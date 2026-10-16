@@ -176,6 +176,7 @@ fn merging_a_shard_rebases_every_palette_slot() {
         radius: 0.0,
         height: 0.0,
         own_radius: 0.0,
+        bound: 0.0,
         attachments: 0,
     };
     let mut shard = ModelLibrary {
@@ -372,6 +373,7 @@ fn library_with_one_mesh(radius: f32) -> ModelLibrary {
             radius,
             height: 1.0,
             own_radius: radius,
+            bound: radius.hypot(1.0),
             attachments: 0,
         }],
         ..ModelLibrary::default()
@@ -1017,4 +1019,17 @@ fn unit_lifetime_and_hidden_animation_clock() {
         let (faded, _) = frame(12.75, false, true);
         assert_eq!(faded[0].scale, 0.5);
     }
+}
+
+#[test]
+fn an_entity_s_bound_encloses_every_point_around_its_origin() {
+    // A corner up and out reaches farther than the horizontal radius or the height alone, and a
+    // point below the origin counts too.
+    let mut reach = Reach::default();
+    reach.widen_point([100.0, 100.0, 0.0], true);
+    reach.widen_point([0.0, -120.0, 30.0], true);
+    assert_eq!((reach.radius, reach.height), (100.0, 100.0));
+    assert!((reach.bound - 100.0 * 2f32.sqrt()).abs() < 1e-3, "{}", reach.bound);
+    reach.widen_point([0.0, -150.0, 0.0], true);
+    assert_eq!(reach.bound, 150.0);
 }

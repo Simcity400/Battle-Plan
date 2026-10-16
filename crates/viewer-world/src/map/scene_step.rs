@@ -191,6 +191,8 @@ pub(super) struct EventSources<'a> {
     pub unit_models: Option<&'a ModelPass>,
     pub aircraft: Option<&'a ModelPass>,
     pub trains: Option<&'a ModelPass>,
+    /// The model a free camera mode's user steers, which every camera and switch shows.
+    pub player: Option<&'a ModelPass>,
 }
 
 /// Every event the frame's passes emitted, in submission order. A hidden layer's or actor's
@@ -230,6 +232,7 @@ pub(super) fn frame_events(
     if rails_shown {
         add(sources.trains, !graphics.supply_trains());
     }
+    add(sources.player, false);
     events
 }
 
@@ -331,6 +334,7 @@ mod tests {
                     unit_models: Some(&self.unit_models),
                     aircraft: None,
                     trains: Some(&self.trains.0),
+                    player: None,
                 },
                 graphics,
                 &camera,

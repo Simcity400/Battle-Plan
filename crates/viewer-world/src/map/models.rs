@@ -199,6 +199,10 @@ pub struct ModelMesh {
     /// The same radius over the entity's **own** geometry only. An attachment
     /// rig's is a fraction of a world unit while its composed one is metres.
     pub own_radius: f32,
+    /// The farthest any point of LOD 0's bounds, attachments composed in, lies
+    /// from its own origin, after `scale`: the radius of the sphere around the
+    /// origin that encloses it.
+    pub bound: f32,
     /// How many attached entities were composed into this mesh, at any depth.
     pub attachments: usize,
 }
@@ -259,6 +263,8 @@ struct Composition {
 struct Reach {
     radius: f32,
     height: f32,
+    /// The farthest point from the origin, in every direction.
+    bound: f32,
     /// The radius of the root entity's own geometry, attachments excluded.
     own_radius: f32,
     /// Attached entities composed in, at any depth.
@@ -307,6 +313,7 @@ impl Reach {
         let radius = (point[0] * point[0] + point[2] * point[2]).sqrt();
         self.radius = self.radius.max(radius);
         self.height = self.height.max(point[1]);
+        self.bound = self.bound.max(radius.hypot(point[1]));
         if own {
             self.own_radius = self.own_radius.max(radius);
         }
@@ -656,6 +663,7 @@ impl ModelLibrary {
             radius,
             height,
             own_radius: reach.own_radius,
+            bound: reach.bound,
             attachments: reach.attachments,
         });
         Ok(())

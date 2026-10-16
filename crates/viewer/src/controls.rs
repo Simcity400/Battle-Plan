@@ -19,10 +19,11 @@
 //! own window.
 //!
 //! [`orbit`] moves the game's map camera with a controller; [`observer`] is the free eye the
-//! flying and walking modes move.
+//! flying mode moves; [`walker`] is the walking mode's figure and the view following it.
 
 pub mod observer;
 pub mod orbit;
+pub mod walker;
 
 use dashboard::protocol::{GamepadButton, GamepadMessage, GamepadOwner, GamepadState};
 use eframe::egui;

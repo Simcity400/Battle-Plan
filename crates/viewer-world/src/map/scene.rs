@@ -35,6 +35,10 @@ pub mod passes;
 #[path = "scene_step.rs"]
 mod step;
 
+#[path = "scene_player.rs"]
+mod player;
+pub use player::PlayerModel;
+
 #[cfg(any(test, feature = "test-support"))]
 use super::scene_faults as failure_tests;
 
@@ -105,6 +109,7 @@ macro_rules! model_passes {
             $scene.bridges.as_ref(),
             $scene.aircraft.as_ref().map(|(pass, ..)| pass),
             $scene.trains.as_ref().map(|(pass, ..)| pass),
+            $scene.player.as_ref().map(|player| &player.pass),
         ]
     };
 }
@@ -290,6 +295,8 @@ pub struct Scene {
     /// The content's unit and ship camera cutoffs, set with the pass.
     unit_gates: Option<UnitGates>,
     pub unit_history: crate::map::unit_history::History,
+    /// The model a free camera mode's user steers; see [`Scene::set_player`].
+    player: Option<player::Player>,
 }
 
 /// One frame's worth of arguments to [`Scene::render`].
@@ -721,6 +728,7 @@ impl Scene {
             unit_models: None,
             unit_gates: None,
             unit_history: Default::default(),
+            player: None,
         };
         Ok(scene)
     }
@@ -1145,6 +1153,28 @@ impl Scene {
     /// its playback fraction ([`crate::map::unit_models::PreparedModels::raid_units`]).
     pub fn set_raid_units(&mut self, raids: Vec<(usize, crate::map::models::ModelInstance)>) {
         self.unit_history.set_raids(raids);
+    }
+
+    /// Places the model a free camera mode's user steers, or takes it away.
+    /// It draws lit and casts shadows wherever it stands, whatever the unit
+    /// layer's cutoffs and display switches, and plays its entity's states on
+    /// the render clock. A new label builds its pass afresh.
+    pub fn set_player(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        player: Option<PlayerModel<'_>>,
+    ) -> io::Result<()> {
+        let Some(model) = player else {
+            self.player = None;
+            return Ok(());
+        };
+        player::Player::place(&mut self.player, device, queue, model)
+    }
+
+    /// The player's instances the last frame drew, for reporting.
+    pub fn player_drawn(&self) -> u32 {
+        self.player.as_ref().map_or(0, |player| player.pass.drawn())
     }
 
     // close zoom
@@ -1697,6 +1727,9 @@ impl Scene {
             last_animation_time: self.last_animation_time,
         }
         .step(camera, size, animation_time, rails_shown);
+        if let Some(player) = &mut self.player {
+            player.pass.animate(animation_time, None, &[0.0]);
+        }
         self.detail_laps.lap("presentation_step");
         // Only a layer that draws needs its meshes uploaded.
         if let Some((pass, assets, _)) = &mut self.aircraft
@@ -1720,6 +1753,7 @@ impl Scene {
                 unit_models: self.unit_models.as_ref(),
                 aircraft: self.aircraft.as_ref().map(|(pass, _, _)| pass),
                 trains: self.trains.as_ref().map(|(pass, _, _)| pass),
+                player: self.player.as_ref().map(|player| &player.pass),
             },
             &self.graphics,
             &camera,
@@ -2009,6 +2043,16 @@ impl Scene {
                             && bridges_visible
                         {
                             bridges.draw_casters(
+                                arena,
+                                &mut pass,
+                                caster_frame(1.0),
+                                native_caster_inputs,
+                            )?;
+                        }
+                        // The player casts as every caster does: on the canonical and each seam
+                        // view, with the light matrix translated for each, inside the light.
+                        if let Some(player) = &self.player {
+                            player.pass.draw_casters(
                                 arena,
                                 &mut pass,
                                 caster_frame(1.0),
@@ -2552,6 +2596,25 @@ impl Scene {
             })
             .collect::<io::Result<Vec<_>>>()?;
         let actor_frame_bytes: Vec<_> = actor_frames.iter().map(bytemuck::bytes_of).collect();
+        // The player's own map copies, however high it stands above the band the map's objects
+        // are admitted in, and each copy's scene constants.
+        if let Some(player) = &mut self.player {
+            player::copies(&actor_camera, size, player.sphere, &mut player.offsets);
+            player.frames.clear();
+            for offset in &player.offsets {
+                let mut view = actor_camera;
+                view.center[0] -= offset;
+                player.frames.push(
+                    FrameConstants::try_new(view, size, day_night, animation_time, self.fog)
+                        .map(|frame| frame.with_snow_mud_fade(snow_mud_fade))
+                        .ok_or_else(|| {
+                            invalid(
+                                "Map shader scene: 1 refused player frame: camera has no finite inverse",
+                            )
+                        })?,
+                );
+            }
+        }
         let particle_packets = self.weather_effects.as_mut().map(|weather| {
             weather.prepare_frame(
                 camera,
@@ -2571,6 +2634,7 @@ impl Scene {
             bridges,
             aircraft,
             trains,
+            _,
         ] = model_passes!(self);
         let mesh_layers = [
             (map_frame, true, 1., "map_frame_mesh"),
@@ -2595,6 +2659,10 @@ impl Scene {
             if let Some(model) = model {
                 model.reset_drawn();
             }
+        }
+        let player = self.player.as_ref();
+        if let Some(player) = player {
+            player.pass.reset_drawn();
         }
         let mut object = crate::map::models::NativeObjectConstants::default();
         object.retained.inherit(&retained_scene.borrow());
@@ -2698,6 +2766,31 @@ impl Scene {
                     }
                     mark(&mut encoder, "weather");
                 }
+            }
+            // The player on each map copy its own bounds reach in view, not culled to the ground
+            // the map's objects stand on.
+            if let Some(player) = player {
+                object.begin();
+                for (offset, frame) in player.offsets.iter().zip(&player.frames) {
+                    player.pass.draw_native(
+                        arena,
+                        &mut encoder,
+                        targets,
+                        ModelFrame {
+                            camera: actor_camera,
+                            offsets: std::slice::from_ref(offset),
+                            visible: None,
+                            alpha: 1.0,
+                        },
+                        crate::map::models::NativeInputs {
+                            frames: &[bytemuck::bytes_of(frame)],
+                            ..native_mesh_inputs
+                        },
+                        native_queue,
+                        &mut object,
+                    )?;
+                }
+                mark(&mut encoder, "player");
             }
         }
         //alternate entities/particles precede modes3 and1.

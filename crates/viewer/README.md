@@ -10,7 +10,7 @@ Installation-dependent loading initializes `engine::executable_tables` from the 
 |---|---|
 | Loading, decoding, hour workers | [document.rs](src/document.rs), [playback.rs](src/playback.rs), [hours.rs](src/hours.rs) |
 | Campaign map and map widgets | [app.rs](src/app.rs), [embedded.rs](src/embedded.rs), [dashboard_maps.rs](src/dashboard_maps.rs) |
-| Input and camera controllers | [controls.rs](src/controls.rs), [orbit.rs](src/controls/orbit.rs), [observer.rs](src/controls/observer.rs) |
+| Input and camera controllers | [controls.rs](src/controls.rs), [orbit.rs](src/controls/orbit.rs), [observer.rs](src/controls/observer.rs), [walker.rs](src/controls/walker.rs), [app/walk.rs](src/app/walk.rs) |
 | Camera, scene and clocks | [viewer-foundation](../viewer-foundation/README.md), [viewer-world](../viewer-world/README.md) |
 | Perspective, fog and political fill | [viewer-foundation](../viewer-foundation/README.md), [viewer-world](../viewer-world/README.md) |
 | World passes and shader adapters | [map/mod.rs](src/map/mod.rs), [viewer-world](../viewer-world/README.md) |
@@ -33,6 +33,8 @@ Interactive maps open in the desktop app. The host passes its effective game/use
 
 `--free-camera <x,y,z,yaw,pitch[,roll[,fov[,near[,far]]]]>` replaces `--camera` with a free eye at world `(x, y, z)` turned by degrees, for dumps and window dumps of horizon and low views.
 
+`--window-dump --walk <x,z,heading[,scale]>` draws the walking mode instead of a camera: the figure stands at world `(x, z)` facing `heading` degrees clockwise from north at `scale` (default 1), seen from behind. `--walk-keys` holds keys through every frame (`w`, `a`, `s`, `d`, `space`, `shift`, `ctrl`, `plus`, `minus`), `--walk-flying` starts in flight, and each captured frame moves the walk on by `--animation-step` seconds.
+
 The camera moves by the game's law ([motion.rs](../viewer-foundation/src/map/camera/motion.rs)): edge scrolling (when `corner_scrolling` is on, within 2 pixels of the map's edge), the arrow keys, the wheel and Page Up/Page Down move a target camera, and the shown camera eases towards it. The content's `CAMERA_ZOOM_*` and `CAMERA_INTERPOLATION_SPEED` defines and the user's `scroll_speed`, `zoom_speed` and `camera_speed` supply the operands. The wheel acts on the map under the pointer. Keys and edge scrolling act on the focused map: the window must have the system's focus, and on the desktop dashboard the map must also be the one last pressed with a mouse button (Escape and Tab do not change that), so passing over another widget's border on the way somewhere does not pan it. Middle-button drag panning is a viewer addition the game does not have; it moves the shown camera at once, and the target with it. A fitted camera stays fitted until the camera actually moves.
 
 *Match game* rasterises screen controls/text at game framebuffer/gui scale, then linearly stretches the completed image. Hit tests undo stretch; interface-pixel layout scales corners at upload. World names/geometry stay unscaled. [Unreadable display settings](../installed-content-settings/src/settings.rs) use 1.0 with warning. Dumps use game frame size/scale 1.0 unless `--ui-scale` overrides it.
@@ -49,7 +51,7 @@ through the existing playback path.
 
 ## Camera modes and controls
 
-The full map draws through the game's look-at camera unless a controller orbits it or a free mode is chosen: by the host (`MapAction::CameraMode`: map, fly or walk) or by the map's own shortcut, F12 or the controller's View (Back, Share) button, which cycles map, fly and walk. No interface shortcut in the game's content binds F12, and the game reads no controller. The viewer reports every change to its host (`NativeEvent::CameraMode`). Every map window has its own mode, the pop-out's included, and its own shortcut. A [free camera](../viewer-foundation/src/map/camera/pose.rs) keeps the game's world axes and conventions with its own heading, pitch, roll and lens. Its terrain is the content shader's block scheme by distance ([terrain.rs](../viewer-world/src/map/terrain.rs)) on every map copy its far plane reaches; province, model, tree and icon admission test its view volume out to the content's `DRAW_MAP_OBJECTS_CUTOFF`, the distance the game removes map objects at, while the content's height cutoffs read the eye's height; map icons behind it are dropped; picking walks the height cells along the cursor's ray and finds no ground above the horizon; shadows fit the receivers within `DRAW_SHADOWS_CUTOFF` of the eye; and the content sky fills whatever the terrain leaves. The game's camera draws exactly as before.
+The full map draws through the game's look-at camera unless a controller orbits it or a free mode is chosen: by the host (`MapAction::CameraMode`: map, fly or walk) or by the map's own shortcut, F12 or the controller's View (Back, Share) button, which cycles map, fly and walk. No interface shortcut in the game's content binds F12, and the game reads no controller. The viewer reports every change to its host (`NativeEvent::CameraMode`). Every map window has its own mode, the pop-out's included, and its own shortcut. A [free camera](../viewer-foundation/src/map/camera/pose.rs) keeps the game's world axes and conventions with its own heading, pitch, roll and lens. Its terrain is the content shader's block scheme by distance ([terrain.rs](../viewer-world/src/map/terrain.rs)) on every map copy its far plane reaches; province, model, tree and icon admission test its view volume out to the content's `DRAW_MAP_OBJECTS_CUTOFF`, the distance the game removes map objects at, while the content's height cutoffs read the eye's height; map icons behind it are dropped; picking walks the height cells along the cursor's ray and finds no ground above the horizon; shadows are fitted to its capped water-plane footprint as the game camera's are, and turn on and fade by eye height; and the content sky fills whatever the terrain leaves. The game's camera draws exactly as before.
 
 [controls.rs](src/controls.rs) is the one input layer for keyboard, mouse and controllers. Frame time is wall-clock time, at most 0.1 s a frame, whatever the replay speed. Controllers are read by the desktop host and handed to the map whose window is in front ([desktop](../desktop/README.md)): Windows.Gaming.Input reports them only to the process owning the foreground window, which the map's child window never does. The host alone decides which map holds the controller, by the window in front (the map's own focus never touches it): a map taking it reads what is held without pressing anything, a map released lets go of everything without pressing anything and drops any state sent before its release or for a handoff it does not hold, and presses count against the last state read, so a button held through a handoff is never pressed twice. Xbox, PlayStation and other gamepads Windows recognises work alike. Sticks have an 18% radial dead zone, count as full at 95% and follow a 1.6 power curve; triggers have a 6% dead zone. Moves ease in and out over about a tenth of a second.
 
@@ -62,15 +64,31 @@ In map mode a controller [orbits](src/controls/orbit.rs) the game's camera. Whil
 | Right / left trigger | Zoom in / out within the content's camera heights |
 | Right stick press | Ease back to the game's north-up view, which then draws exactly as the game's camera |
 
-Fly and walk move a [free eye](src/controls/observer.rs) over the map, never below the drawn ground or water nor off the map's top and bottom. Flying starts where the view looks from and moves at a pace set by its height above the ground. Walking starts on the ground the view looks at, stands one world unit above the drawn ground or water (seas and lakes included) and walks at a fixed pace; a double tap of Space or of the controller's south button flies at that pace, and another falls back to the ground. Click the map to look with the mouse; Escape or losing keyboard focus gives the pointer back and forgets held keys. The controller stays with the map until the host hands it on. The map's interface (counters, labels, icons, hovers and clicks) is not drawn in these modes; ground-draped layers (borders, names, plans and routes) are.
+In both free modes, click the map to look with the mouse; Escape or losing keyboard focus gives the pointer back and forgets held keys. The controller stays with the map until the host hands it on. The map's interface (counters, labels, icons, hovers and clicks) is not drawn; ground-draped layers (borders, names, plans and routes) are.
+
+Fly moves a [free eye](src/controls/observer.rs) over the map, never below the drawn ground or water nor off the map's top and bottom. It starts where the view looks from and moves at a pace set by its height above the ground.
 
 | Action | Keyboard and mouse | Controller |
 |---|---|---|
 | Look | Mouse while the map holds the pointer | Right stick |
 | Move | W A S D | Left stick |
-| Rise / sink (flying) | Space / Shift | Right / left trigger |
+| Rise / sink | Space / Shift | Right / left trigger |
 | Faster | Ctrl | Left stick pressed in |
-| Walking: fly / land | Space twice | South button (A, cross) twice |
+
+Walk puts the viewing country's infantry on the ground the view looks at, facing the way the view faces, and follows it from behind ([walker.rs](src/controls/walker.rs)). The figure is the entity the game's land ladder gives that country's infantry sub-unit: cosmetic tag, tag, graphical culture and bare name, the sub-unit's key and then its sprite, then the placeholder entity ([unit models](../viewer-world/src/map/unit_models.rs)). It is chosen again each hour and whenever the viewing country changes, and a figure that cannot be chosen is named in the diagnostics. The figure always draws, lit and casting shadows, whatever the unit layer's cutoffs and the map's display switches. It stands on the drawn triangle surface or the water above it, so it walks on seas and lakes, plays its entity's `move` state while it walks and `idle` otherwise, and turns to face where it walks.
+
+Every length follows the figure's height times the user's scale, where scale 1 is the size the game draws its units: walking (one figure height a second), flying, falling, the view's distance and its near plane. The scale runs from one height-map step tall to where the figure and its farthest view reach the content's highest camera, and is kept while the mode is left. A double tap of Space flies as in a creative sandbox: the figure holds its height, Space and Shift rise and descend, descending onto the ground lands, and another double tap falls back to the ground under gravity. Flight stops rising where the figure and the view behind it reach the content's highest camera.
+
+| Action | Keyboard and mouse | Controller |
+|---|---|---|
+| Look around the figure | Mouse while the map holds the pointer | Right stick |
+| Walk, relative to the view | W A S D | Left stick |
+| Faster | Ctrl | Left stick pressed in |
+| Start / stop flying | Space twice | South button (A, cross) twice |
+| Rise / descend while flying | Space / Shift | South / east button (B, circle), or right / left trigger |
+| Grow / shrink (doubling or halving each second) | + / - held | D-pad up / down held |
+| View nearer / farther | Mouse wheel | Left / right bumper held |
+| View from behind the figure again | | Right stick pressed in |
 
 ## Playback, threading and frame budgets
 

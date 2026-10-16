@@ -61,6 +61,16 @@
 //! ([`viewer_foundation::map::task_force_visual`]). Docked formations in visual slot 19 hide
 //! their root and all four hull attachments. Static naval-base geometry belongs
 //! to `map_buildings`; division transports still draw as described above.
+//!
+//! # The walker's figure
+//!
+//! The walking camera mode draws the viewing country's infantry
+//! ([`UnitModelAssets::infantry_figure`]): the land ladder's step 3 for the
+//! [`INFANTRY_KEY`] sub-unit and its sprite, with the viewing country's
+//! cosmetic tag, tag, graphical culture and bare name, falling back to
+//! [`PLACEHOLDER_ENTITY`] as a division's complete miss does. A walker is no
+//! division: it has no template, equipment, stored model number or
+//! acclimatization, so steps 1, 2 and 4 have no operands.
 
 use std::cell::OnceCell;
 use std::collections::HashSet;
@@ -116,6 +126,10 @@ pub const ENTITY_SUFFIX: &str = "_entity";
 
 /// The key a division in naval transfer takes instead of its own.
 pub const TRANSPORT_KEY: &str = "transport";
+
+/// The engine's infantry unit type, and the key of the sub-unit and figure
+/// entities the walking camera mode's figure takes.
+pub const INFANTRY_KEY: &str = "infantry";
 
 /// What the game draws when every candidate misses.
 pub const PLACEHOLDER_ENTITY: &str = "test_object_entity";
@@ -341,6 +355,39 @@ fn resolve_transport(
         lookup,
         true,
     )
+}
+
+/// The entity the land ladder gives `country`'s [`INFANTRY_KEY`] sub-unit,
+/// whose authored sprite is `sprite`: no model number, then the placeholder
+/// as a division's complete miss takes it. `None` when a prefix the ladder
+/// still has to try is unknown, or nothing, the placeholder included, is
+/// registered.
+fn resolve_infantry(
+    country: &ModelCountry,
+    sprite: Option<&str>,
+    lookup: impl FnMut(&str) -> bool,
+) -> Option<(Level, String)> {
+    resolve_prefixes(
+        &country.cosmetic,
+        Some(&country.tag),
+        country.graphical_culture.as_deref(),
+        INFANTRY_KEY,
+        sprite,
+        lookup,
+        true,
+    )
+}
+
+/// The walking camera mode's figure ([`UnitModelAssets::infantry_figure`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Figure {
+    pub entity: String,
+    pub level: Level,
+    /// The entity's slot in [`UnitModelAssets::library`].
+    pub mesh: usize,
+    /// How far the figure reaches above its own origin at the size the game
+    /// draws its units, in world units.
+    pub height: f32,
 }
 
 /// Which level of the ladder a stack's model came from, for the report.
@@ -648,6 +695,57 @@ impl UnitModelAssets {
     /// Whether any `gfx` descriptor declares the entity.
     pub fn declares(&self, name: &str) -> bool {
         self.registered(name)
+    }
+
+    /// The entity the walking camera mode draws this hour for the viewing
+    /// country, whose canonical slot is `ours` ([`resolve_infantry`]).
+    pub fn infantry_entity(
+        &self,
+        frame: &DecodedFrame,
+        ours: u32,
+    ) -> Result<(Level, String), String> {
+        if let Some(reason) = &self.disabled {
+            return Err(reason.clone());
+        }
+        let countries = model_countries::read(frame).map_err(|error| error.to_string())?;
+        let country = countries.get(&ours).ok_or_else(|| {
+            format!("the viewing country (slot {ours}) has no recorded tag or appearance this hour")
+        })?;
+        let sprite = self
+            .sub_units
+            .subunit(INFANTRY_KEY)
+            .map(|unit| unit.sprite.as_str());
+        resolve_infantry(country, sprite, |name| self.registered(name)).ok_or_else(|| {
+            if country.graphical_culture.is_none() {
+                format!(
+                    "{}'s graphical culture is unreadable this hour",
+                    country.tag
+                )
+            } else {
+                format!(
+                    "no {INFANTRY_KEY} entity resolves for {} and {PLACEHOLDER_ENTITY} is not registered",
+                    country.tag
+                )
+            }
+        })
+    }
+
+    /// [`Self::infantry_entity`], baked into [`Self::library`].
+    pub fn infantry_figure(&self, frame: &DecodedFrame, ours: u32) -> Result<Figure, String> {
+        let (level, entity) = self.infantry_entity(frame, ours)?;
+        if let Some(reason) = entity_refusal(&self.roster, &entity) {
+            return Err(reason);
+        }
+        let mesh = self
+            .bake_slot(&entity)
+            .ok_or_else(|| format!("registered entity {entity} did not bake"))?;
+        let height = self.library().meshes.get(mesh).map_or(0.0, |mesh| mesh.height);
+        Ok(Figure {
+            entity,
+            level,
+            mesh,
+            height,
+        })
     }
 
     /// Variant model selection for the aircraft-designer feature `0x26`.

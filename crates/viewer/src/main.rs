@@ -91,6 +91,11 @@ Options: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is;
            limitations either way
 Window dump: --window-dump opens a window, renders through the windowed path at --width/--height
              and --camera or --free-camera, writes the frame to --out and exits
+             --walk <x,z,heading[,scale]> draws the walking mode instead: the viewing country's
+             infantry standing at world (x, z) facing heading degrees clockwise from north, at
+             scale (default 1), seen from behind; --walk-keys <keys> holds keys through every
+             frame (w, a, s, d, space, shift, ctrl, plus, minus) and --walk-flying starts in
+             flight; each frame moves it by --animation-step
              --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>
              sample a deterministic sequence; default is one frame at time zero
 Dump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, zero in a dump:
@@ -267,6 +272,9 @@ struct Options {
     /// the desktop app's maps take its graphics preferences.
     day_night: Option<bool>,
     camera: Option<Placement>,
+    /// `--window-dump --walk`: a walk placed on the map, drawn through the walking mode with
+    /// the keys `--walk-keys` holds ([`controls::walker::Start`]).
+    walk: Option<controls::walker::Start>,
     /// `--dump --building-camera <x,z,height>`, repeatable: cameras the map
     /// visited before this frame, in order. Map buildings keep what those views
     /// created, as a live session does.
@@ -350,6 +358,8 @@ impl Options {
             ..Default::default()
         };
         let mut args = args.peekable();
+        // `--walk`, `--walk-keys` and `--walk-flying` in any order, joined after the loop.
+        let (mut walk, mut walk_keys, mut walk_flying) = (None, None, false);
         while let Some(arg) = args.next() {
             match arg.to_str() {
                 Some("--combat" | "--combat-at") => {
@@ -498,6 +508,19 @@ impl Options {
                     options.ui_scale = Some(scale);
                 }
                 Some("--allow-unverified-content") => options.allow_unverified = true,
+                Some("--walk-flying") => walk_flying = true,
+                Some(flag @ ("--walk" | "--walk-keys")) => {
+                    let flag = flag.to_owned();
+                    let value = args
+                        .next()
+                        .and_then(|value| value.into_string().ok())
+                        .ok_or_else(|| invalid(USAGE))?;
+                    if flag == "--walk" {
+                        walk = Some(value);
+                    } else {
+                        walk_keys = Some(value);
+                    }
+                }
                 Some("--diagnostics") => options.diagnostics = true,
                 Some("--out") => {
                     options.out = Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
@@ -656,6 +679,28 @@ impl Options {
                 }
                 _ => return Err(invalid(USAGE)),
             }
+        }
+        match walk {
+            Some(place) => {
+                options.walk = Some(
+                    controls::walker::Start::parse(&place, walk_keys.as_deref(), walk_flying)
+                        .map_err(invalid)?,
+                );
+            }
+            None if walk_keys.is_some() || walk_flying => {
+                return Err(invalid("--walk-keys and --walk-flying hold keys for a --walk"));
+            }
+            None => {}
+        }
+        if options.walk.is_some() && !options.window_dump {
+            return Err(invalid(
+                "--walk draws a placed walk through the window and requires --window-dump; the                  desktop app's maps walk from the Camera control",
+            ));
+        }
+        if options.walk.is_some() && options.camera.is_some() {
+            return Err(invalid(
+                "--walk places its own camera behind the figure; give it or a camera",
+            ));
         }
         if options.size.iter().any(|size| !(1..=16384).contains(size)) {
             return Err(invalid("image dimensions must be 1 through 16384"));
@@ -2398,6 +2443,49 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_window_dump_places_a_walk_with_its_held_keys() {
+        let dump = |extra: &[&str]| {
+            let mut args = vec![
+                "--window-dump",
+                "campaign.battleplan",
+                "--hour",
+                "1",
+                "--out",
+                "walk.png",
+            ];
+            args.extend_from_slice(extra);
+            parse(&args)
+        };
+        let options = dump(&[
+            "--walk-keys",
+            "w,Shift,plus",
+            "--walk",
+            "3000,1200,90,2.5",
+            "--walk-flying",
+        ])
+        .unwrap();
+        let start = options.walk.expect("placed");
+        assert_eq!(start.at, [3000.0, 1200.0]);
+        assert!((start.facing - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert_eq!(start.scale, 2.5);
+        assert!(start.flying && start.modifiers.shift && !start.modifiers.ctrl);
+        assert_eq!(start.held, [eframe::egui::Key::W, eframe::egui::Key::Plus]);
+        assert_eq!(dump(&["--walk", "1,2,0"]).unwrap().walk.unwrap().scale, 1.0);
+        for refused in [
+            &["--walk", "1,2"][..],
+            &["--walk", "1,2,0,0"],
+            &["--walk", "1,2,0", "--walk-keys", "q"],
+            &["--walk-keys", "w"],
+            &["--walk-flying"],
+            &["--walk", "1,2,0", "--camera", "100,200,300"],
+        ] {
+            assert!(dump(refused).is_err(), "{refused:?}");
+        }
+        // It is a window dump's: the desktop app's maps walk from their Camera control.
+        assert!(parse(&["campaign.battleplan", "--walk", "1,2,0"]).is_err());
     }
 
     #[test]

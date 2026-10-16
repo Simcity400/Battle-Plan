@@ -772,3 +772,141 @@ fn the_offset_points_the_mesh_s_own_forward_axis_along_the_route() {
         );
     }
 }
+
+/// One hour with GER in canonical slot 1, whose appearance row carries
+/// `cosmetic` and `culture`.
+fn appearance_frame(cosmetic: &[u8], culture: &[u8]) -> DecodedFrame {
+    use replay::{
+        frame::{Metrics, TableView},
+        rows::{CountryAppearanceRow, CountryLinkRow, CountryRow, TableId, TableRows},
+    };
+    let mut views = std::array::from_fn(|_| TableView::Unavailable {
+        reason: "not needed for this hour".into(),
+    });
+    for (id, rows) in [
+        (
+            TableId::CountryLinks,
+            TableRows::CountryLinks(vec![CountryLinkRow {
+                id: 100,
+                canonical_slot: 1,
+            }]),
+        ),
+        (
+            TableId::Countries,
+            TableRows::Countries(vec![CountryRow {
+                id: 100,
+                canonical_slot: 1,
+                tag: b"GER".to_vec(),
+                ..Default::default()
+            }]),
+        ),
+        (
+            TableId::CountryAppearance,
+            TableRows::CountryAppearance(vec![CountryAppearanceRow {
+                country: 100,
+                cosmetic_tag: cosmetic.to_vec(),
+                graphical_culture: culture.to_vec(),
+                ..Default::default()
+            }]),
+        ),
+    ] {
+        views[id.index()] = TableView::Complete(rows);
+    }
+    DecodedFrame {
+        branch: 1,
+        hour: 1,
+        tables: views.map(Into::into),
+        metrics: Metrics::default(),
+    }
+}
+
+/// Assets registering `registered`, with `sub_units` read through the content's equipment
+/// load (which needs `BATTLE_PLAN_GAME_DIR`), or none.
+fn walker_assets(registered: &[&str], sub_units: Option<&[u8]>) -> UnitModelAssets {
+    UnitModelAssets {
+        sub_units: sub_units.map_or_else(model_selection::Content::default, |text| {
+            model_selection::Content::from_test_documents(&[text])
+        }),
+        registered: registered.iter().map(|name| (*name).to_owned()).collect(),
+        disabled: None,
+        ..UnitModelAssets::off(String::new())
+    }
+}
+
+#[test]
+fn the_walker_is_the_viewing_country_s_infantry_by_the_land_ladder() {
+    // Without the sub-unit, or with one whose sprite is its own name, the infantry key alone
+    // is tried.
+    let frame = appearance_frame(b"", b"western_european_gfx");
+    let entity = |registered: &[&str]| walker_assets(registered, None).infantry_entity(&frame, 1);
+    let every = [
+        "GER_infantry_entity",
+        "western_european_gfx_infantry_entity",
+        "infantry_entity",
+        PLACEHOLDER_ENTITY,
+    ];
+    // Tag, then graphical culture, then the bare name, then the placeholder.
+    for (skip, level) in [
+        (0, Level::Tag),
+        (1, Level::Culture),
+        (2, Level::Bare),
+        (3, Level::Placeholder),
+    ] {
+        assert_eq!(
+            entity(&every[skip..]),
+            Ok((level, every[skip].to_owned()))
+        );
+    }
+    let missing = entity(&[]).unwrap_err();
+    assert!(missing.contains(PLACEHOLDER_ENTITY), "{missing}");
+    // A cosmetic tag comes first.
+    let cosmetic = appearance_frame(b"GER_kaiser", b"western_european_gfx");
+    assert_eq!(
+        walker_assets(&["GER_kaiser_infantry_entity", "GER_infantry_entity"], None)
+            .infantry_entity(&cosmetic, 1),
+        Ok((Level::Cosmetic, "GER_kaiser_infantry_entity".to_owned()))
+    );
+    // A culture that does not read cannot prove the later names: the tag still resolves,
+    // anything after it refuses by name.
+    let unreadable = appearance_frame(b"", &[0xff]);
+    assert_eq!(
+        walker_assets(&["GER_infantry_entity"], None).infantry_entity(&unreadable, 1),
+        Ok((Level::Tag, "GER_infantry_entity".to_owned()))
+    );
+    let refused = walker_assets(&["infantry_entity"], None)
+        .infantry_entity(&unreadable, 1)
+        .unwrap_err();
+    assert!(refused.contains("graphical culture"), "{refused}");
+    // A country the hour does not record has no figure, and a layer that is off says why.
+    assert!(walker_assets(&every, None).infantry_entity(&frame, 2).is_err());
+    assert_eq!(
+        UnitModelAssets::off("no descriptors".into()).infantry_entity(&frame, 1),
+        Err("no descriptors".to_owned())
+    );
+}
+
+#[test]
+fn the_walker_s_sprite_key_follows_its_own() {
+    // A mod whose infantry draws a sprite of another name tries that key after its own.
+    let frame = appearance_frame(b"", b"western_european_gfx");
+    let rifleman: Option<&[u8]> = Some(br"sub_units = { infantry = { sprite = rifleman } }");
+    let assets = walker_assets(
+        &["western_european_gfx_rifleman_entity", "infantry_entity"],
+        rifleman,
+    );
+    assert_eq!(
+        assets.infantry_entity(&frame, 1),
+        Ok((Level::Bare, "infantry_entity".to_owned()))
+    );
+    let assets = walker_assets(
+        &["western_european_gfx_rifleman_entity", PLACEHOLDER_ENTITY],
+        rifleman,
+    );
+    assert_eq!(
+        assets.infantry_entity(&frame, 1),
+        Ok((
+            Level::Culture,
+            "western_european_gfx_rifleman_entity".to_owned()
+        ))
+    );
+}

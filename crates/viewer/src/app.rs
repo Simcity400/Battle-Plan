@@ -66,6 +66,7 @@ use {
 mod embedded;
 mod faction_highlight;
 mod presentation;
+mod walk;
 
 /// Guard the README's frame-budget boundary at both production entry points.
 #[cfg(test)]
@@ -692,8 +693,10 @@ pub struct Viewer {
     input: crate::controls::Input,
     /// The controller's heading and tilt around the map camera.
     orbit: crate::controls::orbit::Orbit,
-    /// The free eye of the flying and walking modes, placed when one starts.
+    /// The free eye of the flying mode, placed when it starts.
     observer: Option<crate::controls::observer::Observer>,
+    /// The walking mode's figure, walker and scale.
+    walk: walk::Walk,
     /// Whether the window hides and confines the cursor for looking around.
     pointer_grabbed: bool,
     playing: bool,
@@ -1065,10 +1068,16 @@ impl Viewer {
             camera: options.camera,
             camera_manual: options.camera.is_some(),
             zoom: Motion::default(),
-            camera_mode: CameraMode::Map,
+            // A window dump's placed walk starts walking.
+            camera_mode: if options.walk.is_some() {
+                CameraMode::Walk
+            } else {
+                CameraMode::Map
+            },
             input: crate::controls::Input::default(),
             orbit: crate::controls::orbit::Orbit::default(),
             observer: None,
+            walk: walk::Walk::new(options.walk.clone()),
             pointer_grabbed: false,
             // colour: `--postfx off` reaches the window too, so a window and a
             // dump of the same state can be the same frame.
@@ -1429,6 +1438,9 @@ impl Viewer {
         warnings.extend(shown.plan_warnings.iter().cloned());
         warnings.extend(shown.building_warnings.iter().cloned());
         warnings.extend(shown.model_warnings.iter().cloned());
+        if self.camera_mode == CameraMode::Walk {
+            warnings.extend(self.walk.warning());
+        }
         if let Some(placements) = &self.placements {
             warnings.extend(placements.warnings.iter().cloned());
         }
@@ -1716,6 +1728,7 @@ impl Viewer {
         self.zoom.reset();
         self.orbit.reset();
         self.observer = None;
+        self.walk.reset();
         // names
         self.placements = None;
         self.placements_at = None;
@@ -1962,6 +1975,11 @@ impl Viewer {
                 );
                 if let Some(time) = capture.time {
                     println!("Animation time: {time:.6} s");
+                }
+                if self.camera_mode == CameraMode::Walk
+                    && let Some(walk) = self.walk.report()
+                {
+                    println!("{walk}; player draws {}", scene.player_drawn());
                 }
                 println!("Colour grading {}", if self.postfx { "on" } else { "off" });
                 self.capture_note = Some(format!("Saved {}", output.display()));
@@ -2404,9 +2422,13 @@ impl Viewer {
         );
         let camera = &mut camera;
         // One frame of keyboard, mouse and controller input for the camera controllers. A
-        // capture's pinned camera takes none.
+        // capture's pinned camera takes none; a placed walk holds its keys on the capture clock.
+        let placed_walk = pinned.is_some() && self.walk.placed();
         let controls = if pinned.is_some() {
-            crate::controls::Frame::default()
+            let time = self.capture.as_ref().and_then(|capture| capture.time);
+            self.walk
+                .placed_frame(time.unwrap_or(0.0))
+                .unwrap_or_default()
         } else {
             let (events, focused, modifiers) =
                 ui.input(|input| (input.events.clone(), input.focused, input.modifiers));
@@ -2428,7 +2450,7 @@ impl Viewer {
         {
             self.set_camera_mode(self.camera_mode.next(), ui.ctx());
         }
-        let free_mode = self.camera_mode != CameraMode::Map && pinned.is_none();
+        let free_mode = self.camera_mode != CameraMode::Map && (pinned.is_none() || placed_walk);
         // Pointer and drag deltas reach the camera in framebuffer pixels.
         let scale = ui.ctx().pixels_per_point() / raster.stretch;
         let frame_point = |position: egui::Pos2| {
@@ -2707,7 +2729,7 @@ impl Viewer {
         // The camera the map draws with, and the one its interface is laid out for: the free
         // modes draw from the free eye, and keep the map's interface laid out for the map camera
         // it left, without drawing it.
-        let (camera, overlay_camera) = match pinned {
+        let (camera, overlay_camera) = match pinned.filter(|_| !placed_walk) {
             Some((size, camera)) => {
                 let camera = camera.map_or_else(
                     || Camera::fit(map_size, defines, size),
@@ -2725,19 +2747,43 @@ impl Viewer {
                         values: texels,
                     };
                     let floor = |x: f32, z: f32| field.surface_height(x, z);
-                    // Flying starts where the view looks from; walking starts on the ground the
-                    // view looks at, facing the way it faces.
-                    let observer = self.observer.get_or_insert_with(|| {
-                        use crate::controls::observer::Observer;
-                        if self.camera_mode == CameraMode::Walk {
-                            let forward = map.look_direction();
-                            Observer::walking(camera.center, forward[0].atan2(forward[2]), &floor)
-                        } else {
-                            Observer::flying(&map)
+                    if self.camera_mode == CameraMode::Walk {
+                        // The viewing country's infantry, chosen again for each hour and view.
+                        let key = (
+                            document.playback.branch(),
+                            document.playback.hour(),
+                            self.perspective.clone(),
+                        );
+                        if self.walk.stale(&key) {
+                            let figure = document
+                                .vision(&self.perspective)
+                                .and_then(|vision| Ok((document.frame()?, vision.ours())))
+                                .map_err(|error| error.to_string())
+                                .and_then(|(frame, ours)| {
+                                    document.unit_models.infantry_figure(frame, ours)
+                                });
+                            self.walk.set_figure(key, figure);
                         }
-                    });
-                    observer.update(&controls, map, &floor);
-                    (observer.camera(map, &floor), map)
+                        // The wheel moves the view nearer or farther over the map.
+                        let wheel = if response.hovered() {
+                            ui.input(|input| input.smooth_scroll_delta.y)
+                        } else {
+                            0.0
+                        };
+                        // Walking starts on the ground the view looks at, facing the way it faces.
+                        let world = crate::controls::walker::World::of(&map, &floor);
+                        let walked = self
+                            .walk
+                            .camera(&controls, wheel, map, camera.center, &world);
+                        (walked, map)
+                    } else {
+                        // Flying starts where the view looks from.
+                        let observer = self.observer.get_or_insert_with(|| {
+                            crate::controls::observer::Observer::flying(&map)
+                        });
+                        observer.update(&controls, map, &floor);
+                        (observer.camera(map, &floor), map)
+                    }
                 } else {
                     (map, map)
                 }
@@ -3192,6 +3238,17 @@ impl Viewer {
         // is what a dump's own pair of frames does.
         let scene = self.scene.as_mut().unwrap();
         scene.set_graphics(self.graphics);
+        // The walking mode's figure stands in the scene while it walks.
+        let library = document.unit_models.library();
+        let player = if free_mode && self.camera_mode == CameraMode::Walk {
+            self.walk.player(&library)
+        } else {
+            None
+        };
+        scene
+            .set_player(&state.device, &state.queue, player)
+            .map_err(|error| error.to_string())?;
+        drop(library);
         crate::document::select_movement(
             scene,
             &document.content,
@@ -3357,6 +3414,7 @@ impl Viewer {
         }
         self.camera_mode = mode;
         self.observer = None;
+        self.walk.leave();
         self.input.release();
         if let Some(embedded) = &self.embedded {
             embedded.report_camera_mode(mode);

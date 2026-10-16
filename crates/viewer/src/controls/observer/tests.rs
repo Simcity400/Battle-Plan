@@ -1,6 +1,5 @@
 use super::*;
 use crate::controls::Pad;
-use dashboard::protocol::GamepadButton;
 use eframe::egui;
 use viewer_foundation::map::camera::{MapDefines, MapSize};
 
@@ -136,80 +135,4 @@ fn the_mouse_looks_only_by_its_motion_and_the_stick_by_its_rate() {
         turned > 0.8 * STICK_LOOK[0] && turned < STICK_LOOK[0],
         "{turned}"
     );
-}
-
-fn held(keys: &[egui::Key]) -> Frame {
-    step(Frame {
-        held: keys.iter().copied().collect(),
-        ..Frame::default()
-    })
-}
-
-#[test]
-fn a_walker_stands_on_the_ground_or_water_and_walks_at_its_pace() {
-    // Land three high to the east of x = 3010, sea to the west.
-    let coast = |x: f32, _: f32| if x > 3010.0 { 30.0 } else { WATER_HEIGHT - 2.0 };
-    let mut walker = Observer::walking([3000.0, 1000.0], std::f32::consts::FRAC_PI_2, &coast);
-    assert_eq!(walker.gait, Gait::Walk { flying: false });
-    assert_eq!(walker.eye[1], WATER_HEIGHT + EYE_HEIGHT);
-    assert_eq!(walker.pitch, 0.0);
-    // Walking east, up onto the land: on the water surface first, then on the ground.
-    let east = held(&[egui::Key::W]);
-    for _ in 0..30 {
-        walker.update(&east, base(), &coast);
-    }
-    assert!(walker.eye[0] > 3000.0 && walker.eye[0] < 3000.0 + WALK_SPEED * 0.5);
-    for _ in 0..120 {
-        walker.update(&east, base(), &coast);
-    }
-    assert!(walker.eye[0] > 3010.0);
-    assert_eq!(walker.eye[1], 30.0 + EYE_HEIGHT);
-    // Space alone neither jumps nor flies.
-    let space = held(&[egui::Key::Space]);
-    walker.update(&space, base(), &coast);
-    assert_eq!(walker.eye[1], 30.0 + EYE_HEIGHT);
-}
-
-#[test]
-fn a_double_tap_flies_from_a_walk_and_another_falls_back_to_the_ground() {
-    let mut walker = Observer::walking([3000.0, 1000.0], 0.0, &flat);
-    let tap = |key_tap: bool, pad_tap: bool, rise: bool| {
-        step(Frame {
-            held: if rise {
-                [egui::Key::Space].into_iter().collect()
-            } else {
-                Default::default()
-            },
-            double_tapped: if key_tap { vec![egui::Key::Space] } else { Vec::new() },
-            pad: Pad {
-                double_tapped: if pad_tap {
-                    GamepadButton::South.bit()
-                } else {
-                    0
-                },
-                ..Pad::default()
-            },
-            ..Frame::default()
-        })
-    };
-    walker.update(&tap(true, false, true), base(), &flat);
-    assert_eq!(walker.gait, Gait::Walk { flying: true });
-    // Flying, Space rises at walking pace.
-    for _ in 0..60 {
-        walker.update(&tap(false, false, true), base(), &flat);
-    }
-    let high = walker.eye[1];
-    assert!(high > WATER_HEIGHT + EYE_HEIGHT + 0.5 * WALK_SPEED, "{high}");
-    assert!(high < WATER_HEIGHT + EYE_HEIGHT + WALK_SPEED);
-    // The controller's double tap stops flying; the walker falls back to the ground.
-    walker.update(&tap(false, true, false), base(), &flat);
-    assert_eq!(walker.gait, Gait::Walk { flying: false });
-    for _ in 0..60 {
-        walker.update(&tap(false, false, false), base(), &flat);
-    }
-    assert_eq!(walker.eye[1], WATER_HEIGHT + EYE_HEIGHT);
-    // Flying mode has no walk to return to.
-    let mut flyer = Observer::flying(&base());
-    flyer.update(&tap(true, true, false), base(), &flat);
-    assert_eq!(flyer.gait, Gait::Fly);
 }
