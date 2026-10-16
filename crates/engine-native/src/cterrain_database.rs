@@ -13,17 +13,16 @@ pub const GRAPHICS_INDEX: usize = 0x88;
 pub const GRAPHICS_INDEX_COUNT: usize = 0x94;
 /// Terrain database constructor; initializes separate graphics and simulation null records.
 pub const CONSTRUCT_RVA: usize = 0x00ac_6860;
-/// Terrain database pointer array, its null object first: terrain-or-ocean
-/// lookup and the terrain predicate pass `+0x40` with name lookup `+0x28` to
-/// hashed-name lookup, which returns `array[index + 1]`.
+/// Terrain database pointer array, its null object first: terrain-or-ocean lookup and the terrain
+/// predicate pass `TYPES` with name lookup to hashed-name lookup, which returns `array[index + 1]`.
 pub const TYPES: usize = 0x40;
-/// A terrain's own unit adjuster (`CTerrainType+0x168`, initialized during
-/// construction) and its attack, added to a stat block's entry.
+/// A terrain's own unit adjuster (`TYPE_ADJUSTER`, initialized during construction) and its attack,
+/// added to a stat block's entry.
 pub const TYPE_ADJUSTER: usize = 0x168;
 
-/// Every live terrain's database index (`CTerrainType+0x88`) and own adjuster
-/// attack, in array order from slot 1, each type and adjuster authenticated.
-/// The attack-list witness reads it; nothing published derives from it.
+/// Every live terrain's database index (its terrain type's) and own adjuster attack, in array order
+/// from slot 1, each type and adjuster authenticated. The attack-list witness reads it; nothing
+/// published derives from it.
 pub fn terrain_attacks(
     memory: &impl crate::Memory,
     base: usize,

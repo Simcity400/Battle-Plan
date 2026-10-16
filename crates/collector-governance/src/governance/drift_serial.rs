@@ -2,22 +2,18 @@
 //! A drifting country's research and technology rows at its slice, copied
 //! from its last complete read with only the daily drift read afresh.
 //!
-//! Between two reads of a country no hooked writer marked, in hours whose
-//! Take certified every write  ([`crate::slicing::Changed`]), its research
-//! and technology rows change only by daily drift. For a country owning a
-//! state, the daily technology update progresses each slot, banking idle
-//! Days  (`+0x20`) or adding assigned technology progress (`+0x198`). The
-//! progress adder's other callers run inside hooked writes (assignment,
-//! console), reach hooked writes later in the same call (the technology
+//! Between two reads of a country no hooked writer marked, in hours whose Take certified every
+//! write  ([`crate::slicing::Changed`]), its research and technology rows change only by daily
+//! drift. For a country owning a state, the daily technology update progresses each slot, banking
+//! idle Days  or adding assigned technology progress. The progress adder's other callers run inside
+//! hooked writes (assignment, console), reach hooked writes later in the same call (the technology
 //! tree sets the level and completes), or are effects its own detour marks
-//! (`engine::country_input_mutations::EFFECT_PROGRESS_SOURCE`),
-//! so a carried roster reads the progress of the technologies assigned to
-//! its slots, and nothing else. A slot's assignment is itself certified
-//! (`technology assignment` and `research slot synchronization` mark their country), so the
-//! assigned rows are held with the roster, taken from the same pass's
-//! ResearchSlots rows. Every other recorded field is the one its last read
-//! held, which the family's sampled comparisons check
-//! ([`crate::sampled_verify::Check::covers`]).
+//! (`engine::country_input_mutations::EFFECT_PROGRESS_SOURCE`), so a carried roster reads the
+//! progress of the technologies assigned to its slots, and nothing else. A slot's assignment is
+//! itself certified (`technology assignment` and `research slot synchronization` mark their
+//! country), so the assigned rows are held with the roster, taken from the same pass's
+//! ResearchSlots rows. Every other recorded field is the one its last read held, which the family's
+//! sampled comparisons check ([`crate::sampled_verify::Check::covers`]).
 //!
 //! A carry reads only operands the full walk reads first, in the full
 //! walk's order, and a failed read gives the full walk's reason: the
@@ -233,9 +229,8 @@ impl Store {
         let held = engine::allocation::advisory(|| {
             let status = status(memory, base, country).ok()?;
             let slots = slots(memory, status)?;
-            // `research_inputs::walk_country_buffer` visits the slots in
-            // roster order and sorts its rows by each slot's own index
-            // (`+0x40`); each slot keeps the row it fills.
+            // `research_inputs::walk_country_buffer` visits the slots in roster order and sorts its
+            // rows by each slot's own index; each slot keeps the row it fills.
             if inputs.len() != slots.count as usize {
                 return None;
             }
@@ -349,7 +344,7 @@ fn status(memory: &impl Memory, base: usize, country: usize) -> Result<usize, &'
     ctechnology_status::decode_status(base, country, &raw)
 }
 
-/// The status's all-technology roster header (`+0x88`).
+/// The status's all-technology roster header.
 fn roster(memory: &impl Memory, status: usize) -> Option<Array> {
     Array::read(
         memory,
@@ -358,7 +353,7 @@ fn roster(memory: &impl Memory, status: usize) -> Option<Array> {
     )
 }
 
-/// The status's research slot roster header (`+0xA0`).
+/// The status's research slot roster header.
 fn slots(memory: &impl Memory, status: usize) -> Option<Array> {
     Array::read(
         memory,

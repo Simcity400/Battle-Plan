@@ -45,10 +45,9 @@ impl Hasher for SpanHasher {
     }
 }
 
-/// Shared static observations of one hourly Stability job. The caller clears
-/// this before every hour, including failed, skipped, load and full hours.
-/// Static modifier binding selects the shared CStaticModifiers; Static modifier
-/// lookup owns their +0x1A8 names. Neither country-owned operands nor
+/// Shared static observations of one hourly Stability job. The caller clears this before every
+/// hour, including failed, skipped, load and full hours. Static modifier binding selects the shared
+/// CStaticModifiers; Static modifier lookup owns their names. Neither country-owned operands nor
 /// source-selection pointers enter this memo.
 #[derive(Debug, Default)]
 pub struct Memo {

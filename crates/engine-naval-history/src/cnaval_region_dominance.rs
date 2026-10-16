@@ -1,4 +1,4 @@
-//! CNavalRegionDominance, owned by CStrategicRegion+0xe8.
+//! CNavalRegionDominance, owned by the strategic region (`cstrategic_region::NAVAL_DOMINANCE`).
 
 /// CNavalRegionDominance primary vtable.
 pub const VTABLE_RVA: usize = 0x0296_e010;

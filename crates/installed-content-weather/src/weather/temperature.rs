@@ -1,7 +1,6 @@
-//! The content the hourly temperature pass reads ([`replay::temperature::Content`]),
-//! through the recorded content stack: the loaded `common/weather.txt`, each
-//! province record's weather setup and strategic-region link (+0xC8), and each
-//! region template's weather periods.
+//! The content the hourly temperature pass reads ([`replay::temperature::Content`]), through the
+//! recorded content stack: the loaded `common/weather.txt`, each province record's weather setup
+//! and strategic-region link, and each region template's weather periods.
 
 use std::{collections::BTreeMap, io};
 
@@ -53,12 +52,11 @@ pub fn read_with(
     )
 }
 
-/// Temperature settings, update window and terrain modifiers. Each `settings`
-/// assignment overwrites; each `terrain_modifiers` block clears every kind before
-/// appending its entries. `temperature` (token 0x2F01) selects kind 1's list at +0x78.
-/// A terrain modifier starts at terrain -1 and value zero; `type` stores the found
-/// terrain's ordinal (+0x88), or the null terrain's zero when none matches.
-/// `value` reads fixed5 and remains unchanged when conversion fails.
+/// Temperature settings, update window and terrain modifiers. Each `settings` assignment
+/// overwrites; each `terrain_modifiers` block clears every kind before appending its entries.
+/// `temperature` (token 0x2F01) selects kind 1's list. A terrain modifier starts at terrain -1 and
+/// value zero; `type` stores the found terrain's ordinal, or the null terrain's zero when none
+/// matches. `value` reads fixed5 and remains unchanged when conversion fails.
 pub(crate) fn settings(bytes: &[u8], ordinal: impl Fn(&[u8]) -> i32) -> io::Result<Settings> {
     let document = super::parse_weather(bytes)?;
     let mut settings = Settings::default();
@@ -127,15 +125,14 @@ pub(crate) fn settings(bytes: &[u8], ordinal: impl Fn(&[u8]) -> i32) -> io::Resu
     Ok(settings)
 }
 
-/// Every weather slot's setup. A slot is active (`+0x28`) when its id is
-/// positive and its definition has a pixel (`+0xC0`); its neighbours (`+0x10`) are every record
-/// of the definition's neighbour table (`+0x70`), and its terrain (`+0x2C`) is the definition
-/// terrain's ordinal (+0x88) when that terrain is valid (+0x10). Every category is valid;
-/// the null terrain's validity is unread, so a null-terrain record is settled only when no
-/// temperature modifier also names the null terrain, and a record invented for an unclaimed
-/// colour has an unread default terrain. Each province's region is the last region, in id
-/// order, whose province vector holds it. Initialization visits regions by id;
-/// each insertion overwrites the province's region link (+0xC8).
+/// Every weather slot's setup. A slot is active when its id is positive and its definition has a
+/// pixel; its neighbours are every record of the definition's neighbour table, and its terrain is
+/// the definition terrain's ordinal when that terrain is valid. Every category is valid; the null
+/// terrain's validity is unread, so a null-terrain record is settled only when no temperature
+/// modifier also names the null terrain, and a record invented for an unclaimed colour has an
+/// unread default terrain. Each province's region is the last region, in id order, whose province
+/// vector holds it. Initialization visits regions by id; each insertion overwrites the province's
+/// region link.
 pub(crate) fn from_parts(
     neighbours: impl Fn(u32) -> Vec<u32>,
     geometry: &ProvinceGeometry,

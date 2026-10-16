@@ -2,18 +2,22 @@
 //! a state air base. Observing them selects bases to reread; recording never
 //! calls them.
 //!
-//! Registration rows read the base's slot vector `+0x30` and dense list
-//! `+0x48`; each listed or occupied country container's country `+0xB0`, pool
-//! vector `+0xB8` and capacity `+0xD0`; each pool's vtable and wing vector
-//! `+0x28`; and each wing's identity and pool backlink `+0x38`. Container
-//! creation copies the base handle `+0x8` into container `+0xA8`. A pool's
-//! base setter writes its base handle `+0x18` before registering it; a wing
-//! names its pool directly. Each site names its changed base by that handle,
-//! through the base in RCX (`+0x8`) or pool in RCX (`+0x18`). An unlinked
-//! pool's handle is zero or the shared invalid reference, both before first
-//! linking and after erasure. Such pools belong to no base's pool vector, so
-//! their writes change no base rows. The collector carries a base only while
-//! every pool it lists names that base.
+//! Registration rows read the base's slot vector
+//! (`cair_base::COUNTRY_CONTAINERS`) and dense list
+//! (`cair_base::REGISTERED_CONTAINERS`); each listed or occupied country
+//! container's country, pool vector and capacity (`ccountry_air_container::COUNTRY`,
+//! `POOLS`, `CAPACITY_RAW`); each pool's vtable and wing vector
+//! (`cair_wing_pool::WINGS`); and each wing's identity and pool backlink
+//! (`cair_wing::POOL`). Container creation copies the base handle
+//! (`cair_base::HANDLE`) into the container's reference
+//! (`ccountry_air_container::REFERENCE_CANDIDATE`). A pool's base setter writes its
+//! base handle (`cair_wing_pool::AIR_BASE_REFERENCE`) before registering it; a
+//! wing names its pool directly. Each site names its changed base by that
+//! handle, through the base or the pool in RCX. An unlinked pool's handle is
+//! zero or the shared invalid reference, both before first linking and after
+//! erasure. Such pools belong to no base's pool vector, so their writes change
+//! no base rows. The collector carries a base only while every pool it lists
+//! names that base.
 //!
 //! - Only country-container creation and country-access removal write the
 //!   slot vector and dense list at runtime. Creation is reached from initial
@@ -48,9 +52,9 @@ pub use crate::advisor_mutations::MutationSite;
 /// How a site's first argument (RCX) names the base it writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Receiver {
-    /// RCX is the air base; its handle is at `+0x8`.
+    /// RCX is the air base; its handle is `cair_base::HANDLE`.
     Base,
-    /// RCX is an air-wing pool; its base's handle is at `+0x18`.
+    /// RCX is an air-wing pool; its base's handle is `cair_wing_pool::AIR_BASE_REFERENCE`.
     Pool,
 }
 
@@ -144,8 +148,8 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
         },
         Receiver::Pool,
     ),
-    // Wing destruction (pool): stack-pointer copy to RAX and RBX store at
-    // RAX+8 relocate together in seven bytes.
+    // Wing destruction (pool): stack-pointer copy to RAX and the RBX store
+    // through it to RCX's home slot relocate together in seven bytes.
     (
         MutationSite {
             name: "destroy_all_wings",

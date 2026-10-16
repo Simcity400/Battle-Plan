@@ -1527,10 +1527,9 @@ fn a_task_forces_first_ship_carries_its_row() {
     assert_eq!(rows[1..8], fresh[1..8]);
 }
 
-/// A task force's country terms (its modifier tree, `CCountry+0x5B8`) are
-/// served from the held hour while the country's naval tree certificate
-/// holds: a quiet hour reads no country accumulator, and an hour after a
-/// tree writer touched the country reads it again.
+/// A task force's country terms (its modifier tree) are served from the held hour while the
+/// country's naval tree certificate holds: a quiet hour reads no country accumulator, and an hour
+/// after a tree writer touched the country reads it again.
 #[test]
 fn held_country_terms_are_not_read_again() {
     use crate::ship_model_changes::Watches;

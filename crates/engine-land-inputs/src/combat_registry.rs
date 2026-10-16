@@ -1,6 +1,5 @@
-//! In-place game-state registry shared by land and naval combats.
-//! Entries point to complete combat objects. The land reader advances each
-//! entry by `0x10` to its secondary base.
+//! In-place game-state registry shared by land and naval combats. Entries point to complete combat
+//! objects. The land reader advances each entry to its secondary base (`cland_combat::BODY`).
 
 /// Registry pointer array.
 pub const DATA: usize = 0x08;

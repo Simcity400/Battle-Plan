@@ -1,5 +1,5 @@
-//! CCountryAirContainer: one country's pool membership at one CAirBase.
-//! It is not the per-country CStrategicAir object in the manager's +30 table.
+//! CCountryAirContainer: one country's pool membership at one CAirBase. It is not the per-country
+//! CStrategicAir object in the strategic air manager's country table.
 
 /// Country air-container vtable.
 pub const VTABLE_RVA: usize = 0x0294_1f30;

@@ -14,8 +14,8 @@ pub const LEARNING_THRESHOLD_RVA: usize = 0x0331_aff0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CommanderPortraitModifier {
-    /// 0: own accumulator +658; 1..4: accumulators +10 inside the parent's
-    /// CModifier objects +AC8, +A08, +7C8, +708.
+    /// 0: its own accumulator; 1..4: the accumulators inside the parent's four CModifier objects,
+    /// in their native order.
     pub source: u8,
     pub id: u32,
     pub value: i64,
@@ -54,7 +54,7 @@ pub struct Presentation {
     pub character_gender: u32,
     pub character_role_leader: u64,
     pub character_fallback_leader: u64,
-    /// 0 absent, 1 direct +A8, 2 resolved +C8 fallback.
+    /// 0 absent, 1 the direct unit leader (`CHARACTER_UNIT_LEADER`), 2 the resolved reference fallback.
     pub character_role_source: u8,
     pub fallback_text: [Vec<u8>; 3],
     pub fallback_text_len: [usize; 3],
@@ -107,8 +107,8 @@ pub struct SkillDefinition {
 pub struct DivisionCommanderRow {
     pub handle: u64,
     pub skill: i32,
-    /// The raw saved name at CUnitLeader+0x20, a span of the caller's
-    /// commander name arena; the viewer localises it.
+    /// The raw saved name (`cunit_leader::TOKEN`), a span of the caller's commander name arena; the
+    /// viewer localises it.
     pub name_token: crate::cname_group_member::Span,
     pub traits: Vec<CommanderTrait>,
     pub traits_len: usize,
@@ -192,7 +192,7 @@ pub struct Row {
     pub learning_text: Vec<u8>,
     pub learning_text_len: usize,
     pub learning_threshold: i64,
-    /// Sources0..4: overall/attack/defense/maneuver/coordination definitions+20.
+    /// Sources0..4: overall/attack/defense/maneuver/coordination definitions' accumulators.
     pub modifiers: Vec<CommanderPortraitModifier>,
     pub modifiers_len: usize,
     pub modifier_feature_flags: u32,
@@ -1075,7 +1075,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!((row.handle, row.skill), (HANDLE, 4));
-        // The raw saved name, not the client's localised copy at +0x40.
+        // The raw saved name, not the client's localised copy (`cunit_leader::NAME`).
         assert_eq!(row.name_token, (0, 10));
         assert_eq!(names.required, 10);
         assert_eq!(&bytes[..10], b"GER_leader");

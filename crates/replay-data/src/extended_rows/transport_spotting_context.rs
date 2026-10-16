@@ -16,7 +16,7 @@ value_struct!(TransportRadarCounts { signed_count: i32, counts: Option<Vec<i32>>
 pub struct TransportSpottingRegion {
     pub region_id: u32,
     pub runtime_slot: Option<i32>,
-    /// Stored signed region +24, from the same original +18 header as sample.
+    /// Stored signed region, from the same original header as the sample.
     pub signed_province_count: Option<i32>,
     /// The province the air-spotting calculation samples in this region this hour.
     pub sample: SpottingSample,

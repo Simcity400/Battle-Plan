@@ -73,7 +73,7 @@ fn selected_areas_read_the_recorded_labels_and_the_node_on_the_label_province() 
         assert_eq!(moves.controller_area(4), Ok(0));
         let node = moves.area_node(1).unwrap();
         assert_eq!(node.first_land_province, Ok(2));
-        // map+238 comes from the content; +3C counts the members.
+        // The nonsea index comes from the map content; the land count counts the members.
         assert_eq!(node.nonsea_index, Ok(2));
         assert_eq!(node.land_count, Ok(2));
         assert_eq!(node.neighbors, Ok(vec![3, 3]));
@@ -136,7 +136,7 @@ fn a_selected_army_reads_exile_from_its_status_and_retreat_bans_from_the_hour() 
         assert_eq!(moves.unit_retreat_ban(&selected, true), Ok(true));
         assert_eq!(moves.unit_retreat_ban(&selected, false), Ok(false));
     });
-    // Class13 vf8 ReturnZero is known before any Army operand.
+    // The class-13 retreat-ban query returns zero, known before any Army operand.
     *frame.tables[TableId::DivisionRetreatBans.index()] = TableView::Unavailable {
         reason: "must remain unreached".into(),
     };

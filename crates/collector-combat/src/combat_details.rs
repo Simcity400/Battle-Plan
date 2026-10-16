@@ -1661,8 +1661,7 @@ impl Captured {
         let timed = &self.timed_traits.first
             [s.timed_traits_start..s.timed_traits_start + s.timed_traits_len];
         LandCombatSideInputs {
-            // The air-support hover's operands: the stored anti-air cache
-            // (+0x138) and the prevented lanes (+0x168/+0x170).
+            // The air-support hover's operands: the stored anti-air cache and the prevented lanes.
             anti_air_attack: s.anti_air_attack,
             prevented_damage: [s.damage[4], s.damage[5]],
             skill_progress: skill_progress(
@@ -1839,8 +1838,8 @@ impl Captured {
                     piercing: s.piercing,
                     air_attack: s.air_attack,
                     reconnaissance: s.reconnaissance,
-                    // The stat block's initiative (+0xE0), which the reinforcement chance
-                    // scales by the country's and leader's 0x250 keys.
+                    // The stat block's initiative, which the reinforcement chance scales by the
+                    // country's and leader's 0x250 keys.
                     initiative: s.initiative,
                     commander: s.commander,
                     direction_group: s.direction_group,

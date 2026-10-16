@@ -1,6 +1,6 @@
-//! One civilian factory consumer embedded in production status, 0x18 bytes.
-//! The five consumers begin at +0x430 (goods), +0x448 (national projects),
-//! +0x460 (licences), +0x478 (trade) and +0x490 (market payments).
+//! One civilian factory consumer embedded in production status, 0x18 bytes. The five consumers sit
+//! in the production status in this order: goods, national projects, licences, trade and market
+//! payments.
 //!
 //! Recalculation invokes goods, payments, projects, licences and trade in
 //! that order, adding each allocation to civilian unavailable factories before

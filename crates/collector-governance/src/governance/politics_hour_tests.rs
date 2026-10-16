@@ -64,7 +64,7 @@ fn leader(index: usize, which: usize) -> usize {
 fn character(index: usize, which: usize) -> usize {
     status(index) + 0xb00 + which * 0x100
 }
-/// A character's leader map head; its one node follows at +0x40.
+/// A character's leader map head; its one node follows it.
 fn map(index: usize, which: usize) -> usize {
     status(index) + 0xd00 + which * 0x80
 }
@@ -509,10 +509,9 @@ fn each_hooked_structure_write_walks_and_publishes_its_value() {
                 party(1, 1) as u64,
             )
         }),
-        // Each array header's word at +8 is the capacity (low) and the count
-        // (high): keep capacity 2 and list one element. A count above the
-        // capacity is an invalid header, which refuses the table, so that
-        // hour's walk is incomplete and holds nothing.
+        // Each array header's word after the data pointer is the capacity (low) and the count
+        // (high): keep capacity 2 and list one element. A count above the capacity is an invalid
+        // header, which refuses the table, so that hour's walk is incomplete and holds nothing.
         ("party array", |world| {
             world.word(status(0) + cpolitical_status::PARTIES + 8, (1 << 32) | 2)
         }),
@@ -573,7 +572,7 @@ fn a_popularity_write_gathers_only_popularity() {
     let refreshed = session.hour(&world, 3, Check::Nothing);
     assert!(refreshed.counts.popularity, "a popularity refresh hour");
     assert!(!refreshed.counts.quiet && !refreshed.counts.read);
-    assert_eq!(refreshed.politics_reads, 0, "only +0x88 is read");
+    assert_eq!(refreshed.politics_reads, 0, "only the popularity is read");
     assert_eq!(refreshed.popularity_reads, 4, "once per held party");
     assert_eq!(parties(&refreshed)[3].popularity, 77_777);
     assert_eq!((refreshed.tables, refreshed.buffers), walked(&world, 3));

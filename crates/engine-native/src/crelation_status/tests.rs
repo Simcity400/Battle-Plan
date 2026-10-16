@@ -379,8 +379,8 @@ fn observed_forward_keeps_the_original_order_values_and_read_faults() {
         assert_eq!(*new.calls.borrow(), *old.calls.borrow());
         assert_eq!(new.attempts.get(), old.attempts.get());
         if fault.is_none() {
-            // Established native control/independent operand order, before
-            // any +B0/+98 candidate walk; these spans are not a derived trace.
+            // Established native control/independent operand order, before any wartime-ally or
+            // enemy candidate walk; these spans are not a derived trace.
             assert_eq!(
                 &new.calls.borrow()[..12],
                 &[
@@ -1268,7 +1268,7 @@ fn run(bytes: &[u8]) -> (Walk, Vec<OpinionRow>, Vec<TupleRow>) {
 #[test]
 fn links_come_from_owned_relations_without_walking_the_matrix() {
     let mut bytes = fixture();
-    // An attache of country 1 in country 3: 3's status toward 1 holds +0x210.
+    // An attache of country 1 in country 3: 3's status toward 1 holds the attache link.
     relation(
         &mut bytes,
         RELATION[0],
@@ -1428,7 +1428,7 @@ fn transport_subject_fixture() -> Vec<u8> {
         1,
         2,
     );
-    // Neither retired nor deliberately future dates change current +288 truth.
+    // Neither retired nor deliberately future dates change current subject-relation truth.
     bytes[RELATION[0] + crelation::RETIRED] = 255;
     p32(&mut bytes, RELATION[0] + crelation::START_HOUR, 500);
     p32(&mut bytes, RELATION[0] + crelation::END_HOUR, 501);
@@ -1794,8 +1794,8 @@ fn a_retired_war_relation_makes_its_owner_read_the_vector() {
 #[test]
 fn access_and_docking_slots_come_from_their_owned_relations() {
     let mut bytes = fixture();
-    // Docking rights of 1 at 3: 1's status toward 3 holds +0x2B0. Military access offered
-    // by 1 to 3: 3's status toward 1 holds +0x2A0.
+    // Docking rights of 1 at 3: 1's status toward 3 holds the docking-rights link. Military access
+    // offered by 1 to 3: 3's status toward 1 holds the military-access link.
     relation(
         &mut bytes,
         RELATION[0],
@@ -2812,8 +2812,8 @@ mod world {
             self.day.set(self.day.get() + 1);
         }
 
-        /// Every status a writer changed today, as a hook would mark it:
-        /// with the owning diplomacy the detour reads at +0x1F0.
+        /// Every status a writer changed today, as a hook would mark it: with the owning diplomacy
+        /// the detour reads (`DIPLOMACY_STATUS`).
         pub fn marks(&self) -> Vec<Mark> {
             let mut marks = Vec::new();
             for owner in 1..self.slots() {
@@ -4233,9 +4233,8 @@ impl Memory for CallLog<'_> {
     }
 }
 
-/// A candidate's status identity, target and +310 byte sit on four lines of
-/// one object; they are copied in one guarded call, where the separate reads
-/// took four.
+/// A candidate's status identity, target and co-belligerent byte sit on four lines of one object;
+/// they are copied in one guarded call, where the separate reads took four.
 #[test]
 fn a_co_candidates_status_fields_are_copied_in_one_guarded_call() {
     let bytes = co_inputs_fixture();

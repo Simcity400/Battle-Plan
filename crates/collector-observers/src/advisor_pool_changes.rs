@@ -370,8 +370,8 @@ impl Hooks {
         // The roster family observes the manager constructor through this
         // patch.
         crate::roster_changes::set_manager_forward(enabled && !self.hooks.is_empty());
-        // The country counter inputs observe the pool constructor and
-        // destructor, which replace a country's `+0xFF0`, through this patch.
+        // The country counter inputs observe the pool constructor and destructor, which replace a
+        // country's characters pointer, through this patch.
         crate::country_input_changes::forwarder(
             crate::country_input_changes::Forwarder::AdvisorPool,
             enabled && !self.hooks.is_empty(),
@@ -424,8 +424,8 @@ macro_rules! callback {
         unsafe extern "system" fn $name($first: usize $(, $arg: usize)*) -> usize {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::AdvisorPoolChanges);
             let _notification = WATCHES.notify(receiver(MUTATIONS[$site].1, $first), $site);
-            // The pool constructor and destructor also replace a country's
-            // `+0xFF0`, which the country counter inputs observe.
+            // The pool constructor and destructor also replace a country's The characters pointer,
+            // which the country counter inputs observe.
             let _inputs = crate::country_input_changes::forwarded_pool($site);
             let original: unsafe extern "system" fn($first: usize $(, $arg: usize)*) -> usize =
                 unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };

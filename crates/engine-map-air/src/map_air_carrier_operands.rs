@@ -25,8 +25,8 @@ pub struct Row {
     pub carrier_stance: Option<i32>,
     /// Raw key-0x11 entry; absent without a leader, key or past the cooldown gate.
     pub leader_modifier: modifier_accumulator::Value,
-    /// The host task force's combat references (`CUnit+0x1B4`); None for a
-    /// state base or a null task force.
+    /// The host task force's combat references (`cunit::COMBAT_REFERENCE_COUNT`); None for a state
+    /// base or a null task force.
     pub task_force_combats: Option<i32>,
     /// The strategic region of an in-combat task force's location, compared with
     /// the mission region. None when not in combat or when the region is null.

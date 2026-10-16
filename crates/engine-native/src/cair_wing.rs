@@ -25,18 +25,18 @@ pub const TYPE: u32 = 69;
 pub const REFERENCE_TYPE: usize = 0x18;
 /// Instance id, u32.
 pub const ID: usize = 0x1c;
-/// CAirWing CAirWingPool* at primary+38; translated from body+28 and
-/// independently used by fuel walkers.
+/// CAirWing CAirWingPool* (`POOL`); translated from the secondary body's copy and independently
+/// used by fuel walkers.
 pub const POOL: usize = 0x38;
 /// Air-group paired-u32 handle.
 pub const GROUP_HANDLE: usize = 0x40;
 /// Plane count, i32.
 pub const PLANE_COUNT: usize = 0x7c;
-/// Air-wing signed i32 acquired manpower at primary+80: aircraft destruction
-/// subtracts the lost crews and clamps at zero.
+/// Air-wing signed i32 acquired manpower: aircraft destruction subtracts the lost crews and clamps
+/// at zero.
 pub const ACQUIRED_MANPOWER: usize = 0x80;
-/// CAirWing cumulative signed i32 accident count at primary+84; The accident
-/// update increments this word after aircraft removal.
+/// CAirWing cumulative signed i32 accident count; the accident update increments this word after
+/// aircraft removal.
 pub const AIR_ACCIDENTS: usize = 0x84;
 /// Embedded mission object, with layout in air_mission.
 pub const MISSION: usize = 0x90;
@@ -184,7 +184,7 @@ pub fn mission_stat_record(
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Full native reference at primary+18; no collector generation or pointer.
+    /// Full native reference; no collector generation or pointer.
     pub id: u64,
     /// Raw country reference from the owning CStrategicAir roster.
     pub owner: u32,
@@ -1041,10 +1041,9 @@ fn walk_projected(
                         wings: count,
                         air_base,
                     } => {
-                        // The wing roster walk snapshots pool+0x28/+0x34 as its
-                        // entire wing range. Worker storage follows that
-                        // acquired range before any leaf; fixed callback
-                        // projections retain their independent limits.
+                        // The wing roster walk snapshots the pool's wing vector and count as its
+                        // entire wing range. Worker storage follows that acquired range before any
+                        // leaf; fixed callback projections retain their independent limits.
                         let required = map
                             .len
                             .checked_add(count as usize)
@@ -1240,8 +1239,8 @@ fn walk_projected(
                 }
                 return Err("strategic air manager absent");
             }
-            // Game initialization publishes the complete strategic-air manager
-            // at game+690. Its primary vtable is distinct from its +8 base.
+            // Game initialization publishes the complete strategic-air manager in the game state.
+            // Its primary vtable is distinct from its secondary base's.
             let vtable =
                 read::<u64>(memory, manager).ok_or("strategic air manager vtable unreadable")?;
             let expected = base
@@ -1401,13 +1400,11 @@ fn walk_projected(
     }
 }
 
-/// Hints the lines of one wing that its census row and stored name read:
-/// identity, pool, planes, eligibility and the embedded mission through its
-/// region (`+0x00..+0xC8`), the ace reference, the base range, and the name,
-/// attached group and country override (`+0x998..+0x9C8`). Issued right
-/// after the wing's pointer is read, so its misses overlap rather than
-/// serialise in the guarded scatter that follows. A hint reads nothing and
-/// cannot fault ([`crate::prefetch`]): every read keeps its place and order.
+/// Hints the lines of one wing that its census row and stored name read: identity, pool, planes,
+/// eligibility and the embedded mission through its region, the ace reference, the base range, and
+/// the name, attached group and country override. Issued right after the wing's pointer is read, so
+/// its misses overlap rather than serialise in the guarded scatter that follows. A hint reads
+/// nothing and cannot fault ([`crate::prefetch`]): every read keeps its place and order.
 fn hint_wing(memory: &impl Memory, wing: usize) {
     for (offset, len) in [
         (0, MISSION + air_mission::REGION + 8),

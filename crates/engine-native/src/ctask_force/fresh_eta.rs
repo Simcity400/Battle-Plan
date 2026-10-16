@@ -59,14 +59,12 @@ pub type Certificate = (u64, u64);
 /// A census's identity: accumulator address, receiver and padded sorted keys.
 pub type CensusIdentity = (usize, usize, [u32; VALUE_COUNT]);
 
-/// One sorted-key census (the raw values of the requested keys) of a
-/// certified receiver's accumulator: a roster country's modifier tree
-/// (`CCountry+0x5B8`) or a fleet leader's (`CUnitLeader+0x418`), which the
-/// naval tree family certifies, with the receiver's certificate taken before
-/// the census was read ([`Censuses::certify`]). A capture records every such
-/// census it used ([`Reader::with_censuses`]); a later capture is served one,
-/// without reading the accumulator, while the receiver's certificate is still
-/// that one.
+/// One sorted-key census (the raw values of the requested keys) of a certified receiver's
+/// accumulator: a roster country's modifier tree (`ccountry::MODIFIER_ACCUMULATOR`) or a fleet
+/// leader's, which the naval tree family certifies, with the receiver's certificate taken before
+/// the census was read ([`Censuses::certify`]). A capture records every such census it used
+/// ([`Reader::with_censuses`]); a later capture is served one, without reading the accumulator,
+/// while the receiver's certificate is still that one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HeldCensus {
     pub receiver: usize,
@@ -106,7 +104,7 @@ const REGION_FIELDS: [(usize, usize); 3] = [
     (crate::cstrategic_region::TEMPLATE, 8),
     (crate::cstrategic_region::ID, 4),
 ];
-/// The template's terrain pointer (template +0x130).
+/// The template's terrain pointer (in the template).
 const TEMPLATE_FIELDS: [(usize, usize); 2] = [(0, 8), (0x130, 8)];
 const FLEET_FIELDS: [(usize, usize); 2] = [(0, 8), (cfleet::LEADER, 8)];
 const LEADER_FIELDS: [(usize, usize); 1] = [(0, 16)];
@@ -679,7 +677,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(output)
     }
 
-    /// `country`'s modifier-tree census at `address` (`+0x5B8`).
+    /// `country`'s modifier-tree census at `address`.
     fn country_values(
         &mut self,
         address: usize,

@@ -11,18 +11,16 @@
 //! spanning it, a full set, a world reset in progress or a disabled family
 //! loses the interval, and the hour reads every holder.
 //!
-//! The store holds every holder of the latest complete capture: its key
-//! (container country and region), address and the records it held. An hour
-//! whose interval was observed whole reads only the touched holders, and of
-//! each only the records dated at or after the previous capture's hour (the
-//! updater writes no other: its callers run after the clock advance,
-//! hourly update), splicing the older ones from the held row by the native
-//! counts: the daily prune removes only a leading run, so the
-//! native records before the tail are the held ones less that run. A touched
-//! holder the store does not hold is new: it is located through its owner's
-//! Table  (air-combat holder construction copied the owner from `CStrategicAir+0x90`) and read
-//! whole. Every other holder is carried: its row is its native state at its
-//! last read, which playback prunes ([`replay::air_region_derive`]).
+//! The store holds every holder of the latest complete capture: its key (container country and
+//! region), address and the records it held. An hour whose interval was observed whole reads only
+//! the touched holders, and of each only the records dated at or after the previous capture's hour
+//! (the updater writes no other: its callers run after the clock advance, hourly update), splicing
+//! the older ones from the held row by the native counts: the daily prune removes only a leading
+//! run, so the native records before the tail are the held ones less that run. A touched holder the
+//! store does not hold is new: it is located through its owner's Table  (air-combat holder
+//! construction copied the owner from the strategic air object) and read whole. Every other holder
+//! is carried: its row is its native state at its last read, which playback prunes
+//! ([`replay::air_region_derive`]).
 //!
 //! Each hour reads the carried holders of its sampled slice (by country and
 //! region) whole and compares them with the held rows: the fresh records must

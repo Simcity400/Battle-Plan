@@ -9,8 +9,8 @@ pub const PREPARATION_TIME: usize = 0x10;
 /// Lexer token resolved before constructing an operation instance.
 pub const TOKEN_ID: usize = 0x08;
 
-/// Reads the exact definition token. +0x10 is an embedded timing object, not a
-/// string; authored names are resolved separately through the token dictionary.
+/// Reads the exact definition token. `PREPARATION_TIME` is an embedded timing object, not a string;
+/// authored names are resolved separately through the token dictionary.
 pub fn definition(memory: &impl Memory, base: usize, pointer: usize) -> Result<u32, &'static str> {
     let expected = base
         .checked_add(VTABLE_RVA)

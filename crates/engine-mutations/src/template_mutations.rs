@@ -1,18 +1,19 @@
 //! The runtime writers of a division template's fallback name key
-//! (template +0x40, contained data +0x28). This is the DivisionTemplates field the
-//! hourly icon walk does not always read:
-//! `creferenced_division_template::walk_icons`
-//! reads it only for an empty literal name. Observing writers tells the
-//! collector which keys to reread; recording never calls them.
+//! (`creferenced_division_template::NAME_KEY`, in the contained data
+//! `DATA`). This is the DivisionTemplates field the hourly icon walk does
+//! not always read: `creferenced_division_template::walk_icons` reads it
+//! only for an empty literal name. Observing writers tells the collector
+//! which keys to reread; recording never calls them.
 //!
 //! Writer coverage:
 //! - Editable-data assignment takes destination and source data and assigns
-//!   literal name +0x08 and fallback key +0x28 through string byte assignment.
-//!   Callers are the update command, three copy helpers and designer staging
-//!   items. Full-data assignment also copies both names, from the creation
-//!   wrapper and designer. The wrapper serves the create command, template
-//!   addition and colonial-template effects, copy helpers and console army
-//!   spawning.
+//!   the literal name and fallback key
+//!   (`creferenced_division_template::NAME`, `NAME_KEY`) through string byte
+//!   assignment. Callers are the update command, three copy helpers and
+//!   designer staging items. Full-data assignment also copies both names,
+//!   from the creation wrapper and designer. The wrapper serves the create
+//!   command, template addition and colonial-template effects, copy helpers
+//!   and console army spawning.
 //! - The data token reader parses both names; the primary reader forwards
 //!   to it.
 //! - The primary deleting destructor names a template before a new template
@@ -51,7 +52,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 4] = [
         },
         Receiver::Data,
     ),
-    // Full-data assignment (dest, source): the RBX spill at stack +8 relocates.
+    // Full-data assignment (dest, source): the RBX spill to RCX's home slot relocates.
     (
         MutationSite {
             name: "assign_template_data",
@@ -63,7 +64,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 4] = [
         },
         Receiver::Data,
     ),
-    // Data reader (data, reader, token): the RBX spill at stack +8 relocates.
+    // Data reader (data, reader, token): the RBX spill to RCX's home slot relocates.
     (
         MutationSite {
             name: "read_template_data",
@@ -75,7 +76,8 @@ pub const MUTATIONS: [(MutationSite, Receiver); 4] = [
         },
         Receiver::Data,
     ),
-    // Primary deleting destructor (template, flags): the RBX spill at stack +8 relocates.
+    // Primary deleting destructor (template, flags): the RBX spill to RCX's home slot
+    // relocates.
     (
         MutationSite {
             name: "destroy_template",

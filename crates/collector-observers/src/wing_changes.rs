@@ -1,12 +1,10 @@
-//! Allocation-free notifications from the native writers of every air wing's
-//! equipment pool ([`engine::air_wing_equipment_mutations`]). A detour only
-//! notifies the shared watch registry ([`WatchRegistry`]) for the pools its
-//! arguments name, counts its site and calls the original; it never changes
-//! game behaviour. Receivers are the `CEquipmentVariantPool` addresses
-//! (`CAirWing+0x1D8`) a WingEquipment capture registered; a notification
-//! never infers a wing. Anything unobserved (disabled, poisoned, a refused
-//! registration, an epoch change, a running writer) makes the capture read
-//! that wing afresh.
+//! Allocation-free notifications from the native writers of every air wing's equipment pool
+//! ([`engine::air_wing_equipment_mutations`]). A detour only notifies the shared watch registry
+//! ([`WatchRegistry`]) for the pools its arguments name, counts its site and calls the original; it
+//! never changes game behaviour. Receivers are the `CEquipmentVariantPool` addresses
+//! (`cair_wing::EQUIPMENT_POOL`) a WingEquipment capture registered; a notification never infers a
+//! wing. Anything unobserved (disabled, poisoned, a refused registration, an epoch change, a
+//! running writer) makes the capture read that wing afresh.
 //!
 //! aircraft loss writer is patched by the equipment-destruction family
 //! (one patch per site); its `air` detour notifies this domain on every path

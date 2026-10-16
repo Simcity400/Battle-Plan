@@ -1,20 +1,17 @@
 //! WingEquipment rows held between hours per air wing
 //! ([`crate::wing_changes`]).
 //!
-//! The air pass still walks every wing each hour (AirWings, WingCumulative,
-//! theatre memberships and game-score inputs need it). A wing's held rows are
-//! carried, without reading its equipment pool's vtable, header, entries or
-//! their variants, only when all of these hold at this boundary: the same
-//! wing address and id as the held read, and no hooked writer touched its
-//! pool (`CAirWing+0x1D8`) since that read registered it (same watch epoch
-//! and sequence; a load, gap, recovery, table change, poison or running
-//! writer revokes it). Every writer of a wing's pool is a hooked site
-//! ([`engine::air_wing_equipment_mutations`]), and a wing built at a
-//! destroyed wing's address carries that destructor's notification, so a
-//! carried wing's rows equal a fresh read's. Each hour also reads the
-//! carryable wings of its sampled slice ([`crate::sampled_verify`], keyed by
-//! wing id; every one under `wing_verify`) afresh, publishes the fresh rows
-//! and poisons reuse on a difference.
+//! The air pass still walks every wing each hour (AirWings, WingCumulative, theatre memberships and
+//! game-score inputs need it). A wing's held rows are carried, without reading its equipment pool's
+//! vtable, header, entries or their variants, only when all of these hold at this boundary: the
+//! same wing address and id as the held read, and no hooked writer touched its pool
+//! (`cair_wing::EQUIPMENT_POOL`) since that read registered it (same watch epoch and sequence; a
+//! load, gap, recovery, table change, poison or running writer revokes it). Every writer of a
+//! wing's pool is a hooked site ([`engine::air_wing_equipment_mutations`]), and a wing built at a
+//! destroyed wing's address carries that destructor's notification, so a carried wing's rows equal
+//! a fresh read's. Each hour also reads the carryable wings of its sampled slice
+//! ([`crate::sampled_verify`], keyed by wing id; every one under `wing_verify`) afresh, publishes
+//! the fresh rows and poisons reuse on a difference.
 //!
 //! The store travels with the AirWing job's payload and holds only the wings
 //! of the latest complete pass, so its size follows live demand. Allocation

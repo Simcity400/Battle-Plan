@@ -1,5 +1,5 @@
-//! The action body pointed to by CIncomingDiplomaticAction+0x18.
-//! Its concrete class is not authenticated by this layout.
+//! The action body an incoming diplomatic action points to. Its concrete class is not authenticated
+//! by this layout.
 
 /// Raw recorded dword; serialization emits its low byte as initiator relevance.
 /// The saved action type is a separate field. Keep all recorded bits.

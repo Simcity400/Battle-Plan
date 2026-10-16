@@ -1,17 +1,12 @@
-//! The per-country character object (CCountryCharacters at CCountry
-//! +0xff0): each country's appointed advisors (+0x58) in native order, with
-//! the advisor's character, idea token and slot, hourly, since `has_idea`
-//! triggers read them (a quiet hour publishes the latest complete walk,
-//! [`appointed`]); each country's
-//! active-character records (+0x10, CountryCharacters) and retired ones
-//! (+0x28, CountryRetiredCharacters), hourly, in one walk (a quiet hour
-//! publishes the latest complete walk, [`records`]); the character
-//! manager's advisor idea-token set (AdvisorTokens), hourly; and each
-//! country's available advisors (+0x40, AvailableAdvisors), the sliced
-//! `available_advisors` family: read once a game day per country, at its
-//! owner slice, and for a new country or one whose last read was not
-//! published at the next hour (owner decision 2026-10-11: only panels read
-//! the pools).
+//! The per-country character object (CCountryCharacters at CCountry pointer): each country's
+//! appointed advisors in native order, with the advisor's character, idea token and slot, hourly,
+//! since `has_idea` triggers read them (a quiet hour publishes the latest complete walk,
+//! [`appointed`]); each country's active-character records (CountryCharacters) and retired ones
+//! (CountryRetiredCharacters), hourly, in one walk (a quiet hour publishes the latest complete
+//! walk, [`records`]); the character manager's advisor idea-token set (AdvisorTokens), hourly; and
+//! each country's available advisors (AvailableAdvisors), the sliced `available_advisors` family:
+//! read once a game day per country, at its owner slice, and for a new country or one whose last
+//! read was not published at the next hour (owner decision 2026-10-11: only panels read the pools).
 use crate::{
     clock::qpc,
     slicing::{SliceFingerprints, SliceSelection},

@@ -1,10 +1,12 @@
 //! The runtime writers of each political party's country-leader vector
-//! (+0x70, capacity +0x78, count +0x7C) recorded by PartyLeaders. Observing them
-//! tells the collector which parties to reread; recording never calls them.
+//! (`cpolitical_party::COUNTRY_LEADERS`, `COUNTRY_LEADER_CAPACITY`,
+//! `COUNTRY_LEADER_COUNT`) recorded by PartyLeaders. Observing them tells the
+//! collector which parties to reread; recording never calls them.
 //!
-//! A row also records the listed leader's character id (leader +0x8 to
-//! character +0xC), its key in that character's leader map (+0x98) and its
-//! leader id (+0x148). The character link and leader id are written only on
+//! A row also records the listed leader's character id
+//! (`ccountry_leader::CHARACTER` to `ccharacter::ID`), its key in that
+//! character's leader map (`ccharacter::LEADER_MAP_HEAD`) and its leader id
+//! (`ccountry_leader::LEADER_ID`). The character link and leader id are written only on
 //! new objects by three new-object paths and the reader inside the character
 //! parser; only a hooked vector insert lists those objects. The map is written
 //! only by [`crate::character_role_mutations`] and [`crate::advisor_mutations`],
@@ -42,7 +44,7 @@ pub enum Receiver {
     Party,
     /// RCX and RDX are both written parties.
     Parties,
-    /// R8 is the party's leader vector at `+0x70`.
+    /// R8 is the party's leader vector, at `VECTOR`.
     Vector,
 }
 
@@ -163,8 +165,9 @@ pub const MUTATIONS: [(MutationSite, Receiver); 11] = [
         },
         Receiver::Party,
     ),
-    // Leader vector save reader (reader, token, party +0x70): copy the stack
-    // pointer to RAX and spill RBX at +8; seven bytes relocate.
+    // Leader vector save reader (reader, token, party leader vector): copy the
+    // stack pointer to RAX and spill RBX through it to RCX's home slot; seven
+    // bytes relocate.
     (
         MutationSite {
             name: "read_leaders",

@@ -448,9 +448,9 @@ mod tests {
     fn port_hint_shares_the_fleet_visitor_and_sizes_large_reference_headers_without_payloads() {
         let mut world = World::new();
         world.bytes.resize(0x11000, 0);
-        // The older movement fixture needed only a short subset of each TF.
-        // Port+740 would alias the second TF's parent at that old spacing.
-        // Give the second complete object its own range before adding fields.
+        // The older movement fixture needed only a short subset of each TF. The port's farthest
+        // field would alias the second TF's parent at that old spacing. Give the second complete
+        // object its own range before adding fields.
         let second = world.bytes[0xdc00..0xe400].to_vec();
         world.bytes[0xe800..0xf000].copy_from_slice(&second);
         world.pointer(0x3388, 0xe800);

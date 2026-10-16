@@ -267,10 +267,8 @@ impl Evaluator<'_, '_> {
                     }
                 })
             }
-            // Compare the country's focus tree (pointer +0x1370) by its id
-            // (tree +0x8), byte
-            // for byte; a country without one is false. Focus holds the
-            // game's value every hour (replay::cadence).
+            // Compare the country's focus tree by its id, byte for byte; a country without one is
+            // false. Focus holds the game's value every hour (replay::cadence).
             "has_focus_tree" => {
                 let wanted = scalar.ok_or("has_focus_tree needs a focus tree")?;
                 let raw = world

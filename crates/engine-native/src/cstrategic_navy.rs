@@ -9,7 +9,7 @@ use crate::{
 
 /// Strategic-navy primary vtable.
 pub const VTABLE_RVA: usize = 0x0295_c640;
-/// Secondary vtable at displacement +8.
+/// Secondary vtable (`SECONDARY`).
 pub const SECONDARY_VTABLE_RVA: usize = 0x0295_c670;
 /// Secondary subobject displacement.
 pub const SECONDARY: usize = 8;
@@ -20,17 +20,15 @@ pub const OWNER: usize = 0x10;
 /// regions outside the mission's narrower accessible list.
 pub const REGION_MISSIONS: usize = 0x68;
 pub const REGION_MISSIONS_STRIDE: usize = 0x18;
-/// Strategic navy mission pointer array holding, once each, every mission filed
-/// in any region ledger ([`REGION_MISSIONS`]). Construction builds it empty
-/// (+0x110, count +0x11C). Registration, reached from mission refresh and the
-/// mission's registration virtual, appends a mission to its region's ledger and
-/// then to this set when absent. Unregistration, reached from refresh, mission
-/// destruction and teardown, removes it from every region ledger and then from
-/// this set. Reset, reached from dynamic reuse and game reset, zeroes every
-/// ledger count and this count together. An empty set therefore leaves every
-/// region ledger empty.
+/// Strategic navy mission pointer array holding, once each, every mission filed in any region
+/// ledger ([`REGION_MISSIONS`]). Construction builds it empty (with its count). Registration,
+/// reached from mission refresh and the mission's registration virtual, appends a mission to its
+/// region's ledger and then to this set when absent. Unregistration, reached from refresh, mission
+/// destruction and teardown, removes it from every region ledger and then from this set. Reset,
+/// reached from dynamic reuse and game reset, zeroes every ledger count and this count together. An
+/// empty set therefore leaves every region ledger empty.
 pub const REGISTERED_MISSIONS: usize = 0x110;
-/// Strategic navy i64 array, constructed at +C8 and indexed by region id.
+/// Strategic navy i64 array, constructed in place and indexed by region id.
 pub const REGIONAL_OPERANDS: usize = 0xc8;
 
 /// The number of missions `navy` has registered in any region ledger

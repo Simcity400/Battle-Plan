@@ -870,21 +870,19 @@ impl ShipStore {
     }
 }
 
-/// One task force's held terms: its handle and roster owner, the country
-/// that owner resolved to, its doctrine contribution with the certificate
-/// (doctrine tree writer, country tree) it was read under, its mine
-/// exposure with the modifier array (`+0x668`, a span of the store's
-/// entries) hourly task-force modifier rebuild built from it, and its location's weather terms with
-/// their certificate (region writer, country tree) and the province's
-/// applied night factor.
+/// One task force's held terms: its handle and roster owner, the country that owner resolved to,
+/// its doctrine contribution with the certificate (doctrine tree writer, country tree) it was read
+/// under, its mine exposure with the modifier array (a span of the store's entries) hourly
+/// task-force modifier rebuild built from it, and its location's weather terms with their
+/// certificate (region writer, country tree) and the province's applied night factor.
 #[derive(Clone, Copy)]
 struct HeldTask {
     pointer: usize,
     handle: u64,
     roster_owner: u32,
     country: usize,
-    /// The country's modifier-tree terms (`+0x5B8`) with its naval tree
-    /// certificate, which the tree's writers move.
+    /// The country's modifier-tree terms with its naval tree certificate, which the tree's writers
+    /// move.
     country_terms: Option<((u64, u64), [i64; 4])>,
     doctrine: Option<HeldDoctrine>,
     mine_exposure: u64,

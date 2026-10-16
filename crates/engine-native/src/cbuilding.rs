@@ -45,7 +45,7 @@ pub struct Row {
     pub level: i16,
     pub healthy_level: i16,
     pub partial_health: i64,
-    /// Listed in the owning status's active vector (CBuildingStatus+0x50).
+    /// Listed in the owning status's active vector (`cbuilding_status::ACTIVE_BUILDINGS`).
     pub active: bool,
 }
 

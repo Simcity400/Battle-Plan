@@ -86,10 +86,8 @@ pub fn walk_country_buffer<M: Memory>(
             let mut xp = [0; 12];
             let mut equipment = [0; 16];
             let mut lists = [0; 64];
-            // Technology category lookup: +190 category sum, +1a0 design-team
-            // sum, +1e8 XP flag.
-            // Research modifier calculation: +110 ideas, +128 scripted sources,
-            // +140 scientist categories.
+            // Technology category lookup: the category sum, design-team sum and XP flag. Research
+            // modifier calculation: ideas, scripted sources and scientist categories.
             if memory.copy_scattered_prefetched(
                 [
                     at(tech, 0x190)?,
@@ -108,9 +106,8 @@ pub fn walk_country_buffer<M: Memory>(
                 return Err("research modifier operands unreadable");
             }
             out.value(Kind::CategorySpeed, i64_at(&cached, 0))?;
-            // Research modifier calculation resolves the adjacent +1ec/+1f0
-            // organisation reference.
-            // Retain that exact reference even when its localized name is unavailable.
+            // Research modifier calculation resolves the adjacent organisation reference. Retain
+            // that exact reference even when its localized name is unavailable.
             out.push(
                 Kind::DesignTeam,
                 i64_at(&cached, 16),
@@ -136,7 +133,7 @@ pub fn walk_country_buffer<M: Memory>(
             let scripts = array(&lists[24..40], 40)?;
             let categories = array(&lists[48..64], 4)?;
             pointer_pages(memory, ideas, |pointer| {
-                // Research modifier idea contribution +38 and CIdea* +40.
+                // Research modifier idea contribution and its CIdea pointer.
                 let bytes = read::<[u8; 16]>(memory, at(pointer, 0x38)?)
                     .ok_or("research idea contribution unreadable")?;
                 let raw = i64_at(&bytes, 0);
@@ -184,8 +181,8 @@ pub fn walk_country_buffer<M: Memory>(
                 let roster = match licenses {
                     Some(roster) => roster,
                     None => {
-                        // Equipment licensing: production+190 embedded status,
-                        // +20 licensed variants.
+                        // Equipment licensing: the production status's embedded licence status and
+                        // its licensed variants.
                         let production =
                             pointer(memory, at(country.pointer, ccountry::PRODUCTION_STATUS)?)?;
                         let roster = array_at(memory, at(production, 0x1b0)?, 8)?;

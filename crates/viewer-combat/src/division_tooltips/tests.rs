@@ -501,9 +501,9 @@ fn reserve_rejection_precedes_movement_inputs() {
     );
 }
 
-/// The commander icon hover joins the division row's handle to the
-/// hour's UnitLeaders row (name token +0x20, skill level) and its
-/// UnitLeaderTraits rows in ordinal order; a missing row refuses by name.
+/// The commander icon hover joins the division row's handle to the hour's UnitLeaders row (name
+/// token, skill level) and its UnitLeaderTraits rows in ordinal order; a missing row refuses by
+/// name.
 #[test]
 fn the_commander_icon_reads_the_hours_unit_leader_and_its_traits() {
     use replay::rows::{UnitLeaderRow, UnitLeaderTraitRow};

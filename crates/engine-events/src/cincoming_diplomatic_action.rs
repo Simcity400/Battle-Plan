@@ -8,9 +8,9 @@ pub const CONSTRUCTOR_RVA: usize = 0x01a9_3750;
 pub const BODY_ACCESSOR_RVA: usize = 0x01a9_3890;
 /// CIncomingDiplomaticAction allocation size.
 pub const OBJECT_SIZE: usize = 0x20;
-// Construction first copies the default invalid reference into +0x08,
-// then mints the real identity from `creference_registry::ID_COUNTER_RVA`.
-// The invalid identity is `creference_registry::INVALID_REFERENCE_RVA`.
+// Construction first copies the default invalid reference into its reference slot, then mints the
+// real identity from `creference_registry::ID_COUNTER_RVA`. The invalid identity is
+// `creference_registry::INVALID_REFERENCE_RVA`.
 /// CIncomingDiplomaticAction packed handle (low u32 type/high u32 id).
 pub const REFERENCE: usize = 0x08;
 /// CIncomingDiplomaticAction reference type.

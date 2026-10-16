@@ -525,7 +525,7 @@ impl ProjectFacts {
             iterations: None,
             warning: (state == ProjectState::Unknown).then(|| {
                 format!(
-                    "Project {} has unsupported native state offset {:#x}",
+                    "Project {} is in unsupported native state {:#x}",
                     project.local_id, project.state.current_offset
                 )
             }),

@@ -1,16 +1,13 @@
 //! A reserve's reinforcement speed share, composed from the operands
 //! [`super::capture_context_buffer`] reads.
 //!
-//! The share multiplies the stat block's base speed (+0x290) by the
-//! movement-speed modifier at the location and next province, with terrain and
-//! combat ignored and no unit argument. It divides the product by
-//! `NMilitary.SLOWEST_SPEED` and clamps the excess over one to [0, 2];
-//! reinforcement chance multiplies that share by `SPEED_REINFORCEMENT_BONUS`.
-//! The calculation ignores terrain and combat movement penalties: it is not the
-//! route's effective speed and takes no organisation or fuel term. Native
-//! fixed5 products wrap at 64 bits before their signed division. A refusal
-//! names the operand or form the port cannot follow; it never stands in a
-//! value.
+//! The share multiplies the stat block's base speed by the movement-speed modifier at the location
+//! and next province, with terrain and combat ignored and no unit argument. It divides the product
+//! by `NMilitary.SLOWEST_SPEED` and clamps the excess over one to [0, 2]; reinforcement chance
+//! multiplies that share by `SPEED_REINFORCEMENT_BONUS`. The calculation ignores terrain and combat
+//! movement penalties: it is not the route's effective speed and takes no organisation or fuel
+//! term. Native fixed5 products wrap at 64 bits before their signed division. A refusal names the
+//! operand or form the port cannot follow; it never stands in a value.
 
 use super::{AcclimatizationTerm, ContextRow, ModifierTerm, SupplyTerm, TransportTerm};
 use crate::{Memory, combat_sources::Sources, walk::Buffer};
@@ -501,12 +498,11 @@ impl Scratch {
     }
 }
 
-/// One reserve's reinforcement share from its live operands: the movement-speed
-/// modifier operands, the base speed `carmy_combat_inputs` read from the same
-/// stat block (+0x290) this pass, and the live `SLOWEST_SPEED`. The buffers
-/// grow, so call it only where the caller may allocate (the acquisition
-/// worker). Shared sources and their failures come through `sources` as for
-/// every other division reader.
+/// One reserve's reinforcement share from its live operands: the movement-speed modifier operands,
+/// the base speed `carmy_combat_inputs` read from the same stat block this pass, and the live
+/// `SLOWEST_SPEED`. The buffers grow, so call it only where the caller may allocate (the
+/// acquisition worker). Shared sources and their failures come through `sources` as for every other
+/// division reader.
 #[allow(clippy::too_many_arguments)]
 pub fn capture_share(
     memory: &impl Memory,

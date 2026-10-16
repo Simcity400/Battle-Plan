@@ -111,7 +111,7 @@ pub struct Reader {
 }
 
 impl Reader {
-    /// Authenticate `CGameState+0x6b0` and read both array headers once.
+    /// Authenticate `cgame_state::WORLD_THREAT` and read both array headers once.
     pub fn new(memory: &impl Memory, base: usize, game_state: usize) -> Result<Self, &'static str> {
         let pointer = game_state
             .checked_add(cgame_state::WORLD_THREAT)

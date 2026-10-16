@@ -57,15 +57,13 @@ const CRITICALS: usize = 0x918;
 /// The province definition used to select terrain or the ocean fallback.
 const PROVINCE_DEFINITION: usize = 0xc8;
 
-/// Every fixed ship field the readers read, each the exact span (or a span
-/// enclosing the exact spans) they request: identity (vtable and handle),
-/// the equipment pool's vtable and array header, the embedded subunit
-/// definition's identity (its class id at +0x88), the definition-valid byte,
-/// the fallback sprite's header, the anti-air base, the weather factor, the
-/// base organisation with the maximum strength, the subunit index (also the
-/// leader-class selector), the formation flags, the task force with the
-/// carrier air base, the modifier accumulator's header, the model number,
-/// the experience source and the critical array's header.
+/// Every fixed ship field the readers read, each the exact span (or a span enclosing the exact
+/// spans) they request: identity (vtable and handle), the equipment pool's vtable and array header,
+/// the embedded subunit definition's identity (its class id, `cship::CLASS_DATABASE_ID`), the
+/// definition-valid byte, the fallback sprite's header, the anti-air base, the weather factor, the
+/// base organisation with the maximum strength, the subunit index (also the leader-class selector),
+/// the formation flags, the task force with the carrier air base, the modifier accumulator's
+/// header, the model number, the experience source and the critical array's header.
 const SHIP: [(usize, usize); 16] = [
     (0, 16),
     (EQUIPMENT_POOL, 8),
@@ -122,8 +120,8 @@ const SPRITE_BYTES: usize = super::MODEL_TEXT_CAPACITY + 1;
 /// it.
 const MEDAL_MODIFIERS: usize = 0x1b0;
 
-/// Task-force fields: vtable, handle, roster owner, location, fleet and the
-/// mine exposure (`+0x650`) its modifier accumulator `+0x668` is built from.
+/// Task-force fields: vtable, handle, roster owner, location, fleet and the mine exposure its
+/// modifier accumulator (`TASK_MODIFIERS`) is built from.
 const TASK: [(usize, usize); 6] = [
     (0, 8),
     (cunit::HANDLE, 8),
@@ -132,8 +130,7 @@ const TASK: [(usize, usize); 6] = [
     (ctask_force::FLEET, 8),
     (MINE_EXPOSURE, 8),
 ];
-/// Mine-exposure updating rebuilds `+0x668` every hour from this value and
-/// content alone.
+/// Mine-exposure updating rebuilds `TASK_MODIFIERS` every hour from this value and content alone.
 const MINE_EXPOSURE: usize = 0x650;
 /// The task-force accumulator ship modifier calculation reads beside the
 /// location's terms.
@@ -430,9 +427,9 @@ pub struct TaskForceFields {
     pub roster_owner: u32,
     pub location: usize,
     pub fleet: usize,
-    /// `+0x650`, raw.
+    /// `MINE_EXPOSURE`, raw.
     pub mine_exposure: u64,
-    /// `+0x668`'s address.
+    /// The address of `TASK_MODIFIERS`.
     pub modifiers: usize,
 }
 
@@ -490,7 +487,7 @@ impl HeldShip {
         self.ship.word(SHIP_TASK_FORCE)
     }
 
-    /// The carrier air base the ship named (`+0x730`), else zero.
+    /// The carrier air base the ship named, else zero.
     pub fn carrier_air_base(&self) -> usize {
         if self.ship.completed > SHIP_TASK_FORCE {
             u64::from_le_bytes(self.ship.bytes[SHIP_TASK_FORCE][8..16].try_into().unwrap()) as usize
@@ -499,7 +496,7 @@ impl HeldShip {
         }
     }
 
-    /// The medal store the ship named (`+0x8F8`), else zero.
+    /// The medal store the ship named, else zero.
     pub fn medal_store(&self) -> usize {
         self.ship.word(SHIP_MEDALS)
     }

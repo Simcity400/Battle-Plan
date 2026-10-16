@@ -1,6 +1,6 @@
-//! Allocation-free notifications from the native writers of the relation
-//! opinion `CRelationStatus+0x300` and of the serializable relation vector
-//! `CRelationStatus+0xE8` ([`engine::opinion_mutations`]). A detour only
+//! Allocation-free notifications from the native writers of the relation opinion
+//! (`crelation_status::OPINION`) and of the serializable relation vector
+//! (`crelation_status::SERIALIZABLE_RELATIONS`) ([`engine::opinion_mutations`]). A detour only
 //! records and calls the original; it never changes game behaviour.
 //!
 //! `RecomputeOpinion` appends its status to a log when the opinion it leaves
@@ -39,9 +39,9 @@ use std::{
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering},
 };
 
-/// Marks between two drains, slot `n % len` holding mark `n`: each mark's
-/// status and its owning diplomacy (`CRelationStatus+0x1F0`), from which the
-/// refresh finds the owner to read.
+/// Marks between two drains, slot `n % len` holding mark `n`: each mark's status and its owning
+/// diplomacy (`crelation_status::DIPLOMACY_STATUS`), from which the refresh finds the owner to
+/// read.
 struct Log {
     statuses: Box<[AtomicUsize]>,
     owners: Box<[AtomicUsize]>,

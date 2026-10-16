@@ -141,12 +141,12 @@ pub fn effective_mission(mission: u32, detached_activity: i32, detached_mission:
 /// Strike-force or convoy-raiding orders fail when their required flag is set or
 /// the content's fixed-point aggression entry is below one.
 pub fn engagement_refused(
-    byte_391: u8,
+    required_flag: u8,
     engagement_rule: i32,
     mission: u32,
     aggression: &[i64],
 ) -> Option<bool> {
-    let refused = if byte_391 != 0 {
+    let refused = if required_flag != 0 {
         true
     } else {
         *aggression.get(usize::try_from(engagement_rule).ok()?)? < 1

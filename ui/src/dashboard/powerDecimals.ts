@@ -26,7 +26,7 @@ export const formatSpent = (raw: bigint, digits: number, scale = 5) => {
   return text === '0' ? text : `−${text}`;
 };
 
-/** A signed change in whole amounts (`+20`, `−20`). */
+/** A signed change in whole amounts, shown with its sign. */
 export const formatPowerChange = (raw: bigint, digits: number, scale = 5) => {
   const text = formatAmount(raw, scale, digits);
   return raw > 0n && text !== '0' ? `+${text}` : text;

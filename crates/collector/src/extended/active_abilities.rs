@@ -259,7 +259,7 @@ mod tests {
     const CTAB: usize = 0x10000;
     const LTAB: usize = 0x20000;
     const COUNTRY0: usize = 0x30000;
-    // Country objects overlap: only +0, +8 and the ability header are populated.
+    // Country objects overlap: only the vtable, the id and the ability header are populated.
     const STRIDE: usize = 0x50;
     const RECORDS: usize = 0x100000;
     const DEFINITION: usize = 0x1c0000;

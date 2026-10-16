@@ -1,10 +1,10 @@
 //! The 0x18-byte allocated-train entry consumed by the railway renderer.
 use crate::{Memory, cequipment_variant, creference_registry, read};
-/// Allocated-train stride at country supply +0x120.
+/// Allocated-train stride in the country supply system (`ccountry_supply_system::ALLOCATED_TRAINS`).
 pub const STRIDE: usize = 0x18;
-/// Full reference handle at +0, resolved through the reference registry.
+/// Full reference handle, resolved through the reference registry.
 pub const VARIANT: usize = 0;
-/// Signed integer count (not fixed point), summed/subtracted at entry+8.
+/// Signed integer count (not fixed point), summed or subtracted in place (`COUNT`).
 pub const COUNT: usize = 8;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

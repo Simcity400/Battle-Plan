@@ -2,7 +2,7 @@
 
 /// CGraphicalMap render-system pointer.
 pub const RENDER_SYSTEM: usize = 0x18;
-/// CGraphicalMap province-indexed CProvinceGraphics pointer array (count +0x74).
+/// CGraphicalMap province-indexed CProvinceGraphics pointer array (with its count).
 pub const PROVINCE_GRAPHICS: usize = 0x68;
 /// CGraphicalMap tree/map-render owner pointer.
 pub const TREE_OWNER: usize = 0x58;
@@ -16,9 +16,9 @@ pub const STATE_GRAPHICS_CAPACITY: usize = 0xb8;
 pub const STATE_GRAPHICS_COUNT: usize = 0xbc;
 /// State-graphics array allocator pointer.
 pub const STATE_GRAPHICS_ALLOCATOR: usize = 0xc0;
-/// CGraphicalMap builds state graphics and writes province graphics +0x1508.
+/// CGraphicalMap builds state graphics and writes province graphics.
 pub const BUILD_STATE_GRAPHICS_RVA: usize = 0x00b4_3b60;
-/// Graphical-map update calls the +0x58 owner updater.
+/// Graphical-map update calls the owner updater.
 pub const UPDATE_RVA: usize = 0x00b4_9340;
 /// Graphical-map province updater.
 pub const UPDATE_PROVINCES_RVA: usize = 0x00b4_c120;

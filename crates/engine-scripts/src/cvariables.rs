@@ -44,7 +44,7 @@ pub enum Scope {
     Global,
     Country(u32),
     State(u32),
-    /// A character's embedded store, by its id (`CCharacter+0xC`).
+    /// A character's embedded store, by its id (`ccharacter::ID`).
     Character(u32),
 }
 
@@ -103,14 +103,13 @@ impl VariableCarry for Fresh {
     fn read(&mut self, _: usize, _: Outcome, _: &[Row], _: &[u8]) {}
 }
 
-/// Construction stores
-/// allocated CVariables pointers at global+980, country+218 and state+7F8;
-/// a character's is embedded at +0xD8, walked for each
-/// authenticated roster occurrence as the ScriptFlags walk visits them.
-/// Persistent effects finish synchronously; daily politics and peace settlement
-/// finish before the hourly return, and game loading joins its load worker before return.
-/// All arenas are caller-owned; a truncated container omits its whole scope,
-/// while empty authenticated containers remain explicit complete scope rows.
+/// Construction stores allocated CVariables pointers in the game state, each country and each state
+/// (`cgame_state::GLOBAL_VARIABLES`, `ccountry::VARIABLES`, `cstate::VARIABLES`); a character's is
+/// embedded (`ccharacter::VARIABLES`), walked for each authenticated roster occurrence as the
+/// ScriptFlags walk visits them. Persistent effects finish synchronously; daily politics and peace
+/// settlement finish before the hourly return, and game loading joins its load worker before
+/// return. All arenas are caller-owned; a truncated container omits its whole scope, while empty
+/// authenticated containers remain explicit complete scope rows.
 pub fn walk_scopes(
     memory: &impl Memory,
     base: usize,

@@ -133,7 +133,7 @@ pub const DENSE_BOUND: usize = 64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum DenseRefusal {
-    /// The dense header `+0x48` or its entries did not read or are invalid.
+    /// The dense header (`REGISTERED_CONTAINERS`) or its entries did not read or are invalid.
     Header = 0,
     /// The list names more containers than the slot vector has slots.
     LongerThanSlots = 1,
@@ -182,7 +182,7 @@ impl DenseRefusal {
     }
 }
 
-/// One listed container and the `+0x30` slot it occupies.
+/// One listed container and the `COUNTRY_CONTAINERS` slot it occupies.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DenseEntry {
     pub slot: u32,
@@ -199,19 +199,17 @@ pub struct SlotMode<'a> {
     pub full: &'a [u64],
 }
 
-/// The occupied slots of one base's country-container vector (`+0x30`) from its
-/// dense registered-container list (`+0x48`), sorted by slot, when the list
-/// proves them; every other slot is then null.
+/// The occupied slots of one base's country-container vector from its dense registered-container
+/// list, sorted by slot, when the list proves them; every other slot is then null.
 ///
-/// At run time only container creation (which stores the new container at its
-/// country's canonical slot and appends it to `+0x48`) and country-access
-/// removal (which nulls the slot and erases every occurrence from `+0x48`)
-/// write the slots; the save reader rebuilds both. So the listed containers are
-/// the occupied slots, each at the slot its own country reference (`+0xB0`)
-/// names in the country link table. Each listed container's identity and span
-/// are the exact reads the slot loop makes, its slot comes from that link
-/// entry, and its slot word must hold it. Any other result refuses, and the
-/// base takes the full scan, whose outcome and reasons are the original walk's.
+/// At run time only container creation (which stores the new container at its country's canonical
+/// slot and appends it to `REGISTERED_CONTAINERS`) and country-access removal (which nulls the slot
+/// and erases every occurrence from `REGISTERED_CONTAINERS`) write the slots; the save reader
+/// rebuilds both. So the listed containers are the occupied slots, each at the slot its own country
+/// reference names in the country link table. Each listed container's identity and span are the
+/// exact reads the slot loop makes, its slot comes from that link entry, and its slot word must
+/// hold it. Any other result refuses, and the base takes the full scan, whose outcome and reasons
+/// are the original walk's.
 pub fn dense_plan(
     memory: &impl Memory,
     image: usize,
@@ -632,9 +630,8 @@ impl<M: Memory> Reader<'_, M> {
                     continue;
                 }
                 self.vtable(container, ccountry_air_container::VTABLE_RVA)?;
-                // One span holds the country reference (+0xB0), the capacity
-                // word (+0xD0) the country-pool registration gate tests and the
-                // fuel scalars the carrier observer records.
+                // One span holds the country reference, the capacity word the country-pool
+                // registration gate tests and the fuel scalars the carrier observer records.
                 let mut span = [0u8; CONTAINER_SPAN];
                 if !container
                     .checked_add(ccountry_air_container::COUNTRY)
@@ -843,10 +840,9 @@ impl<M: Memory> Reader<'_, M> {
     }
 }
 
-/// Bytes from the container's country reference (`+0xB0`) to the end of its
-/// allocated fuel word, the end of the 0xF8-byte container, read as one
-/// span: the country, the capacity word (`+0xD0`), and the fuel demand
-/// (`+0xE0`) and allocation (`+0xF0`) the carrier observer records.
+/// Bytes from the container's country reference to the end of its allocated fuel word, the end of
+/// the 0xF8-byte container, read as one span: the country, the capacity word, and the fuel demand
+/// and allocation the carrier observer records.
 pub const CONTAINER_SPAN: usize =
     ccountry_air_container::FUEL_ALLOCATED_RAW + 8 - ccountry_air_container::COUNTRY;
 
@@ -873,7 +869,7 @@ pub fn container_span_words(span: &[u8; CONTAINER_SPAN]) -> (i64, ContainerFuel)
 /// recording pool boundaries.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RegistrationRow {
-    /// Full native CAirBase `+0x08` handle.
+    /// Full native CAirBase handle (`HANDLE`).
     pub base: u64,
     pub slot: u32,
     /// Container capacity word; admission requires a positive value.

@@ -1604,8 +1604,8 @@ fn movement_combat_fixture() -> (
     (source, sources)
 }
 
-/// Both movement paths record whether CUnit+0x298 is set, and a failed
-/// read of it fails the table rather than recording a guess.
+/// Both movement paths record whether the unit's map-entity bit is set, and a failed read of it
+/// fails the table rather than recording a guess.
 #[test]
 fn movement_records_the_map_entity_bit_and_fails_closed_on_its_read() {
     use crate::cunit;
@@ -3111,7 +3111,7 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
             (crate::modifier_keys::RIVER_CROSSING_FACTOR, 5_000),
         ),
     ] {
-        // The CModifier's value accumulator sits at +0x10.
+        // The CModifier's value accumulator sits at `carmy_leader::MODIFIER_ACCUMULATOR`.
         array(b, LEADER + block + 0x10, data, 3);
         p32(b, data, movement.0);
         p64(b, data + 8, movement.1 as u64);

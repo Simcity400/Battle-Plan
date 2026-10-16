@@ -349,8 +349,8 @@ fn governance_batch_carried_gather_only_fault_publishes_serial_fallback() {
             (600_013_i64 + position as i64).to_le_bytes(),
         );
     }
-    // Daily research slot progress banks +0x20; the technology progress adder
-    // technology research progress adder stores progress +0x198. Exercise both research gathers and
+    // Daily research slot progress banks into the slot; the technology progress adder technology
+    // research progress adder stores the technology's progress. Exercise both research gathers and
     // the roster gather, with faults on later records to discard partial bytes.
     for (address, calls) in [
         (country + SLOT + 0x80 + cresearch_slot::BANKED_DAYS, 9),

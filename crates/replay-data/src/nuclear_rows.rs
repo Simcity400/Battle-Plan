@@ -42,8 +42,8 @@ impl Value for NuclearStrikePart {
     }
 }
 
-/// One war-support adjustment call: the country's raw signed fixed5 war support
-/// (`+0x10D8`) before and after its clamp.
+/// One war-support adjustment call: the country's raw signed fixed5 war support before and after
+/// its clamp.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NuclearWarSupport {
     pub country: u32,
@@ -122,8 +122,8 @@ value_struct!(NuclearEquipmentLoss {
     amount_raw: i64
 });
 
-/// One air wing's crews removed with its planes: the wing's acquired manpower (`+0x80`)
-/// before and after. Part of the equipment outcome, whose writer call it is.
+/// One air wing's crews removed with its planes: the wing's acquired manpower before and after.
+/// Part of the equipment outcome, whose writer call it is.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NuclearWingLoss {
     pub country: u32,
@@ -156,11 +156,10 @@ value_struct!(NuclearStrikeRefusal {
 pub struct NuclearStrikeRow {
     pub id: u64,
     pub hour: i32,
-    /// The launcher's own reference (`nuclear strike+0x10 -> country+8`) and full native
-    /// ID at the impact.
+    /// The launcher's own reference (the nuclear strike's country) and full native ID at the
+    /// impact.
     pub launcher: EventFeedCountry,
-    /// Native type ordinal (`nuclear strike+0x38`); 1 strikes every province of the
-    /// state.
+    /// Native type ordinal (the nuclear strike's type); 1 strikes every province of the state.
     pub nuke_type: u32,
     pub province: u32,
     /// 0 for a province without a state.

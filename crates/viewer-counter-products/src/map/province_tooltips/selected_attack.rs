@@ -1,17 +1,13 @@
-//! The attack slot of the selected-army body, after the retreat
-//! and withdrawal statuses. Selected divisions standing in one province give
-//! one representative per standard-template wrapper
-//! (the standard-template getter). With an empty retained
-//! +190 route each representative words `UNIT_MOVEMENT_BLOCKED_BY_STRAIT` when
-//! its strait to the hovered province is blocked
-//! (adjacency lookup); with a route each lists attack modifiers against the
-//! route's last move (from its
-//! second-to-last province, or the shared province for a one-province route),
-//! under `LAND_COMBAT_ATTACK_PROVINCE_MODIFIERS` when the list is not empty.
-//! The list is derived from the recorded inputs and the recorded content
-//! ([`replay::attack_derive`]); an entry whose operand is missing is refused
-//! by name and the others stay.
-//! Selection, hovered target and the single retained +190 route are viewer-local.
+//! The attack slot of the selected-army body, after the retreat and withdrawal statuses. Selected
+//! divisions standing in one province give one representative per standard-template wrapper (the
+//! standard-template getter). With an empty retained route each representative words
+//! `UNIT_MOVEMENT_BLOCKED_BY_STRAIT` when its strait to the hovered province is blocked (adjacency
+//! lookup); with a route each lists attack modifiers against the route's last move (from its
+//! second-to-last province, or the shared province for a one-province route), under
+//! `LAND_COMBAT_ATTACK_PROVINCE_MODIFIERS` when the list is not empty. The list is derived from the
+//! recorded inputs and the recorded content ([`replay::attack_derive`]); an entry whose operand is
+//! missing is refused by name and the others stay. Selection, hovered target and the single
+//! retained route are viewer-local.
 use viewer_foundation::modifier_names::modifier_name_key;
 use viewer_foundation::tooltip_text::localise as tooltip_text_localise;
 #[cfg(test)]
@@ -49,16 +45,15 @@ fn division(frame: &DecodedFrame, handle: u64) -> Fact<&rows::DivisionRow> {
     keyed::<tables::Divisions>(frame, handle, |row| row.id, "Divisions")
 }
 
-/// The representative identity: `Divisions.template` is the authenticated
-/// handle of the division+0x3B8 standard template (engine `carmy::STANDARD_TEMPLATE`)
-/// whose +0x18 wrapper the standard-template getter returns, zero for its null wrapper, so equal
-/// handles are equal wrappers.
+/// The representative identity: `Divisions.template` is the authenticated handle of the division's
+/// standard template (engine `carmy::STANDARD_TEMPLATE`) whose wrapper the standard-template getter
+/// returns, zero for its null wrapper, so equal handles are equal wrappers.
 fn template(frame: &DecodedFrame, handle: u64) -> Fact<u64> {
     Ok(division(frame, handle)?.template)
 }
 
-/// The selected units' shared province (unit+0x1F0): `None` when two known
-/// locations differ, which skips the slot even with another location missing.
+/// The selected units' shared province (their location): `None` when two known locations differ,
+/// which skips the slot even with another location missing.
 fn same_current(locations: &[Fact<u32>]) -> Fact<Option<u32>> {
     let mut first = None;
     let mut missing = None;
@@ -393,7 +388,7 @@ fn attack_slot(out: &mut Tooltip, members: &[u64], route: &Fact<Vec<u32>>, slot:
                     continue;
                 }
             };
-        // +190 count < 1 reaches the notice; a route reaches the attack list.
+        // A retained route with no province reaches the notice; a route reaches the attack list.
         let Some((source, target)) = retained_edge(current, route) else {
             match (slot.blocked)(handle, current) {
                 Ok(true) => match (slot.notice)() {

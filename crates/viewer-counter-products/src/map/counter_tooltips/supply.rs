@@ -32,7 +32,7 @@ fn aggregate<'a>(members: impl IntoIterator<Item = &'a UnitSupplyInputs>) -> Agg
         out.scalars.received = out.scalars.received.wrapping_add(member.received);
         out.scalars.from_state = out.scalars.from_state.wrapping_add(member.from_state);
         out.scalars.air_drops = out.scalars.air_drops.wrapping_add(member.air_drops);
-        out.scalars.disruption = member.disruption; // +A0 is overwritten, not summed.
+        out.scalars.disruption = member.disruption; // The disruption is overwritten, not summed.
         for (sum, value) in [
             (&mut out.scalars.division_demand, &member.division_demand),
             (&mut out.scalars.airplane_demand, &member.airplane_demand),

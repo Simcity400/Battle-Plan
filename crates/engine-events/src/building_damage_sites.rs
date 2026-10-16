@@ -156,7 +156,7 @@ fn array(
 }
 
 fn health(memory: &impl Memory, building: usize) -> Result<(i16, i64), &'static str> {
-    // The native signed-short levels and qword partial span +40..+50 exactly.
+    // The native signed-short levels and partial-health qword span exactly.
     let bytes = field::<[u8; 16]>(
         memory,
         building,

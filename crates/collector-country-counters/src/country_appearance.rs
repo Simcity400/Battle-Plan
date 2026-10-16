@@ -662,9 +662,9 @@ impl Captured {
         }
     }
 
-    /// Appends a carried row's held original tag bytes as the native pass
-    /// would (a positive +0x130C reference: its bytes; otherwise an empty
-    /// span); false when the arena cannot hold them.
+    /// Appends a carried row's held original tag bytes as the native pass would (a positive
+    /// original-tag reference: its bytes; otherwise an empty span); false when the arena cannot
+    /// hold them.
     fn place_held_tag(&mut self, index: usize, bytes: &[u8]) -> bool {
         let used = self.naming.len;
         let row = &mut self.rows.rows[index];

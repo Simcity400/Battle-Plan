@@ -25,11 +25,11 @@ use crate::{
 pub const REGISTRY: usize = 0x6c0;
 /// Reverse interned-name vector.
 pub const NAMES_RVA: usize = 0x0332_45a0;
-/// Saved-target record stride; its final u16 is at +0x68.
+/// Saved-target record stride; its final u16 ends it.
 pub const STRIDE: usize = 0x70;
 /// Saved-target record vtable.
 pub const VTABLE_RVA: usize = 0x0270_b250;
-/// Fallback target receiver used only outside an initialized game, gated by +0xA39.
+/// Fallback target receiver used only outside an initialized game, gated by `cgame_state::PLAYER_INPUT_ELIGIBLE`.
 pub const IN_GAME: usize = 0xa39;
 /// Stored reference fields in validity-bit order.
 pub const REFERENCES: [usize; 9] = [0x10, 0x18, 0x30, 0x38, 0x40, 0x48, 0x50, 0x58, 0x60];
@@ -242,14 +242,16 @@ fn walk_buffer(
                 // or variable selector.
                 for (bit, handle) in REFERENCES.map(qword).into_iter().enumerate() {
                     if let Some(object) = creference_registry::resolve(memory, base, handle)? {
-                        // Unit reference resolution yields object -0x10; +0x10 alone is null.
+                        // Unit reference resolution yields the enclosing object; its secondary base alone is null.
                         if bit == 3 && object == 0x10 {
                             continue;
                         }
                         live |= 1 << bit;
                         if bit == 0 {
-                            // Unit-leader selection uses direct +0xA8, else reference +0xC8.
-                            // UnitLeaders captures only +0xA8 and cannot supply the fallback.
+                            // Unit-leader selection uses the direct unit leader
+                            // (`ccharacter::UNIT_LEADER`), else the reference
+                            // (`ccharacter::OPERATIVE`). UnitLeaders captures only the direct unit
+                            // leader and cannot supply the fallback.
                             let direct = read::<u64>(
                                 memory,
                                 object.checked_add(0xa8).ok_or("saved character overflow")?,
@@ -543,7 +545,7 @@ mod tests {
             Outcome::Rows { len: 2 }
         );
         assert_eq!(rows[0].character_leader, Some(0));
-        // +C8 resolves even though UnitLeaders' +A8 path is null.
+        // The reference resolves even though UnitLeaders' direct path is null.
         memory.saved.put(0x5000 + 0xa8, &0u64.to_le_bytes());
         memory.saved.put(0x5000 + 0xc8, &fallback.to_le_bytes());
         memory.saved.put(0x8108, &leader.to_le_bytes());

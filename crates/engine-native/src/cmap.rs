@@ -4,14 +4,14 @@
 
 /// Map-dimensions owner singleton pointer.
 pub const SINGLETON_RVA: usize = 0x0332_0db8;
-/// Owner +0x40 map width, native i32.
+/// Owner's map width, native i32.
 pub const WIDTH: usize = 0x40;
-/// Owner +0x44 map height, native i32.
+/// Owner's map height, native i32.
 pub const HEIGHT: usize = 0x44;
 
 /// City bitmap pointer; storage is established, terrain-mask meaning remains unknown.
 pub const CITY_TYPE_MASK: usize = 0x170;
-/// CMap height bitmap pointer at +0x178.
+/// CMap height bitmap pointer.
 pub const HEIGHT_BITMAP: usize = 0x178;
 /// City-neighbour bitmap pointer; river interpretation remains unproven.
 pub const CITY_NEIGHBOUR_MASK: usize = 0x180;

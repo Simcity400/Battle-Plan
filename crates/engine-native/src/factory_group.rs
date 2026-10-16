@@ -1,6 +1,5 @@
-//! One factory group embedded in CProductionStatus: military (+0x2b0), naval
-//! (+0x310), civilian (+0x370) and rocket production (+0x3d0), 0x60 bytes each.
-//! The recorder retains the first three. The fourth counts positive
+//! One factory group embedded in CProductionStatus: military, naval, civilian and rocket
+//! production, 0x60 bytes each. The recorder retains the first three. The fourth counts positive
 //! `rocket_production`, not sites with `rocket_launch_capacity`.
 //!
 //! Reset clears every group, and recalculation rebuilds all four from controlled

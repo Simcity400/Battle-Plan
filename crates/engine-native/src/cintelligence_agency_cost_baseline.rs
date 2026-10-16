@@ -43,9 +43,8 @@ pub(super) fn walk_shared(
                 continue;
             };
             each(country.id, pointer);
-            // The agency-name tooltip copies +0x80 verbatim for a created
-            // agency, even an empty name; name assignment writes the same
-            // bytes. Never localise it again.
+            // The agency-name tooltip copies the agency name verbatim for a created agency, even an
+            // empty name; name assignment writes the same bytes. Never localise it again.
             let name = Literal::read(memory, at(pointer, NAME)?)?;
             Literal::validate(memory, [&name])?;
             required_bytes = required_bytes

@@ -1,15 +1,14 @@
 //! The hourly temperature pass's recorded inputs ([`replay::rows::TemperaturePass`]).
 //!
 //! The decode worker sees the hours in order. Each complete read gives every province record's
-//! words ([`State`]) and the manager's cursor (`+0x58`), window (`+0x2F0`) and seed (`+0x308`).
-//! An hour extends the current anchor when the read proves what the hour did since the hour
-//! before: with both suspension gates clear, hourly weather update ran one ordinary pass, so
-//! the cursor moved exactly as weather window pass walks it and no record outside the
-//! window it visited changed, and the hour's seed is recorded; with a gate set, nothing moved.
-//! Anything else (the first read, a missed hour, a load, a console reload or the
-//! `randomize_weather` effect, which reinitialize every record through
-//! weather reinitialize) starts a new anchor holding the hour's words, as
-//! does every [`ANCHOR_HOURS`] hours so that a frame needs at most that many hours of passes.
+//! words ([`State`]) and the manager's cursor, window and seed. An hour extends the current anchor
+//! when the read proves what the hour did since the hour before: with both suspension gates clear,
+//! hourly weather update ran one ordinary pass, so the cursor moved exactly as weather window pass
+//! walks it and no record outside the window it visited changed, and the hour's seed is recorded;
+//! with a gate set, nothing moved. Anything else (the first read, a missed hour, a load, a console
+//! reload or the `randomize_weather` effect, which reinitialize every record through weather
+//! reinitialize) starts a new anchor holding the hour's words, as does every [`ANCHOR_HOURS`] hours
+//! so that a frame needs at most that many hours of passes.
 
 use std::sync::Arc;
 

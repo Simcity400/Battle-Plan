@@ -2,15 +2,13 @@ use super::*;
 
 /// ProductionLines: key handle (64 bits), 13 payload mask bits.
 ///
-/// `produced_raw` is progress toward the next unit (fixed5), not a count of
-/// units produced. `efficiency_raw` is the current efficiency the production
-/// view shows, i64 Q15 (x32768, so 100% is 3276800): the game's average of the
-/// first min(`active_factories`, `max_factories`) per-factory efficiencies,
-/// truncated as `engine::cequipment_production_line::efficiency_average`
-/// computes it; the row shows it rounded to a whole percent,
-/// `(efficiency_raw + 0x4000) >> 15`. `max_factories` is the line's maximum
-/// factories, the count that average is clamped to; the per-factory values
-/// are not recorded.
+/// `produced_raw` is progress toward the next unit (fixed5), not a count of units produced.
+/// `efficiency_raw` is the current efficiency the production view shows, i64 Q15 (x32768, so 100%
+/// is 3276800): the game's average of the first min(`active_factories`, `max_factories`)
+/// per-factory efficiencies, truncated as `engine::cequipment_production_line::efficiency_average`
+/// computes it; the row shows it rounded to a whole percent, `(efficiency_raw + (1 << 14)) >> 15`.
+/// `max_factories` is the line's maximum factories, the count that average is clamped to; the
+/// per-factory values are not recorded.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ProductionLineRow {
     pub handle: u64,
@@ -373,9 +371,9 @@ typed_codec!(DivisionEquipmentRow, 96, |row| (row.division as u128) << 32 | row.
 /// VariantDefinitions: key id (64 bits), 14 payload mask bits. The equipment
 /// type's name is content: `equipment_token` spelled by `LexicalTokens`.
 ///
-/// `icon_active`, `icon_kind` and `icon` are the variant's raw icon entry
-/// (+0x450): when active, kind 0 names a GFX sprite and kind 1 a texture
-/// path, and the kind-1 path `"."` asks the equipment graphic pool instead.
+/// `icon_active`, `icon_kind` and `icon` are the variant's raw icon entry: when active, kind 0
+/// names a GFX sprite and kind 1 a texture path, and the kind-1 path `"."` asks the equipment
+/// graphic pool instead.
 ///
 /// The production row picks the icon from the variant and content in this
 /// order; every sprite is looked up by name through
@@ -433,7 +431,7 @@ pub struct VariantDefinitionRow {
     pub mission_mask: u32,
     pub display_name: Vec<u8>,
     pub variant_name: Vec<u8>,
-    /// The designer's saved model choice (`+0x430`); empty when unset.
+    /// The designer's saved model choice; empty when unset.
     pub explicit_entity: Vec<u8>,
     /// The definition's archetype lexer token.
     pub archetype_token: u32,
@@ -1038,8 +1036,8 @@ pub struct StateResourceInputRow {
     /// The controller has a `resource origin` for the state; without one the
     /// infrastructure and supply factors are one.
     pub origin: u8,
-    /// The infrastructure building's `+0x40` level, damage included; read
-    /// only with an origin, absent when the state has no such building.
+    /// The infrastructure building's level, damage included; read only with an origin, absent when
+    /// the state has no such building.
     pub infrastructure_level: Option<i32>,
     /// Effective modifier 0x292 for the controller, fixed5; read only with an
     /// infrastructure level, zero otherwise.
@@ -1103,13 +1101,13 @@ pub struct CountryBuildingResourceRow {
 typed_codec!(CountryBuildingResourceRow, 64, |row| (row.country as u128) << 32 | row.ordinal as u128,
  |key| Self { country: (key >> 32) as u32, ordinal: key as u32, ..Default::default() },
  { 0 => (entry): U32, 1 => (building): U32, 2 => (count): U32, 3 => (resource): U32, 4 => (amount): I64 }, |_row| Ok(()));
-/// StockpileArchetypes: key canonical slot:archetype token. The stock of each archetype a
-/// raid type lists as essential equipment, in a country's stockpile pool (`production
-/// status+0x200`, first array), which the raid equipment-requirement check compares with
-/// each amount: archetype quantity in whole units, capped at the largest amount any raid
-/// type requires of the archetype, so the raid offer's verdict and printed shortfall stay
-/// exact and the value changes only while the country is short. An essential archetype
-/// without a row has no stock. Hourly, every country.
+/// StockpileArchetypes: key canonical slot:archetype token. The stock of each archetype a raid type
+/// lists as essential equipment, in a country's stockpile pool (the production status's first
+/// stockpile array), which the raid equipment-requirement check compares with each amount:
+/// archetype quantity in whole units, capped at the largest amount any raid type requires of the
+/// archetype, so the raid offer's verdict and printed shortfall stay exact and the value changes
+/// only while the country is short. An essential archetype without a row has no stock. Hourly,
+/// every country.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StockpileArchetypeRow {
     pub canonical_slot: u32,

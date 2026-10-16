@@ -407,7 +407,7 @@ impl Player {
     ) -> bool {
         self.retained.inherit(caller);
         let retained = &mut self.retained;
-        draw::bind_depth(retained); // The native empty pass also binds CGraphics+88.
+        draw::bind_depth(retained); // The native empty pass also binds the graphics context's depth target.
         let (right, up) = camera.world_text_axes();
         let camera = draw::Camera {
             right,

@@ -15,9 +15,8 @@ pub const UNITS: usize = 0x20;
 pub const UNIT_CAPACITY: usize = 0x28;
 /// CLandCombatant full unit-array u32 count.
 pub const UNIT_COUNT: usize = 0x2c;
-/// Primary country-tag linked set: head, tail and signed count at +0x10.
-/// Nodes hold tag, previous +8 and next +0x10. Used for membership and shared
-/// vision, separately from the unit list.
+/// Primary country-tag linked set: head, tail and signed count. Nodes hold tag, previous and next.
+/// Used for membership and shared vision, separately from the unit list.
 pub const COUNTRIES: usize = 0x38;
 /// Secondary country-tag set, with the same layout. It selects the
 /// viewer directly or shared vision for defender markers.
@@ -128,7 +127,7 @@ pub const RESERVE_CAPACITY: usize = 0xe8;
 pub const RESERVE_COUNT: usize = 0xec;
 /// CLandCombatant CCombatTactic pointer.
 pub const TACTIC: usize = 0x110;
-/// Air-support pointer array; display sums each entry signed i32 at +0x14.
+/// Air-support pointer array; display sums each entry signed i32 strength.
 pub const AIR_SUPPORT: usize = 0x120;
 /// Signed fixed5 border modifier; the tooltip tests it for presence.
 pub const BORDER_MODIFIER: usize = 0x4d8;

@@ -188,10 +188,10 @@ impl Hook {
         self.relocation.trampoline() as *const () as usize
     }
 
-    /// Replace one verified five-byte CALL with a CALL to the relay. The
-    /// callback invokes the original call target itself, then returns to
-    /// site+5. Its native caller's frame and unwind information stay intact.
-    /// The relocation trampoline is retained for ownership, never invoked.
+    /// Replace one verified five-byte CALL with a CALL to the relay. The callback invokes the
+    /// original call target itself, then returns to return point after the five-byte CALL. Its
+    /// native caller's frame and unwind information stay intact. The relocation trampoline is
+    /// retained for ownership, never invoked.
     ///
     /// # Safety
     /// Authenticate the executable and sentinel, provide a callback with the native call ABI, and retain its code until restoration and quiescence complete.
@@ -240,14 +240,13 @@ impl Hook {
         Ok(hook)
     }
 
-    /// Replace the leader-action indirect CALLs, FF 90 disp32, with CALL relay;
-    /// NOP. The counted stub forwards the live RAX-based target and native
-    /// arguments, then returns to site+5.
-    /// Their caller has no unwind handler/chain; site+5 and site+6 share
-    /// the same body unwind state, after its ten-byte prologue.
-    /// Its counter must cover the target until its return PC is no longer in use,
-    /// including unwind. Rust cleanup must not clear it before Windows finishes
-    /// traversing the stub. The stub range covers uncounted entry/exit instructions.
+    /// Replace the leader-action indirect CALLs, FF 90 disp32, with CALL relay; NOP. The counted
+    /// stub forwards the live RAX-based target and native arguments, then returns to the return
+    /// point after the five-byte CALL. Their caller has no unwind handler/chain; the five- and
+    /// six-byte return points share the same body unwind state, after its ten-byte prologue. Its
+    /// counter must cover the target until its return PC is no longer in use, including unwind.
+    /// Rust cleanup must not clear it before Windows finishes traversing the stub. The stub range
+    /// covers uncounted entry/exit instructions.
     ///
     /// # Safety
     /// Authenticate the executable and sentinel and verify the documented unwind state. The callback must preserve the native call ABI and the counter and stub must remain valid through every native return or unwind.
@@ -288,8 +287,8 @@ impl Hook {
         if let Some(tap) = &self.tap
             && (!enabled || !self.enabled)
         {
-            // A native target can hold site+5 on its stack while its current
-            // IP is outside every collector range. Keep the flight check first.
+            // A native target can hold the five-byte return point on its stack while its current IP
+            // is outside every collector range. Keep the flight check first.
             return Ok(tap.in_flight.load(Ordering::SeqCst) != 0
                 || contains(&[relay, trampoline, tap.stub.clone()])?);
         }

@@ -389,8 +389,8 @@ pub enum SpriteKind {
 
 /// The sprites and fonts a layout draws, as the caller has them.
 pub trait Resources {
-    /// The frame's physical extent (graphics state), separate from the logical
-    /// construction viewport (+180). Required only by native pointer geometry.
+    /// The frame's physical extent (graphics state), separate from the logical construction
+    /// viewport. Required only by native pointer geometry.
     fn physical_viewport(&self) -> Option<[i32; 2]> {
         None
     }

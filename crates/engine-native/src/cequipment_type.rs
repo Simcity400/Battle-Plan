@@ -1,6 +1,6 @@
-//! CEquipmentType definitions, effective archetypes and null placeholders
-//! share the complete layout. The +0x4d8 archetype link reaches another type,
-//! including clones. All offsets use the complete primary base.
+//! CEquipmentType definitions, effective archetypes and null placeholders share the complete
+//! layout. The `ARCHETYPE` link reaches another type, including clones. All offsets use the
+//! complete primary base.
 
 /// CEquipmentType primary vtable.
 pub const VTABLE_RVA: usize = 0x0292_18a0;
@@ -9,11 +9,11 @@ pub const VTABLE_RVA: usize = 0x0292_18a0;
 pub const NULL_VTABLE_RVA: usize = 0x0292_19f0;
 /// Equipment-type constructor initializes the primary vtable and self-links.
 pub const CONSTRUCTOR_RVA: usize = 0x00c8_2b50;
-/// CEquipmentType token u32; variant_definition_body authenticates it against CEquipmentVariant+0x18.
+/// CEquipmentType token u32; variant_definition_body authenticates it against `cequipment_variant::EQUIPMENT_TOKEN`.
 pub const TOKEN: usize = 0x08;
 /// Build-cost IC stat, signed fixed5; weights required equipment entries.
 pub const BUILD_COST_IC: usize = 0x3b0;
-/// CEquipmentType real/active flag u8; occupation canonical_equipment_archetype tests +0x10 before using its id.
+/// CEquipmentType real/active flag u8; occupation canonical_equipment_archetype tests it before using its id.
 pub const ACTIVE: usize = 0x10;
 /// CEquipmentType name MSVC string.
 pub const NAME: usize = 0x18;
@@ -40,18 +40,18 @@ pub const MIN_MODEL_PRIORITY: i32 = 1;
 pub const RESET_DEFAULTS_RVA: usize = 0x00c8_4830;
 /// Finalize inherited values by adding signed visual additions along parent links, then clamping to one.
 pub const FINALIZE_INHERITED_VALUES_RVA: usize = 0x00c8_5280;
-/// CEquipmentType special-country flag u8; occupation stockpile reconstruction reads +0x3eb, broader semantics unproved.
+/// CEquipmentType special-country flag u8; occupation stockpile reconstruction reads it, broader semantics unproved.
 pub const SPECIAL_COUNTRY: usize = 0x3eb;
-/// CEquipmentType special-pool classifier flags u64; occupation special-stockpile walk reads archetype+0x408.
+/// CEquipmentType special-pool classifier flags u64; occupation special-stockpile walk reads it on the archetype.
 pub const POOL_FLAGS: usize = 0x408;
-/// CEquipmentType stable archetype id u32; occupation canonical_equipment_archetype preserves +0x418.
+/// CEquipmentType stable archetype id u32; occupation canonical_equipment_archetype preserves it.
 pub const ARCHETYPE_ID: usize = 0x418;
 /// Equipment archetype pointer. Ordinary definitions initially use the
 /// null placeholder; null-placeholder construction self-links it.
 pub const ARCHETYPE: usize = 0x4d8;
 /// CEquipmentType parent pointer.
 pub const PARENT: usize = 0x4e0;
-/// Equipment-type +0x4e8 self-pointer; subsequent link semantics remain unknown.
+/// Equipment-type self-pointer; subsequent link semantics remain unknown.
 pub const SELF_LINK_4E8: usize = 0x4e8;
 /// Signed archetype index into the equipment database archetype array.
 /// Non-archetypes retain -1. Every logistics series indexes by this value.
@@ -63,8 +63,8 @@ pub const IS_ARCHETYPE: usize = 0x555;
 pub const PRIMARY_CATEGORY_FLAGS: usize = 0x540;
 /// CEquipmentType secondary category flags u64.
 pub const SECONDARY_CATEGORY_FLAGS: usize = 0x548;
-/// Optional maximum military factories: i32 followed by a has-value byte
-/// at +4. Read on the type first, then its archetype.
+/// Optional maximum military factories: i32 followed by a has-value byte. Read on the type first,
+/// then its archetype.
 pub const MAX_MIL_FACTORIES: usize = 0x5a0;
 /// Optional maximum naval factories, laid out as [`MAX_MIL_FACTORIES`].
 /// Read on the type first, then its archetype.

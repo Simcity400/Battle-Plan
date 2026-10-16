@@ -921,9 +921,8 @@ pub(super) fn record_modifiers(rows: &[cadvisor::Row]) {
     );
 }
 
-/// Each role's cached modifier accumulator (`CAdvisor+0x1B0`) and its tooltip
-/// key set (`+0x218`, the accumulator's string set at `+0x68`), outside the
-/// advisor-map certified definition program.
+/// Each role's cached modifier accumulator (`cadvisor::MODIFIER_ENTRIES`) and its tooltip key set
+/// (the accumulator's string set), outside the advisor-map certified definition program.
 ///
 /// A role's held entries and keys are carried, without reading the role,
 /// when the previous complete capture read it at the same position with the

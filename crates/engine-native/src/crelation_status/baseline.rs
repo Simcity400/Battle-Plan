@@ -20,8 +20,8 @@ use super::{
 };
 use crate::{Memory, memory::RecordSources};
 
-/// One observed opinion write: the status whose opinion changed and its
-/// owning diplomacy, `CRelationStatus+0x1F0`, as the writer's detour read it.
+/// One observed opinion write: the status whose opinion changed and its owning diplomacy,
+/// (`DIPLOMACY_STATUS`), as the writer's detour read it.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Mark {
     pub status: usize,

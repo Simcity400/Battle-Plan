@@ -159,8 +159,9 @@ fn inputs<M: Memory>(
     })
 }
 
-/// Ruling-party popularity reached through country political status +0xf90,
-/// ruling party +0xd0 and popularity +0x88, with authenticated ownership.
+/// Ruling-party popularity reached through country political status (`ccountry::POLITICAL_STATUS`),
+/// ruling party (`cpolitical_status::RULING_PARTY`) and popularity
+/// (`cpolitical_party::POPULARITY`), with authenticated ownership.
 fn popularity(memory: &impl Memory, base: usize, country: usize) -> Result<i64, &'static str> {
     phase!(Popularity);
     let status = pointer(memory, at(country, ccountry::POLITICAL_STATUS)?)?;
@@ -176,11 +177,10 @@ fn popularity(memory: &impl Memory, base: usize, country: usize) -> Result<i64, 
         .ok_or("ruling party popularity unreadable")
 }
 
-/// Mode-one war, offensive-war and defensive-war predicates over the owned
-/// relations (+0x20, count +0x2c): a war relation (type 0x380a) whose attacker
-/// (first when `first_was_instigator` +0x158, else second) or defender is this
-/// country by same-country identity, and for mode one whose second
-/// country's diplomacy +0x1a8 is below one.
+/// Mode-one war, offensive-war and defensive-war predicates over the owned relations (with their
+/// count): a war relation (type 0x380a) whose attacker (first when `first_was_instigator`, else
+/// second) or defender is this country by same-country identity, and for mode one whose second
+/// country's diplomacy status's hosted-war count is below one.
 fn war_flags<M: Memory>(
     memory: &M,
     base: usize,
@@ -254,7 +254,7 @@ fn war_flags<M: Memory>(
     Ok((at_war, offensive, defensive))
 }
 
-/// Interception history sum from country+0xfc8 for the complete ring, without
+/// Interception history sum from the country's interception history for the complete ring, without
 /// calling the game.
 fn interception(memory: &impl Memory, country: usize) -> Result<i64, &'static str> {
     phase!(Interception);
@@ -572,8 +572,8 @@ fn candidates(
         if read::<u64>(memory, object) != Some(primary) {
             return Err("active idea primary vtable mismatch");
         }
-        // Political modifier rebuilding adds the array's own pointer + 0x68,
-        // with a built label.
+        // Political modifier rebuilding adds the array's own pointer plus its entry offset, with a
+        // built label.
         list.source(memory, at(idea, IDEA_MODIFIER)?, Kind::Idea, false)?
             .identity(at(object, cidea::TOKEN)?, 0, 0);
         Ok(())
@@ -799,15 +799,13 @@ impl Builder<'_> {
         Ok(())
     }
 
-    /// The evaluated part of a dynamic modifier: each nonzero value keyed by
-    /// its row's modifier key, summed per key in key order as the stack
-    /// accumulator holds them during dynamic value recalculation. Its child's
-    /// display is the localized definition id; the constructor stores the same
-    /// localization of that key at the constant part's display (+0x150), set
-    /// even when the constant part is empty. The child must carry that text, so
-    /// a same-valued child of another source (a landmark with the same bonus)
-    /// cannot take it; after a runtime language change the two could differ and
-    /// the line stays unpaired.
+    /// The evaluated part of a dynamic modifier: each nonzero value keyed by its row's modifier
+    /// key, summed per key in key order as the stack accumulator holds them during dynamic value
+    /// recalculation. Its child's display is the localized definition id; the constructor stores
+    /// the same localization of that key at the constant part's display, set even when the constant
+    /// part is empty. The child must carry that text, so a same-valued child of another source (a
+    /// landmark with the same bonus) cannot take it; after a runtime language change the two could
+    /// differ and the line stays unpaired.
     fn values(
         &mut self,
         memory: &impl Memory,

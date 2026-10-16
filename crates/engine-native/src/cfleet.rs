@@ -35,7 +35,7 @@ pub const MISSION_REGIONS: usize = 0x48;
 pub const MISSION_REGION_COUNT: usize = 0x54;
 /// Fleet embedded colour object.
 pub const COLOR: usize = 0x110;
-/// RGBA f32 components at colour+0x10, copied into the port counter.
+/// RGBA f32 components inside the colour, copied into the port counter.
 pub const COLOR_COMPONENTS: usize = 0x120;
 /// Fleet serializer writes leader, name, colour, icon and ordered task-force entries.
 pub const SERIALIZE_RVA: usize = 0x00d4_a390;
@@ -409,9 +409,9 @@ impl ShipRun {
     }
 }
 
-/// Worker-only storage follows each original fleet/task/ship observation. Fleet
-/// serialization traverses TASK_FORCES through +B8/+C4; no chosen population
-/// ceiling and no second native capture is needed after growth.
+/// Worker-only storage follows each original fleet/task/ship observation. Fleet serialization
+/// traverses TASK_FORCES through its data and count; no chosen population ceiling and no second
+/// native capture is needed after growth.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_timed_growing_with_names(
     memory: &impl Memory,
@@ -783,8 +783,8 @@ pub struct CounterWalk {
     pub roster_required: usize,
 }
 
-/// A task force found by [`visit_task_forces`], already authenticated, with its fleet (whose pointer
-/// `CTaskForce+0x340` the walk checked equal).
+/// A task force found by [`visit_task_forces`], already authenticated, with its fleet (whose
+/// pointer the task force's fleet the walk checked equal).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskForceVisit {
     pub country: ccountry::Country,
@@ -807,11 +807,11 @@ pub enum Visit {
     TaskForce(TaskForceVisit, u32),
 }
 
-/// Visits every task force of every canonical country's fleets (`CCountry+0x278`,
-/// `CFleet+0xB8`), in country, fleet and roster order. Each fleet's vtable, handle and owner
-/// and each task force's vtables, handle and parent fleet are checked, as
-/// `walk_counter_inputs` checks them, before its kind is trusted. The callback receives each
-/// fleet (including empty fleets), then its task forces with their roster indices.
+/// Visits every task force of every canonical country's fleets (`ccountry::FLEETS`, `TASK_FORCES`),
+/// in country, fleet and roster order. Each fleet's vtable, handle and owner and each task force's
+/// vtables, handle and parent fleet are checked, as `walk_counter_inputs` checks them, before its
+/// kind is trusted. The callback receives each fleet (including empty fleets), then its task forces
+/// with their roster indices.
 pub fn visit_task_forces<M: Memory>(
     memory: &M,
     base: usize,

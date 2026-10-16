@@ -11,10 +11,9 @@ const STATE: usize = 0x1000;
 const COUNTRY_DATA: usize = 0x2000;
 const LINK_DATA: usize = 0x10000;
 const BLOCKS: usize = 0x20000;
-/// One country per block: the object (its civil-war header at `+0x12F0`),
-/// then its diplomacy, its relation matrix (slot zero only), its status to
-/// zero, its neighbour data and characters object, and last the reserved
-/// country's status to it.
+/// One country per block: the object (with its civil-war header), then its diplomacy, its relation
+/// matrix (slot zero only), its status to zero, its neighbour data and characters object, and last
+/// the reserved country's status to it.
 const BLOCK: usize = 0x2000;
 const DIPLOMACY: usize = 0x1300;
 const MATRIX: usize = 0x1660;
@@ -107,7 +106,7 @@ impl World {
         }
     }
 
-    /// Installs a CCountryCharacters object (no leaders) at `+0xFF0`.
+    /// Installs a CCountryCharacters object (no leaders) behind its country characters pointer.
     fn characters(&mut self, slot: usize) {
         let object = block(slot) + CHARACTERS;
         self.put64(block(slot) + ccountry::CHARACTERS, object as u64);

@@ -76,7 +76,7 @@ pub struct Row {
     /// Index in this observation's native acquired array, not a persistent ID.
     pub ordinal: u32,
     pub definition_pointer: u64,
-    /// Stored +0x260 when the definition layout is authenticated; otherwise zero.
+    /// The stored branch pointer when the definition layout is authenticated; otherwise zero.
     pub branch_pointer: u64,
     pub upgrade_token: Option<u32>,
     pub branch_token: Option<u32>,

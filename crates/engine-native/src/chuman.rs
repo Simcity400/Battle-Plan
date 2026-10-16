@@ -1,8 +1,8 @@
 //! CHuman, a live session-player record in CGameState.
 //!
-//! Country tags and session-player keys are separate identities; display names
-//! can repeat. The live roster at +0xf8 is distinct from the saved header
-//! roster at +0xa8, which retains user-upserted players.
+//! Country tags and session-player keys are separate identities; display names can repeat. The live
+//! roster (`cgame_state::PLAYER_RECORDS`) is distinct from the saved header roster
+//! (`cgame_state::SAVED_PLAYER_RECORDS`), which retains user-upserted players.
 
 use crate::{
     Memory, ccountry, cgame_state, cpdx_array::Array, msvc_string, read, read_slice, walk::Outcome,

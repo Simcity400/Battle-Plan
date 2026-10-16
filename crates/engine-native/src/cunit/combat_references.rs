@@ -1,12 +1,11 @@
-//! Ordered complete CUnit simulation combat-reference observations.
-//! Class projection is independent of the runtime-minted low reference word.
-//! CUnit owns its CPdxArray at +1A8 (count +1B4); the existing first-combat
-//! paths establish pointer stride eight. map_combat_identity authenticates
-//! native primary/secondary vtables and the full registry reference; this
-//! helper does not broaden that class or lifetime contract.
-//! Fixed callbacks use prepared storage; workers grow from original headers.
-//! Capture is a field-local optional suffix, never a replacement for existing
-//! country-role, full combat side/member, naval country or province data.
+//! Ordered complete CUnit simulation combat-reference observations. Class projection is independent
+//! of the runtime-minted low reference word. CUnit owns its CPdxArray of combat references
+//! (`COMBAT_REFERENCE_DATA`); the existing first-combat paths establish pointer stride eight.
+//! map_combat_identity authenticates native primary/secondary vtables and the full registry
+//! reference; this helper does not broaden that class or lifetime contract. Fixed callbacks use
+//! prepared storage; workers grow from original headers. Capture is a field-local optional suffix,
+//! never a replacement for existing country-role, full combat side/member, naval country or
+//! province data.
 
 use super::*;
 

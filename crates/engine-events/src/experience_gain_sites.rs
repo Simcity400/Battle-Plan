@@ -86,8 +86,8 @@ pub struct Owner {
     pub instance: u32,
 }
 
-/// Authenticate the native status's owner/backlink, with no country selector.
-/// CCountry +08/+0C is the raw country reference and native instance identity.
+/// Authenticate the native status's owner/backlink, with no country selector. The CCountry ID and
+/// its following word are the raw country reference and native instance identity.
 pub fn owner(
     memory: &impl Memory,
     base: usize,

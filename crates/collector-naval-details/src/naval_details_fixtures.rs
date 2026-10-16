@@ -435,11 +435,9 @@ impl Fixture {
             }
         }
     }
-    /// [`Self::new`] with weapon-context accumulators of about a late-war
-    /// save's size: each country's (`+0x5B8`, [`ROOT_ENTRIES`] in either
-    /// fixture) and, here only, each ship's own (`+0x750`), each medal
-    /// store's (`+0x1B0`) and each task force's (`+0x668`)
-    /// ([`LIVE_ENTRIES`]); the base fixture leaves those empty.
+    /// [`Self::new`] with weapon-context accumulators of about a late-war save's size: each
+    /// country's ([`ROOT_ENTRIES`] in either fixture) and, here only, each ship's own, each medal
+    /// store's and each task force's ([`LIVE_ENTRIES`]); the base fixture leaves those empty.
     pub fn live_sized(combats: usize) -> Self {
         let mut this = Self::new(combats);
         for slot in 0..COUNTRY_COUNT {

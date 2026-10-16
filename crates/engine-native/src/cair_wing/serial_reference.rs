@@ -43,8 +43,8 @@ pub(super) fn walk_projected(
             }
             return Err("strategic air manager absent");
         }
-        // Game initialization publishes the complete strategic-air manager at
-        // game+690. Its primary vtable is distinct from its +8 base.
+        // Game initialization publishes the complete strategic-air manager at the game state. Its
+        // primary vtable is distinct from its secondary base's.
         let vtable =
             read::<u64>(memory, manager).ok_or("strategic air manager vtable unreadable")?;
         let expected = base
@@ -102,10 +102,9 @@ pub(super) fn walk_projected(
                     return Err("air wing pool owner differs from roster");
                 }
                 let wings = reader.array(pool, cair_wing_pool::WINGS)?;
-                // The wing roster walk snapshots pool+0x28/+0x34 as its entire
-                // wing range. Worker storage follows that acquired range before
-                // any leaf; fixed callback projections retain their independent
-                // limits.
+                // The wing roster walk snapshots the pool's wing vector and count as its entire
+                // wing range. Worker storage follows that acquired range before any leaf; fixed
+                // callback projections retain their independent limits.
                 let required = map
                     .len
                     .checked_add(wings.count as usize)

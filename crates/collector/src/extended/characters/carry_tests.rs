@@ -16,8 +16,7 @@ use crate::sampled_verify::Check;
 use crate::unit_leader_changes::{Changes as LeaderChanges, Watches as LeaderWatches};
 use std::cell::Cell;
 
-/// Counts reads touching a carried span (`+0x18..+0x68`, gender `+0x70`) of
-/// any character object.
+/// Counts reads touching a carried span (gender) of any character object.
 struct Names<'a> {
     world: &'a World,
     characters: usize,
@@ -272,9 +271,8 @@ fn sampled_hours_cover_every_carried_name_and_catch_an_unobserved_rename_within_
     );
 }
 
-/// Counts the reads a quiet roster hour does not make: the roster's pointer
-/// pages and each character's identity span (`+0x0..+0x10`: vtable,
-/// reference type and id).
+/// Counts the reads a quiet roster hour does not make: the roster's pointer pages and each
+/// character's identity span (vtable, reference type and id).
 struct Walk<'a> {
     world: &'a World,
     pages: Cell<usize>,

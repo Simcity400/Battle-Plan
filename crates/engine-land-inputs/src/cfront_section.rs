@@ -18,7 +18,7 @@ pub const ID: usize = 8;
 pub const FRONT: usize = 0x10;
 /// Province-pair array with 16-byte entries, each holding two province pointers.
 pub const PAIRS: usize = 0x48;
-/// Signed province-pair count; +0x50 holds capacity.
+/// Signed province-pair count; the word before it holds the capacity.
 pub const PAIR_COUNT: usize = 0x54;
 
 /// Pairs per guarded copy of the pair array, and per gather of their

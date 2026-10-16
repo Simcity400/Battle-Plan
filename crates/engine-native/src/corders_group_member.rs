@@ -1,11 +1,10 @@
-//! Orders-group membership base embedded at unit+0xb8.
-//! Member vectors store pointers to embedded subobjects rather than unit
-//! primaries. Serialization uses the host unit identity, and HQ clearing
-//! checks the embedded member against the group provider. The callback must
-//! not call the virtual accessor: recover the host by subtracting the base
-//! offset, then authenticate its vtables and back-pointer.
+//! Orders-group membership base embedded in the unit (`cunit::SCHEDULED_MEMBER`). Member vectors
+//! store pointers to embedded subobjects rather than unit primaries. Serialization uses the host
+//! unit identity, and HQ clearing checks the embedded member against the group provider. The
+//! callback must not call the virtual accessor: recover the host by subtracting the base offset,
+//! then authenticate its vtables and back-pointer.
 
-/// Owning orders-group pointer; unit+0xc0 is this base's +0x08 back-pointer.
+/// Owning orders-group pointer; the unit's `carmy::ORDERS_GROUP` is this base's back-pointer.
 pub const GROUP: usize = 0x08;
 /// Cached fallback-order pointer, refreshed first when the dirty byte is set.
 pub const FALLBACK_ORDER: usize = 0x18;
@@ -62,8 +61,8 @@ impl MembershipCapacity {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MembershipQuery {
     pub member: usize,
-    /// The member's +0x08 group back-pointer (CArmy+0xC0) as the caller's
-    /// seed copied it at this boundary; the packet does not read it again.
+    /// The member's group back-pointer (`carmy::ORDERS_GROUP`) as the caller's seed copied it at
+    /// this boundary; the packet does not read it again.
     pub own_group: usize,
 }
 
@@ -84,7 +83,7 @@ struct RootSet {
 struct GroupInput {
     pointer: usize,
     result: Result<(), &'static str>,
-    /// The +0x1B8 parent link, read once a pass for every query of the group.
+    /// The group's parent link (`corders_group::PARENT`), read once a pass for every query of the group.
     parent: Option<Result<usize, &'static str>>,
     roots: [RootSet; 2],
 }

@@ -22,7 +22,7 @@ pub const OVERLORD: usize = 0x10;
 pub const SUBJECT: usize = 0x14;
 /// Start hour, i32.
 pub const START_HOUR: usize = 0x20;
-/// Autonomy-state definition pointer; the name is at +8.
+/// Autonomy-state definition pointer; the definition holds its name.
 pub const AUTONOMY_STATE: usize = 0x58;
 /// CSubjectRelation raw autonomy ratio i64/100000.
 pub const AUTONOMY_RATIO: usize = 0x60;
@@ -707,8 +707,8 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(())
     }
 
-    /// Whether a relation sits at the overlord's `+0x288` slot toward its
-    /// subject. Any unreadable or unresolvable step answers no.
+    /// Whether a relation sits at the overlord's subject-relation slot toward its subject. Any
+    /// unreadable or unresolvable step answers no.
     fn installed(&self, pointer: usize, overlord: u32, subject: u32, pass: &mut Pass<'_>) -> bool {
         (|| {
             let first = pass.resolver.resolve(&self.countries, overlord)?;
@@ -818,10 +818,10 @@ impl<'a, M: Memory> Reader<'a, M> {
                 )
             }
         };
-        // The shared-vision subject terms read only the status +0x288 pointer
-        // and its type, never the retired byte, and link clearing (vf22) is
-        // what uninstalls a subject. So a retired relation counts exactly while
-        // it is still installed; one left only in an owned vector is skipped.
+        // The shared-vision subject terms read only the status's subject-relation pointer and its
+        // type, never the retired byte, and link clearing is what uninstalls a subject. So a
+        // retired relation counts exactly while it is still installed; one left only in an owned
+        // vector is skipped.
         if retired && matrix_index.is_none() && !self.installed(pointer, overlord, subject, pass) {
             return Ok(None);
         }

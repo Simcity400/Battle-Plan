@@ -394,10 +394,10 @@ use engine::character_role_mutations as roles;
 // Country leader modifiers (leader).
 role_callback!(country_leader_modifiers, roles::COUNTRY_LEADER_MODIFIERS, (leader: usize),
     crate::character_changes::role_character(leader, engine::ccountry_leader::CHARACTER));
-// Country leader destroy (leader): +0x8 still names the character on entry.
+// Country leader destroy (leader): its character link still names the character on entry.
 role_callback!(country_leader_destroy, roles::COUNTRY_LEADER_DESTROY, (leader: usize),
     crate::character_changes::role_character(leader, engine::ccountry_leader::CHARACTER));
-// Leader-map try_emplace (map = character + 0x98, result, key, value).
+// Leader-map try_emplace (map = the character's leader map, result, key, value).
 role_callback!(country_leader_map_insert, roles::COUNTRY_LEADER_MAP_INSERT,
     (map: usize, result: usize, key: usize, value: usize),
     Some(map.saturating_sub(engine::ccharacter::LEADER_MAP_HEAD)));
@@ -407,12 +407,11 @@ role_callback!(country_leader_create, roles::COUNTRY_LEADER_CREATE,
 // Advisor modifier rebuild (advisor).
 role_callback!(advisor_modifiers, roles::ADVISOR_MODIFIERS, (advisor: usize),
     crate::character_changes::role_character(advisor, engine::cadvisor::CHARACTER));
-// Name setter (character, name): +0x48, +0x28 and the unit leader name.
+// Name setter (character, name): the token, the name and the unit leader name.
 role_callback!(character_name, roles::CHARACTER_NAME, (character: usize, name: usize),
     Some(character));
-// Repair containers  (character) rebuilds +0x28 and may
-// give the character a new id (`RegisterIdentity`), which the roster family
-// observes through this patch.
+// Repair containers  (character) rebuilds the name and may give the character a new id
+// (`RegisterIdentity`), which the roster family observes through this patch.
 unsafe extern "system" fn character_repair(character: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::AdvisorChanges);
     let _roster = crate::roster_changes::character_repaired();

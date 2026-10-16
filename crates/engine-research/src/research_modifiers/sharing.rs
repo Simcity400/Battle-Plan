@@ -58,8 +58,8 @@ impl Country {
             }
             let members = array(&bytes[24..40], 4)?;
             let bonuses = array(&bytes[48..64], 8)?;
-            // Scan +0x18/+0x24 to the live count and index parallel +0x30 bonuses
-            // by the same ordinal; the headers are the only bound.
+            // Scan the sharing list to its live count and index the parallel bonuses by the same
+            // ordinal; the headers are the only bound.
             if members.count != bonuses.count {
                 return Err("research sharing members invalid");
             }
@@ -133,7 +133,7 @@ impl Country {
         memo: &mut Witnesses,
         out: &mut Output<'_>,
     ) -> Result<(), &'static str> {
-        // The template +0x409 doctrine flag bypasses sharing.
+        // The template's doctrine flag bypasses sharing.
         if self.len == 0 {
             return Ok(());
         }

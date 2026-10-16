@@ -1,4 +1,4 @@
-//! Anonymous fuel consumer entry in CCountryFuelStatus's consumer array (+0x48).
+//! Anonymous fuel consumer entry in CCountryFuelStatus's consumer array.
 
 /// Consumer entry stride.
 pub const STRIDE: usize = 0x18;

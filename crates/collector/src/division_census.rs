@@ -834,8 +834,8 @@ impl Census {
                     {
                         memory.prefetch(pointer, 16);
                     }
-                    // Division reveal-skip lookup uses +0x234,
-                    // on a different line from the template's identity.
+                    // Division reveal-skip lookup uses its reveal-skip byte, on a different line
+                    // from the template's identity.
                     if let Some(skip) = pending
                         .standard_template
                         .filter(|&pointer| pointer != 0)

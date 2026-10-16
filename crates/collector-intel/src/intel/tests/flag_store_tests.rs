@@ -355,7 +355,7 @@ fn every_site_names_its_manager() {
         assert_eq!(receiver, expected, "{}", site.name);
     }
     assert_eq!(manager(Receiver::Manager, 0xa100), 0xa100);
-    // Assign flags receives the manager's row array at +0x8.
+    // Assign flags receives the manager's row array.
     assert_eq!(manager(Receiver::Rows, 0xa108), 0xa100);
     let watches = Watches::enabled(16);
     let certified = crate::flag_changes::Changes::sequence(&watches, 0xa100).unwrap();

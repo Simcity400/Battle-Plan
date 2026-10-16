@@ -1,21 +1,17 @@
-//! Allocation-free notifications from the native writers of the two naval
-//! hover trees NavalModifierTrees carries: a country's modifier tree
-//! (`CCountry+0x5B8`) and a commander's (`CUnitLeader+0x418`)
-//! ([`engine::naval_tree_mutations`]). A detour only notifies the shared
-//! watch registry ([`WatchRegistry`]) for the CCountry or CUnitLeader its
-//! first argument names, counts its site and calls the original; it never
-//! changes game behaviour. This family patches only the commander sites: the
-//! two country sites belong to families that already patch them and forward
-//! Each call  ([`forwarded`]): country modifier recalculation to
-//! country_input_changes, country appearance reset to politics. The
-//! family observes only while its own patches and both forwarders are enabled
-//! ([`forwarder`]). Receivers are the countries and commanders a naval
-//! tree capture registered. Anything unobserved (disabled, poisoned, a
-//! refused registration, an epoch change, a running writer) makes the capture
-//! read that tree afresh. The commander sites are also the only writers of
-//! the retreat bans' blocks, so they forward each call to
-//! [`crate::retreat_ban_changes`]; the leader constructors and destructor
-//! forward theirs to [`crate::unit_leader_changes`].
+//! Allocation-free notifications from the native writers of the two naval hover trees
+//! NavalModifierTrees carries: a country's modifier tree (`ccountry::MODIFIER_ACCUMULATOR`) and a
+//! commander's ([`engine::naval_tree_mutations`]). A detour only notifies the shared watch registry
+//! ([`WatchRegistry`]) for the CCountry or CUnitLeader its first argument names, counts its site
+//! and calls the original; it never changes game behaviour. This family patches only the commander
+//! sites: the two country sites belong to families that already patch them and forward Each call 
+//! ([`forwarded`]): country modifier recalculation to country_input_changes, country appearance
+//! reset to politics. The family observes only while its own patches and both forwarders are
+//! enabled ([`forwarder`]). Receivers are the countries and commanders a naval tree capture
+//! registered. Anything unobserved (disabled, poisoned, a refused registration, an epoch change, a
+//! running writer) makes the capture read that tree afresh. The commander sites are also the only
+//! writers of the retreat bans' blocks, so they forward each call to
+//! [`crate::retreat_ban_changes`]; the leader constructors and destructor forward theirs to
+//! [`crate::unit_leader_changes`].
 //!
 //! The same certificates key the naval mission country and commander rows
 //! ([`crate::extended::naval_mission_inputs`]): a country whose own and
@@ -333,11 +329,11 @@ pub fn status() -> impl serde::Serialize {
             "verified": CENSUSES[1].load(Ordering::Relaxed),
             "mismatches": CENSUSES[2].load(Ordering::Relaxed),
             "last_mismatch": CENSUSES_SAMPLED.last_mismatch(),
-            "scope": "cumulative since attach; the task-force counter walk's fresh ETA censuses of roster countries' (+0x5B8) and fleet leaders' (+0x418) modifier trees served from the frame's held capture while the receiver's certificate is still the one taken before the held census was read, outside the sampled slice (one in rotation_hours by receiver); a covered receiver is read afresh and compared when both reads had the same certificate and it still holds, and a difference disables every certificate; a failed Ordinary family holds none",
+            "scope": "cumulative since attach; the task-force counter walk's fresh ETA censuses of roster countries' and fleet leaders' modifier trees served from the frame's held capture while the receiver's certificate is still the one taken before the held census was read, outside the sampled slice (one in rotation_hours by receiver); a covered receiver is read afresh and compared when both reads had the same certificate and it still holds, and a difference disables every certificate; a failed Ordinary family holds none",
         }),
         "events": events,
         "watches": WATCHES.status(),
-        "scope": "cumulative since attach; a country's (CCountry+0x5B8) or commander's (CUnitLeader+0x418) tree a live naval combat reaches is carried while its receiver's certificate holds (no hooked writer touched it since the held read, same accumulator); every other reached tree (uncarried_trees) is read each hour a live combat reaches it; every hour also reads the carryable trees of its slice afresh (one in rotation_hours by owner; every one in verify mode), publishes the fresh tree and disables reuse at the first mismatch (sampled_*)"
+        "scope": "cumulative since attach; a country's or commander's modifier tree a live naval combat reaches is carried while its receiver's certificate holds (no hooked writer touched it since the held read, same accumulator); every other reached tree (uncarried_trees) is read each hour a live combat reaches it; every hour also reads the carryable trees of its slice afresh (one in rotation_hours by owner; every one in verify mode), publishes the fresh tree and disables reuse at the first mismatch (sampled_*)"
     })
 }
 

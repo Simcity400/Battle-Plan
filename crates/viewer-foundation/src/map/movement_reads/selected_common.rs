@@ -150,9 +150,9 @@ impl<'w, 'a> Moves<'w, 'a> {
             )
             .map_err(str::to_owned);
         }
-        // F3A90 -> F3B00 reads +2E8/+49 directly: no signed-positive
-        // F3A00 gate. Access callers pass mode1/flag0: hourly RelationLinks
-        // is the genuine sparse +2A0 pointer census (access-roster writers), before
+        // The pointer-active check reads the war pointer and retired byte directly: no
+        // signed-positive gate. Access callers pass mode1/flag0: hourly RelationLinks is the
+        // genuine sparse military-access pointer census (access-roster writers), before
         // faction/subject; no alternate access lookup is selected.
         if self.common_owner(receiver, |owner| owner.pointer_active_slot(target))? {
             return Ok(false);
@@ -413,8 +413,8 @@ impl<'w, 'a> Moves<'w, 'a> {
         Ok(&rows[at])
     }
 
-    /// `Provinces.controller_area`: the label of the province's `+0xD0`
-    /// controller area, zero for null.
+    /// `Provinces.controller_area`: the label of the province's controller-area pointer controller
+    /// area, zero for null.
     fn common_controller_area(&self, province: u32) -> Fact<u32> {
         self.province(province)?
             .controller_area
@@ -436,8 +436,8 @@ impl<'w, 'a> Moves<'w, 'a> {
             .ok_or_else(|| format!("selected area {label} graph capture refused"))
     }
 
-    /// `controller area+0x3C`: the provinces linking to the area, which the
-    /// capture checked against it, counted once an hour.
+    /// The controller area's land count: the provinces linking to the area, which the capture
+    /// checked against it, counted once an hour.
     fn common_area_land_count(&self, label: u32) -> Fact<i32> {
         let counts = get(&self.cells.area_members, || {
             let mut counts = BTreeMap::<u32, i32>::new();
@@ -552,11 +552,11 @@ impl CommonMoveWorld for Moves<'_, '_> {
     fn province_state(&self, province: u32) -> Fact<Option<u32>> {
         self.state_of(province)
     }
-    /// `province+0xD0` equality, null included, through the labels.
+    /// Controller-area pointer equality, null included, through the labels.
     fn controller_area_equal(&self, from: u32, to: u32) -> Fact<bool> {
         Ok(self.common_controller_area(from)? == self.common_controller_area(to)?)
     }
-    /// `province+0xD8` equality (the owner-area gate's first test), through the labels.
+    /// Owner-area pointer equality (the owner-area gate's first test), through the labels.
     fn owner_area_equal(&self, from: u32, to: u32) -> Fact<bool> {
         let area = |province: u32| -> Fact<u32> {
             self.province(province)?
@@ -574,7 +574,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
         let first_land = node
             .first_land
             .ok_or_else(|| format!("selected area {label} representative capture refused"));
-        // map+238[first land] is static map content.
+        // The map's nonsea index of the first land is static map content.
         let nonsea_index = first_land.clone().and_then(|first| {
             self.assets
                 .geometry
@@ -595,17 +595,17 @@ impl CommonMoveWorld for Moves<'_, '_> {
         })
     }
     fn area_nonsea_count(&self, label: u32) -> Fact<u32> {
-        // the move-rejection search's visited identity domain is map+234: the
-        // content's nonsea index count, demanded with the start node.
+        // the move-rejection search's visited identity domain is the map's province-record domain:
+        // the content's nonsea index count, demanded with the start node.
         self.common_area_node(label)?;
         u32::try_from(self.assets.geometry.nonsea_indices.len())
             .map_err(|_| "selected area nonsea domain exceeds native u32".into())
     }
     fn unit_exiled_raw(&self, unit: &CommonUnit<'_>) -> Fact<u8> {
         match unit.class {
-            // The movement caller passes the exile byte (+0x2AE) as the
-            // owner-area gate's boolean parameter, which that gate negates by toggling its zero/one value.
-            // It is a C++ bool, so DivisionStatus's nonzero bit is the raw byte.
+            // The movement caller passes the exile byte as the owner-area gate's boolean parameter,
+            // which that gate negates by toggling its zero/one value. It is a C++ bool, so
+            // DivisionStatus's nonzero bit is the raw byte.
             CommonClass::Army => Ok(u8::from(
                 self.move_flags(unit.handle)? & DivisionStatusRow::MOVE_EXILED != 0,
             )),

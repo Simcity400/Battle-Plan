@@ -788,8 +788,8 @@ impl Captured {
                 targets,
                 &mut forward,
             );
-            // Independent new payload: consumes the exact original status0
-            // attempts, retaining old outputs even when +50 was an alias0.
+            // Independent new payload: consumes the exact original status0 attempts, retaining old
+            // outputs even when the relation's target word was an alias of country 0.
             let visibility = crelation_status::forward_zero_visibility_inputs(
                 memory,
                 base,

@@ -54,9 +54,9 @@ fn a_plain_sprite_keeps_what_its_reader_keeps() {
     assert_eq!(bytes.dx_offset, [0.5, 0.5]);
 }
 
-/// The axis component reader writes `anchor`'s components on from `+0xE8` into the
-/// sprite type: each lands on its field ([`SpriteBytes`]), stored when a later read sees it,
-/// nothing when the game rewrites it first.
+/// The axis component reader writes `anchor`'s components on from the anchor into the sprite type:
+/// each lands on its field ([`SpriteBytes`]), stored when a later read sees it, nothing when the
+/// game rewrites it first.
 #[test]
 fn anchor_components_land_on_the_fields_past_the_anchor() {
     engine::executable_tables::initialize_for_tests()
@@ -103,9 +103,9 @@ fn anchor_components_land_on_the_fields_past_the_anchor() {
     assert_eq!(id.texture_id, 1);
 }
 
-/// From `+0x118` the components reach the animation records' vector: zeros over the null
-/// vector are nothing, a data pointer or a count the readers follow is refused, a capacity or
-/// an allocator only when a later record is appended through them.
+/// Past the texture id the components reach the animation records' vector: zeros over the null
+/// vector are nothing, a data pointer or a count the readers follow is refused, a capacity or an
+/// allocator only when a later record is appended through them.
 #[test]
 fn anchor_components_reaching_the_animation_records() {
     engine::executable_tables::initialize_for_tests()
@@ -115,7 +115,7 @@ fn anchor_components_reaching_the_animation_records() {
     assert!(refusals.is_empty(), "{refusals:?}");
     assert!(sprite.animations.is_empty());
     let (_, refusals) = plain(&format!("anchor = {{ {} 5 }}", zeros(12)));
-    assert!(refusals[0].reason.contains("+0x118"), "{refusals:?}");
+    assert!(refusals[0].reason.contains("animation records' vector"), "{refusals:?}");
     // A count of 1 over no record: texture release reads one from the null pointer.
     let (_, refusals) = plain(&format!("anchor = {{ {} 1.4e-45 }}", zeros(15)));
     assert!(
@@ -144,8 +144,8 @@ fn anchor_components_reaching_the_animation_records() {
     assert_eq!(shown.animations.len(), 2);
 }
 
-/// `dx_offset`'s components from `+0x1C8`: the flags' bytes, `generate_mip_maps`, the second
-/// vector's null data pointer, then the end of the kind's allocation or its own tail.
+/// `dx_offset`'s components from the sprite's flag bytes: the flags' bytes, `generate_mip_maps`,
+/// the second vector's null data pointer, then the end of the kind's allocation or its own tail.
 #[test]
 fn dx_offset_components_land_to_the_end_of_the_object() {
     engine::executable_tables::initialize_for_tests()
@@ -175,12 +175,12 @@ fn dx_offset_components_land_to_the_end_of_the_object() {
         refusals[0].reason.contains("past the heap block"),
         "{refusals:?}"
     );
-    // 1.0000305 is 0x3F800100: `+0x1D4` 0 (the logged-once byte), `+0x1D5` 1.
+    // 1.0000305 is 0x3F800100: the logged-once byte 0, `generate_mip_maps` 1.
     let (flags, refusals) = plain("dx_offset = { 0.5 0.5 0 1.0000305 0 0 3 4 5 6 }");
     assert!(refusals.is_empty(), "{refusals:?}");
     assert!(flags.generate_mip_maps && !flags.legacy_lazy_load);
     let (_, refusals) = plain("dx_offset = { 0.5 0.5 0 0 1 }");
-    assert!(refusals[0].reason.contains("+0x1D8"), "{refusals:?}");
+    assert!(refusals[0].reason.contains("second vector's data pointer"), "{refusals:?}");
     let (_, refusals) = plain("dx_offset = { 0.5 0.5 0 0 0 0 0 0 0 0 1 }");
     assert!(
         refusals[0].reason.contains("heap overflow") && refusals[0].reason.contains("0x1F0"),
@@ -346,7 +346,7 @@ fn animation_blocks_keep_every_field() {
     );
     assert!(refusals.is_empty(), "{refusals:?}");
     assert_eq!(split.animations.len(), 1);
-    // `animationrotationoffset` from `+0x60`: the type, blend mode and masks, then the
+    // `animationrotationoffset` from the record's type: the type, blend mode and masks, then the
     // texture pointers (null here, so nothing), the texel size, and past the record.
     let offset = |components: &str, eager: bool| {
         plain(&format!(
@@ -361,7 +361,7 @@ fn animation_blocks_keep_every_field() {
     assert_eq!((record.kind, record.texture_size), (1, [2, 1]));
     // A mask pointer written without a mask file: an eager sprite binds it.
     let (_, refusals) = offset("1 2 1.4e-45 0 0 0 1", true);
-    assert!(refusals[0].reason.contains("+0x78"), "{refusals:?}");
+    assert!(refusals[0].reason.contains("(mask or texture)"), "{refusals:?}");
     let (_, refusals) = offset("1 2 1.4e-45 0 0 0 1", false);
     assert!(refusals.is_empty(), "{refusals:?}");
     let mut past = vec!["0"; 12];
@@ -681,7 +681,7 @@ fn object_registry_refuses_after_an_animated_position_overrun() {
     for name in [b"text".as_slice(), b"later".as_slice()] {
         let object = outside.object(name).unwrap();
         assert_eq!(object.refusals[0].path.as_bytes(), name);
-        assert!(object.refusals[0].reason.contains("+0xF0"));
+        assert!(object.refusals[0].reason.contains("past the 0xF0-byte"));
         assert_eq!(object.refusals[0].cause, Cause::Unaligned);
     }
 }

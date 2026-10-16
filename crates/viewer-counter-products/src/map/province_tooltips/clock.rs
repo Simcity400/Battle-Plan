@@ -9,7 +9,7 @@ use replay::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LocalClock {
     pub hour: i32,
-    /// Signed i64 fixed5 night factor, the record's +0x240 word.
+    /// Signed i64 fixed5 night factor, the record's word.
     pub night: i64,
     /// PROV_TOOLTIP_LOCAL_TIME's FRAME: round, then add one.
     pub icon_frame: i32,

@@ -6,17 +6,17 @@ use crate::Memory;
 pub const VTABLE_RVA: usize = 0x02a0_99e0;
 /// Array stride, used for reverse scans and growth.
 pub const STRIDE: usize = 0x98;
-/// Wing ID, u32, at +8.
+/// Wing ID, u32.
 pub const WING_ID: usize = 0x08;
-/// Raw date, i32, at +0x0c.
+/// Raw date, i32.
 pub const DATE: usize = 0x0c;
 /// Plane-count high-water mark, compared and updated as signed i32.
 pub const PLANE_COUNT: usize = 0x10;
-/// Mission mask, u32, at +0x14.
+/// Mission mask, u32.
 pub const MISSION_MASK: usize = 0x14;
-/// Selection flag byte at +0x18.
+/// Selection flag byte.
 pub const SELECTION_FLAG: usize = 0x18;
-/// Classification flag byte at +0x19.
+/// Classification flag byte.
 pub const CLASSIFICATION_FLAG: usize = 0x19;
 /// First damage vector, channel ordinal zero.
 pub const FIRST_DAMAGE: usize = 0x20;
@@ -32,7 +32,7 @@ pub const SECOND_DAMAGE_CAPACITY: usize = 0x40;
 pub const SECOND_DAMAGE_COUNT: usize = 0x44;
 /// Raw attribution-country link, initialized to zero before nonzero plane-count attribution.
 pub const ATTRIBUTED_COUNTRY: usize = 0x50;
-/// Copied flag byte at +0x90.
+/// Copied flag byte.
 pub const COPIED_FLAG: usize = 0x90;
 
 /// Full native lookup coordinates, scoped to its physical country/region vector.

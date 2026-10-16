@@ -19,7 +19,7 @@ pub const CROSSING_POINT: usize = 0x20;
 pub struct Record {
     pub id: u32,
     pub crossing_kind: u8,
-    /// Raw +0x11 byte; nonzero suppresses the movement-arrow midpoint.
+    /// Raw `FLAG` byte; nonzero suppresses the movement-arrow midpoint.
     pub flag: u8,
     pub distance: i64,
     pub crossing: [i32; 2],

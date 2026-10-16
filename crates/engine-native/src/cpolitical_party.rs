@@ -34,14 +34,14 @@ pub const POPULARITY: usize = 0x88;
 pub struct LeaderRow {
     /// Raw id of the owning CCountry.
     pub country: u32,
-    /// The party's native ideology ID (+0x08).
+    /// The party's native ideology ID.
     pub party: u32,
-    /// Position in the party's leader vector (+0x70).
+    /// Position in the party's leader vector.
     pub ordinal: u32,
     /// The leader's CCharacter id behind [`crate::ccountry_leader::CHARACTER`];
     /// `None` for a null parent.
     pub character: Option<u32>,
-    /// That leader's signed key in its parent's +0x98 role map; absent for a null parent.
+    /// That leader's signed key in its parent's leader-role map (`ccharacter::LEADER_MAP_HEAD`); absent for a null parent.
     pub role: Option<i32>,
     /// [`crate::ccountry_leader::LEADER_ID`].
     pub leader_id: i32,
@@ -55,15 +55,15 @@ pub struct Row {
     pub is_ruling: u8,
     pub token_start: usize,
     pub token_len: usize,
-    /// The party's own country tag index (+0x20).
+    /// The party's own country tag index.
     pub tag: u32,
-    /// The default-name flag (+0x68): 1 when the game builds the name from the tag and
-    /// ideology group, 0 when it localises the stored keys.
+    /// The default-name flag: 1 when the game builds the name from the tag and ideology group, 0
+    /// when it localises the stored keys.
     pub name_default: u8,
-    /// Stored name key (+0x28), in the same arena as the token.
+    /// Stored name key, in the same arena as the token.
     pub name_start: usize,
     pub name_len: usize,
-    /// Stored long-name key (+0x48), in the same arena.
+    /// Stored long-name key, in the same arena.
     pub long_name_start: usize,
     pub long_name_len: usize,
 }

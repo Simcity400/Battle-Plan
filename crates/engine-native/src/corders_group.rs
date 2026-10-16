@@ -442,7 +442,7 @@ pub struct CounterInputsRow {
     pub leader_enroute_days: Option<i32>,
     /// Presence of the raw border-war pointer; the pointee is never followed.
     pub border_war_presence: Option<u8>,
-    /// Distinct from +1C4; unknown negative values remain exact signed words.
+    /// Distinct from `HQ_DISTANCE`; unknown negative values remain exact signed words.
     pub invasion_source_distance: Option<i32>,
 }
 
@@ -877,16 +877,17 @@ pub fn walk_roots_buffer(
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct GroupRow {
     pub handle: u64,
-    /// Raw country reference at +0x3c; aliases are preserved, never canonicalized.
+    /// Raw country reference (`COUNTRY`); aliases are preserved, never canonicalized.
     pub country: u32,
-    /// Raw discriminator byte at +0x39, the save's field_marshal_group source.
+    /// Raw discriminator byte (`IS_ARMY_GROUP`), the save's field_marshal_group source.
     pub is_army_group: u8,
     /// Raw motorization byte, always serialized.
     pub motorization_level: u8,
     /// Full CTheatre reference, or zero for the native null parent pointer.
     pub theatre: u64,
-    /// Native index in that theatre's +0x80 regular or +0x98 army-group
-    /// roster, chosen by `is_army_group`. None is absence, not position zero.
+    /// Native index in that theatre's regular (`ctheatre::ORDERS_GROUP_DATA`) or army-group
+    /// (`ctheatre::ARMY_GROUP_DATA`) roster, chosen by `is_army_group`. None is absence, not
+    /// position zero.
     pub theatre_ordinal: Option<u32>,
     /// Full CTheaterGroup reference, or zero for the native null pointer.
     pub theater_group: u64,
@@ -984,8 +985,8 @@ mod command_name_tests {
     }
 }
 
-/// One entry of a group's own ordered member vector at +0x50. Native order is
-/// state: the ordinal is the vector index, not a generated key.
+/// One entry of a group's own ordered member vector (`MEMBER_DATA`). Native order is state: the
+/// ordinal is the vector index, not a generated key.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MemberRow {
     pub group: u64,
@@ -994,7 +995,7 @@ pub struct MemberRow {
     pub unit: u64,
 }
 
-/// One entry of a CArmyGroup's ordered child vector at +0x230.
+/// One entry of a CArmyGroup's ordered child vector, which follows the orders group's own fields.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ChildRow {
     pub group: u64,
@@ -1130,13 +1131,12 @@ impl Count {
 
 /// Reads the order of battle for an already authenticated registry census.
 ///
-/// `roots` must be the exact prefix the caller's registry walk filled; the
-/// caller keeps that census's own outcome, because a truncated or unavailable
-/// registry cannot establish a complete order of battle. Every reference is
-/// authenticated by its pointee's vtable and reference type before it becomes a
-/// row field. Members are resolved by subtracting the embedded
-/// COrdersGroupMember offset and re-authenticating the CUnit host, including
-/// its reciprocal +0xc0 back-pointer, so no unresolved pointer becomes a row.
+/// `roots` must be the exact prefix the caller's registry walk filled; the caller keeps that
+/// census's own outcome, because a truncated or unavailable registry cannot establish a complete
+/// order of battle. Every reference is authenticated by its pointee's vtable and reference type
+/// before it becomes a row field. Members are resolved by subtracting the embedded
+/// COrdersGroupMember offset and re-authenticating the CUnit host, including its reciprocal
+/// `carmy::ORDERS_GROUP` back-pointer, so no unresolved pointer becomes a row.
 pub fn walk_order_of_battle(
     memory: &impl Memory,
     base: usize,
@@ -1590,10 +1590,10 @@ impl<M: Memory> Reader<'_, M> {
         Ok(handle)
     }
 
-    /// Recovers the CUnit that owns an embedded COrdersGroupMember. The engine
-    /// reaches the unit through a virtual accessor the callback may not call,
-    /// so the host is authenticated instead: both CArmy vtables, a nonzero
-    /// handle and the reciprocal +0xc0 back-pointer must all agree.
+    /// Recovers the CUnit that owns an embedded COrdersGroupMember. The engine reaches the unit
+    /// through a virtual accessor the callback may not call, so the host is authenticated instead:
+    /// both CArmy vtables, a nonzero handle and the reciprocal `carmy::ORDERS_GROUP` back-pointer
+    /// must all agree.
     fn member_unit(&self, member: usize, group: usize) -> Result<u64, &'static str> {
         let unit = member
             .checked_sub(corders_group_member::HOST_OFFSET)

@@ -36,17 +36,17 @@ use super::camera::{Camera, MapDefines, MapSize};
 
 /// Settled wind direction for a replay hour.
 ///
-/// The hourly weather update rebuilds the target each hour; weather
-/// initialization rebuilds it too.
-/// There is no simulation smoothing or save-history dependency. The renderer
-/// alone does `normalize(previous + (raw / 100000 - previous) * alpha)`, with
-/// `alpha = clamp(12 * filtered_frame_seconds, 0.001, 1)` each frame. We start
-/// at the settled target, so seeks do not introduce a synthetic load transient.
-/// Unrecorded renderer transients and disabled-weather stale targets remain
-/// UNVERIFIED; the exact fields and conditional error bounds are in [archived rendering notes](#)
-/// section 3.1. The virtual lighting sun uses only the hour, not this direction.
-/// The exact simulation target is [`replay::day_night::seasonal_direction`],
-/// the signed fixed5 words at `weather manager+0x350/0x358/0x360`.
+/// The hourly weather update rebuilds the target each hour; weather initialization rebuilds it too.
+/// There is no simulation smoothing or save-history dependency. The renderer alone does
+/// `normalize(previous + (raw / 100000 - previous) * alpha)`, with `alpha = clamp(12 *
+/// filtered_frame_seconds, 0.001, 1)` each frame. We start at the settled target, so seeks do not
+/// introduce a synthetic load transient. Unrecorded renderer transients and disabled-weather stale
+/// targets remain UNVERIFIED; the exact fields and conditional error bounds are in [archived
+/// rendering
+/// notes](#)
+/// section 3.1. The virtual lighting sun uses only the hour, not this direction. The exact
+/// simulation target is [`replay::day_night::seasonal_direction`], the signed fixed5 words the
+/// weather manager holds.
 fn seasonal_direction(hour: i32) -> [f32; 3] {
     let scale = replay::day_night::SCALE as f32;
     let [x, y, z] = replay::day_night::seasonal_direction(hour).map(|v| v as f32 / scale);

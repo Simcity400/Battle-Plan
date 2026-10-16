@@ -2,7 +2,7 @@
 
 /// Primary vtable.
 pub const VTABLE_RVA: usize = 0x0295_69a8;
-/// Secondary vtable at displacement +8.
+/// Secondary vtable (`SECONDARY`).
 pub const SECONDARY_VTABLE_RVA: usize = 0x0295_69f8;
 /// Secondary-subobject displacement; authenticate both vtables.
 pub const SECONDARY: usize = 0x08;
@@ -28,7 +28,7 @@ pub const TEMPLATE_VTABLE_RVA: usize = 0x029c_5260;
 pub const TEMPLATE_MODIFIERS_CAPACITY: usize = 0x140;
 pub const TEMPLATE_MODIFIERS_COUNT: usize = 0x144;
 
-/// Authenticates a nullable region pointer and reads its stored id (+58).
+/// Authenticates a nullable region pointer and reads its stored id (`ID`).
 pub fn id(
     memory: &impl crate::Memory,
     base: usize,

@@ -1,25 +1,21 @@
 //! DivisionTemplates derived every hour from the template icon walk
 //! ([`crate::template_changes`]).
 //!
-//! A dictionary row records a template's handle, roster owner, literal name
-//! (`+0x20`), fallback name key (`+0x40`) and unit_type. The hourly icon walk
-//! ([`native::walk_icons_with_names_growing`]) visits the same rosters in the
-//! same order and reads, for every template, its handle, owner, literal and
-//! unit-type operands (the override `+0x230` and the definition category
-//! [`native::walk`] derives), and the key behind an empty literal. Only a
-//! key behind a nonempty literal is not read every hour: it is carried from
-//! the held capture when the template object and handle are the held ones and
-//! either the family's quiet token is the one taken before that capture or no
-//! hooked writer touched the template since it registered (every run-time
-//! writer of the key is a hooked site, [`engine::template_mutations`]).
-//! Every other template's names are read afresh. A capture is held only when
-//! it completed and the quiet token stood still across it. The carryable keys
-//! of the hour's [`crate::sampled_verify`] slice (by template id) are read
-//! afresh instead and compared with the held ones. After all name reads and an
-//! acquire fence, an unchanged final certificate permits a mismatch verdict;
-//! an overlapping writer withdraws the capture without poisoning. A key
-//! mismatch poisons the key domain. Allocation is advisory: a capture that
-//! cannot be held reads every such key again next hour.
+//! A dictionary row records a template's handle, roster owner, literal name, fallback name key and
+//! unit_type. The hourly icon walk ([`native::walk_icons_with_names_growing`]) visits the same
+//! rosters in the same order and reads, for every template, its handle, owner, literal and
+//! unit-type operands (the unit-type override and the definition category [`native::walk`]
+//! derives), and the key behind an empty literal. Only a key behind a nonempty literal is not read
+//! every hour: it is carried from the held capture when the template object and handle are the held
+//! ones and either the family's quiet token is the one taken before that capture or no hooked
+//! writer touched the template since it registered (every run-time writer of the key is a hooked
+//! site, [`engine::template_mutations`]). Every other template's names are read afresh. A capture
+//! is held only when it completed and the quiet token stood still across it. The carryable keys of
+//! the hour's [`crate::sampled_verify`] slice (by template id) are read afresh instead and compared
+//! with the held ones. After all name reads and an acquire fence, an unchanged final certificate
+//! permits a mismatch verdict; an overlapping writer withdraws the capture without poisoning. A key
+//! mismatch poisons the key domain. Allocation is advisory: a capture that cannot be held reads
+//! every such key again next hour.
 use crate::{
     sampled_verify::Check,
     template_changes::{Changes, Counts},

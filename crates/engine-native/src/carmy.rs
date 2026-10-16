@@ -283,11 +283,10 @@ pub struct Row {
     pub hit_points: i64,
     /// Native signed fixed5, without display rounding.
     pub organisation: i64,
-    /// Full COrdersGroup reference of the army this division belongs to, read
-    /// through the embedded COrdersGroupMember back-pointer at primary +0xc0.
-    /// Zero preserves the native null pointer of an unassigned division; it is
-    /// an independent second source for the group's own member vector, never a
-    /// substitute for it.
+    /// Full COrdersGroup reference of the army this division belongs to, read through the embedded
+    /// COrdersGroupMember back-pointer (`ORDERS_GROUP`). Zero preserves the native null pointer of
+    /// an unassigned division; it is an independent second source for the group's own member
+    /// vector, never a substitute for it.
     pub orders_group: u64,
     /// Standard template's [`creferenced_division_template::REVEAL_SKIP`]
     /// byte; zero for a null template.
@@ -652,11 +651,10 @@ impl DivisionSeed {
     pub const FUEL: u64 = 1 << 42;
 }
 
-/// The two arrow-style fields (`+0x248` and `+0x24D`) share the retreat
-/// byte's line, so the census gathers them there instead of the movement pass
-/// reading each division twice more; the counter icon's alternate template
-/// (`+0x3C8`) and separate-counter byte (`+0x630`) share the standard
-/// template's and the supply grace scalars' lines.
+/// The two arrow-style fields (beside `RETREAT`) share the retreat byte's line, so the census
+/// gathers them there instead of the movement pass reading each division twice more; the counter
+/// icon's alternate template and separate-counter byte share the standard template's and the supply
+/// grace scalars' lines.
 const DIVISION_SEED_SPANS: [(usize, usize); 43] = [
     (0, 8),
     (SECONDARY_BASE, 8),
@@ -880,9 +878,9 @@ pub struct MovementRow {
     /// Complete ordered full identities in MovementPacket's owned arena.
     pub combat_references: Option<(usize, usize)>,
     pub combat_references_failure: Option<&'static str>,
-    /// Raw signed fixed5 maximum speed of the authenticated stat block
-    /// (`[CArmy+0x138]+0x290`), read only when the ordinary route count is
-    /// positive. None is outside demand or a guarded refusal.
+    /// Raw signed fixed5 maximum speed of the authenticated stat block (the stat block's maximum
+    /// speed), read only when the ordinary route count is positive. None is outside demand or a
+    /// guarded refusal.
     pub base_speed: Option<i64>,
     /// [`FUEL_CANDIDATE`] from the census seed, kept with the base speed for a
     /// division whose ordinary route count is positive. None is outside demand
@@ -2459,8 +2457,8 @@ impl StatusPacket {
             );
             for word in bytes[..copied * 4].chunks_exact(4) {
                 let value = i32::from_le_bytes(word.try_into().unwrap());
-                // The admitted array header checked the entire stride-8 range.
-                // Keep only complete offset-4 words, including on a later fault.
+                // The admitted array header checked the entire stride-8 range. Keep only complete
+                // manpower words, including on a later fault.
                 self.manpower.push(value);
                 manpower = manpower.wrapping_add(value);
             }
@@ -2719,13 +2717,12 @@ impl StatusPacket {
         self.units[unit].weather_factor = weather_factor.ok();
     }
 
-    /// Winner selection walks every entry for the first strictly greatest
-    /// weight above zero; one span read per 32 entries copies them here. The
-    /// camouflage decision shows nothing for no winner or a null category, and
-    /// otherwise compares the winner's weight with the maximum (+0x38) times
-    /// the live `ACCLIMATIZATION_CAMO_SHOW_AT`. Only a shown category's pointer
-    /// is resolved to its token through the registry, as only it is used; the
-    /// define and the registry are read once per pass, when first needed.
+    /// Winner selection walks every entry for the first strictly greatest weight above zero; one
+    /// span read per 32 entries copies them here. The camouflage decision shows nothing for no
+    /// winner or a null category, and otherwise compares the winner's weight with the maximum times
+    /// the live `ACCLIMATIZATION_CAMO_SHOW_AT`. Only a shown category's pointer is resolved to its
+    /// token through the registry, as only it is used; the define and the registry are read once
+    /// per pass, when first needed.
     fn read_camouflage(
         &mut self,
         memory: &impl Memory,
@@ -3336,9 +3333,9 @@ fn acclimatization_winner(
     Ok((object, strongest.winner()))
 }
 
-/// The acclimatization categories' movement factors (+0x30) read this pass.
-/// A category is content every division in its climate shares, so each is
-/// read once a pass; a full memo only costs a fresh read.
+/// The acclimatization categories' movement factors read this pass. A category is content every
+/// division in its climate shares, so each is read once a pass; a full memo only costs a fresh
+/// read.
 #[derive(Default)]
 struct CategoryFactors {
     entries: [(u64, i64); 8],
@@ -3366,10 +3363,9 @@ impl CategoryFactors {
     }
 }
 
-/// Movement availability: one without an active climate (`+0x20`) or when the
-/// winner's category is not that one, otherwise
-/// [`crate::acclimatization_data::movement_factor`] with the active category's
-/// factor (`+0x30`), read once a pass ([`CategoryFactors`]).
+/// Movement availability: one without an active climate or when the winner's category is not that
+/// one, otherwise [`crate::acclimatization_data::movement_factor`] with the active category's
+/// factor, read once a pass ([`CategoryFactors`]).
 fn weather_factor(
     memory: &impl Memory,
     object: &[u8; 0x40],

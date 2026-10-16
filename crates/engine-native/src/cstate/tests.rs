@@ -1035,7 +1035,7 @@ fn state_census_and_flags_keep_primary_read_order_without_terminal_rereads() {
             (0x1300 + source.id as usize * 8, 8),
             (source.pointer, 8),
             (source.pointer + ID, 4),
-            // DMZ +0x864 and border-war active +0x865 share one span.
+            // The DMZ byte and the border-war active byte share one span.
             (source.pointer + DEMILITARIZED, 2),
         ]);
     }

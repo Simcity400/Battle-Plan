@@ -70,7 +70,7 @@ pub struct DetailBuffers<'a> {
     pub commander_inputs_required: usize,
     pub commander_timed_traits: &'a mut Vec<crate::cunit_leader::TimedTrait>,
     pub commander_timed_traits_len: usize,
-    /// Each side's task-force handles (`CCombatant+0x20`).
+    /// Each side's task-force handles (the combatant's unit vector).
     pub side_units: crate::walk::Buffer<'a, u64>,
     pub side_units_len: usize,
     pub side_units_required: usize,
@@ -180,7 +180,7 @@ pub struct DetailsRow {
     /// Same-pass group pointer for the convoy source join; never replayed.
     pub native_group: usize,
     pub member: cnaval_combatant::Row,
-    /// Ordered group source: 0 active +0x8, 1 retained +0x70.
+    /// Ordered group source: 0 the active member vector, 1 the retained one.
     pub member_source: u8,
     pub group_index: u32,
     pub member_index: u32,
@@ -202,8 +202,8 @@ pub struct DetailsRow {
     pub evacuation_state: i32,
     pub detection_state: i32,
     pub escape_progress: i64,
-    /// State 8 only: the live ship +0x228 or live convoy variant +0x208
-    /// provides the stored effective-speed operand for on-demand escape calculation.
+    /// State 8 only: the live ship's or live convoy variant's speed provides the stored
+    /// effective-speed operand for on-demand escape calculation.
     pub escape_speed_base: i64,
     pub last_target: crate::clast_target_info::Row,
     pub received_damage: [i64; 6],
@@ -212,14 +212,14 @@ pub struct DetailsRow {
     pub live_convoy: u8,
     pub strength: i64,
     pub organisation: i64,
-    /// Raw CShip +300/+308, before the window's organisation modifier composition.
+    /// Raw CShip organisation operands, before the window's organisation modifier composition.
     pub base_organisation: i64,
     pub maximum_hit_points: i64,
     pub formation_flags: u64,
     pub weapon_context: crate::naval_ship_modifier_inputs::ContextRow,
     /// Start/count pairs in the corresponding caller arena.
     pub damage_entries: [usize; 2],
-    /// Distinct member+150 and+168 arrays, retained in native order.
+    /// Distinct air-hit arrays, retained in native order.
     pub air_hits: [[usize; 2]; 2],
     pub naval_hits: [usize; 2],
 }

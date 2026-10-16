@@ -147,26 +147,23 @@ pub struct LandCombatSideDetails {
     pub tactic_counter_id: u32,
     pub tactic_token: Vec<u8>,
     pub air_counts: Vec<i32>,
-    /// The combat side's +0x138 CAS hover anti-air cache, which
-    /// [`LandCombatSideInputs::anti_air_attack`] records; formats 101 and earlier hold it
-    /// here ([`LandCombatDetailsRow::cas_inputs`]).
+    /// The combat side's CAS hover anti-air cache, which [`LandCombatSideInputs::anti_air_attack`]
+    /// records; formats 101 and earlier hold it here ([`LandCombatDetailsRow::cas_inputs`]).
     pub anti_air_attack: RetiredKept<i64>,
     pub air_kills: u32,
-    /// The round's air strength and organisation damage (combat side +0x148/+0x150), the
-    /// window's LAND_COMBAT_CAS_INFO line.
+    /// The round's air strength and organisation damage on the combat side, the window's
+    /// LAND_COMBAT_CAS_INFO line.
     pub damage: [i64; 2],
-    /// The ground strength and organisation damage lanes (+0x158/+0x160): only save
-    /// loading, round resolution and save serialization touch them, so no display reads
-    /// them.
+    /// The ground strength and organisation damage lanes: only save loading, round resolution and
+    /// save serialization touch them, so no display reads them.
     pub ground_damage: RetiredNested<[i64; 2]>,
-    /// The prevented CAS damage lanes (+0x168/+0x170), which
-    /// [`LandCombatSideInputs::prevented_damage`] records; formats 101 and
-    /// earlier hold them here, exact.
+    /// The prevented CAS damage lanes, which [`LandCombatSideInputs::prevented_damage`] records;
+    /// formats 101 and earlier hold them here, exact.
     pub prevented_damage: RetiredKept<[i64; 2]>,
-    /// The sum of the 24 organisation loss samples (`combat side+0x178`) once
+    /// The sum of the 24 organisation loss samples the combat side holds once
     /// `organisation_loss_count` reaches 24, and 0 before, when the samples are not read
-    /// ([`Self::loss_sum`]). The marker's survival estimate is the only reader that is
-    /// not the save or the round itself, and it takes only this sum.
+    /// ([`Self::loss_sum`]). The marker's survival estimate is the only reader that is not the save
+    /// or the round itself, and it takes only this sum.
     pub organisation_loss_sum: i64,
     pub organisation_loss_count: u32,
     pub commander: u64,
@@ -175,26 +172,25 @@ pub struct LandCombatSideDetails {
     pub commander_country: u32,
     /// Raw unit leader experience, read only by the commander skill hover.
     pub commander_experience: RetiredNested<i64>,
-    /// Raw saved name token (unit leader+0x20); the viewer localises it.
+    /// Raw saved name token (the unit leader's name); the viewer localises it.
     pub commander_name_token: Vec<u8>,
-    /// The description token (+0x80), read only by the portrait hover.
+    /// The description token, read only by the portrait hover.
     pub commander_description_token: RetiredNested<Vec<u8>>,
-    /// The army leader's +0x1048 formation reference of a category 0/1 commander, for the
-    /// HQ badge; zero otherwise.
+    /// The army leader's formation reference of a category 0/1 commander, for the HQ badge; zero
+    /// otherwise.
     pub commander_formation: u64,
     pub presentation: CombatCommanderPresentation,
     pub traits: Vec<LandCombatCommanderTrait>,
-    /// Timed traits (`unit leader+0xDE0`), read only by trait hovers.
+    /// Timed traits (the unit leader's timed-trait vector), read only by trait hovers.
     pub timed_traits: RetiredNested<Vec<LandCombatCommanderTimedTrait>>,
-    /// Learning traits (`+0xDF8`), read only by the commander hover.
+    /// Learning traits, read only by the commander hover.
     pub learning_traits: RetiredNested<Vec<LandCombatCommanderLearningTrait>>,
 }
 impl LandCombatSideDetails {
-    /// The organisation loss samples a side holds after its 24th round (`combat
-    /// side+0x178`, `ORGANISATION_LOSS_WINDOW`) as the one figure any displayed reader
-    /// takes from them: their sum. The survival estimate loads slot 0 and adds the other
-    /// 23 with wrapping 64-bit addition. The other readers are save serialization, save
-    /// loading and round resolution.
+    /// The organisation loss samples a side holds after its 24th round (`ORGANISATION_LOSS_WINDOW`)
+    /// as the one figure any displayed reader takes from them: their sum. The survival estimate
+    /// loads slot 0 and adds the other 23 with wrapping 64-bit addition. The other readers are save
+    /// serialization, save loading and round resolution.
     pub fn loss_sum(samples: &[i64; 24]) -> i64 {
         samples
             .iter()
@@ -391,20 +387,19 @@ value_struct!(LandCombatCommanderTimedTrait {
 });
 
 /// A learning trait the side's commander portrait lists: an entry of the commander's
-/// trait-experience vector (`unit leader+0xDF8`, count `+0xE04`, in native order) whose
-/// progress is strictly greater than the live `LEADER_TRAITS_XP_SHOW`, decided at
-/// capture, as the portrait decides it, from the exact progress. Entries at or below it
-/// are not shown and not recorded.
+/// trait-experience vector (in native order, up to its count) whose progress is strictly greater
+/// than the live `LEADER_TRAITS_XP_SHOW`, decided at capture, as the portrait decides it, from the
+/// exact progress. Entries at or below it are not shown and not recorded.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LandCombatLearningProgress {
-    /// The trait definition's token id and ordinal, and its raw token (`+0x10`), which
-    /// the portrait localises for the commander's country.
+    /// The trait definition's token id and ordinal, and its raw token, which the portrait localises
+    /// for the commander's country.
     pub token_id: i32,
     pub definition_ordinal: i32,
-    /// Fixed5 ratio of the entry's raw experience (`+8`) to the definition's requirement
-    /// (`+0x8A0`), scaling both operands before division, or `0xFFFFFFFF` when the
-    /// requirement is zero or the experience a sentinel word, as the portrait computes
-    /// it; stored at its displayed precision ([`LandCombatSideInputs::PROGRESS_STEP`]).
+    /// Fixed5 ratio of the entry's raw experience to the definition's requirement, scaling both
+    /// operands before division, or `0xFFFFFFFF` when the requirement is zero or the experience a
+    /// sentinel word, as the portrait computes it; stored at its displayed precision
+    /// ([`LandCombatSideInputs::PROGRESS_STEP`]).
     pub progress: i64,
     pub token: Vec<u8>,
 }
@@ -426,22 +421,19 @@ value_struct!(LandCombatLearningProgress {
 /// ([`Self::UNREAD_PROGRESS`], `None`) and the row stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LandCombatSideInputs {
-    /// `combat side+0x138`, the side's anti-air cache as stored: combat-statistics
-    /// refresh writes it and CAS application reads it. The opposing side's CAS hover
-    /// derives anti-air effectiveness from it, whose 1.5 power reads every digit, so it
-    /// stays exact.
+    /// The side's anti-air cache as stored: combat-statistics refresh writes it and CAS application
+    /// reads it. The opposing side's CAS hover derives anti-air effectiveness from it, whose 1.5
+    /// power reads every digit, so it stays exact.
     pub anti_air_attack: i64,
-    /// The CAS damage the side's anti-air prevented, strength then organisation
-    /// (`+0x168`, `+0x170`): cumulative, added by the CAS application after its anti-air
-    /// reduction. Only the opposing side's CAS hover reads them, as STR_PREVENT and
-    /// ORG_PREVENT: [`Self::PREVENTED_STEP`].
+    /// The CAS damage the side's anti-air prevented, strength then organisation: cumulative, added
+    /// by the CAS application after its anti-air reduction. Only the opposing side's CAS hover
+    /// reads them, as STR_PREVENT and ORG_PREVENT: [`Self::PREVENTED_STEP`].
     pub prevented_damage: [i64; 2],
-    /// The selected commander's skill progress: experience (`+0xE68`) over the next skill
-    /// level's requirement (lookup at level + 1, `+0x1BC`), `0xFFFFFFFF` for a zero
-    /// requirement or a sentinel experience word, or [`Self::NO_PROGRESS`] when the next
-    /// level is missing or invalid (the hover's skill-cap message), or
-    /// [`Self::UNREAD_PROGRESS`] when the next level could not be read. The hover prints
-    /// a whole percentage in a fixed colour: [`Self::PROGRESS_STEP`].
+    /// The selected commander's skill progress: experience over the next skill level's requirement
+    /// (lookup at level + 1), `0xFFFFFFFF` for a zero requirement or a sentinel experience word, or
+    /// [`Self::NO_PROGRESS`] when the next level is missing or invalid (the hover's skill-cap
+    /// message), or [`Self::UNREAD_PROGRESS`] when the next level could not be read. The hover
+    /// prints a whole percentage in a fixed colour: [`Self::PROGRESS_STEP`].
     pub skill_progress: i64,
     /// Raw keys 0x5F and 0x60 of the leader modifier block that the leader selects for
     /// the unit picked from the side's units. The commander hover copies that block into
@@ -449,11 +441,11 @@ pub struct LandCombatSideInputs {
     /// lacks the key. `None`: the block, or the unit choice that selects it, could not be
     /// read.
     pub skill_modifiers: Option<[i64; 2]>,
-    /// The commander's raw description token (`+0x80`), whose localised cache (`+0x60`,
-    /// filled during loading) is the portrait's delayed text.
+    /// The commander's raw description token, whose localised cache ( filled during loading) is the
+    /// portrait's delayed text.
     pub description_token: Vec<u8>,
-    /// The commander's timed traits (`+0xDE0`) in native order; each trait hover's expiry
-    /// line reads the first matching entry.
+    /// The commander's timed traits in native order; each trait hover's expiry line reads the first
+    /// matching entry.
     pub timed_traits: Vec<LandCombatCommanderTimedTrait>,
     /// `None`: the live `LEADER_TRAITS_XP_SHOW` could not be read, so which
     /// rows the portrait shows is unknown.
@@ -613,7 +605,7 @@ value_struct!(NavalCombatSummaryModifier {
 pub struct NavalCombatSummaryInputs {
     pub recent_join_penalty: i64,
     pub escort_bonus: i64,
-    /// The side's ordered primary country list (`+0x38`), raw references.
+    /// The side's ordered primary country list, raw references.
     pub countries: Vec<u32>,
     /// Its ordered roster-owner list, which admits a viewer to the combat's
     /// shared vision.
@@ -731,7 +723,7 @@ pub struct NavalCombatSideDetails {
 }
 value_struct!(NavalCombatSideDetails { damage_history: [[i64; 6]; 6], original_health: i64, total_damage: i64, damage_by_type: Vec<NavalDamageSource>, commander: u64, engaged: u8, retreating: u8, capital_screening: i64, carrier_screening: i64, positioning: i64, anti_air: i64, planes: Vec<NavalCombatPlane>, summary: NavalCombatSummaryInputs, commander_inputs: Option<NavalCommanderInputs>, units: Vec<u64> });
 
-/// One source-token total in the native +0x288 map's iteration order.
+/// One source-token total in the native damage-by-source map's iteration order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalDamageSource {
     pub token: u32,
@@ -891,8 +883,8 @@ value_struct!(NavalResultSideDetails { leader: u64, hq_leader: u64, hq_influence
 pub struct LandBorderWarSide {
     pub country: i32,
     pub state: i32,
-    /// Exact MSVC identifier bytes at +0x4E0/+0x500. Their lengths at
-    /// +0x4F0/+0x510 are the native presence tests, not event pointers.
+    /// Exact MSVC identifier bytes of the win and lose events. Their lengths are the native
+    /// presence tests, not event pointers.
     pub win_event: Vec<u8>,
     pub lose_event: Vec<u8>,
 }
@@ -993,16 +985,15 @@ pub struct LandCombatDivisionRow {
     pub piercing: i64,
     pub air_attack: i64,
     pub reconnaissance: i64,
-    /// The stat block's initiative (`unit+0x138` +0xE0), which reinforcement chance
-    /// scales by the country's and the contextual leader's 0x250 keys and
-    /// `ARMY_INITIATIVE_REINFORCE_FACTOR`. Exact: those products truncate at every step.
+    /// The stat block's initiative (the unit's stat block), which reinforcement chance scales by
+    /// the country's and the contextual leader's 0x250 keys and `ARMY_INITIATIVE_REINFORCE_FACTOR`.
+    /// Exact: those products truncate at every step.
     pub initiative: i64,
     /// The division's commander handle; its name, skill and traits are the
     /// UnitLeaders and UnitLeaderTraits rows of the same hour.
     pub commander: u64,
-    /// The attack and defence accumulators (unit+0x188/+0x190) and the invasion attack
-    /// and defence scales (+0x198/+0x1A0), a field each (38 to 41); read them through
-    /// [`Self::scales`].
+    /// The attack and defence accumulators and the invasion attack and defence scales, a field each
+    /// (38 to 41); read them through [`Self::scales`].
     pub scales: [Recorded<i64>; 4],
     /// Field 18's tombstone, `scales` as one packet in older recordings.
     pub scale_packet: RetiredKept<[i64; 4]>,
@@ -1017,23 +1008,22 @@ pub struct LandCombatDivisionRow {
     pub reinforcement_supply: Retired,
     pub reinforcement_acclimatization: Retired,
     pub reinforcement_transport: Retired,
-    /// Raw unit +0x4A8 latch word of the direction count.
+    /// Raw unit latch word of the direction count.
     pub direction_group: i32,
     pub exile: Option<LandCombatExileInputs>,
     /// The unit stat block's stored equipment category mask. A category trigger
     /// counts land combatant units whose masks meet its category mask.
     pub categories: u64,
-    /// A reserve's reinforcement speed share: its base speed (stat block +0x290) times
-    /// the movement-speed modifier (location, next route province, ignoring terrain and
-    /// combat), over the live `NMilitary.SLOWEST_SPEED`, less one, clamped to [0, 2]
-    /// (fixed5). The reinforcement chance's speed arm multiplies it by
-    /// `SPEED_REINFORCEMENT_BONUS`. As DivisionStatus keeps the camouflage category
-    /// decided with the live define, the collector composes the share at capture
-    /// (`engine::land_reinforcement_inputs::speed`) and records it instead of the
-    /// drifting movement-speed operands it takes. `None` for a committed division, and
-    /// for a reserve whose operands could not be read or take a form the port does not
-    /// follow (counted in collector status). Exact: the arm's truncating product and the
-    /// chance's sum read every digit.
+    /// A reserve's reinforcement speed share: its base speed (the stat block's maximum speed) times
+    /// the movement-speed modifier (location, next route province, ignoring terrain and combat),
+    /// over the live `NMilitary.SLOWEST_SPEED`, less one, clamped to [0, 2] (fixed5). The
+    /// reinforcement chance's speed arm multiplies it by `SPEED_REINFORCEMENT_BONUS`. As
+    /// DivisionStatus keeps the camouflage category decided with the live define, the collector
+    /// composes the share at capture (`engine::land_reinforcement_inputs::speed`) and records it
+    /// instead of the drifting movement-speed operands it takes. `None` for a committed division,
+    /// and for a reserve whose operands could not be read or take a form the port does not follow
+    /// (counted in collector status). Exact: the arm's truncating product and the chance's sum read
+    /// every digit.
     pub reinforcement_speed: Recorded<Option<i64>>,
 }
 // Display steps ([`crate::display`]). The strength combat factor (only inside the
@@ -1076,11 +1066,11 @@ impl LandCombatDivisionRow {
     /// can differ from the game in their last digit at boundaries.
     pub const STAT_STEP: crate::display::Step =
         crate::display::Step::fixed5(10_000, crate::display::Rounding::TowardZero);
-    /// The attack and defence accumulators (`scales` 0 and 1, unit+0x188/ +0x190) at the
-    /// game's display precision: total-modifier lines print percentages in a fixed colour
-    /// with the default two decimals, 10 raw, truncated by the fixed5 formatter. By owner
-    /// decision 2026-10-11 the stat boxes and the heading read the stepped products and
-    /// can differ from the game in their last digit at boundaries.
+    /// The attack and defence accumulators (`scales` 0 and 1) at the game's display precision:
+    /// total-modifier lines print percentages in a fixed colour with the default two decimals, 10
+    /// raw, truncated by the fixed5 formatter. By owner decision 2026-10-11 the stat boxes and the
+    /// heading read the stepped products and can differ from the game in their last digit at
+    /// boundaries.
     pub const SCALE_STEP: crate::display::Step =
         crate::display::Step::fixed5(10, crate::display::Rounding::TowardZero);
     /// The reinforcement calculation clamps the reserve speed share to [0, 0x30D40].
@@ -1242,19 +1232,17 @@ pub struct NavalCombatShipRow {
 // lanes, the weapon context (night's `> 50000`, the fuel ratio) and the
 // oracle-only caches stay exact.
 impl NavalCombatShipRow {
-    /// `organisation` (ship+0x700), which the game shows only as a share of
-    /// the ship's maximum, a fixed-colour percentage with two decimals (0.01%), and in bars:
-    /// 0.001 keeps that share within its last digit for any maximum above 10.
-    /// By owner decision 2026-10-11 the share, the bars, the average
-    /// organisation and the sortie efficiency read the stepped
-    /// value and can differ from the game in their last digit at boundaries.
+    /// `organisation`, which the game shows only as a share of the ship's maximum, a fixed-colour
+    /// percentage with two decimals (0.01%), and in bars: 0.001 keeps that share within its last
+    /// digit for any maximum above 10. By owner decision 2026-10-11 the share, the bars, the
+    /// average organisation and the sortie efficiency read the stepped value and can differ from
+    /// the game in their last digit at boundaries.
     pub const ORGANISATION_STEP: crate::display::Step =
         crate::display::Step::fixed5(100, crate::display::Rounding::TowardZero);
-    /// `escape_progress` (naval combat member+0x130) at the game's display precision:
-    /// Escape-progress text prints a percentage with the default two decimals, 10 raw,
-    /// truncated by the fixed5 formatter. Its colour reads the sign, so a nonzero value
-    /// below one step keeps one step with its sign. The window's bar mean reads the
-    /// stepped value.
+    /// `escape_progress` (the naval combat member's) at the game's display precision:
+    /// Escape-progress text prints a percentage with the default two decimals, 10 raw, truncated by
+    /// the fixed5 formatter. Its colour reads the sign, so a nonzero value below one step keeps one
+    /// step with its sign. The window's bar mean reads the stepped value.
     pub const ESCAPE_STEP: crate::display::Step =
         crate::display::Step::fixed5(10, crate::display::Rounding::TowardZeroNonzero);
 }

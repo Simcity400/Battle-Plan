@@ -6,11 +6,10 @@ mod combat_references;
 pub use combat_references::CombatReferencesCapture;
 pub use combat_references::{COMBAT_BORDER_WAR, COMBAT_LAND, COMBAT_NAVAL, MapCombatReference};
 pub(crate) use combat_references::{MapCombatIdentityMemo, read_unit_combat_references};
-/// Native counter references resolve to the secondary reference object at
-/// primary+10, and the counter consumes classes 0, 1 and 13. The reference type
-/// is not a class witness: id assignment replaces a null or colliding id with a
-/// dynamic id, type 0x1268 plus the dynamic type counter (4713 in saved
-/// divisions). Exact vtable, class and registry join authenticate.
+/// Native counter references resolve to the secondary reference object at its secondary base, and
+/// the counter consumes classes 0, 1 and 13. The reference type is not a class witness: id
+/// assignment replaces a null or colliding id with a dynamic id, type 0x1268 plus the dynamic type
+/// counter (4713 in saved divisions). Exact vtable, class and registry join authenticate.
 pub fn counter_identity(
     memory: &impl Memory,
     base: usize,
@@ -64,7 +63,7 @@ pub fn counter_identity_with(
 
 /// CUnit class discriminator u32.
 pub const CLASS: usize = 0x08;
-/// CSelectable selected byte at CUnit primary +0x0c.
+/// CSelectable selected byte on the unit.
 pub const SELECTED: usize = 0x0c;
 /// CUnit packed type-low/id-high u64 reference handle.
 pub const HANDLE: usize = 0x18;
@@ -230,7 +229,7 @@ pub struct MapMotion {
     pub combat_role: u8,
     /// Province of the first combat; zero without one.
     pub combat_province: u32,
-    /// Stored count of the combat-reference vector (`CUnit+0x1B4`).
+    /// Stored count of the combat-reference vector (`COMBAT_REFERENCE_COUNT`).
     pub combat_count: u32,
     /// Whether the logical owner attacks in any of this unit's combats.
     /// Combats are visited in vector order and stop at the first attacking one.

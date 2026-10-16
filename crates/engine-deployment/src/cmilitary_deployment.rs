@@ -1,9 +1,8 @@
 //! Military deployment layout uses the primary object base.
 //!
-//! It owns a secondary subobject at +0x18, equipment pool at +0x20,
-//! training qwords at +0x60/+0x68, manpower containers at +0x70/+0x90,
-//! maximum-manpower word at +0xB0 and owning-line backlink at +0xB8.
-//! The queued template belongs to the conveyor rather than this backlink.
+//! It owns a secondary subobject, an equipment pool, two training qwords, the had and needed
+//! manpower containers, a maximum-manpower word and an owning-line backlink. The queued template
+//! belongs to the conveyor rather than this backlink.
 //!
 //! Serialization runs on the secondary base. Training, maximum training and
 //! maximum manpower emit only when positive; both manpower wrappers always
@@ -49,9 +48,9 @@ pub const HALTING_REASON: usize = 0xc0;
 pub const HALTING_REASON_PRESENT: usize = 0xc4;
 /// CMilitaryDeployment native training denominator.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
-/// Deployment serializer runs on the +0x18 subobject.
+/// Deployment serializer runs on the secondary subobject.
 pub const SERIALIZE_RVA: usize = 0x0142_46f0;
-/// Equipment-wrapper gate requires a nonzero allocation qword at +0x10.
+/// Equipment-wrapper gate requires a nonzero allocation qword.
 pub const EQUIPMENT_WRAPPER_GATE_RVA: usize = 0x00ff_b8f0;
 /// Manpower serializer always opens its wrapper and writes only positive-count entries.
 pub const MANPOWER_SERIALIZE_RVA: usize = 0x00c5_b610;
@@ -60,9 +59,9 @@ pub const CONSTRUCT_RVA: usize = 0x0141_fa60;
 /// Effective maximum-training helper computes a modifier-based cap; it is not stored.
 pub const EFFECTIVE_MAX_TRAINING_RVA: usize = 0x0142_03d0;
 
-/// The manpower container's stored side. `Have` is +0x70, `Need` is +0x90.
+/// The manpower container's stored side. `Have` is the first container, `Need` the second.
 pub const SIDE_HAVE: u8 = 0;
-/// Needed manpower container at +0x90; the save writes it as `army_manpower_need`.
+/// Needed manpower container; the save writes it as `army_manpower_need`.
 pub const SIDE_NEED: u8 = 1;
 
 /// The deployment object's own scalars. The queued template belongs to the

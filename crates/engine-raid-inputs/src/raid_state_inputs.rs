@@ -29,22 +29,22 @@ pub const GLOBAL_FACTOR_KEY: u32 = crate::modifier_keys::STATE_RESOURCES_FACTOR;
 pub const INFRASTRUCTURE_KEY: u32 =
     crate::modifier_keys::LOCAL_RESOURCE_GAIN_EFFICIENCY_PER_INFRASTRUCTURE;
 
-/// Infrastructure building template pointer at database +0x3b0.
+/// Infrastructure building template pointer in the building database.
 const INFRASTRUCTURE_TEMPLATE: usize = 0x3b0;
 
 /// One state's operands shared by every resource.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct InputRow {
     pub state: u32,
-    /// `CState + 0x1b4`: the additive keys count only when set.
+    /// `cstate::RESOURCE_MODIFIER_GATE`: the additive keys count only when set.
     pub gate: u8,
-    /// Effective key 0x223 in `CState + 0x558`.
+    /// Effective key 0x223 in `cstate::BASE_MODIFIERS`.
     pub global_factor: i64,
-    /// The controller has a resource origin whose +0x80 identifies this state;
-    /// without one both factors are one.
+    /// The controller has a resource origin whose own link identifies this state; without one both
+    /// factors are one.
     pub origin: u8,
-    /// The infrastructure building's `+0x40` level, damage included, read only
-    /// with an origin; `None` when the state has no such building.
+    /// The infrastructure building's level, damage included, read only with an origin; `None` when
+    /// the state has no such building.
     pub infrastructure_level: Option<i32>,
     /// Effective controller key 0x292, read only with an infrastructure level;
     /// zero otherwise.
@@ -57,17 +57,17 @@ pub struct InputRow {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ResourceRow {
     pub state: u32,
-    /// The resource's lexer token (`CStrategicResource + 8`).
+    /// The strategic resource's lexer token.
     pub resource: u32,
-    /// The `CState + 0x1c0` record, fixed5.
+    /// The state's resource record, fixed5.
     pub pool: i64,
-    /// Effective accumulator values of the resource's `+0xf0`, `+0xf4` and `+0xfc` keys.
+    /// Effective accumulator values of the resource's three keys.
     pub additive: i64,
     pub factor: i64,
     pub cost: i64,
 }
 
-/// One `CState + 0x788` entry, in container order.
+/// One `cstate::DYNAMIC_MODIFIERS` entry, in container order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ModifierRow {
     pub state: u32,
@@ -78,8 +78,8 @@ pub struct ModifierRow {
     pub token_len: usize,
 }
 
-/// One element of a controller's `CCountryResources + 0x7a0` entry. An entry
-/// with no elements has one row with `count` and `resource` zero.
+/// One element of a controller's country-resources origin entry. An entry with no elements has one
+/// row with `count` and `resource` zero.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct OverrideRow {
     /// The country's native id.
@@ -2103,8 +2103,8 @@ fn origin_states(
     Ok(())
 }
 
-/// Infrastructure lookup for up to `BATCH` states: the index, building
-/// pointer, template and +0x40 level; `None` without a building.
+/// Infrastructure lookup for up to `BATCH` states: the index, building pointer, template and level;
+/// `None` without a building.
 fn infrastructure_levels(
     memory: &impl Memory,
     infrastructure: Infrastructure,
@@ -2272,8 +2272,8 @@ fn route_supply(
     )
 }
 
-/// Positive maximum province-node value for states whose province vectors
-/// are `spans`: a province's route node has a positive +0x78.
+/// Positive maximum province-node value for states whose province vectors are `spans`: a province's
+/// route node has a positive route value.
 #[allow(clippy::too_many_arguments)]
 fn origin_states_supply(
     memory: &impl Memory,
@@ -2409,8 +2409,7 @@ fn infrastructure_template(
     })
 }
 
-/// The state container's authenticated entry array: no country or leader,
-/// and this state's ID at +0x18.
+/// The state container's authenticated entry array: no country or leader, and this state's ID.
 fn container_array(base: usize, state: &Scratch) -> Result<Array, &'static str> {
     let bytes = &state.fields[STATE_CONTAINER..STATE_CONTAINER + 0x38];
     if u64_at(bytes, 0) != address(base, cdynamic_modifier_container::VTABLE_RVA)? as u64 {

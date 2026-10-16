@@ -12,7 +12,7 @@
 
 use crate::{Memory, cgame_state, craid_system, memory::read_slice, read, walk::Outcome};
 
-/// `CRaidSystem + 0x230`: the path distance memo.
+/// The raid system's path distance memo.
 pub const MEMO: usize = 0x230;
 const BUCKETS: usize = 0x08;
 const COUNT: usize = 0x10;

@@ -26,7 +26,7 @@ pub const WAR: CallSite = CallSite {
         0xe8, 0x73, 0x35, 0, 0, 0x41, 0xbf, 0x60, 0x08, 0, 0, 0x41, 0xbe, 0x10, 0, 0,
     ],
 };
-/// Annex dispatch CALL: R8 primary scope at RBP+0xA0, R9D zero.
+/// Annex dispatch CALL: R8 the primary scope's frame slot, R9D zero.
 pub const ANNEX: CallSite = CallSite {
     rva: 0x006c_8e34,
     return_rva: 0x006c_8e39,
@@ -55,8 +55,8 @@ pub enum Source {
     Annex,
 }
 
-/// Preserve the source reference independently of its resolved full native
-/// CCountry ID (+8/+C). The second word is not a generation counter.
+/// Preserve the source reference independently of its resolved full native CCountry ID and its
+/// following word. The second word is not a generation counter.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CountryIdentity {
     pub reference: u32,

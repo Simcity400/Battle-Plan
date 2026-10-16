@@ -1,20 +1,17 @@
 //! Characters rows carried between hours by the roster job
 //! ([`crate::character_changes`]).
 //!
-//! A carried character's row is published from the held read without
-//! copying its name-token span (`CCharacter+0x18..+0x28`, which holds the
-//! template pointer), its two name strings (`+0x28`, `+0x48`) and their heap
-//! payloads, its gender (`+0x70`) or its template. Its identity, country and
-//! roster position are still read every hour, so the row's id, country,
-//! roster and ordinal are this hour's. A character is carried only when its
-//! pointer and id equal the held read's and no hooked writer touched it
-//! since that read registered it (same watch epoch and sequence). Every
-//! writer of those fields is a hooked site: the character name setter and
-//! Character identity repair  ([`engine::character_role_mutations`]), the
-//! character parser, merge and destructor (advisor family); a character the
-//! character definition builder writes is a new object, and an address is
-//! reused only after the hooked destructor ran. A template's identity is a
-//! database value for its pointer ([`super::TemplateCache`]).
+//! A carried character's row is published from the held read without copying its name-token span
+//! (from `ccharacter::NAME_TOKEN_ID` up to `ccharacter::NAME`, which holds the template pointer),
+//! its two name strings and their heap payloads, its gender or its template. Its identity, country
+//! and roster position are still read every hour, so the row's id, country, roster and ordinal are
+//! this hour's. A character is carried only when its pointer and id equal the held read's and no
+//! hooked writer touched it since that read registered it (same watch epoch and sequence). Every
+//! writer of those fields is a hooked site: the character name setter and Character identity repair
+//! ([`engine::character_role_mutations`]), the character parser, merge and destructor (advisor
+//! family); a character the character definition builder writes is a new object, and an address is
+//! reused only after the hooked destructor ran. A template's identity is a database value for its
+//! pointer ([`super::TemplateCache`]).
 //!
 //! The set of carried characters keys the roster job's prepared read program
 //! (`generation`): the program omits exactly their name reads, and a changed

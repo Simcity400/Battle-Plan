@@ -126,12 +126,12 @@ const TECHNOLOGY_FIELDS: [crate::memory::RecordField; 4] =
     crate::memory::packed_fields([(0x190, 24), (0x1e8, 12), (0x68, 16), (0x110, 64)]);
 const TECHNOLOGY_LAYOUT: crate::memory::RecordLayout<'static> =
     crate::memory::RecordLayout::new(&TECHNOLOGY_FIELDS, 116).unwrap();
-// Research modifier calculation: contribution and CIdea link are the two qwords at +0x38.
+// Research modifier calculation: contribution and CIdea link are its two qwords.
 const IDEA_FIELDS: [crate::memory::RecordField; 1] = crate::memory::packed_fields([(0x38, 16)]);
 const IDEA_LAYOUT: crate::memory::RecordLayout<'static> =
     crate::memory::RecordLayout::new(&IDEA_FIELDS, 16).unwrap();
-// Research modifier calculation: each script record names a source whose +0x30
-// is its contribution.
+// Research modifier calculation: each script record names a source whose source pointer is its
+// contribution.
 const SCRIPT_FIELDS: [crate::memory::RecordField; 1] = crate::memory::packed_fields([(0x30, 8)]);
 const SCRIPT_LAYOUT: crate::memory::RecordLayout<'static> =
     crate::memory::RecordLayout::new(&SCRIPT_FIELDS, 8).unwrap();
@@ -355,10 +355,8 @@ pub fn walk_country_buffer<M: Memory>(
             let mut xp = [0; 12];
             let mut equipment = [0; 16];
             let mut lists = [0; 64];
-            // Technology category lookup: +190 category sum, +1a0 design-team
-            // sum, +1e8 XP flag.
-            // Research modifier calculation: +110 ideas, +128 scripted sources,
-            // +140 scientist categories.
+            // Technology category lookup: the category sum, design-team sum and XP flag. Research
+            // modifier calculation: ideas, scripted sources and scientist categories.
             if technology_memory.copy_scattered_prefetched(
                 [
                     at(tech, 0x190)?,
@@ -377,8 +375,8 @@ pub fn walk_country_buffer<M: Memory>(
                 return Err("research modifier operands unreadable");
             }
             out.value(Kind::CategorySpeed, i64_at(&cached, 0))?;
-            // Resolve the adjacent +0x1ec/+0x1f0 organisation reference. Retain the
-            // exact reference even when its localized name is unavailable.
+            // Resolve the adjacent organisation reference. Retain the exact reference even when its
+            // localized name is unavailable.
             out.push(
                 Kind::DesignTeam,
                 i64_at(&cached, 16),
@@ -423,7 +421,7 @@ pub fn walk_country_buffer<M: Memory>(
             let idea_pointer_memory = idea_pointers.view(memory);
             let idea_memory = idea_batch.view(&idea_pointer_memory);
             pointer_pages(&idea_memory, ideas, |pointer| {
-                // Research modifier idea contribution +38 and CIdea* +40.
+                // Research modifier idea contribution and its CIdea pointer.
                 let bytes = read::<[u8; 16]>(&idea_memory, at(pointer, 0x38)?)
                     .ok_or("research idea contribution unreadable")?;
                 let raw = i64_at(&bytes, 0);
@@ -491,8 +489,8 @@ pub fn walk_country_buffer<M: Memory>(
                 let roster = match licenses {
                     Some(roster) => roster,
                     None => {
-                        // Production +0x190 embeds the industrial status; +0x20
-                        // holds licensed variants.
+                        // The production status embeds the industrial status; its list holds
+                        // licensed variants.
                         let production =
                             pointer(memory, at(country.pointer, ccountry::PRODUCTION_STATUS)?)?;
                         let roster = array_at(memory, at(production, 0x1b0)?, 8)?;
@@ -546,9 +544,9 @@ fn country_sources(
             bytes: [0; 64 * 8],
         })
     }
-    // Visit every original child through wrapper +0x10. Keep acquired pages
-    // on the worker stack so neither depth nor fanout caps the pass, and
-    // returning from a child never reacquires its parent page.
+    // Visit every original child through its wrapper. Keep acquired pages on the worker stack so
+    // neither depth nor fanout caps the pass, and returning from a child never reacquires its
+    // parent page.
     let mut stack =
         crate::allocation::vec(1).map_err(|_| "research source stack allocation failed")?;
     stack.push(frame(memory, accumulator)?);
@@ -694,7 +692,7 @@ fn scientist_bonus<M: Memory>(
     let header = match *cached {
         Some(v) => v,
         None => {
-            // Country +0xFA8 selects hash storage +0x88, mask +0x94 and overflow +0x98.
+            // The country's program status selects the hash storage, mask and overflow.
             let owner =
                 crate::nproject_cprogram_status::from_country(memory, base, country, countries)?;
             let bytes = read::<[u8; 17]>(memory, at(owner, 0x88)?)
@@ -759,8 +757,8 @@ fn scientist_bonus<M: Memory>(
                     )?;
                     // These pointers are the exact selected scientist source list.
                     pointer_pages(memory, array(&bytes[24..40], 8)?, |source| {
-                        // Retain scientists with a positive modifier 0x27A.
-                        // Their +8 character backlink is also copied.
+                        // Retain scientists with a positive modifier 0x27A. Their character
+                        // backlink is also copied.
                         let identity = read::<[u8; 16]>(memory, source)
                             .ok_or("research scientist identity unreadable")?;
                         if u64::from_le_bytes(identity[..8].try_into().unwrap())

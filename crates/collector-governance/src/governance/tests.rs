@@ -118,10 +118,9 @@ fn breakdown_capture_keeps_the_original_push_capacity_trace() {
     }
 }
 
-/// Production reads each record's source roster and no cached tree:
-/// playback derives the trees ([`replay::power_balance_derive`]). A record
-/// whose +0xC8 tree cannot be read still publishes its sources, which the
-/// hourly tree walk this replaced refused.
+/// Production reads each record's source roster and no cached tree: playback derives the trees
+/// ([`replay::power_balance_derive`]). A record whose description tree cannot be read still
+/// publishes its sources, which the hourly tree walk this replaced refused.
 #[test]
 fn breakdown_capture_reads_sources_without_the_cached_trees() {
     use engine::memory::SliceMemory;
@@ -134,7 +133,7 @@ fn breakdown_capture_reads_sources_without_the_cached_trees() {
         bytes[at..at + value.len()].copy_from_slice(value);
     }
     fn name(bytes: &mut [u8], at: usize, text: &[u8]) {
-        // An inline MSVC string: bytes, then size +0x10 and capacity +0x18.
+        // An inline MSVC string: bytes, then size and capacity.
         put(bytes, at, text);
         put(bytes, at + 0x10, &(text.len() as u64).to_le_bytes());
         put(bytes, at + 0x18, &15_u64.to_le_bytes());

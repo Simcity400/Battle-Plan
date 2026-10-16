@@ -6,18 +6,18 @@
 //!
 //! Three sets, each taken once an hour by one job; the first two by the
 //! RaidState job ([`crate::extended::raid_state_inputs`]):
-//! - `STATES` (state ids, `CState+0x58`): the state writers name their state
+//! - `STATES` (state ids, `cstate::ID`): the state writers name their state
 //!   directly, the pool method through its pool's offset, the origin
-//!   constructor through `r8` and the origin destructor through `+0x80`; an
+//!   constructor through `r8` and the origin destructor through the origin's own link; an
 //!   origin without a state marks nothing. The building status writers,
 //!   whose patches [`crate::building_changes`] owns, are forwarded
 //!   ([`building_changed`], [`building_unnamed`]) for the infrastructure
 //!   level: a state status marks its state.
-//! - `COUNTRIES` (raw country links, `CCountryResources+0x20`): the override
+//! - `COUNTRIES` (raw country links held by the country resources): the override
 //!   writers; the consumer resolves each link to its country.
 //! - `SITES` (raw country links), taken by the RaidLaunch job
 //!   ([`crate::extended::raid_launch_inputs`]): the site list writers name
-//!   their `CStrategicAir`'s `+0x90` or the link RDX points to; the
+//!   their `CStrategicAir`'s country link or the link RDX points to; the
 //!   initialization and load writers name every country; the capacity setter
 //!   names the link R8 points to only when the value it stores differs from
 //!   the one there. The daily air base capacity refresh, which calls the
@@ -399,10 +399,9 @@ pub fn forwarder(enabled: bool) {
     WATCHES.forward(enabled);
 }
 
-/// Hook path, allocation-free: a building writer of the status with `flags`
-/// and `location` (`CBuildingStatus+0x68`/`+0x6C`) is about to run. Marks the
-/// state of a state status, whose infrastructure level the state inputs
-/// read. Hold the result over the native call.
+/// Hook path, allocation-free: a building writer of the status with `flags` and `location`
+/// (`cbuilding_status::FLAGS` and `ID`) is about to run. Marks the state of a state status, whose
+/// infrastructure level the state inputs read. Hold the result over the native call.
 pub fn building_changed(flags: u32, location: u32) -> Option<Dirty<'static>> {
     WATCHES.building(flags, location)
 }
@@ -680,7 +679,7 @@ callback!(add_building_dynamic_modifier, 1);
 callback!(remove_building_dynamic_modifier, 2);
 // Add_resource (state, amount, days).
 callback!(add_resource, 3);
-// Pool method (state + 0x1B8, amount).
+// Pool method (the state's resource pool, amount).
 callback!(expire_timed_resource, 4);
 // Destroy state (state).
 callback!(destroy_state, 5);
@@ -725,12 +724,11 @@ callback!(add_claim, 25);
 // Claim erase (state, tag).
 callback!(remove_claim, 26);
 
-/// `country air pool capacity setter(base, capacity, tag)` stores `capacity`
-/// unchanged at `(base+0x30)[slot]+0xD0` (the daily pass stores most
-/// containers' value again): only a store that differs from the value there,
-/// or one whose container does not read, marks the tag's country, and is
-/// forwarded to [`crate::air_base_carry_changes`], whose registrations
-/// record the capacity.
+/// `country air pool capacity setter(base, capacity, tag)` stores `capacity` unchanged at the
+/// slot's container capacity (the daily pass stores most containers' value again): only a store
+/// that differs from the value there, or one whose container does not read, marks the tag's
+/// country, and is forwarded to [`crate::air_base_carry_changes`], whose registrations record the
+/// capacity.
 unsafe extern "system" fn set_country_pool_capacity(
     first: usize,
     second: usize,
@@ -842,10 +840,9 @@ mod tests {
             .unwrap()
     }
 
-    /// Each receiver names its state or country through live memory: a
-    /// state's `+0x58`, the pool's state, the origin constructor's `r8`, the
-    /// origin's `+0x80` and the resources' `+0x20`; an origin without a
-    /// state names nothing, and an unreadable receiver names none.
+    /// Each receiver names its state or country through live memory: a state's id, the pool's
+    /// state, the origin constructor's `r8`, the origin's own link and the resources' country link;
+    /// an origin without a state names nothing, and an unreadable receiver names none.
     #[test]
     fn receivers_name_their_state_or_country() {
         let mut state = vec![0_u8; 0x400];
@@ -1171,7 +1168,7 @@ mod tests {
         }
     }
 
-    /// The native capacity store: `(base+0x30)[slot]+0xD0 = capacity`.
+    /// The native capacity store: the slot container's capacity.
     unsafe extern "system" fn store(base: usize, capacity: usize, tag: usize, _: usize) -> usize {
         let containers =
             unsafe { *((base + engine::cair_base::COUNTRY_CONTAINERS) as *const *const usize) };

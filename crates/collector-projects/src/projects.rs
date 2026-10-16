@@ -1121,18 +1121,15 @@ fn elapsed(begin: i64) -> u64 {
 }
 
 impl Captured {
-    /// Projects and ProjectHistory, the `projects` sliced family: every
-    /// country at the daily boundary, whose pool pass advances every project,
-    /// and on a full
-    /// hour; in between the new and unpublished countries and those a hooked
-    /// project writer marked ([`crate::country_input_changes`]). A row's
-    /// owner is its project's stored owner tag (`CProject+0x1C`), any raw id
-    /// linking to the pool's country, so a read country selects, and the
-    /// census keeps alive, every raw id its link table entries name. A read
-    /// of an unmarked owner compares a digest of its projects' identity and
-    /// lifecycle (definition, program reference, started and completed) with
-    /// its last read; the state machine and the reward history, which the
-    /// daily pass advances, are left out.
+    /// Projects and ProjectHistory, the `projects` sliced family: every country at the daily
+    /// boundary, whose pool pass advances every project, and on a full hour; in between the new and
+    /// unpublished countries and those a hooked project writer marked
+    /// ([`crate::country_input_changes`]). A row's owner is its project's stored owner tag (in the
+    /// project), any raw id linking to the pool's country, so a read country selects, and the
+    /// census keeps alive, every raw id its link table entries name. A read of an unmarked owner
+    /// compares a digest of its projects' identity and lifecycle (definition, program reference,
+    /// started and completed) with its last read; the state machine and the reward history, which
+    /// the daily pass advances, are left out.
     #[allow(clippy::too_many_arguments)]
     fn capture_project_family(
         &mut self,

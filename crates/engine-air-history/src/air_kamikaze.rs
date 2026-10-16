@@ -49,10 +49,10 @@ const BATCH: usize = 64;
 /// order.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TaskForceCombat {
-    /// The combat's province (`CCombat+0x38`, then `CProvince+0xA4`).
+    /// The combat's province (the combat's province, then its id).
     pub province: u32,
-    /// That province's stored strategic region (`CProvince+0xC8`, then
-    /// `CStrategicRegion+0x58`), zero when null.
+    /// That province's stored strategic region (the province's region, then its id), zero when
+    /// null.
     pub region: u32,
 }
 
@@ -717,10 +717,9 @@ fn window_states(
 #[path = "air_kamikaze/sizing_tests.rs"]
 mod sizing_tests;
 
-/// The manager's country air objects (`CStrategicAirManager+0x30`) of the
-/// canonical slots `first`, `first + step`, ... into `output`, replacing its
-/// contents, in one strided gather per 512. Returns the manager's slot
-/// count.
+/// The manager's country air objects (the strategic air manager's country table) of the canonical
+/// slots `first`, `first + step`, ... into `output`, replacing its contents, in one strided gather
+/// per 512. Returns the manager's slot count.
 pub fn country_air_roots(
     memory: &impl Memory,
     base: usize,

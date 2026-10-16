@@ -117,7 +117,7 @@ pub struct Line {
     pub active_factories: i32,
     /// Growth/output operand.
     pub resource_penalty: i64,
-    /// +B8; a getter would refresh the stored +98 bonus cache when nonzero.
+    /// the stored bonus; a getter would refresh the bonus cache when nonzero.
     pub organisation_dirty: bool,
     /// Conversion-selection operand written during production-state refresh.
     pub conversion: bool,
@@ -130,7 +130,7 @@ pub struct Line {
     /// Stored variant ship-family mask used for output.
     pub naval_output: bool,
     pub bonuses: [i64; BONUS_COUNT],
-    /// All saved +C0 factory-efficiency occurrences, in native order.
+    /// All saved factory-efficiency occurrences, in native order.
     pub efficiencies: [usize; 2],
 }
 

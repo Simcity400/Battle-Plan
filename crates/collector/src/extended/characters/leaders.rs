@@ -1,16 +1,14 @@
 //! CountryLeaderRoles rows held between hours ([`crate::character_changes`]).
 //!
-//! The leader role job walks the roster job's admitted census. A character's
-//! rows are carried, without reading its map, roles or ideologies, only when
-//! its census pointer, id and country-leader map header (head node and size)
-//! equal the held read's and no hooked writer touched the character since that
-//! read registered it; the country comes from this hour's census. The map,
-//! its roles' parent links and current ideologies (`CCountryLeader+0x140`)
-//! are written only at hooked sites ([`engine::character_role_mutations`],
-//! [`engine::advisor_mutations`]); set_country_leader_ideology names no
-//! character and revokes every certificate, and a `CIdeology` token is a
-//! database value. Verify mode reads every carryable character afresh,
-//! publishes the fresh rows and poisons reuse on a difference. Without an
+//! The leader role job walks the roster job's admitted census. A character's rows are carried,
+//! without reading its map, roles or ideologies, only when its census pointer, id and
+//! country-leader map header (head node and size) equal the held read's and no hooked writer
+//! touched the character since that read registered it; the country comes from this hour's census.
+//! The map, its roles' parent links and current ideologies (`ccountry::LEADER_IDEOLOGY`) are
+//! written only at hooked sites ([`engine::character_role_mutations`],
+//! [`engine::advisor_mutations`]); set_country_leader_ideology names no character and revokes every
+//! certificate, and a `CIdeology` token is a database value. Verify mode reads every carryable
+//! character afresh, publishes the fresh rows and poisons reuse on a difference. Without an
 //! admitted census the job walks the roster and the cache forgets its rows.
 //!
 //! A fresh empty map is checked from its batch-gathered sentinel, as the

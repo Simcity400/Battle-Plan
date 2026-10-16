@@ -22,7 +22,7 @@ use crate::{
 
 /// Primary vtable.
 pub const VTABLE_RVA: usize = 0x0293_f790;
-/// COperativeLeader two-u32 identity at primary+8.
+/// COperativeLeader two-u32 identity (`IDENTITY`).
 pub const IDENTITY: usize = 0x08;
 /// Identity type dword validated against the admitted operative type.
 pub const TYPE: usize = 0x08;
@@ -54,9 +54,9 @@ pub const SKILL_OBJECT: usize = 0xe60;
 pub const EXPERIENCE: usize = 0xe68;
 /// Cooldown kind used by agency cooldown status.
 pub const COOLDOWN_KIND: usize = 0xe84;
-/// Cooldown start date; its signed hour is at date+8.
+/// Cooldown start date; its signed hour is inside the date.
 pub const COOLDOWN_START_HOUR: usize = 0xe90;
-/// Cooldown end date; its signed hour is at date+8.
+/// Cooldown end date; its signed hour is inside the date.
 pub const COOLDOWN_END_HOUR: usize = 0xea8;
 pub const COOLDOWN_ASSIGNMENT: u32 = 1;
 /// COperativeLeader nationality country-reference u32 vector.
@@ -99,14 +99,14 @@ pub const TOKEN_NATIONALITIES: u32 = 0x3d12;
 pub const TOKEN_CAPTURER: u32 = 0x3d14;
 /// Capturer-date token, emitted only when the capturer is nonzero.
 pub const TOKEN_CAPTURE_DATE: u32 = 0x4b61;
-/// Token for the field at +0xFD0, always emitted.
+/// Token for `CODENAME`, always emitted.
 pub const TOKEN_FD0: u32 = 0x3d17;
 /// Embedded codename member. Serialization retains naming operands while
 /// display reads its generated cache; acquire operands independently.
 pub const CODENAME: usize = 0xfd0;
 /// Action token, emitted only when an action is present.
 pub const TOKEN_ACTION: u32 = 0x2cba;
-/// Token for +0xF80, emitted when either stored word is nonzero.
+/// Token for `OPERATION_REFERENCE`, emitted when either stored word is nonzero.
 pub const TOKEN_F80: u32 = 0x2f1b;
 /// Assignment token, always emitted.
 pub const TOKEN_ASSIGNMENT: u32 = 0x01b7;

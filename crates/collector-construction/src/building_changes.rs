@@ -1,24 +1,19 @@
-//! Allocation-free notifications from the native writers of every building
-//! status's StateBuildings and ProvinceBuildings rows
-//! ([`engine::building_mutations`]). A detour only notifies the shared watch
-//! registry ([`WatchRegistry`]) for the `CBuildingStatus` its first argument
-//! names, counts its site and calls the original; it never changes game
-//! behaviour. A building writer names its status through the building's
-//! guarded backlink (`CBuilding+0x1D8`); when that read fails the call
-//! revokes every certificate. Entering nudge mode (the developer map editor,
-//! [`Receiver::Structure`]) poisons the domain: the nudger then rebuilds
-//! statuses and locations at any moment without a hooked writer. Anything
-//! unobserved (disabled, poisoned, a refused registration, an epoch change, a
-//! running writer) makes the capture read that status afresh. Every
-//! notification of a registered status also marks it ([`Changes::take`]),
-//! which lets a settled hour read only the statuses writers touched without
-//! walking the locations. This family owns these
-//! patches, so each detour also forwards its call ([`forward`]) to
-//! [`crate::territory_changes`], whose carried state and province rows read
-//! the same buildings, to [`crate::rail_changes`], whose carried rail infos
-//! read the rail building of their province's status, and to
-//! [`crate::raid_changes`], whose raid state inputs read a state's
-//! infrastructure level.
+//! Allocation-free notifications from the native writers of every building status's StateBuildings
+//! and ProvinceBuildings rows ([`engine::building_mutations`]). A detour only notifies the shared
+//! watch registry ([`WatchRegistry`]) for the `CBuildingStatus` its first argument names, counts
+//! its site and calls the original; it never changes game behaviour. A building writer names its
+//! status through the building's guarded backlink (`engine::cbuilding::BUILDING_STATUS`); when that
+//! read fails the call revokes every certificate. Entering nudge mode (the developer map editor,
+//! [`Receiver::Structure`]) poisons the domain: the nudger then rebuilds statuses and locations at
+//! any moment without a hooked writer. Anything unobserved (disabled, poisoned, a refused
+//! registration, an epoch change, a running writer) makes the capture read that status afresh.
+//! Every notification of a registered status also marks it ([`Changes::take`]), which lets a
+//! settled hour read only the statuses writers touched without walking the locations. This family
+//! owns these patches, so each detour also forwards its call ([`forward`]) to
+//! [`crate::territory_changes`], whose carried state and province rows read the same buildings, to
+//! [`crate::rail_changes`], whose carried rail infos read the rail building of their province's
+//! status, and to [`crate::raid_changes`], whose raid state inputs read a state's infrastructure
+//! level.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -207,18 +202,14 @@ struct Forwarded(
     #[allow(dead_code)] Option<crate::dirty_set::Dirty<'static>>,
 );
 
-/// Hook path, allocation-free: this family owns the building writers'
-/// patches, so it forwards each call to [`crate::territory_changes`], whose
-/// The two state infrastructure terms and province fort
-/// sums read a status's
-/// buildings, to [`crate::rail_changes`], whose rail infos read the rail
-/// building of their province's status (`+0x190`), and to
-/// [`crate::raid_changes`], whose state inputs read a state's infrastructure
-/// level. A named status marks its province or state through its own flags
-/// and location id (`CBuildingStatus+0x68`/`+0x6C`, written only by the
-/// status constructor); a status that cannot be named or read
-/// marks every province and state; entering nudge mode poisons the three
-/// families. The marks cover the original in flight.
+/// Hook path, allocation-free: this family owns the building writers' patches, so it forwards each
+/// call to [`crate::territory_changes`], whose The two state infrastructure terms and province fort
+/// sums read a status's buildings, to [`crate::rail_changes`], whose rail infos read the rail
+/// building of their province's status, and to [`crate::raid_changes`], whose state inputs read a
+/// state's infrastructure level. A named status marks its province or state through its own flags
+/// and location id (`engine::cbuilding_status::FLAGS` and `ID`, written only by the status
+/// constructor); a status that cannot be named or read marks every province and state; entering
+/// nudge mode poisons the three families. The marks cover the original in flight.
 fn forward(receiver: Receiver, first: usize) -> Forwarded {
     if receiver == Receiver::Structure {
         crate::territory_changes::poison();
@@ -500,10 +491,9 @@ callback!(get_or_create_building, 4, (status, template));
 callback!(read_building_status, 5, (status, reader));
 // Clear building status (status).
 callback!(clear_building_status, 6, (status));
-// Enter nudge mode (idler, a, b, c, d) -> idler. Its only
-// caller, game idler update, passes five arguments (the fifth at
-// [RSP+0x20]); a sixth forwards the next caller stack slot,
-// which the original never reads.
+// Enter nudge mode (idler, a, b, c, d) -> idler. Its only caller, game idler update, passes five
+// arguments (the fifth at its stack slot); a sixth forwards the next caller stack slot, which the
+// original never reads.
 callback!(enter_nudge_mode, 7, (idler, a, b, c, d, spare));
 
 #[cfg(test)]

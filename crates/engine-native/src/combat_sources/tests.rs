@@ -366,11 +366,10 @@ fn world(shape: &Shape) -> Built {
         w.array(intel + crate::ccountry_intel::DATA, rows, slots as u32);
         w.u64(country + ccountry::INTEL_TABLE, intel as u64);
         intel_tables.push(intel);
-        // CDiplomacyStatus+0xA4, the at-war test in `air()`, is this
-        // list's count, so an owner with enemies never walks its
-        // relations. Every third owner is at war with the next three (one
-        // of which has capitulated); the rest have no enemies and walk
-        // their relations.
+        // The enemy-country count (after `cdiplomacy_status::ENEMY_COUNTRIES`), the at-war test in
+        // `air()`, is this list's count, so an owner with enemies never walks its relations. Every
+        // third owner is at war with the next three (one of which has capitulated); the rest have
+        // no enemies and walk their relations.
         let enemies: Vec<usize> = if index % 3 == 0 {
             (1..=3).map(|step| (index + step) % owners.len()).collect()
         } else {
@@ -391,8 +390,8 @@ fn world(shape: &Shape) -> Built {
             &[u8::from(index % 5 == 4)],
         );
     }
-    // Each owner's relation matrix row: a tuple per other owner, none at
-    // war, every other pair friendly through +2A0.
+    // Each owner's relation matrix row: a tuple per other owner, none at war, every other pair
+    // friendly through the relation's war pointer.
     for (from, &diplomacy) in diplomacies.iter().enumerate() {
         let row = w.alloc(slots * 8);
         w.array(
@@ -576,8 +575,8 @@ fn world(shape: &Shape) -> Built {
         w.u32(name + crate::cname_group_member::TYPE, (index % 2) as u32);
         w.u32(name + crate::cname_group_member::ORDER, index as u32);
         w.put(name + crate::cname_group_member::FLAG_B, &[1]);
-        // Every other division bypasses core supply (+0x2E); the rest ask
-        // the predicate, which half of them fail.
+        // Every other division bypasses core supply; the rest ask the predicate, which half of them
+        // fail.
         w.put(army + 0x2e, &[u8::from(index % 2 == 0)]);
         if !groups.is_empty() && index % 4 == 1 {
             w.u64(

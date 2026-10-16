@@ -503,7 +503,7 @@ pub enum Host {
     /// The ship's task force is null. Sortie efficiency handles this explicitly;
     /// task-force owner selection requires a nonnull task force.
     NoTaskForce,
-    /// The task force's roster owner (`CUnit+0x1D8`).
+    /// The task force's roster owner (`cunit::ROSTER_OWNER`).
     Owner(u32),
 }
 

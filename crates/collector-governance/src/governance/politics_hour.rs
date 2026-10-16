@@ -8,19 +8,20 @@
 //! - The country census: this hour's `countries.at(slot)` over every slot
 //!   must list the walk's (slot, pointer, id) sequence; with the callback's
 //!   authenticated census this reads nothing. The status pointer
-//!   `CCountry+0xF90`, the status's vtable and its owner backlink `+0xC8`
+//!   `ccountry::POLITICAL_STATUS`, the status's vtable and its owner backlink
+//!   (`cpolitical_status::COUNTRY`)
 //!   are written only by their constructors, and countries are reused,
 //!   never rebuilt.
-//! - The capital `CCountry+0x1018` and original capital `+0x101C`: set
-//!   capital and country appearance reset. The last election `+0xA0`: set
+//! - The capital (`ccountry::CAPITAL`) and original capital: set
+//!   capital and country appearance reset. The last election: set
 //!   politics and the daily politics update's election-day store. The
-//!   election frequency `+0xE8` and byte `+0xEC`: the politics setter and
-//!   the party clear (below). The ruling party `+0xD0`: force ruling party
-//!   and set ruling party. The party array `+0x20`/`+0x2C`: the party build
+//!   election frequency and elections byte: the politics setter and
+//!   the party clear (below). The ruling party: force ruling party
+//!   and set ruling party. The party array and count: the party build
 //!   and clear, reached at runtime only from country appearance reset. The
-//!   idea array `+0x50`/`+0x5C`: set ideas. Each moves the political status
+//!   idea array and count: set ideas. Each moves the political status
 //!   structure token.
-//! - Each party's popularity `CPoliticalParty+0x88`: add popularity, set
+//! - Each party's popularity (`cpolitical_party::POPULARITY`): add popularity, set
 //!   popularity redistributing, the clamped setter's calls from the party
 //!   popularity and popularities effects, force ruling party, country
 //!   appearance reset and the daily politics update, which rewrites every

@@ -468,9 +468,9 @@ pub fn links(
     )
 }
 
-/// Same authenticated diplomacy pass, with complete ordered +98 occurrences
-/// for every authenticated positive receiver and actual reserved receiver.
-/// Old set-only callers stay unchanged.
+/// Same authenticated diplomacy pass, with complete ordered enemy-vector occurrences for every
+/// authenticated positive receiver and actual reserved receiver. Old set-only callers stay
+/// unchanged.
 pub fn links_observed_current(
     memory: &impl Memory,
     base: usize,
@@ -492,19 +492,18 @@ pub fn links_observed_current(
     )
 }
 
-/// Same original pass, with subject shared-vision inputs and one owner
-/// certificate. Subject application and clearing install/remove +288 through
-/// the same owned relation lifetime as relation replacement. The installing
-/// setter, used by application helpers and clearing, removes the old
-/// +D0/+20/+E8 memberships before first-owner destruction, and registers a
-/// replacement in +D0 and owner +20. Reset calls each subject's vf22 before
-/// directly clearing +288; destruction calls that reset. Loading constructs
-/// through the relation factory, reads the relation, then initialization unless
-/// duplicated dispatches vf21 (subject application), so loading uses the same
-/// installer. No status/subject pointer or seen bitmap crosses this callback;
-/// Resolver::begin retires prior country/diplomacy identities. Dates and the
-/// retired byte never enter the shared-vision predicates. These source paths do
-/// not independently prove the collector boundary's thread quiescence.
+/// Same original pass, with subject shared-vision inputs and one owner certificate. Subject
+/// application and clearing install/remove `SUBJECT_RELATION` through the same owned relation
+/// lifetime as relation replacement. The installing setter, used by application helpers and
+/// clearing, removes the old subrelation, owner and serializable-relation memberships before
+/// first-owner destruction, and registers a replacement in the subrelations and the owner. Reset
+/// calls each subject's link clearing before directly clearing `SUBJECT_RELATION`; destruction
+/// calls that reset. Loading constructs through the relation factory, reads the relation, then
+/// initialization unless duplicated dispatches subject application, so loading uses the same
+/// installer. No status/subject pointer or seen bitmap crosses this callback; Resolver::begin
+/// retires prior country/diplomacy identities. Dates and the retired byte never enter the
+/// shared-vision predicates. These source paths do not independently prove the collector boundary's
+/// thread quiescence.
 pub fn links_observed_transport(
     memory: &impl Memory,
     base: usize,
@@ -1126,9 +1125,9 @@ fn links_observed_inner(
 pub struct OpinionRow {
     /// Raw reference of the country whose relation matrix holds this record.
     pub owner_country: u32,
-    /// Raw reference stored at CRelationStatus +0x50, not the matrix index.
+    /// Raw reference stored at `TARGET_COUNTRY`, not the matrix index.
     pub target_country: u32,
-    /// Native signed dword at +0x300, retained without scaling.
+    /// Native signed dword (`OPINION`), retained without scaling.
     pub opinion: i32,
 }
 
@@ -1137,14 +1136,14 @@ pub struct OpinionRow {
 pub struct TupleRow {
     pub owner_country: u32,
     pub target_country: u32,
-    /// Native CRelation type word at +0x08, which is also the serialized key token.
+    /// Native CRelation type word, which is also the serialized key token.
     pub type_id: u32,
-    /// Native index in the serializable relation vector at +0xe8, counting the
+    /// Native index in the serializable relation vector (`SERIALIZABLE_RELATIONS`), counting the
     /// CWarRelation and CSubjectRelation elements that this table skips.
     pub ordinal: u32,
-    /// Raw CRelation +0x10 reference, retained even when it is an alias of the owner.
+    /// Raw CRelation first-country reference, retained even when it is an alias of the owner.
     pub first_country: u32,
-    /// Raw CRelation +0x14 reference, retained even when it is an alias of the target.
+    /// Raw CRelation second-country reference, retained even when it is an alias of the target.
     pub second_country: u32,
     pub start_hour: i32,
     pub end_hour: i32,
@@ -2025,7 +2024,7 @@ fn outcome(len: usize, unread_rows: u32) -> Outcome {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ZeroRelation {
     pub war_present: u8,
-    /// The pointed relation's raw +49 byte; zero when there is no war.
+    /// The pointed relation's raw retired byte; zero when there is no war.
     pub war_retired: u8,
     pub co_belligerent: u8,
 }
@@ -2064,8 +2063,8 @@ fn zero_war_at(memory: &impl Memory, status: usize) -> Result<[u8; 2], &'static 
 /// be shared after the reverse cell observes the same nonnull pointer.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ForwardZeroObservation {
-    // Controls and the raw +50 attempt precede the original literal-zero
-    // guard. Both outcomes are retained; the new packet never retries them.
+    // Controls and the raw target-country attempt precede the original literal-zero guard. Both
+    // outcomes are retained; the new packet never retries them.
     status: Option<Result<usize, &'static str>>,
     target: Option<Result<u32, &'static str>>,
     war_pointer: Option<Result<u64, &'static str>>,
@@ -2233,12 +2232,11 @@ fn status_in_matrix(
     Ok(status)
 }
 
-/// One co-belligerent candidate's directed byte: [`status_in_matrix`], then
-/// [`country_target_with`] over the country links, then the +310 byte. The status's identity, target and
-/// byte sit on four separate lines of a scattered object, so after the matrix
-/// element they are copied in one guarded, prefetched batch whose misses
-/// overlap, and checked in the order of the separate reads: the first fault
-/// is theirs.
+/// One co-belligerent candidate's directed byte: [`status_in_matrix`], then [`country_target_with`]
+/// over the country links, then the `CO_BELLIGERENT` byte. The status's identity, target and byte
+/// sit on four separate lines of a scattered object, so after the matrix element they are copied in
+/// one guarded, prefetched batch whose misses overlap, and checked in the order of the separate
+/// reads: the first fault is theirs.
 fn co_candidate_byte(
     memory: &impl Memory,
     base: usize,
@@ -2359,8 +2357,8 @@ fn for_each_co_candidate_with(
 /// Independent native operands for one already-authenticated positive country.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoBelligerentInputs {
-    /// Complete sorted unique canonical target slots whose stored +310 byte
-    /// is nonzero, including slot zero. An error exposes no usable prefix.
+    /// Complete sorted unique canonical target slots whose stored `CO_BELLIGERENT` byte is nonzero,
+    /// including slot zero. An error exposes no usable prefix.
     pub targets: Result<usize, &'static str>,
     /// Exact unique target demand after a complete walk, including an arena
     /// shortage; on a read refusal, only the known demand before that fault.
@@ -2526,8 +2524,8 @@ pub struct ReverseZeroVisibilityInputs {
     pub target: Option<u32>,
     pub war: Option<[u8; 2]>,
     pub subject: Option<ZeroSubjectInputs>,
-    /// Native flag1 arm: exact +2A0 qword presence, not a pointed getter.
-    /// Some(0/1) is null/nonnull; None is skipped or refused.
+    /// Native flag1 arm: exact `MILITARY_ACCESS` qword presence, not a pointed getter. Some(0/1) is
+    /// null/nonnull; None is skipped or refused.
     pub military_access: Option<u8>,
 }
 
@@ -2914,11 +2912,10 @@ pub fn reserved_visibility_demand(
     Ok(relation_matrix(memory, diplomacy)?.count as usize)
 }
 
-/// Header-only conservative target demand for initial live arena sizing.
-/// The native +B0/+98 counts plus one explicit slot-zero status bound the
-/// complete set. This hint neither reads payload nor certifies captured data;
-/// a caller sums each readable country's bound without dropping earlier
-/// countries when another country refuses its own headers.
+/// Header-only conservative target demand for initial live arena sizing. The native wartime-ally
+/// and enemy counts plus one explicit slot-zero status bound the complete set. This hint neither
+/// reads payload nor certifies captured data; a caller sums each readable country's bound without
+/// dropping earlier countries when another country refuses its own headers.
 pub fn co_belligerent_demand(
     memory: &impl Memory,
     base: usize,

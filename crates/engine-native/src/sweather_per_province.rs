@@ -25,35 +25,32 @@ pub const ID: usize = 0x08;
 pub const PERMANENT_SNOW: usize = 0x30;
 /// Snow, i64 fixed5, clamped and stored at full width.
 pub const SNOW: usize = 0x40;
-/// Embedded modifier collection at +0x58.
+/// Embedded modifier collection.
 pub const MODIFIERS: usize = 0x58;
 /// Temperature, signed i64 fixed5, used for truncated numeric text and
 /// temperature classification. Serialization retains all eight bytes,
 /// including zero.
 pub const TEMPERATURE: usize = 0x118;
-/// Committed drift, signed i64 fixed5: weather smoothing averages the active
-/// neighbours' words and weather modifier tasks commit the working drift
-/// +0x170 into it with the staged temperature.
+/// Committed drift, signed i64 fixed5: weather smoothing averages the active neighbours' words and
+/// weather modifier tasks commit the working drift (`WORKING_DRIFT`) into it with the staged
+/// temperature.
 pub const DRIFT: usize = 0x128;
-/// Raw mud byte tested by the province tooltip.
-/// Display updating writes display mud from this OR custom mud +0x138, so it is
-/// independent.
+/// Raw mud byte tested by the province tooltip. Display updating writes display mud from this OR
+/// the custom mud, so it is independent.
 pub const RAW_MUD: usize = 0x130;
-/// Staged temperature, signed i64 fixed5: province weather calculation stores
-/// +0x118 plus the clamped working drift and weather smoothing then smooths it;
-/// weather modifier tasks commit it into +0x118 when +0x168 is set.
+/// Staged temperature, signed i64 fixed5: province weather calculation stores `TEMPERATURE` plus
+/// the clamped working drift and weather smoothing then smooths it; weather modifier tasks commit
+/// it into `TEMPERATURE` when the record's commit flag is set.
 pub const STAGED_TEMPERATURE: usize = 0x160;
 /// Working drift, signed i64 fixed5: province weather calculation adds the
 /// hashed step, clamps it and resets it outside the period's range.
 pub const WORKING_DRIFT: usize = 0x170;
-/// Separate day/night row stride; day and night getters index the
-/// CWeatherManager+0x370 array by this physical province slot.
+/// Separate day/night row stride; day and night getters index the weather manager's day/night array
+/// (`cweather_manager::PROVINCE_CLOCKS`) by this physical province slot.
 pub const CLOCK_STRIDE: usize = 0x330;
-/// Stored night factor, signed i64 fixed5 at +0x240, updated by day/night
-/// processing and read at full width.
+/// Stored night factor, signed i64 fixed5, updated by day/night processing and read at full width.
 pub const CLOCK_NIGHT_FACTOR: usize = 0x240;
-/// Stored local hour, signed i32 at +0x260. Suspension may retain zero
-/// after reset.
+/// Stored local hour, signed i32. Suspension may retain zero after reset.
 pub const CLOCK_LOCAL_HOUR: usize = 0x260;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -61,9 +58,9 @@ pub struct Row {
     pub id: u32,
     pub snow: i64,
     pub permanent_snow: i64,
-    /// `CWeatherManager+0x310[id]`, filled by [`fill_display`].
+    /// The weather manager's display snow for the slot (`cweather_manager::DISPLAY_SNOW`), filled by [`fill_display`].
     pub display_snow: u8,
-    /// `CWeatherManager+0x328[id]`, filled by [`fill_display`].
+    /// The weather manager's display mud for the slot (`cweather_manager::DISPLAY_MUD`), filled by [`fill_display`].
     pub display_mud: u8,
     pub raw_mud: u8,
     pub temperature: i64,

@@ -1,4 +1,4 @@
-//! Licensed-production status, embedded in production status at +0x190.
+//! Licensed-production status, embedded in production status.
 //!
 //! The container owns four arrays and an owner backlink. Serialization writes
 //! only the first as available variant handles and the third as nested
@@ -6,7 +6,7 @@
 
 /// Container available-variant pointer array.
 pub const AVAILABLE: usize = 0x08;
-/// Available-array capacity, i32; the CPdxArray header at +8 places it at +0x10.
+/// Available-array capacity, i32; the CPdxArray header at `AVAILABLE` places it after the data pointer.
 pub const AVAILABLE_CAPACITY: usize = 0x10;
 /// Available-array count, i32.
 pub const AVAILABLE_COUNT: usize = 0x14;

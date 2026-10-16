@@ -1,16 +1,13 @@
 //! Quiet roster hours of the roster job ([`crate::roster_changes`]).
 //!
-//! The roster is the `CCharacterManager`'s historical (`+0x10`) and dynamic
-//! (`+0x28`) `CPdxArray<CCharacter*>`. An element is only appended, by
-//! `roster push(array, unique_ptr)`, and freed only with its whole array, by
-//! `roster clear(array)`; nothing erases, swaps or reorders one. The manager is
-//! rebuilt only by its constructor, and a rostered character's id
-//! (`+0xC`) is written after its push only by
-//! character identity repair. Every one of them moves the
-//! roster domain's quiet token ([`engine::character_roster_mutations`]), so
-//! while the token stands still the roster's occurrences (pointers), their
-//! order (roster and ordinal) and their ids are those of the job's latest
-//! complete full pass.
+//! The roster is the `CCharacterManager`'s historical and dynamic `CPdxArray<CCharacter*>`. An
+//! element is only appended, by `roster push(array, unique_ptr)`, and freed only with its whole
+//! array, by `roster clear(array)`; nothing erases, swaps or reorders one. The manager is rebuilt
+//! only by its constructor, and a rostered character's id is written after its push only by
+//! character identity repair. Every one of them moves the roster domain's quiet token
+//! ([`engine::character_roster_mutations`]), so while the token stands still the roster's
+//! occurrences (pointers), their order (roster and ordinal) and their ids are those of the job's
+//! latest complete full pass.
 //!
 //! The roster job takes the token at the start of each hourly pass, before
 //! any registration or read, and holds it with the scope only when that pass

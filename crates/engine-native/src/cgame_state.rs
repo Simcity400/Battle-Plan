@@ -24,7 +24,7 @@ pub fn read_main_thread_id(memory: &impl Memory, base: usize) -> Option<u32> {
 }
 /// Play-session start Unix seconds.
 pub const PLAY_SESSION_STARTED_AT_RVA: usize = 0x0331_7048;
-/// CGameState CGameDate +0x460, raw i32 at +8.
+/// CGameState current date (`CURRENT_DATE`), its raw i32 hour.
 pub const CURRENT_HOUR: usize = 0x468;
 /// CGameState persisted u64 play time.
 pub const PLAY_TIME: usize = 0x490;
@@ -48,8 +48,8 @@ pub const NAVY_ID: usize = 0x74c;
 pub const LAND_COMBAT_ID: usize = 0x748;
 /// Save-header serializer emits twenty-five consecutive fields.
 pub const HEADER_SERIALIZER_RVA: usize = 0x001f_2a20;
-/// Save-header loader restores twelve counter tokens to their matching
-/// globals or setters. Token 0x2d4d instead loads +0x49c, not the id counter.
+/// Save-header loader restores twelve counter tokens to their matching globals or setters. Token
+/// 0x2d4d instead loads the word after `NEXT_EVENT_INSTANCE`, not the id counter.
 pub const HEADER_LOADER_RVA: usize = 0x001e_5550;
 /// Tick marker, set before date advancement and cleared near return.
 pub const TICK_BUSY: usize = 0x4c0;
@@ -68,13 +68,13 @@ pub const PROVINCES: usize = 0x2b0;
 pub const SAVE_VERSION: usize = 0x58;
 /// State MSVC-string candidate; writer and meaning remain unproven.
 pub const SESSION_HEADER_TEXT: usize = 0x70;
-/// CGameState retained save-header player array; the CHuman serializer preserves it separately from live players at +F8.
+/// CGameState retained save-header player array; the CHuman serializer preserves it separately from live players (`PLAYER_RECORDS`).
 pub const SAVED_PLAYER_RECORDS: usize = 0xa8;
 /// CGameState CIdeologyGroup* candidate.
 pub const SESSION_IDEOLOGY_GROUP: usize = 0xc8;
 /// State u32 candidate; this field does not establish the loaded DLC roster.
 pub const SESSION_DLC_WORD: usize = 0xd4;
-/// CGameState live CHuman pointer array; the world-clock reader and native player serializer distinguish it from saved records at +A8.
+/// CGameState live CHuman pointer array; the world-clock reader and native player serializer distinguish it from saved records (`SAVED_PLAYER_RECORDS`).
 pub const PLAYER_RECORDS: usize = 0xf8;
 /// CGameState embedded CCombatManager.
 pub const COMBATS: usize = 0x260;
@@ -90,9 +90,9 @@ pub const COUNTRIES_COUNT: usize = 0x31c;
 pub const MAJOR_COUNTRIES: usize = 0x328;
 /// CGameState u32 major-country vector count.
 pub const MAJOR_COUNTRIES_COUNT: usize = 0x334;
-/// CGameState u32 country-link capacity; current guarded CPdxArray reader confirms +0x348.
+/// CGameState u32 country-link capacity; current guarded CPdxArray reader confirms it.
 pub const COUNTRY_LINKS_CAPACITY: usize = 0x348;
-/// CGameState u32 country-link count; current guarded CPdxArray reader confirms +0x34c.
+/// CGameState u32 country-link count; current guarded CPdxArray reader confirms it.
 pub const COUNTRY_LINKS_COUNT: usize = 0x34c;
 /// CGameState u32 country-tag string vector capacity.
 pub const COUNTRY_TAGS_CAPACITY: usize = 0x360;
@@ -586,11 +586,11 @@ pub fn read_clock(memory: &impl Memory, base: usize) -> Option<Clock> {
 /// object is read and nothing here is recorded.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CountryRegistrySize {
-    /// `CPdxArray<CCountry*>` count at +0x31c, including the reserved slot zero.
+    /// `CPdxArray<CCountry*>` count (`COUNTRIES_COUNT`), including the reserved slot zero.
     pub countries: u32,
-    /// Raw country-reference link count at +0x34c, including its zero sentinel.
+    /// Raw country-reference link count (`COUNTRY_LINKS_COUNT`), including its zero sentinel.
     pub links: u32,
-    /// `_CountryLinkTags` string count at +0x364.
+    /// `_CountryLinkTags` string count (`COUNTRY_TAGS_COUNT`).
     pub tags: u32,
 }
 

@@ -9,7 +9,7 @@ use crate::{
 
 /// CSupplySystem primary vtable.
 pub const VTABLE_RVA: usize = 0x0295_d0a8;
-/// CSupplySystem secondary vtable at +8.
+/// CSupplySystem secondary vtable (`SECONDARY_BASE`).
 pub const SECONDARY_VTABLE_RVA: usize = 0x0295_d0d0;
 /// CSupplySystem secondary-base displacement.
 pub const SECONDARY_BASE: usize = 0x08;
@@ -51,9 +51,9 @@ pub const FOREIGN_SOURCE_DIRTY_BIT3: usize = 0xd0;
 pub const FOREIGN_SOURCE_DIRTY_BIT3_COUNT: usize = 0xdc;
 /// Country-supply pointer array selected by canonical country-link slot.
 pub const COUNTRY_SYSTEM_DATA: usize = 0x108;
-/// Country-array capacity, u32, at header +8.
+/// Country-array capacity, u32, after the header's data pointer.
 pub const COUNTRY_SYSTEM_CAPACITY: usize = 0x110;
-/// Country-array count, u32, at header +0xc.
+/// Country-array count, u32, after its capacity.
 pub const COUNTRY_SYSTEM_COUNT: usize = 0x114;
 /// CSupplySystem inline companion array pointer.
 pub const COUNTRY_COMPANION_DATA: usize = 0x120;

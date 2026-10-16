@@ -1,5 +1,5 @@
-//! CDeploymentStatus, reached through CCountry+0xf70, owns the complete
-//! deployment queue.
+//! CDeploymentStatus, reached through `ccountry::DEPLOYMENT_MANAGER`, owns the complete deployment
+//! queue.
 //!
 //! The walker authenticates the owner backlink and reports each failure
 //! explicitly. Hourly consistency and writer lifetime remain unproven.
@@ -20,7 +20,7 @@ pub const VTABLE_RVA: usize = 0x2949128;
 pub const CONVEYORS: usize = 0x48;
 /// CDeploymentStatus conveyor-array capacity, u32.
 pub const CONVEYORS_CAPACITY: usize = 0x50;
-/// CDeploymentStatus conveyor-array count, u32; the same header places it at +0x54.
+/// CDeploymentStatus conveyor-array count, u32; the same header places it after the capacity.
 pub const CONVEYORS_COUNT: usize = 0x54;
 /// CDeploymentStatus conveyor-array pointer stride.
 pub const CONVEYOR_STRIDE: usize = 0x08;

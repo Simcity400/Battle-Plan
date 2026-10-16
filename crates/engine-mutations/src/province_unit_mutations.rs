@@ -1,7 +1,8 @@
-//! The runtime writers of a province's ordered occupant lists (mixed data
-//! +0xE0/count +0xEC, naval data +0xF8/count +0x104), which ProvinceUnitOrder
-//! records through `cprovince::walk_unit_order`. Observing them tells
-//! the collector which provinces to reread; recording never calls them.
+//! The runtime writers of a province's ordered occupant lists (mixed and
+//! naval data with their counts, `cprovince::OCCUPANTS` and
+//! `NAVAL_OCCUPANTS`), which ProvinceUnitOrder records through
+//! `cprovince::walk_unit_order`. Observing them tells the collector which
+//! provinces to reread; recording never calls them.
 //!
 //! Writer coverage:
 //! - Only append and stable compacting erase write list contents; both take
@@ -18,9 +19,9 @@
 //!   (province destruction). Loads, resets and teardown invalidate the hour
 //!   and revoke every mark's epoch.
 //! - Occupant handles and classes are set at construction or load. Only the
-//!   location setter writes unit location +0x1F0, bracketed by erase and
-//!   append. An untouched occupant list therefore yields the same handles,
-//!   classes and backlinks.
+//!   location setter writes unit location (`cunit::LOCATION`), bracketed by
+//!   erase and append. An untouched occupant list therefore yields the same
+//!   handles, classes and backlinks.
 
 pub use crate::advisor_mutations::MutationSite;
 
@@ -28,8 +29,9 @@ pub use crate::advisor_mutations::MutationSite;
 /// the province in RCX; a detour forwards RCX..R9 and returns RAX
 /// unchanged.
 pub const MUTATIONS: [MutationSite; 2] = [
-    // The three-byte stack-pointer copy to RAX and RBX spill at +0x10
-    // relocate; RBP and RSI spills at +0x18/+0x20 and saving RDI follow.
+    // The three-byte stack-pointer copy to RAX and RBX spill through it to RDX's
+    // home slot relocate; RBP and RSI spills to the R8 and R9 home slots and
+    // saving RDI follow.
     MutationSite {
         name: "add_unit",
         rva: 0xe6_5210,
@@ -38,9 +40,9 @@ pub const MUTATIONS: [MutationSite; 2] = [
             0x20, 0x57,
         ],
     },
-    // The five-byte RBX spill at stack +8 relocates. Saving RDI and
+    // The five-byte RBX spill to RCX's home slot relocates. Saving RDI and
     // reserving 0x20 stack bytes follow, then zeroing EBX, retaining the
-    // receiver in RDI and the start of loading the count at +0xEC into ECX.
+    // receiver in RDI and the start of loading the mixed list's count into ECX.
     MutationSite {
         name: "remove_unit",
         rva: 0xe6_b110,

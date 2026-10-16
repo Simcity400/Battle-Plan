@@ -100,7 +100,7 @@ pub const PRESENCE_WINDOW: usize = 0x2d0;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Operands {
     pub id: u64,
-    /// `CTaskForce+0x374`, one of [`MISSION_KINDS`].
+    /// The task force's mission kind (`ctask_force::MISSION`), one of [`MISSION_KINDS`].
     pub kind: u32,
     /// [`MISSION_OWNER`], a raw country reference.
     pub mission_owner: u32,

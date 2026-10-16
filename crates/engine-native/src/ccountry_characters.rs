@@ -40,7 +40,7 @@ pub struct Row {
     pub country: u32,
     /// Position in the appointed array; the engine's own order.
     pub ordinal: u32,
-    /// CCharacter numeric id (+0x0c) behind CAdvisor +0x10.
+    /// CCharacter numeric id behind `cadvisor::CHARACTER`.
     pub character: u32,
     pub idea_start: usize,
     pub idea_len: usize,
@@ -65,7 +65,7 @@ pub struct ActiveRow {
     pub country: u32,
     /// Position in the active array; the engine's own order.
     pub ordinal: u32,
-    /// CCharacter numeric id (+0x0c), `None` for a null record.
+    /// CCharacter numeric id, `None` for a null record.
     pub character: Option<u32>,
 }
 
@@ -223,13 +223,12 @@ impl<'a> Records<'a> {
     }
 }
 
-/// Walks every canonical country's active (`active`, CountryCharacters) and
-/// retired (`retired`, CountryRetiredCharacters) character records over one
-/// country pass. A null +0xff0 pointer has no rows; an unreadable or
-/// unauthenticated country or object fails both tables, an unreadable array
-/// or character only its own. Once a table's row does not fit, its later
-/// records are counted from the array headers only and not read, so empty
-/// outputs yield the live totals as `unread_rows`.
+/// Walks every canonical country's active (`active`, CountryCharacters) and retired (`retired`,
+/// CountryRetiredCharacters) character records over one country pass. A null `ccountry::CHARACTERS`
+/// pointer has no rows; an unreadable or unauthenticated country or object fails both tables, an
+/// unreadable array or character only its own. Once a table's row does not fit, its later records
+/// are counted from the array headers only and not read, so empty outputs yield the live totals as
+/// `unread_rows`.
 pub fn walk_records(
     memory: &impl Memory,
     base: usize,
@@ -299,11 +298,10 @@ pub fn walk_records_buffer(
     tables.each_ref().map(|table| table.outcome(shared))
 }
 
-/// Walks every canonical country's appointed advisors. A null +0xff0 pointer
-/// is the engine's "no character object" (the save omits `characters`) and has
-/// no rows; any unreadable or unauthenticated object fails the whole table.
-/// Once a row or its strings do not fit, later advisors are counted from the
-/// array headers only and their fields are not read.
+/// Walks every canonical country's appointed advisors. A null `ccountry::CHARACTERS` pointer is the
+/// engine's "no character object" (the save omits `characters`) and has no rows; any unreadable or
+/// unauthenticated object fails the whole table. Once a row or its strings do not fit, later
+/// advisors are counted from the array headers only and their fields are not read.
 pub fn walk(
     memory: &impl Memory,
     base: usize,

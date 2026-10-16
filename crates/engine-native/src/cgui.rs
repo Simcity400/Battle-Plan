@@ -27,7 +27,7 @@ pub const REGISTER_ACTIVE_OBJECT_RVA: usize = 0x0224_55c0;
 pub const GRAPHICS: usize = 0xb8;
 /// CGui embedded type-name lookup tree.
 pub const TYPE_LOOKUP_TREE: usize = 0xc0;
-/// GUI container-window factory dispatch at +0x60, inherited by the game GUI.
+/// GUI container-window factory dispatch slot, inherited by the game GUI.
 pub const CONTAINER_FACTORY_VSLOT: usize = 0x60;
 /// CGui container-window factory.
 pub const CONTAINER_FACTORY_RVA: usize = 0x0224_6270;

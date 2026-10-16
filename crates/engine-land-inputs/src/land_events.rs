@@ -113,6 +113,9 @@ pub const DISPATCH_LEADER_RETURNS: [usize; 2] = [0x12a42fc, 0x12a431a];
 /// vtable slots are not patched.
 pub const DISPATCH_LEADER_CALLS: [usize; 2] = [0x12a42f6, 0x12a4314];
 pub const DISPATCH_LEADER_CALL_SENTINEL: [u8; 6] = [0xff, 0x90, 0xe8, 0, 0, 0];
+/// The commander-resolver vtable slot each verdict CALL calls through, the displacement its
+/// sentinel ends with.
+pub const DISPATCH_LEADER_VTABLE_SLOT: usize = 0xe8;
 pub const DISPATCH_LEADER_CALL_NAMES: [&str; 2] = [
     "DispatchLeaderOnActions.loser_leader",
     "DispatchLeaderOnActions.winner_leader",
@@ -627,8 +630,8 @@ impl ResultPlan {
         // aliases. Bound their cardinality by live link IDs, not the smaller
         // canonical country-object roster; the link array includes null0.
         let limit = ccountry::Reader::new(memory, base, state)?.arrays()[1].count as usize;
-        // One contiguous copy of handle, both combatants, province and
-        // counters (+0x18..+0x48); offsets stay owned by CLandCombat.
+        // One contiguous copy of handle, both combatants, province and counters; offsets stay owned
+        // by CLandCombat.
         let qword = |offset| header.qword(offset);
         let sides = [
             qword(combat::ATTACKER) as usize,

@@ -171,8 +171,8 @@ fn drain_admitted() -> Result<(), &'static str> {
     }
     Ok(())
 }
-// Reviewed Win64 frame: native call is outside Rust; .seh_stackalloc covers
-// the owned snapshot. Relocation moves only MOV [RSP+20],RBX (five bytes).
+// Reviewed Win64 frame: native call is outside Rust; .seh_stackalloc covers the owned snapshot.
+// Relocation moves only the five-byte store of RBX to its home slot.
 core::arch::global_asm!(
     ".text", ".globl building_damage_entry", ".seh_proc building_damage_entry",
     "building_damage_entry:", "sub rsp, 0x138", ".seh_stackalloc 0x138", ".seh_endprologue",

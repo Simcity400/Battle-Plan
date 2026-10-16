@@ -383,12 +383,10 @@ impl Etas {
         }
     }
 
-    /// Native first-edge movement fraction in signed fixed5, sentinel and all,
-    /// or why the hour cannot rebuild it. Zero for an empty route. In the game
-    /// it drives the movement arrow's fill target (`+0x28`) of a selected own
-    /// unit (see the module docs) and the naval invasion progress in a
-    /// combat's division hover; a counter never reads
-    /// it.
+    /// Native first-edge movement fraction in signed fixed5, sentinel and all, or why the hour
+    /// cannot rebuild it. Zero for an empty route. In the game it drives the movement arrow's fill
+    /// target of a selected own unit (see the module docs) and the naval invasion progress in a
+    /// combat's division hover; a counter never reads it.
     pub fn progress(&self, division: u64) -> Result<i64, &'static str> {
         match self.progress.get(&division) {
             Some(progress) => Ok(*progress),

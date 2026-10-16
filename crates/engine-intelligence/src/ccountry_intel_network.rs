@@ -72,7 +72,7 @@ pub struct Row {
     pub strength_raw: Option<i64>,
     /// Signed graph-row selector retained exactly, including unassigned values.
     pub subnetwork_selector: i32,
-    /// Graph-row +0x28, used by raid target intel; independent of selector.
+    /// The graph row's value, used by raid target intel; independent of selector.
     pub local_strength_raw: i64,
 }
 
@@ -259,8 +259,8 @@ pub fn walk_buffer(
                                 .ok_or("intel subnetwork selector outside array")?;
                         }
                     }
-                    // Copy the authenticated prefix through the saved strength,
-                    // excluding the unrelated gain modifier at +0x08.
+                    // Copy the authenticated prefix through the saved strength, excluding the
+                    // unrelated gain modifier.
                     const STRENGTH_END: usize = csub_intel_network::STRENGTH + 8;
                     let mut strengths = [[0_u8; STRENGTH_END]; BATCH];
                     let mut fields = strengths.iter_mut().enumerate();

@@ -38,8 +38,8 @@ pub const OPERATIVES: usize = 0xd8;
 pub const OPERATIVE_CAPACITY: usize = 0xe0;
 /// CIntelligenceAgency active-vector i32 size.
 pub const OPERATIVE_COUNT: usize = 0xe4;
-/// Unidentified agency dword initialized with +0xF4, read as u32.
-/// It does not establish available operative slots.
+/// Unidentified agency dword initialized with `OPERATIVE_ADMISSION_CEILING`, read as u32. It does
+/// not establish available operative slots.
 pub const UNKNOWN_F0: usize = 0xf0;
 /// Signed operative-admission ceiling; ordinary admission requires count below it.
 pub const OPERATIVE_ADMISSION_CEILING: usize = 0xf4;
@@ -217,9 +217,8 @@ fn walk_shared(
                 continue;
             };
             each(country.id, pointer);
-            // The agency-name tooltip copies +0x80 verbatim for a created
-            // agency, even an empty name; name assignment writes the same
-            // bytes. Never localise it again.
+            // The agency-name tooltip copies the agency name verbatim for a created agency, even an
+            // empty name; name assignment writes the same bytes. Never localise it again.
             let name = if whole {
                 Literal::from_header(
                     at(pointer, NAME)?,
@@ -305,9 +304,9 @@ pub fn captured_operative_demand(
     }
 }
 
-/// Walk the captured-operative array at +0x108/count +0x114, stride 0x38,
-/// resolve each +0xC handle and read the operative's raw owner at +0x120.
-/// Never call the game.
+/// Walk the captured-operative array (`CAPTURED_OPERATIVE_REFERENCES`, with its count), stride
+/// 0x38, resolve each entry's handle and read the operative's raw owner
+/// (`coperative_leader::OWNER_COUNTRY`). Never call the game.
 pub fn walk_captured_operatives(
     memory: &impl Memory,
     base: usize,

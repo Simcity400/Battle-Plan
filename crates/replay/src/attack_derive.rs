@@ -65,8 +65,8 @@ pub struct Preview {
     pub refusals: Vec<(&'static str, String)>,
 }
 
-/// Attack-modifier scalars of a stat block (`+0x390`/`+0x398`, `+0x368`/`+0x370`,
-/// `+0x3E0`, `+0x340`), each refused alone.
+/// Attack-modifier scalars of a stat block (the river and fort pairs, the snow term and the night
+/// term), each refused alone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scalars {
     pub river: [Fact<i64>; 2],
@@ -75,8 +75,8 @@ pub struct Scalars {
     pub night: Fact<i64>,
 }
 
-/// The direct commander's values for the target (`+0xFE0`, `+0xFB8`,
-/// `+0x1030`, `+0x270` and the terrain adjuster's attack), each refused alone.
+/// The direct commander's values for the target (river, fort, snow and night adjusters and the
+/// terrain adjuster's attack), each refused alone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commander {
     pub terrain: Fact<i64>,
@@ -98,19 +98,18 @@ pub struct Defines {
 
 /// The operands the list reads for one division against one move.
 pub trait Inputs {
-    /// Raw controller (`province+0x188`).
+    /// Raw controller (the province's).
     fn controller(&self, province: u32) -> Fact<u32>;
     /// Whether both raw references resolve to the same country.
     fn same_country(&self, first: u32, second: u32) -> Fact<bool>;
-    /// The division's logical owner's direct-war cell toward the target's
-    /// controller: its war pointer is set and the relation's `+0x49` is zero.
+    /// The division's logical owner's direct-war cell toward the target's controller: its war
+    /// pointer is set and the relation's retired byte is zero.
     fn at_war(&self, target_controller: u32) -> Fact<bool>;
     /// Attack for the target province's terrain.
     fn terrain_attack(&self, target: u32) -> Fact<i64>;
     /// The direct commander; `None` without one.
     fn commander(&self, target: u32) -> Fact<Option<Commander>>;
-    /// The directed neighbour entry's crossing kind (`+0x10`), `None` when the target is
-    /// not a neighbour.
+    /// The directed neighbour entry's crossing kind, `None` when the target is not a neighbour.
     fn crossing(&self, from: u32, to: u32) -> Fact<Option<u8>>;
     /// Whether the target province has positive effective snow.
     fn has_snow(&self, target: u32) -> Fact<bool>;
@@ -130,8 +129,8 @@ pub trait Inputs {
     /// The effective `land_night_attack` of the division's owner (the
     /// expeditionary owner when positive, otherwise the roster owner).
     fn night_modifier(&self) -> Fact<i64>;
-    /// A positive enemy score (`+0x18`) in the logical owner's strategic-air
-    /// entry for the division's own region.
+    /// A positive enemy score in the logical owner's strategic-air entry for the division's own
+    /// region.
     fn enemy_air(&self) -> Fact<bool>;
 }
 
@@ -349,16 +348,15 @@ pub fn preview(inputs: &impl Inputs, from: u32, to: u32) -> Fact<Option<Preview>
 
 /// The recorded content the frame's rows refer to.
 pub trait Context {
-    /// The province's terrain: its one-based database index (`terrain type+0x88`) and the
-    /// terrain's own adjuster attack (`terrain type+0x168+0x10`).
+    /// The province's terrain: its one-based database index and the terrain's own adjuster attack.
     fn terrain(&self, province: u32) -> Fact<Terrain>;
     /// The crossing kind of the neighbour `from -> to`, `None` when `to` is
     /// not one of `from`'s neighbours.
     fn crossing(&self, from: u32, to: u32) -> Fact<Option<u8>>;
-    /// The province's strategic region id (`province+0xC8` -> `+0x58`); `None` for a
+    /// The province's strategic region id (through the province's strategic region); `None` for a
     /// province without one.
     fn region(&self, province: u32) -> Fact<Option<u32>>;
-    /// The building type's `land_fort` (`building type+0x308`) for a lexer token.
+    /// The building type's `land_fort` for a lexer token.
     fn land_fort(&self, building_type: u32) -> Fact<i32>;
     /// The province's night factor at the frame's hour.
     fn night_factor(&self, province: u32) -> Fact<i64>;

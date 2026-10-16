@@ -27,8 +27,9 @@ pub struct DirectedWars {
     /// With false, every absent target is unknown. An admitted empty complete
     /// vector proves false, while an empty observed vector proves nothing.
     pub complete_active_domain: bool,
-    /// Sorted unique exact direct (+2E8!=null && pointed+49==0) observations.
-    /// In a complete active-domain packet false cells may be omitted.
+    /// Sorted unique exact direct observations: the slot-zero war pointer is not null and the
+    /// pointed relation's retired byte is zero. In a complete active-domain packet false cells may
+    /// be omitted.
     pub cells: Vec<WarCell>,
     pub refused_slots: Vec<u32>,
 }

@@ -31,9 +31,8 @@ pub struct StrategicRegion {
     /// Ordered `static_modifiers` names. Each key/value pair appends, and
     /// the naval grid uses this order.
     pub static_modifier_names: Vec<String>,
-    /// The template's weather periods (+0xB0, count +0xBC) in authored order:
-    /// append one weather period per `period`, across
-    /// repeated `weather` blocks.
+    /// The template's weather periods in authored order: append one weather period per `period`,
+    /// across repeated `weather` blocks.
     pub periods: Vec<replay::temperature::Period>,
     /// Why a period's bounds cannot be ported; the periods are then unknown.
     pub periods_refused: Option<String>,
@@ -245,11 +244,10 @@ fn parse_period(
 }
 
 impl StrategicRegion {
-    /// The region's province vector (pointer +0x18, count +0x24), built from
-    /// its template during province initialization, which visits every region.
-    /// Keep authored province order; skip an id the province database does not
-    /// return and one already in this region. A province another region's
-    /// template also lists stays in both vectors.
+    /// The region's province vector (pointer and count), built from its template during province
+    /// initialization, which visits every region. Keep authored province order; skip an id the
+    /// province database does not return and one already in this region. A province another
+    /// region's template also lists stays in both vectors.
     pub fn native_provinces(&self, exists: impl Fn(u32) -> bool) -> Vec<u32> {
         let mut seen = std::collections::BTreeSet::new();
         self.provinces

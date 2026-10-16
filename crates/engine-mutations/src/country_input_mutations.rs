@@ -6,115 +6,132 @@
 //! Observing them selects countries to reread; recording never calls them.
 //!
 //! Stability formula operands (`country_stability::inputs`):
-//! - Bases `+0x10D0`/`+0x10D8` are written by stability and war-support addition
-//!   (effects, guarantee breaks, non-aggression war penalties, nukes and console),
-//!   their setters, and weekly country updates with their sole helper. The game
-//!   runs the weekly update for every country at each week boundary; it alone
-//!   also writes the five Q15 penalties `+0x14C0..0x14E0`. Other writers are
-//!   construction, forwarded country-appearance reset and the save member reader.
-//! - Ruling party popularity (`[[+0xF90]+0xD0]+0x88`) drifts in the daily
-//!   politics update for every country and is refreshed by the daily slice.
-//!   Any-hour writers belong to [`crate::political_status_mutations`]: five
-//!   function sites and two clamped-setter calls, all forwarded.
+//! - Bases (`ccountry::STABILITY`, `WAR_SUPPORT`) are written by stability and
+//!   war-support addition (effects, guarantee breaks, non-aggression war
+//!   penalties, nukes and console), their setters, and weekly country updates
+//!   with their sole helper. The game runs the weekly update for every country
+//!   at each week boundary; it alone also writes the five Q15 penalties
+//!   (`country_stability::PROPAGANDA_STABILITY_PENALTY` through
+//!   `PROPAGANDA_WAR_SUPPORT_PENALTY`). Other writers are construction,
+//!   forwarded country-appearance reset and the save member reader.
+//! - Ruling party popularity (the political status's ruling party's
+//!   `cpolitical_party::POPULARITY`) drifts in the daily politics update for
+//!   every country and is refreshed by the daily slice. Any-hour writers belong
+//!   to [`crate::political_status_mutations`]: five function sites and two
+//!   clamped-setter calls, all forwarded.
 //! - Only the daily country subsystem update writes coastal protection
-//!   (`+0x1600`), once a day at that country's slot hour; the daily slice
-//!   refreshes this drift.
-//! - Interception is history `+0xFC8` column 1. The air-statistic adder receives
-//!   country, column and value; column 1 comes only from interception bookkeeping
-//!   for hourly air missions, coordinated strikes and naval air combat. Daily
-//!   ring advancement runs for every country on worker threads, is patched by
-//!   the history family, and is drift refreshed by the daily slice.
-//! - War flags read owned diplomacy relations (`+0x20`), war `+0x158` and its
-//!   second country's exile host `+0x1A8`. Relation replacement alone writes a
-//!   status's war list, once per endpoint for declaring/joining war, civil war
-//!   and war ending. Instigator and defender setters write `+0x158` after
-//!   linking; relation creation writes a new relation before replacement.
-//!   Becoming exiled writes the host; exile-link clearing clears the country's
-//!   and every hosted exile's. Return from exile is daily only below legitimacy
-//!   one. Diplomacy reset is patched by the relation family and forwarded.
+//!   (`country_stability::COASTAL_PROTECTION_STABILITY`), once a day at that
+//!   country's slot hour; the daily slice refreshes this drift.
+//! - Interception is air-statistics history
+//!   (`country_stability::AIR_STATISTICS`) column 1. The air-statistic adder
+//!   receives country, column and value; column 1 comes only from interception
+//!   bookkeeping for hourly air missions, coordinated strikes and naval air
+//!   combat. Daily ring advancement runs for every country on worker threads,
+//!   is patched by the history family, and is drift refreshed by the daily
+//!   slice.
+//! - War flags read owned diplomacy relations
+//!   (`cdiplomacy_status::OWNED_RELATIONS`), the war's instigator flag
+//!   (`cwar_relation::FIRST_WAS_INSTIGATOR`) and its second country's exile
+//!   host (`country_stability::DIPLOMACY_HOSTING`). Relation replacement alone
+//!   writes a status's war list, once per endpoint for declaring/joining war,
+//!   civil war and war ending. Instigator and defender setters write the
+//!   instigator flag after linking; relation creation writes a new relation
+//!   before replacement. Becoming exiled writes the host; exile-link clearing
+//!   clears the country's and every hosted exile's. Return from exile is daily
+//!   only below legitimacy one. Diplomacy reset is patched by the relation
+//!   family and forwarded.
 //! - World tension, defines, active language and tracked keys are per-read
 //!   globals (`country_stability::Context`).
 //!
 //! Stability tree and sources (`walk_country`):
-//! - Only country modifier recalculation rebuilds accumulator `+0x5B8` and
-//!   children: 77 direct calls, no virtual reference and no other runtime
-//!   writer among accumulator clear, filtered/scaled addition and merging.
-//!   Appearance reset clears it and the save member reader reads it. Every
-//!   dynamic-modifier addition, removal, expiry and enabled-flag/value
-//!   recalculation reaches it in the same call. Deferred refresh (`+0x10E0`
-//!   bit 1), set by building-level changes, research completion and wartime-ally
-//!   rebuilding, recalculates in the next pre-hourly pending-refresh pass and
-//!   notifies then.
+//! - Only country modifier recalculation rebuilds the accumulator
+//!   (`ccountry::MODIFIER_ACCUMULATOR`) and children: 77 direct calls, no
+//!   virtual reference and no other runtime writer among accumulator clear,
+//!   filtered/scaled addition and merging. Appearance reset clears it and the
+//!   save member reader reads it. Every dynamic-modifier addition, removal,
+//!   expiry and enabled-flag/value recalculation reaches it in the same call.
+//!   Deferred refresh (bit 1 of the country's deferred-refresh flags), set by
+//!   building-level changes, research completion and wartime-ally rebuilding,
+//!   recalculates in the next pre-hourly pending-refresh pass and notifies
+//!   then.
 //! - Recalculation does not follow the ruling party (forwarded political-status
 //!   sites), leader vector (all forwarded [`crate::party_leader_mutations`]
 //!   writers), first leader modifier/display (modifier rebuilding, two role
 //!   creation/insertion sites, destruction and ideology setting; forwarded
 //!   character-role sites), active ideas (one forwarded setter), advisor
-//!   modifiers (forwarded rebuilding), or appointed advisors (`+0x58`).
-//!   Appointment always recalculates; unappointment from retirement, unit-leader
-//!   capture, the deferred hourly queue, advisor-status updates and another
-//!   advisor helper does not. Character names and portraits are not read.
+//!   modifiers (forwarded rebuilding), or appointed advisors
+//!   (`ccountry_characters::APPOINTED_ADVISORS`). Appointment always
+//!   recalculates; unappointment from retirement, unit-leader capture, the
+//!   deferred hourly queue, advisor-status updates and another advisor helper
+//!   does not. Character names and portraits are not read.
 //!
 //! Research (`research_inputs`, `research_modifiers`):
-//! - Slots (status `+0xA0`, slot `+0x08..+0x40`) are written by technology
-//!   assignment (two research commands, console and completion) and slot
-//!   synchronization. The daily tick synchronizes every country, changing the
-//!   roster only when country `+0x1348` differs from status `+0xAC`. Banked idle
-//!   days `+0x20` drift daily.
-//! - Technology fields (`+0x170..+0x1F0`) are written by the level setter
-//!   (completion, effects, unlocks, stolen bonuses), research reset (direct
-//!   level write), slot completion, research completion (classifier `+0x170`
-//!   recursively through propagation), limited-bonus claim/release, design-team
-//!   and XP-boost assignment, transfer/inheritance rebuilding (technology
-//!   inheritance, civil war and dynamic countries), database-reload rebuilding,
-//!   the research console command (through progress, level, completion,
-//!   assignment and propagation), and fresh initialization after dynamic-country
-//!   reuse and load. Propagation is reached by these sites, load and its observer.
-//!   Daily slot progress through the progress adder writes `+0x198` as drift:
-//!   only the research panel/tooltips, AI research weight and the random-stolen
-//!   bonus selection read it, with no trigger. The adder's site marks progress
-//!   added to any technology by technology-setting and random-stolen-bonus
-//!   effects (source 2, [`EFFECT_PROGRESS_SOURCE`]). Assignment and console call
-//!   it inside hooked writes; the technology-tree GUI handler (source 0) calls
-//!   the hooked level setter and research completion later in the same call.
-//! - Technology rows (`ctechnology::Row`) read classifier `+0x170`, level
-//!   `+0x174`, ahead reduction `+0x1C0`, applied bonus ids `+0x1D0`, researched
-//!   array `+0x40` and roster `+0x88`. Only construction, propagation, the
-//!   rebuild classification sweep, post-read initialization under load/transfer,
-//!   fresh initialization and research completion write classifiers; the
-//!   observer propagates only on their classifier changes. Claim/release and
-//!   assignment write ahead reduction. Transfer, reset and level setting reach
+//! - Slots (`ctechnology_status::RESEARCH_SLOTS_DATA`, and the slot's fields
+//!   from `cresearch_slot::TECHNOLOGY_HANDLE` through `INDEX`) are written by
+//!   technology assignment (two research commands, console and completion) and
+//!   slot synchronization. The daily tick synchronizes every country, changing
+//!   the roster only when the country's slot count differs from the status's
+//!   (`ctechnology_status::RESEARCH_SLOTS_COUNT`). Banked idle days
+//!   (`cresearch_slot::BANKED_DAYS`) drift daily.
+//! - Technology fields (the span starting at `ctechnology::CLASSIFIER`) are
+//!   written by the level setter (completion, effects, unlocks, stolen
+//!   bonuses), research reset (direct level write), slot completion, research
+//!   completion (classifier recursively through propagation), limited-bonus
+//!   claim/release, design-team and XP-boost assignment, transfer/inheritance
+//!   rebuilding (technology inheritance, civil war and dynamic countries),
+//!   database-reload rebuilding, the research console command (through
+//!   progress, level, completion, assignment and propagation), and fresh
+//!   initialization after dynamic-country reuse and load. Propagation is
+//!   reached by these sites, load and its observer. Daily slot progress through
+//!   the progress adder writes `ctechnology::LIVE_PROGRESS` as drift: only the
+//!   research panel/tooltips, AI research weight and the random-stolen bonus
+//!   selection read it, with no trigger. The adder's site marks progress added
+//!   to any technology by technology-setting and random-stolen-bonus effects
+//!   (source 2, [`EFFECT_PROGRESS_SOURCE`]). Assignment and console call it
+//!   inside hooked writes; the technology-tree GUI handler (source 0) calls the
+//!   hooked level setter and research completion later in the same call.
+//! - Technology rows (`ctechnology::Row`) read classifier, level, ahead
+//!   reduction and applied bonus ids (`ctechnology::CLASSIFIER`, `LEVEL`,
+//!   `AHEAD_REDUCTION_YEARS`, `APPLIED_BONUS_IDS`), and the status's researched
+//!   array and roster (`ctechnology_status::RESEARCHED_DATA`,
+//!   `TECHNOLOGIES_DATA`). Only construction, propagation, the rebuild
+//!   classification sweep, post-read initialization under load/transfer, fresh
+//!   initialization and research completion write classifiers; the observer
+//!   propagates only on their classifier changes. Claim/release and assignment
+//!   write ahead reduction. Transfer, reset and level setting reach
 //!   researched-array insertion/removal. Fresh initialization and rebuilding
 //!   write the roster. These sites mark technology rows only for their own
 //!   country.
 //! - Limited-bonus and doctrine-cost-reduction additions append bonus rosters.
 //!   Recorded fields never change after creation. Only appearance reset and
 //!   destruction clear them.
-//! - Modifier operands include the country accumulator, technology category sum
-//!   `+0x190` and script sources `+0x128` (two helpers reached only by country
-//!   modifier recalculation); idea contributions `+0x110`/`+0x190` (two helpers
-//!   reached only by the forwarded idea setter); licences (registration and
-//!   variant extension from variant-creation commands, through a shared insert,
-//!   plus removal from two cancellation paths, war cleanup and destruction);
-//!   the program scientist-category map (project start, completion, cancel,
-//!   scientist assignment and a virtual program-status callback); and scientist
-//!   roles (forwarded [`crate::character_roster_mutations`] sites).
-//! - Sharing reads the status roster `+0x118` (addition/removal, also reached
-//!   from faction addition/removal), virtual group membership addition/removal,
-//!   group bonus setting, faction sharing base (supportive scientist counts
-//!   from daily refresh and attachment), and faction member order. Faction
-//!   leadership moves the leader to the front; faction-mode groups follow that
-//!   order. Every sharing country reads a member's levels/classifiers, including
-//!   predecessor classifiers in sharing rows. These writers, assignment (which
-//!   propagates both old and new technologies) and fresh initialization also
-//!   name partners on the writer's groups and faction. Writers naming a
-//!   technology (level, reset, completion, assignment) select only partners whose
-//!   researched instance here is written or whose predecessor classifiers its
-//!   propagation can rewrite ([`sharing_affected`]); rebuilding and fresh
-//!   initialization select every member ([sharing]).
+//! - Modifier operands include the country accumulator, the technology's
+//!   category sum and scripted sources (two helpers reached only by country
+//!   modifier recalculation); idea contributions to its idea list and category
+//!   sum (two helpers reached only by the forwarded idea setter); licences
+//!   (registration and variant extension from variant-creation commands,
+//!   through a shared insert, plus removal from two cancellation paths, war
+//!   cleanup and destruction); the program scientist-category map (project
+//!   start, completion, cancel, scientist assignment and a virtual
+//!   program-status callback); and scientist roles (forwarded
+//!   [`crate::character_roster_mutations`] sites).
+//! - Sharing reads the status roster (`SHARING_ROSTER`; addition/removal, also
+//!   reached from faction addition/removal), virtual group membership
+//!   addition/removal, group bonus setting, faction sharing base (supportive
+//!   scientist counts from daily refresh and attachment), and faction member
+//!   order. Faction leadership moves the leader to the front; faction-mode
+//!   groups follow that order. Every sharing country reads a member's
+//!   levels/classifiers, including predecessor classifiers in sharing rows.
+//!   These writers, assignment (which propagates both old and new technologies)
+//!   and fresh initialization also name partners on the writer's groups and
+//!   faction. Writers naming a technology (level, reset, completion,
+//!   assignment) select only partners whose researched instance here is written
+//!   or whose predecessor classifiers its propagation can rewrite
+//!   ([`sharing_affected`]); rebuilding and fresh initialization select every
+//!   member ([sharing]).
 //!
-//! National focus (`cnational_focus_progress`): the writers below mark
-//! the progress object's country (`+0x8`).
+//! National focus (`cnational_focus_progress`): the writers below mark the
+//! progress object's country.
 //!
 //! CountryAppearance (`CountryAppearanceRow`) follows cosmetic tags, colour
 //! copies, 3D/2D graphical cultures, localized names and subject rebuilding
@@ -129,11 +146,11 @@
 //! subject rebuilding names its country and overlord before and after the call.
 //!
 //! CountryVisibility retains only raw presence/value of the combat-intel
-//! accumulator entry. Accumulator clearing, filtered/scaled addition and merging
-//! reach country `+0x5B8` only through modifier recalculation and appearance
-//! reset. Helpers receiving that accumulator run inside recalculation. Load
-//! readers and construction cannot certify a held epoch. Definition and
-//! eligibility metadata remain per-hour reads.
+//! accumulator entry. Accumulator clearing, filtered/scaled addition and
+//! merging reach the country accumulator only through modifier recalculation
+//! and appearance reset. Helpers receiving that accumulator run inside
+//! recalculation. Load readers and construction cannot certify a held epoch.
+//! Definition and eligibility metadata remain per-hour reads.
 //!
 //! Every site runs on the game thread, takes at most four integer or pointer
 //! arguments and opens with whole relocatable instructions covering the five
@@ -361,31 +378,33 @@ pub enum Receiver {
     /// RCX is the country and EDX the air statistic column; only column
     /// 1 (interception) is recorded.
     Interception,
-    /// RCX is a relation status; its owner is its diplomacy `+0x1F0`'s
-    /// country `+0x288`.
+    /// RCX is a relation status; its owner is its diplomacy's
+    /// (`crelation_status::DIPLOMACY_STATUS`) country
+    /// (`cdiplomacy_status::COUNTRY`).
     RelationStatus,
-    /// RCX is a war relation; both endpoints `+0x10`/`+0x14` (link ids).
+    /// RCX is a war relation; both endpoints (link ids `crelation::FIRST_COUNTRY`,
+    /// `SECOND_COUNTRY`).
     WarRelation,
-    /// RCX is a country character pool; its owner `+0x8`.
+    /// RCX is a country character pool; its owner `ccountry_characters::OWNER`.
     CountryCharacters,
-    /// RCX is a political status; its owner `+0xC8`.
+    /// RCX is a political status; its owner `cpolitical_status::COUNTRY`.
     PoliticalStatus,
-    /// RCX is a political party; its country link id `+0x20`.
+    /// RCX is a political party; its country link id `cpolitical_party::TAG`.
     Party,
-    /// RCX is a character; its country link id `+0x68`.
+    /// RCX is a character; its country link id `ccharacter::COUNTRY`.
     Character,
-    /// RCX is a scientist; its character `+0x8`.
+    /// RCX is a scientist; its character `SCIENTIST_CHARACTER`.
     Scientist,
-    /// RCX is a research slot; its status `+0x10`.
+    /// RCX is a research slot; its status `cresearch_slot::STATUS`.
     ResearchSlot,
     /// A research slot whose assignment reclassifies its country's technologies
     /// through two propagation calls. Sharing countries read a member's
     /// classifiers (`research_modifiers::sharing`), so this names its status's
     /// country and every research partner, as [`Self::SharedTechnologyStatus`].
     SharedResearchSlot,
-    /// RCX is a technology status; its country `+0x130`.
+    /// RCX is a technology status; its country `ctechnology_status::COUNTRY`.
     TechnologyStatus,
-    /// RCX is a technology; its status `+0x158`.
+    /// RCX is a technology; its status `ctechnology::STATUS`.
     Technology,
     /// A technology whose level or classifier other countries read:
     /// its status's country and every country sharing research with it.
@@ -397,33 +416,37 @@ pub enum Receiver {
     /// completed: its country and the partners whose rows that technology
     /// can change ([`sharing_affected`]).
     CompletedTechnology,
-    /// RCX is a program status; its owner link id `+0x10`.
+    /// RCX is a program status; its owner link id `nproject_cprogram_status::OWNER`.
     ProgramStatus,
-    /// RCX is a focus progress; its country `+0x8`.
+    /// RCX is a focus progress; its country `cnational_focus_progress::COUNTRY`.
     FocusProgress,
-    /// RCX is an project; its owner link id `+0x1C`.
+    /// RCX is an project; its owner link id `nproject_cproject::OWNER`.
     Project,
-    /// RCX is a faction sharing group (faction `+0x860`; construction stores
-    /// its faction at `+0x48`): the faction's members and raw ids on the group's
-    /// member array (`+0x18`), whose sharing rosters hold it.
+    /// RCX is a faction's sharing group (construction stores its faction in
+    /// `FACTION_SHARING_FACTION`): the faction's members and raw ids on the
+    /// group's member array (`ctechnology_sharing_group::MEMBERS`), whose
+    /// sharing rosters hold it.
     FactionSharing,
-    /// RCX is a equipment production licence; its licensee link id `+0x10`,
-    /// whose production status holds the licensed variants.
+    /// RCX is a equipment production licence; its licensee link id
+    /// `cequipment_production_license::OWNER`, whose production status holds
+    /// the licensed variants.
     License,
-    /// RCX is a diplomacy status; its country `+0x288`.
+    /// RCX is a diplomacy status; its country `cdiplomacy_status::COUNTRY`.
     DiplomacyStatus,
-    /// RCX is a diplomacy status whose subjects `+0x170` and overlord
-    /// `+0x188` the call rebuilds: its country and the overlord the raw link
-    /// names while positive, as the rebuild requires,
-    /// named again on return ([`Self::renames`]) for the new overlord.
+    /// RCX is a diplomacy status whose subjects and overlord
+    /// (`cdiplomacy_status::SUBJECTS`, `OVERLORD`) the call rebuilds: its
+    /// country and the overlord the raw link names while positive, as the
+    /// rebuild requires, named again on return ([`Self::renames`]) for the new
+    /// overlord.
     Subjects,
-    /// State owner setting receives the state in RCX and new owner link in
-    /// EDX, with two further arguments: old owner `+0xC8` and new owner, each
-    /// while positive. The setter resolves the old link only when positive.
+    /// State owner setting receives the state in RCX and new owner link in EDX,
+    /// with two further arguments: old owner (`cstate::OWNER`) and new owner,
+    /// each while positive. The setter resolves the old link only when
+    /// positive.
     StateOwner,
     /// State controller setting receives the state in RCX and new controller
-    /// link in EDX, with two further arguments: old controller `+0xCC` and
-    /// new controller, each while positive.
+    /// link in EDX, with two further arguments: old controller
+    /// (`cstate::CONTROLLER`) and new controller, each while positive.
     StateController,
     /// Core addition/removal receives the state and a raw country link pointer
     /// in RDX, doing nothing unless the pointed-to link is positive. This names
@@ -458,18 +481,18 @@ impl Receiver {
 /// EDX of air-statistic addition for interception: the only
 /// column the stability inputs read (`country_stability::interception`).
 pub const INTERCEPTION_COLUMN: u32 = 1;
-/// Scientist `+0x8`: its character, copied by copy construction and used to
-/// retain scientists in the program category-map rebuild.
+/// A scientist's character, copied by copy construction and used to retain
+/// scientists in the program category-map rebuild.
 pub const SCIENTIST_CHARACTER: usize = 0x08;
-/// Technology status `+0x118`: the sharing-group roster, changed by group
+/// A technology status's sharing-group roster, changed by group
 /// addition/removal and visited by the sharing member walk.
 pub const SHARING_ROSTER: usize = 0x118;
 /// Slot synchronization rewrites the slot roster header
-/// (technology status `+0xA0`, capacity `+0xA8`, count `+0xAC`) only when it
-/// changes the roster.
+/// (`ctechnology_status::RESEARCH_SLOTS_DATA`, `RESEARCH_SLOTS_CAPACITY`,
+/// `RESEARCH_SLOTS_COUNT`) only when it changes the roster.
 pub const SLOT_ROSTER: usize = ctechnology_status::RESEARCH_SLOTS_DATA;
 /// Raw member ids the sharing member walk reads from a roster entry
-/// (`+0x18`, count `+0x24`).
+/// (`ctechnology_sharing_group::MEMBERS`, count `MEMBER_COUNT`).
 const GROUP_MEMBERS: usize = ctechnology_sharing_group::MEMBERS;
 /// The faction sharing roster entry's vtable `research_modifiers` accepts
 /// beside the group's.
@@ -483,7 +506,7 @@ const REBUILD_LOCALIZED_NAME_RVA: usize = 0x70_9950;
 /// Each hooked site, how its arguments name its countries, and the tables
 /// its writes reach.
 pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
-    // Country modifier recalculation (country): stores RCX at RSP+8.
+    // Country modifier recalculation (country): stores RCX in its home slot.
     (
         MutationSite {
             name: "recalculate_modifiers",
@@ -494,11 +517,13 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
             ],
         },
         Receiver::Country,
-        // Pride of the fleet `+0x250` (its setter recalculates) and counter-row
-        // attack modifiers; the visibility entry used by unit intel is rebuilt too.
+        // Pride of the fleet (`ccountry::PRIDE_OF_THE_FLEET`; its setter recalculates)
+        // and counter-row attack modifiers; the visibility entry used by unit intel is
+        // rebuilt too.
         Tables::BOTH.with(Tables::COUNTERS).with(Tables::VISIBILITY),
     ),
-    // Stability addition (country, delta): loads the base at RCX+0x10D0 into R8.
+    // Stability addition (country, delta): loads the base (`ccountry::STABILITY`)
+    // into R8.
     (
         MutationSite {
             name: "add_stability",
@@ -511,7 +536,8 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::Country,
         Tables::STABILITY,
     ),
-    // War-support addition (country, delta): loads the base at RCX+0x10D8 into R8.
+    // War-support addition (country, delta): loads the base (`ccountry::WAR_SUPPORT`)
+    // into R8.
     (
         MutationSite {
             name: "add_war_support",
@@ -524,8 +550,9 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::Country,
         Tables::STABILITY,
     ),
-    // Stability setting (country, value): stores RDX at RCX+0x10D0. The
-    // instruction-pointer-relative load starts at +7, after the relocated store.
+    // Stability setting (country, value): stores RDX in the base
+    // (`ccountry::STABILITY`). The instruction-pointer-relative load follows the
+    // relocated store.
     (
         MutationSite {
             name: "set_stability",
@@ -538,7 +565,8 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::Country,
         Tables::STABILITY,
     ),
-    // War-support setting (country, value): stores RDX at RCX+0x10D8.
+    // War-support setting (country, value): stores RDX in the base
+    // (`ccountry::WAR_SUPPORT`).
     (
         MutationSite {
             name: "set_war_support",
@@ -551,7 +579,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::Country,
         Tables::STABILITY,
     ),
-    // Weekly country update (country): stores RBX at RSP+0x18.
+    // Weekly country update (country): stores RBX in R8's home slot.
     (
         MutationSite {
             name: "weekly_update",
@@ -565,7 +593,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::STABILITY,
     ),
     // Air-statistic addition (country, column, value), also tail-called by
-    // building-bombing bookkeeping: stores RBX at RSP+8.
+    // building-bombing bookkeeping: stores RBX in RCX's home slot.
     (
         MutationSite {
             name: "add_air_statistic",
@@ -579,7 +607,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::STABILITY,
     ),
     // Relation replacement: RCX is the status, RDX the new relation, R8 the
-    // typed slot to replace. The prologue stores RBX at RSP+8.
+    // typed slot to replace. The prologue stores RBX in RCX's home slot.
     (
         MutationSite {
             name: "replace_relation",
@@ -590,11 +618,11 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
             ],
         },
         Receiver::RelationStatus,
-        // The war pointer `+0x2E8` of the owner's slot-zero status, a counter
-        // operand (zero_war).
+        // The war pointer (`crelation_status::WAR_RELATION`) of the owner's slot-zero
+        // status, a counter operand (zero_war).
         Tables::STABILITY.with(Tables::COUNTERS),
     ),
-    // War instigator setting (war, tag, _): stores RBX at RSP+8.
+    // War instigator setting (war, tag, _): stores RBX in RCX's home slot.
     (
         MutationSite {
             name: "set_instigator",
@@ -622,7 +650,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::STABILITY,
     ),
     // Exile entry (exile diplomacy, host, _): other countries read the host
-    // for war flags, so every country is marked. Stores RBX at RSP+8.
+    // for war flags, so every country is marked. Stores RBX in RCX's home slot.
     (
         MutationSite {
             name: "become_exiled",
@@ -649,7 +677,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::Every,
         Tables::STABILITY,
     ),
-    // Return from exile (diplomacy): stores RCX at RSP+8.
+    // Return from exile (diplomacy): stores RCX in its home slot.
     (
         MutationSite {
             name: "return_from_exile",
@@ -662,7 +690,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::Every,
         Tables::STABILITY,
     ),
-    // Advisor unappointment (characters, advisor, flag): stores RBX at RSP+0x18.
+    // Advisor unappointment (characters, advisor, flag): stores RBX in R8's home slot.
     (
         MutationSite {
             name: "unappoint_advisor",
@@ -690,7 +718,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
     ),
     // Slot synchronization (status) runs daily for every country. The collector
     // notifies only when the slot roster header changed ([`SLOT_ROSTER`]).
-    // Stores RBX at RSP+0x10.
+    // Stores RBX in RDX's home slot.
     (
         MutationSite {
             name: "sync_research_slots",
@@ -782,8 +810,8 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::Technology,
         Tables::RESEARCH,
     ),
-    // XP-boost setting (technology, flag): stores RBX at RSP+8; the
-    // instruction-pointer-relative comparison starts at +0xA.
+    // XP-boost setting (technology, flag): stores RBX in RCX's home slot; the
+    // instruction-pointer-relative comparison follows.
     (
         MutationSite {
             name: "set_boosted_by_xp",
@@ -938,7 +966,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::Every,
         Tables::RESEARCH,
     ),
-    // Scientist category-map rebuilding (program status): stores RCX at RSP+8.
+    // Scientist category-map rebuilding (program status): stores RCX in its home slot.
     (
         MutationSite {
             name: "scientist_categories",
@@ -967,7 +995,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
     // Fresh technology initialization (status) rebuilds and classifies the
     // roster after load, during runtime-subsystem initialization for dynamic
     // country reuse (civil war, country creation and peace-conference
-    // participants), after forwarded appearance reset. Stores RBX at RSP+0x18.
+    // participants), after forwarded appearance reset. Stores RBX in R8's home slot.
     (
         MutationSite {
             name: "fresh_init",
@@ -977,17 +1005,19 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::SharedTechnologyStatus,
         Tables::TECHNOLOGY,
     ),
-    // National focus writers (`cnational_focus_progress`) cover the
-    // country tree `+0x1370`, current/continuous focus `+0x10`/`+0x18`, progress
-    // `+0x38`, paused flag `+0xB0` and completed vector `+0x40..+0x4C`. The politics
-    // family patches and forwards selection and cancellation. Daily focus update
-    // is unhooked: the game-state daily pass runs it for every country owning a
-    // state inside the hour entered at 23; focus reads every country at the next
-    // hour. Selection with focus auto-completion is its other caller. Member
-    // loading, construction and destruction run only in a load.
+    // National focus writers (`cnational_focus_progress`) cover the country tree
+    // (`ccountry::FOCUS_TREE`), current/continuous focus (`CURRENT`, `CONTINUOUS`),
+    // progress (`PROGRESS`), paused flag (`PAUSED`) and completed vector
+    // (`COMPLETED_DATA` through `COMPLETED_COUNT`). The politics family patches and
+    // forwards selection and cancellation. Daily focus update is unhooked: the
+    // game-state daily pass runs it for every country owning a state inside the hour
+    // entered at 23; focus reads every country at the next hour. Selection with focus
+    // auto-completion is its other caller. Member loading, construction and
+    // destruction run only in a load.
     //
     // Progress reset (progress) runs from appearance reset, tree replacement and
-    // dynamic-country reuse. It zeroes R8D and sets the paused byte at RCX+0xB0.
+    // dynamic-country reuse. It zeroes R8D and sets the paused byte
+    // (`cnational_focus_progress::PAUSED`).
     (
         MutationSite {
             name: "focus_reset",
@@ -1015,7 +1045,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::FOCUS,
     ),
     // Continuous-focus selection/clearing (progress, focus): commands, selection,
-    // tree restoration and daily invalidation. Stores RBX at RSP+0x18.
+    // tree restoration and daily invalidation. Stores RBX in R8's home slot.
     (
         MutationSite {
             name: "continuous_focus",
@@ -1029,7 +1059,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::FOCUS,
     ),
     // Focus completion (target progress, focus, origin, _): daily completion,
-    // completion effects, joint focuses and auto-completion. Stores R9 at RSP+0x20.
+    // completion effects, joint focuses and auto-completion. Stores R9 in its home slot.
     (
         MutationSite {
             name: "focus_completed",
@@ -1040,7 +1070,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::FOCUS,
     ),
     // Focus-state copying (destination, source): civil war and dynamic/peace-created
-    // countries. Stores RBX at RSP+8.
+    // countries. Stores RBX in RCX's home slot.
     (
         MutationSite {
             name: "focus_copy",
@@ -1054,7 +1084,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::FOCUS,
     ),
     // Completed-focus removal (progress, focus): focus-uncompletion effects.
-    // Stores RBX at RSP+0x18.
+    // Stores RBX in R8's home slot.
     (
         MutationSite {
             name: "focus_remove_completed",
@@ -1082,7 +1112,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::FOCUS,
     ),
     // Completed-focus addition (progress, focus, origin): completion, bypass,
-    // unlock, tree effects and restoration. Stores RDX at RSP+0x10.
+    // unlock, tree effects and restoration. Stores RDX in its home slot.
     (
         MutationSite {
             name: "add_completed_focus",
@@ -1098,7 +1128,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
     // Technology reload console command (out, arguments): clears and reparses
     // the template database with postprocessing through its reload helper, then
     // rebuilds every country's status. The whole command covers the templates
-    // TechnologyDefinitions records. Stores RBX at RSP+0x18.
+    // TechnologyDefinitions records. Stores RBX in R8's home slot.
     (
         MutationSite {
             name: "reload_technologies",
@@ -1114,7 +1144,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
     // The console intelligence-network growth handler (out?) is the only writer
     // of IntelNetworks outside the daily step and dynamic-country reuse. Through
     // three helpers it sets each row's local strength in the player's networks.
-    // Stores RCX at RSP+8.
+    // Stores RCX in its home slot.
     (
         MutationSite {
             name: "grow_intel_network",
@@ -1127,15 +1157,15 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::Every,
         Tables::INTEL_NETWORKS,
     ),
-    // Special project writers (`nproject_cproject`) outside the daily
-    // pool pass mark the project owner (`+0x1C`). The daily country pass reaches
+    // Special project writers (`nproject_cproject`) outside the daily pool pass mark
+    // the project owner (`nproject_cproject::OWNER`). The daily country pass reaches
     // progress advancement through four helpers inside the hour entered at 23;
     // projects reads every country afterwards. Capture loss and forced completion
-    // reach cancellation and completion; forwarded appearance reset clears the
-    // pool of a dynamically reused country.
+    // reach cancellation and completion; forwarded appearance reset clears the pool
+    // of a dynamically reused country.
     //
     // Project start (project, program): commands, AI, effects and console.
-    // Stores RBX at RSP+0x18.
+    // Stores RBX in R8's home slot.
     (
         MutationSite {
             name: "start_project",
@@ -1163,7 +1193,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::PROJECTS,
     ),
     // Project cancellation (project): stopping, outer and forced updates, and
-    // capture. Stores RBX at RSP+0x10.
+    // capture. Stores RBX in RDX's home slot.
     (
         MutationSite {
             name: "cancel_project",
@@ -1191,7 +1221,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::PROJECTS,
     ),
     // Project progress-ratio addition (project, ratio): progress effects, raid
-    // reductions, capture bonuses and supportive scientists. Stores RBX at RSP+0x10.
+    // reductions, capture bonuses and supportive scientists. Stores RBX in RDX's home slot.
     (
         MutationSite {
             name: "add_project_progress",
@@ -1206,7 +1236,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
     ),
     // Prototype reward application (project, option, reward, option token,
     // context flag) takes five arguments. It runs from reward commands, effects,
-    // console and default rewards. Stores RBX at RSP+0x20.
+    // console and default rewards. Stores RBX in R9's home slot.
     (
         MutationSite {
             name: "project_reward_option",
@@ -1220,7 +1250,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::PROJECTS,
     ),
     // Forced project update (project): dismantling and the debug scheduled
-    // program daily pass. Stores RBX at RSP+0x10.
+    // program daily pass. Stores RBX in RDX's home slot.
     (
         MutationSite {
             name: "forced_project_update",
@@ -1235,7 +1265,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
     ),
     // Project database resynchronization (definitions, owner tag, scope, counter,
     // header) takes five arguments. Database reload reaches it through a helper
-    // for every country. Stores RBX at RSP+0x10.
+    // for every country. Stores RBX in RDX's home slot.
     (
         MutationSite {
             name: "project_database_resync",
@@ -1248,11 +1278,11 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::Every,
         Tables::PROJECTS,
     ),
-    // Licence removal (licence) resolves its licensee through the link at
-    // licence+0x10 and removes the licence's variants from production-status
-    // licensed variants (`+0x1B0`, count `+0x1BC`), read by technology licence
-    // modifiers. Two cancellation paths, war cleanup (creation/joining) and
-    // destruction call it. Saves RBP.
+    // Licence removal (licence) resolves its licensee through the link
+    // (`cequipment_production_license::OWNER`) and removes the licence's variants
+    // from the production status's licensed-variant array and count, read by
+    // technology licence modifiers. Two cancellation paths, war cleanup
+    // (creation/joining) and destruction call it. Saves RBP.
     (
         MutationSite {
             name: "license_removal",
@@ -1267,7 +1297,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
     ),
     // Licence extension (licence, variant), from variant-creation commands,
     // appends to the licence then tail-calls insertion into the licensee's
-    // licensed variants. Stores RDX at RSP+0x10.
+    // licensed variants. Stores RDX in its home slot.
     (
         MutationSite {
             name: "license_extension",
@@ -1280,10 +1310,10 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::License,
         Tables::RESEARCH,
     ),
-    // Faction leadership setting (faction, country) moves the leader to the
-    // front of member array `+0x58`; every member's faction-mode sharing group
-    // follows that order. Callers are construction, member addition and leader
-    // change. Stores RDX at RSP+0x10.
+    // Faction leadership setting (faction, country) moves the leader to the front of
+    // the member array (`cfaction::MEMBERS`); every member's faction-mode sharing
+    // group follows that order. Callers are construction, member addition and leader
+    // change. Stores RDX in its home slot.
     (
         MutationSite {
             name: "faction_set_leader",
@@ -1296,19 +1326,22 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::Every,
         Tables::RESEARCH,
     ),
-    // CountryAppearance ([`APPEARANCE_SITES`]) reads diplomacy subjects `+0x170`
-    // and overlord `+0x188`, country colours `+0x370..+0x3A0` (UI colour `+0x390`),
-    // cosmetic tag `+0x1488`, name/adjective/definite name and old-name caches
-    // `+0x90/+0xB0/+0xD0`, graphical cultures `+0x1028`/`+0x1050`, and the ruling
-    // party's first leader (ideology and character). Other writers are forwarded
-    // appearance reset, diplomacy reset, ruling-party and party-leader sites, and
-    // character-role writers including ideology setting. Dynamic reuse resets
-    // appearance before original-tag assignment (`+0x130C`'s only runtime writer)
-    // in the same game-thread step. Modifier recalculation writes none of these
-    // fields (its `+0x390` is a static modifier slot); none changes every hour.
+    // CountryAppearance ([`APPEARANCE_SITES`]) reads diplomacy subjects and overlord
+    // (`cdiplomacy_status::SUBJECTS`, `OVERLORD`), the country colours starting at
+    // `ccountry::CURRENT_PRIMARY_COLOR` (UI colour `CURRENT_UI_COLOR`), cosmetic tag
+    // (`COSMETIC_TAG`), name/adjective/definite name and old-name caches (`OLD_NAME`,
+    // `OLD_ADJECTIVE`, `OLD_DEFINITE_NAME`), graphical cultures (`GRAPHICAL_CULTURE`,
+    // `GRAPHICAL_CULTURE_2D`), and the ruling party's first leader (ideology and
+    // character). Other writers are forwarded appearance reset, diplomacy reset,
+    // ruling-party and party-leader sites, and character-role writers including
+    // ideology setting. Dynamic reuse resets appearance before original-tag
+    // assignment (`ccountry::ORIGINAL_TAG`'s only runtime writer) in the same
+    // game-thread step. Modifier recalculation writes none of these fields (what it
+    // writes at the UI colour's offset is a static modifier slot); none changes
+    // every hour.
     //
     // Cosmetic-tag setting (country, name): tag-set/drop effects and console.
-    // Stores RBX at RSP+0x10.
+    // Stores RBX in RDX's home slot.
     (
         MutationSite {
             name: "set_cosmetic_tag",
@@ -1321,11 +1354,12 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::Country,
         Tables::APPEARANCE,
     ),
-    // Country colour copying (destination, source), called only from console
-    // colour setting, is a 33-byte leaf without unwind data. Its first two
-    // instructions load 16 bytes at RDX+0x20 into XMM0 and store them at RCX+0x370;
-    // four and seven bytes relocate whole. They have no instruction-pointer-relative
-    // operand or incoming branch, as with the leaf stability setters.
+    // Country colour copying (destination, source), called only from console colour
+    // setting, is a 33-byte leaf without unwind data. Its first two instructions load
+    // 16 bytes of the source's colour into XMM0 and store them in the destination's
+    // `ccountry::CURRENT_PRIMARY_COLOR`; four and seven bytes relocate whole. They
+    // have no instruction-pointer-relative operand or incoming branch, as with the
+    // leaf stability setters.
     (
         MutationSite {
             name: "copy_country_colors",
@@ -1338,8 +1372,9 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::Country,
         Tables::APPEARANCE,
     ),
-    // 3D graphical-culture resolution (country, name) writes the `+0x1028` name
-    // and resolved pointer, from the culture-selection caller. Stores RBX at RSP+8.
+    // 3D graphical-culture resolution (country, name) writes the
+    // `ccountry::GRAPHICAL_CULTURE` name and resolved pointer, from the
+    // culture-selection caller. Stores RBX in RCX's home slot.
     (
         MutationSite {
             name: "resolve_graphical_culture",
@@ -1352,9 +1387,9 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::Country,
         Tables::APPEARANCE,
     ),
-    // 2D graphical-culture resolution (country, name) writes `+0x1050`, from
-    // the same culture-selection caller. Prologue bytes match the 3D site but
-    // the site is verified independently.
+    // 2D graphical-culture resolution (country, name) writes
+    // `ccountry::GRAPHICAL_CULTURE_2D`, from the same culture-selection caller.
+    // Prologue bytes match the 3D site but the site is verified independently.
     (
         MutationSite {
             name: "resolve_graphical_culture_2d",
@@ -1371,7 +1406,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
     // name, and alone writes their old-name caches. Fifteen callers cover cosmetic
     // tags, politics/leader-ideology effects, autonomy, subjects and civil war;
     // a thunk also tail-calls it for leader-role and party writers.
-    // Stores RBX at RSP+0x18.
+    // Stores RBX in R8's home slot.
     (
         MutationSite {
             name: "rebuild_localized_name",
@@ -1384,9 +1419,10 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::Country,
         Tables::APPEARANCE,
     ),
-    // Subject rebuilding (diplomacy) clears and refills overlord `+0x188` and
-    // subjects `+0x170` from relations. Callers are in-game data initialization
-    // and two subject-relation callbacks, one virtual. Stores RBX at RSP+0x10.
+    // Subject rebuilding (diplomacy) clears and refills overlord and subjects
+    // (`cdiplomacy_status::OVERLORD`, `SUBJECTS`) from relations. Callers are in-game
+    // data initialization and two subject-relation callbacks, one virtual. Stores RBX
+    // in RDX's home slot.
     (
         MutationSite {
             name: "rebuild_subjects",
@@ -1402,16 +1438,17 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
     // CountryCounterInputs ([`COUNTER_SITES`]) also follows modifier recalculation
     // (pride of the fleet, attack modifiers), relation replacement (slot-zero war),
     // forwarded appearance/diplomacy resets and wartime-ally rebuilding (relation
-    // `+0x310` co-belligerent matrix bytes and candidate vectors), relation-status
-    // reset and fifteen typed replacements (slot-zero subject/access), state owner
-    // and controller changes (owned `+0x478` and controlled `+0x460` states of old
-    // and new countries), state reset, core changes (core states `+0x4A8`), and
-    // character-pool construction/destruction (country `+0xFF0`). Pride-ship names
-    // are read every hour.
+    // co-belligerent matrix bytes (`crelation_status::CO_BELLIGERENT`) and candidate
+    // vectors), relation-status reset and fifteen typed replacements (slot-zero
+    // subject/access), state owner and controller changes (owned and controlled
+    // states, `ccountry::OWNED_STATES` and `CONTROLLED_STATES`, of old and new
+    // countries), state reset, core changes (`ccountry::CORE_STATES`), and
+    // character-pool construction/destruction (`ccountry::CHARACTERS`). Pride-ship
+    // names are read every hour.
     //
-    // Division addition (country, army, _, _) writes roster `+0x290` (first
-    // division), for every new division, load and the fresh-army thunk.
-    // Saves RBX/RBP/RDI.
+    // Division addition (country, army, _, _) writes roster `ccountry::DIVISIONS`
+    // (first division), for every new division, load and the fresh-army thunk. Saves
+    // RBX/RBP/RDI.
     (
         MutationSite {
             name: "add_army",
@@ -1426,7 +1463,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
     ),
     // Division removal (country, army) returns the removed value and swap-erases
     // the roster. Callers are two removal helpers and division addition.
-    // Stores RBX at RSP+8.
+    // Stores RBX in RCX's home slot.
     (
         MutationSite {
             name: "remove_army",
@@ -1440,8 +1477,8 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::COUNTERS,
     ),
     // Unit-leader insertion (characters, leader pointer), from character-status
-    // processing, writes army leaders `+0x70` (kinds 0/1) or navy leaders `+0x88`.
-    // Saves RBP/RDI/R13.
+    // processing, writes the army (kinds 0/1) or navy leader roster
+    // (`LEADER_ROSTERS`). Saves RBP/RDI/R13.
     (
         MutationSite {
             name: "insert_unit_leader",
@@ -1469,9 +1506,9 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::CountryCharacters,
         Tables::COUNTERS,
     ),
-    // Neighbour rebuilding (country) writes `+0x1088`. Callers are derived-state
-    // refresh by flags, province controller changes and another country refresh
-    // helper. Saves RBP/RBX.
+    // Neighbour rebuilding (country) writes the neighbour set
+    // (`ccountry::NEIGHBORS`). Callers are derived-state refresh by flags, province
+    // controller changes and another country refresh helper. Saves RBP/RBX.
     (
         MutationSite {
             name: "refresh_neighbors",
@@ -1485,9 +1522,9 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::COUNTERS,
     ),
     // Industrial-organisation policy reload (game state) reaches every country's
-    // organisation manager (`+0xF68`) through its helper. Only database reload,
-    // through its virtual entry and two other callers, reaches it.
-    // Stores RSI at RSP+0x10.
+    // organisation manager (`ccountry::PRODUCTION_STATUS`) through its helper. Only
+    // database reload, through its virtual entry and two other callers, reaches it.
+    // Stores RSI in RDX's home slot.
     (
         MutationSite {
             name: "reload_mio_policies",
@@ -1500,13 +1537,13 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Receiver::Every,
         Tables::COUNTERS,
     ),
-    // Faction sharing-base setting (group, supportive scientist count) writes
-    // the count multiplied by the configured scientist-sharing bonus at `+0x10`,
-    // the raw Sharing value for every member. It runs from the daily faction
-    // refresh through three helpers, after country program ticks that can prune
-    // supportive scientists through two helpers, and from scientist attachment,
-    // sharing upgrades and parsing. The detour marks only a changed base.
-    // Stores RBX at RSP+0x18.
+    // Faction sharing-base setting (group, supportive scientist count) writes the
+    // count multiplied by the configured scientist-sharing bonus into the group's
+    // base (`ctechnology_sharing_group::BASE_BONUS`), the raw Sharing value for every
+    // member. It runs from the daily faction refresh through three helpers, after
+    // country program ticks that can prune supportive scientists through two helpers,
+    // and from scientist attachment, sharing upgrades and parsing. The detour marks
+    // only a changed base. Stores RBX in R8's home slot.
     (
         MutationSite {
             name: "faction_sharing_base",
@@ -1535,7 +1572,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::WEATHER,
     ),
     // Weather reset/setup console command (out, arguments): resets and initializes
-    // the manager and may reseed. Stores RBX at RSP+0x8.
+    // the manager and may reseed. Stores RBX in RCX's home slot.
     (
         MutationSite {
             name: "weather_reset",
@@ -1549,7 +1586,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::WEATHER,
     ),
     // Snow console command (out, arguments) directly writes the selected
-    // province's snow (`+0x40`). Copies the stack pointer to R11.
+    // province's snow (`sweather_per_province::SNOW`). Copies the stack pointer to R11.
     (
         MutationSite {
             name: "weather_add_snow",
@@ -1563,7 +1600,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::WEATHER,
     ),
     // Mud console command (out) forces the selected province's raw mud
-    // (`+0x130`). Stores RBX at RSP+0x10.
+    // (`sweather_per_province::RAW_MUD`). Stores RBX in RDX's home slot.
     (
         MutationSite {
             name: "weather_set_mud",
@@ -1578,7 +1615,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
     ),
     // Weather console command (out, arguments) sets the selected province's
     // region flags through their setters and rebuilds its modifiers.
-    // Stores RBX at RSP+0x10.
+    // Stores RBX in RDX's home slot.
     (
         MutationSite {
             name: "weather_set_region",
@@ -1592,7 +1629,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::WEATHER,
     ),
     // Weather load reading (manager, reader) reads every province/region record
-    // and rebuilds region modifiers. Stores RBX at RSP+0x8.
+    // and rebuilds region modifiers. Stores RBX in RCX's home slot.
     (
         MutationSite {
             name: "weather_read",
@@ -1606,8 +1643,8 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::WEATHER,
     ),
     // Virtual post-load weather initialization (manager) sets initial-mode flag
-    // `+0x348` and runs the hourly update, whose initial passes visit every
-    // province. Saves RBP.
+    // (`cweather_manager::INITIAL_MODE`) and runs the hourly update, whose initial
+    // passes visit every province. Saves RBP.
     (
         MutationSite {
             name: "weather_initial_passes",
@@ -1650,13 +1687,13 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 81] = [
         Tables::WEATHER,
     ),
     // Technology progress addition (technology, amount, source, notify) writes
-    // `+0x198`. Daily slot progress (source 0) is drift read afresh by a carried
-    // slice; assignment (source 1) and console (source 0) run it inside hooked
-    // writes. The technology-tree GUI handler (source 0) calls hooked level
-    // setting and research completion afterwards in the same call. Technology-set
-    // and random-stolen-bonus effects (source 2) can add progress alone to any
-    // technology, so only source-2 calls mark ([`EFFECT_PROGRESS_SOURCE`]; the
-    // detour reads R8). Saves RBX/RDI/R12.
+    // `ctechnology::LIVE_PROGRESS`. Daily slot progress (source 0) is drift read
+    // afresh by a carried slice; assignment (source 1) and console (source 0) run it
+    // inside hooked writes. The technology-tree GUI handler (source 0) calls hooked
+    // level setting and research completion afterwards in the same call.
+    // Technology-set and random-stolen-bonus effects (source 2) can add progress
+    // alone to any technology, so only source-2 calls mark
+    // ([`EFFECT_PROGRESS_SOURCE`]; the detour reads R8). Saves RBX/RDI/R12.
     (
         MutationSite {
             name: "research_progress",
@@ -1708,7 +1745,7 @@ pub const GROW_INTEL_NETWORK: usize = 46;
 pub const PROJECT_REWARD_OPTION: usize = 52;
 pub const PROJECT_DATABASE_RESYNC: usize = 54;
 
-/// Visits the native id (country `+0x8`, the census key) of every country
+/// Visits the native id (`ccountry::ID`, the census key) of every country
 /// whose recorded rows a call with first (RCX) and second (RDX) can
 /// change, as receiver names them. False when one cannot be named (a read
 /// fails, a pointer is null or a link names no country) and for
@@ -1882,7 +1919,7 @@ fn positive_link(
     }
 }
 
-/// The country of a diplomacy status (`+0x288`).
+/// The country of a diplomacy status (`cdiplomacy_status::COUNTRY`).
 fn diplomacy_country(memory: &impl Memory, diplomacy: usize) -> Option<u32> {
     pointer(memory, diplomacy, cdiplomacy_status::COUNTRY)
         .and_then(|country| of_country(memory, country))
@@ -1894,11 +1931,12 @@ pub fn slot_roster(memory: &impl Memory, status: usize) -> Option<[u8; 16]> {
     read::<[u8; 16]>(memory, status.checked_add(SLOT_ROSTER)?)
 }
 
-/// The army and navy leader roster counts country character pool `+0x7C` and
-/// `+0x94`, the only roster words unit-leader removal writes. It erases in
-/// place: navy inline, army through a helper copying the tail and decrementing
-/// count. It never reallocates, so equal counts before and after prove neither
-/// roster changed. Deferred hourly removal of unlisted leaders writes nothing.
+/// The army and navy leader roster counts of a country character pool
+/// (`LEADER_ROSTERS` at `LEADER_COUNT`), the only roster words unit-leader
+/// removal writes. It erases in place: navy inline, army through a helper
+/// copying the tail and decrementing count. It never reallocates, so equal
+/// counts before and after prove neither roster changed. Deferred hourly
+/// removal of unlisted leaders writes nothing.
 pub fn unit_leader_counts(memory: &impl Memory, characters: usize) -> Option<[u8; 16]> {
     let count = |roster: usize| {
         read::<[u8; 4]>(
@@ -1912,27 +1950,27 @@ pub fn unit_leader_counts(memory: &impl Memory, characters: usize) -> Option<[u8
     Some(counts)
 }
 
-/// country character pool `+0x70` army and `+0x88` navy leader rosters.
+/// The country character pool's army and navy leader rosters.
 const LEADER_ROSTERS: [usize; 2] = [0x70, 0x88];
 /// A roster's count word after its data pointer and capacity.
 const LEADER_COUNT: usize = 0xC;
 
-/// The faction sharing group's base `+0x10` and member array pointer `+0x18`
-/// the base setter leaves alone: equal before and after its call
-/// proves it changed no Sharing row.
+/// The faction sharing group's base and member array pointer
+/// (`ctechnology_sharing_group::BASE_BONUS`, `MEMBERS`) the base setter leaves
+/// alone: equal before and after its call proves it changed no Sharing row.
 pub fn faction_sharing_base(memory: &impl Memory, group: usize) -> Option<[u8; 16]> {
     read::<[u8; 16]>(memory, group.checked_add(FACTION_SHARING_BASE_OFFSET)?)
 }
 
-/// sharing group `+0x10`: the group's base bonus.
+/// The sharing group's base bonus.
 const FACTION_SHARING_BASE_OFFSET: usize = 0x10;
-/// faction sharing group `+0x48`: its faction.
+/// The faction sharing group's faction.
 const FACTION_SHARING_FACTION: usize = 0x48;
 
 /// Visits every country sharing research with status's country: the
 /// members of each group on its sharing roster ([`SHARING_ROSTER`], raw ids
 /// resolved through the links) and every member of its faction, because a
-/// faction-mode group (template `+0x78`) on any member's roster takes its
+/// faction-mode group (a mode its template sets) on any member's roster takes its
 /// members from that member's faction (`research_modifiers::sharing`). False
 /// when anything does not read.
 pub fn sharing(
@@ -1970,8 +2008,8 @@ pub fn sharing(
             return false;
         }
     }
-    // The faction's members (faction `+0x58`, country pointer whose `+0x8` the
-    // reader takes), whatever this country's roster lists.
+    // The faction's members (`cfaction::MEMBERS`, country pointer whose
+    // `ccountry::ID` the reader takes), whatever this country's roster lists.
     let Some(diplomacy) = pointer(memory, status, ctechnology_status::COUNTRY)
         .and_then(|country| pointer(memory, country, ccountry::DIPLOMACY_STATUS))
     else {
@@ -2026,8 +2064,8 @@ fn sharing_partners(
             return false;
         }
     }
-    // The faction's members (faction `+0x58`, country pointer whose `+0x8` the
-    // reader takes), whatever this country's roster lists.
+    // The faction's members (`cfaction::MEMBERS`, country pointer whose
+    // `ccountry::ID` the reader takes), whatever this country's roster lists.
     let Some(diplomacy) = pointer(memory, status, ctechnology_status::COUNTRY)
         .and_then(|country| pointer(memory, country, ccountry::DIPLOMACY_STATUS))
     else {
@@ -2046,30 +2084,28 @@ fn sharing_partners(
     }
 }
 
-/// Technology `+0xB0`: the dependents propagation recomputes
-/// after a classifier change (count `+0xBC`).
+/// A technology's dependents, which propagation recomputes after a classifier
+/// change (an array with its count).
 const TECHNOLOGY_DEPENDENTS: usize = 0xb0;
-/// technology `+0xC8`: the predecessors whose classifiers
-/// technology classification and a sharing partner's predecessor
-/// rows read (count `+0xD4`).
+/// A technology's predecessors, whose classifiers technology classification and
+/// a sharing partner's predecessor rows read (an array with its count).
 const TECHNOLOGY_PREDECESSORS: usize = 0xc8;
 
 /// [sharing], narrowed to the partners whose rows a write of written
-/// (technologies of status's country; `None` entries are skipped) can
-/// change. A partner reads, for each technology it researches, this
-/// country's instance at that template's database index
-/// (`research_modifiers::sharing`): its level, and the
-/// classifiers of its direct predecessors (`+0xC8`). A write changes the
-/// written technology's level and, through propagation, the
-/// classifiers of the written technology, of its dependents (`+0xB0`) and
-/// of its listeners ([`ctechnology::LISTENERS`]: the technologies whose
-/// template names it as a prerequisite or exclusion, which a dependent list
-/// need not), transitively. So a partner is visited when one of its
-/// researched templates' instances here is written, or has a predecessor
-/// that is written or reached from a written one. Anything unreadable, a
-/// listener that is not a technology, a pending listener container, or a
-/// walk longer than this country's technology roster, visits every partner.
-/// False as [sharing].
+/// (technologies of status's country; `None` entries are skipped) can change. A
+/// partner reads, for each technology it researches, this country's instance at
+/// that template's database index (`research_modifiers::sharing`): its level,
+/// and the classifiers of its direct predecessors (`TECHNOLOGY_PREDECESSORS`).
+/// A write changes the written technology's level and, through propagation, the
+/// classifiers of the written technology, of its dependents
+/// (`TECHNOLOGY_DEPENDENTS`) and of its listeners ([`ctechnology::LISTENERS`]:
+/// the technologies whose template names it as a prerequisite or exclusion,
+/// which a dependent list need not), transitively. So a partner is visited when
+/// one of its researched templates' instances here is written, or has a
+/// predecessor that is written or reached from a written one. Anything
+/// unreadable, a listener that is not a technology, a pending listener
+/// container, or a walk longer than this country's technology roster, visits
+/// every partner. False as [sharing].
 pub fn sharing_affected(
     memory: &impl Memory,
     base: usize,
@@ -2169,10 +2205,9 @@ fn affected_partners(
                     push(&mut stack, dependent)?;
                 }
             }
-            // Propagation notifies each listener through virtual slot 2; the
-            // technology observer propagates from the object 0x10 bytes before
-            // the listener. Other listener kinds or pending containers visit
-            // every partner.
+            // Propagation notifies each listener through virtual slot 2; the technology observer
+            // propagates from the technology that embeds the listener. Other listener kinds or
+            // pending containers visit every partner.
             if read::<u64>(
                 memory,
                 technology.checked_add(ctechnology::PENDING_LISTENERS)?,
@@ -2203,10 +2238,11 @@ fn affected_partners(
 }
 
 /// The instances of status's technology roster (roster) that country
-/// reads as a sharing partner: the one at each researched template's
-/// database index (technology status `+0xA0` slots, research slot `+0x18`,
-/// technology `+0x160`, technology template `+0x38`). `None` when anything
-/// does not read; an idle slot or a missing instance reads nothing.
+/// reads as a sharing partner: the one at each researched template's database
+/// index (`ctechnology_status::RESEARCH_SLOTS_DATA` slots,
+/// `cresearch_slot::TECHNOLOGY`, `ctechnology::TEMPLATE`,
+/// `ctechnology_template::DATABASE_INDEX`). `None` when anything does not read;
+/// an idle slot or a missing instance reads nothing.
 fn partner_reads(memory: &impl Memory, country: usize, roster: Array) -> Option<Vec<usize>> {
     let status = pointer(memory, country, ccountry::TECHNOLOGY_STATUS)?;
     let slots = Array::read(
@@ -2242,8 +2278,9 @@ fn partner_reads(memory: &impl Memory, country: usize, roster: Array) -> Option<
     Some(instances)
 }
 
-/// Visits each raw id on a sharing group's member array (`+0x18`, count
-/// `+0x24`), resolved through the links. False when anything does not read.
+/// Visits each raw id on a sharing group's member array
+/// (`ctechnology_sharing_group::MEMBERS`, count `MEMBER_COUNT`), resolved through
+/// the links. False when anything does not read.
 fn members(memory: &impl Memory, base: usize, group: usize, visit: &mut dyn FnMut(u32)) -> bool {
     let Some(members) = group
         .checked_add(GROUP_MEMBERS)
@@ -2264,8 +2301,9 @@ fn members(memory: &impl Memory, base: usize, group: usize, visit: &mut dyn FnMu
     true
 }
 
-/// Visits each raw id on a sharing group's member array (`+0x18`, count
-/// `+0x24`), resolved through the links. False when anything does not read.
+/// Visits each raw id on a sharing group's member array
+/// (`ctechnology_sharing_group::MEMBERS`, count `MEMBER_COUNT`), resolved through
+/// the links. False when anything does not read.
 fn member_countries(
     memory: &impl Memory,
     base: usize,
@@ -2291,8 +2329,8 @@ fn member_countries(
     true
 }
 
-/// Visits each member of a faction (`+0x58`, country pointer whose `+0x8` the
-/// reader takes). False when anything does not read.
+/// Visits each member of a faction (`cfaction::MEMBERS`, country pointer whose
+/// `ccountry::ID` the reader takes). False when anything does not read.
 fn faction_members(memory: &impl Memory, faction: usize, visit: &mut dyn FnMut(u32)) -> bool {
     let Some(members) = faction
         .checked_add(cfaction::MEMBERS)
@@ -2313,8 +2351,8 @@ fn faction_members(memory: &impl Memory, faction: usize, visit: &mut dyn FnMut(u
     true
 }
 
-/// Visits each member country pointer of a faction (`+0x58`), reading its
-/// country id at `+0x8`. False when anything does not read.
+/// Visits each member country pointer of a faction (`cfaction::MEMBERS`), reading
+/// its country id (`ccountry::ID`). False when anything does not read.
 fn faction_countries(memory: &impl Memory, faction: usize, visit: &mut dyn FnMut(usize)) -> bool {
     let Some(members) = faction
         .checked_add(cfaction::MEMBERS)
@@ -2337,7 +2375,7 @@ fn faction_countries(memory: &impl Memory, faction: usize, visit: &mut dyn FnMut
 
 /// The native id of the country raw link id raw names, as
 /// `ccountry::Reader::resolve` finds it: the game state's `COUNTRY_LINKS[raw]`
-/// gives its slot and `COUNTRIES[slot]` its object, whose `+0x8` the census keys.
+/// gives its slot and `COUNTRIES[slot]` its object, whose `ccountry::ID` the census keys.
 /// `None` for zero, an unlinked id or anything unreadable.
 pub fn of_link(memory: &impl Memory, base: usize, raw: u32) -> Option<u32> {
     if raw == 0 {
@@ -2376,7 +2414,7 @@ fn of_country(memory: &impl Memory, country: usize) -> Option<u32> {
     read::<u32>(memory, country.checked_add(ccountry::ID)?)
 }
 
-/// The country of a technology status (`+0x130`).
+/// The country of a technology status (`ctechnology_status::COUNTRY`).
 fn status_country(memory: &impl Memory, status: usize) -> Option<u32> {
     pointer(memory, status, ctechnology_status::COUNTRY)
         .and_then(|country| of_country(memory, country))

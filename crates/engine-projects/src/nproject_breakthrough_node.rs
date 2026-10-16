@@ -1,10 +1,10 @@
 //! MSVC tree node holding breakthrough progress.
 
-/// Breakthrough tree node +0x00 left link; sentinel's left link points to the minimum node.
+/// Breakthrough tree node left link; sentinel's left link points to the minimum node.
 pub const LEFT: usize = 0x00;
-/// Breakthrough tree node +0x08 parent link; used by engine-compatible successor traversal.
+/// Breakthrough tree node parent link; used by engine-compatible successor traversal.
 pub const PARENT: usize = 0x08;
-/// Breakthrough tree node +0x10 right link; used by engine-compatible successor traversal.
+/// Breakthrough tree node right link; used by engine-compatible successor traversal.
 pub const RIGHT: usize = 0x10;
 /// Breakthrough-tree nil byte: one for the sentinel, zero for entries.
 pub const IS_NIL: usize = 0x19;

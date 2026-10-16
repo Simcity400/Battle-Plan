@@ -976,15 +976,14 @@ impl Captured {
         receivers
     }
 
-    /// What `country`'s family rows read, beside the accumulator entries a hooked writer
-    /// certifies: task-force leader and commander references; the country's
-    /// Tree certificate  (modifier recalculation and appearance reset rebuild
-    /// its accumulator); the navy's stored hubs (a short array refreshed by
-    /// reset and append); fleet leaders' tree certificates (recalculation,
-    /// HQ scaling, construction and destruction rebuild `+0x418`); and each
-    /// HQ commander's unit leader and four skill objects, selected by four
-    /// component setters. Their `+0xE0` accumulators are content. An unreadable
-    /// or unobserved part returns `None`, so the country is read every hour.
+    /// What `country`'s family rows read, beside the accumulator entries a hooked writer certifies:
+    /// task-force leader and commander references; the country's Tree certificate  (modifier
+    /// recalculation and appearance reset rebuild its accumulator); the navy's stored hubs (a short
+    /// array refreshed by reset and append); fleet leaders' tree certificates (recalculation, HQ
+    /// scaling, construction and destruction rebuild the leader's accumulator); and each HQ
+    /// commander's unit leader and four skill objects, selected by four component setters. Their
+    /// source accumulators are content. An unreadable or unobserved part returns `None`, so the
+    /// country is read every hour.
     fn certificate(
         &self,
         memory: &impl Memory,

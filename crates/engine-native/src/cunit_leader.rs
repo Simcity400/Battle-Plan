@@ -14,9 +14,9 @@ pub const REFERENCE_TYPE: u32 = 4713;
 pub const TYPE: usize = 0x08;
 /// CUnitLeader instance ID u32.
 pub const ID: usize = 0x0c;
-/// CUnitLeader MSVC string at +20.
+/// CUnitLeader MSVC string (`TOKEN`).
 pub const TOKEN: usize = 0x20;
-/// CUnitLeader inherited MSVC string at +40.
+/// CUnitLeader inherited MSVC string (`NAME`).
 pub const NAME: usize = 0x40;
 /// Raw saved description token; localized into a separate client-language cache.
 pub const DESCRIPTION_TOKEN: usize = 0x80;
@@ -100,7 +100,7 @@ pub const KIND_NAVY: u8 = 2;
 /// Replay-side COperativeLeader discriminator, authenticated by its primary vtable.
 pub const KIND_OPERATIVE: u8 = 3;
 
-/// Definition identity and exact signed countdown of one +0xDE0 entry.
+/// Definition identity and exact signed countdown of one `TIMED_TRAIT_DATA` entry.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TimedTrait {
     pub token_id: i32,
@@ -199,9 +199,9 @@ pub fn read(
     let mut category = [0; 4];
     let mut skill = [0; 8];
     let mut exile = [0; 4];
-    // The experience (+0xE68) is not read: UnitLeaders retired it, and the
-    // only display of it, a combat commander's skill progress, takes the
-    // combat side's selected commander (`cland_combat::SideDetails`).
+    // The experience is not read: UnitLeaders retired it, and the only display of it, a combat
+    // commander's skill progress, takes the combat side's selected commander
+    // (`cland_combat::SideDetails`).
     if memory.copy_scattered(
         [
             at(pointer, CHARACTER_TYPE)?,
@@ -329,19 +329,19 @@ pub fn read(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextRead {
     pub outcome: Outcome,
-    /// Offset of native +40, which the unit-leader serializer does not emit.
+    /// Arena offset of the native `NAME`, which the unit-leader serializer does not emit.
     pub name_start: usize,
     pub name_len: usize,
-    /// Offset of native +20, serialized as name. No script-token claim is made.
+    /// Arena offset of the native `TOKEN`, serialized as name. No script-token claim is made.
     pub token_start: usize,
     pub token_len: usize,
     pub bytes_len: usize,
     pub required_bytes: usize,
 }
 
-/// Copies both exact byte strings after `read` authenticates the role. Native
-/// +20 is the saved name; +40 remains a separate unsaved inherited string.
-/// Insufficient storage omits the whole row; callers can grow the arena off-thread.
+/// Copies both exact byte strings after `read` authenticates the role. Native `TOKEN` is the saved
+/// name; `NAME` remains a separate unsaved inherited string. Insufficient storage omits the whole
+/// row; callers can grow the arena off-thread.
 pub fn read_text(memory: &impl Memory, pointer: usize, arena: &mut [u8]) -> TextRead {
     let result = (|| {
         let name = literal(memory, at(pointer, NAME)?)?;

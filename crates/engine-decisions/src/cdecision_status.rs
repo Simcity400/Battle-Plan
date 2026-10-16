@@ -21,9 +21,9 @@ pub const RE_ENABLE: usize = 0x58;
 pub const REMOVE: usize = 0x70;
 /// CDecisionStatus active CTimedDecision pointer array.
 pub const ACTIVE_TIMED: usize = 0xa0;
-/// CDecisionStatus active CTargetedDecision pointer array; native serializer token 0x3856 names +0xe8 active_targeted_decision.
+/// CDecisionStatus active CTargetedDecision pointer array; native serializer token 0x3856 names it active_targeted_decision.
 pub const TARGETED: usize = 0xe8;
-/// CDecisionStatus active timed CTargetedDecision pointer array; native serializer token 0x39de names +0x100 active_targeted_timed_decision.
+/// CDecisionStatus active timed CTargetedDecision pointer array; native serializer token 0x39de names it active_targeted_timed_decision.
 pub const TARGETED_TIMED: usize = 0x100;
 /// Ordered random-count records, with 0x18-byte entries.
 pub const RANDOM_ITEMS: usize = 0x148;

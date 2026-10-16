@@ -30,12 +30,12 @@ pub(super) const STRIDES: [(usize, usize); 11] = [
     (CHARACTER, 0x100),
     (LEADER_HEAD, 0x40),
     (LEADER_NODE, 0x40),
-    // Current ideology is stored at +0x140, beyond the old role prefix.
+    // Current ideology is stored beyond the old role prefix.
     (LEADER_ROLE, 0x200),
     (ADVISOR_HEAD, 0x40),
     (ADVISOR_NODE, 0x60),
     (ADVISOR_ROLE, 0x400),
-    // A CArmyLeader reaches past +0x1059 (its captured byte).
+    // A CArmyLeader reaches past its captured byte.
     (UNIT, 0x2000),
     (TRAITS, 0x40),
     (EXPERIENCE, 0x100),

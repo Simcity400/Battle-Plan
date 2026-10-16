@@ -38,10 +38,9 @@ pub enum Transfer {
     },
 }
 
-/// Transport status uses the original unit +0x2F8 selector, then the signed
-/// combat reference count at +0x24. The count is saved with token 0x2916.
-/// The railway counter consumes only presence and status. Refusal retains identity;
-/// never retry an original selector failure.
+/// Transport status uses the original unit's naval-transfer selector, then the signed combat
+/// reference count. The count is saved with token 0x2916. The railway counter consumes only
+/// presence and status. Refusal retains identity; never retry an original selector failure.
 pub fn transfer(
     memory: &impl Memory,
     base: usize,
@@ -320,8 +319,8 @@ fn composed_modifier<M: Memory>(
     if value::<u64>(memory, definition, 0)? != at(base, cstatic_modifier::VTABLE_RVA)? as u64 {
         return Err("transport modifier identity mismatch");
     }
-    // Resolve the owner's navy and +0x10 backlink after DLC/static-definition
-    // gates, even with no enemies. The owner's regional operand is not reached.
+    // Resolve the owner's navy and its owner backlink after DLC/static-definition gates, even with
+    // no enemies. The owner's regional operand is not reached.
     selected_navy(memory, base, state, owner, countries)?;
     let (total, mean) = totals(memory, base, state, countries, owner, region)?;
     let maximum = value::<i64>(memory, base, MAXIMUM_TOTAL_RVA)?;

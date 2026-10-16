@@ -1,9 +1,8 @@
-//! Per-viewer unit visibility-level entries. Upsert selects by viewer
-//! country ordinal, resets accumulator +8 and stores the signed level
-//! byte at +0x10. Updates advance the accumulator by a per-class rate,
-//! decrement level after the threshold and swap-remove entries below one.
-//! The stored value depends on tick history rather than the current hour
-//! positions, so it is recorded instead of derived.
+//! Per-viewer unit visibility-level entries. Upsert selects by viewer country ordinal, resets the
+//! accumulator and stores the signed level byte. Updates advance the accumulator by a per-class
+//! rate, decrement level after the threshold and swap-remove entries below one. The stored value
+//! depends on tick history rather than the current hour positions, so it is recorded instead of
+//! derived.
 
 use crate::{
     Memory, carmy, ccountry, cfleet,
@@ -21,12 +20,12 @@ const ENTRY_BATCH: usize = 32;
 /// Shared-census divisions whose first entry blocks are read in one guarded
 /// scatter.
 const GROUP: usize = 16;
-/// Unit viewer-level entry country key, u32; intel lookup compares entry+0
-/// against the resolver's ordinal at +4.
+/// Unit viewer-level entry country key, u32; intel lookup compares this key against the resolver's
+/// ordinal.
 pub const VIEWER: usize = 0x00;
-/// Decay accumulator, i64 at +8, incremented by a per-class rate and reset by upsert.
+/// Decay accumulator, i64, incremented by a per-class rate and reset by upsert.
 pub const TIMER: usize = 0x08;
-/// Signed level byte at +0x10, decremented during decay.
+/// Signed level byte, decremented during decay.
 pub const LEVEL: usize = 0x10;
 
 /// One viewer entry in stored array order. `ordinal` is part of the key:
@@ -34,10 +33,10 @@ pub const LEVEL: usize = 0x10;
 /// serializer writes the resulting complete array order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Full native CUnit `+0x18` handle: type in the low 32 bits, id in the high 32 bits.
+    /// Full native CUnit handle (`cunit::HANDLE`): type in the low 32 bits, id in the high 32 bits.
     pub unit: u64,
     pub ordinal: u32,
-    /// Stored viewer key: the country's ordinal in `CGameState+0x310`, not a link id.
+    /// Stored viewer key: the country's ordinal in `cgame_state::COUNTRIES`, not a link id.
     pub viewer: u32,
     /// Native signed level byte; nonpositive entries are recorded, not dropped.
     pub level: i8,

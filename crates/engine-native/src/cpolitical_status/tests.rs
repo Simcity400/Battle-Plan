@@ -576,7 +576,7 @@ fn leader_fixture() -> Vec<u8> {
         put(&mut bytes, node + 0x20, key.to_le_bytes());
         put(&mut bytes, node + 0x28, (leader as u64).to_le_bytes());
     }
-    // The first role is the second map node; +0x140 is deliberately unrelated.
+    // The first role is the second map node; the word at 0x140 is deliberately unrelated.
     put(&mut bytes, LEADERS[0] + 0x140, 999_u64.to_le_bytes());
     put(
         &mut bytes,

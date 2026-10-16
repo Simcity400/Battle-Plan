@@ -3,13 +3,17 @@
 //! recording never calls them. Every site asserts that its thread's game-state
 //! access forbid count is zero.
 //!
-//! Provinces records id +0xA4, state link +0xC0 and state id +0x58/owner +0xC8,
-//! controller +0x188, victory points +0x38, the fort sum from building status
-//! +0x190, border-conflict set size +0xB0 (set +0xA8), owner area +0xD8 and
-//! definition terrain flags and port from static map content. States records
-//! id +0x58, owner +0xC8, controller +0xCC, template +0x30 and its continent
-//! +0x140, custom name +0x38, owner name +0xE8, manpower +0x848, and movement
-//! and railway infrastructure from building status +0x120.
+//! Provinces records id (`cprovince::ID`), state link (`cprovince::STATE`) and
+//! the state's id and owner (`cstate::ID`, `cstate::OWNER`), controller
+//! (`cprovince::CONTROLLER`), victory points (`VICTORY_POINTS`), the fort sum
+//! from the building status (`cprovince::BUILDING_STATUS`), border-conflict set
+//! size (`BORDER_CONFLICT_NONZERO_QWORD`, set `BORDER_CONFLICT_TREE`), owner
+//! area (`OWNER_AREA`) and definition terrain flags and port from static map
+//! content. States records id, owner, controller and template (`cstate::ID`,
+//! `OWNER`, `CONTROLLER`, `TEMPLATE`) and its continent
+//! (`cstate_template::CONTINENT`), custom name (`cstate::PRIMARY_DISPLAY_NAME`),
+//! owner name (`cstate::SECONDARY_DISPLAY_NAME`), manpower, and movement and
+//! railway infrastructure from the building status (`cstate::BUILDING_STATUS`).
 //!
 //! Writer coverage:
 //! - Province controller: only controller-change notification writes it. Its
@@ -33,19 +37,22 @@
 //! - State controller: only the controller setter, which also notifies every
 //!   province through the observed province controller writer.
 //! - Custom name: rename and reset effects share an interpreter entry,
-//!   selecting the state from scope +0xA8; state token loading reads the
+//!   selecting the state from the scope; state token loading reads the
 //!   string, and reset clears it.
 //! - Continent is written only by template database loading; only state
 //!   construction writes the template pointer. It is static per state object.
 //! - Infrastructure calculations read only the infrastructure building
-//!   ([`crate::building_mutations`]) and loader-written operands: building
-//!   database +0x3B0, template +0x8, +0x20, +0x2B8, +0x2BC and +0x2E0, and
-//!   two defines. A capture compares these operands hourly instead.
+//!   ([`crate::building_mutations`]) and loader-written operands: a
+//!   building-database field, five infrastructure-template fields (among them
+//!   `cbuilding_template::TYPE_ID`, `LOOKUP_ENABLED_CANDIDATE`, `SCOPE` and
+//!   `DATABASE_ORDINAL`), and two defines. A capture compares these operands
+//!   hourly instead.
 //! - Manpower is read hourly instead of observed: withdrawal's reinforcement
 //!   path rewrites every controlled state hourly. StateFlags is also read
-//!   hourly because the active-border-conflict setter has no clean hook entry.
-//!   BorderConflicts rows are read hourly because orders-group +0x1B0 and
-//!   combat lifetimes name no province.
+//!   hourly because the active-border-conflict setter has no clean hook
+//!   entry. BorderConflicts rows are read hourly because the orders group's
+//!   border war (`corders_group::BORDER_WAR`) and combat lifetimes name no
+//!   province.
 //! - The developer map editor rewrites states, names and province links
 //!   inline. The building family owns and forwards its entry patch.
 
@@ -63,9 +70,9 @@ pub struct StateRows {
 /// How a site's first argument (RCX) names what it writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Receiver {
-    /// RCX is the province; its id is `+0xA4`.
+    /// RCX is the province; its id is `cprovince::ID`.
     Province,
-    /// RCX is the state; its id is `+0x58`.
+    /// RCX is the state; its id is `cstate::ID`.
     State(StateRows),
     /// The site may write any province's row.
     EveryProvince,
@@ -83,7 +90,7 @@ const BOTH: StateRows = StateRows {
 /// forwards RCX..R9 and returns the original's value.
 pub const MUTATIONS: [(MutationSite, Receiver); 12] = [
     // Province controller change (province, tag, bool, bool): the R9B
-    // spill at stack +0x20 occupies five relocated bytes.
+    // spill to its home slot occupies five relocated bytes.
     (
         MutationSite {
             name: "province_controller",
@@ -107,7 +114,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 12] = [
         },
         Receiver::Province,
     ),
-    // Province token loading (province, reader, ...): spill RBX at stack +8.
+    // Province token loading (province, reader, ...): spill RBX to RCX's home slot.
     (
         MutationSite {
             name: "read_province",
@@ -119,7 +126,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 12] = [
         },
         Receiver::Province,
     ),
-    // Border-conflict insertion (state, combat): spill RBX at stack +8.
+    // Border-conflict insertion (state, combat): spill RBX to RCX's home slot.
     (
         MutationSite {
             name: "insert_border_conflict",
@@ -134,7 +141,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 12] = [
             provinces: true,
         }),
     ),
-    // Border-conflict erasure (state, combat): spill RBX at stack +8.
+    // Border-conflict erasure (state, combat): spill RBX to RCX's home slot.
     (
         MutationSite {
             name: "erase_border_conflict",
@@ -161,7 +168,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 12] = [
         },
         Receiver::EveryProvince,
     ),
-    // State province initialization (state): spill RBX at stack +0x18.
+    // State province initialization (state): spill RBX to R8's home slot.
     // It links provinces that may have been linked to another state.
     (
         MutationSite {
@@ -174,7 +181,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 12] = [
         },
         Receiver::EveryProvince,
     ),
-    // State owner change (state, tag, bool, bool): spill RBX at stack +0x18.
+    // State owner change (state, tag, bool, bool): spill RBX to R8's home slot.
     (
         MutationSite {
             name: "state_owner",
@@ -187,7 +194,8 @@ pub const MUTATIONS: [(MutationSite, Receiver); 12] = [
         Receiver::State(BOTH),
     ),
     // State controller change (state, tag, bool, bool): the stack-pointer
-    // copy to RAX and RBX spill at +0x18 occupy seven relocated bytes.
+    // copy to RAX and RBX spill through it to R8's home slot occupy seven
+    // relocated bytes.
     // Province controllers change through the hooked notification writer.
     (
         MutationSite {
@@ -203,7 +211,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 12] = [
             provinces: false,
         }),
     ),
-    // State reset (state): spill RBX at stack +0x10. It clears both tags
+    // State reset (state): spill RBX to RDX's home slot. It clears both tags
     // and the custom name and unlinks the state's provinces.
     (
         MutationSite {
@@ -217,7 +225,8 @@ pub const MUTATIONS: [(MutationSite, Receiver); 12] = [
         Receiver::State(BOTH),
     ),
     // State token loading (state, reader, token): the stack-pointer copy
-    // to RAX and RBX spill at +8 occupy seven relocated bytes.
+    // to RAX and RBX spill through it to RCX's home slot occupy seven relocated
+    // bytes.
     (
         MutationSite {
             name: "read_state",
@@ -230,7 +239,8 @@ pub const MUTATIONS: [(MutationSite, Receiver); 12] = [
         Receiver::State(BOTH),
     ),
     // State rename/reset effect interpreter entry (effect, scope): the
-    // stack-pointer copy to R11 and RBX spill at +8 occupy seven relocated bytes.
+    // stack-pointer copy to R11 and RBX spill through it to RCX's home slot
+    // occupy seven relocated bytes.
     (
         MutationSite {
             name: "state_name_effect",

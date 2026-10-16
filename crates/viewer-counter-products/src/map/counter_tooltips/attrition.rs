@@ -1,13 +1,11 @@
 //! Own singleton attrition child: the counter's division attrition calculation
 //! uses caller mode zero and prepends `ATTRITION_TOTAL` to its per-source lines.
 //!
-//! The total is the one the counter itself shows,
-//! `DivisionStatus.attrition_value` (+0x438), stored by the hourly division
-//! update from the same calculation (zero while the game state's +0xA39 byte
-//! is clear). The attrition-presence predicate compares it with the threshold
-//! for the counter's attrition glyph. The game's hover evaluates the total afresh, so
-//! a term that changes after the hourly update (acclimatization, a modifier)
-//! shows there first.
+//! The total is the one the counter itself shows, `DivisionStatus.attrition_value`, stored by the
+//! hourly division update from the same calculation (zero while the game state's player-input byte
+//! is clear). The attrition-presence predicate compares it with the threshold for the counter's
+//! attrition glyph. The game's hover evaluates the total afresh, so a term that changes after the
+//! hourly update (acclimatization, a modifier) shows there first.
 //!
 //! The lines follow the game in its order, each derived exactly from the
 //! recording and its content where its operands are recorded:
@@ -16,12 +14,12 @@
 //!   positive expeditionary owner, else the roster owner, is the product
 //!   the attrition-presence predicate compares with, which DivisionStatus
 //!   records as `attrition_threshold`;
-//! - terrain: for a unit with a positive route count (unit+0x20C) and a clear
-//!   strategic-redeployment byte (+0x2AF) on a valid terrain (+0x10, zero only
+//! - terrain: for a unit with a positive ordinary route count and a clear
+//!   strategic-redeployment byte on a valid terrain (zero only
 //!   for the installed null terrain), `ATTRITION_TERRAIN` with the terrain's
 //!   name and
 //!   upkeep plus the getter's `attrition` (0x4F) of its common modifier
-//!   (`+0xB8`) when that sum is nonzero;
+//!   when that sum is nonzero;
 //! - training: `TRAINING_ATTRITION` for an exercising unit
 //!   (DivisionStatus.exercising) with a
 //!   route count below one;
@@ -41,12 +39,11 @@
 //!   province's recorded weather attrition entry is zero and its heat and
 //!   winter entries scaled by acclimatization are not positive.
 //!
-//! The other lines read operands the recording does not hold, and each is
-//! refused by name: the terrain line's held-variant equipment term
-//! (equipment-variant field +0x3A0), the state modifier for the country
-//! (keys 0x4F/0x1EE/0x1EF), the upkeep (0x54) and country (0x4F) modifier
-//! source trees of `country+0x5B8`, a moving unit's weather, heat and winter
-//! source trees where those lines appear, and its moving-state block.
+//! The other lines read operands the recording does not hold, and each is refused by name: the
+//! terrain line's held-variant equipment term (an equipment-variant field), the state modifier for
+//! the country (keys 0x4F/0x1EE/0x1EF), the upkeep (0x54) and country (0x4F) modifier source trees
+//! of the country's modifier accumulator, a moving unit's weather, heat and winter source trees
+//! where those lines appear, and its moving-state block.
 
 use super::*;
 use replay::modifier_registry::Registry;
@@ -57,31 +54,29 @@ use viewer_foundation::tooltip_text::ensure_newlines;
 
 use viewer_foundation::map::counter_inputs::SCALE as ONE;
 
-const EQUIPMENT_UNRECORDED: &str = "the per-terrain attrition of the division's held variants (equipment variant+0x3A0) is not recorded";
+const EQUIPMENT_UNRECORDED: &str = "the per-terrain attrition of the division's held variants is not recorded";
 const STATE_UNRECORDED: &str = "the state's attrition modifiers for the roster owner (keys 0x4F, 0x1EE and 0x1EF) are not recorded";
 const UPKEEP_SOURCES_UNRECORDED: &str =
-    "the country's unit_upkeep_attrition_factor sources (country+0x5B8, key 0x54) are not recorded";
+    "the country's unit_upkeep_attrition_factor sources (the country's modifier accumulator, key 0x54) are not recorded";
 const WEATHER_UNRECORDED: &str =
     "a moving unit's province weather, heat and winter modifier source trees are not recorded";
 const MOVING_STATE_UNRECORDED: &str =
     "a moving unit's state attrition modifier for its logical owner (key 0x4F) is not recorded";
 const COUNTRY_SOURCES_UNRECORDED: &str =
-    "the country's attrition sources (country+0x5B8, key 0x4F, depth 2) are not recorded";
+    "the country's attrition sources (the country's modifier accumulator, key 0x4F, depth 2) are not recorded";
 
 /// What the lines read beyond the frame.
 struct Lookups<'b> {
     content: &'b Content,
-    /// A province's one-based terrain ordinal (`terrain+0x88`); zero
-    /// is the null terrain.
+    /// A province's one-based terrain ordinal (its database index); zero is the null terrain.
     terrain: &'b dyn Fn(u32) -> Result<i32, String>,
     /// The border war's enemy share in mode zero, for a raw country link
     /// and a state id.
     border: &'b dyn Fn(u32, u32) -> Result<i64, String>,
 }
 
-/// Attrition returns zero and writes nothing when the unit has neither a
-/// route province (the first province of
-/// a positive ordinary route) nor a location (unit+0x1F0).
+/// Attrition returns zero and writes nothing when the unit has neither a route province (the first
+/// province of a positive ordinary route) nor a location.
 fn located(context: &Context<'_>, id: u64) -> Result<bool, String> {
     if context.division(id)?.province != 0 {
         return Ok(true);
@@ -113,7 +108,7 @@ fn selected_province(context: &Context<'_>, id: u64) -> Result<u32, String> {
     Ok(context.division(id)?.province)
 }
 
-/// The province's state (`province+0xC0`); zero without one.
+/// The province's state (its state link); zero without one.
 fn province_state(context: &Context<'_>, province: u32) -> Result<u32, String> {
     let rows = context
         .frame
@@ -248,7 +243,7 @@ fn terrain(
             .ok_or_else(|| {
                 format!("terrain ordinal {ordinal} is outside the content's terrain database")
             })?;
-        // Sum the common modifier's accumulator (+0xB8), key 0x4F.
+        // Sum the common modifier's accumulator, key 0x4F.
         let attrition = match terrain.attrition {
             None => 0,
             Some(raw) => {

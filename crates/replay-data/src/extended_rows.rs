@@ -2,9 +2,9 @@
 use super::*;
 use crate::value::value_struct;
 
-/// Name generator operands, rather than the cached display name.
-/// `custom` keeps +0x88 bytes shown by the generator, including its stored
-/// programmatic fallback for a null group; `group` is a content key.
+/// Name generator operands, rather than the cached display name. `custom` keeps the override name
+/// bytes shown by the generator, including its stored programmatic fallback for a null group;
+/// `group` is a content key.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NameOperands {
     pub kind: i32,

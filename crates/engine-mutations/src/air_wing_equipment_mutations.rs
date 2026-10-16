@@ -1,14 +1,15 @@
-//! Runtime writers of the air-wing equipment pool WingEquipment records:
-//! wing `+0x1D8`, with a vtable, item array `+0x20`, count `+0x2C`, and
-//! 16-byte entries holding a variant pointer and amount. Observing writers
-//! selects wings to reread; recording never calls them. Each recorded variant
-//! handle is read from the variant fixed by the entry's pointer.
+//! Runtime writers of the air-wing equipment pool WingEquipment records: the
+//! wing's embedded pool (`POOL`), with a vtable, item array and count
+//! (`cequipment_variant_pool::ITEMS`, `COUNT`), and 16-byte entries holding a
+//! variant pointer and amount. Observing writers selects wings to reread;
+//! recording never calls them. Each recorded variant handle is read from the
+//! variant fixed by the entry's pointer.
 //!
-//! Writer coverage includes the primary `+0x1D8` and secondary `+0x1C8` pool
-//! addresses, inline data/count pairs at `+0x1F8`/`+0x204`, and all hand-offs
-//! to pool primitives: variant and pool addition, variant setting, pool and
-//! variant subtraction, scaling, clearing, assignment, token reading and the
-//! two insertion helpers.
+//! Writer coverage includes the primary and secondary pool addresses, the
+//! wing's inline equipment-bank data/count pair (`cair_wing::EQUIPMENT_BANK`,
+//! `EQUIPMENT_BANK_COUNT`), and all hand-offs to pool primitives: variant and
+//! pool addition, variant setting, pool and variant subtraction, scaling,
+//! clearing, assignment, token reading and the two insertion helpers.
 //! - Aircraft removal is reached from hourly air combat (through the air
 //!   manager and mission helpers), accidents, land-combat support, raids,
 //!   naval combat, airbase bombing and nuclear damage. Its entry belongs to
@@ -52,7 +53,7 @@ pub enum Receiver {
 /// Every site with its receiver; each returns RAX unchanged from its
 /// original, so a detour returns the original's value.
 pub const MUTATIONS: [(MutationSite, Receiver); 7] = [
-    // Aircraft addition (wing, variant, count, ...): stores RBX at RSP+0x10.
+    // Aircraft addition (wing, variant, count, ...): stores RBX in RDX's home slot.
     (
         MutationSite {
             name: "add_airplanes",
@@ -64,7 +65,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 7] = [
         },
         Receiver::Wing,
     ),
-    // Equipment-pool addition (wing, pool, ...): stores RBX at RSP+0x10.
+    // Equipment-pool addition (wing, pool, ...): stores RBX in RDX's home slot.
     (
         MutationSite {
             name: "add_equipment_pool",
@@ -77,7 +78,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 7] = [
         Receiver::Wing,
     ),
     // Aircraft movement (source, destination, count): copies the stack pointer
-    // to R11, then stores RDX at R11+0x10; seven bytes relocate together.
+    // to R11, then stores RDX in its home slot; seven bytes relocate together.
     (
         MutationSite {
             name: "move_airplanes",
@@ -89,7 +90,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 7] = [
         },
         Receiver::Wings,
     ),
-    // Equipment-pool subtraction (wing, pool): stores RBX at RSP+0x10.
+    // Equipment-pool subtraction (wing, pool): stores RBX in RDX's home slot.
     (
         MutationSite {
             name: "subtract_equipment_pool",
@@ -127,7 +128,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 7] = [
         },
         Receiver::Pool,
     ),
-    // Wing destruction (wing): stores RBX at RSP+0x10.
+    // Wing destruction (wing): stores RBX in RDX's home slot.
     (
         MutationSite {
             name: "destroy_wing",

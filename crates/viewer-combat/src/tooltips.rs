@@ -536,7 +536,7 @@ const SKILL_LINES_UNREAD: &str = "the skill hover's offence and defence lines (k
 
 /// Nor the CAS hover's operands, unless an older recording's side details
 /// hold them ([`replay::rows::LandCombatDetailsRow::cas_inputs`]).
-const CAS_UNRECORDED: &str = "the CAS hover's prevented damage and anti-air effectiveness (STR_PREVENT, ORG_PREVENT, AA_EFFECTIVENESS over side fields +0x138/+0x168/+0x170) are not recorded in this recording";
+const CAS_UNRECORDED: &str = "the CAS hover's prevented damage and anti-air effectiveness (STR_PREVENT, ORG_PREVENT, AA_EFFECTIVENESS over the side's anti-air cache and prevented-damage fields) are not recorded in this recording";
 
 /// The side commander's skill hover: the skill line, a newline, then the
 /// leader block's keys 0x5F and 0x60 copied into a fresh accumulator and
@@ -611,11 +611,10 @@ fn skill_tooltip(
     }
 }
 
-/// Anti-air defence derived from the side's stored anti-air cache (+0x138),
-/// times
+/// Anti-air defence derived from the side's stored anti-air cache, times
 /// `ANTI_AIR_ATTACK_TO_DAMAGE_REDUCTION_FACTOR` (truncated) and capped at
-/// `ANTI_AIR_MAXIMUM_DAMAGE_REDUCTION_FACTOR`, the reduction the CAS
-/// application applies to incoming planes.
+/// `ANTI_AIR_MAXIMUM_DAMAGE_REDUCTION_FACTOR`, the reduction the CAS application applies to
+/// incoming planes.
 fn anti_air_effectiveness(
     anti_air: i64,
     defines: &super::defines::LandDefines,

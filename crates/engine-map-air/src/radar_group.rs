@@ -52,7 +52,7 @@ pub struct Row {
     /// Raw CCountry link id of the owning country.
     pub country: u32,
     pub ordinal: u32,
-    /// Host CState id; a null `+0x48` pointer is recorded as absent, not zero.
+    /// Host CState id; a null host-state pointer is recorded as absent, not zero.
     pub state: Option<u32>,
     pub provinces_start: usize,
     pub provinces_len: usize,

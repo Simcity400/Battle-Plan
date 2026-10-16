@@ -1,25 +1,30 @@
 //! Runtime writers of every field StateBuildings and ProvinceBuildings
-//! record from a building status (state `+0x120`, province `+0x190`) and its
-//! buildings. Observing them selects statuses to reread; recording never calls
-//! them.
+//! record from a building status (`cstate::BUILDING_STATUS`,
+//! `cprovince::BUILDING_STATUS`) and its buildings. Observing them selects
+//! statuses to reread; recording never calls them.
 //!
-//! Rows record status flags `+0x68`, location id `+0x6C` and country `+0x70`;
-//! building position in vector `+0x38` and membership in active vector `+0x50`;
-//! type `+0x8`, level `+0x40`, healthy level `+0x42` and partial health `+0x48`.
-//! The walk also authenticates backlink `+0x1D8`, template `+0x1E0` and index
-//! vector `+0x20`. Recorded values are not derived from another object. Outside
-//! load or reset, location tables, ids and province state links change only in
-//! nudge mode, whose entry is also a site. An hour without any site leaves every
-//! walked location, status and building unchanged.
+//! Rows record status flags, location id and country
+//! (`cbuilding_status::FLAGS`, `ID`, `COUNTRY`); building position in the
+//! building vector (`cbuilding_status::BUILDINGS`) and membership in the active
+//! vector (`ACTIVE_BUILDINGS`); type, level, healthy level and partial health
+//! (`cbuilding::TYPE_ID`, `LEVEL`, `HEALTHY_LEVEL`, `PARTIAL_HEALTH`). The walk
+//! also authenticates the status backlink (`cbuilding::BUILDING_STATUS`),
+//! template (`cbuilding::TEMPLATE`) and index vector
+//! (`cbuilding_status::BUILDING_INDICES`). Recorded values are not derived from
+//! another object. Outside load or reset, location tables, ids and province
+//! state links change only in nudge mode, whose entry is also a site. An hour
+//! without any site leaves every walked location, status and building
+//! unchanged.
 //!
-//! - Only level setting writes `+0x40` at runtime: construction completion,
+//! - Only level setting writes the level at runtime: construction completion,
 //!   daily production, instant builds, owner changes, railways, effects,
-//!   commands and peace. It also writes `+0x42`/`+0x48` and rebuilds the active
-//!   vector through two helpers on a zero crossing. Other writers of health
-//!   are the damage step (only from damage application: bombing, naval air,
-//!   land fort damage and scripted damage), repair advancement (construction
-//!   and console), and healthy-level destruction (scorching and two nuclear
-//!   paths). Each receives the building in RCX; its status is at `+0x1D8`.
+//!   commands and peace. It also writes healthy level and partial health and
+//!   rebuilds the active vector through two helpers on a zero crossing. Other
+//!   writers of health are the damage step (only from damage application:
+//!   bombing, naval air, land fort damage and scripted damage), repair
+//!   advancement (construction and console), and healthy-level destruction
+//!   (scorching and two nuclear paths). Each receives the building in RCX; its
+//!   status is its backlink.
 //! - Only building lookup/creation writes the building and index vectors at
 //!   runtime. With the status in RCX, it alone calls building construction,
 //!   setting type, backlink and template and zeroing levels. Its callers use
@@ -33,22 +38,23 @@
 //!   location id and country zero; the owner's constructor sets scope flags
 //!   in place (state 2, both province constructors 5). State owner and controller
 //!   setters write none of these fields.
-//! - Index initialization fills `+0x20`/`+0x2C` only when count is zero, after
-//!   construction or hooked clearing. It runs during country-appearance reset
-//!   for the country's own status (`+0x1350`, never walked), state building-status
-//!   reset after hooked clearing on game reset, and state index initialization
-//!   from game reset and nudge mode.
+//! - Index initialization fills the index vector and count only when count is
+//!   zero, after construction or hooked clearing. It runs during
+//!   country-appearance reset for the country's own status (never walked),
+//!   state building-status reset after hooked clearing on game reset, and state
+//!   index initialization from game reset and nudge mode.
 //! - Only hooked sites and destruction write building and active-vector headers.
 //!   Active-vector rebuilding runs inside hooked level setting through its
 //!   helper, or at the end of the hooked reader's block on load, through a
 //!   slot-8 persistence-reader thunk.
 //! - Only load, reset and nudge mode write location structure. The game-state
-//!   state table `+0x2C8` is written by construction, destruction, reset and the
-//!   nudger's state rebuild; its province table `+0x2B0` by construction,
-//!   destruction and load-only province initialization. Constructors write ids.
-//!   The province state link `+0xC0` is written by both province constructors,
-//!   state province initialization (load, two reset paths and nudge mode),
-//!   and state teardown (game reset, runtime reset and nudge mode).
+//!   state table (`cgame_state::STATES`) is written by construction,
+//!   destruction, reset and the nudger's state rebuild; its province table
+//!   (`cgame_state::PROVINCES`) by construction, destruction and load-only
+//!   province initialization. Constructors write ids. The province state link
+//!   (`cprovince::STATE`) is written by both province constructors, state
+//!   province initialization (load, two reset paths and nudge mode), and state
+//!   teardown (game reset, runtime reset and nudge mode).
 //! - No building writer runs on a parallel worker thread.
 //! - Nudge mode rewrites statuses and locations without a hooked writer. Its
 //!   handlers rebuild a state in place (destruction, construction at the same
@@ -64,7 +70,7 @@ pub use crate::advisor_mutations::MutationSite;
 /// How a site's first argument (RCX) names the status.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Receiver {
-    /// RCX is a building; its status is the pointer at `+0x1D8`.
+    /// RCX is a building; its status is the backlink `cbuilding::BUILDING_STATUS`.
     Building,
     /// RCX is the building status.
     Status,
@@ -166,7 +172,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 8] = [
     ),
     // Nudge-mode entry constructs an idler with five arguments and returns it.
     // Four argument-register stores to shadow space open the function; the
-    // fifth argument is read at RBP+0x70.
+    // fifth argument is read from its stack slot through RBP.
     (
         MutationSite {
             name: "enter_nudge_mode",

@@ -126,11 +126,11 @@ fn name_member(
         .ok_or("ship cached name member pointer unreadable or null")
 }
 
-/// Copies the exact current peaceful or combat ship-name cache. The selected
-/// full reference and primary vtable are authenticated before following+818;
-/// the existing NameGroupMember reader owns string guards and arena demand.
-/// Its successful span is uncommitted, including a valid empty cache. No
-/// generator, combat snapshot, runtime type gate or callback allocation is used.
+/// Copies the exact current peaceful or combat ship-name cache. The selected full reference and
+/// primary vtable are authenticated before following the name member (`NAME_MEMBER`); the existing
+/// NameGroupMember reader owns string guards and arena demand. Its successful span is uncommitted,
+/// including a valid empty cache. No generator, combat snapshot, runtime type gate or callback
+/// allocation is used.
 pub fn cached_name(
     memory: &impl Memory,
     base: usize,
@@ -153,7 +153,7 @@ pub(crate) fn cached_name_buffer(
     cname_group_member::cached_name_buffer(memory, base, member, names)
 }
 
-/// Worker-only copy of the retained name-group member cache at +0x60.
+/// Worker-only copy of the retained name-group member cache (`cname_group_member::CACHED_NAME`).
 /// Growth continues from the original descriptor without retrying validation.
 pub fn cached_name_growing(
     memory: &impl Memory,
@@ -192,7 +192,7 @@ pub struct Row {
     pub category: u32,
     pub sunk_convoys: i32,
     pub class_id: i32,
-    /// Position in CTaskForce+348 before any replay key sorting.
+    /// Position in the task force's ship vector (`ctask_force::SHIPS`) before any replay key sorting.
     pub roster_ordinal: u32,
 }
 
@@ -1097,7 +1097,7 @@ pub struct OrganisationMemo {
     /// (game, task roster owner) -> the country Reader::resolve authenticated.
     owner: Option<(usize, u32, usize)>,
     country: Option<(usize, [i64; 4])>,
-    /// Country -> its pride-of-the-fleet ship handle (`CCountry+0x250`).
+    /// Country -> its pride-of-the-fleet ship handle (`ccountry::PRIDE_OF_THE_FLEET`).
     pride: Recent<usize, [u8; 8], RECENT>,
     support: Option<(usize, [i64; 4])>,
     /// HQ influence character reference -> its commander's four role terms,
@@ -1139,10 +1139,9 @@ impl OrganisationMemo {
         self.last = Some((task, contribution));
     }
 
-    /// Serve `country`'s modifier-tree terms (`CCountry+0x5B8`, its four ship
-    /// modifier keys) from an earlier hour's complete observation that a
-    /// certificate keeps: the next ship or task force of that country reads no
-    /// accumulator for them.
+    /// Serve `country`'s modifier-tree terms (`ccountry::MODIFIER_ACCUMULATOR`, its four ship
+    /// modifier keys) from an earlier hour's complete observation that a certificate keeps: the
+    /// next ship or task force of that country reads no accumulator for them.
     pub fn hold_country(&mut self, country: usize, terms: [i64; 4]) {
         self.country = Some((country, terms));
     }
@@ -1318,14 +1317,13 @@ impl TaskTerms {
     }
 }
 
-/// Ship modifier calculation's region, province and task terms are shared by
-/// ships at the same location. The ship's own +270 factor is deliberately
-/// outside this packet. Sources are game, task, country, location and
-/// province-definition pointers; this complete observation expires with the
-/// existing per-capture memo unless a certificate keeps it
-/// ([`OrganisationMemo::hold_weather`]). `region_at` and `province_at` are the
-/// weather region and province clock records whose accumulators (`+0x58`,
-/// `+0x280`) it read.
+/// Ship modifier calculation's region, province and task terms are shared by ships at the same
+/// location. The ship's own weather factor (`gathered::WEATHER_FACTOR`) is deliberately outside
+/// this packet. Sources are game, task, country, location and province-definition pointers; this
+/// complete observation expires with the existing per-capture memo unless a certificate keeps it
+/// ([`OrganisationMemo::hold_weather`]). `region_at` and `province_at` are the weather region and
+/// province clock records whose accumulators (the region record's modifier and the clock's night
+/// factor) it read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OrganisationWeather {
     sources: [usize; 5],
@@ -1348,14 +1346,14 @@ impl OrganisationWeather {
         self.sources == other.sources
     }
 
-    /// The weather region record (`CWeatherManager+0x40` element), whose
+    /// The weather region record (an element of the weather manager's region array), whose
     /// accumulator weather updating rebuilds.
     pub fn region(&self) -> usize {
         self.region_at
     }
 
-    /// The province clock record's applied night factor (`+0x268`), which
-    /// day/night updating compares before rewriting `+0x280`.
+    /// The province clock record's applied night factor, which day/night updating compares before
+    /// rewriting the night factor.
     pub fn night_factor(&self) -> usize {
         self.province_at.saturating_add(0x268)
     }

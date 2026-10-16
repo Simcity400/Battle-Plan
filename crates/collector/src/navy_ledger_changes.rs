@@ -92,6 +92,6 @@ pub(crate) fn status() -> impl serde::Serialize {
         "skipped_navies": navies[0],
         "read_navies": navies[1],
         "verified_navies": navies[2],
-        "scope": "cumulative since attach; NavalMissionLedgers reads a navy's region ledger headers only when its registered-mission set (CStrategicNavy+0x110) is nonempty, since every ledger writer writes the set in the same call; every hour also reads the skippable navies of its slice (one in rotation_hours by country slot; every one in verify mode), publishes that read and stops skipping at the first nonempty ledger (sampled_*)"
+        "scope": "cumulative since attach; NavalMissionLedgers reads a navy's region ledger headers only when its registered-mission set is nonempty, since every ledger writer writes the set in the same call; every hour also reads the skippable navies of its slice (one in rotation_hours by country slot; every one in verify mode), publishes that read and stops skipping at the first nonempty ledger (sampled_*)"
     })
 }

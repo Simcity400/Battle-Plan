@@ -163,10 +163,9 @@ fn relation<M: Memory>(
     let retired = reader.field::<u8>(pointer, crelation::RETIRED)? != 0;
     let overlord = reader.field::<u32>(pointer, OVERLORD)?;
     let subject = reader.field::<u32>(pointer, SUBJECT)?;
-    // The shared-vision subject terms read only the status +0x288 pointer and
-    // its type, never the retired byte, and link clearing (vf22) is what
-    // uninstalls a subject. So a retired relation counts exactly while it is
-    // still installed; one left only in an owned vector is skipped.
+    // The shared-vision subject terms read only the status's subject-relation pointer and its type,
+    // never the retired byte, and link clearing is what uninstalls a subject. So a retired relation
+    // counts exactly while it is still installed; one left only in an owned vector is skipped.
     if retired && matrix_index.is_none() && !reader.installed(pointer, overlord, subject, pass) {
         return Ok(None);
     }

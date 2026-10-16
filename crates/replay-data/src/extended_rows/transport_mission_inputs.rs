@@ -23,7 +23,7 @@ value_struct!(TransportNavalEdge { to: u32, flags: u8, unrestricted: u8, rules: 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TransportMissionReceiver {
     pub task_force: u64,
-    /// Original embedded mission +10 country, independent of task logical owner.
+    /// Original embedded mission's country, independent of task logical owner.
     pub mission_owner: Option<u32>,
     /// Genuine same-pass raw logical owner, if its original graph reached it.
     pub logical_owner: Option<u32>,
@@ -33,7 +33,7 @@ pub struct TransportMissionReceiver {
     pub combat_references: Option<i32>,
     /// Reached full NAVAL_DETECTION before the native unity addition.
     pub combined_detection: Option<i64>,
-    /// One original sixteen-byte cache copy: mission +20 and +28, signed64.
+    /// One original sixteen-byte cache copy: the mission's two cached signed64 words.
     pub detection_cache: Option<[i64; 2]>,
     /// Borrowed original raw supply, independent of the other graph results.
     pub received_supply_ratio: Option<i64>,

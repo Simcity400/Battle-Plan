@@ -92,7 +92,7 @@ pub fn state_rocket_slots(
     if status_id != state_id || flags & cbuilding_status::STATE_FLAG == 0 {
         return Err("rocket building-status state identity mismatch");
     }
-    // CState+0x170 = its embedded CBuildingStatus (+0x120) plus ACTIVE_BUILDINGS.
+    // The state's building status is its embedded CBuildingStatus plus ACTIVE_BUILDINGS.
     let buildings = bounded_array(
         memory,
         status,

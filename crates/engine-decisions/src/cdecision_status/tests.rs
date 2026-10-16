@@ -319,7 +319,7 @@ fn timed_rows_keep_nonactive_states_and_full_signed_fields() {
 #[test]
 fn targeted_container_labels_match_native_serializer_sources() {
     let mut bytes = empty();
-    // Native serde emits +E8 under active_targeted_decision and +100 under
+    // Native serde emits the active array under active_targeted_decision and the timed one under
     // active_targeted_timed_decision. Source positions retain keys 3 and 4.
     vector(&mut bytes, 0xe8, 1);
     vector(&mut bytes, 0x100, 1);

@@ -14,9 +14,8 @@ use engine::{
 };
 use std::cell::RefCell;
 
-/// Each country's objects lie in its own 0x2000-byte region: the country at
-/// +0x100, its status at +0x1200 and its parties, leaders and characters at
-/// and above +0x1500.
+/// Each country's objects lie in its own 0x2000-byte region: the country at its own region, its
+/// status after it and its parties, leaders and characters above both.
 const REGION: usize = 0x2000;
 const COUNTRIES: usize = 2;
 

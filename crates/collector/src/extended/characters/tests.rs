@@ -2066,8 +2066,8 @@ fn active_abilities_count_every_row_and_token_past_capacity_for_one_growth_step(
     const CTAB: usize = 0x10000;
     const LTAB: usize = 0x20000;
     const COUNTRY0: usize = 0x30000;
-    // Country objects overlap: only +0 (vtable), +8 (id) and the ability
-    // header at +0x15b8 (0x28 within a 0x50 stride) are populated.
+    // Country objects overlap: only the vtable, the id and the ability header (0x28 bytes into a
+    // 0x50 stride) are populated.
     const STRIDE: usize = 0x50;
     const RECORDS: usize = 0x100000;
     const DEFINITION: usize = 0x180000;
@@ -2418,8 +2418,8 @@ fn cost_tree(bytes: &mut [u8], field: usize, head: usize, node: usize, stride: u
 
 pub(crate) fn cost_fixture() -> Vec<u8> {
     use engine::{character_advisor_node, character_leader_node};
-    // Include the appended +0x140 leader and +0x218 advisor fields without
-    // crossing another synthetic object's allocation.
+    // Include the appended leader-ideology and advisor tooltip-key fields without crossing another
+    // synthetic object's allocation.
     let mut bytes = vec![0; 0x32000];
     let mut heap = CostHeap { next: COST_HEAP };
     pointer(&mut bytes, cgame_state::CHARACTER_MANAGER, COST_MANAGER);
@@ -2759,9 +2759,9 @@ fn character_nested_prefetch_selects_fixed_groups_without_rehinting_main_or_heap
             unit.into_iter().zip([8, 4, 8, 8]).collect(),
         ]
     );
-    // All six groups already used one guard each. Hints preserve every
-    // observation and byte, including the ordinary view and heap groups.
-    // The view carries the template pointer (+12) and gender (+4).
+    // All six groups already used one guard each. Hints preserve every observation and byte,
+    // including the ordinary view and heap groups. The view carries the template pointer and
+    // gender.
     assert_eq!(
         (source.guards.get(), source.spans.get(), source.bytes.get()),
         (6, 24, 346 + 12 + 4)
@@ -2798,23 +2798,19 @@ fn character_family_read_cost_stays_at_its_measured_shape() {
             && row.tooltip_len == 0
             && row.tooltip_failure.is_none()
     }));
-    // The shared walk's read cost, pinned. Making the view's copied-span
-    // lookup cheaper removed decoding work, not reads, so every one of
-    // these three totals must stay exactly where it was. Each of the three
-    // unit leaders adds one guarded read of its owner and visibility
-    // inputs (three spans, 13 bytes: none is an army leader). Each of
-    // the 32 views' name token spans also carries the template pointer
-    // (12 bytes, no read); none of these characters has a template.
-    // Gender adds one four-byte span per view in the same scatter, and each
-    // unit leader's state scatter its four-byte exile country (+0xED4).
-    // Each advisor adds its fresh 16-byte modifier-cache header; all are empty.
-    // The five country leaders each read an eight-byte null current-ideology
-    // pointer, and the 22 advisors each read an empty 17-byte tooltip header.
-    // No unit leader's trait-experience vector is read: its identity, header
-    // and fifteen 16-byte entries with their definitions and heap tokens
-    // (47 guards, 92 spans and 1,262 bytes per leader) stay out of the totals.
-    // Nor is a unit leader's experience (+0xE68, one 8-byte span each): the
-    // skill hover takes the combat side's commander.
+    // The shared walk's read cost, pinned. Making the view's copied-span lookup cheaper removed
+    // decoding work, not reads, so every one of these three totals must stay exactly where it was.
+    // Each of the three unit leaders adds one guarded read of its owner and visibility inputs
+    // (three spans, 13 bytes: none is an army leader). Each of the 32 views' name token spans also
+    // carries the template pointer (12 bytes, no read); none of these characters has a template.
+    // Gender adds one four-byte span per view in the same scatter, and each unit leader's state
+    // scatter its four-byte exile country. Each advisor adds its fresh 16-byte modifier-cache
+    // header; all are empty. The five country leaders each read an eight-byte null current-ideology
+    // pointer, and the 22 advisors each read an empty 17-byte tooltip header. No unit leader's
+    // trait-experience vector is read: its identity, header and fifteen 16-byte entries with their
+    // definitions and heap tokens (47 guards, 92 spans and 1,262 bytes per leader) stay out of the
+    // totals. Nor is a unit leader's experience (one 8-byte span each): the skill hover takes the
+    // combat side's commander.
     assert_eq!(
         (memory.guards.get(), memory.spans.get(), memory.bytes.get()),
         (

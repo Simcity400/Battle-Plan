@@ -1,4 +1,4 @@
-//! Graph object referenced by CLocalIntelNetwork +0x08; its C++ type name is unknown.
+//! Graph object referenced by CLocalIntelNetwork's graph pointer; its C++ type name is unknown.
 //! Offsets describe game memory, separate from replay rows.
 
 /// Begin pointer for graph rows.

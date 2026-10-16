@@ -5,9 +5,9 @@ use crate::{Memory, cgame_state, cpdx_array::Array, cstate, cstate_template, rea
 
 /// Resource-entry stride.
 pub const STRIDE: usize = 0x10;
-/// Signed i64 fixed5 amount, scaled from a signed source integer and stored at +0.
+/// Signed i64 fixed5 amount, scaled from a signed source integer and stored first.
 pub const AMOUNT: usize = 0x00;
-/// Resource lexer ID, u32 at +8.
+/// Resource lexer ID, u32.
 pub const RESOURCE_ID: usize = 0x08;
 /// Empty-key sentinel.
 pub const NO_RESOURCE_ID: u32 = u32::MAX;

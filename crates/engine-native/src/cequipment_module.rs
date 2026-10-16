@@ -6,5 +6,5 @@ pub const VTABLE_RVA: usize = 0x0292_1850;
 pub const ACTIVE: usize = 0x10;
 /// CEquipmentModule std::string script token.
 pub const NAME: usize = 0x18;
-/// Candidate module byte at +2D0; oil_airbase_cache_value reads a definition through module-entry+8, concrete type not authenticated there.
+/// Candidate module byte; oil_airbase_cache_value reads a definition through the module entry's definition pointer, concrete type not authenticated there.
 pub const CARRIER_CACHE_FLAG_CANDIDATE: usize = 0x2d0;

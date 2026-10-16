@@ -7,9 +7,9 @@
 //! - `STATES` (state ids), taken by the States job
 //!   ([`crate::acquisition_states::StateStore`]): the owner, controller,
 //!   reset and reader sites name a state through its guarded id
-//!   `CState+0x58`; the state-name effects name none.
+//!   `cstate::ID`; the state-name effects name none.
 //! - `PROVINCES` (province ids): the province writers name a province
-//!   through its guarded id `CProvince+0xA4`; the owner-area rebuild and
+//!   through its guarded id `cprovince::ID`; the owner-area rebuild and
 //!   `province initialization` name none.
 //! - `PROVINCE_STATES` (state ids): the owner, reset, reader and
 //!   border-conflict sites, whose writes reach the provinces linked to the
@@ -301,11 +301,10 @@ pub fn poison() {
     DOMAIN.poison();
 }
 
-/// Hook path, allocation-free: a building writer of the status with `flags`
-/// and `location` (`CBuildingStatus+0x68`/`+0x6C`) is about to run. Marks the
-/// province when the flags' province bit is set and the state when the state
-/// bit is, since a province's fort sum and a state's infrastructure terms
-/// read its buildings. Hold the result over the native call.
+/// Hook path, allocation-free: a building writer of the status with `flags` and `location`
+/// (`cbuilding_status::FLAGS` and `ID`) is about to run. Marks the province when the flags'
+/// province bit is set and the state when the state bit is, since a province's fort sum and a
+/// state's infrastructure terms read its buildings. Hold the result over the native call.
 pub fn building_changed(flags: u32, location: u32) -> Marks<'static> {
     DOMAIN.building(flags, location)
 }
@@ -614,8 +613,8 @@ mod tests {
         (epochs, provinces, states)
     }
 
-    /// Receivers name their ids through the live object: a province's
-    /// `+0xA4`, a state's `+0x58`; a zero or unreadable id names none.
+    /// Receivers name their ids through the live object: a province's id, a state's id; a zero or
+    /// unreadable id names none.
     #[test]
     fn receivers_name_their_ids_through_the_live_object() {
         let mut province = vec![0_u8; 0x200];

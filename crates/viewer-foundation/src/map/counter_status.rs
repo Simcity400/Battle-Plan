@@ -92,8 +92,8 @@ pub struct Member {
     pub naval_transfer: bool,
     pub entrenchment: i64,
     pub entrenchment_cap: i64,
-    /// The division's stored attrition (+0x438) exceeds its recorded threshold.
-    /// This is the counter's attrition-presence predicate.
+    /// The division's stored attrition exceeds its recorded threshold. This is the counter's
+    /// attrition-presence predicate.
     pub attrition: bool,
     pub exercising: u8,
     /// The raw division's group is present; an ungrouped member skips both

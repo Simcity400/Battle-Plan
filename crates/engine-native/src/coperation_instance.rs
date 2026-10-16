@@ -64,14 +64,12 @@ pub const ASSIGNED_OPERATIVE_COUNT: usize = 0xec;
 pub const PHASE_DATA: usize = 0xf8;
 /// Signed phase-array count; definition pointers are serialized in this order.
 pub const PHASE_COUNT: usize = 0x104;
-/// Inline operation resource map rooted at +0x110, used by preparation
-/// checks.
+/// Inline operation resource map rooted here, used by preparation checks.
 pub const RESOURCE_MAP: usize = 0x110;
-/// Requirement-record array pointer. Preparation checks read +0x158
-/// with 0x20-byte records.
+/// Requirement-record array pointer. Preparation checks read it with 0x20-byte records.
 pub const REQUIREMENT_DATA: usize = 0x158;
-/// Requirement-record count, u32. Preparation checks read +0x164
-/// before walking optional and required resources.
+/// Requirement-record count, u32. Preparation checks read it before walking optional and required
+/// resources.
 pub const REQUIREMENT_COUNT: usize = 0x164;
 /// Operation-instance serializer.
 pub const SAVE_RVA: usize = 0x013e_f710;

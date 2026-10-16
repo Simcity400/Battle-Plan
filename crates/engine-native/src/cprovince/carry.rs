@@ -5,31 +5,31 @@
 //! collector's territory family (`crate::territory_mutations`) or forwarded to
 //! it by the building family by location:
 //!
-//! - `state` and `owner`: the state link `+0xC0` and the state's owner
-//!   `CState+0xC8`, read through the link. Province initialization stores the
+//! - `state` and `owner`: the state link (`cprovince::STATE`) and the
+//!   state's owner (`cstate::OWNER`), read through the link. Province initialization stores the
 //!   link and marks every province; state reset zeroes the link over the
-//!   state's province list (`+0x18`, count `+0x24`) and the owner. State owner
+//!   state's province list and the owner. State owner
 //!   assignment stores the owner. Those name a state; its provinces are those
 //!   whose held row links it, the membership before a reset emptied the list.
 //!
-//! - `controller` `+0x188`: province controller notification, called per
+//! - `controller`: province controller notification, called per
 //!   province by state controller assignment, names its province.
 //!
-//! - `victory_points` `+0x38`: the victory-point setter, reached from effects
+//! - `victory_points`: the victory-point setter, reached from effects
 //!   and their applier, and the province reader.
 //!
-//! - `fort_positive`: the healthy levels `CBuilding+0x42` and active building
-//!   vector `+0x1E0`, written by the building family's level assignment,
+//! - `fort_positive`: the healthy levels (`cbuilding::HEALTHY_LEVEL`) and active
+//!   building vector, written by the building family's level assignment,
 //!   damage, repair, healthy-level destruction, creation, clearing and loading
 //!   detours. Each is forwarded by its status's province location; template
 //!   weights are content, loaded once per world.
 //!
-//! - `move_gate`: the border-conflict set size `+0xB0`, written by insertion
-//!   and removal (they name a state: its provinces), and owner area `+0xD8`,
+//! - `move_gate`: the border-conflict set size, written by insertion
+//!   and removal (they name a state: its provinces), and owner area,
 //!   written at run time only by the rebuild, which marks every province;
 //!   terrain flags are content.
 //!
-//! - `port_sea` and definition `+0xB8`: content and construction.
+//! - `port_sea` and the province definition: content and construction.
 //!
 //! `fort_bunker` follows the state's modifier hashes, whose resource-gate
 //! rebuild names no province, so every carried row with a positive fort sum and

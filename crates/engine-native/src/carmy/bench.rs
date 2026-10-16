@@ -42,7 +42,7 @@ fn division_world(n: usize) -> (Arena, Vec<DivisionSeed>) {
                 carmy_leader::SEPARATE_HQ_MOVEMENT_MODIFIER,
             ] {
                 let entries = arena.alloc(KEYS.len() * modifier_entry::STRIDE);
-                // The CModifier's value accumulator is at +0x10.
+                // The CModifier's value accumulator is `carmy_leader::MODIFIER_ACCUMULATOR`.
                 arena.vector(leader + block + 0x10, entries, KEYS.len() as u32);
                 for (slot, key) in KEYS.into_iter().enumerate() {
                     let entry = entries + slot * modifier_entry::STRIDE;

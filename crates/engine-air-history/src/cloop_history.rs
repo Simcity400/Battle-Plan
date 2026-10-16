@@ -24,21 +24,20 @@ const SLOT_LAYOUT: RecordLayout<'static> =
 
 /// CLoopHistory primary vtable.
 pub const VTABLE_RVA: usize = 0x029b_be58;
-/// Embedded history queue at +8, with window pointers at +0x10/+0x18/+0x20.
+/// Embedded history queue, followed by its three window pointers.
 pub const QUEUE: usize = 0x08;
 /// CLoopHistory daily window pointer.
 pub const DAILY_WINDOW: usize = 0x10;
 /// Records in the daily window.
 pub const DAILY_WINDOW_CAPACITY: u32 = 30;
-/// Third history window at +0x20 advances when the twelve-record second
-/// window wraps.
+/// The third history window advances when the twelve-record second window wraps.
 pub const WINDOW: usize = 0x20;
-/// History self-reference pointer at +0x28, required to equal its object.
+/// History self-reference pointer, required to equal its object.
 pub const SELF_REFERENCE: usize = 0x28;
 /// History roll-up mode, signed i32: zero sums wrapped records,
 /// one keeps the latest record.
 pub const ROLL_UP: usize = 0x30;
-/// History field-count u32 at +0x34; air schema requires 89 fields.
+/// History field-count u32; air schema requires 89 fields.
 pub const FIELD_COUNT: usize = 0x34;
 
 /// A country's current annual-ring air-statistics bucket in one air region.

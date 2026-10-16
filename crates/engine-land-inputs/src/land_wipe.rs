@@ -32,7 +32,7 @@ pub const LIFECYCLE_RVA: usize = 0x13cc5b0;
 pub const LIFECYCLE_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48,
 ];
-/// CPdxArray<u32>; base lifecycle loads data +68 and signed count +74.
+/// CPdxArray<u32>; base lifecycle loads its data and signed count.
 const COUNTRY_ARRAY: usize = 0x68;
 
 #[derive(Clone, Copy)]

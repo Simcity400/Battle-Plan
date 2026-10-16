@@ -46,11 +46,10 @@ pub struct Entry {
     pub callers: &'static [Caller],
 }
 
-/// Joins a war using diplomacy, ally and enemy pointers, a u32 reason and u8
-/// expansion flag, returning the war. The joiner (`diplomacy+0x288`) joins the
-/// ally's war against the enemy with the reason, attacker side and enemies:
-/// every enemy of the ally's side when expanding, else the one named. Its five
-/// callers are below.
+/// Joins a war using diplomacy, ally and enemy pointers, a u32 reason and u8 expansion flag,
+/// returning the war. The joiner (the diplomacy status's country) joins the ally's war against the
+/// enemy with the reason, attacker side and enemies: every enemy of the ally's side when expanding,
+/// else the one named. Its five callers are below.
 pub const JOIN_WAR: Entry = Entry {
     name: "JoinWar",
     rva: 0x00d2_bec0,
@@ -88,11 +87,9 @@ pub const END_WAR: Entry = Entry {
     ],
 };
 
-/// Creates a conference from manager, loser and winner pointers, an i64 factor,
-/// two u32 arguments, a u8 argument and a message pointer, returning the
-/// conference. Construction stores the loser at `+0x34` and winner at `+0x38`;
-/// creation queues it and starts it through [`START_CONFERENCE`] before
-/// returning.
+/// Creates a conference from manager, loser and winner pointers, an i64 factor, two u32 arguments,
+/// a u8 argument and a message pointer, returning the conference. Construction stores the loser and
+/// then the winner; creation queues it and starts it through [`START_CONFERENCE`] before returning.
 pub const CREATE_CONFERENCE: Entry = Entry {
     name: "CreateConference",
     rva: 0x00ba_f880,
@@ -284,7 +281,7 @@ impl<'a, M: Memory> World<'a, M> {
         })
     }
 
-    /// `CGameState+0x468`, the hour every event feed operand carries.
+    /// `cgame_state::CURRENT_HOUR`, the hour every event feed operand carries.
     pub fn hour(&self) -> Result<i32, &'static str> {
         value(self.memory, self.state, cgame_state::CURRENT_HOUR)
     }
@@ -310,7 +307,7 @@ impl<'a, M: Memory> World<'a, M> {
         Ok(identity)
     }
 
-    /// The owner (`+0x288`) of a `CDiplomacyStatus*`.
+    /// The owner of a `CDiplomacyStatus*`.
     pub fn diplomacy_owner(&self, diplomacy: usize) -> Result<CountryIdentity, &'static str> {
         verify_vtable(
             self.memory,
@@ -321,7 +318,7 @@ impl<'a, M: Memory> World<'a, M> {
         self.country_object(pointer(self.memory, diplomacy, cdiplomacy_status::COUNTRY)?)
     }
 
-    /// A linked war relation's first and second endpoints (`+0x10`/`+0x14`).
+    /// A linked war relation's first and second endpoints.
     pub fn war_endpoints(&self, war: usize) -> Result<[CountryIdentity; 2], &'static str> {
         verify_vtable(self.memory, self.base, war, cwar_relation::VTABLE_RVA)?;
         if value::<u32>(self.memory, war, crelation::TYPE_ID)? != cwar_relation::TYPE {
@@ -333,8 +330,7 @@ impl<'a, M: Memory> World<'a, M> {
         ])
     }
 
-    /// A conference's PeaceConferences reference (`+0x8`, nonzero) and its
-    /// main winner (`+0x38`) and loser (`+0x34`).
+    /// A conference's PeaceConferences reference (nonzero) and its main winner and loser.
     pub fn conference(
         &self,
         conference: usize,
@@ -374,7 +370,7 @@ pub fn conference_reference(
     }
 }
 
-/// A state's id (`+0x58`) and owner reference (`+0xC8`).
+/// A state's id and owner reference.
 pub fn state_owner(
     memory: &impl Memory,
     base: usize,

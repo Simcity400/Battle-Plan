@@ -539,7 +539,7 @@ mod provenance_sites {
                 .map(|country| country.id),
             [1, 2]
         );
-        // A conference names its winner (+0x38) and loser (+0x34).
+        // A conference names its winner and loser.
         image.q(CONFERENCE, BASE + peace_conference::VTABLE_RVA);
         image.q(CONFERENCE + peace_conference::REFERENCE, 0x7_0000_0031);
         image.d(CONFERENCE + provenance::MAIN_LOSER, 2);

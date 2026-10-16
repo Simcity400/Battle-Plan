@@ -127,7 +127,7 @@ fn stub(code: &TestCode, aligned: bool) -> (usize, [u8; 16]) {
         bytes.extend([0x48, 0x8d, 0x64, 0x24, 0xd8]); // LEA keeps the caller's CF.
     }
     let site = code.0 as usize + bytes.len();
-    // Independently authored MOV [R9+128],RCX. Capture CF before arithmetic.
+    // Independently authored store of RCX through R9. Capture CF before arithmetic.
     bytes.extend([0x49, 0x89, 0x89, 0x80, 0, 0, 0, 0x9c, 0x41, 0x5a]);
     bytes.extend([0x4d, 0x89, 0x91, 0x88, 0, 0, 0]);
     bytes.extend([
@@ -468,7 +468,7 @@ fn native_epilogue_remains_at_the_call_return_and_moved_tail_target_matches() {
     let mut bytes = [0xcc; 80];
     bytes[..5].copy_from_slice(&[0x57, 0x48, 0x83, 0xec, 0x30]);
     bytes[5..11].copy_from_slice(&[0x48, 0x83, 0xc4, 0x30, 0x5f, 0xe9]);
-    bytes[11..15].copy_from_slice(&49_i32.to_le_bytes()); // JMP from +10 to +64.
+    bytes[11..15].copy_from_slice(&49_i32.to_le_bytes()); // The JMP lands 49 bytes past its own end.
     bytes[64..70].copy_from_slice(&[0xb8, 73, 0, 0, 0, 0xc3]);
     unsafe {
         ptr::copy_nonoverlapping(bytes.as_ptr(), code.0.cast(), bytes.len());
@@ -540,7 +540,7 @@ fn copied_load_and_add_preserve_the_native_result_and_branch_flags() {
     let code = TestCode::new();
     let mut bytes: Vec<u8> = vec![0x53, 0x57, 0x48, 0x89, 0xcb, 0x48, 0x89, 0xd7];
     let site = code.0 as usize + bytes.len();
-    // Synthetic MOV RDX,[RBX+8]; ADD RDX,[RDI], followed by a sign-dependent result.
+    // Synthetic load into RDX through RBX, then an add from [RDI], followed by a sign-dependent result.
     bytes.extend([0x48, 0x8b, 0x53, 8, 0x48, 0x03, 0x17]);
     bytes.extend([
         0x49, 0x89, 0x10, 0xb8, 0, 0, 0, 0, 0x0f, 0x98, 0xc0, 0x5f, 0x5b, 0xc3,

@@ -100,14 +100,14 @@ impl Fresh<'_> {
     /// Appends the bytes of `span` the registration rows consume; bytes the
     /// walk reads but no row consumes, which change without a registration
     /// writer, are held as zero:
-    /// - a container's span (`+0xB0..+0xF8`) keeps its country and capacity
+    /// - a container's span keeps its country and capacity
     ///   words; its sortie factor, fuel demand and allocation words are
     ///   rewritten every hour (the hourly air sortie update from the hourly
     ///   strategic-air stage, and the hourly air fuel update) and only a host
     ///   base's carrier observer reads them;
-    /// - a wing's identity (`+0x00..+0x20`) keeps its two vtables and its
-    ///   handle; `+0x08..+0x10` is its `CSelectable` state (the selected
-    ///   byte `+0x0C`, set by the selection writer when the player selects
+    /// - a wing's identity keeps its two vtables and its
+    ///   handle; after it comes its `CSelectable` state (the selected
+    ///   byte, set by the selection writer when the player selects
     ///   it), which the walk does not check.
     fn consumed(&self, span: &Span, output: &mut Vec<u8>) {
         use engine::{cair_base::CONTAINER_SPAN, ccountry_air_container as container};

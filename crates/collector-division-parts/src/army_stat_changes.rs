@@ -1,16 +1,13 @@
-//! Allocation-free notifications from the native writers of every division's
-//! stat block (`CArmy+0x138`) whose attack operands and maxima DivisionStatus
-//! records, and of its name member (`CArmy+0x340`), whose span and cached-name lookup
-//! cache it records ([`engine::army_stat_mutations`]). A detour only notifies
-//! the shared marking watch registry ([`WatchRegistry::marking`]) for the
-//! `CArmy` or member its
-//! first argument names, or starts an epoch for the country-wide name refresh,
-//! counts the call and calls the original; it never changes game behaviour.
-//! The writers run on the game thread and on the TBB workers of the hourly
-//! update, which the registry's atomics serve. Receivers are the armies and
-//! members a DivisionStatus capture registered. Anything unobserved (disabled,
-//! poisoned, a refused registration, an epoch change, a running writer) makes
-//! the capture read that division afresh.
+//! Allocation-free notifications from the native writers of every division's stat block
+//! (`cunit::STAT_BLOCK`) whose attack operands and maxima DivisionStatus records, and of its name
+//! member (`carmy_combat_inputs::NAME_GROUP_MEMBER`), whose span and cached-name lookup cache it
+//! records ([`engine::army_stat_mutations`]). A detour only notifies the shared marking watch
+//! registry ([`WatchRegistry::marking`]) for the `CArmy` or member its first argument names, or
+//! starts an epoch for the country-wide name refresh, counts the call and calls the original; it
+//! never changes game behaviour. The writers run on the game thread and on the TBB workers of the
+//! hourly update, which the registry's atomics serve. Receivers are the armies and members a
+//! DivisionStatus capture registered. Anything unobserved (disabled, poisoned, a refused
+//! registration, an epoch change, a running writer) makes the capture read that division afresh.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},

@@ -65,9 +65,9 @@ fn nodes(
             *counts.entry(row.country).or_default() += 1;
         }
         let label = format!("SupplyNodes {}:{}", row.country, row.index);
-        // Node creators store unchecked province ids, from a copied record
-        // or the companion's +0xA0 array; the country-local parent walk does
-        // not validate those ids against map membership.
+        // Node creators store unchecked province ids, from a copied record or the companion's
+        // node-province array; the country-local parent walk does not validate those ids against
+        // map membership.
         const NULL: &str = "a supply node or parent id the game resolves as the null province; no map province joins it";
         if !known(row.province) {
             report.limitation(NULL, format!("{label}.province {}", row.province));

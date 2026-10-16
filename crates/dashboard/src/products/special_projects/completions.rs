@@ -463,12 +463,12 @@ pub(super) fn scripted_names(
 pub(super) fn structural_reason(reason: &str) -> String {
     if let Some((project, offset)) = reason
         .strip_prefix("Project ")
-        .and_then(|rest| rest.split_once(" has unsupported native state offset "))
+        .and_then(|rest| rest.split_once(" is in unsupported native state "))
         && project.parse::<u32>().is_ok()
     {
-        // Local handles vary by country; the unsupported native offset is the
-        // stable form that must remain named. Content-token reasons stay exact.
-        format!("Project has unsupported native state offset {offset}")
+        // Local handles vary by country; the unsupported native state is the stable form that must
+        // remain named. Content-token reasons stay exact.
+        format!("Project is in unsupported native state {offset}")
     } else {
         reason.to_owned()
     }

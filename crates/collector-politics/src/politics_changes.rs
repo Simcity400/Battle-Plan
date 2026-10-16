@@ -1784,8 +1784,8 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
     };
     identity.keys[2] = context.identity.keys[2];
     match scope {
-        // P: command idea pointer +30 (replace's new idea +38), definition key
-        // +18. Both payment operations of a replace retain Replace provenance.
+        // P: command idea pointer (replace's new idea after it), definition key inside the idea.
+        // Both payment operations of a replace retain Replace provenance.
         Scope::AddIdea | Scope::RemoveIdea | Scope::ReplaceIdea => {
             let offset = if scope == Scope::ReplaceIdea {
                 0x38
@@ -1826,9 +1826,9 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
                 PowerAction::Replace
             };
         }
-        // Targeted-decision handling receives status, selector, definition;
-        // The command passes its +2C/+30 selector and +38 definition.
-        // Both target handlers retain their original definition/selector args.
+        // Targeted-decision handling receives status, selector, definition; The command passes its
+        // selector words and its definition. Both target handlers retain their original
+        // definition/selector args.
         Scope::Decision | Scope::TargetedDecision | Scope::DecisionTimeout => {
             let decision = if scope == Scope::TargetedDecision {
                 c
@@ -1849,7 +1849,7 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
                 } else {
                     c
                 };
-                // Target matching compares selector+8/+C against instance+20/+24.
+                // Target matching compares the selector's two target words against the instance's.
                 let target = at(selector, 8).and_then(item_read::<i32>);
                 if let Some(target) = target {
                     if target > 0 {
@@ -1865,8 +1865,8 @@ fn context_identity(scope: Scope, a: usize, b: usize, c: usize, mut context: Con
                 }
             }
         }
-        // P: base action type +08; subclass target layouts differ, so no
-        // unproved generic target offset. Scripted template/key +78/+10.
+        // P: base action type; subclass target layouts differ, so no unproved generic target
+        // offset. Scripted template and key.
         Scope::Diplomacy | Scope::ScriptedDiplomacy => {
             identity.set(0, at(a, 8).and_then(item_read::<u32>));
             identity.action = PowerAction::Execute;

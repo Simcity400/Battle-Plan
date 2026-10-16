@@ -380,10 +380,9 @@ pub fn producing_country(
     )
 }
 
-/// The raw reference of the country whose production status owns `line`, as
-/// [`producing_country`] reads it, for a line whose vtable is one of `vtables`
-/// (RVAs): any production line keeps its CProductionStatus at +0x20
-/// (`cproduction_line::PRODUCTION_STATUS`), construction lines included.
+/// The raw reference of the country whose production status owns `line`, as [`producing_country`]
+/// reads it, for a line whose vtable is one of `vtables` (RVAs): any production line keeps its
+/// CProductionStatus (`cproduction_line::PRODUCTION_STATUS`), construction lines included.
 pub fn owning_country(
     memory: &impl Memory,
     base: usize,

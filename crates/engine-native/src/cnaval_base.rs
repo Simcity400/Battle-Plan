@@ -17,8 +17,8 @@ pub const UPDATE_LEVELS_RVA: usize = 0x00e9_cc60;
 
 /// CNavalBase vtable.
 pub const VTABLE_RVA: usize = 0x0295_c5a0;
-/// Per-base country list: pointer +0, count +0xC and one u32 tag per
-/// entry. Membership supplies the prohibition overlay for the viewer.
+/// Per-base country list: pointer, count and one u32 tag per entry. Membership supplies the
+/// prohibition overlay for the viewer.
 pub const COUNTRY_LIST: usize = 0x40;
 /// Holder's country tag used by known, foreign and enabled branches.
 pub const HOLDER_COUNTRY: usize = 0x10;
@@ -107,9 +107,9 @@ pub struct Walk {
     pub required_countries: usize,
 }
 
-/// Walk the province-to-naval-base hash at CGameState+0x698. Buckets are
-/// at +0x28, mask +0x34 and maximum probe distance +0x38, with 0x18-byte
-/// entries selected by set probe bytes. Authenticate each base vtable and
+/// Walk the province-to-naval-base hash held by the strategic navy manager
+/// (`cgame_state::STRATEGIC_NAVY_MANAGER`). The hash holds its buckets, mask and maximum probe
+/// distance, with 0x18-byte entries selected by set probe bytes. Authenticate each base vtable and
 /// require its province id to match the key.
 ///
 /// Keep each complete [`COUNTRY_LIST`] in `countries`, bounded by live count.

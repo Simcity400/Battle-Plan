@@ -1,4 +1,4 @@
-//! Province supply data in the supply-system +0x10 vector.
+//! Province supply data in the supply system's province vector (`csupply_system::PROVINCE_DATA`).
 //! Stored field widths and flag bits are retained independently.
 
 use crate::{
@@ -67,8 +67,8 @@ pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [
     walk_buffer(memory, base, game_state, Buffer::Fixed(output))
 }
 
-/// Worker-owned rows grow from the acquired vector +0x1c count before
-/// reading non-sentinel slots. No live read is repeated.
+/// Worker-owned rows grow from the acquired vector's count before reading non-sentinel slots. No
+/// live read is repeated.
 pub fn walk_growing(
     memory: &impl Memory,
     base: usize,

@@ -306,10 +306,10 @@ pub const RAILWAY_ADVANCE: Site = Site {
     ],
 };
 
-/// Railway progress query: RCX is the railway manager, EDX is the source province,
-/// R8D is the destination province, R9 is the signed i64 amount, and the country
-/// is at RSP+0x28. The boolean result reports segment completion. The relocated
-/// prefix saves RBX to the stack.
+/// Railway progress query: RCX is the railway manager, EDX is the source province, R8D is the
+/// destination province, R9 is the signed i64 amount, and the country is in its stack argument
+/// slot. The boolean result reports segment completion. The relocated prefix saves RBX to the
+/// stack.
 pub const RAILWAY_PROGRESS: Site = Site {
     name: "railway progress",
     rva: 0x00e7_df00,
@@ -355,7 +355,7 @@ pub struct Operands {
     pub line: u64,
     pub bank: i64,
     pub cost: i64,
-    /// At BUILDING_SPEND_RETURN the getter returns this own +0x30 value.
+    /// At BUILDING_SPEND_RETURN the getter returns this object's own value.
     pub speed: i64,
     pub repair: bool,
     pub partner: Option<u64>,

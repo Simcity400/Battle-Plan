@@ -31,10 +31,10 @@ pub const CONTROLLER_CHANGE_RVA: usize = 0x00ce_2870;
 /// unserialized and supplies no persistent key.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Full native CTheatre `+0x08` handle of the theatre that lists this area.
+    /// Full native CTheatre handle of the theatre that lists this area.
     pub theatre: u64,
     pub ordinal: u32,
-    /// Province id behind `+0x28`; a null representative pointer is absent, not zero.
+    /// Province id behind `REPRESENTATIVE_PROVINCE`; a null representative pointer is absent, not zero.
     pub representative: Option<u32>,
     pub provinces_start: usize,
     pub provinces_len: usize,

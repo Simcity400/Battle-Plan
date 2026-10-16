@@ -398,10 +398,9 @@ fn carrier_walk_fixture_with_storage(
     }
 }
 
-/// Both container fuel scalars arrive through the walk's own container span,
-/// with the values separate reads of `+0xE0` and `+0xF0` return: the observer
-/// reads neither word itself, so a fault its own memory would meet there
-/// changes nothing.
+/// Both container fuel scalars arrive through the walk's own container span, with the values
+/// separate reads of the fuel demand and allocated fuel return: the observer reads neither word
+/// itself, so a fault its own memory would meet there changes nothing.
 #[test]
 fn carrier_fuel_arrives_through_the_container_span_and_an_optional_fault_preserves_membership() {
     let bytes = host_registration_fixture();
@@ -553,8 +552,8 @@ fn failed_original_carrier_plane_leaf_preserves_membership_and_current_fuel() {
 #[test]
 fn denied_transport_carrier_demand_keeps_legacy_fuel_and_never_reads_unreached_planes() {
     let bytes = host_registration_fixture();
-    // This ORIGINAL cost-header refusal prevents both legacy fuel branches
-    // from reaching +7C. An admitted transport suffix would add those leaves.
+    // This ORIGINAL cost-header refusal prevents both legacy fuel branches from reaching the plane
+    // count. An admitted transport suffix would add those leaves.
     let fault = Some(IMAGE + crate::air_fuel_defines::MISSION_COSTS_RVA);
     let denied = carrier_walk_fixture_with_transport(
         &bytes,
@@ -1762,9 +1761,9 @@ fn sparse_container(index: usize) -> usize {
     SPARSE_CONTAINERS + index * 0x100
 }
 
-/// One host base whose 5,001-slot country-container vector holds three
-/// containers, each filed at its own country's slot, with its dense list
-/// `+0x48` naming `listed` (container indices) in that order.
+/// One host base whose 5,001-slot country-container vector holds three containers, each filed at
+/// its own country's slot, with its dense list `REGISTERED_CONTAINERS` naming `listed` (container
+/// indices) in that order.
 fn sparse_slot_fixture(listed: &[usize]) -> Vec<u8> {
     let mut bytes = vec![0; sparse_container(SPARSE_OCCUPIED.len()) - GAME];
     qword(

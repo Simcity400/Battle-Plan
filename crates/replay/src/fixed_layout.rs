@@ -146,8 +146,8 @@ pub const ATTRITION: Family = Family {
     tables: &[],
 };
 
-/// Cached region attack uses modifier slot 0xAD. Field-local capture and
-/// playback guard; no table-wide refusal.
+/// Cached region attack uses `keys::ARMY_ATTACK_FACTOR`. Field-local capture and playback guard; no
+/// table-wide refusal.
 pub const SELECTED_ATTACK_WEATHER_ATTACK: Family = Family {
     name: "selected attack weather attack",
     keys: &[keys::ARMY_ATTACK_FACTOR],
@@ -155,7 +155,7 @@ pub const SELECTED_ATTACK_WEATHER_ATTACK: Family = Family {
     tables: &[],
 };
 
-/// Cached region breakthrough uses modifier slot 0x1DD.
+/// Cached region breakthrough uses `keys::BREAKTHROUGH_FACTOR`.
 pub const SELECTED_ATTACK_WEATHER_BREAKTHROUGH: Family = Family {
     name: "selected attack weather breakthrough",
     keys: &[keys::BREAKTHROUGH_FACTOR],
@@ -163,7 +163,7 @@ pub const SELECTED_ATTACK_WEATHER_BREAKTHROUGH: Family = Family {
     tables: &[],
 };
 
-/// Country night term uses modifier slot 0x103.
+/// Country night term uses `keys::LAND_NIGHT_ATTACK`.
 pub const SELECTED_ATTACK_NIGHT: Family = Family {
     name: "selected attack night",
     keys: &[keys::LAND_NIGHT_ATTACK],
@@ -171,7 +171,7 @@ pub const SELECTED_ATTACK_NIGHT: Family = Family {
     tables: &[],
 };
 
-/// Country/state fort term uses modifier slot 0x272.
+/// Country/state fort term uses `keys::LAND_BUNKER_EFFECTIVENESS_FACTOR`.
 pub const SELECTED_ATTACK_FORT: Family = Family {
     name: "selected attack fort",
     keys: &[keys::LAND_BUNKER_EFFECTIVENESS_FACTOR],

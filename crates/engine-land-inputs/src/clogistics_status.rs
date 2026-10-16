@@ -1,4 +1,4 @@
-//! Country logistics history, reached through CCountry+0xf98.
+//! Country logistics history, reached through `ccountry::LOGISTICS_STATUS`.
 //!
 //! Nineteen history series store one signed fixed5 value per equipment
 //! archetype, indexed by the archetype's position in the equipment database.
@@ -34,8 +34,8 @@ use crate::{
 
 /// Logistics-status primary vtable.
 pub const VTABLE_RVA: usize = 0x0299_cc88;
-/// Logistics history pointer array: capacity +0x10 and count +0x14.
-/// Construction fills 19 series; daily update advances every counted series.
+/// Logistics history pointer array: capacity and count. Construction fills 19 series; daily update
+/// advances every counted series.
 pub const SERIES: usize = 0x08;
 /// Number of initialized and serialized logistics history series.
 pub const SERIES_COUNT: u32 = 19;
@@ -52,9 +52,9 @@ pub const BALANCE_ROLL_UP: i32 = 1;
 
 /// Bytes of the status copied: vtable, series header and owner.
 const STATUS_BYTES: usize = COUNTRY + 8;
-/// Bytes of a CLoopHistory copied: through the field count at +0x34.
+/// Bytes of a CLoopHistory copied: through the field count.
 const HISTORY_BYTES: usize = cloop_history::FIELD_COUNT + 4;
-/// Bytes of a CLoopHistoryContainer copied: through the owning history at +0x38.
+/// Bytes of a CLoopHistoryContainer copied: through the owning history.
 const WINDOW_BYTES: usize = window::HISTORY + 8;
 /// Bytes of a record copied: its value header and owning history.
 const RECORD_BYTES: usize = record_fields::HISTORY + 8;
@@ -93,12 +93,12 @@ const IDENTITY_LAYOUT: RecordLayout<'static> =
 /// of each series in the current daily record, fixed5.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// The country's own raw tag reference (CCountry+8).
+    /// The country's own raw tag reference (`ccountry::ID`).
     pub country: u32,
-    /// The record index: the archetype's CEquipmentType+0x538 and its position
-    /// in CEquipmentDatabase+0x80.
+    /// The record index: the archetype's `cequipment_type::STOCKPILE_INDEX` and its position in
+    /// `cequipment_database::ARCHETYPES`.
     pub archetype: u32,
-    /// The archetype's script token (CEquipmentType+0x08).
+    /// The archetype's script token (`cequipment_type::TOKEN`).
     pub token: u32,
     /// Series 16: the Logistics screen's surplus (positive) or deficit.
     pub balance_raw: i64,
@@ -687,10 +687,9 @@ pub fn walk_balance_owners(
     }
 }
 
-/// Operands at the two balance-write calls. Daily update takes available
-/// from caller RSP+0x88; refresh takes it from caller RSP+0x78. Entry RSP
-/// includes the return address. Both pass record, actual balance and index
-/// in RCX/RDX/R8. Availability already includes convoy-cache and supply
+/// Operands at the two balance-write calls. Daily update takes available from a caller stack slot;
+/// refresh takes it from another. Entry RSP includes the return address. Both pass record, actual
+/// balance and index in RCX/RDX/R8. Availability already includes convoy-cache and supply
 /// adjustments; this read calls no getter and refreshes no cache.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BalanceWrite {
@@ -721,9 +720,9 @@ pub const BALANCE_CALLS: [(usize, [u8; 16], usize); 2] = [
     ),
 ];
 
-/// Whether the loop-history value setter stores at all: it writes
-/// `values[index]` only when the signed index is below the signed count at
-/// record+0xC, and returns otherwise. `None` when the count is unreadable.
+/// Whether the loop-history value setter stores at all: it writes `values[index]` only when the
+/// signed index is below the signed count at the record's count, and returns otherwise. `None` when
+/// the count is unreadable.
 pub fn balance_write_stores(memory: &impl Memory, record: usize, archetype: u32) -> Option<bool> {
     let count = read::<i32>(memory, record.checked_add(0xc)?)?;
     Some((archetype as i32) < count)

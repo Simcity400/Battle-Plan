@@ -15,7 +15,7 @@ pub const COUNTRY_COUNT: usize = 0x48;
 /// Second ordered list of canonically distinct roster owners of the side's
 /// units, used to admit viewers through shared vision.
 pub const SECONDARY_COUNTRIES: usize = 0x50;
-/// Each list's signed count follows its head by 0x10.
+/// Each list's signed count follows its head and tail pointers.
 const LIST_COUNT: usize = COUNTRY_COUNT - COUNTRIES;
 /// Linked-list node: raw u32 tag followed by its next pointer.
 pub const NODE_TAG: usize = 0;

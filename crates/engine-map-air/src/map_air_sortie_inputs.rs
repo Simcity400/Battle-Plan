@@ -35,9 +35,9 @@ const OVERRIDE_ENTRY: usize = 0x10;
 pub struct Mission {
     pub coverage_raw: i64,
     pub reassignment_penalty_raw: i64,
-    /// +0x70; zero when no target was chosen.
+    /// The chosen target; zero when no target was chosen.
     pub last_target_province: i32,
-    /// The reached vector (+0x38, count +0x44), acquisition context only.
+    /// The reached vector (with its count), acquisition context only.
     pub reached: Array,
     /// The mission's CStrategicRegion*, acquisition context only.
     pub region_pointer: usize,
@@ -321,7 +321,7 @@ pub struct Container {
     pub fuel_allocated_raw: i64,
 }
 
-/// A base's per-country container vector (`CAirBase+0x30`), read once per base.
+/// A base's per-country container vector (`cair_base::COUNTRY_CONTAINERS`), read once per base.
 pub fn country_containers(memory: &impl Memory, air_base: usize) -> Result<Array, &'static str> {
     air_base
         .checked_add(cair_base::COUNTRY_CONTAINERS)
@@ -434,8 +434,8 @@ pub fn weather_modifier(
     )
 }
 
-/// The effective country's own key-0x11 entry (CCountry+0x5B8); `country`
-/// is an authenticated CCountry.
+/// The effective country's own key-0x11 entry (`ccountry::MODIFIER_ACCUMULATOR`); `country` is an
+/// authenticated CCountry.
 pub fn country_modifier(
     memory: &impl Memory,
     country: usize,

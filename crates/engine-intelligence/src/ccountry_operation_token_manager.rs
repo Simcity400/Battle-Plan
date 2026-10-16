@@ -31,11 +31,10 @@ pub struct Walk {
     pub required_tokens: usize,
 }
 
-/// Reads each canonical country's authenticated manager once. Missing arena
-/// capacity omits a whole target row. Empty vectors, raw country aliases and
-/// repeated token values remain exact. Resolve distinct token names through the
-/// shared callback dictionary when enabling this table; +0x50 in COperationToken
-/// is not used as an assumed authored id. Normal effect/lifecycle writer closure
+/// Reads each canonical country's authenticated manager once. Missing arena capacity omits a whole
+/// target row. Empty vectors, raw country aliases and repeated token values remain exact. Resolve
+/// distinct token names through the shared callback dictionary when enabling this table; its slot
+/// in COperationToken is not used as an assumed authored id. Normal effect/lifecycle writer closure
 /// and live consistency/cost assessment remain prerequisites to collection.
 pub fn walk(
     memory: &impl Memory,

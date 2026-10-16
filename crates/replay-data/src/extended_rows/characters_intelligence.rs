@@ -251,9 +251,9 @@ pub struct OperativeMembershipRow {
     pub ordinal: Recorded<u32>,
     /// Active assignment target copied with this membership.
     pub target_country: Recorded<Option<u32>>,
-    /// Own packed operation reference (+0xF80), including reservations.
+    /// Own packed operation reference, including reservations.
     pub operation: Recorded<Option<u64>>,
-    /// Saved literal/localisation key (+0x20), never the localised UI cache.
+    /// Saved literal/localisation key, never the localised UI cache.
     pub name: Recorded<Vec<u8>>,
     /// Assignment status operands; older layouts supply no value.
     pub cooldown_kind: Recorded<Option<u32>>,
@@ -655,9 +655,9 @@ typed_codec!(CapturedOperativeReferenceRow, 64, |row| (row.country as u128) << 3
 pub struct ScientistSkillRow {
     pub character: u32,
     pub ordinal: u32,
-    /// Full native u32 specialization token at record +0x00.
+    /// Full native u32 specialization token, the record's first word.
     pub token: u32,
-    /// Native signed level at record +0x18; zero is a real level, not an absence.
+    /// Native signed level; zero is a real level, not an absence.
     pub level: i32,
     /// Stored signed experience, independent of the skill's level.
     pub experience_raw: i64,
@@ -720,9 +720,9 @@ impl CountryIntelRow {
     }
 }
 
-/// The country-character roster's +0x40 advisor search order, read once a game day at the
-/// country's owner slice; SliceReads holds each country's read hour. The primary roster
-/// is independent of hired appointments and has no slot bytes.
+/// The country-character roster's advisor search order, read once a game day at the country's owner
+/// slice; SliceReads holds each country's read hour. The primary roster is independent of hired
+/// appointments and has no slot bytes.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AvailableAdvisorRow {
     pub country: u32,

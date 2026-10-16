@@ -2,16 +2,15 @@
 //! combat, side or ship reaches, and the recorded identity its trees are
 //! filed under.
 //!
-//! Side modifier aggregation walks sources in [`SideSource`] order: the first primary
-//! country's tree (`country+0x5B8`), the combat region's weather (`region weather+0x58`,
-//! omitted outside the live region array), the combat province's terrain (`terrain
-//! type+0xB8`) and a commander (`naval leader+0x418`): the side's own for positioning
-//! (0x1B2), the opposing side's for the early-defender key (0x5A). The 0x1B3 screening
-//! correction passes null province and commander, so it reads the country alone. A
-//! convoy's escape key (0x5D) walks its side's sources for that key. A ship's escape keys
-//! (0x5C, 0x5B, 0x59) and a carrier's sortie keys (0x24, 0x1B6) walk its ship modifier
-//! sources; the recorded `NavalCombatShips.weapon_context.sources` are those sources in
-//! native order, and scopes 0-15 carry a tree ([`ship_source`]).
+//! Side modifier aggregation walks sources in [`SideSource`] order: the first primary country's
+//! tree (its modifier accumulator), the combat region's weather (the region weather record's,
+//! omitted outside the live region array), the combat province's terrain (its terrain type's) and a
+//! commander (the naval leader's): the side's own for positioning (0x1B2), the opposing side's for
+//! the early-defender key (0x5A). The 0x1B3 screening correction passes null province and
+//! commander, so it reads the country alone. A convoy's escape key (0x5D) walks its side's sources
+//! for that key. A ship's escape keys (0x5C, 0x5B, 0x59) and a carrier's sortie keys (0x24, 0x1B6)
+//! walk its ship modifier sources; the recorded `NavalCombatShips.weapon_context.sources` are those
+//! sources in native order, and scopes 0-15 carry a tree ([`ship_source`]).
 //!
 //! The collector files each reached tree under the identities below and the
 //! viewer joins the same identities, so neither depends on a runtime address.

@@ -34,7 +34,7 @@ const HEAP_END: usize = 0x3_0000;
 const GAME_STATE: usize = 0x1000;
 const COUNTRY_TABLE: usize = 0x2000;
 const LINK_TABLE: usize = 0x2100;
-/// Modifier-definition rows. Key 0xcd's row sits at +0xcd*STRIDE, inside the heap.
+/// Modifier-definition rows. Key 0xcd's row sits at index 0xcd, inside the heap.
 const METADATA: usize = 0x3000;
 /// The module data window. It is placed from a public engine RVA, and
 /// `World::new` checks that it also covers the research modifier
@@ -284,7 +284,7 @@ impl World {
         self.put(at + 24, 15_u64.to_le_bytes());
     }
 
-    /// A one-entry sorted accumulator: key at +0, raw value at +8.
+    /// A one-entry sorted accumulator: key, then raw value.
     fn modifier(&mut self, accumulator: usize, storage: usize, key: u32, raw: i64) {
         self.array(accumulator, storage, 1);
         self.put(storage, key.to_le_bytes());

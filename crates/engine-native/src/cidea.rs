@@ -4,9 +4,9 @@
 
 /// Idea primary vtable.
 pub const VTABLE_RVA: usize = 0x0296_a9b0;
-/// Idea secondary vtable at complete-object displacement +0x10.
+/// Idea secondary vtable at `SECONDARY_BASE` in the complete object.
 pub const SECONDARY_VTABLE_RVA: usize = 0x0296_aa00;
 /// Idea secondary-subobject displacement from primary.
 pub const SECONDARY_BASE: usize = 0x10;
-/// CIdea token std::string at primary +0x18.
+/// CIdea token std::string.
 pub const TOKEN: usize = 0x18;

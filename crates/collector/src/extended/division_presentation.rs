@@ -897,14 +897,12 @@ impl Captured {
         );
     }
 
-    /// The division's +0x340 member pointer leads to the naming generator.
-    /// Keep its language-neutral operands and, independently, the exact
-    /// +0x60 cached name. Ordering, binding and rename writers refresh the
-    /// member, as do template, load and pre-hourly active-stat updates.
-    /// Inputs therefore read hourly.
-    /// One copy of the member span serves both the generator operands and the
-    /// cache header; the two arenas keep their refusals independent, and a
-    /// span that cannot be copied leaves the cache to its own reads.
+    /// The division's name member pointer leads to the naming generator. Keep its language-neutral
+    /// operands and, independently, the exact cached name (`cname_group_member::CACHED_NAME`).
+    /// Ordering, binding and rename writers refresh the member, as do template, load and pre-hourly
+    /// active-stat updates. Inputs therefore read hourly. One copy of the member span serves both
+    /// the generator operands and the cache header; the two arenas keep their refusals independent,
+    /// and a span that cannot be copied leaves the cache to its own reads.
     ///
     /// With the `army_stat` store, a member no hooked writer touched since the
     /// Held read  (`engine::army_stat_mutations`: `cached-name refresh`, and the

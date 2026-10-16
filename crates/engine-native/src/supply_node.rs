@@ -6,13 +6,13 @@ pub const STRIDE: usize = 0xe8;
 /// Node index, u32, used for weight-vector selection and initialized from
 /// constructor argument two. Identity is country plus index.
 pub const INDEX: usize = 0;
-/// Destination province at node +4.
+/// Destination province of the node.
 pub const PROVINCE: usize = 4;
 /// Node kind, u32.
 pub const KIND: usize = 0x08;
 /// Node flag, u8.
 pub const FLAG: usize = 0x0c;
-/// Locator-arm byte at +0x0d, tested separately from the +0x0c flag.
+/// Locator-arm byte, tested separately from the `FLAG` byte.
 pub const LOCATOR_ARM: usize = 0x0d;
 /// Available supply, i64.
 pub const AVAILABLE: usize = 0x38;
@@ -21,11 +21,11 @@ pub const CONSUMED: usize = 0x40;
 /// Route value, i64; the state uses its maximum over provinces and grants
 /// a supply-route resource bonus when that maximum is positive.
 pub const ROUTE_VALUE: usize = 0x78;
-/// Node constructor initializing the +8 kind.
+/// Node constructor initializing the `KIND`.
 pub const CONSTRUCTOR_RVA: usize = 0x0120_4300;
-/// First locator-arm writer updating +0x0d.
+/// First locator-arm writer updating `LOCATOR_ARM`.
 pub const UPDATE_LOCATOR_ARM_RVA: usize = 0x0120_cee0;
-/// Second locator-arm writer updating +0x0d.
+/// Second locator-arm writer updating `LOCATOR_ARM`.
 pub const REFRESH_LOCATOR_ARM_RVA: usize = 0x0120_e7c0;
 
 use crate::{
@@ -98,11 +98,10 @@ impl ProvinceCheck {
         }
     }
 
-    /// The game holds this id as a null province. The walk's native readers
-    /// only key maps with a node or parent province: train departure routing
-    /// looks it up in the parent and route maps, and a missing parent key ends
-    /// the walk. Node creators store it unchecked, from the copied record or
-    /// companion+0xA0. The walk therefore records such an id as stored.
+    /// The game holds this id as a null province. The walk's native readers only key maps with a
+    /// node or parent province: train departure routing looks it up in the parent and route maps,
+    /// and a missing parent key ends the walk. Node creators store it unchecked, from the copied
+    /// record or in the supply companion. The walk therefore records such an id as stored.
     pub const fn is_null_province(self) -> bool {
         matches!(self, Self::OutsideCensus | Self::SlotEmpty)
     }
@@ -111,7 +110,7 @@ impl ProvinceCheck {
 /// Where the walk met a province id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProvinceRole {
-    /// A node's own province (node +4).
+    /// A node's own province (`PROVINCE`).
     Node,
     /// A province-keyed parent from the companion's parent map.
     Parent,

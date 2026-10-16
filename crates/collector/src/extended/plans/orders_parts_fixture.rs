@@ -11,8 +11,8 @@ const HEAP: usize = 0x0350_0000;
 pub(super) const GROUPS: usize = 8;
 pub(super) const ORDERS: usize = GROUPS * 3;
 pub(super) const FRONTS: usize = 2;
-// The child-front serializer stores 72-byte entries;
-// Both child-front readers select +380 and signed +20/+24 spans.
+// The child-front serializer stores 72-byte entries; Both child-front readers select the
+// child-front data and its signed count spans.
 const CHILD_DATA: usize = 0x380;
 const CHILD_STRIDE: usize = 0x48;
 const CHILD_VTABLE: usize = 0x0296_fa98;

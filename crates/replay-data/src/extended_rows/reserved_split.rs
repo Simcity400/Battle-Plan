@@ -191,9 +191,9 @@ typed_codec!(TransportSpottingRegionRow, 32, |row| row.ordinal as u128, |key| Se
  { 0 => (region.region_id): U32, 1 => (region.runtime_slot): OptionalI32, 2 => (region.signed_province_count): OptionalI32, 3 => (region.weather_detection): Opaque, 4 => (region.air_environment): Opaque },
  |row| if row.region.sample == SpottingSample::Derived { Ok(()) } else { Err(invalid("split spotting regions derive their sample")) });
 
-/// TransportAirRoots: key physical strategic air manager ordinal (32 bits), 5 payload
-/// mask bits. [`TransportAirCountry`] without its headers: `regions` is the length of its
-/// +98 header domain, None its refusal.
+/// TransportAirRoots: key physical strategic air manager ordinal (32 bits), 5 payload mask bits.
+/// [`TransportAirCountry`] without its headers: `regions` is the length of its Enemy-vector header
+/// domain, None its refusal.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TransportAirRootRow {
     pub ordinal: u32,

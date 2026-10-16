@@ -567,11 +567,9 @@ struct ModifierIconContext<'context, 'frame> {
     leader_traits: Result<&'context Available<'frame, tables::UnitLeaderTraits>, &'context str>,
 }
 
-/// Division commander operands, from the hour's character
-/// tables: the raw saved name (commander+0x20, UnitLeaders.inherited_text_a,
-/// localised in the viewer's language), the skill level
-/// (skill level at +0x1B8 through the +0xE60 skill pointer) and every
-/// assigned trait (+0xDC8, count +0xDD4) in vector order, repeats included.
+/// Division commander operands, from the hour's character tables: the raw saved name
+/// (UnitLeaders.inherited_text_a, localised in the viewer's language), the skill level (skill level
+/// through the leader's skill pointer) and every assigned trait in vector order, repeats included.
 #[derive(Debug, PartialEq, Eq)]
 struct DivisionCommander<'frame> {
     name_token: &'frame [u8],
@@ -597,10 +595,10 @@ fn division_commander<'frame>(
             }
             _ => format!("the division commander {handle} has no UnitLeaders row this hour"),
         })?;
-    // Skill lookup dereferences the +0xE60 pointer unconditionally.
+    // Skill lookup dereferences the skill pointer unconditionally.
     if leader.skill_status == 0 {
         return Err(format!(
-            "the division commander {handle}'s UnitLeaders row records no skill object (commander+0xE60), needed to read its skill level"
+            "the division commander {handle}'s UnitLeaders row records no skill object, needed to read its skill level"
         ));
     }
     let traits = traits.map_err(|reason| format!("UnitLeaderTraits is unreadable ({reason})"))?;
@@ -655,7 +653,7 @@ fn commander_icon_tooltip(
                     String::from_utf8_lossy(trait_token)
                 )
             })?;
-            // Localise the trait's token (+0x10) for the viewing country.
+            // Localise the trait's token for the viewing country.
             let name =
                 super::commander_tooltips::country_localized(icons, loc, viewing_tag, trait_token)?;
             text.push_str(&builtin(
@@ -1021,9 +1019,8 @@ fn reserve_sources(
 const ADVANCE_STRENGTH: i64 = 10_000;
 const ADVANCE_ORGANISATION: i64 = 100_000;
 
-/// Reinforcement arms in original order: not fighting (the +0xA8 advancement
-/// test), then too much width (COMBAT_OVER_WIDTH_PENALTY against its
-/// maximum), otherwise the chance.
+/// Reinforcement arms in original order: not fighting (the advancement test), then too much width
+/// (COMBAT_OVER_WIDTH_PENALTY against its maximum), otherwise the chance.
 fn reinforcement(
     row: &LandCombatDivisionRow,
     condition: &Condition,

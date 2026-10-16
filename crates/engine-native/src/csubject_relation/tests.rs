@@ -203,9 +203,9 @@ fn censuses_preserve_native_direction_full_width_and_literal_bytes() {
     }
 }
 
-/// A retired relation still installed at `+0x288` is what the native
-/// subject terms read, so it stays a row; the retired relation left only in
-/// the owned vector (the fixture's second entry) is skipped.
+/// A retired relation still installed in the subject-relation slot is what the native subject terms
+/// read, so it stays a row; the retired relation left only in the owned vector (the fixture's
+/// second entry) is skipped.
 #[test]
 fn a_retired_subject_counts_while_it_is_installed() {
     let mut bytes = fixture();

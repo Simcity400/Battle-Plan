@@ -1,16 +1,18 @@
-//! Runtime writers of each country's available-advisor array (`+0x40`,
-//! count `+0x4C`; AvailableAdvisors), appointed-advisor array (`+0x58`, count
-//! `+0x64`; HiredAdvisors), active- and retired-character record arrays
-//! (`+0x10`, `+0x28`; CountryCharacters, CountryRetiredCharacters), and the
-//! character manager's advisor idea-token set (`+0x60`; AdvisorTokens).
-//! Observing them selects pools to reread; recording never calls them.
+//! Runtime writers of each country's available-advisor array and count
+//! (`ccountry_characters::AVAILABLE_ADVISORS`; AvailableAdvisors), appointed-advisor
+//! array and count (`ccountry_characters::APPOINTED_ADVISORS`; HiredAdvisors), active-
+//! and retired-character record arrays (`ccountry_characters::ACTIVE_CHARACTERS`,
+//! `ccountry_characters::RETIRED_CHARACTERS`; CountryCharacters,
+//! CountryRetiredCharacters), and the character manager's advisor idea-token set
+//! (AdvisorTokens). Observing them selects pools to reread; recording never calls them.
 //!
-//! An AvailableAdvisors row also reads its character's id (advisor `+0x10`
-//! to character `+0xC`) and idea string (advisor `+0x30`). Only the advisor
-//! family's sites write those fields ([`crate::advisor_mutations`]: advisor
-//! construction, destruction, idea changes and save reading, and character
-//! parsing, merging and destruction). Each notifies the character its role
-//! names, so carrying a row also requires its character's certificate.
+//! An AvailableAdvisors row also reads its character's id (advisor character
+//! pointer `cadvisor::CHARACTER` to `ccharacter::ID`) and idea string
+//! (`cadvisor::IDEA_TOKEN`). Only the advisor family's sites write those fields
+//! ([`crate::advisor_mutations`]: advisor construction, destruction, idea changes
+//! and save reading, and character parsing, merging and destruction). Each
+//! notifies the character its role names, so carrying a row also requires its
+//! character's certificate.
 //!
 //! - Available advisors are inserted by advisor-status updates, which also
 //!   erase, and by the add-advisor and generate-advisor commands. The generic
@@ -22,9 +24,10 @@
 //!   scope character's country, which is not an argument; that hook names no
 //!   pool and revokes every certificate.
 //! - Pool construction and destruction run during country construction and
-//!   dynamic reuse. Callers publish the new pool at country `+0xFF0` after
-//!   construction returns; the walk reads that pointer every hour.
-//! - Appointed advisors (`+0x58`) are inserted only by the appointment helper,
+//!   dynamic reuse. Callers publish the new pool in the country's character-pool
+//!   pointer (`ccountry::CHARACTERS`) after construction returns; the walk reads
+//!   that pointer every hour.
+//! - Appointed advisors are inserted only by the appointment helper,
 //!   through country advisor activation, reached by the activation effect,
 //!   add-advisor command and replace-advisor command. Only the unappointment
 //!   helper erases them: from country advisor removal behind deactivation,
@@ -33,11 +36,11 @@
 //!   updates, unit-leader capture, the deferred queue, another advisor helper,
 //!   the activation effect and removal of ideas with a trait. The save reader,
 //!   constructor and destructor build and free the array; the save writer and
-//!   country modifier recalculation only read it. Advisor fields (`+0x10`,
-//!   `+0x30`, `+0x80`) belong to the advisor family, and character ids to roster
+//!   country modifier recalculation only read it. Advisor fields (character,
+//!   idea token and slot) belong to the advisor family, and character ids to roster
 //!   identity repair. The unappointment helper, the last site below, is patched
 //!   by the stability and research family, which forwards each call here.
-//! - Character records (`+0x10`/`+0x28`) contain a character pointer and four
+//! - Character records (active and retired) contain a character pointer and four
 //!   role-status bytes no table records, in 16 bytes. The ordinary insert is
 //!   called only by save reading, retirement and the civil-war retired copy;
 //!   the sorted insert only by registration and two generated-advisor
@@ -48,9 +51,9 @@
 //!   daily exile-leader generation), civil-war transfer, country-leader and
 //!   scientist creation, and scientist recruitment. Only civil-war start
 //!   reaches the retired copy. The save reader fills only a pool constructed
-//!   in the same load. Records sort by the character's name token (`+0x18`);
-//!   after publication only roster identity repair writes it and the id
-//!   recorded by rows.
+//!   in the same load. Records sort by the character's name token
+//!   (`ccharacter::NAME_TOKEN_ID`); after publication only roster identity
+//!   repair writes it and the id recorded by rows.
 //! - Token-set updates are the only runtime token writer, reached through four
 //!   shared set helpers. Callers are advisor-status updates, the save reader
 //!   and advisor-role removal. Only the manager's virtual load clear empties
@@ -78,7 +81,8 @@ const UNAPPOINT_ADVISOR_RVA: usize = 0x10d64e0;
 /// original, so a detour returns the original's value.
 pub const MUTATIONS: [(MutationSite, Receiver); 16] = [
     // Advisor-status update (pool, status record). The stack-pointer copy to RAX
-    // and RBX store at RAX+8 relocate together in seven bytes.
+    // and the RBX store through it to RCX's home slot relocate together in seven
+    // bytes.
     (
         MutationSite {
             name: "update_advisor_status",
@@ -234,7 +238,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 16] = [
         },
         Receiver::Pool,
     ),
-    // Character registration (pool, character, flag): stores RBX at RSP+8,
+    // Character registration (pool, character, flag): stores RBX in RCX's home slot,
     // then saves RBP/RSI/RDI/R12..R15.
     (
         MutationSite {

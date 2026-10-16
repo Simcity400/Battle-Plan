@@ -8,8 +8,7 @@ use std::cell::RefCell;
 
 const B0_HANDLE: u64 = (0x41 << 32) | cair_base::TYPE as u64;
 
-/// The fixture with B0's pool naming B0 by `+0x18`, as `SetAirBase` links
-/// it.
+/// The fixture with B0's pool naming B0 by its base handle, as `SetAirBase` links it.
 fn fixture() -> Vec<u8> {
     let mut bytes = kit::fixture();
     kit::put64(
@@ -201,8 +200,8 @@ fn the_first_pass_sizes_the_watches_without_holding_a_base() {
     assert_eq!(read, counts(2, 0, 0, 0));
 }
 
-/// A base listing a pool whose `+0x18` names no base (or another one) is
-/// read every hour: that pool's writers would not notify it.
+/// A base listing a pool whose base handle names no base (or another one) is read every hour: that
+/// pool's writers would not notify it.
 #[test]
 fn a_base_whose_pool_names_another_base_is_never_carried() {
     let mut bytes = fixture();
@@ -363,9 +362,8 @@ fn a_held_container_span_differs_only_in_what_the_rows_consume() {
     assert_eq!(store.counts(), counts(0, 3, 2, 1));
 }
 
-/// A wing's identity is held as the walk consumes it: its `CSelectable`
-/// state (`+0x08..+0x10`, the selected byte the player sets) never makes a
-/// compared base differ, while its handle does.
+/// A wing's identity is held as the walk consumes it: its `CSelectable` state (the selected byte
+/// the player sets) never makes a compared base differ, while its handle does.
 #[test]
 fn a_held_wing_identity_differs_only_in_what_the_walk_consumes() {
     use super::registration_store::Difference;

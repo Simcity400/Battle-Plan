@@ -327,10 +327,9 @@ fn trait_batches_keep_exact_read_ranges_and_reduce_guard_entries() {
             .iter()
             .map(|span| span.1)
             .sum::<usize>(),
-        // 81 before the retired experience (+0xE68, eight bytes of the state
-        // scatter) stopped being read; the guard count is unchanged, since it
-        // shared the state scatter's one call.
-        81 - 8 + 4 + 8 + 1 + 1 + 4 // + exile country +0xED4
+        // 81 before the retired experience (eight bytes of the state scatter) stopped being read;
+        // the guard count is unchanged, since it shared the state scatter's one call.
+        81 - 8 + 4 + 8 + 1 + 1 + 4 // + exile country
     );
 }
 

@@ -469,11 +469,10 @@ fn same_tree(held: &Held, fresh: &Option<Held>) -> bool {
         })
 }
 
-/// Each key's printed tree ([`rows::NavalModifierKeyTree`]): the root, every
-/// nonzero leaf with its display bytes and the interior nodes above them. A
-/// root whose native children all pruned keeps one zero child so it stays
-/// Interior  (modifier tree display prints only children once `+0x24` is nonzero); a key
-/// whose root is zero and prints nothing is omitted.
+/// Each key's printed tree ([`rows::NavalModifierKeyTree`]): the root, every nonzero leaf with its
+/// display bytes and the interior nodes above them. A root whose native children all pruned keeps
+/// one zero child so it stays Interior  (modifier tree display prints only children once its child
+/// count is nonzero); a key whose root is zero and prints nothing is omitted.
 pub fn project(
     nodes: &[RawNode],
     text: &[u8],

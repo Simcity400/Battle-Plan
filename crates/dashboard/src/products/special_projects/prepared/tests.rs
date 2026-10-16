@@ -2357,7 +2357,7 @@ fn project_history_only_spans_preserve_branch_diagnostic_rates_for_unchanged_unk
         &flag,
     )
     .unwrap();
-    let reason = "Project has unsupported native state offset 0xdead";
+    let reason = "Project is in unsupported native state 0xdead";
     assert_eq!(
         reader
             .values_at(&[metadata.refusal_keys[reason]], 101)

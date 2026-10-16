@@ -725,8 +725,7 @@ fn scattered_fields_preserve_native_values_without_reading_struct_gaps() {
     for blocked in [
         0x1408..0x1438,
         0x143c..0x14a4,
-        // +0xB0 (the border-conflict set size) and +0xD0..+0xE0 (both
-        // area pointers) are now read.
+        // The border-conflict set size and the two area pointers (both area pointers) are now read.
         0x14a8..0x14b0,
         0x1a08..0x1a58,
         0x1a5c..0x1ac8,

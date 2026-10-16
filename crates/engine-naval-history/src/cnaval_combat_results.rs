@@ -355,12 +355,11 @@ fn record(memory: &impl Memory, pointer: usize, id: u64) -> Result<Row, &'static
     })
 }
 
-/// Find each row's province-bucket ordinal in one pass over the result map.
-/// Insertion appends to the global list and province vector. The unordered
-/// map list has size +0x5E8, with nodes holding next +0, province +0x10 and
-/// vector +0x18. Read each node once and vectors in 64-entry batches; sorted
-/// scratch matches entries by binary search. Reads are linear and comparisons
-/// are n log n. Find every row exactly once under its own province.
+/// Find each row's province-bucket ordinal in one pass over the result map. Insertion appends to
+/// the global list and province vector. The unordered map list has a size, with nodes holding the
+/// next node, a province and a vector. Read each node once and vectors in 64-entry batches; sorted
+/// scratch matches entries by binary search. Reads are linear and comparisons are n log n. Find
+/// every row exactly once under its own province.
 fn province_ordinals(
     memory: &impl Memory,
     game_state: usize,

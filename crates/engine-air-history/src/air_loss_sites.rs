@@ -198,15 +198,14 @@ pub fn before(
 /// current-record change refuses the event instead of assigning an unrelated
 /// record's values to the writer. This function allocates nothing.
 ///
-/// With a history before the call, the writer performs clamped additions to
-/// only the two selected words of its current record. History lookup returns
-/// the existing history unchanged; region-combat lookup writes only the country
-/// air object's `+0x170` table, and the record updater writes only its
-/// region-combat data. None touches the receiver, its history table or that
-/// history. One guarded copy therefore takes the window's current slot and
-/// record again as the witness that no daily advance ran, and a second takes
-/// the two words. Each copies exactly those fields in their old order. A
-/// history the call created is authenticated in full, as `before` would.
+/// With a history before the call, the writer performs clamped additions to only the two selected
+/// words of its current record. History lookup returns the existing history unchanged;
+/// region-combat lookup writes only the country air object's region-combat table, and the record
+/// updater writes only its region-combat data. None touches the receiver, its history table or that
+/// history. One guarded copy therefore takes the window's current slot and record again as the
+/// witness that no daily advance ran, and a second takes the two words. Each copies exactly those
+/// fields in their old order. A history the call created is authenticated in full, as `before`
+/// would.
 pub fn after(
     memory: &impl Memory,
     base: usize,

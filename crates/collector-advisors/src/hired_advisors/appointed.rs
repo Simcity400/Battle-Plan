@@ -1,26 +1,21 @@
 //! HiredAdvisors held between hours ([`crate::advisor_pool_changes`]).
 //!
-//! HiredAdvisors, which `has_idea` triggers read
-//! (idea membership trigger over `CCountryCharacters+0x58`), is
-//! read every hour. A row records a country's appointed `CAdvisor*` array and
-//! each advisor's character id, idea and slot. Every writer of the array is a
-//! Hooked site of the advisor pool family  (advisor insertion, the
-//! unappointment helper, the pool's constructor and destructor,
-//! [`engine::advisor_pool_mutations`]); every writer of an advisor's character
-//! link, idea and slot is one of the advisor family's sites, which notify the
-//! character domain ([`crate::character_changes`]); a character's id is
-//! written only by `repair_containers`, which the roster domain observes
-//! ([`crate::roster_changes`]); and a country gains or replaces its
-//! `CCountryCharacters` only through the pool constructor. So while the pool
-//! domain's, the character domain's and the roster's quiet tokens and the
-//! country and link array headers are those taken before the latest complete
-//! walk, every row equals that walk's: such a quiet hour publishes it without
-//! reading any country. The quiet hour of the day that [`crate::sampled_verify`]
-//! gives the table's key ([`KEY`]; every hour under `appointment_verify`)
-//! walks every country instead and compares the walk whole with the held
-//! rows; a difference disables the pool domain for the attachment. Any hour
-//! that is not quiet walks every country, and an hour holds its walk when the
-//! tokens and headers stood still across it.
+//! HiredAdvisors, which `has_idea` triggers read (idea membership trigger over the country
+//! characters' appointed list), is read every hour. A row records a country's appointed `CAdvisor*`
+//! array and each advisor's character id, idea and slot. Every writer of the array is a Hooked site
+//! of the advisor pool family  (advisor insertion, the unappointment helper, the pool's constructor
+//! and destructor, [`engine::advisor_pool_mutations`]); every writer of an advisor's character
+//! link, idea and slot is one of the advisor family's sites, which notify the character domain
+//! ([`crate::character_changes`]); a character's id is written only by `repair_containers`, which
+//! the roster domain observes ([`crate::roster_changes`]); and a country gains or replaces its
+//! `CCountryCharacters` only through the pool constructor. So while the pool domain's, the
+//! character domain's and the roster's quiet tokens and the country and link array headers are
+//! those taken before the latest complete walk, every row equals that walk's: such a quiet hour
+//! publishes it without reading any country. The quiet hour of the day that
+//! [`crate::sampled_verify`] gives the table's key ([`KEY`]; every hour under `appointment_verify`)
+//! walks every country instead and compares the walk whole with the held rows; a difference
+//! disables the pool domain for the attachment. Any hour that is not quiet walks every country, and
+//! an hour holds its walk when the tokens and headers stood still across it.
 use crate::{
     advisor_pool_changes::{Counts, Table},
     sampled_verify::Check,

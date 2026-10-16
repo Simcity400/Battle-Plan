@@ -10,9 +10,9 @@ pub struct Row {
     pub name_len: usize,
 }
 
-/// Exact CAirGroup+78 reference-vector entry. No filter or presentation order
-/// is substituted for the native position. Reverse wing ownership must be
-/// checked against CAirWing+50 when joining this table to the wing census.
+/// Exact air-group reference-vector entry. No filter or presentation order is substituted for the
+/// native position. Reverse wing ownership must be checked against the wing's group reference when
+/// joining this table to the wing census.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MemberRow {
     pub wing: u64,

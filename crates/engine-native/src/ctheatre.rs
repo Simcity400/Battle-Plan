@@ -73,7 +73,7 @@ pub struct Row {
     pub id: u64,
     pub owner: u32,
     pub volunteers_theatre: i32,
-    /// Native CCountry+168 pointer-vector position, not a generated row key.
+    /// Native `ccountry::THEATRES` pointer-vector position, not a generated row key.
     pub ordinal: u32,
 }
 
@@ -788,10 +788,10 @@ pub fn walk_buffers(
 /// in order, including repeated occurrences.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct StationedUnitRow {
-    /// Full native CTheatre `+0x08` handle.
+    /// Full native CTheatre handle (`HANDLE`).
     pub theatre: u64,
     pub ordinal: u32,
-    /// Full native CUnit `+0x18` handle of the stationed division or task force.
+    /// Full native CUnit handle (`cunit::HANDLE`) of the stationed division or task force.
     pub unit: u64,
 }
 

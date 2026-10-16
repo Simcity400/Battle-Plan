@@ -2,30 +2,30 @@
 //! route search reads for land-area paths and costs, held between hours and
 //! read again only where a native writer may have changed them.
 //!
-//! - `CProvince+0xD0` names the province's controller area (vtable
+//! - The province's controller-area pointer names the province's controller area (vtable
 //!   [`ccontroller_area::VTABLE_RVA`]). Its pointer setter is reached at run
 //!   time only by controller changes and their split and join operations; only
 //!   province controller notifications reach those changes. Load construction
 //!   and flood fill, reached from the game-state header loader and in-game
 //!   initialization, and world clearing run only around a load.
 //!
-//! - An area's members are its `+0x30` province vector, `+0x3C` long. Insertion
-//!   uses binary order by province id (`CProvince+0xA4`), and removal operates
+//! - An area's members are its province vector (`ccontroller_area::PROVINCE_DATA`). Insertion
+//!   uses binary order by province id (the province's id), and removal operates
 //!   in place, so the first member has the smallest id: that id labels the area
-//!   here. Both operations keep the representative `+0x28` used for path costs
-//!   and ordering: the first land province (definition `+0xD2` bit 0) added,
+//!   here. Both operations keep the representative (`ccontroller_area::REPRESENTATIVE_PROVINCE`) used for path costs
+//!   and ordering: the first land province (the definition's land bit) added,
 //!   chosen again when it leaves.
 //!
-//! - Contacts: `+0x90` first and `+0x98` last node, signed count `+0xA0` and
-//!   deferred-removal byte `+0xA4`. Each 0x20-byte node holds payload `+0x0`,
-//!   previous `+0x8`, next `+0x10` and removal mark `+0x18`; each payload is
-//!   `{area +0x0, signed count +0x8}`. Land-area search follows the list in
+//! - Contacts (`CONTACTS`): first and last node, signed count and
+//!   deferred-removal byte. Each 0x20-byte node holds the payload,
+//!   previous, next and removal mark; each payload is
+//!   `{area, signed count}`. Land-area search follows the list in
 //!   order. Contact insertion appends a new target and counts an existing one;
 //!   it and removal run only from controller changes, splitting and joining,
 //!   between the area of a province whose area changes and a neighbour's area
-//!   (definition `+0x70`, 0x30-byte entries, id `+0x8`).
+//!   (the definition's adjacency list, 0x30-byte entries keyed by id).
 //!
-//! - `CProvince+0xD8` names its owner area; only the global rebuild writes it
+//! - The province's owner-area pointer names its owner area; only the global rebuild writes it
 //!   at run time, and only equality and null are read.
 //!
 //! Every province's two area pointers arrive with the province walk's movement
@@ -47,9 +47,9 @@ use crate::{
     province_neighbour, read, read_slice,
 };
 
-/// `CControllerArea+0x28`: representative, member data, capacity and count.
+/// From the representative on: representative, member data, capacity and count.
 const MEMBERS: usize = ccontroller_area::REPRESENTATIVE_PROVINCE;
-/// `CControllerArea+0x90`: first and last contact, signed count, deferred byte.
+/// Contacts: first and last contact, signed count, deferred byte.
 const CONTACTS: usize = 0x90;
 const CONTACT_HEADER: usize = 21;
 const CONTACT_NODE: usize = 25;
@@ -69,7 +69,7 @@ pub struct Pointers {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Node {
     pub label: u32,
-    /// The representative `+0x28` as an authenticated member; None refused.
+    /// The representative as an authenticated member; None refused.
     pub first_land: Option<u32>,
     /// The contacts' labels in native order, a range of
     /// [`Output::neighbours`]; None refused.
@@ -155,7 +155,7 @@ impl Held {
 struct Area {
     pointer: usize,
     label: u32,
-    /// Provinces whose `+0xD0` names this area.
+    /// Provinces whose controller-area pointer names this area.
     members: u32,
     /// Why the node was refused: it is published without either operand.
     failure: Option<&'static str>,
@@ -254,20 +254,17 @@ impl Store {
             && self.marks.is_empty()
     }
 
-    /// The province ids whose area pointers a marked capture must compare, into
-    /// `scope` (sorted): the marked provinces, their neighbours and every held
-    /// member of the held controller area of a marked province or of one of its
-    /// neighbours. A controller change re-points no other province: a
-    /// controller change stores only the changed province's `+0xD0` (through
-    /// the pointer setter), splitting clears and re-fills only the members of
-    /// the area the province left, and joining moves the members of one area
-    /// into another, both areas of the changed province or of its neighbours;
-    /// by induction over the hour's changes every area a later change touches
-    /// is a union of members of those held areas. The split's flood fill also
-    /// takes a null-area province of the new controller, so a marked province
-    /// whose controller `rows` give as zero or a held null area of a nonzero
-    /// controller answers false: compare every province. False too when nothing
-    /// is held or a province or its neighbours do not read.
+    /// The province ids whose area pointers a marked capture must compare, into `scope` (sorted):
+    /// the marked provinces, their neighbours and every held member of the held controller area of
+    /// a marked province or of one of its neighbours. A controller change re-points no other
+    /// province: a controller change stores only the changed province's controller-area pointer
+    /// (through the pointer setter), splitting clears and re-fills only the members of the area the
+    /// province left, and joining moves the members of one area into another, both areas of the
+    /// changed province or of its neighbours; by induction over the hour's changes every area a
+    /// later change touches is a union of members of those held areas. The split's flood fill also
+    /// takes a null-area province of the new controller, so a marked province whose controller
+    /// `rows` give as zero or a held null area of a nonzero controller answers false: compare every
+    /// province. False too when nothing is held or a province or its neighbours do not read.
     pub fn repointable(
         &mut self,
         memory: &impl Memory,
@@ -497,8 +494,8 @@ impl Store {
         Ok(())
     }
 
-    /// Groups the provinces by `+0xD0`: each group is one area, labelled by
-    /// its smallest province id.
+    /// Groups the provinces by controller-area pointer: each group is one area, labelled by its
+    /// smallest province id.
     fn group_controllers(&mut self) -> Result<(), &'static str> {
         self.fill_pairs(false)?;
         let Self {
@@ -522,7 +519,7 @@ impl Store {
         Ok(())
     }
 
-    /// Labels the provinces by `+0xD8` group, each by its smallest province id.
+    /// Labels the provinces by owner-area group, each by its smallest province id.
     fn group_owners(&mut self) -> Result<(), &'static str> {
         self.fill_pairs(true)?;
         let Self {
@@ -700,7 +697,7 @@ impl Store {
                 continue;
             };
             let before = self.areas[at].label;
-            // An area's label is its first member: vf4 inserts in id order.
+            // An area's label is its first member: member insertion keeps id order.
             let Some(first) = self.read_area(memory, base, at)? else {
                 return Ok(false);
             };

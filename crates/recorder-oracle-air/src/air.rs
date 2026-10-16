@@ -574,7 +574,7 @@ pub fn compare_region_combat(
     });
     extra(report, "air region combat", &actual);
     report.compared("AirRegionCombat", matched);
-    report.limitation("the copied equipment pools of a retained record (+0x60, +0x78) are serialized but not recorded; their allow-zero byte is the recorded copied flag", "AirRegionCombat.equipment");
+    report.limitation("the copied equipment pools of a retained record are serialized but not recorded; their allow-zero byte is the recorded copied flag", "AirRegionCombat.equipment");
     report.limitation(
         "allocated holders without records have no row; the save's empty holders are not compared",
         "AirRegionCombat empty holders",

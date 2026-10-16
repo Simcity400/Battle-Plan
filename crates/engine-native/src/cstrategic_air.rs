@@ -52,7 +52,7 @@ pub const POPULATE_RVA: usize = 0x00c4_a6f0;
 #[derive(Debug, Clone, Copy)]
 pub struct Root {
     pub address: usize,
-    /// Current raw reference from CStrategicAir+90, including native aliases.
+    /// Current raw reference of the strategic air's country, including native aliases.
     pub country: u32,
     pub canonical_slot: u32,
 }

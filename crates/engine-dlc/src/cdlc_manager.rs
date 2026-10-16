@@ -28,7 +28,7 @@ pub const ENUMERATE_ACTIVE_DLCS_RVA: usize = 0x0206_3660;
 pub const SEARCH_PATH_RVA: usize = 0x035c_af10;
 /// CDLCManager mutable DLC filter strings.
 pub const DLC_FILTER_STRINGS: usize = 0x50;
-/// Requested mod strings, data +0x68 and count +0x74.
+/// Requested mod strings, data and count.
 pub const REQUESTED_MODS: usize = 0x68;
 /// CDLCManager DLC std::map.
 pub const DLCS: usize = 0xa0;

@@ -1,15 +1,13 @@
-//! Each country's RaidIntelInputs modifier answers (its accumulator's
-//! `CRYPTO_STRENGTH` and `INTELLIGENCE_AGENCY_DEFENSE` raw values), held
-//! between the Projects job's hourly walks ([`engine::raid_intel_inputs::Carry`]).
-//! The walk still reads each country's accumulator header; a country whose
-//! header is the held one, whose CCountry and id are the held ones and whose
-//! certificate is the one taken before the held read skips its entries copy
-//! and answers from the held values. The certificate is the naval tree
-//! family's ([`crate::naval_tree_changes::sequence`]): its country sites,
-//! country modifier recalculation and country appearance reset,
-//! are the native writers of `CCountry+0x5B8`. A read is held only when the
-//! certificate stood still across it; a walk that does not complete forgets
-//! the store.
+//! Each country's RaidIntelInputs modifier answers (its accumulator's `CRYPTO_STRENGTH` and
+//! `INTELLIGENCE_AGENCY_DEFENSE` raw values), held between the Projects job's hourly walks
+//! ([`engine::raid_intel_inputs::Carry`]). The walk still reads each country's accumulator header;
+//! a country whose header is the held one, whose CCountry and id are the held ones and whose
+//! certificate is the one taken before the held read skips its entries copy and answers from the
+//! held values. The certificate is the naval tree family's
+//! ([`crate::naval_tree_changes::sequence`]): its country sites, country modifier recalculation and
+//! country appearance reset, are the native writers of `ccountry::MODIFIER_ACCUMULATOR`. A read is
+//! held only when the certificate stood still across it; a walk that does not complete forgets the
+//! store.
 //!
 //! Each country is read afresh and compared with its held answers on its
 //! hour of the sampled rotation (by id), and `raid_intel_verify`, on by

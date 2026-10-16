@@ -1130,19 +1130,20 @@ unsafe extern "system-unwind" fn border_finalize(combat: usize) {
 unsafe extern "system-unwind" fn border_terminate_entry() {
     core::arch::naked_asm!("mov rdx, qword ptr [rsp]", "jmp {body}", body = sym border_terminate);
 }
-// CALL relay leaves site+5 on both native and CET stacks. Keep its padding
-// until the target has returned. The counter covers the body/native target;
-// suspended-IP checks cover the relay and the stub before/after the counter.
-// The 0x28 frame supplies Win64 home space/alignment and SEH unwind metadata.
+// CALL relay leaves the five-byte return point on both native and CET stacks. Keep its padding
+// until the target has returned. The counter covers the body/native target; suspended-IP checks
+// cover the relay and the stub before/after the counter. The 0x28 frame supplies Win64 home
+// space/alignment and SEH unwind metadata.
 core::arch::global_asm!(
     ".text", ".globl leader_tap_entry", ".seh_proc leader_tap_entry",
     "leader_tap_entry:", "sub rsp, 0x28", ".seh_stackalloc 0x28", ".seh_endprologue",
-    "mov r8, qword ptr [rax + 0xe8]",
+    "mov r8, qword ptr [rax + {leader_slot}]",
     "lock inc qword ptr [rip + {counter}]", "mov rdx, qword ptr [rsp + 0x28]",
     "lea rdx, [rdx + 1]", "call {body}",
     "lock dec qword ptr [rip + {counter}]", "add rsp, 0x28", "ret",
     ".seh_endproc", ".globl leader_tap_entry_end", "leader_tap_entry_end:",
-    counter = sym TAP_IN_FLIGHT, body = sym leader_tap_body);
+    counter = sym TAP_IN_FLIGHT, body = sym leader_tap_body,
+    leader_slot = const native::DISPATCH_LEADER_VTABLE_SLOT);
 unsafe extern "system-unwind" {
     fn leader_tap_entry();
     fn leader_tap_entry_end();
@@ -1903,8 +1904,8 @@ mod tests {
         while !ENTERED.load(Ordering::Acquire) {
             std::thread::yield_now();
         }
-        // set_enabled suspends the worker in target, outside the patch/relay/
-        // stub. Its buried site+5 return must still prevent restoration.
+        // set_enabled suspends the worker in target, outside the patch/relay/ stub. Its buried
+        // five-byte return point must still prevent restoration.
         let refused = hook.set_enabled(false);
         let still_enabled = hook.is_enabled();
         let in_flight = TAP_IN_FLIGHT.load(Ordering::SeqCst);
@@ -2372,7 +2373,7 @@ mod tests {
         "mov r15, 0x8808",
         ".globl land_leader_tap_test_site",
         "land_leader_tap_test_site:",
-        "call qword ptr [rax + 0xe8]",
+        "call qword ptr [rax + {leader_slot}]",
         ".rept 10",
         "nop",
         ".endr",
@@ -2395,7 +2396,8 @@ mod tests {
         "pop rbp",
         "pop rbx",
         "ret",
-        ".seh_endproc"
+        ".seh_endproc",
+        leader_slot = const native::DISPATCH_LEADER_VTABLE_SLOT,
     );
     unsafe extern "system-unwind" {
         pub(super) fn land_leader_tap_test_caller(

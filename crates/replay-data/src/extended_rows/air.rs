@@ -391,14 +391,11 @@ value_struct!(AirCombatDamage {
     amount: i64
 });
 
-/// One wing combat record (stride 0x98): the wing id (+0x08), the native
-/// hour the updater created it at (+0x0C), the plane high-water mark (+0x10),
-/// the ORed mission mask (+0x14), the selection (+0x18) and classification
-/// (+0x19) bytes, the copied equipment's allow-zero byte (+0x90) and the
-/// attribution raw country (+0x50), with both damage vectors in native order:
-/// `first_damage` (+0x20, causes 0, 1, 2, 6 and 7) and `second_damage`
-/// (+0x38, causes 3, 4, 5, 9 and 10). The copied equipment lists (+0x60,
-/// +0x78) are not recorded.
+/// One wing combat record (stride 0x98): the wing id, the native hour the updater created it at,
+/// the plane high-water mark, the ORed mission mask, the selection and classification bytes, the
+/// copied equipment's allow-zero byte and the attribution raw country, with both damage vectors in
+/// native order: `first_damage` (causes 0, 1, 2, 6 and 7) and `second_damage` (causes 3, 4, 5, 9
+/// and 10). The copied equipment lists are not recorded.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AirCombatRecord {
     pub wing_id: u32,
@@ -425,12 +422,11 @@ value_struct!(AirCombatRecord {
     second_damage: Vec<AirCombatDamage>
 });
 
-/// AirRegionCombat: one regional air-combat holder of a country's `strategic air+0x170`
-/// table, key container country (raw `strategic air+0x90`) and strategic region (the
-/// table index). `owner` is the holder's raw `+0x38` owner. `own` is the `+0x08` vector
-/// (records of wings whose effective country is the owner's, selected when finding or
-/// creating a record), `foreign` the `+0x20` vector, each in native order with
-/// duplicates.
+/// AirRegionCombat: one regional air-combat holder of a country's strategic air region-combat
+/// table, key container country (the strategic air's raw country) and strategic region (the table
+/// index). `owner` is the holder's raw owner. `own` is the own-records vector (records of wings
+/// whose effective country is the owner's, selected when finding or creating a record), `foreign`
+/// the foreign-records vector, each in native order with duplicates.
 ///
 /// A row is the holder's native state at the hour it was last read, not necessarily the
 /// frame's hour: the collector reads a holder only when the record updater touched it
@@ -487,8 +483,8 @@ pub struct AirAceRow {
     pub name: Vec<u8>,
     pub surname: Vec<u8>,
     pub callsign: Vec<u8>,
-    /// Raw +150/+154 and selected definition +170's name (+8).
-    /// None is a capture failure; a null definition is represented inside it.
+    /// Raw first and last name indices, and the selected definition's name. None is a capture
+    /// failure; a null definition is represented inside it.
     pub presentation: Recorded<Option<AirAcePresentation>>,
 }
 typed_codec!(AirAceRow, 64, |row| row.id as u128, |key| Self { id: key as u64, country: Default::default(), ordinal: Default::default(), aircraft_type_mask: Default::default(), assigned_wing: Default::default(), alive: Default::default(), handled: Default::default(), kill_type: Default::default(), death: Default::default(), name: Default::default(), surname: Default::default(), callsign: Default::default(), presentation: Default::default() },

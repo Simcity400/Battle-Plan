@@ -62,8 +62,8 @@ impl Animation {
     }
 }
 
-/// The native camera carrier's right/up columns and its +0x80 world-view-projection matrix.
-/// These are independent: glyphs remain world geometry until the content's Text3D shader runs.
+/// The native camera carrier's right/up columns and its world-view-projection matrix. These are
+/// independent: glyphs remain world geometry until the content's Text3D shader runs.
 pub struct Camera {
     pub right: [f32; 3],
     pub up: [f32; 3],

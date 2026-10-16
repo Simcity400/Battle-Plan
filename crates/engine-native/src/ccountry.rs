@@ -160,7 +160,7 @@ pub const PRIDE_OF_THE_FLEET: usize = 0x250;
 pub const OWNED_STATES: usize = 0x478;
 /// Ordered core-state roster with append and compacting removal.
 pub const CORE_STATES: usize = 0x4a8;
-/// CCountry owned-state array capacity, i32 at CPdxArray +8.
+/// CCountry owned-state array capacity, i32 (`cpdx_array::CAPACITY` of the `OWNED_STATES` array).
 pub const OWNED_STATE_CAPACITY: usize = 0x480;
 /// Owned-state count, i32; supply serialization requires a positive count.
 pub const OWNED_STATE_COUNT: usize = 0x484;
@@ -217,7 +217,7 @@ pub const EQUIPMENT_MARKET_STATUS: usize = 0xfb8;
 pub const COLLABORATION_STATUS: usize = 0xfd8;
 /// Embedded radar pool.
 pub const RADARS_POOL: usize = 0x10f8;
-/// CCountry radar-group vector, the embedded pool's own +0x28.
+/// CCountry radar-group vector, the embedded pool's own `cradars_pool::GROUPS`.
 pub const RADAR_GROUPS: usize = RADARS_POOL + cradars_pool::GROUPS;
 /// Radar pool raw owner reference resolved before its controlled-state walk.
 pub const RADARS_POOL_COUNTRY: usize = RADARS_POOL + cradars_pool::COUNTRY;
@@ -287,7 +287,7 @@ pub const RAILWAY_UNITS_CAPACITY: usize = 0x2b0;
 pub const RAILWAY_UNITS_COUNT: usize = 0x2b4;
 /// CCountry controlled-state count u32.
 pub const CONTROLLED_STATES_COUNT: usize = 0x46c;
-/// CCountry radar-group vector count, the embedded pool's own +0x34.
+/// CCountry radar-group vector count, the embedded pool's own `cradars_pool::GROUPS_COUNT`.
 pub const RADAR_GROUPS_COUNT: usize = RADARS_POOL + cradars_pool::GROUPS_COUNT;
 /// CCountry ace roster capacity u32.
 pub const ACES_CAPACITY: usize = 0x12e0;
@@ -540,16 +540,16 @@ pub struct AppearanceRow<T = Text<256>, G = Text<8>, I = Text<128>> {
     /// `None` when one is unreadable or exceeds fixed caller storage, leaving
     /// the rest of the row readable. Owned worker text follows its native length.
     pub old_names: Option<[T; 3]>,
-    /// Exact signed +0x130C word. Positive selects the original string even
-    /// when empty; nonpositive selects the own tag in original-tag lookup.
+    /// Exact signed `ORIGINAL_TAG` word. Positive selects the original string even when empty;
+    /// nonpositive selects the own tag in original-tag lookup.
     pub original_tag_reference: i32,
     original_tag_is_name_tag: bool,
     pub original_tag: Option<crate::csubject_relation::Name>,
     pub original_tag_failure: Option<&'static str>,
 }
 
-/// Session inputs the naming operands need: the link-indexed tag strings and
-/// `CCountryDatabase+0x88`, the first dynamic canonical slot.
+/// Session inputs the naming operands need: the link-indexed tag strings and The country database's
+/// first dynamic canonical slot.
 #[derive(Clone, Copy, Debug)]
 pub struct NamingContext {
     pub tags: Array,
@@ -732,12 +732,12 @@ pub struct ReservedNamingRow {
     pub original_tag_reference: i32,
     /// Exact signed dynamic-country boundary operand.
     pub dynamic_tag_boundary: i32,
-    /// Exact reserved Country+0x484 getter operand; guarded failure leaves
-    /// every naming operand and original reference independently available.
+    /// Exact reserved `OWNED_STATE_COUNT` getter operand; guarded failure leaves every naming
+    /// operand and original reference independently available.
     pub owned_state_count: Option<i32>,
     pub owned_state_count_failure: Option<&'static str>,
-    /// Reserved diplomacy+290: zero is an observed null; other values are
-    /// authenticated full CFaction references. Independent of naming reads.
+    /// Reserved diplomacy faction word (`cdiplomacy_status::FACTION`): zero is an observed null;
+    /// other values are authenticated full CFaction references. Independent of naming reads.
     pub faction: Option<u64>,
     pub faction_failure: Option<&'static str>,
 }
@@ -1454,8 +1454,8 @@ fn read_reserved_naming_observed_inner<M: Memory>(
     mut names: crate::walk::Buffer<'_, u8>,
     mut journal: Option<&mut crate::raw_country_observations::Journal>,
 ) -> ReservedNamingWalk {
-    // Observe +484 before any fallible naming work. Both success and failure
-    // belong to this one root observation; the vector consumes it below.
+    // Observe `OWNED_STATE_COUNT` before any fallible naming work. Both success and failure belong
+    // to this one root observation; the vector consumes it below.
     let launch_states = launch_sources::ReservedOwnedStates::new(memory, base, game_state);
     let visibility = ReservedVisibilityObservation::from_root(memory, base, launch_states.root());
     let mut required_bytes = 0;
@@ -1629,7 +1629,7 @@ fn read_appearance_observed_inner<
     {
         return Err("country appearance identity changed");
     }
-    // One read spans the primary colour and the UI colour 0x20 bytes after it.
+    // One read spans the primary colour and the UI colour after it.
     const _: () = assert!(CURRENT_UI_COLOR == CURRENT_PRIMARY_COLOR + 0x20);
     let bytes = read::<[u8; 48]>(memory, at(CURRENT_PRIMARY_COLOR)?)
         .ok_or("country appearance colour unreadable")?;
@@ -1735,11 +1735,10 @@ fn read_appearance_observed_inner<
     })
 }
 
-/// Append positive +0x130C references' exact tag_string bytes to
-/// an existing naming arena, after every established appearance/subject prefix.
-/// Selection comes from each freshly authenticated AppearanceRow; no country
-/// pointer or scalar is followed again. Empty spans cover both nonpositive
-/// absence and actual positive empty strings; the signed reference separates them.
+/// Append positive `ORIGINAL_TAG` references' exact tag_string bytes to an existing naming arena,
+/// after every established appearance/subject prefix. Selection comes from each freshly
+/// authenticated AppearanceRow; no country pointer or scalar is followed again. Empty spans cover
+/// both nonpositive absence and actual positive empty strings; the signed reference separates them.
 pub fn capture_appearance_original_tags(
     memory: &impl Memory,
     game_state: usize,
@@ -3520,7 +3519,7 @@ pub struct VolunteerHostRow {
     /// Raw CCountry link id of the country that owns the vector.
     pub country: u32,
     pub position: u32,
-    /// Raw country reference exactly as `+0x1428` stores it, resolved by nobody here.
+    /// Raw country reference exactly as `VOLUNTEER_HOSTS` stores it, resolved by nobody here.
     pub host: u32,
     /// Paired tally word, re-derived from the sender's armies.
     pub deployed_divisions: i32,
@@ -5481,11 +5480,11 @@ mod tests {
             ),
             Ok(output[0])
         );
-        // Two more reads than without the character: its pointer and identity.
-        // The three old names add a length, capacity, terminator and payload
-        // read each, the empty one no payload; the empty 2D culture takes its
-        // length, capacity and terminator. The empty roster shares the single
-        // 0x170..0x18c diplomacy read with the overlord, without payload.
+        // Two more reads than without the character: its pointer and identity. The three old names
+        // add a length, capacity, terminator and payload read each, the empty one no payload; the
+        // empty 2D culture takes its length, capacity and terminator. The empty roster shares the
+        // single diplomacy read from `cdiplomacy_status::SUBJECTS` through `OVERLORD` with the
+        // overlord, without payload.
         assert_eq!(census.calls(), 34 + 11 + 3);
         assert_eq!(
             walk_appearance(&memory, 0, 0x1000, 1, &mut output[..1]),

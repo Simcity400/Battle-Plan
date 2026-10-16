@@ -283,7 +283,7 @@ pub struct SideDetails {
     pub commander_skill: i32,
     pub commander_category: i32,
     pub commander_country: u32,
-    /// Raw CUnitLeader experience (+0xE68), which the skill hover divides.
+    /// Raw CUnitLeader experience, which the skill hover divides.
     pub commander_experience: i64,
     /// The selected commander's next skill level, which the experience ratio
     /// looks up at level + 1. This and the next two are optional hover inputs:
@@ -299,25 +299,25 @@ pub struct SideDetails {
     /// Why the next level, the floor and the leader block, in that order,
     /// could not be read.
     pub side_input_refusals: [Option<&'static str>; 3],
-    /// The raw saved name at CUnitLeader+0x20 (a localisation key or literal);
-    /// the localised +0x40 copy is the recording client's cache.
+    /// The raw saved name of the unit leader (a localisation key or literal); its localised copy is
+    /// the recording client's cache.
     pub commander_name_token: Span,
-    /// Raw saved commander-description token at +0x80. The game caches
-    /// localised text at +0x60; the viewer localises the retained token.
+    /// Raw saved commander-description token. The game caches localised text beside it; the viewer
+    /// localises the retained token.
     pub commander_description_token: Span,
-    /// Commander formation reference at +0x1048 used by the HQ badge;
+    /// Commander formation reference (`carmy_leader::FORMATION_REFERENCE`) used by the HQ badge;
     /// zero for absence or an ineligible category.
     pub commander_formation: u64,
     pub presentation: crate::naval_commander_inputs::Presentation,
-    /// The assigned-trait vector (+0xDC8) in native order, as a span of the
-    /// caller's [`DetailArenas`]; each trait's token is a span of its text.
+    /// The assigned-trait vector in native order, as a span of the caller's [`DetailArenas`]; each
+    /// trait's token is a span of its text.
     pub traits_start: usize,
     pub traits_len: usize,
-    /// Ordered timed traits at +0xDE0 in the caller arena. Expiry display
-    /// uses the first entry matching a trait.
+    /// Ordered timed traits in the caller arena. Expiry display uses the first entry matching a
+    /// trait.
     pub timed_traits_start: usize,
     pub timed_traits_len: usize,
-    /// The trait-experience vector (+0xDF8) in native order.
+    /// The trait-experience vector in native order.
     pub learning_traits: Span,
 }
 
@@ -713,16 +713,13 @@ impl<M: Memory> Reader<'_, M> {
         Ok(selected)
     }
 
-    /// Keys 0x5F and 0x60 of the selected leader's block described after the
-    /// skill line. The skill hover picks the first of the side's units (+0x20)
-    /// that fails separate-HQ eligibility, else the first, and passes no unit
-    /// when the side has none or the deployed-HQ feature is off. Unit modifier
-    /// selection takes the separate-HQ block (+0x4C8) only for an eligible
-    /// unit, so that block is taken exactly when every unit is eligible
-    /// (eligibility itself requires the feature). The values are the raw words,
-    /// zero for an absent key, as the accumulator copy receives them through
-    /// effective modifier lookup, whose metadata branch the description applies
-    /// again.
+    /// Keys 0x5F and 0x60 of the selected leader's block described after the skill line. The skill
+    /// hover picks the first of the side's units that fails separate-HQ eligibility, else the
+    /// first, and passes no unit when the side has none or the deployed-HQ feature is off. Unit
+    /// modifier selection takes the separate-HQ block only for an eligible unit, so that block is
+    /// taken exactly when every unit is eligible (eligibility itself requires the feature). The
+    /// values are the raw words, zero for an absent key, as the accumulator copy receives them
+    /// through effective modifier lookup, whose metadata branch the description applies again.
     fn skill_modifiers(
         &self,
         members: &Members<'_>,
@@ -790,8 +787,8 @@ impl<M: Memory> Reader<'_, M> {
             };
             return Ok(());
         }
-        // Portrait and trait display use the exact country tag at +0x120.
-        // Preserve it without canonical-slot substitution.
+        // Portrait and trait display use the commander's exact country tag. Preserve it without
+        // canonical-slot substitution.
         row.commander_country = self.field(selected, 0x120)?;
         row.commander_experience = self.field(selected, cunit_leader::EXPERIENCE)?;
         // The skill hover's ratio divides by the next level's requirement, and
@@ -824,10 +821,9 @@ impl<M: Memory> Reader<'_, M> {
             .skill_modifiers(members, index, units, selected)
             .inspect_err(|reason| refused[2] = Some(*reason))
             .ok();
-        // The selected commander's +0x20 name is stored as an ordinary MSVC
-        // string and passed to text rendering, which takes any length, empty
-        // included; +0x80 is the same kind of string. Both keep the game's own
-        // length.
+        // The selected commander's saved name is stored as an ordinary MSVC string and passed to
+        // text rendering, which takes any length, empty included; the description token is the same
+        // kind of string. Both keep the game's own length.
         for (offset, unreadable, errors, span) in [
             (
                 cunit_leader::TOKEN,

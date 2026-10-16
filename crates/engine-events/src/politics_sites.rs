@@ -431,7 +431,7 @@ mod tests {
             })
         );
         assert_eq!(*memory.reads.borrow(), [(COUNTRY, 16)]);
-        // The former CP reader requires an unrelated +F90 selecting read.
+        // The former CP reader requires an unrelated political-status selecting read.
         assert_eq!(
             country_owner(&memory, BASE, COUNTRY),
             Err("politics country identity unreadable")

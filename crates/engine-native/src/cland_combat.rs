@@ -1,7 +1,6 @@
-//! CLandCombat complete-object layout. All offsets use its primary base;
-//! the secondary base is at +0x10. The location is a province pointer.
-//! The walker captures two ordered participant vectors without event-hook
-//! or presentation data.
+//! CLandCombat complete-object layout. All offsets use its primary base; the secondary base is
+//! `BODY`. The location is a province pointer. The walker captures two ordered participant vectors
+//! without event-hook or presentation data.
 
 use crate::{
     Memory, carmy, cgame_state, cland_border_war_combat, cland_border_war_combatant,
@@ -25,11 +24,11 @@ pub use details::{
 
 /// CLandCombat primary vtable.
 pub const VTABLE_RVA: usize = 0x0299_14d8;
-/// CLandCombat secondary vtable at +0x10.
+/// CLandCombat secondary vtable (`BODY`).
 pub const BODY_VTABLE_RVA: usize = 0x0299_15b8;
 /// CLandCombat secondary-base displacement.
 pub const BODY: usize = 0x10;
-/// Packed full u64 handle: low u32 type and high u32 id, at reference-base+8.
+/// Packed full u64 handle: low u32 type and high u32 id, in the reference base.
 pub const HANDLE: usize = 0x18;
 /// Land-combat u32 reference type.
 pub const TYPE: usize = 0x18;
@@ -41,7 +40,7 @@ pub const ID: usize = 0x1c;
 pub const ATTACKER: usize = 0x28;
 /// Defending combat-side pointer.
 pub const DEFENDER: usize = 0x30;
-/// Location province pointer; history uses its u32 id at +0xA4.
+/// Location province pointer; history uses its u32 id.
 pub const PROVINCE: usize = 0x38;
 /// Signed round counter, initially -1 and incremented on nonterminating
 /// rounds. This is neither elapsed days nor an absolute start date.
@@ -809,7 +808,7 @@ impl<M: Memory> Reader<'_, M> {
         if id == 0 {
             Err("land combat division has null handle")
         } else {
-            // cunit::HANDLE is secondary base +8; both words remain native.
+            // cunit::HANDLE follows the secondary base's vtable; both words remain native.
             debug_assert_eq!(cunit::HANDLE, carmy::SECONDARY_BASE + 8);
             Ok(id)
         }

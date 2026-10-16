@@ -19,29 +19,28 @@
 //! leader accumulator is independently scaled by the content-loaded HQ
 //! communication factor.
 //!
-//! The root order is the answer `root_order` computes before it compares its
-//! cache (`+0x20`): the first primary order (`COrdersGroup+0x98`, count
-//! `+0xA4`) of the member's group (`+0x08`) whose assigned members
-//! (`COrderInstance+0x210`, count `+0x21C`) include the member (first
-//! assigned-order search), else the same over the group's parent (`+0x1B8`). A
-//! cache that disagrees is the game's own stale-cache assertion, not simulation
-//! state.
+//! The root order is the answer `root_order` computes before it compares its cache: the first
+//! primary order (`corders_group::PRIMARY_ORDER_DATA`, with its count) of the member's group whose
+//! assigned members (`corder_instance::ASSIGNED_MEMBER_DATA`, with its count) include the member
+//! (first assigned-order search), else the same over the group's parent. A cache that disagrees is
+//! the game's own stale-cache assertion, not simulation state.
 //!
-//! The provider (`+0x68`) is read as the member `single_hq_unit + 0xB8` names.
-//! HQ unit lookup returns the provider's vtable slot `+0x20`. The only
-//! orders-group member objects are embedded by unit construction at
-//! `CUnit+0xB8`. The member vtables of units, divisions, task forces and
-//! railway guns, each at object offset 0xB8, return the primary unit (`this -
-//! 0xB8`) in that slot. Every store to `+0x68` is a unit's `+0xB8` or zero:
-//! deployed-leader assignment, the loader (token 0x41BF, a unit dynamic cast)
-//! and HQ-provider clearing. So `single_hq_unit + 0xB8` is the provider, as the
-//! group's HQ-order virtual passes `+0x68` to `root_order` directly.
+//! The provider is read as the orders-group member embedded in `single_hq_unit`. HQ unit lookup
+//! returns the provider's unit-accessor vtable slot
+//! (`corders_group_member::UNIT_ACCESSOR_VTABLE_SLOT`). The only orders-group member objects are
+//! embedded by unit construction at `cunit::SCHEDULED_MEMBER`. The member vtables of units,
+//! divisions, task forces and railway guns, each embedded there, return the primary unit (the
+//! object enclosing the member) in that slot. Every store to the group's HQ provider
+//! (`corders_group::HQ_PROVIDER`) is a unit's embedded member or zero: deployed-leader assignment,
+//! the loader (token 0x41BF, a unit dynamic cast) and HQ-provider clearing. So `single_hq_unit`'s
+//! embedded member is the provider, as the group's HQ-order virtual passes the HQ provider to
+//! `root_order` directly.
 //!
-//! The leader's `+0x418` is the accumulator of its `+0x408` CModifier, the
-//! block unit modifier selection returns. HQ modifier scaling, called on the
-//! group's `+0x88` during deployed-leader assignment, clears it, copies the
-//! leader's `+0x358` accumulator into it and scales it by the HQ communication
-//! define.
+//! The leader's movement accumulator is the accumulator of its movement CModifier
+//! (`carmy_leader::MOVEMENT_MODIFIER`), the block unit modifier selection returns. HQ modifier
+//! scaling, called on the group's leader (`corders_group::LEADER`) during deployed-leader
+//! assignment, clears it, copies the leader's own unit-modifier accumulator into it and scales it
+//! by the HQ communication define.
 //!
 //! The walk also records the owner of the unit the naval-invasion route check
 //! searches with (see `route_unit`). The path-cost operands read for that owner
@@ -62,7 +61,7 @@ use crate::{
     walk::Outcome,
 };
 
-/// A CModifier's accumulator, `+0x10` into it.
+/// A CModifier's accumulator, inside it.
 const MODIFIER_ACCUMULATOR: usize = 0x10;
 /// Selected HQ leader modifier accumulator.
 pub const LEADER_ACCUMULATOR: usize = carmy_leader::MOVEMENT_MODIFIER + MODIFIER_ACCUMULATOR;
@@ -74,7 +73,7 @@ pub struct Row {
     /// The owning group's handle and the order's instance id, as ArmyOrders.
     pub owner_group: u64,
     pub instance: u32,
-    /// `COrderInstance+0xD8`, the accumulated preparation.
+    /// The accumulated preparation (`corder_instance::ACCUMULATED_PREPARATION`).
     pub progress: i64,
     /// `T`, the first path province's state controller; zero without a path
     /// or a state.
@@ -91,7 +90,7 @@ pub struct Row {
     pub leader_applies: u8,
     /// Key 0x184 on the country.
     pub days_term: i64,
-    /// Raw `CUnit+0x1E0` owner of the route unit, zero without one.
+    /// Raw logical owner (`cunit::LOGICAL_OWNER`) of the route unit, zero without one.
     pub unit_owner: u32,
 }
 

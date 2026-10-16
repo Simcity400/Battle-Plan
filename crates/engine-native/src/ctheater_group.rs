@@ -12,8 +12,8 @@ pub struct Row {
     pub name_len: usize,
 }
 
-/// Native CTheaterGroup+48 membership, preserving the unfiltered vector order.
-/// Both COrdersGroup and its CArmyGroup subclass use native type-53 handles.
+/// Native theater-group membership, preserving the unfiltered vector order. Both COrdersGroup and
+/// its CArmyGroup subclass use native type-53 handles.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MemberRow {
     pub orders_group: u64,

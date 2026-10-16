@@ -14,7 +14,7 @@ pub const SIZE: usize = 0x88;
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DetailsRow {
     pub variant: u64,
-    /// Variant-summary operands at +0x2A0/+0x2A8.
+    /// Variant-summary operands.
     pub variant_summary_inputs: [i64; 2],
     pub initial_planes: i32,
     pub current_planes: i32,

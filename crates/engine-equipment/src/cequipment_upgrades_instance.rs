@@ -1,4 +1,4 @@
-//! CEquipmentUpgradesInstance, embedded at CEquipmentVariant+0x68.
+//! CEquipmentUpgradesInstance, embedded in the equipment variant (`cequipment_variant::UPGRADES`).
 
 use crate::{
     Memory, cequipment_upgrade, cequipment_variant,
@@ -12,9 +12,9 @@ use crate::{
 pub const VTABLE_RVA: usize = 0x027a_b628;
 /// CEquipmentUpgradesInstance entry vector data.
 pub const ENTRIES: usize = 0x08;
-/// CEquipmentUpgradesInstance entry-vector u32 capacity; legacy variant+78 normalizes to instance+10.
+/// CEquipmentUpgradesInstance entry-vector u32 capacity; the legacy variant field normalizes to this one.
 pub const ENTRIES_CAPACITY: usize = 0x10;
-/// CEquipmentUpgradesInstance entry-vector u32 count; legacy variant+7C normalizes to instance+14.
+/// CEquipmentUpgradesInstance entry-vector u32 count; the legacy variant field normalizes to this one.
 pub const ENTRIES_COUNT: usize = 0x14;
 
 /// `definition_token` names the upgrade. Its authored name and token come

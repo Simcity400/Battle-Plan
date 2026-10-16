@@ -648,7 +648,7 @@ pub(super) fn railway_buildings(
         }
         current.clear();
         std::mem::swap(&mut current, &mut next);
-        // ETA-only suffixes must not stop another source's selected +40 read.
+        // ETA-only suffixes must not stop another source's selected building-level read.
         current.gather(memory, &RAIL_HEALTHY);
         for index in 0..current.len {
             let row = current.rows[index];

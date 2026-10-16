@@ -1073,8 +1073,8 @@ fn commander_fixture() -> Fixture {
     fixture.array(LEADER + cunit_leader::TRAIT_EXPERIENCE_DATA, 0xf000, 1);
     fixture.u64(0xf000, TRAIT as u64);
     fixture.u64(0xf008, 321000);
-    // The ordinary leader block (+0x408, accumulator +0x10) the skill hover
-    // describes: keys 0x5F and 0x60 among others, sorted.
+    // The ordinary leader block (with its accumulator) the skill hover describes: keys 0x5F and
+    // 0x60 among others, sorted.
     fixture.array(
         LEADER + carmy_leader::MOVEMENT_MODIFIER + carmy_leader::MODIFIER_ACCUMULATOR,
         0x11400,
@@ -1555,10 +1555,10 @@ fn unreadable_optional_side_inputs_refuse_only_themselves() {
     assert_eq!(side.learning_traits.len, 1);
 }
 
-/// The selected commander's +0x20 name is stored as an ordinary MSVC string and
-/// text rendering takes any length, empty included; +0x80 is the same kind of
-/// string. Both keep the game's length in the text arena, count into its demand
-/// when they do not fit, and name their field when invalid.
+/// The selected commander's saved name is stored as an ordinary MSVC string and text rendering
+/// takes any length, empty included; the description token is the same kind of string. Both keep
+/// the game's length in the text arena, count into its demand when they do not fit, and name their
+/// field when invalid.
 #[test]
 fn selected_commander_texts_keep_native_length_and_name_their_field() {
     use crate::cunit_leader::{DESCRIPTION_TOKEN, TOKEN};
@@ -2109,7 +2109,7 @@ fn border_width_fault_stops_before_side_payloads() {
 #[test]
 fn border_marker_inputs_keep_stored_country_state_event_bytes_and_inactive_skip() {
     let mut fixture = commander_fixture();
-    // Subclass strings occupy the ordinary fixture's list storage at +0x500.
+    // Subclass strings occupy the ordinary fixture's list storage.
     let mut source = detail_source();
     source.attackers.data = 0x10100;
     source.defenders.data = 0x10120;

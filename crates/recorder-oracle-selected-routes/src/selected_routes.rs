@@ -125,8 +125,8 @@ fn areas(
                         "a member province of the area",
                     );
                 }
-                // the move-rejection search indexes its visited set by the representative's
-                // map+238 entry, which playback takes from the content.
+                // the move-rejection search indexes its visited set by the representative's map's
+                // nonsea-index entry, which playback takes from the content.
                 if let Some(geometry) = content
                     && !geometry.nonsea_indices.contains_key(&first)
                 {
@@ -176,9 +176,8 @@ fn areas(
     Ok(())
 }
 
-/// The division writer calls the unit writer on its
-/// secondary receiver, which saves primary+0x2AE as `exile` only when it is
-/// nonzero; DivisionStatus records that byte's truth.
+/// The division writer calls the unit writer on its secondary receiver, which saves the unit's
+/// exile byte as `exile` only when it is nonzero; DivisionStatus records that byte's truth.
 fn exile(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::DivisionStatus>()?;
     let mut compared = 0;
@@ -253,7 +252,7 @@ fn enemies(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
                 &row.enemies,
             );
         }
-        report.limitation("Diplomacy+98 native enemy occurrence order, repeats and raw zero entries are not saved. WarRelations and saved war sides certify separate sets, not this vector. The current suffix is checked for freshness and agreement with an exceptional prefix that shares its read only; an independent matched-hour native witness remains required", label);
+        report.limitation("The diplomacy status's native enemy-vector occurrence order, repeats and raw zero entries are not saved. WarRelations and saved war sides certify separate sets, not this vector. The current suffix is checked for freshness and agreement with an exceptional prefix that shares its read only; an independent matched-hour native witness remains required", label);
     }
     Ok(())
 }

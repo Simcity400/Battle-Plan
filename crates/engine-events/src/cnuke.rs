@@ -15,10 +15,9 @@ pub const AMOUNT: usize = 0x18;
 pub const TYPE: usize = 0x38;
 /// Ready nuke count, signed i32; reset and increments are independent of amount.
 pub const READY: usize = 0x3c;
-/// The country nuke array can have any valid count. Loading clears it
-/// and appends a default object per saved entry without checking the total.
-/// The +8 persistent name token is set by ordinary construction; loading
-/// uses the base default.
+/// The country nuke array can have any valid count. Loading clears it and appends a default object
+/// per saved entry without checking the total. The persistent name token is set by ordinary
+/// construction; loading uses the base default.
 pub const SERIAL_TYPE: usize = 8;
 /// Normal-construction nuke name token, shared with its parent array.
 pub const SERIAL_TYPE_VALUE: u32 = 0x34cd;

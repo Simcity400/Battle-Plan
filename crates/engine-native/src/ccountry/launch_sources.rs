@@ -180,7 +180,7 @@ impl ReservedOwnedStates {
                 return Err("reserved launch state count is negative");
             }
             required = count as usize;
-            // Reuse +484 exactly. This 12-byte observation excludes the count.
+            // Reuse the `ccountry::OWNED_STATE_COUNT` read exactly. This 12-byte observation excludes the count.
             let descriptor = country
                 .pointer
                 .checked_add(super::OWNED_STATES)

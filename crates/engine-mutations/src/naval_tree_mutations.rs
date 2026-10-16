@@ -11,8 +11,8 @@
 //! constructor also takes its source. Forwarding RCX, RDX, R8 and R9 and
 //! returning RAX therefore preserves every argument and result.
 //!
-//! Country tree (country +0x5B8, modifier block +0x5A8, per-source children
-//! +0x5D0 used by the breakdown formatter):
+//! Country tree (`naval_modifier_trees::COUNTRY_TREE`, in the country's modifier
+//! block, with the per-source children used by the breakdown formatter):
 //! - Country modifier recalculation clears and rebuilds it in place. Eight
 //!   helper paths, including dynamic modifier value recalculation, receive
 //!   the block or tree only inside this call; every other add occurs there.
@@ -24,28 +24,30 @@
 //! - Construction, destruction and country member loading are load-only;
 //!   only country-file loading constructs countries. Load changes the epoch.
 //!
-//! The writer inventory covers block displacements +0x5A8 through +0x5C8,
-//! formed block and tree pointers and the calls they reach, header stores,
-//! stores through tree data pointers and destinations of every accumulator
-//! mutator: filtered addition, clear, copy and move assignment, child cloning,
-//! dynamic value recalculation and two further mutators. Other country block
-//! and tree uses only read. Child cloning reuses pooled children (+0x30 and
-//! +0x3C), so equal child pointers cannot certify an unchanged tree.
+//! The writer inventory covers every displacement into the country's
+//! modifier block, formed block and tree pointers and the calls they reach,
+//! header stores, stores through tree data pointers and destinations of
+//! every accumulator mutator: filtered addition, clear, copy and move
+//! assignment, child cloning, dynamic value recalculation and two further
+//! mutators. Other country block and tree uses only read. Child cloning
+//! reuses pooled children, so equal child pointers cannot certify an
+//! unchanged tree.
 //!
-//! Commander tree (leader +0x418, value accumulator of modifier block +0x408,
-//! read by naval mission and ship modifier calculations):
+//! Commander tree (`naval_modifier_trees::COMMANDER_TREE`, the value
+//! accumulator of the leader's modifier block, read by naval mission and ship
+//! modifier calculations):
 //! - A tail helper called only by leader modifier recalculation clears it,
-//!   copies the base accumulator +0x358 and scales it.
+//!   copies the leader's base accumulator and scales it.
 //! - HQ modifier scaling copies the same accumulator with the HQ
 //!   communication scale, from orders-group paths.
 //! - Construction, copy construction and destruction revoke certificates, so
 //!   reusing an address cannot keep a freed leader's certificate. The
 //!   accumulator is not serialized; load rebuilds it and changes the epoch.
 //!
-//! The leader writer inventory covers blocks +0x408 through +0x4E8 and the
-//! data subobject +0x18 used by constructors and destruction (+0x3F0 through
-//! +0x4CC). Pointers formed at block offsets reach mutators only through the
-//! functions above.
+//! The leader writer inventory covers the leader's modifier blocks from the
+//! commander block on, and the data subobject used by constructors and
+//! destruction. Pointers formed at block offsets reach mutators only through
+//! the functions above.
 
 pub use crate::advisor_mutations::MutationSite;
 

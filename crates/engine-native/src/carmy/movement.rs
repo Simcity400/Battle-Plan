@@ -597,9 +597,9 @@ const SPEED_FIELDS: [crate::memory::RecordField; 2] = [
 const SPEED_LAYOUT: crate::memory::RecordLayout<'static> =
     crate::memory::RecordLayout::new(&SPEED_FIELDS, 16).expect("valid movement speed layout");
 
-/// The movement-speed calculation starts from the same signed +0x290. Gather
-/// only admitted ordinary movers, after the complete route prefix; missing rows
-/// and stationary rows supply no speed read.
+/// The movement-speed calculation starts from the same signed stat-block maximum speed. Gather only
+/// admitted ordinary movers, after the complete route prefix; missing rows and stationary rows
+/// supply no speed read.
 struct SpeedBatch {
     pointers: [usize; 64],
     bytes: [u8; 64 * 16],
@@ -671,12 +671,12 @@ impl SpeedBatch {
     }
 }
 
-/// The division's raw signed fixed5 maximum speed. No field caches the current
-/// speed: the movement-speed calculation starts from +0x290 in the division's
-/// +0x138 stat block. The hourly step adds vslot 0xD8's result to the unit's
-/// +0x240 without storing the speed, and the division view recomputes it. One
-/// gather reads the stat block's vtable and speed; the speed is kept only when
-/// the vtable authenticates the sub-unit definition.
+/// The division's raw signed fixed5 maximum speed. No field caches the current speed: the
+/// movement-speed calculation starts from the maximum speed in the division's stat block. The
+/// hourly step adds the result of the unit's movement-speed virtual to the unit's movement
+/// numerator (`MOVEMENT_NUMERATOR`) without storing the speed, and the division view recomputes it.
+/// One gather reads the stat block's vtable and speed; the speed is kept only when the vtable
+/// authenticates the sub-unit definition.
 fn movement_base_speed(
     memory: &impl Memory,
     base: usize,

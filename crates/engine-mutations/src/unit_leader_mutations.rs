@@ -4,38 +4,46 @@
 //! them.
 //!
 //! Writer coverage:
-//! - Formation reference +0x1048 is written by formation assignment from
-//!   orders-group leader selection, container repair and faction commander
-//!   handling. Saves retain +0x1050; load rebuilds +0x1048 through repair.
-//! - Skill definition +0xE60 changes through level selection. Status, valid
-//!   byte, level, required experience and category belong to the shared skill
-//!   definition, written only at construction and database load. Experience
-//!   addition changes unrecorded +0xE68 and reaches level-up only past its
+//! - Formation reference (`carmy_leader::FORMATION_REFERENCE`) is written by
+//!   formation assignment from orders-group leader selection, container
+//!   repair and faction commander handling. Saves retain a separate field
+//!   beside it; load rebuilds the formation reference through repair.
+//! - Skill definition (`cunit_leader::SKILL`) changes through level
+//!   selection. Status, valid byte, level, required experience and category
+//!   belong to the shared skill definition, written only at construction and
+//!   database load. Experience addition changes unrecorded experience
+//!   (`cunit_leader::EXPERIENCE`) and reaches level-up only past its
 //!   threshold.
-//! - Category +0xE7C has its own setter.
-//! - Army attack, defense, planning and logistics components at +0xF58,
-//!   +0xF68, +0xF78 and +0xF88 have four setters. Navy attack, defense,
-//!   maneuvering and coordination at +0xF68, +0xF78, +0xF88 and +0xF98 have
-//!   four setters. Level-ups, traits, skill-add effects and loads call them.
-//! - Army captured flag +0x1059 is written by capture and release.
-//! - Owner +0x120 is written by the nine-byte ordinary setter and operative
-//!   override, virtual slot 21.
-//! - Exile country +0xED4 is written by daily diplomacy's exile leader
-//!   generation, resolving the leader from its newly created character, and
-//!   the remove-exile effect, resolving a leader from event scope. Neither
-//!   names a leader at entry.
-//! - Inherited texts +0x20 and +0x40 change through name setting's string
-//!   moves and derived-state rebuild, virtual slot 8, which copies +0x20 to
-//!   +0x40. Operative rebuild calls that first before renaming.
-//! - Character linking writes backlink +0xF48 and template visibility +0xF50.
-//! - Operative codename +0xFD0, a naming-group member, changes through the
-//!   rename wrapper (called only by the codename command), admission wrapper
-//!   (from both agency operative-add paths) and operative rebuild.
+//! - Category (`cunit_leader::CATEGORY`) has its own setter.
+//! - Army attack, defense, planning and logistics components
+//!   (`carmy_leader::ATTACK`, `DEFENSE`, `PLANNING`, `LOGISTICS`) have four
+//!   setters. Navy attack, defense, maneuvering and coordination have four
+//!   setters. Level-ups, traits, skill-add effects and loads call them.
+//! - Army captured flag (`carmy_leader::CAPTURED`) is written by capture and
+//!   release.
+//! - Owner (`cunit_leader::OWNER`) is written by the nine-byte ordinary
+//!   setter and operative override, virtual slot 21.
+//! - Exile country (`cunit_leader::EXILE_COUNTRY`) is written by daily
+//!   diplomacy's exile leader generation, resolving the leader from its newly
+//!   created character, and the remove-exile effect, resolving a leader from
+//!   event scope. Neither names a leader at entry.
+//! - Inherited texts (`cunit_leader::TOKEN`, `NAME`) change through name
+//!   setting's string moves and derived-state rebuild, virtual slot 8, which
+//!   copies the token text into the name. Operative rebuild calls that first
+//!   before renaming.
+//! - Character linking writes the backlink (`cunit_leader::CHARACTER_TYPE`,
+//!   `CHARACTER_ID`) and template visibility
+//!   (`cunit_leader::TEMPLATE_VISIBILITY`).
+//! - Operative codename (`coperative_leader::CODENAME`), a naming-group
+//!   member, changes through the rename wrapper (called only by the codename
+//!   command), admission wrapper (from both agency operative-add paths) and
+//!   operative rebuild.
 //! - Construction, copy construction and destruction belong to
 //!   [`crate::naval_tree_mutations`], which forwards them; reused addresses
 //!   cannot keep freed leaders' certificates. All other stores to these
 //!   fields are in construction, cloning or save loading. Character-template
-//!   building writes the visibility choice +0x18 only for character-definition
+//!   building writes the visibility choice
+//!   (`cunit_leader::VISIBILITY_CHOICE`) only for character-definition
 //!   building. Load changes the epoch.
 
 pub use crate::advisor_mutations::MutationSite;
@@ -46,7 +54,7 @@ const SET_NAME_RVA: usize = 0xc1_6fb0;
 /// two exile sites, which name none. A detour forwards RCX..R9 and returns
 /// RAX unchanged.
 pub const MUTATIONS: [MutationSite; 23] = [
-    // The five-byte R8B spill at stack +0x18 relocates.
+    // The five-byte R8B spill to its home slot relocates.
     site(
         "formation",
         0xc1_7240,
@@ -95,8 +103,9 @@ pub const MUTATIONS: [MutationSite; 23] = [
             0x30, 0x8b,
         ],
     ),
-    // Reading the tag through RDX into EAX and storing it at receiver
-    // +0x120 occupy eight relocated bytes before the return and padding.
+    // Reading the tag through RDX into EAX and storing it in the receiver's owner
+    // (`cunit_leader::OWNER`) occupy eight relocated bytes before the return and
+    // padding.
     site(
         "owner",
         0xc1_6010,
@@ -173,8 +182,8 @@ pub const MUTATIONS: [MutationSite; 23] = [
             0x20, 0x48,
         ],
     ),
-    // Reserving 0x28 stack bytes and testing the receiver's qword at +0x1040
-    // against zero occupy twelve relocated bytes.
+    // Reserving 0x28 stack bytes and testing a receiver qword against zero
+    // occupy twelve relocated bytes.
     site(
         "operative_admission",
         0xc0_3eb0,
@@ -189,7 +198,8 @@ pub const MUTATIONS: [MutationSite; 23] = [
 pub const EXILE_GENERATION: usize = 15;
 pub const EXILE_REMOVAL: usize = 16;
 
-/// The eight component setters share a five-byte relocated RBX spill at stack +8.
+/// The eight component setters share a five-byte relocated RBX spill to RCX's
+/// home slot.
 const SETTER: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57,
 ];

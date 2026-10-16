@@ -28,8 +28,8 @@ pub const CONSTRUCT: Site = Site {
 /// The state nudger's apply/save reload: clears and re-parses the state
 /// template database, then rebuilds the live `CState` objects and their
 /// template pointers, the only post-load writer of the state templates' base
-/// resources. One argument (RCX, the editor); RBX is saved at RSP+0x10 on
-/// entry.
+/// resources. One argument (RCX, the editor); RBX is saved to RDX's home slot
+/// on entry.
 pub const STATE_RELOAD: Site = Site {
     rva: 0x01b4_9fb0,
     sentinel: [

@@ -346,8 +346,7 @@ unsafe extern "system" fn ensure_local_subunit(
     }
     result
 }
-// Local sub-unit definition rebuild (global,
-// country+8, status+8, clone).
+// Local sub-unit definition rebuild (global, the country's id, the status's bonus list, clone).
 callback!(rebuild_local_subunit, 1);
 // Clear local subunits (status).
 callback!(clear_local_subunits, 2);
@@ -363,9 +362,9 @@ callback!(reload_equipment_content, 5);
 mod tests {
     use super::*;
 
-    /// A writer moves only the status it names (the rebuild names it through
-    /// its bonus list, `status+8`), and every writer moves the quiet token; a
-    /// shared definition writer revokes every certificate.
+    /// A writer moves only the status it names (the rebuild names it through its bonus list in the
+    /// status), and every writer moves the quiet token; a shared definition writer revokes every
+    /// certificate.
     #[test]
     fn a_writer_moves_only_its_statuss_certificate_and_the_quiet_token() {
         let watches = Watches::enabled(16);

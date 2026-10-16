@@ -34,10 +34,10 @@ opaque_value!(Option<AirBaseCarrierInputs>);
 /// order; the consumer checks every range and the final consumed length.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CarrierAirPool {
-    /// Signed +0x60 grouping key, distinct from content database index +0x58C.
+    /// Signed grouping key, distinct from the content database index.
     pub type_index: i32,
-    /// Authenticated +0x58C content database index; a genuine null singleton
-    /// is zero. This proves the held definition's name, including empty pools.
+    /// Authenticated content database index; a genuine null singleton is zero. This proves the held
+    /// definition's name, including empty pools.
     pub subunit_index: u32,
     pub wing_start: u32,
     pub wing_count: u32,

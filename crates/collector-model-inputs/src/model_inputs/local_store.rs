@@ -3,7 +3,7 @@
 //!
 //! CountryLocalSubunits, which the 3D model selectors read, is walked every
 //! hour. A country's rows record its deployment status's clones
-//! (`CDeploymentStatus+0x20`) whose requirements (`+0x310`) differ from their
+//! (in the deployment status) whose requirements differ from their
 //! global definition's; every run-time writer of the clone vector and of a
 //! clone's requirements is a hooked site, and a status is replaced only
 //! through its destructor's hooked clear

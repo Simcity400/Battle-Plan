@@ -405,9 +405,9 @@ impl Store {
     ) -> Result<usize, &'static str> {
         let countries = ccountry::Reader::new(memory, base, state)?;
         self.census = countries.count() as usize;
-        // Pre-hourly update visits the live +310/+31C country roster. The worker sizes
-        // row and owner storage from this original census before publication;
-        // the next interval's table is offered after the gate reopens.
+        // Pre-hourly update visits the live country roster and its count. The worker sizes row and
+        // owner storage from this original census before publication; the next interval's table is
+        // offered after the gate reopens.
         if rows.is_growing() {
             self.prepare_owners(countries.count() as usize)?;
         }

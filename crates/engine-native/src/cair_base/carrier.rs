@@ -30,7 +30,7 @@ pub struct IndexedContainer {
     pub slot: u32,
 }
 
-/// One dense +48 occurrence; repeats and native order are retained.
+/// One dense `REGISTERED_CONTAINERS` occurrence; repeats and native order are retained.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CountryOccurrence {
     pub country: u32,
@@ -105,9 +105,9 @@ pub(super) fn dense_countries<M: Memory>(
     Ok(())
 }
 
-/// Storage demand from the exact +48 header only. This does not certify an
-/// indexed registration or follow any dense occurrence; no output is admitted
-/// when the caller lacks the indexed certificates needed by dense_countries.
+/// Storage demand from the exact `REGISTERED_CONTAINERS` header only. This does not certify an
+/// indexed registration or follow any dense occurrence; no output is admitted when the caller lacks
+/// the indexed certificates needed by dense_countries.
 pub(super) fn dense_demand(memory: &impl Memory, air_base: usize) -> Result<usize, &'static str> {
     dense_header(memory, air_base).map(|dense| dense.count as usize)
 }
@@ -148,7 +148,7 @@ pub struct ContainerFuel {
 pub(crate) struct DefinitionIdentity {
     pub pointer: usize,
     pub type_index: i32,
-    /// Exact recorded-content entry: real positive +58C, native null slot0.
+    /// Exact recorded-content entry: a real positive content database index, native null slot0.
     /// Tokens are not unique content identities and cannot replace this index.
     pub subunit_index: u32,
 }

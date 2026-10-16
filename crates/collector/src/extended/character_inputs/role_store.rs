@@ -1,24 +1,19 @@
 //! Country-leader and advisor role rows held between hours for
 //! CharacterRoleTraits ([`crate::character_changes`]).
 //!
-//! The census walk visits every occurrence of the roster job's admitted
-//! census in roster order. A character's held country-leader and advisor rows
-//! are carried, without reading its maps, roles or trait arrays, only when all
-//! of these hold at this boundary: the same character pointer and id as the
-//! held read; the same country-leader and advisor map headers (head node and
-//! size, freshly gathered by the roster job this callback); and no hooked
-//! writer touched the character since the read registered it (same watch
-//! epoch and sequence; a load, gap, recovery, table change, poison, an
-//! unnamed receiver or a running writer revokes it). Every writer of those
-//! maps, their roles' parent links and trait arrays is a hooked site
-//! ([`engine::character_role_mutations`], [`engine::advisor_mutations`]), and
-//! trait definitions (`+0x8` token, `+0x1A0` ordinal) are database objects
-//! nothing rewrites, so the fresh read would return the held rows. Scientist
-//! rows and operative links are read every hour. Every hour also reads the
-//! carryable characters of its sampled-verification slice afresh
-//! ([`crate::sampled_verify`], keyed by character id; `character_verify`
-//! takes every one), publishes the fresh rows and poisons reuse on a
-//! difference.
+//! The census walk visits every occurrence of the roster job's admitted census in roster order. A
+//! character's held country-leader and advisor rows are carried, without reading its maps, roles or
+//! trait arrays, only when all of these hold at this boundary: the same character pointer and id as
+//! the held read; the same country-leader and advisor map headers (head node and size, freshly
+//! gathered by the roster job this callback); and no hooked writer touched the character since the
+//! read registered it (same watch epoch and sequence; a load, gap, recovery, table change, poison,
+//! an unnamed receiver or a running writer revokes it). Every writer of those maps, their roles'
+//! parent links and trait arrays is a hooked site ([`engine::character_role_mutations`],
+//! [`engine::advisor_mutations`]), and trait definitions (token and ordinal) are database objects
+//! nothing rewrites, so the fresh read would return the held rows. Scientist rows and operative
+//! links are read every hour. Every hour also reads the carryable characters of its
+//! sampled-verification slice afresh ([`crate::sampled_verify`], keyed by character id;
+//! `character_verify` takes every one), publishes the fresh rows and poisons reuse on a difference.
 //!
 //! A quiet hour carries every country-leader and advisor row without a
 //! lookup: when the latest full walk held every occupant, the character

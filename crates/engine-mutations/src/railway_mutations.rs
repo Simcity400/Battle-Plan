@@ -1,25 +1,33 @@
 //! The runtime writers of fields recorded by RailCooldowns, RailEdges,
 //! RailwayBuildingRow and its selected levels from each province rail info
-//! (railway manager slot table +0x08). Observing them tells the collector
-//! which infos to reread; recording never calls them.
+//! (railway manager slot table `crailway_manager::PROVINCE_INFO_TABLE`).
+//! Observing them tells the collector which infos to reread; recording never
+//! calls them.
 //!
-//! Outputs include cooldown +0x68; sorted neighbour pairs +0x38, count +0x44;
-//! neighbour-indexed levels +0x20, count +0x2C, sized from province definition
-//! +0x7C; and rail-building health through +0x18 (level +0x40, healthy level
-//! +0x42, partial health +0x48, backlink +0x1D8). The walk also authenticates
-//! the vtable, definition +0x08 and building status +0x10 (province +0x190).
+//! Outputs include cooldown (`cprovince_railway_info::COOLDOWN_TICKS`);
+//! sorted neighbour pairs and count (`NEIGHBOR_PAIRS`,
+//! `NEIGHBOR_PAIR_COUNT`); neighbour-indexed levels and count
+//! (`LEVELS_BY_NEIGHBOR_INDEX`, `LEVEL_COUNT`), sized from the province
+//! definition's `province_definition::NEIGHBOUR_COUNT`; and rail-building
+//! health through `cprovince_railway_info::BUILDING` (level, healthy level,
+//! partial health and backlink: `cbuilding::LEVEL`, `HEALTHY_LEVEL`,
+//! `PARTIAL_HEALTH`, `BUILDING_STATUS`). The walk also authenticates the
+//! vtable, definition (`cprovince_railway_info::PROVINCE_RECORD`) and
+//! building status (`cprovince_railway_info::BUILDING_STATUS`, the province's
+//! `cprovince::BUILDING_STATUS`).
 //!
 //! Writer coverage:
 //! - The cooldown setter takes manager, signed province id and ticks. It
 //!   sign-extends the id and loads the slot without a bounds check. A nonnull
 //!   info causes supply notification, appending the province to the manager's
-//!   cooldown list (+0x20/count +0x2C) when old cooldown is below one, and an
+//!   cooldown list (`crailway_manager::COOLDOWN_PROVINCES`, count
+//!   `COOLDOWN_PROVINCE_COUNT`) when old cooldown is below one, and an
 //!   unclamped ticks store. Only the hourly occupation controller-change path
-//!   calls it. Ticks below one leave a listed value below one, so another call
-//!   appends again; the list can contain duplicates. Daily countdown, called
-//!   only by game-state daily update, walks backwards, decrements the info
-//!   once per occurrence and swap-removes each occurrence when its value is
-//!   below one. It writes no other info.
+//!   calls it. Ticks below one leave a listed value below one, so another
+//!   call appends again; the list can contain duplicates. Daily countdown,
+//!   called only by game-state daily update, walks backwards, decrements the
+//!   info once per occurrence and swap-removes each occurrence when its value
+//!   is below one. It writes no other info.
 //! - Railway setting writes the indexed level as the greater of old and new,
 //!   clamped to the define; updates or sorted-inserts the neighbour pair;
 //!   creates the rail building when its pointer is null; and sets its level.
@@ -27,17 +35,17 @@
 //!   completion, daily construction and two debug paths, and the rail file
 //!   loader. Edge levels never fall at runtime.
 //! - Info construction takes the province id in EDX and writes every field:
-//!   zero cooldown, province definition, levels sized from definition +0x7C
-//!   and a looked-up rail-building pointer. Find-or-create calls it and stores
-//!   the slot in the same call; manager token loading also constructs infos.
-//!   Virtual destruction frees pairs. Info token loading reads cooldown,
-//!   levels and pairs from a save.
+//!   zero cooldown, province definition, levels sized from the definition's
+//!   neighbour count and a looked-up rail-building pointer. Find-or-create
+//!   calls it and stores the slot in the same call; manager token loading
+//!   also constructs infos. Virtual destruction frees pairs. Info token
+//!   loading reads cooldown, levels and pairs from a save.
 //! - Manager construction, virtual destruction and token loading build,
 //!   free or refill the slot table and cooldown list.
 //! - Only [`crate::building_mutations`] writes rail-building health. Its
-//!   status (province +0x190) names the province by location id; the collector
-//!   forwards writes to the rail domain. Pending construction +0x50 is not
-//!   recorded.
+//!   status (`cprovince::BUILDING_STATUS`) names the province by location id;
+//!   the collector forwards writes to the rail domain. Pending construction
+//!   (`cprovince_railway_info::PENDING_CONSTRUCTION`) is not recorded.
 //!
 //! Every writer asserts game-thread access. Each prologue starts with five
 //! bytes of whole relocatable instructions, and each site takes at most four
@@ -59,7 +67,7 @@ pub enum Receiver {
     /// id ([`province`]).
     Info,
     /// The daily countdown: it writes the info of every occurrence on the
-    /// manager's cooldown list `+0x20` and nothing else.
+    /// manager's cooldown list (`crailway_manager::COOLDOWN_PROVINCES`) and nothing else.
     CooldownList,
     /// The site writes infos it does not name, or the slot table itself.
     Every,
@@ -68,7 +76,7 @@ pub enum Receiver {
 /// Every site with its receiver; each returns RAX unchanged from its
 /// original, so a detour returns the original's value.
 pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
-    // Cooldown assignment (manager, province, ticks): spill RBX at stack +0x20.
+    // Cooldown assignment (manager, province, ticks): spill RBX to R9's home slot.
     (
         MutationSite {
             name: "set_province_on_cooldown",
@@ -80,7 +88,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
         },
         Receiver::Province,
     ),
-    // Daily cooldown countdown (manager): spill RBX at stack +0x20.
+    // Daily cooldown countdown (manager): spill RBX to R9's home slot.
     (
         MutationSite {
             name: "update_cooldowns",
@@ -102,7 +110,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
         },
         Receiver::Info,
     ),
-    // Info construction (info, province id): spill RBX at stack +0x10.
+    // Info construction (info, province id): spill RBX to RDX's home slot.
     (
         MutationSite {
             name: "construct_info",
@@ -114,7 +122,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
         },
         Receiver::Province,
     ),
-    // Info deleting destructor (info, flags): spill RBX at stack +8.
+    // Info deleting destructor (info, flags): spill RBX to RCX's home slot.
     (
         MutationSite {
             name: "destroy_info",
@@ -123,7 +131,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
         },
         Receiver::Info,
     ),
-    // Info save reader (info, reader, token): spill RBX at stack +8.
+    // Info save reader (info, reader, token): spill RBX to RCX's home slot.
     // Revoke every certificate instead of trusting a definition the load may
     // not have set yet.
     (
@@ -134,7 +142,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
         },
         Receiver::Every,
     ),
-    // Manager construction (manager): spill RBX at stack +0x18.
+    // Manager construction (manager): spill RBX to R8's home slot.
     (
         MutationSite {
             name: "construct_manager",
@@ -146,7 +154,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
         },
         Receiver::Every,
     ),
-    // Manager deleting destructor (manager, flags): spill RBX at stack +8.
+    // Manager deleting destructor (manager, flags): spill RBX to RCX's home slot.
     (
         MutationSite {
             name: "destroy_manager",
@@ -158,7 +166,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
         },
         Receiver::Every,
     ),
-    // Manager token loading (manager, reader, token): spill RBX at stack +8.
+    // Manager token loading (manager, reader, token): spill RBX to RCX's home slot.
     (
         MutationSite {
             name: "read_manager",
@@ -172,9 +180,11 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
     ),
 ];
 
-/// The province of `info`: its definition `+0x08`'s id `+0xC4`, which the
-/// walk authenticates against the info's slot. `None` when either does not
-/// read or the id is zero, which no info has.
+/// The province of `info`: its definition's
+/// (`cprovince_railway_info::PROVINCE_RECORD`) id
+/// (`province_definition::ID`), which the walk authenticates against the
+/// info's slot. `None` when either does not read or the id is zero, which no
+/// info has.
 pub fn province(memory: &impl Memory, info: usize) -> Option<u32> {
     let definition = info
         .checked_add(cprovince_railway_info::PROVINCE_RECORD)

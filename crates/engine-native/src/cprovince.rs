@@ -72,12 +72,11 @@ pub fn walk_unit_order_growing_with_land(
     walk_unit_order_growing_with_known(memory, base, state, output, handles, |_| None, land)
 }
 
-/// A division the caller's census authenticated at this same boundary: a
-/// CArmy (both vtables) of class zero listed in a country's division roster,
-/// with its full handle and its `CUnit+0x1F0` location, read in the census's
-/// batched gather. The walk takes such an occupant's class-zero identity and
-/// backlink from here instead of reading the unit and its registry entry: the
-/// roster that lists the division proves it is live, as the registry join does.
+/// A division the caller's census authenticated at this same boundary: a CArmy (both vtables) of
+/// class zero listed in a country's division roster, with its full handle and its location
+/// (`cunit::LOCATION`), read in the census's batched gather. The walk takes such an occupant's
+/// class-zero identity and backlink from here instead of reading the unit and its registry entry:
+/// the roster that lists the division proves it is live, as the registry join does.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct KnownUnit {
     pub handle: u64,
@@ -568,7 +567,7 @@ pub fn walk_direct_combats_buffer(
                         .and_then(|pointer| usize::try_from(pointer).ok())
                         .filter(|&pointer| pointer != 0)
                         .ok_or("province combat pointer unreadable or null")?;
-                    // The vtable and the CCombat handle (`+0x18`, which every class shares).
+                    // The vtable and the CCombat handle (which every class shares).
                     let header = crate::read::<[u8; 0x20]>(memory, combat)
                         .ok_or("province combat header unreadable")?;
                     let class = u64::from_le_bytes(header[..8].try_into().expect("eight bytes"));
@@ -619,7 +618,7 @@ pub fn walk_direct_combats_buffer(
     }
 }
 
-/// CProvince combat pointer vector (`CPdxArray`, count `+0x17C`).
+/// CProvince combat pointer vector (`CPdxArray`).
 pub const COMBATS: usize = 0x170;
 /// The kind each class of `walk_direct_combats`' `classes` records.
 const KINDS: [u8; 3] = [COMBAT_LAND, COMBAT_BORDER_WAR, COMBAT_NAVAL];
@@ -691,8 +690,8 @@ pub const SET_VICTORY_POINTS_EFFECT_RVA: usize = 0x0034_7120;
 pub const ADD_VICTORY_POINTS_EFFECT_RVA: usize = 0x0034_7230;
 /// Province-ID/value applier; load-versus-play timing unresolved.
 pub const APPLY_VICTORY_POINTS_RVA: usize = 0x0158_ee10;
-/// Sorted conflict-tree head: a set of border-war combat pointers with node
-/// values at node+0x20. Intersection uses those values.
+/// Sorted conflict-tree head: a set of border-war combat pointers with node values in its nodes.
+/// Intersection uses those values.
 pub const BORDER_CONFLICT_TREE: usize = 0xa8;
 /// Border-conflict set size. Movement is refused while nonzero unless the
 /// army stands in a conflict or is admitted by a combat in the set.
@@ -2036,7 +2035,7 @@ fn border_conflict_groups(
 }
 
 /// [`Row::fort_bunker`]: the state bunker term for the province's state
-/// (`+0xC0`) and the controller the raw reference resolves to, queried with
+/// and the controller the raw reference resolves to, queried with
 /// that country's own id as state country modifier lookup takes it.
 fn fort_bunker<'a, M: Memory>(
     memory: &'a M,
@@ -2625,10 +2624,10 @@ impl GeometryPacket {
         Ok((id, index))
     }
 
-    /// Hint a seed-selected identity before its acquisition. Successful
-    /// identities already held by this begin() need no native bytes again. The
-    /// hourly movement step uses CProvince+0xA4 for route identities; these
-    /// hints acquire neither that id nor its vtable and consume no guard page.
+    /// Hint a seed-selected identity before its acquisition. Successful identities already held by
+    /// this begin() need no native bytes again. The hourly movement step uses the province id
+    /// (`ID`) for route identities; these hints acquire neither that id nor its vtable and consume
+    /// no guard page.
     pub fn prefetch_province_id(&self, memory: &impl Memory, pointer: usize) {
         if pointer == 0
             || self

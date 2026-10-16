@@ -1,20 +1,18 @@
-//! Province temperatures replayed from recorded inputs and the recorded content stack,
-//! with no memory access: the signed fixed5 temperature `province weather+0x118` that the
-//! province tooltip and the save serializer read.
+//! Province temperatures replayed from recorded inputs and the recorded content stack, with no
+//! memory access: the signed fixed5 committed temperature of each province weather record, which
+//! the province tooltip and the save serializer read.
 //!
-//! Each hour that the weather update finds both suspension gates (`+0x349`/`+0x34A`)
-//! clear, it adds a synchronized 31-bit random integer to the seed `+0x308` and runs one
-//! pass over a rotating window: from the cursor `+0x58`, `provinces_per_update`
-//! (`+0x2F0`) consecutive slots, wrapping at the province count `+0x1C`, of which the
-//! active ones (`+0x28`) update ([`Simulation::update`]). For each, the temperature pass
-//! moves its working drift `+0x170` by a hash of its id and the seed, clamps it to
-//! `max_temperature_change` and stages `+0x118 + drift` at `+0x160`, resetting a drift
-//! that pushes further outside the date's weather-period range; the threaded smoothing
-//! pass then moves the staged temperature and the drift toward the averages of the active
-//! neighbours' committed temperature `+0x118` and drift `+0x128`. Only after every
-//! staging job joined does the commit pass copy `+0x160`/`+0x170` into `+0x118`/`+0x128`
-//! for each province that had an active neighbour (`+0x168`), so the staging order is
-//! irrelevant and every thread count gives the same result.
+//! Each hour that the weather update finds both suspension gates clear, it adds a synchronized
+//! 31-bit random integer to the manager's seed and runs one pass over a rotating window: from the
+//! manager's cursor, `provinces_per_update` consecutive slots, wrapping at the province count, of
+//! which the active ones update ([`Simulation::update`]). For each, the temperature pass moves its
+//! working drift by a hash of its id and the seed, clamps it to `max_temperature_change` and stages
+//! the committed temperature plus the drift, resetting a drift that pushes further outside the
+//! date's weather-period range; the threaded smoothing pass then moves the staged temperature and
+//! the drift toward the averages of the active neighbours' committed temperature and committed
+//! drift. Only after every staging job joined does the commit pass copy the staged temperature and
+//! working drift into the committed temperature and drift for each province that had an active
+//! neighbour, so the staging order is irrelevant and every thread count gives the same result.
 //!
 //! The seed is the only input of an hour the content cannot supply; a recording stores it
 //! with the state of every province at an anchor hour ([`State`]), from which playback
@@ -181,9 +179,8 @@ pub fn period_date(hour: i32) -> i32 {
     shifted.wrapping_sub(shifted % 24).wrapping_add(EPOCH)
 }
 
-/// One `weather period` (stride `0xE0`) of a strategic region template's weather
-/// (`+0xB0`, count `+0xBC`): inclusive bounds `+0x10`/`+0x28` and the temperature range
-/// the `weather range` at `+0x38` holds (`+0x40`, `+0x48`).
+/// One `weather period` (stride `0xE0`) of a strategic region template's weather (in its period
+/// list): inclusive start and end dates and the temperature range its `weather range` holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Period {
     pub start: i32,
@@ -200,45 +197,43 @@ pub fn find_period(periods: &[Period], hour: i32) -> Option<&Period> {
         .find(|period| period.start <= date && date <= period.end)
 }
 
-/// One `terrain_modifiers` `temperature` entry (`weather terrain modifier`, stride
-/// `0x18`): the terrain's database index (`+0x88`) and the fixed5 degrees added to both
-/// bounds.
+/// One `terrain_modifiers` `temperature` entry (`weather terrain modifier`, stride `0x18`): the
+/// terrain's database index and the fixed5 degrees added to both bounds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TerrainModifier {
     pub terrain: i32,
     pub value: i64,
 }
 
-/// Settings loaded from `common/weather.txt`, every value zero when the file leaves it
-/// unset (manager construction clears `+0x138..+0x308`).
+/// Settings loaded from `common/weather.txt`, every value zero when the file leaves it unset
+/// (manager construction clears every setting).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Settings {
-    /// `temperature_variation` (`+0x138`).
+    /// `temperature_variation`.
     pub variation: i64,
-    /// `max_temperature_change` (`+0x140`).
+    /// `max_temperature_change`.
     pub max_change: i64,
-    /// `temperature_neighbor_smoothing` (`+0x148`).
+    /// `temperature_neighbor_smoothing`.
     pub smoothing: i64,
-    /// `temperature_change_neighbor_smoothing` (`+0x150`).
+    /// `temperature_change_neighbor_smoothing`.
     pub change_smoothing: i64,
-    /// `provinces_per_update` (`+0x2F0`).
+    /// `provinces_per_update`.
     pub provinces_per_update: i32,
-    /// The `temperature` kind's terrain modifiers (`+0x78`, count `+0x84`) in loaded order.
+    /// The `temperature` kind's terrain modifiers in loaded order.
     pub terrain: Vec<TerrainModifier>,
 }
 
 /// Initialization inputs for one province slot of the weather array.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Province {
-    /// `+0x28`: a positive id whose definition exists and has pixels.
+    /// A positive id whose definition exists and has pixels.
     pub active: bool,
-    /// `+0x10`: the slot of every neighbour record of the definition (`+0x70`), in order.
+    /// The slot of every neighbour record of the definition, in order.
     pub neighbours: Vec<u32>,
-    /// `province+0xC8`'s strategic region id, `None` for a null region.
+    /// The province's strategic region id, `None` for a null region.
     pub region: Option<u32>,
-    /// `+0x2C`: the definition terrain's `terrain type+0x88`, `None` for -1; an error
-    /// names what the content cannot settle, refused only when the province reaches the
-    /// terrain lookup.
+    /// The definition terrain's database index, `None` for -1; an error names what the content
+    /// cannot settle, refused only when the province reaches the terrain lookup.
     pub terrain: Result<Option<i32>, String>,
 }
 
@@ -253,9 +248,8 @@ pub struct Content {
 }
 
 impl Content {
-    /// The period the temperature pass finds for `slot` at native date `hour`; `None`
-    /// where it returns before touching the record: a null region (`province+0xC8`) or no
-    /// period.
+    /// The period the temperature pass finds for `slot` at native date `hour`; `None` where it
+    /// returns before touching the record: a null strategic region or no period.
     pub fn period(&self, slot: u32, hour: i32) -> Result<Option<&Period>, String> {
         let province = self
             .provinces
@@ -298,13 +292,13 @@ impl Content {
 /// The simulation words of one province record that the pass reads and writes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct State {
-    /// `+0x118`, the committed temperature.
+    /// The committed temperature.
     pub temperature: i64,
-    /// `+0x128`, the committed drift neighbours average.
+    /// The committed drift neighbours average.
     pub drift: i64,
-    /// `+0x160`, the staged temperature.
+    /// The staged temperature.
     pub staged: i64,
-    /// `+0x170`, the working drift.
+    /// The working drift.
     pub working: i64,
 }
 
@@ -340,10 +334,10 @@ pub fn window_span(cursor: i32, window: i32, count: i32) -> Result<(i32, i32), &
     ))
 }
 
-/// The slots an update starting at `cursor` visits, and the cursor it leaves, following
-/// the rotating cursor `+0x58`: `window` slots (at least one), wrapping to zero at the
-/// count and stopping early on returning to the start. A cursor at or past the count
-/// visits nothing and stays; a negative one would index before the array and is refused.
+/// The slots an update starting at `cursor` visits, and the cursor it leaves, following the
+/// manager's rotating cursor: `window` slots (at least one), wrapping to zero at the count and
+/// stopping early on returning to the start. A cursor at or past the count visits nothing and
+/// stays; a negative one would index before the array and is refused.
 pub fn window(cursor: i32, window: i32, count: i32) -> Result<(Vec<u32>, i32), &'static str> {
     if cursor < 0 {
         return Err("weather update cursor negative");
@@ -419,7 +413,7 @@ impl Simulation {
         Ok(())
     }
 
-    /// One ordinary update (`+0x348` clear, pass index zero) at native date `hour`.
+    /// One ordinary update (the manager's pass flag clear, pass index zero) at native date `hour`.
     pub fn update(&mut self, content: &Content, hour: i32, seed: u32) -> Result<(), String> {
         let count = self.states.len();
         if content.provinces.len() != count {
@@ -451,8 +445,8 @@ impl Simulation {
         Ok(())
     }
 
-    /// Temperature drift and neighbour smoothing for one slot, reading the committed
-    /// words of the hour before; whether `+0x168` is set for the commit.
+    /// Temperature drift and neighbour smoothing for one slot, reading the committed words of the
+    /// hour before; whether the record's commit flag is set.
     fn stage(
         &self,
         content: &Content,
@@ -498,7 +492,7 @@ impl Simulation {
             }
             state.staged = temperature;
         }
-        // Smoothing clears +0x168 and sets it only when an active neighbour exists.
+        // Smoothing clears the commit flag and sets it only when an active neighbour exists.
         let (temperatures, drifts, active) = content.neighbour_sums(slot, &self.states)?;
         if active <= 0 {
             return Ok((state, false));

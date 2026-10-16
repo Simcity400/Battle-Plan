@@ -1116,9 +1116,8 @@ fn governance_batch_modifier_sources_and_faults_keep_serial_rows_and_reasons() {
         before.count(),
         after.count()
     );
-    // Technology category lookup reads category +0x190; research modifier
-    // calculation reads idea contributions +0x38/+0x40 and scripted
-    // contributions +0x30. Fault pointers and contributions separately: both
+    // Technology category lookup reads the category sum; research modifier calculation reads idea
+    // contributions and scripted contributions. Fault pointers and contributions separately: both
     // gathers must increment their shared key.
     let country = World::country(1);
     for (offset, reader) in [

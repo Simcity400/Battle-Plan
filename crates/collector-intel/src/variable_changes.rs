@@ -494,9 +494,9 @@ unsafe extern "system" {
     ) -> i32;
 }
 
-/// Hook path: the calling thread's temporary store
-/// (thread-local variable store lookup: `[[TEB+0x58] + index * 8] +
-/// 0x20`), located once per thread; `usize::MAX` when it cannot be.
+/// Hook path: the calling thread's temporary store (thread-local variable store lookup: the
+/// thread's TLS slot array, indexed by the module's TLS index, then the store's slot in it),
+/// located once per thread; `usize::MAX` when it cannot be.
 #[inline(always)]
 fn temporary() -> usize {
     let cached = TEMPORARY.get();
@@ -684,8 +684,8 @@ callback!(erase_variable, 1, true, (store_, key));
 // Read variables (store, reader).
 callback!(read_variables, 2, false, (store_, reader));
 
-// The release (store + 0x10); RDX passes through unused. It moves
-// the structure token around the original as well.
+// The release (of the store's lock); RDX passes through unused. It moves the structure token around
+// the original as well.
 unsafe extern "system" fn release_variables(table: usize, unused: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::VariableChanges);
     let written = store(MUTATIONS[RELEASE].1, table, unused);

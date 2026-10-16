@@ -35,8 +35,8 @@ pub struct PlanRow {
     /// ordering is unchanged.
     pub child_fronts: Option<child_fronts::Inputs>,
     pub owner_override: u64,
-    /// Type3's allocated convoy subscriber count (+0x10), including zero
-    /// and negative raw values. None for other types or a field-local fault.
+    /// Type3's allocated convoy subscriber count, including zero and negative raw values. None for
+    /// other types or a field-local fault.
     pub invasion_transports: Option<i32>,
     /// Independent simulation operands; failed optional reads preserve the plan.
     pub execution: Option<crate::order_execution::OrderExecutionInputs>,
@@ -1162,8 +1162,8 @@ pub fn walk_plans_ordered_with_sources(
                         .filter(|v| *v != 0)
                         .ok_or("plan member null or unreadable")?
                             as usize;
-                        // Loading stores the host pointer at reference-body +0xa8, or primary
-                        // +0xb8. Serialization writes the host's full handle at +0x18.
+                        // Loading stores the host pointer in the reference body, or in the primary
+                        // object. Serialization writes the host's full handle.
                         let unit = member
                             .checked_sub(crate::cunit::SCHEDULED_MEMBER)
                             .ok_or("plan member host underflow")?;
@@ -1268,10 +1268,10 @@ fn assigned_handle(
 
 /// COrderInstance vtable.
 pub const VTABLE_RVA: usize = 0x0296_fae8;
-/// Embedded convoy-subscriber vtable at order+8; its serializer stores
-/// allocated and required counts.
+/// Embedded convoy-subscriber vtable after the order's own vtable; its serializer stores allocated
+/// and required counts.
 const INVASION_SUBSCRIBER_VTABLE_RVA: usize = 0x0294_5910;
-/// Embedded subscriber+8: signed allocated convoys, saved even when zero.
+/// The embedded subscriber's signed allocated convoys, saved even when zero.
 const INVASION_TRANSPORTS: usize = 0x10;
 /// COrderInstance signed order type.
 pub const TYPE: usize = 0x30;
@@ -1315,7 +1315,7 @@ pub const PREDECESSOR_COUNT: usize = 0x1ec;
 pub const SUCCESSOR_DATA: usize = 0x1f8;
 /// Successor u32 count, loaded alongside its pointer as a signed word.
 pub const SUCCESSOR_COUNT: usize = 0x204;
-/// Scheduled-member pointer vector stores unit-body+A8, rather than body pointers.
+/// Scheduled-member pointer vector stores each unit's embedded member, rather than body pointers.
 pub const ASSIGNED_MEMBER_DATA: usize = 0x210;
 /// COrderInstance scheduled-member u32 count.
 pub const ASSIGNED_MEMBER_COUNT: usize = 0x21c;

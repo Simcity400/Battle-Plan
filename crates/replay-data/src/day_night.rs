@@ -1,15 +1,14 @@
-//! Province day/night clocks replayed from the recorded content stack, with no memory
-//! access: the local hour and night factor held in each province slot of the weather
-//! manager's `+0x370` array, read by the province tooltip, combat and air spotting.
+//! Province day/night clocks replayed from the recorded content stack, with no memory access: the
+//! local hour and night factor held in each province slot of the weather manager's day/night array,
+//! read by the province tooltip, combat and air spotting.
 //!
-//! Initialization builds each record's constants from the province's integer centroid,
-//! the map size and four `NGraphics` defines ([`ProvinceClock::new`]). Each hourly update
-//! that finds both suspension gates (`+0x349`/`+0x34A`) clear rebuilds the seasonal
-//! direction for the current date ([`seasonal_direction`]) and updates every record from
-//! slot 1 ([`ProvinceClock::update`]). Slot 0 is never updated, a suspended manager
-//! updates no slot, and a newly allocated record holds hour 0 and night 100000 until its
-//! first update: those clocks are not a function of the hour and must be recorded
-//! ([`crate::rows::DayNightClock`]).
+//! Initialization builds each record's constants from the province's integer centroid, the map size
+//! and four `NGraphics` defines ([`ProvinceClock::new`]). Each hourly update that finds both
+//! suspension gates clear rebuilds the seasonal direction for the current date
+//! ([`seasonal_direction`]) and updates every record from slot 1 ([`ProvinceClock::update`]). Slot
+//! 0 is never updated, a suspended manager updates no slot, and a newly allocated record holds hour
+//! 0 and night 100000 until its first update: those clocks are not a function of the hour and must
+//! be recorded ([`crate::rows::DayNightClock`]).
 //!
 //! Every function preserves the game's integer arithmetic: 64-bit wrapping products,
 //! truncating division and the fixed-point division guard that stores `0xFFFFFFFF` for a
@@ -71,7 +70,7 @@ impl Defines {
     }
 }
 
-/// The clock a day/night record holds: `+0x260` local hour and `+0x240` night factor.
+/// The clock a day/night record holds: the local hour and the night factor.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Clock {
     /// Signed i32 local hour; 1..=24 after an update of a centroid inside the map.
@@ -94,8 +93,7 @@ impl Clock {
     }
 }
 
-/// One initialized record's constants: 24 hourly sun vectors (`+0x000`) and the longitude
-/// phase (`+0x248`).
+/// One initialized record's constants: 24 hourly sun vectors and the longitude phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProvinceClock {
     vectors: [[i64; 3]; HOURS],
@@ -103,8 +101,8 @@ pub struct ProvinceClock {
 }
 
 impl ProvinceClock {
-    /// Initialize a province whose definition's computed centroid (`+0xB8`/`+0xBC`) is
-    /// `centroid`, on a map of `+0x40`/`+0x44` columns and rows.
+    /// Initialize a province whose definition's computed centroid is `centroid`, on a map of `map`
+    /// columns and rows.
     pub fn new(centroid: [i32; 2], map: [i32; 2], defines: &Defines) -> Self {
         // Signed i32 subtraction before widening, then the guarded fixed division.
         let column = i64::from(centroid[0].wrapping_sub(defines.gmt_offset));
@@ -184,9 +182,8 @@ pub struct HourOperands {
 }
 
 impl HourOperands {
-    /// The update at native date `hour` (`game state+0x468`). A date before the epoch
-    /// gives a negative index, which would read before the record's vectors; it is
-    /// refused.
+    /// The update at native date `hour` (the game state's date). A date before the epoch gives a
+    /// negative index, which would read before the record's vectors; it is refused.
     pub fn new(hour: i32, defines: &Defines) -> Result<Self, &'static str> {
         let index = hour.wrapping_sub(EPOCH) % HOURS as i32;
         let index = usize::try_from(index)
@@ -226,8 +223,8 @@ pub fn seasonal_rotation(hour: i32) -> i64 {
     }
 }
 
-/// The seasonal direction held at weather-manager `+0x350/+0x358/+0x360`: it resets (0,
-/// 0, 100000), rotates about X and clamps sine and cosine.
+/// The seasonal direction the weather manager holds: it resets (0, 0, 100000), rotates about X and
+/// clamps sine and cosine.
 pub fn seasonal_direction(hour: i32) -> [i64; 3] {
     let radians = (seasonal_rotation(hour) * SCALE / 18_000_000) * 314_159 / SCALE;
     [

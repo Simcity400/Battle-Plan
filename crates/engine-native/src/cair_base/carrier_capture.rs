@@ -312,9 +312,9 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         }
     }
 
-    /// The collector supplies the copied callback's numerical admission. A
-    /// refusal leaves every legacy carrier/fuel attempt unchanged and forbids
-    /// added wing+7C reads, including when both fuel branches never reached it.
+    /// The collector supplies the copied callback's numerical admission. A refusal leaves every
+    /// legacy carrier/fuel attempt unchanged and forbids added wing plane-count reads, including
+    /// when both fuel branches never reached it.
     pub fn with_transport_planes(mut self, admission: Available<()>) -> Self {
         self.transport_planes = admission;
         self
@@ -327,9 +327,9 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         self.demand
     }
 
-    /// Call after the original base identity, BEFORE its +30 header read.
-    /// An accepted base-row/name therefore survives a failed registration
-    /// header. State-indexed bases pass `host_base = false`.
+    /// Call after the original base identity, BEFORE its `COUNTRY_CONTAINERS` header read. An
+    /// accepted base-row/name therefore survives a failed registration header. State-indexed bases
+    /// pass `host_base = false`.
     pub fn begin_base(&mut self, pointer: usize, handle: u64, host_base: bool) {
         self.finish_base(false);
         if !host_base {
@@ -364,8 +364,8 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         });
     }
 
-    /// The original registration reader supplies its validated live +30 count.
-    /// No optional header read or guessed country-count bound is substituted.
+    /// The original registration reader supplies its validated live `COUNTRY_CONTAINERS` count. No
+    /// optional header read or guessed country-count bound is substituted.
     pub fn indexed_header(&mut self, indexed_count: u32) {
         let Some(base) = self.current.as_mut() else {
             return;
@@ -589,8 +589,8 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
             }
             return;
         }
-        // Each original occurrence enters the fuel accumulator exactly once;
-        // admitted transport borrows that attempt's +7C result.
+        // Each original occurrence enters the fuel accumulator exactly once; admitted transport
+        // borrows that attempt's plane-count result.
         let planes = if let Some(read) = pool.fuel.as_mut() {
             self.fuel.wing_with_planes(read, pointer)
         } else {
@@ -688,7 +688,7 @@ impl<'a, M: Memory> CarrierCapture<'a, M> {
         }
     }
 
-    /// Dense +48 reading runs only after complete original indexed membership.
+    /// Dense `REGISTERED_CONTAINERS` reading runs only after complete original indexed membership.
     /// A prefix/short certificate arena is never a complete indexed proof.
     pub fn finish_base(&mut self, original_complete: bool) {
         self.finish_registration(None);

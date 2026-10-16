@@ -87,36 +87,34 @@ impl<T: Value> Value for Witnessed<T> {
     }
 }
 
-/// The division's stat block (`[division+0x138]`), as the attack list reads it. The
-/// active-stat refresh rewrites it through equipment-stat calculation, the only caller
-/// writing a live stat block, once a day per division and on ability refreshes; every
-/// value is an exact fixed5 word.
+/// The division's stat block (the division's stat block pointer), as the attack list reads it. The
+/// active-stat refresh rewrites it through equipment-stat calculation, the only caller writing a
+/// live stat block, once a day per division and on ability refreshes; every value is an exact
+/// fixed5 word.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DivisionAttackStats {
-    /// The `+0x3F8` `unit adjuster` array, each entry's attack (`+0x10`), in array order
-    /// and as many as its live count. Terrain attack reads entry `index - 1` for the
-    /// terrain whose database index (`terrain type+0x88`) is `index`, and adds the
-    /// terrain's own adjuster.
+    /// The terrain `unit adjuster` array, each entry's attack, in array order and as many as its
+    /// live count. Terrain attack reads entry `index - 1` for the terrain whose database index is
+    /// `index`, and adds the terrain's own adjuster.
     pub terrain: Vec<i64>,
-    /// `+0x390` and `+0x398`, the river crossing pair the attack list adds to.
+    /// The river crossing pair the attack list adds to.
     pub river: [i64; 2],
-    /// `+0x368` and `+0x370`, the fort pair.
+    /// The fort pair.
     pub fort: [i64; 2],
-    /// `+0x3E0`, the snow term.
+    /// The snow term.
     pub snow: i64,
-    /// `+0x340`, the night term.
+    /// The night term.
     pub night: i64,
 }
 value_struct!(DivisionAttackStats { terrain: Vec<i64>, river: [i64; 2], fort: [i64; 2], snow: i64, night: i64 });
 opaque_value!(Option<DivisionAttackStats>);
 
-/// The stat block's movement operands, read with [`DivisionAttackStats`] and carried
-/// under the same certificate: each terrain adjuster's movement (`+0x20`), parallel to
-/// [`DivisionAttackStats::terrain`] (entry `i` serves terrain database index `i + 1`);
-/// the fort, river and snow adjusters' movement, `None` when those adjusters did not
-/// authenticate; the word the movement speed's fuel capacity scales
-/// (`MOVEMENT_FUEL_RATE`) and the anti-air word its air term reads
-/// (`MOVEMENT_AIR_DEFENSE`), each raw fixed5.
+/// The stat block's movement operands, read with [`DivisionAttackStats`] and carried under the same
+/// certificate: each terrain adjuster's movement, parallel to [`DivisionAttackStats::terrain`]
+/// (entry `i` serves terrain database index `i + 1`); the fort, river and snow adjusters' movement,
+/// `None` when those adjusters did not authenticate; the word the movement speed's fuel capacity
+/// scales (`MOVEMENT_FUEL_RATE`) and the anti-air word its air term reads (`MOVEMENT_AIR_DEFENSE`),
+/// each raw fixed5.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DivisionMovementStats {
     pub terrain: Vec<i64>,
@@ -140,8 +138,8 @@ impl DivisionMovementStats {
     }
 }
 
-/// A direct commander's movement operands, read with [`CommanderAttackStats`]: each
-/// terrain adjuster's movement (`+0x20`), parallel to [`CommanderAttackStats::terrain`].
+/// A direct commander's movement operands, read with [`CommanderAttackStats`]: each terrain
+/// adjuster's movement, parallel to [`CommanderAttackStats::terrain`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommanderMovementStats {
     pub terrain: Vec<i64>,
@@ -149,20 +147,19 @@ pub struct CommanderMovementStats {
 value_struct!(CommanderMovementStats { terrain: Vec<i64> });
 opaque_value!(Option<Option<CommanderMovementStats>>);
 
-/// An orders group's direct commander (its `+0x88` getter) as the attack list reads it.
-/// Unit-leader and army-leader trait-adjuster refreshes rebuild every value from the
-/// leader's traits, the field marshal's and the country's effects.
+/// An orders group's direct commander (its direct-commander getter) as the attack list reads it.
+/// Unit-leader and army-leader trait-adjuster refreshes rebuild every value from the leader's
+/// traits, the field marshal's and the country's effects.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommanderAttackStats {
-    /// The commander's full `unit leader` reference (`+0x8`).
+    /// The commander's full `unit leader` reference.
     pub leader: u64,
-    /// The `+0x248` terrain adjuster vector's attack (`+0x10`) values in order. The
-    /// commander's terrain-adjuster lookup takes the entry at the terrain's database
-    /// index and the first entry for an index outside the live count (`+0x254`), even a
-    /// count of zero; with a zero count the first entry is that retained one, so this
-    /// holds one value there, and none only when the vector has no storage.
+    /// The terrain adjuster vector's attack values in order. The commander's terrain-adjuster
+    /// lookup takes the entry at the terrain's database index and the first entry for an index
+    /// outside the live count, even a count of zero; with a zero count the first entry is that
+    /// retained one, so this holds one value there, and none only when the vector has no storage.
     pub terrain: Vec<i64>,
-    /// `+0xFB8`, `+0xFE0`, `+0x1030` and `+0x270`.
+    /// The fort, river, snow and night adjusters' attack values.
     pub fort: i64,
     pub river: i64,
     pub snow: i64,
@@ -171,9 +168,9 @@ pub struct CommanderAttackStats {
 value_struct!(CommanderAttackStats { leader: u64, terrain: Vec<i64>, fort: i64, river: i64, snow: i64, night: i64 });
 opaque_value!(Option<Option<CommanderAttackStats>>);
 
-/// A country accumulator's (`country+0x5B8`) raw entries for the two keys the attack list
-/// reads, `None` for an absent key. The effective-value getter applies the key's
-/// ModifierDefinitions row to a present one ([`crate::naval_mission_derive::effective`]).
+/// A country modifier accumulator's raw entries for the two keys the attack list reads, `None` for
+/// an absent key. The effective-value getter applies the key's ModifierDefinitions row to a present
+/// one ([`crate::naval_mission_derive::effective`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CountryAttackModifiers {
     /// `land_night_attack` (0x103), read for the division's owner.
@@ -209,9 +206,9 @@ value_struct!(CountryMovementModifiers { army_speed_factor: Option<i64>,
     army_attack_speed_factor: Option<i64>, army_retreat_speed_factor: Option<i64> });
 opaque_value!(Option<CountryMovementModifiers>);
 
-/// A weather region's modifier (record `+0x58`, returned through manager `+0x48`): raw
-/// entries, `None` for an absent key. Weather refresh rebuilds it from the region's
-/// weather flags, the six static weather modifiers and the region's own weather states.
+/// A weather region's modifier (held by its weather record, returned through the weather manager):
+/// raw entries, `None` for an absent key. Weather refresh rebuilds it from the region's weather
+/// flags, the six static weather modifiers and the region's own weather states.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RegionCombatWeather {
     /// `army_attack_factor` (0xAD).
@@ -239,7 +236,7 @@ opaque_value!(Option<RegionCombatWeather>);
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DivisionAttackInputs {
     pub sample_hour: PacketHour,
-    /// `Some(0)`: null `division+0x3B8`. Nonzero is a type-52 template handle.
+    /// `Some(0)`: a null division template. Nonzero is a type-52 template handle.
     pub template: Option<u64>,
     /// Stat-block scalars; each refused alone.
     pub stats: AttackStats,
@@ -252,13 +249,13 @@ pub struct DivisionAttackInputs {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AttackStats {
-    /// `+0x390`/`+0x398`.
+    /// The river crossing pair.
     pub river: [Option<i64>; 2],
-    /// `+0x368`/`+0x370`.
+    /// The fort pair.
     pub fort: [Option<i64>; 2],
-    /// `+0x3E0`.
+    /// The snow term.
     pub snow: Option<i64>,
-    /// `+0x340`.
+    /// The night term.
     pub night: Option<i64>,
 }
 
@@ -271,14 +268,14 @@ pub struct AttackTerrain {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OrdersGroupAttackInputs {
     pub sample_hour: PacketHour,
-    /// `None`: refusal. `Some(None)`: a null `+0x88`.
+    /// `None`: refusal. `Some(None)`: a null direct commander.
     pub commander: Option<Option<CommanderAttackInputs>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommanderAttackInputs {
     pub leader: u64,
-    /// `+0xFB8`/`+0xFE0`/`+0x1030`/`+0x270`.
+    /// The fort, river, snow and night adjusters' attack values.
     pub fort: Option<i64>,
     pub river: Option<i64>,
     pub snow: Option<i64>,

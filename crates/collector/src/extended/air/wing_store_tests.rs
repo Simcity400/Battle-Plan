@@ -15,8 +15,8 @@ use engine::{
 };
 use std::cell::RefCell;
 
-/// Each wing's objects lie in its own 0x800-byte region: the wing at +0,
-/// its entries at +0x400 and its variant at +0x480.
+/// Each wing's objects lie in its own 0x800-byte region: the wing first, then its entries and its
+/// variant.
 const REGION: usize = 0x800;
 const WINGS: usize = 3;
 

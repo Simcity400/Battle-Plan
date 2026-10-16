@@ -76,7 +76,7 @@ pub const WINDOW_ENTRIES: u32 = 2;
 /// One variant's amount in one month entry of one orders group's log.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// The manager's raw country link (CManager+0x20).
+    /// The manager's raw country link (held by the manager).
     pub country: u32,
     /// The orders group reference's id (its type is 53).
     pub group: u32,
@@ -895,8 +895,8 @@ pub fn deleted_logs(
     Ok((country, outcome))
 }
 
-/// The writer's country-gate operand (CGameState+0x520), which every
-/// Combat Log writer tests with `< 1` before its CHuman country-match predicate.
+/// The writer's country-gate operand (`cgame_state::LOCAL_PLAYER_COUNTRY`), which every Combat Log
+/// writer tests with `< 1` before its CHuman country-match predicate.
 pub fn viewing_country(memory: &impl Memory, game_state: usize) -> Option<i32> {
     game_state
         .checked_add(cgame_state::LOCAL_PLAYER_COUNTRY)

@@ -1,6 +1,5 @@
-//! The raid system's stored target statuses at +8. Each 0x50-byte record
-//! holds scope at +8, a valid byte at +0x31 and persistent detection bytes
-//! at +0x38.
+//! The raid system's stored target statuses. Each 0x50-byte record holds a scope, a valid byte and
+//! persistent detection bytes.
 //!
 //! Target evaluation skips invalid targets and detection-required buildings
 //! the viewer has not detected. Detection uses byte `slot / 8` and bit
@@ -16,7 +15,7 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// `CRaidSystem + 8`: the target status pointer array.
+/// The raid system's target status pointer array.
 pub const TARGETS: usize = 0x08;
 /// The embedded target scope (`raid_location_scope_layout`).
 pub const SCOPE: usize = 0x08;
@@ -189,8 +188,8 @@ pub fn walk(
     )
 }
 
-/// Every target at +8 and its +38 detection vector are serialized.
-/// Worker storage grows from each original header before row publication.
+/// Every target and its detection vector are serialized. Worker storage grows from each original
+/// header before row publication.
 pub fn walk_growing(
     memory: &impl Memory,
     base: usize,

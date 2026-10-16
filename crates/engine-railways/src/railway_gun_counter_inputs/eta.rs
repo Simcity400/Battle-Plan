@@ -13,9 +13,9 @@ use crate::{
 };
 use std::cell::OnceCell;
 
-// The retained variant reference is at gun +0x338.
+// The retained variant reference is on the gun.
 const VARIANT: usize = 0x338;
-// Independent supply storage, separate from supply-consumer +0x40.
+// Independent supply storage, separate from the supply consumer's received ratio.
 const SUPPLY_CAPACITY: usize = 0x400;
 const SUPPLY_REMAINING: usize = 0x410;
 const OUT_OF_SUPPLY_SPEED_RVA: usize = 0x0331_9050;

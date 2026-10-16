@@ -1,14 +1,12 @@
 //! Air bases whose country-container vector needs no full scan. Every
-//! `CAirBase+0x30` vector has a slot per country (air base construction sizes it to
-//! the game state's country count), almost all null; its only run-time
-//! writers, create country container and
-//! remove country access, keep the dense list `+0x48` in
-//! step in the same call. AirBaseRegistrations therefore reads, per base, the
-//! dense list and each listed container's identity, span, link entry and slot
-//! word ([`engine::cair_base::dense_plan`]), and no other slot: the listed
-//! containers are the occupied slots, in slot order. A list that does not
-//! prove the slots leaves the base to the full scan. Containers, pools,
-//! wings, capacity and fuel are still read every hour. No hook is involved.
+//! `cair_base::COUNTRY_CONTAINERS` vector has a slot per country (air base construction sizes it to
+//! the game state's country count), almost all null; its only run-time writers, create country
+//! container and remove country access, keep the dense list (`cair_base::REGISTERED_CONTAINERS`) in
+//! step in the same call. AirBaseRegistrations therefore reads, per base, the dense list and each
+//! listed container's identity, span, link entry and slot word ([`engine::cair_base::dense_plan`]),
+//! and no other slot: the listed containers are the occupied slots, in slot order. A list that does
+//! not prove the slots leaves the base to the full scan. Containers, pools, wings, capacity and
+//! fuel are still read every hour. No hook is involved.
 //!
 //! Each hour the acquisition also scans every chunk of its sampled slice of
 //! fast-path bases (by base handle, one in
@@ -112,6 +110,6 @@ pub(crate) fn status() -> impl serde::Serialize {
         "verified_bases": bases[2],
         "unread_comparisons": UNREAD.load(Ordering::Relaxed),
         "full_scan_reasons": refusals,
-        "scope": "cumulative since attach; AirBaseRegistrations reads a base's country-container vector (CAirBase+0x30) only at the slot words of the containers its dense list (+0x48) names, since country-container creation and country access removal write both in the same call; a list that does not prove the slots (full_scan_reasons) reads every chunk; containers, pools, wings, capacity and fuel are read every hour; every hour also scans every chunk of the fast-path bases of its slice (one in rotation_hours by base handle; every one in verify mode) outside the recorded log and compares (sampled_*); a difference records that base from the full scan and stops the fast path"
+        "scope": "cumulative since attach; AirBaseRegistrations reads a base's country-container vector only at the slot words of the containers its dense list names, since country-container creation and country access removal write both in the same call; a list that does not prove the slots (full_scan_reasons) reads every chunk; containers, pools, wings, capacity and fuel are read every hour; every hour also scans every chunk of the fast-path bases of its slice (one in rotation_hours by base handle; every one in verify mode) outside the recorded log and compares (sampled_*); a difference records that base from the full scan and stops the fast path"
     })
 }

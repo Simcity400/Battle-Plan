@@ -1,17 +1,14 @@
-//! UnitLeaderTraits rows held per leader between hours. A leader's assigned
-//! Trait vector  (`CUnitLeader+0xDC8`, count `+0xDD4`) is written at run time
-//! only by trait insertion and removal, which updates the vector count.
-//! Each then recalculates modifiers on the same leader, with no return or
-//! branch past the call; recalculation ends in a jump to its shared tail.
-//! The naval tree family owns that tail's patch and the leader construction,
-//! copy construction and destruction patches, and forwards each call
-//! Here  ([`forwarded`]), which notifies this family's watch registry for the
-//! leader; it never changes game behaviour. A write therefore moves the
-//! leader's certificate before the hour that could read it ends, and a reused
-//! address never keeps a freed leader's rows. Loads write the vector directly
-//! and invalidate the hour, which revokes every certificate. The trait
-//! definitions a row names (token id, ordinal, token) are written only while
-//! the content database loads.
+//! UnitLeaderTraits rows held per leader between hours. A leader's assigned Trait vector 
+//! (`cunit_leader::TRAIT_DATA`, with its count) is written at run time only by trait insertion and
+//! removal, which updates the vector count. Each then recalculates modifiers on the same leader,
+//! with no return or branch past the call; recalculation ends in a jump to its shared tail. The
+//! naval tree family owns that tail's patch and the leader construction, copy construction and
+//! destruction patches, and forwards each call Here  ([`forwarded`]), which notifies this family's
+//! watch registry for the leader; it never changes game behaviour. A write therefore moves the
+//! leader's certificate before the hour that could read it ends, and a reused address never keeps a
+//! freed leader's rows. Loads write the vector directly and invalidate the hour, which revokes
+//! every certificate. The trait definitions a row names (token id, ordinal, token) are written only
+//! while the content database loads.
 //!
 //! The traits job reads a leader's vector only when no held read carries its
 //! certificate ([`crate::extended::characters`]); every hour also reads the

@@ -24,15 +24,14 @@ pub const PROVINCES_COUNT: usize = 0x1c;
 pub const REGIONS: usize = 0x40;
 /// CWeatherManager region array count, i32.
 pub const REGIONS_COUNT: usize = 0x4c;
-/// Province update cursor, i32: the weather update pass visits the window from
-/// it and stores where it stopped, wrapping to zero at the province count
-/// +0x1C.
+/// Province update cursor, i32: the weather update pass visits the window from it and stores where
+/// it stopped, wrapping to zero at the province count (`PROVINCES_COUNT`).
 pub const UPDATE_CURSOR: usize = 0x58;
 /// `provinces_per_update`, i32, which the content loader loads from
 /// common/weather.txt; an ordinary weather update pass visits that many slots.
 pub const PROVINCES_PER_UPDATE: usize = 0x2f0;
-/// Region update cursor, i32: the weather update pass visits the region window
-/// from it and wraps it to zero at the region count +0x4C.
+/// Region update cursor, i32: the weather update pass visits the region window from it and wraps it
+/// to zero at the region count (`REGIONS_COUNT`).
 pub const REGION_CURSOR: usize = 0x5c;
 /// `regions_per_update`, i32, loaded by the content loader beside
 /// [`PROVINCES_PER_UPDATE`]; an ordinary weather update pass visits that many
@@ -63,13 +62,12 @@ pub const DISPLAY_GRID_MUD: usize = 0x390;
 pub const DISPLAY_WORK_COUNT: usize = 0x3b4;
 /// Province day/night array, sized to the live weather province count.
 pub const PROVINCE_CLOCKS: usize = 0x370;
-/// Initial-mode byte: initialization sets it before the hourly update, whose
-/// weather update pass then visits every province and region in +0x2F8 passes;
-/// the hourly update clears it afterward.
+/// Initial-mode byte: initialization sets it before the hourly update, whose weather update pass
+/// then visits every province and region in as many passes as its stored pass count; the hourly
+/// update clears it afterward.
 pub const INITIAL_MODE: usize = 0x348;
-/// Hourly-update gates: weather updating tests +0x349/+0x34A before advancing
-/// weather and day/night. The weather-simulation reset command can change
-/// +0x34A.
+/// Hourly-update gates: weather updating tests both bytes from `SUSPEND_FLAGS` before advancing
+/// weather and day/night. The weather-simulation reset command can change the second.
 pub const SUSPEND_FLAGS: usize = 0x349;
 /// CWeatherManager hourly update.
 pub const HOURLY_UPDATE_RVA: usize = 0x00f0_7550;

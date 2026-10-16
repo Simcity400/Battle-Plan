@@ -14,14 +14,12 @@
 //! ([`ccountry::CarriedRosters::append`]), so the published table equals a
 //! full read of the same memory.
 //!
-//! A country is carried only while all of these hold: the hour's take
-//! returned the epoch its held read was certified under; it is not marked;
-//! the census country and link headers are the held ones and the census names
-//! the held object and native id at its canonical slot; its `+0xF68`
-//! (CProductionStatus), `+0xF88` (CDiplomacyStatus) and `+0xFF0`
-//! (CCountryCharacters) pointers, read for every country each hour in one
-//! guarded copy, are the held ones. Its identity (vtable and `+ID`) is still
-//! checked before the carry, as before any read.
+//! A country is carried only while all of these hold: the hour's take returned the epoch its held
+//! read was certified under; it is not marked; the census country and link headers are the held
+//! ones and the census names the held object and native id at its canonical slot; its production
+//! status, diplomacy status and country characters (CCountryCharacters) pointers, read for every
+//! country each hour in one guarded copy, are the held ones. Its identity (vtable and `+ID`) is
+//! still checked before the carry, as before any read.
 //!
 //! Every hour still reads, for every country, carried or not: the pride ship
 //! name behind a nonzero pride handle (no hookable writer per country), the
@@ -55,11 +53,11 @@ use engine::{
 /// [`WORDS_LEN`] bytes covers all three.
 const WORDS: usize = ccountry::PRODUCTION_STATUS;
 const WORDS_LEN: usize = ccountry::CHARACTERS + 8 - WORDS;
-/// `+0xF68` holds production status and its policy roster for MIO policies;
-/// `+0xF88` holds diplomacy status, whose relation matrix and rebuilt
-/// wartime ally candidates the relation suffix reads; `+0xFF0` holds the
-/// country character pool, through which the army and navy leader lookups
-/// reach rosters at `+0x70`/`+0x88`.
+/// The production status pointer holds production status and its policy roster for MIO policies;
+/// the diplomacy status pointer holds diplomacy status, whose relation matrix and rebuilt wartime
+/// ally candidates the relation suffix reads; the country characters pointer holds the country
+/// character pool, through which the army and navy leader lookups reach rosters (the leader
+/// rosters).
 const WORD_OFFSETS: [usize; 3] = [
     ccountry::PRODUCTION_STATUS,
     ccountry::DIPLOMACY_STATUS,

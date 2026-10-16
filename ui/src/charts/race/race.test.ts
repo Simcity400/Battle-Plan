@@ -198,7 +198,7 @@ test('split bars stack signed: a negative segment lies left of the baseline, and
 test('a new segment appearing at once is taken in by the axis at once', () => {
   const military = (value: number): RaceItem => ({ key: 'a', value, label: '', stretch: 1, segments: [{ id: 'mil', value, color: '#111111' }] });
   let state = stepRace(null, [military(10)], 0, 16, 100);
-  // Civilian factories appear (+100) in the same stretch: the new segment snaps in at 100.
+  // Civilian factories appear (100 more) in the same stretch: the new segment snaps in at 100.
   const both: RaceItem = { ...military(10), value: 110, segments: [...military(10).segments, { id: 'civ', value: 100, color: '#222222' }] };
   state = stepRace(state, [both], 16, 16, 100);
   assert.deepEqual(state.rows[0].widths.get('civ'), { solid: 100, hatched: 0 });

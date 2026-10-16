@@ -35,9 +35,9 @@ pub const PARTICIPANTS: usize = 0xf0;
 pub const PARTICIPANTS_CAPACITY: usize = 0xf8;
 /// CNavalCombat participant array count u32.
 pub const PARTICIPANTS_COUNT: usize = 0xfc;
-/// Combat flag byte copied to retained result +0x128.
+/// Combat flag byte copied to the retained result's first flag.
 pub const RESULT_FLAG_A: usize = 0x10c;
-/// Combat flag byte copied to retained result +0x129.
+/// Combat flag byte copied to the retained result's second flag.
 pub const RESULT_FLAG_B: usize = 0x10d;
 /// CNavalCombat result-emitted byte.
 pub const RESULT_EMITTED: usize = 0x114;
@@ -58,8 +58,8 @@ pub struct Row {
     pub defender_positioning: i64,
     pub attacker_anti_air: i64,
     pub defender_anti_air: i64,
-    /// Ordinal in the mixed active-combat registry at CGameState+0x268,
-    /// which orders the naval icon spillover pass.
+    /// Ordinal in the mixed active-combat registry (`cgame_state::COMBATS`), which orders the naval
+    /// icon spillover pass.
     pub registry_ordinal: u32,
 }
 
@@ -378,8 +378,8 @@ pub fn walk_details_timed(
     }
 }
 
-/// Strategic-region template +0x144 counts modifier definitions at +0x138.
-/// Weather +0x30 uses the same ordinals.
+/// The strategic-region template counts its modifier definitions; the weather record uses the same
+/// ordinals.
 fn custom_sea(
     memory: &impl Memory,
     base: usize,
@@ -563,14 +563,14 @@ fn read_planes(
     Ok([start, buffers.planes_len - start])
 }
 
-/// Expected CFEXAir+8 owner for one plane array.
+/// Expected CFEXAir owner for one plane array.
 #[derive(Clone, Copy)]
 enum PlaneOwner<'a> {
-    /// Group plane arrays at +0x58/+0x88; merge can rewrite their owner.
+    /// Group plane arrays; merge can rewrite their owner.
     Group(usize),
-    /// Side plane array at +0xE0. External waves construct with null group,
-    /// append to this array, then attach to the side's first group and its +0x58
-    /// array. The owner is null or one of this side's groups.
+    /// Side plane array. External waves construct with null group, append to this array, then
+    /// attach to the side's first group and its plane array. The owner is null or one of this
+    /// side's groups.
     Side(&'a GroupSet),
 }
 
@@ -940,8 +940,8 @@ fn members(
         .ok_or("naval group vtable overflow")?;
     let mut group_len = 0_usize;
     let mut seen = GroupSet::default();
-    // Native +0x20 links paired opposing groups. Taking both forward vectors
-    // and the linked group also recovers an opponent absent from its vector.
+    // The native opponent link pairs opposing groups. Taking both forward vectors and the linked
+    // group also recovers an opponent absent from its vector.
     for (side_index, side) in sides.into_iter().enumerate() {
         let roots = cnaval_combatant::groups(memory, side)?;
         let capacity = (roots.count as usize)

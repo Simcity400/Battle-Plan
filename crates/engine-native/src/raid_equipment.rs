@@ -28,7 +28,7 @@ pub struct Row {
     /// caller's archetype arenas.
     pub archetypes_start: usize,
     pub archetypes_len: usize,
-    /// `CRaidInstance+0x150`.
+    /// The raid's nukes (`craid_instance::NUKES`).
     pub nukes: i32,
 }
 
@@ -98,8 +98,7 @@ pub fn recorded(raid: &Raid, hour: i32) -> bool {
         || raid_speed_inputs::live(raid.phase, raid.outcome, raid.end_hour, hour)
 }
 
-/// Pool bytes from the archetype array's header (`+0x08`) through the item
-/// array's (`+0x20..+0x30`), read in one guarded copy.
+/// Pool bytes from the archetype array's header through the item array's, read in one guarded copy.
 const HEADERS: usize = cequipment_variant_pool::COUNT + 4 - cequipment_variant_pool::ALLOCATIONS;
 
 /// Every recorded raid's pool, in raid-system order. A raid whose items or

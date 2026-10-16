@@ -260,10 +260,9 @@ pub fn forwarder(enabled: bool) {
     WATCHES.apply();
 }
 
-/// Hook path, allocation-free: a building writer of the status with `flags`
-/// and `location` (`CBuildingStatus+0x68`/`+0x6C`) is about to run. Marks
-/// the province of a province status, whose rail building the info at that
-/// slot holds. Hold the result over the native call.
+/// Hook path, allocation-free: a building writer of the status with `flags` and `location`
+/// (`cbuilding_status::FLAGS` and `ID`) is about to run. Marks the province of a province status,
+/// whose rail building the info at that slot holds. Hold the result over the native call.
 pub fn building_changed(flags: u32, location: u32) -> Option<Dirty<'static>> {
     WATCHES.building(flags, location)
 }

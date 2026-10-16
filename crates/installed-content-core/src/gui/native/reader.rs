@@ -494,13 +494,13 @@ impl<'s> Reader<'s> {
         target.value = crate::fixed5::decimal_i32(number);
     }
 
-    /// The integer component reader into `components`, only when the value (`+0xC0`) is
-    /// `{` (anything else is recorded, a block skipped): each pass peeks, and a `}` or the end
-    /// (token 0x13) is read and ends it, unresolved; otherwise each token read and resolved
-    /// is a number (0xC), scanned with `%i` into the next component; or the next component's
-    /// label, then `=` and a number; anything else
-    /// is recorded and skips a block. `store(index, value)` receives each component `%i` stores.
-    /// A label compared past the table of four reads past it: `Err` with the native failure.
+    /// The integer component reader into `components`, only when the value is `{` (anything else is
+    /// recorded, a block skipped): each pass peeks, and a `}` or the end (token 0x13) is read and
+    /// ends it, unresolved; otherwise each token read and resolved is a number (0xC), scanned with
+    /// `%i` into the next component; or the next component's label, then `=` and a number; anything
+    /// else is recorded and skips a block. `store(index, value)` receives each component `%i`
+    /// stores. A label compared past the table of four reads past it: `Err` with the native
+    /// failure.
     pub(super) fn components(&mut self, mut store: impl FnMut(usize, i32)) -> Result<(), String> {
         const LABELS: [&str; 4] = ["x", "y", "z", "w"];
         if self.value.kind != TokenKind::Open {
@@ -598,8 +598,8 @@ pub struct PersistentKey {
     /// lookup. `None` for a quoted key (0xF), a number (0xC) or an unregistered word; none
     /// dispatch.
     pub keyword: Option<&'static str>,
-    /// The stored value token (`+0xC0`) used by scalar field readers: its text up to the first
-    /// NUL and whether it was quoted.
+    /// The stored value token used by scalar field readers: its text up to the first NUL and
+    /// whether it was quoted.
     pub value: Vec<u8>,
     pub quoted: bool,
     /// A [`Case::Point`] key's two axes as integer point reader stored them.

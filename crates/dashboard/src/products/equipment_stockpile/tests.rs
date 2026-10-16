@@ -803,8 +803,8 @@ mod variant_reads {
         let frames = vec![
             named_frame(hour, Some(b"Old name")),
             carried,
-            // A gap (hours +2 to +4), then a due read that did not land: renamed meanwhile,
-            // the old name must not stay.
+            // A gap (two to four hours later), then a due read that did not land: renamed
+            // meanwhile, the old name must not stay.
             named_frame(hour + 5, None),
             // No gap, but a due read that did not land.
             named_frame(hour + 6, Some(b"New name")),
@@ -935,7 +935,7 @@ mod variant_reads {
     fn a_read_after_a_gap_starts_after_the_unknown_stretch_never_at_its_hour() {
         use crate::products::equipment_stockpile::scan;
         let hour = slot_hour(TableId::VariantDefinitions);
-        // Known at +0, the recording skips to +9, which reads the variants again.
+        // Known at the first hour, the recording skips nine hours ahead, which reads the variants again.
         let frames = vec![
             named_frame(hour, Some(b"Name")),
             named_frame(hour + 9, Some(b"Name")),

@@ -1157,9 +1157,8 @@ fn copy_economy_supply_details(
                     ) else {
                         continue;
                     };
-                    // Source string lives at +0x28 inside the record; take
-                    // the exact header span plus payload for exact service
-                    // (the bulk above already covers the record itself).
+                    // Source string lives inside the record; take the exact header span plus
+                    // payload for exact service (the bulk above already covers the record itself).
                     let _ = rec_start;
                     if let Some(raddr) =
                         rec_addr.and_then(|r| r.checked_add(engine::foreign_homebase_node::SOURCE))

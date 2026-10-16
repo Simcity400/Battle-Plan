@@ -148,12 +148,11 @@ pub fn walk_owned_growing(
     )
 }
 
-/// The casualty counters `+0x50..+0x70` of each war in `wars` into the row at
-/// the same index, one guarded copy per batch of wars. They are the only
-/// recorded fields the hourly combat settlement writes (known and unknown
-/// casualty additions); every other field and the war set itself change only
-/// through hooked writers. False when any war's counters are unreadable; the
-/// rows are then partly written.
+/// The casualty counters (`FIRST_CASUALTIES` through `SECOND_UNKNOWN_CASUALTIES`) of each war in
+/// `wars` into the row at the same index, one guarded copy per batch of wars. They are the only
+/// recorded fields the hourly combat settlement writes (known and unknown casualty additions);
+/// every other field and the war set itself change only through hooked writers. False when any
+/// war's counters are unreadable; the rows are then partly written.
 pub fn read_casualties(memory: &impl Memory, wars: &[usize], rows: &mut [Row]) -> bool {
     const SPAN: usize = SECOND_UNKNOWN_CASUALTIES + 8 - FIRST_CASUALTIES;
     const FIELDS: [RecordField; 1] = [RecordField {

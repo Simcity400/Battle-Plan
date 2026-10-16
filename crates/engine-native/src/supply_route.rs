@@ -1,20 +1,20 @@
 //! Selected supply-route record.
 use crate::{Memory, cpdx_array::Array, read, supply_parent_map::Map};
 
-/// Supply-system outer-map data header at +0xf0/+0xfc/+0x100.
+/// Supply-system outer-map data header: data, count and mask.
 pub const ROUTE_MAP: usize = 0xf0;
-/// Outer bucket stride 0x30, marker +4, key +8 and value header +0x18.
+/// Outer bucket stride 0x30, an occupied marker, the key, then the value header (`INNER_HEADER`).
 pub const OUTER_STRIDE: usize = 0x30;
 pub const INNER_HEADER: usize = 0x18;
-/// Inner bucket stride 0xa0, marker +4, key +8 and value +0x10.
+/// Inner bucket stride 0xa0, an occupied marker, the key, then the value (`VALUE`).
 pub const INNER_STRIDE: usize = 0xa0;
 pub const VALUE: usize = 0x10;
-/// Route province-array data at +0, count at +0xc.
+/// Route province-array data and count.
 pub const PATH: usize = 0;
-/// Route source/destination, u16; +0x80 distinguishes a stored route.
+/// Route source/destination, u16; `FROM` distinguishes a stored route.
 pub const FROM: usize = 0x80;
 pub const TO: usize = 0x82;
-/// Nonzero +0x87 flushes and reverses the accumulated land portion.
+/// A nonzero `BREAK` byte flushes and reverses the accumulated land portion.
 pub const BREAK: usize = 0x87;
 /// Static empty route returned when either map key is missing.
 pub const EMPTY_RVA: usize = 0x0332_4270;

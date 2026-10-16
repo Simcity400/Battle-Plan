@@ -294,9 +294,9 @@ pub struct Span {
 /// One registered definition row, with its native fields unchanged.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// The row's own index (+0x6c), which equals its table position.
+    /// The row's own index, which equals its table position.
     pub index: u32,
-    /// Script-name lexer token id (+0x70), nonzero for every registered row.
+    /// Script-name lexer token id, nonzero for every registered row.
     pub token: u32,
     pub name_key: Span,
     pub postfix_key: Span,

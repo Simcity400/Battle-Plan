@@ -14,8 +14,8 @@ use crate::{
 pub const VTABLE_RVA: usize = 0x02a0_86c0;
 /// Owning CFaction pointer.
 pub const OWNER: usize = 0x08;
-/// Theatre array header: data +0, capacity +8, count +0xC.
-/// Serialization and pin visibility use the stored count.
+/// Theatre array header: data, capacity and count. Serialization and pin visibility use the stored
+/// count.
 pub const THEATRES: usize = 0x10;
 /// Theatre entry stride; theatre serialization and every pin reader step by 0xA8.
 pub const THEATRE_STRIDE: usize = 0xa8;

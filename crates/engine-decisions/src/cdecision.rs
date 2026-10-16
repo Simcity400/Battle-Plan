@@ -1,8 +1,7 @@
-//! CDecision definition identity. Completion/effect functions are retained sites.
-//! Authored definitions store the token's folded FNV-1a hash at +0x140. The
-//! default placeholder stores the 0xFFFFFFFF sentinel and is outside content reach.
-//! Effect ownership follows the authored-definition argument and its +0x120 token.
-//! The untyped hook ABI does not establish the concrete receiver class.
+//! CDecision definition identity. Completion/effect functions are retained sites. Authored
+//! definitions store the token's folded FNV-1a hash. The default placeholder stores the 0xFFFFFFFF
+//! sentinel and is outside content reach. Effect ownership follows the authored-definition argument
+//! and its token. The untyped hook ABI does not establish the concrete receiver class.
 
 use crate::{Memory, msvc_string, read};
 

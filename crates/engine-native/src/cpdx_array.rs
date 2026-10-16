@@ -4,9 +4,9 @@ use crate::{Memory, read, read_slice};
 
 /// Array element pointer.
 pub const DATA: usize = 0;
-/// Allocated element capacity, u32 at +8, checked before growth.
+/// Allocated element capacity, u32 after the data pointer, checked before growth.
 pub const CAPACITY: usize = 8;
-/// Live element count, u32 at +12, incremented on insertion.
+/// Live element count, u32 after the capacity, incremented on insertion.
 pub const COUNT: usize = 12;
 /// Header byte stride in nested draw and binding arrays.
 pub const STRIDE: usize = 0x18;

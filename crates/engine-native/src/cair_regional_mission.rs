@@ -15,32 +15,28 @@
 //! cleared first, so a special-only region can stay listed after combat ends.
 //! That is a stable empty ordinary vector.
 //!
-//! The carrier pass is a separate writer: it clears +0x140's regional counts,
-//! then visits carrier hosts in naval combat. For a wing with no assigned
-//! region or a zero mission mask, it appends the embedded mission to
-//! +0x140[combat region] and inserts that region into +0xC8, without writing
-//! +0x98 or +0xB0. It does not clear +0xC8 first, so a special-only region can
-//! remain listed after its carrier combat ends. This is a stable empty ordinary
-//! vector, not evidence of a missed registration.
+//! The carrier pass is a separate writer: it clears the special-mission regional counts, then
+//! visits carrier hosts in naval combat. For a wing with no assigned region or a zero mission mask,
+//! it appends the embedded mission to the special-mission vector of the combat region and inserts
+//! that region into the active-region vector, without writing the regional or all-active vectors.
+//! It does not clear the active-region vector first, so a special-only region can remain listed
+//! after its carrier combat ends. This is a stable empty ordinary vector, not evidence of a missed
+//! registration.
 //!
-//! Appending a pointer also temporarily zeroes a vector's count while
-//! reallocating. Capture at the hourly update entry joins every native read
-//! before the trampoline; it does not retry or wait out a writer. Invalid
-//! headers, unreadable entries and count mismatches still refuse the census;
-//! dependents must not treat that failure as absence. The strategic-air hourly
-//! pass calls the carrier refresh. The tag command changes the local player
-//! (+0x520/+0x524), not these registries: region assignment resolves ownership
-//! through the wing's pool, and this census visits every country air object
-//! independently of the local player.
+//! Appending a pointer also temporarily zeroes a vector's count while reallocating. Capture at the
+//! hourly update entry joins every native read before the trampoline; it does not retry or wait out
+//! a writer. Invalid headers, unreadable entries and count mismatches still refuse the census;
+//! dependents must not treat that failure as absence. The strategic-air hourly pass calls the
+//! carrier refresh. The tag command changes the local player, not these registries: region
+//! assignment resolves ownership through the wing's pool, and this census visits every country air
+//! object independently of the local player.
 //!
-//! A caller may carry a country air object's registrations from an earlier read
-//! ([`walk_carried`], [`Carry`]). Every object's headers +0x98..+0xD8 are still
-//! gathered each hour; a carried object's active-region ids, regional vectors
-//! and mission pointers are not read. Each carried registration is still looked
-//! up in this hour's census by its mission pointer and checked as a read one
-//! is; on any disagreement the object is read afresh, so the rows and the
-//! outcome are a fresh walk's. Every run-time writer of the vectors is in
-//! `regional_mission_mutations`.
+//! A caller may carry a country air object's registrations from an earlier read ([`walk_carried`],
+//! [`Carry`]). Every object's vector headers (`HEADERS`) are still gathered each hour; a carried
+//! object's active-region ids, regional vectors and mission pointers are not read. Each carried
+//! registration is still looked up in this hour's census by its mission pointer and checked as a
+//! read one is; on any disagreement the object is read afresh, so the rows and the outcome are a
+//! fresh walk's. Every run-time writer of the vectors is in `regional_mission_mutations`.
 
 use crate::{
     Memory, ccountry,
@@ -117,17 +113,15 @@ pub struct FailureContext {
 }
 
 const BATCH: usize = 64;
-/// +0x98 outer header through the +0xC8 region header, one guarded copy.
+/// The regional-mission outer header through the active-region header, one guarded copy.
 pub const HEADERS: usize =
     cstrategic_air::ACTIVE_MISSION_REGIONS + 16 - cstrategic_air::REGIONAL_MISSIONS;
 
-/// One country air object as the walk gathered it: its address, canonical
-/// slot and the bytes +0x98..+0xD8 (the regional, all-active and
-/// active-region vector headers with their allocators). A held read of the
-/// same object and bytes, which no hooked writer touched since, lists the
-/// same registrations: the carrier pass, the only unhooked writer of the
-/// active-region ids, moves their header whenever it changes them
-/// (`regional_mission_mutations`).
+/// One country air object as the walk gathered it: its address, canonical slot and the `HEADERS`
+/// bytes (the regional, all-active and active-region vector headers with their allocators). A held
+/// read of the same object and bytes, which no hooked writer touched since, lists the same
+/// registrations: the carrier pass, the only unhooked writer of the active-region ids, moves their
+/// header whenever it changes them (`regional_mission_mutations`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Root {
     pub address: usize,
@@ -509,11 +503,10 @@ const REGION_HEADER_FIELDS: [RecordField; 1] = [RecordField {
 const REGION_HEADER_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&REGION_HEADER_FIELDS, 16).expect("air region header layout");
 
-/// Lend every originally unattempted +0x98 region header (stride 0x18, indexed
-/// by region slot during registration) in ascending order. Runs of consecutive
-/// unattempted regions are gathered BATCH headers per record call; a header
-/// that cannot be copied or decoded is that region's own failure and the run
-/// resumes after it, as one read per region would.
+/// Lend every originally unattempted regional-mission region header (stride 0x18, indexed by region
+/// slot during registration) in ascending order. Runs of consecutive unattempted regions are
+/// gathered BATCH headers per record call; a header that cannot be copied or decoded is that
+/// region's own failure and the run resumes after it, as one read per region would.
 fn inactive_regions(
     memory: &impl Memory,
     outer: Array,

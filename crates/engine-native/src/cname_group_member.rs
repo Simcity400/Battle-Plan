@@ -1,11 +1,12 @@
-//! Division-name member held by deployment line +0x20 or army +0x340.
+//! Division-name member held by a deployment line or an army
+//! (`carmy_combat_inputs::NAME_GROUP_MEMBER`).
 //!
-//! The layout has type at +8, strings at +0x10/+0x60/+0x88, signed order
-//! at +0x80 and flag bytes +0xa8/+0xa9. Serialization always writes type,
-//! nonzero order, nonempty override and the two flags under their respective
-//! clear/set gates. Omitted order proves zero; the -1 sentinel is saved.
-//! The +0x60 string is a generated language-specific display cache. Refresh
-//! can copy a legacy name to +0x88 and mark it programmatic.
+//! The layout has `TYPE`, the strings `FIRST_NAME_TEXT`, `CACHED_NAME` and `OVERRIDE_NAME`, the
+//! signed `ORDER` and the flag bytes `FLAG_A` and `FLAG_B`. Serialization always writes type,
+//! nonzero order, nonempty override and the two flags under their respective clear/set gates.
+//! Omitted order proves zero; the -1 sentinel is saved. The `CACHED_NAME` string is a generated
+//! language-specific display cache. Refresh can copy a legacy name to `OVERRIDE_NAME` and mark it
+//! programmatic.
 //!
 //! [`inputs`] acquires the member in one guarded read, excluding the cache.
 //! It publishes nonempty override bytes for a nonprogrammatic name, or for
@@ -20,7 +21,7 @@ pub const VTABLE_RVA: usize = 0x0291_f518;
 pub const TYPE: usize = 0x08;
 /// Type-two name-group key hashed in the name database; not serialized.
 pub const FIRST_NAME_TEXT: usize = 0x10;
-/// Type-zero template reference selects its resolved name group at +0x1D0.
+/// Type-zero template reference selects its resolved name group (`TEMPLATE_NAME_GROUP`).
 pub const TEMPLATE_REFERENCE: usize = 0x58;
 pub const TEMPLATE_NAME_GROUP: usize = 0x1d0;
 /// Name-group vtable and authored key string.
@@ -64,10 +65,10 @@ pub fn order(memory: &impl Memory, base: usize, pointer: usize) -> Result<i32, &
         .ok_or("division name order unreadable")
 }
 
-/// Custom division-name bytes and flag bytes. The override string at +0x88 is an
-/// MSVC string whose length at +0x98 gates token 0x38e1; the two flag bytes at
-/// +0xa8/+0xa9 gate tokens 0x38e2/0x3936. Returns the heap or inline source
-/// pointer, the byte length, and the two raw flag bytes.
+/// Custom division-name bytes and flag bytes. The override string (`OVERRIDE_NAME`) is an MSVC
+/// string whose length (`OVERRIDE_NAME_LENGTH`) gates token 0x38e1; the two flag bytes (`FLAG_A`,
+/// `FLAG_B`) gate tokens 0x38e2/0x3936. Returns the heap or inline source pointer, the byte length,
+/// and the two raw flag bytes.
 pub fn custom(
     memory: &impl Memory,
     base: usize,
@@ -164,17 +165,16 @@ pub struct Inputs {
     pub order: i32,
     pub ordered: u8,
     pub programmatic: u8,
-    /// Stored +0x88 name shown when +0xA9 is clear, or when set with a null
-    /// resolved group. Empty otherwise. Write uncommitted at [`Names::len`];
-    /// the caller commits on admission.
+    /// Stored override name shown when `FLAG_B` is clear, or when set with a null resolved group.
+    /// Empty otherwise. Write uncommitted at [`Names::len`]; the caller commits on admission.
     pub custom: Span,
-    /// The selected historical group key of a type-zero member whose stored
-    /// name is not shown, or the type-two member's +0x10 lookup key. Group keys
-    /// are committed when first written, since later divisions share them.
+    /// The selected historical group key of a type-zero member whose stored name is not shown, or
+    /// the type-two member's `FIRST_NAME_TEXT` lookup key. Group keys are committed when first
+    /// written, since later divisions share them.
     pub group: Span,
-    /// The member's own template reference (+0x58), whose name group a
-    /// type-zero member's generator resolves. It can name a template deleted
-    /// since, which resolves to no group; a save rebinds it on load.
+    /// The member's own template reference, whose name group a type-zero member's generator
+    /// resolves. It can name a template deleted since, which resolves to no group; a save rebinds
+    /// it on load.
     pub template: u64,
 }
 
@@ -231,9 +231,9 @@ pub fn same_recorded_fields(left: &[u8; INPUT_SPAN], right: &[u8; INPUT_SPAN]) -
         .all(|&(at, len)| left[at..at + len] == right[at..at + len])
 }
 
-/// Every field [`inputs`] reads lies in `[vtable, FLAG_B]`, so one guarded
-/// copy acquires them. `inputs` ignores the +0x60 cache inside that span;
-/// [`cached_name`] independently publishes its exact retained bytes.
+/// Every field [`inputs`] reads lies in `[vtable, FLAG_B]`, so one guarded copy acquires them.
+/// `inputs` ignores the `CACHED_NAME` cache inside that span; [`cached_name`] independently
+/// publishes its exact retained bytes.
 pub const INPUT_SPAN: usize = FLAG_B + 1;
 
 /// Copy the exact retained army display string independently of [`inputs`].
@@ -318,15 +318,13 @@ pub fn cached_name_demand(
 #[path = "cname_group_member/cached_name_tests.rs"]
 mod cached_name_tests;
 
-/// Pass-scoped naming lookups. Within one quiescent acquisition a template's
-/// selected group (+0x1D0) and a group's authored key cannot change, so the
-/// pass memoizes template handle -> key span and group pointer -> key span
-/// after authenticating them once. A key that did not fit is memoized too, so
-/// its demand is counted once per pass. Template references share only the
-/// registry header (`HeaderResolver`), never a bucket. Both tables are
-/// bounded caches: a full table only costs a fresh read, never a row. Entries
-/// carry the pass's generation stamp, so a new pass forgets them without
-/// clearing the tables.
+/// Pass-scoped naming lookups. Within one quiescent acquisition a template's selected group and a
+/// group's authored key cannot change, so the pass memoizes template handle -> key span and group
+/// pointer -> key span after authenticating them once. A key that did not fit is memoized too, so
+/// its demand is counted once per pass. Template references share only the registry header
+/// (`HeaderResolver`), never a bucket. Both tables are bounded caches: a full table only costs a
+/// fresh read, never a row. Entries carry the pass's generation stamp, so a new pass forgets them
+/// without clearing the tables.
 #[derive(Default)]
 pub struct GroupKeys {
     templates: Vec<Entry<u64>>,
@@ -344,7 +342,7 @@ struct Entry<K> {
 
 /// A memoized key that did not fit this pass's arena; its demand is counted.
 const UNFIT: Span = (usize::MAX, 0);
-/// A memoized template whose +0x1D0 group is null.
+/// A memoized template whose `TEMPLATE_NAME_GROUP` group is null.
 const NULL_GROUP: Span = (usize::MAX - 1, 0);
 
 const PROBES: usize = 16;
@@ -636,15 +634,15 @@ pub fn inputs(
     result
 }
 
-/// One guarded copy of a member's `[vtable, +0xA9]` span: every field
-/// [`inputs`] reads and the +0x60 cache header [`cached_name`] reads.
+/// One guarded copy of a member's span from its vtable through `FLAG_B`: every field [`inputs`]
+/// reads and the `CACHED_NAME` header [`cached_name`] reads.
 pub fn member(memory: &impl Memory, pointer: usize) -> Result<[u8; INPUT_SPAN], &'static str> {
     read::<[u8; INPUT_SPAN]>(memory, pointer).ok_or("division name unreadable")
 }
 
-/// The constructor owns exactly the member span through +0xA9. Zero pointers
-/// mark rows whose member is absent or carried, and cause no native read. Each
-/// serial naming gate still validates the returned span.
+/// The constructor owns exactly the member span through `FLAG_B`. Zero pointers mark rows whose
+/// member is absent or carried, and cause no native read. Each serial naming gate still validates
+/// the returned span.
 pub struct MemberBatch {
     bytes: [u8; 64 * INPUT_SPAN],
     rows: [usize; 64],
@@ -752,10 +750,10 @@ pub fn held_cached_name_growing(
     Ok(Some((start, text.len())))
 }
 
-/// [`cached_name_growing`] over the member span [`member`] copied, which
-/// holds the vtable and the +0x60 header. A heap text that fits the arena
-/// with its terminator is one copy of both; any other text, or a copy that
-/// faults, takes [`copy_string_buffer`]'s reads, which name the fault.
+/// [`cached_name_growing`] over the member span [`member`] copied, which holds the vtable and the
+/// `CACHED_NAME` header. A heap text that fits the arena with its terminator is one copy of both;
+/// any other text, or a copy that faults, takes [`copy_string_buffer`]'s reads, which name the
+/// fault.
 pub fn cached_name_from_member_growing(
     memory: &impl Memory,
     base: usize,
@@ -875,9 +873,9 @@ pub(crate) fn codename_inputs_buffer(
     result
 }
 
-/// Whether [`member_inputs`] copied a type-two codename's stored name: it does
-/// whenever +0xA9 is clear, and with it set only for a nonzero stored length,
-/// which is then the name's own length. A skipped name keeps the default span.
+/// Whether [`member_inputs`] copied a type-two codename's stored name: it does whenever `FLAG_B` is
+/// clear, and with it set only for a nonzero stored length, which is then the name's own length. A
+/// skipped name keeps the default span.
 pub fn custom_copied(row: &Inputs) -> bool {
     row.programmatic == 0 || row.custom.1 != 0
 }
@@ -1031,8 +1029,7 @@ fn member_inputs(
         }
     }
     let header = &member[OVERRIDE_NAME..OVERRIDE_NAME + 32];
-    // A nonempty stored override is shown when +0xA9 is clear,
-    // independently of the group.
+    // A nonempty stored override is shown when `FLAG_B` is clear, independently of the group.
     if row.programmatic == 0
         || (row.kind == 2
             && word(OVERRIDE_NAME_LENGTH) != 0
@@ -1052,8 +1049,8 @@ fn member_inputs(
     }
     match template_group(memory, base, word(TEMPLATE_REFERENCE), groups, names)? {
         UNFIT => Ok(Naming::DoesNotFit),
-        // With +0xA9 set, only a null group shows a nonempty stored override.
-        // A null group without it generates a legacy name, which is not captured.
+        // With `FLAG_B` set, only a null group shows a nonempty stored override. A null group
+        // without it generates a legacy name, which is not captured.
         NULL_GROUP if word(OVERRIDE_NAME + msvc_string::LENGTH) != 0 => {
             match copy_string_buffer(memory, header, names, &CUSTOM)? {
                 Some(span) => row.custom = span,
@@ -1179,9 +1176,9 @@ fn group_keys_equal(
     }
 }
 
-/// Type-zero group lookup resolves template +0x58, then its +0x1D0 group
-/// key span. A null/unresolved template or null group yields [`NULL_GROUP`];
-/// unreadable storage yields [`UNFIT`].
+/// Type-zero group lookup resolves `TEMPLATE_REFERENCE`, then its `TEMPLATE_NAME_GROUP` group key
+/// span. A null/unresolved template or null group yields [`NULL_GROUP`]; unreadable storage yields
+/// [`UNFIT`].
 fn template_group(
     memory: &impl Memory,
     base: usize,
@@ -1366,7 +1363,7 @@ mod tests {
         let (result, _, required) = run(&memory, 5);
         assert_eq!(row(result).custom.1, 0);
         assert_eq!(required, 5);
-        // A different hash follows the next node to null, so +0x88 is shown.
+        // A different hash follows the next node to null, so the override name is shown.
         memory.bytes[0x428..0x42c].copy_from_slice(&124_u32.to_le_bytes());
         assert_eq!(row(run(&memory, 11).0).custom.1, 6);
         memory.bytes[0x428..0x42c].copy_from_slice(&123_u32.to_le_bytes());
@@ -1440,7 +1437,7 @@ mod tests {
         );
         assert_eq!((named.group.1, required), (0, 5));
         assert_eq!(memory.reads.borrow().len(), 1);
-        // The generated +0x60 cache never reaches the published row.
+        // The generated `CACHED_NAME` cache never reaches the published row.
         let mut changed = bytes;
         changed[0x60..0x80].fill(0x5a);
         assert_eq!(run(&guard(&changed), 64).0, Ok(Naming::Row(named)));

@@ -62,9 +62,9 @@ pub fn pruned(records: &[AirCombatRecord], cutoff: i32) -> &[AirCombatRecord] {
 /// visits, from its row read at or before `hour`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Retained<'a> {
-    /// The `+0x08` vector: the owner's own wings.
+    /// The own-records vector: the owner's own wings.
     pub own: &'a [AirCombatRecord],
-    /// The `+0x20` vector: other countries' wings.
+    /// The foreign-records vector: other countries' wings.
     pub foreign: &'a [AirCombatRecord],
 }
 
@@ -137,8 +137,8 @@ pub struct Received {
     pub amounts: [i64; CAUSES],
 }
 
-/// What one aggregation reads: the mission bits a record must share, the
-/// window in hours and the classification byte (+0x19) it must equal.
+/// What one aggregation reads: the mission bits a record must share, the window in hours and the
+/// classification byte it must equal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Filter {
     pub missions: u32,
@@ -200,11 +200,10 @@ fn add_vector(
     Ok(())
 }
 
-/// For the viewing side `enemy` (the view's mission side, 0 for our missions), the first
-/// scan reads the side's own vector (`+0x08` for ours, `+0x20` for the enemy's) with its
-/// `+0x38` damage, the second the other vector with its `+0x20` damage, into one
-/// aggregate in that order. Equipment totals added from the copied pools (+0x58) are not
-/// recorded.
+/// For the viewing side `enemy` (the view's mission side, 0 for our missions), the first scan reads
+/// the side's own vector (the own records for ours, the foreign ones for the enemy's) with its
+/// first damage vector, the second the other vector with its second damage vector, into one
+/// aggregate in that order. Equipment totals added from the copied pools are not recorded.
 pub fn received(
     retained: Retained<'_>,
     now: Hour,
@@ -222,7 +221,7 @@ pub fn received(
     Ok(received)
 }
 
-/// The air-combat window's initial mission filter (`+0xB14`), the ground-mission bits.
+/// The air-combat window's initial mission filter, the ground-mission bits.
 pub const DEFAULT_MISSIONS: u32 = 0x1f7fa;
 
 /// The window used by the air and ground grids: the last day.
@@ -279,11 +278,10 @@ fn items(
     }
 }
 
-/// The two grids of the default strategic air view (mode `+0xB10` zero and the initial
-/// filter): the air grid uses mission bits 5 over unclassified records, causes 4, 5 and
-/// 9, for one side. The ground grid uses the filter over classified records, causes 4, 5,
-/// 3, 9 and 10, for our missions; for the enemy's it uses bits 5 then the filter, causes
-/// 4, 5 and 9 then 2, 0, 1, 6, 7 and 9.
+/// The two grids of the default strategic air view (view mode zero and the initial filter): the air
+/// grid uses mission bits 5 over unclassified records, causes 4, 5 and 9, for one side. The ground
+/// grid uses the filter over classified records, causes 4, 5, 3, 9 and 10, for our missions; for
+/// the enemy's it uses bits 5 then the filter, causes 4, 5 and 9 then 2, 0, 1, 6, 7 and 9.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Grids {
     pub air: Vec<Item>,

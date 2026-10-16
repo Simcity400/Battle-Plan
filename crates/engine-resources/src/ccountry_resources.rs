@@ -55,7 +55,7 @@ pub const RESOURCE_ORIGINS: usize = 0x710;
 pub const BUILDING_RESOURCE_OVERRIDES: usize = 0x7a0;
 /// Override entry stride.
 pub const OVERRIDE_STRIDE: usize = 0x20;
-/// Override entry building type token, i32 at +0, compared with CBuilding+8.
+/// Override entry building type token, i32, compared with the building's type.
 pub const OVERRIDE_BUILDING: usize = 0x00;
 /// Override resource array; each entry holds i32 resource index and i64
 /// fixed5 quantity. A nonzero count establishes an override.

@@ -5,7 +5,7 @@
 //! its writes reach, counts its site and calls the original; it never
 //! changes game behaviour.
 //!
-//! Eight sets of native country ids (`CCountry+0x8`, the census key), each
+//! Eight sets of native country ids (`ccountry::ID`, the census key), each
 //! with one consumer, the family that reads it:
 //! - [`Table::Stability`]: CountryStabilityInputs and CountryStabilityLines,
 //!   read in the Stability job ([`crate::extended::country_stability`]).
@@ -151,7 +151,7 @@ pub enum Forward {
     /// [`crate::politics_changes`]: every country field, the tree and the
     /// bonus rosters. country dynamic reuse calls it
     /// before the original-tag setter, the only
-    /// runtime writer of the original tag `+0x130C` the appearance row
+    /// runtime writer of the original tag (`ccountry::ORIGINAL_TAG`) the appearance row
     /// records, in the same game-thread step, and every read of an hour
     /// finishes inside the hourly callback, so the reset's mark covers it.
     ResetCountry,
@@ -183,30 +183,29 @@ pub enum Forward {
     /// National focus selection and cancellation
     /// (progress), through [`crate::politics_changes`].
     Focus,
-    /// The character name setter and identity repair
-    /// on the character, through [`crate::advisor_changes`]: a
-    /// scientist's saved name `+0x48` and id `+0xC`, which a technology's
-    /// scientist source rows carry.
+    /// The character name setter and identity repair on the character, through
+    /// [`crate::advisor_changes`]: a scientist's saved name and id, which a technology's scientist
+    /// source rows carry.
     CharacterIdentity,
     /// Wartime ally rebuild (diplomacy), through
     /// [`crate::relation_changes`]: the co-belligerent bytes
-    /// `CRelationStatus+0x310` of the status's relation matrix and its
-    /// candidate vectors `+0x98`/`+0xB0`.
+    /// The co-belligerent byte (`crelation_status::CO_BELLIGERENT`) of the status's relation matrix and its
+    /// candidate vectors (enemies and wartime allies).
     WartimeAllies,
     /// State owner setter (state, tag, _, _), through
-    /// [`crate::territory_changes`]: the owned states `+0x478` of the old and
+    /// [`crate::territory_changes`]: the owned states of the old and
     /// the new owner.
     StateOwner,
     /// State controller setter (state, tag, _, _), through
-    /// [`crate::territory_changes`]: the controlled states `+0x460` of the
+    /// [`crate::territory_changes`]: the controlled states of the
     /// old and the new controller.
     StateController,
     /// The state reset `reset state(state)`, through
     /// [`crate::territory_changes`]: clears both tags without naming their
     /// countries.
     StateReset,
-    /// `add core(state, &tag)` and remove core,
-    /// through [`crate::raid_changes`]: the tag's core states `+0x4A8`.
+    /// `add core(state, &tag)` and remove core, through [`crate::raid_changes`]: the tag's core
+    /// states.
     Cores,
     /// Relation status reset (status), through
     /// [`crate::opinion_changes`]: the owner's co-belligerent byte, war and
@@ -216,8 +215,9 @@ pub enum Forward {
     /// slot), through [`crate::opinion_changes`]: the owner's slot-zero
     /// subject and access relations.
     RelationSlot,
-    /// Country character pool construction and destruction, through [`crate::advisor_pool_changes`]: a country's
-    /// `+0xFF0` and the unit leader rosters the counter rows read.
+    /// Country character pool construction and destruction, through
+    /// [`crate::advisor_pool_changes`]: a country's The country characters and the unit leader
+    /// rosters the counter rows read.
     CountryCharacters,
 }
 
@@ -303,12 +303,10 @@ impl Forward {
                 .with(Tables::APPEARANCE)
                 .with(Tables::COUNTERS),
             Self::Focus => Tables::FOCUS,
-            // The old and the new owner's owned-state count `+0x484`, which
-            // gates their daily research, focus and project steps
-            // (daily country update) and so whether those
-            // families read them at their slice or after the daily tick
-            // ([`drifts`]): a country that owned a state only across a
-            // daily tick, between two of those checks, is read when its
+            // The old and the new owner's owned-state count, which gates their daily research,
+            // focus and project steps (daily country update) and so whether those families read
+            // them at their slice or after the daily tick ([`drifts`]): a country that owned a
+            // state only across a daily tick, between two of those checks, is read when its
             // ownership changes.
             Self::StateOwner | Self::StateReset => Tables::COUNTERS.with(DRIFTING),
             Self::WartimeAllies
@@ -925,10 +923,9 @@ impl Changes for Observer {
     }
 }
 
-/// Whether a country's rows drift with the daily tick. Research, focus,
-/// program ticks and the project pool pass run only for a country owning a
-/// State  (`+0x484 >= 1`); a stateless country returns after its units and war
-/// checks. An unreadable count drifts.
+/// Whether a country's rows drift with the daily tick. Research, focus, program ticks and the
+/// project pool pass run only for a country owning a State  (an owned-state count of at least 1); a
+/// stateless country returns after its units and war checks. An unreadable count drifts.
 pub fn drifts(memory: &impl Memory, country: usize) -> bool {
     country
         .checked_add(engine::ccountry::OWNED_STATE_COUNT)

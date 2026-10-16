@@ -1,38 +1,40 @@
 //! The runtime writers of tables carried between hours by
-//! `world_input_changes`. Observing them tells the collector which whole table
-//! or country's rows may differ from the held read; recording never calls
-//! them. Whole-table sites name no receiver. Dynamic modifier sites name the
-//! container they write, whose +0x08 points to its owning country.
+//! `world_input_changes`. Observing them tells the collector which whole
+//! table or country's rows may differ from the held read; recording never
+//! calls them. Whole-table sites name no receiver. Dynamic modifier sites
+//! name the container they write, whose
+//! `cdynamic_modifier_container::COUNTRY` points to its owning country.
 //!
 //! Writer coverage:
-//! - ProvinceNames: the rename effect assigns province override string +0x40
-//!   and the reset effect clears it (`cprovince`). Both are
+//! - ProvinceNames: the rename effect assigns the province override string
+//!   (`cprovince::NAME_OVERRIDE`) and the reset effect clears it. Both are
 //!   interpreter-only effects at virtual slot 13. Province loading and both
 //!   constructors run only during save load or map building, invalidating
 //!   the hour.
 //! - NavalRegionAccess: the strategic-navy mode setter writes each access
-//!   byte in +0xB0 (`cstrategic_navy::ACCESS_MODES`). Only the naval
-//!   region access command calls it, posted by player UI or the AI interior
-//!   minister's daily step. Navy reset zeroes modes during dynamic country
-//!   reuse and another reset path. Construction, sizing and save reading
-//!   occur only at setup or load.
+//!   byte in `cstrategic_navy::ACCESS_MODES`. Only the naval region access
+//!   command calls it, posted by player UI or the AI interior minister's
+//!   daily step. Navy reset zeroes modes during dynamic country reuse and
+//!   another reset path. Construction, sizing and save reading occur only
+//!   at setup or load.
 //! - WorldTension, ThreatSources and ThreatCountryAggregates: total update
 //!   drops exhausted sources, rebuilds aggregate cache through its sole
 //!   helper and stores the clamped total (`cworld_threat`). Only
 //!   source creation, source update and daily decay call it, each ending
 //!   there after writes. Daily decay ramps every source. Both save readers
 //!   are load-only.
-//! - DynamicModifiers: a country's container +0xE58
-//!   (`cdynamic_modifier_container`) inserts entries only through add
-//!   from the add effect and its insertion helper, or save loading. Renewal
-//!   sets days on the add effect's existing-entry branch. Remove effects and
-//!   daily update erase through a shared helper; daily update also decrements
-//!   every timed entry's days and runs for every country. Each site takes the
-//!   container in RCX. Only dynamic value recalculation rewrites enabled
-//!   bytes and values, reached for countries only by country modifier
-//!   recalculation. Only appearance reset clears entries through the clear
-//!   helper. The naval tree family forwards both country sites; the
-//!   collector joins their certificate to this domain.
+//! - DynamicModifiers: a country's container
+//!   (`ccountry::DYNAMIC_MODIFIERS`, `cdynamic_modifier_container`) inserts
+//!   entries only through add from the add effect and its insertion helper,
+//!   or save loading. Renewal sets days on the add effect's existing-entry
+//!   branch. Remove effects and daily update erase through a shared helper;
+//!   daily update also decrements every timed entry's days and runs for
+//!   every country. Each site takes the container in RCX. Only dynamic
+//!   value recalculation rewrites enabled bytes and values, reached for
+//!   countries only by country modifier recalculation. Only appearance
+//!   reset clears entries through the clear helper. The naval tree family
+//!   forwards both country sites; the collector joins their certificate to
+//!   this domain.
 //!
 //! Every site takes at most four integer or pointer arguments and returns
 //! RAX unchanged from its original.
@@ -71,7 +73,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 9] = [
         },
         Domain::ProvinceNames,
     ),
-    // Province name reset effect (effect, scope): spill RBX at stack +0x10.
+    // Province name reset effect (effect, scope): spill RBX to RDX's home slot.
     (
         MutationSite {
             name: "reset_province_name",
@@ -96,7 +98,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 9] = [
         },
         Domain::RegionAccess,
     ),
-    // Navy reset (navy): spill RBX at stack +8.
+    // Navy reset (navy): spill RBX to RCX's home slot.
     (
         MutationSite {
             name: "reset_navy",

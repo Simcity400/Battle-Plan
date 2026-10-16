@@ -307,8 +307,8 @@ fn appearance_and_counter_sites_reach_their_table() {
     for (site, _, tables) in &MUTATIONS[COUNTER_SITES] {
         assert_eq!(*tables, Tables::COUNTERS, "{}", site.name);
     }
-    // Nothing before them writes the appearance fields: modifier recalculation'
-    // +0x390 is a static modifier slot.
+    // Nothing before them writes the appearance fields: what modifier
+    // recalculation writes at the UI colour's offset is a static modifier slot.
     for (site, _, tables) in &MUTATIONS[..APPEARANCE_SITES.start] {
         assert!(!tables.appearance, "{}", site.name);
     }
@@ -578,7 +578,7 @@ fn the_slot_roster_header_reads_from_the_status() {
 }
 
 /// unit-leader removal is compared by the two leader roster counts it
-/// decrements, army `+0x7C` and navy `+0x94`.
+/// decrements, army and navy.
 #[test]
 fn the_leader_roster_counts_read_both_rosters() {
     let mut bytes = world();

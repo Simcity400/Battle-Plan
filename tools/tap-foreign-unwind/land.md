@@ -18,8 +18,8 @@ loaded `Probe` lifetime.
   or SEH raise. Foreign cleanup must retain ACTIVE while releasing observation
   and boundary admission, refusing the incomplete interval and retaining storage.
 - `production_verdict_indirect_foreign_unwind` installs the real leader resolver
-  stub at an authored six-byte indirect CALL. The relay returns to `site+5` padding
-  and continues at `site+6` on normal return. Native resolver arguments, leader
+  stub at an authored six-byte indirect CALL. The relay returns to the padding after the five-byte CALL
+  and continues after the six-byte CALL on normal return. Native resolver arguments, leader
   handle, continuation, nonvolatiles and registered frames are witnessed. Escaped
   unwind must leave the ASM-owned flight sticky, stop observation, refuse drain
   across load, retain the patch/log and fail restoration. A subsequent normal

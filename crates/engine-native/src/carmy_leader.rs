@@ -48,8 +48,7 @@ pub const MOVEMENT_MODIFIER_KEYS: [u32; 5] = [
     crate::modifier_keys::RIVER_CROSSING_FACTOR,
     crate::modifier_keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR,
 ];
-/// Orders-group member primary-root cache; root lookup returns +20 after
-/// validation.
+/// Orders-group member primary-root cache; root lookup returns it after validation.
 const PRIMARY_ROOT_CACHE: usize = 0x20;
 /// Dirty byte causing both orders-group member caches to rebuild.
 const PRIMARY_ROOT_DIRTY: usize = 0x28;
@@ -484,9 +483,9 @@ fn movement_primary_root_internal(
     Ok(expected)
 }
 
-/// Passive modifier selection. Returns the selected CModifier's
-/// accumulator (+10), not its enclosing object. Dirty order roots are derived
-/// without mutating caches; a stale clean cache is unavailable, not repaired.
+/// Passive modifier selection. Returns the selected CModifier's accumulator
+/// (`MODIFIER_ACCUMULATOR`), not its enclosing object. Dirty order roots are derived without
+/// mutating caches; a stale clean cache is unavailable, not repaired.
 pub fn movement_accumulator(
     memory: &impl crate::Memory,
     base: usize,
@@ -546,12 +545,11 @@ fn movement_accumulator_internal(
     movement_selected(leader, alternate)
 }
 
-/// The separate-HQ predicate for `unit`, as [`movement_accumulator`] applies it
-/// to a division's own leader: a class-zero unit, with the deployed-HQ feature
-/// (DLC feature 0x39, runtime mask bit 17), whose group has a leader (+0x88)
-/// and an HQ provider (+0x68), and whose primary root differs from the HQ
-/// unit's. Unit modifier selection then selects a leader's separate-HQ block
-/// (+0x4C8) for it. A failed read is unavailable, never false.
+/// The separate-HQ predicate for `unit`, as [`movement_accumulator`] applies it to a division's own
+/// leader: a class-zero unit, with the deployed-HQ feature (DLC feature 0x39, runtime mask bit 17),
+/// whose group has a leader and an HQ provider, and whose primary root differs from the HQ unit's.
+/// Unit modifier selection then selects a leader's separate-HQ block for it. A failed read is
+/// unavailable, never false.
 pub fn separate_hq_order(
     memory: &impl crate::Memory,
     base: usize,
@@ -859,9 +857,9 @@ pub fn movement_block_memoized(
     movement_selected(leader, alternate).map(|root| root.map(|root| (root, alternate)))
 }
 
-/// Commander-receiver vtable slot 8 (+0x40) returns the army's own identity
-/// and null for a railway unit, so a railway unit never selects a commander.
-/// Read keys independently from the same selected unit modifier block.
+/// Commander-receiver vtable slot 8 returns the army's own identity and null for a railway unit, so
+/// a railway unit never selects a commander. Read keys independently from the same selected unit
+/// modifier block.
 pub fn current_retreat_inputs(
     memory: &impl crate::Memory,
     base: usize,
@@ -885,7 +883,7 @@ pub fn current_retreat_inputs(
 /// defending side. The fixed layout contract authenticates the requested keys.
 pub const CANNOT_RETREAT_WHILE_DEFENDING: u32 =
     crate::modifier_keys::CANNOT_RETREAT_WHILE_DEFENDING;
-/// Leader modifier `cannot_retreat_while_attacking`, tested against the attacking side (+0x28).
+/// Leader modifier `cannot_retreat_while_attacking`, tested against the attacking side.
 pub const CANNOT_RETREAT_WHILE_ATTACKING: u32 =
     crate::modifier_keys::CANNOT_RETREAT_WHILE_ATTACKING;
 /// [`RetreatBans`] bit for [`CANNOT_RETREAT_WHILE_DEFENDING`].
@@ -899,9 +897,9 @@ pub const RETREAT_BANNED_ATTACKING: u8 = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetreatBans {
     pub leader: usize,
-    /// From the ordinary block (+0x408).
+    /// From the ordinary block.
     pub ordinary: u8,
-    /// From the separate-HQ block (+0x4C8).
+    /// From the separate-HQ block.
     pub alternate: u8,
     /// The ordinary and the separate-HQ block's movement entries.
     pub movement: [MovementEntries; 2],
@@ -1403,12 +1401,10 @@ pub fn movement_terrain(
 #[cfg(test)]
 mod movement_tests;
 
-/// The unit leader's night adjuster's attack (`+0x260 + 0x10`), added to the
-/// night term. Trait recalculation clears and rebuilds it with the terrain
-/// adjusters.
+/// The unit leader's night adjuster's attack, added to the night term. Trait recalculation clears
+/// and rebuilds it with the terrain adjusters.
 pub const ATTACK_NIGHT: usize = 0x270;
-/// The army leader's fort (`+0xFA8 + 0x10`), river (`+0xFD0 + 0x10`) and snow
-/// (`+0x1020 + 0x10`) adjusters' attack contributions. Army trait recalculation
+/// The army leader's fort, river and snow adjusters' attack contributions. Army trait recalculation
 /// rebuilds them.
 pub const ATTACK_FORT: usize = 0xfb8;
 pub const ATTACK_RIVER: usize = 0xfe0;
@@ -1425,16 +1421,15 @@ pub struct AttackStats {
     pub river: i64,
     pub snow: i64,
     pub night: i64,
-    /// Each terrain adjuster's movement (`+0x20`), parallel to `terrain`: the
-    /// movement speed adds the destination terrain's entry on every edge.
+    /// Each terrain adjuster's movement, parallel to `terrain`: the movement speed adds the
+    /// destination terrain's entry on every edge.
     pub movement_terrain: Vec<i64>,
 }
 
-/// Reads [`AttackStats`] of the `CUnitLeader` an orders group's `+0x88` names.
-/// Terrain-adjuster lookup returns the vector's first record for an index
-/// outside its live count, even a count of zero, so a vector with storage and
-/// no live entry yields that one retained record; a vector without storage
-/// yields none.
+/// Reads [`AttackStats`] of the `CUnitLeader` an orders group's direct-commander getter names.
+/// Terrain-adjuster lookup returns the vector's first record for an index outside its live count,
+/// even a count of zero, so a vector with storage and no live entry yields that one retained
+/// record; a vector without storage yields none.
 pub fn attack_stats(
     memory: &impl crate::Memory,
     base: usize,

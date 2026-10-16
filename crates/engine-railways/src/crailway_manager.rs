@@ -344,10 +344,9 @@ fn eta_state_infrastructure(
     eta_ratio(i64::from(healthy) * 100_000, i64::from(maximum) * 100_000)
 }
 
-/// The manager's cooldown province list `+0x20` (count `+0x2C`) in list order,
-/// duplicates kept: the occurrences the daily countdown pass decrements, each
-/// naming the province whose info it writes. Stored as the native signed ids'
-/// bits.
+/// The manager's cooldown province list in list order, duplicates kept: the occurrences the daily
+/// countdown pass decrements, each naming the province whose info it writes. Stored as the native
+/// signed ids' bits.
 pub fn cooldown_list(
     memory: &impl Memory,
     base: usize,
@@ -408,22 +407,21 @@ impl Outcomes {
 pub struct RailLocation {
     pub province: u32,
     pub info: usize,
-    /// The info's building status `+0x10`, authenticated as its province's
-    /// `+0x190`.
+    /// The info's building status, authenticated as its province's (`cprovince::BUILDING_STATUS`).
     pub building_status: usize,
-    /// The info's vtable, definition `+0x08` and status `+0x10`.
+    /// The info's vtable, definition and status.
     pub identity: [u8; 24],
     /// The province table this walk authenticates far endpoints against.
     pub provinces: Array,
-    /// The cooldown `+0x68`, when it copied.
+    /// The cooldown, when it copied.
     pub cooldown: Option<i32>,
-    /// The pair header `+0x38` with the count `+0x44`, when both copied.
+    /// The pair header with its count, when both copied.
     pub pairs: Option<[u8; 16]>,
 }
 
-/// What every walk reads before any slot: the manager and its slot table
-/// `+0x08`, authenticated against the game state's province table. A held
-/// batch is published only under the header it was read with.
+/// What every walk reads before any slot: the manager and its slot table The definition,
+/// authenticated against the game state's province table. A held batch is published only under the
+/// header it was read with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RailHeader {
     pub manager: usize,
@@ -431,9 +429,8 @@ pub struct RailHeader {
     pub provinces: Array,
 }
 
-/// One info's outputs: its cooldown `+0x68`, its directed edges in pair
-/// order, its building row and its indexed levels. The row's selected level
-/// span starts at zero and indexes `levels`.
+/// One info's outputs: its cooldown, its directed edges in pair order, its building row and its
+/// indexed levels. The row's selected level span starts at zero and indexes `levels`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InfoOutputs<'a> {
     pub cooldown: i32,

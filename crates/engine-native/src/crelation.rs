@@ -19,7 +19,7 @@ pub const FIRST_COUNTRY: usize = 0x10;
 pub const SECOND_COUNTRY: usize = 0x14;
 /// Raw start hour, i32.
 pub const START_HOUR: usize = 0x20;
-/// Embedded start date with signed raw hour at date+8.
+/// Embedded start date with signed raw hour.
 pub const START_DATE: usize = 0x18;
 /// Raw end hour, i32.
 pub const END_HOUR: usize = 0x38;

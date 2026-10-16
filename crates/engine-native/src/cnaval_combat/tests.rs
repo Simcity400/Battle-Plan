@@ -206,9 +206,9 @@ fn unreadable_custom_sea_grid_does_not_withhold_live_combat_details() {
     );
 }
 
-/// A side's task forces (`CCombatant+0x20`) are read in stored order into the caller's
-/// arena. A short arena leaves the row for the next hour with the demand reported, and an
-/// entry that is not a task force refuses the table.
+/// A side's task forces (`cnaval_combatant::UNITS`) are read in stored order into the caller's
+/// arena. A short arena leaves the row for the next hour with the demand reported, and an entry
+/// that is not a task force refuses the table.
 #[test]
 fn side_units_keep_stored_order_and_report_their_demand() {
     const SLOTS: usize = 0xa700;
@@ -317,8 +317,8 @@ fn side_units_keep_stored_order_and_report_their_demand() {
 #[test]
 fn null_commander_never_falls_back_to_the_last_leader() {
     let mut world = detail_world();
-    // +0x118 is the last leader the save and a load keep; the window shows
-    // only +0x110, so the reader must not read, fall back to or fail on it.
+    // The retained last leader is the one the save and a load keep; the window shows only
+    // `cnaval_combatant::COMMANDER`, so the reader must not read, fall back to or fail on it.
     world.u64(ATTACKING + 0x118, u64::MAX);
     let side = cnaval_combatant::Side {
         pointer: ATTACKING,
@@ -1442,7 +1442,7 @@ fn groups_members_and_planes_past_the_old_bounds_are_read_whole() {
     assert_eq!(capture.participants, Outcome::Rows { len: 65_538 });
     assert_eq!(ships[65_536].member_index, 65_536);
 
-    // 16,385 planes in GROUP_A's +0x58 vector.
+    // 16,385 planes in GROUP_A's plane vector.
     const PLANE: usize = 0xa900;
     let mut world = detail_world();
     world.0.resize(size, 0);

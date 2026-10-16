@@ -6,8 +6,8 @@ use crate::{Memory, cfex_member, cpdx_array::Array, cship, memory::Raw, read};
 pub const VTABLE_RVA: usize = 0x029c_d298;
 /// CNavalCombatant parent CNavalCombat pointer.
 pub const COMBAT: usize = 0x18;
-/// Task-force pointer array: data +0x20, capacity +0x28, count +0x2C.
-/// Admission requires naval units; serialization retains every full handle.
+/// Task-force pointer array: data, capacity and count. Admission requires naval units;
+/// serialization retains every full handle.
 pub const UNITS: usize = 0x20;
 /// CNavalCombatant engaged byte.
 pub const ENGAGED: usize = 0xba;
@@ -26,13 +26,12 @@ pub const POSITIONING_SCALE: i64 = 100_000;
 /// CNavalCombatant engaged-pair predicate.
 pub const ANY_SIDE_ENGAGED_RVA: usize = 0x013c_d880;
 
-/// Current commander pointer shown by the naval window. Null remains
-/// no commander without fallback to the retained last leader at +0x118.
-/// Selection keeps the first highest-skill candidate, or null when none.
-/// Unit addition/removal, round preparation while null, post-load rebuild
-/// and leader rebuild publish this selection; only nonnull selections
-/// replace the last leader. Both initialize to zero. Saves restore only
-/// last leader, so current commander can remain null until the next combat tick.
+/// Current commander pointer shown by the naval window. Null remains no commander without fallback
+/// to the retained last leader after it. Selection keeps the first highest-skill candidate, or null
+/// when none. Unit addition/removal, round preparation while null, post-load rebuild and leader
+/// rebuild publish this selection; only nonnull selections replace the last leader. Both initialize
+/// to zero. Saves restore only last leader, so current commander can remain null until the next
+/// combat tick.
 pub const COMMANDER: usize = 0x110;
 /// Stored screening operands.
 pub const SCREENING: usize = 0x128;
@@ -63,9 +62,8 @@ pub struct DetailsRow {
     pub units: [usize; 2],
 }
 
-/// Unordered-map list order preserves insertion order for stable sorted
-/// ties. Nodes are 0x20 bytes: token +0x10, fixed5 total +0x18; map +0x290
-/// is the sentinel.
+/// Unordered-map list order preserves insertion order for stable sorted ties. Nodes are 0x20 bytes:
+/// a token, then a fixed5 total; the map is the sentinel.
 fn damage_by_type(
     memory: &impl Memory,
     side: usize,
@@ -149,13 +147,13 @@ pub(crate) struct SideArenas<'a> {
     pub damage_sources_required: &'a mut usize,
 }
 
-/// Reads a side's [`UNITS`] into `arena` from `*len`: one read for the array header, one per
-/// 64 slots and one scattered read per task force, which must carry the CTaskForce primary
-/// vtable, the secondary vtable at `+0x10` and a nonzero handle at `+0x18`. The count is the
-/// live array's own (bounded by its capacity header) and is only trusted as far as its entries
-/// authenticate; no bound is chosen here. `required` gains the side's count whether or not it
-/// fits. Worker storage grows from the acquired header before entry reads;
-/// fixed fixture storage retains [`crate::cfex_member::DETAIL_ARENA_CAPACITY`].
+/// Reads a side's [`UNITS`] into `arena` from `*len`: one read for the array header, one per 64
+/// slots and one scattered read per task force, which must carry the CTaskForce primary vtable, the
+/// secondary vtable and a nonzero handle. The count is the live array's own (bounded by its
+/// capacity header) and is only trusted as far as its entries authenticate; no bound is chosen
+/// here. `required` gains the side's count whether or not it fits. Worker storage grows from the
+/// acquired header before entry reads; fixed fixture storage retains
+/// [`crate::cfex_member::DETAIL_ARENA_CAPACITY`].
 fn units(
     memory: &impl Memory,
     base: usize,
@@ -314,7 +312,7 @@ pub struct Row {
     pub combat: u64,
     /// Zero for attacker, one for defender, from the combat's side pointers.
     pub side: u8,
-    /// Native CFEXMember +0x120, not the member array ordinal.
+    /// Native CFEXMember battle slot (`cfex_member::BATTLE_SLOT`), not the member array ordinal.
     pub battle_slot: u32,
     /// Complete ship reference; zero means no ship reference, including convoy members.
     pub ship: u64,

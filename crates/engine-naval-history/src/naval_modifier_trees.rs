@@ -3,21 +3,20 @@
 //! breakdown tree walked for it.
 //!
 //! - Side positioning, screening and convoy escape visit the first primary
-//!   country's `CCountry+0x5B8`, the combat region's `SWeatherPerRegion+0x58`
+//!   country's modifier accumulator, the combat region's weather modifier
 //!   (omitted when no live region is found), province terrain's
-//!   `CTerrainType+0xB8` and a commander's `CUnitLeader+0x418`, in that order.
-//!   An empty side (`CCombatant+0x48` zero) reaches no source.
+//!   terrain type modifier and a commander's movement accumulator, in that order.
+//!   An empty side (no units) reaches no source.
 //!
 //! - Escaping ships (state 8) and carriers with a linked air group format the
-//!   tree at each ordered source's `+0x10` (scopes 0-15 of
+//!   tree at each ordered source's accumulator (scopes 0-15 of
 //!   [`naval_ship_modifier_inputs::visit_sources`]).
 //!
-//! Both pass depth -1 to modifier formatting, which prints every nonzero leaf:
-//! a node with children prints only its children's text (the root is read only
-//! when `+0x24` is zero), and a leaf prints `CModifier+0x58` (accumulator
-//! `+0x48`) with its effective value. Every reached tree is read for all
-//! [`KEYS`]; a node's values come from one sorted-entry lookup and only nonzero
-//! leaves read their display bytes. No game function is called.
+//! Both pass depth -1 to modifier formatting, which prints every nonzero leaf: a node with children
+//! prints only its children's text (the root is read only when its child count is zero), and a leaf
+//! prints the modifier's display bytes with its effective value. Every reached tree is read for all
+//! [`KEYS`]; a node's values come from one sorted-entry lookup and only nonzero leaves read their
+//! display bytes. No game function is called.
 //!
 //! [`ship_owner`] and [`side_owner`] are the one join both the collector and
 //! playback (`replay::naval_trees`) use, so a recorded combat finds its trees
@@ -46,9 +45,9 @@ pub const KEYS: [u32; 10] = [
     modifier_keys::NAVAL_TORPEDO_COOLDOWN_FACTOR,
 ];
 
-/// `CCountry+0x5B8`, the country tree (`naval_tree_mutations` writers).
+/// The country's modifier accumulator, the country tree (`naval_tree_mutations` writers).
 pub const COUNTRY_TREE: usize = 0x5b8;
-/// `CUnitLeader+0x418`, the commander tree (`naval_tree_mutations` writers).
+/// The commander's movement accumulator, the commander tree (`naval_tree_mutations` writers).
 pub const COMMANDER_TREE: usize = 0x418;
 
 /// The kind of a source's owner identity (`replay::naval_trees::Owner`).
@@ -366,8 +365,8 @@ pub fn enumerate(
                 ) else {
                     continue;
                 };
-                // visit_sources passes CCountry+0x5A8 and CUnitLeader+0x408,
-                // whose accumulators are +0x10 further.
+                // visit_sources passes the country's and the leader's CModifier objects, whose
+                // accumulators lie inside them.
                 let receiver = match kind {
                     Kind::Country => source.accumulator.wrapping_sub(COUNTRY_TREE),
                     Kind::Commander => source.accumulator.wrapping_sub(COMMANDER_TREE),
@@ -457,8 +456,8 @@ fn side_requests(
         if field::<i32>(memory, side, 0x48)? == 0 {
             continue;
         }
-        // CCombatant+0x38 is the head pointer; the first node's +0 word is the
-        // raw country reference side hovers resolve.
+        // The combatant's country list head; the first node's first word is the raw country
+        // reference side hovers resolve.
         let head = field::<u64>(memory, side, 0x38)? as usize;
         let link: u32 = field(memory, head, 0)?;
         let country = countries.resolve(link)?;
@@ -673,8 +672,8 @@ mod tests {
     #[test]
     fn capture_walks_preorder_and_names_only_nonzero_leaves() {
         use crate::memory::SliceMemory;
-        // Accumulators: root at 0x100 (two children), leaf A at 0x210, leaf B
-        // at 0x310. A child pointer is the CModifier; its accumulator is +0x10.
+        // Accumulators: root at 0x100 (two children), leaf A at 0x210, leaf B at 0x310. A child
+        // pointer is the CModifier; its accumulator lies inside it.
         let mut bytes = vec![0_u8; 0x4000];
         let put = |bytes: &mut Vec<u8>, at: usize, value: &[u8]| {
             bytes[at..at + value.len()].copy_from_slice(value);

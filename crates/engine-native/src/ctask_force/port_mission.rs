@@ -17,8 +17,8 @@ use crate::{
 /// Ordered full searcher handles. Addition appends; removal tail-swaps.
 /// Serialization uses the secondary receiver to write this primary array.
 const SEARCHING: usize = 0x610;
-/// Mission target at +0xa0, owned by commands and simulation. Serialization
-/// writes the full reference whenever either raw word is nonzero.
+/// Mission target, owned by commands and simulation. Serialization writes the full reference
+/// whenever either raw word is nonzero.
 const ENGAGEMENT_TARGET: usize = super::NAVAL_MISSION + 0xa0;
 /// Ordered 32-byte target-ship-type strings copied by commands and serialized.
 const AVOIDED_SHIP_TYPES: usize = 0x740;
@@ -28,7 +28,7 @@ pub struct Searcher {
     /// None is an unreadable raw slot, not a null or dangling reference.
     pub reference: Option<u64>,
     pub resolves: Option<bool>,
-    /// Raw CUnit primary+1D8, including zero; never logical owner+1E0.
+    /// Raw unit roster owner (`cunit::ROSTER_OWNER`), including zero; never the logical owner.
     pub roster_owner: Option<u32>,
 }
 

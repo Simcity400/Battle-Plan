@@ -5,7 +5,7 @@
 //! lists and access containers, ace-range operands and autonomous-controller
 //! state.
 //!
-//! - Command power: allocated power at `+0x1F8` and effective capacity
+//! - Command power: allocated power (`ccountry::ALLOCATED_COMMAND_POWER`) and effective capacity
 //!   modifiers for every country ([`CommandPowerRow`]), with the ace country
 //!   modifiers every raid reads live (`ace_effectiveness_factor`,
 //!   `air_ace_bonuses_factor`).
@@ -14,7 +14,7 @@
 //!   cache is already `Countries.convoys_raw`.
 //!
 //! - Essential equipment: stock of every archetype listed by a raid type,
-//!   compared in whole units from `CProductionStatus+0x200` with each required
+//!   compared in whole units from the production status's stockpile pool (`cproduction_status::STOCKPILE_POOL`) with each required
 //!   amount and capped at the largest amount any raid type requires
 //!   ([`Essential`]).
 //!
@@ -137,7 +137,7 @@ pub struct CountryRow {
     /// key the walk was not given. The command power and ace columns are
     /// [`CommandPowerRow`]'s; the conversion leaves them out.
     pub modifiers: [Option<i64>; MODIFIERS],
-    /// `CGameState+0x370[slot]`; `None` past the controller arrays.
+    /// The game state's autonomous flag for the slot (`cgame_state::AUTONOMOUS_STATUS`); `None` past the controller arrays.
     pub autonomous: Option<u32>,
     /// Flattened `(priority, quantity)` pairs in the caller's arena.
     pub reservations_start: usize,
@@ -149,7 +149,7 @@ pub struct CountryRow {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CommandPowerRow {
     pub canonical_slot: u32,
-    /// `CCountry+0x1F8`.
+    /// `ccountry::ALLOCATED_COMMAND_POWER`.
     pub allocated_raw: i64,
     /// `max_command_power` and `max_command_power_mult`; `None` for a key
     /// the walk was not given.
@@ -163,25 +163,25 @@ pub struct CommandPowerRow {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ArchetypeRow {
     pub canonical_slot: u32,
-    /// The archetype's lexer token (`CEquipmentType + 8`).
+    /// The archetype's lexer token (`cequipment_type::TOKEN`).
     pub archetype: u32,
     /// Whole units in stock, obtained by dividing quantity by 100000 and
     /// narrowing to i32, at most the archetype's [`Essential::cap`].
     pub units: i32,
 }
 
-/// An archetype some raid type lists as essential equipment, with the largest
-/// amount any raid type requires of it. A raid type's `essential_equipment` is
-/// its `+0xA40` map, keyed by equipment type with one amount per key
-/// ([`crate::raid_database::equipment_map`]); the stock requirement checking
-/// compares with each amount is that of the equipment's archetype
-/// (`CEquipmentType+0x4D8`, found by its id `+0x418`). Capped there, the stock
-/// still decides every comparison and every shortfall the raid offer prints.
+/// An archetype some raid type lists as essential equipment, with the largest amount any raid type
+/// requires of it. A raid type's `essential_equipment` is its essential-equipment map
+/// (`raid_database::ESSENTIAL_EQUIPMENT`), keyed by equipment type with one amount per key
+/// ([`crate::raid_database::equipment_map`]); the stock requirement checking compares with each
+/// amount is that of the equipment's archetype (`cequipment_type::ARCHETYPE`, found by its id
+/// `cequipment_type::ARCHETYPE_ID`). Capped there, the stock still decides every comparison and
+/// every shortfall the raid offer prints.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Essential {
     /// The archetype's `CEquipmentType`.
     pub archetype: usize,
-    /// Its lexer token (`+8`).
+    /// Its lexer token.
     pub token: u32,
     pub cap: i32,
 }
@@ -283,7 +283,7 @@ pub fn essentials(
     Ok(())
 }
 
-/// One site of a country's `CStrategicAir + 0x10` (list 0) or `+ 0x28` (list 1).
+/// One site of a country's strategic air site lists (list 0 or list 1).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SiteRow {
     pub canonical_slot: u32,
@@ -301,7 +301,7 @@ pub struct AceRow {
     pub canonical_slot: u32,
     pub wing: u64,
     pub alive: u8,
-    /// Effective key 5 on the ace's own modifiers (`+0x30`).
+    /// Effective key 5 on the ace's own modifiers.
     pub range: i64,
     /// Effective key 5 on its type definition's modifiers.
     pub type_range: i64,
@@ -794,12 +794,11 @@ fn stockpiles(
     Ok(())
 }
 
-/// The essential entries of one country's allocation rows as
-/// StockpileArchetypes rows. Archetype quantity lookup returns the entry whose
-/// archetype id (`+0x418`) is the essential's, in an array kept sorted by that
-/// id with one entry per archetype; an id names one archetype object, so the
-/// entry's archetype pointer is compared instead, and an essential archetype
-/// without an entry has no row (zero stock).
+/// The essential entries of one country's allocation rows as StockpileArchetypes rows. Archetype
+/// quantity lookup returns the entry whose archetype id is the essential's, in an array kept sorted
+/// by that id with one entry per archetype; an id names one archetype object, so the entry's
+/// archetype pointer is compared instead, and an essential archetype without an entry has no row
+/// (zero stock).
 fn emit(
     rows: &[u8],
     slot: u32,
@@ -865,8 +864,8 @@ const ACCUMULATOR_ENTRIES: usize = 1024;
 /// Autonomous flags copied per guarded call.
 const FLAG_CHUNK: usize = 256;
 
-/// The `CGameState+0x370` flags, copied [`FLAG_CHUNK`] slots at a time as the
-/// ascending walk reaches them.
+/// The game state's autonomous flags (`cgame_state::AUTONOMOUS_STATUS`), copied [`FLAG_CHUNK`]
+/// slots at a time as the ascending walk reaches them.
 struct Flags {
     array: Array,
     first: u32,
@@ -1716,8 +1715,8 @@ pub(crate) mod tests {
                 self.u32(at + crate::raid_database::NODE_AMOUNT, amount as u32);
             }
         }
-        /// The raid definition database at `database` with one raid type per
-        /// essential map, each at `types + 0x1000 * index`.
+        /// The raid definition database at `database` with one raid type per essential map, each in
+        /// its own 0x1000-byte block after `types`.
         fn raid_types(&mut self, database: usize, types: usize, maps: &[&[(usize, i32)]]) {
             use crate::raid_database as db;
             self.u64(db::SINGLETON_RVA, database as u64);

@@ -19,43 +19,35 @@
 //! display text. Only children with tracked values and sources with tracked
 //! keys participate so empty signatures cannot shift bounds.
 //!
-//! The tree: filtered modifier addition appends exactly one clone (a modifier
-//! child clone) per non-empty source to the country accumulator's children
-//! (CCountry +0x5b8 +0x18), in call order, during country modifier
-//! recalculation; a clone keeps only the source's entries, display string,
-//! category mask and depth, and its token is reset. For `good` keys the child's
-//! entry equals its contribution to the root. The reader therefore replays the
-//! source walk in that order for the kinds whose layout is proven and pairs
-//! each child with a source whose nonzero entries are exactly equal (and, where
-//! the child copies the source's display string, whose display text is equal).
-//! A child is paired only when the leftmost and rightmost order-preserving
-//! assignments agree; anything else stays unpaired and keeps its display text.
-//! Only children with a tracked value and sources with a tracked key take part:
-//! the others could only pair with each other and would move the assignments'
-//! bounds.
+//! The tree: filtered modifier addition appends exactly one clone (a modifier child clone) per
+//! non-empty source to the country accumulator's children (the country modifier accumulator's
+//! entries), in call order, during country modifier recalculation; a clone keeps only the source's
+//! entries, display string, category mask and depth, and its token is reset. For `good` keys the
+//! child's entry equals its contribution to the root. The reader therefore replays the source walk
+//! in that order for the kinds whose layout is proven and pairs each child with a source whose
+//! nonzero entries are exactly equal (and, where the child copies the source's display string,
+//! whose display text is equal). A child is paired only when the leftmost and rightmost
+//! order-preserving assignments agree; anything else stays unpaired and keeps its display text.
+//! Only children with a tracked value and sources with a tracked key take part: the others could
+//! only pair with each other and would move the assignments' bounds.
 //!
-//! Source kinds replayed here (the others, which stay unpaired, are faction,
-//! difficulty setting items, balance of power, decisions and missions,
-//! operations, focus, autonomy, buildings, technologies, doctrines,
-//! intelligence agency, the difficulty static, abilities and hosted exiles):
-//! ideas (`CPoliticalStatus` +0x50), the ruling party's first country leader,
-//! its ideology group, appointed advisors (`CCountryCharacters` +0x58), the
-//! bound named statics, enabled dynamic modifiers (constant part, then
-//! evaluated part) and the scaled stability and war-support statics (scaled
-//! static copies).
+//! Source kinds replayed here (the others, which stay unpaired, are faction, difficulty setting
+//! items, balance of power, decisions and missions, operations, focus, autonomy, buildings,
+//! technologies, doctrines, intelligence agency, the difficulty static, abilities and hosted
+//! exiles): ideas (`cpolitical_status::IDEAS`), the ruling party's first country leader, its
+//! ideology group, appointed advisors (`ccountry_characters::APPOINTED_ADVISORS`), the bound named
+//! statics, enabled dynamic modifiers (constant part, then evaluated part) and the scaled stability
+//! and war-support statics (scaled static copies).
 //!
-//! The copied inputs also include war predicates over owned war relations, the
-//! interception ring sum, loaded defines, active language and tracked modifier
-//! getter values resolved through `modifier_definition::keys_by_names_at`.
-//! `raid_launch_inputs` alone reads `max_command_power`,
-//! `max_command_power_mult` and allocated command power (+0x1f8) into hourly
-//! CountryCommandPower; consumers join that row at the same frame.
-//! `add_command_power` and the top bar subtract allocated power from the
-//! maximum (see `ccountry`). Tooltip-only ideas, all-zero dynamic modifiers and
-//! zero-valued faction children cannot shift pairing because they have no
-//! tracked values. Synthetic fixtures cover pairing, ambiguity, drift,
-//! truncation and short reads; live capture and real-country pairing coverage
-//! remain unverified.
+//! The copied inputs also include war predicates over owned war relations, the interception ring
+//! sum, loaded defines, active language and tracked modifier getter values resolved through
+//! `modifier_definition::keys_by_names_at`. `raid_launch_inputs` alone reads `max_command_power`,
+//! `max_command_power_mult` and allocated command power into hourly CountryCommandPower; consumers
+//! join that row at the same frame. `add_command_power` and the top bar subtract allocated power
+//! from the maximum (see `ccountry`). Tooltip-only ideas, all-zero dynamic modifiers and
+//! zero-valued faction children cannot shift pairing because they have no tracked values. Synthetic
+//! fixtures cover pairing, ambiguity, drift, truncation and short reads; live capture and
+//! real-country pairing coverage remain unverified.
 
 use crate::{
     Memory, cadvisor, ccharacter, ccountry, ccountry_characters, ccountry_leader,
@@ -153,9 +145,8 @@ pub const STATIC_NAME: usize = 0x1a8;
 /// only values below one admit the war.
 pub const DIPLOMACY_HOSTING: usize = 0x1a8;
 
-/// Interception-ring layout: data pointer +8, signed size +0x20, signed
-/// head +0x24 and wrapped byte +0x28. Each slot points to an i64 row pointer;
-/// column 1 is summed with the stored saturation limit.
+/// Interception-ring layout: a data pointer, a signed size, a signed head and a wrapped byte. Each
+/// slot points to an i64 row pointer; column 1 is summed with the stored saturation limit.
 const RING: usize = 0x10;
 const RING_DATA: usize = 0x08;
 const RING_SIZE: usize = 0x20;
@@ -976,8 +967,9 @@ fn inputs<M: Memory>(
     })
 }
 
-/// Ruling-party popularity reached through country political status +0xf90,
-/// ruling party +0xd0 and popularity +0x88, with authenticated ownership.
+/// Ruling-party popularity reached through country political status (`ccountry::POLITICAL_STATUS`),
+/// ruling party (`cpolitical_status::RULING_PARTY`) and popularity
+/// (`cpolitical_party::POPULARITY`), with authenticated ownership.
 fn popularity(memory: &impl Memory, base: usize, country: usize) -> Result<i64, &'static str> {
     phase!(Popularity);
     let status = pointer(memory, at(country, ccountry::POLITICAL_STATUS)?)?;

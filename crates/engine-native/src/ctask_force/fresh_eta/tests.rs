@@ -2082,8 +2082,8 @@ fn assert_mission_risk_graph_read_once(memory: &Fixture) {
             "duplicate graph read at {address:x}"
         );
     }
-    // The selector returns wrappers. Only their +0x10 accumulators are
-    // lookup roots; neither old wrapper address is read as an accumulator.
+    // The selector returns wrappers. Only their accumulators are lookup roots; neither old wrapper
+    // address is read as an accumulator.
     for wrapper in [RISK_CLASS_TREE - 0x10, RISK_TERRAIN + 0xa8] {
         assert_eq!(
             memory.calls(wrapper),
@@ -2123,8 +2123,8 @@ fn mission_risk_combines_country_terrain_weather_local_leader_and_headquarters_o
     assert_eq!(owner.unwrap().id, 1); // Logical owner 7 never selects the country tree.
     assert_eq!(eta.speed_modifier, Ok(1_420));
     assert_eq!(eta.modified_range, Ok(1_000_600));
-    // -120001 country + (6000*2-3000)/3 terrain -80/2 weather
-    // +70 local +500 fleet +max(-10*4,30*4,0) headquarters.
+    // -120001 country + (6000*2-3000)/3 terrain -80/2 weather 70 local, 500 fleet and max(-10*4,
+    // 30*4, 0) headquarters.
     assert_eq!(risk.combined_detection, Ok(Some(RISK_COMBINED)));
     assert!(risk.combined_detection.unwrap().unwrap() < -100_000);
     assert_mission_risk_graph_read_once(&memory);

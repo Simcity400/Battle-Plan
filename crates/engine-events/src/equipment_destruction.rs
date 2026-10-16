@@ -185,9 +185,9 @@ pub const QUEUE: Site = Site {
         0x57,
     ],
 };
-/// Five integer slots: division, source-country pointer, equipment divisor,
-/// manpower divisor and organization divisor. The fifth is at entry RSP+0x28.
-/// Division and flooring finish before optional logging.
+/// Five integer slots: division, source-country pointer, equipment divisor, manpower divisor and
+/// organization divisor. The fifth is in its stack argument slot. Division and flooring finish
+/// before optional logging.
 pub const PARADROP: Site = Site {
     id: SiteId::Paradrop,
     kind: SiteKind::Entry,
@@ -753,9 +753,9 @@ pub fn is_army(memory: &impl Memory, base: usize, unit: usize) -> Result<bool, &
     army_identity(memory, base, unit).map(|_| true)
 }
 
-/// Native full handle is +18, whose high word (+1C) is the saved division ID.
-/// Its low word can be dynamically assigned: no reference-type constant is
-/// assumed. Authenticate both native CArmy vtables and the class discriminator.
+/// Native full handle's high word is the saved division ID. Its low word can be dynamically
+/// assigned: no reference-type constant is assumed. Authenticate both native CArmy vtables and the
+/// class discriminator.
 pub fn army_identity(memory: &impl Memory, base: usize, army: usize) -> Result<u64, &'static str> {
     let primary = base.checked_add(carmy::VTABLE_RVA);
     let secondary = base.checked_add(carmy::SECONDARY_VTABLE_RVA);

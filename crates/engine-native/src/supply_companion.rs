@@ -1,5 +1,5 @@
-//! Supply calculation data joined through country supply-system +0x80
-//! and the supply-system array. Offsets are object-relative.
+//! Supply calculation data joined through the country supply system
+//! (`ccountry_supply_system::COMPANION`) and the supply-system array. Offsets are object-relative.
 
 /// Companion array element stride.
 pub const STRIDE: usize = 800;

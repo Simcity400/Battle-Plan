@@ -20,7 +20,7 @@
 
 use crate::{Memory, cpdx_array::Array, memory::RecordLayout, memory::RecordSources, read};
 
-/// Primary CUnit offsets: the embedded CSupplyConsumer starts at +0x10.
+/// Primary CUnit offsets: they lie inside the embedded CSupplyConsumer.
 pub const ASKED: usize = 0x38;
 pub const RECEIVED: usize = 0x50;
 pub const AIR_DROPS: usize = 0x58;

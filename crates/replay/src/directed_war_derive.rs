@@ -1,14 +1,13 @@
 //! Direct-war cells used by country relations and the full-visibility war veto, derived
 //! at playback from the hour's complete WarRelations with no memory access.
 //!
-//! Both read the receiver's diplomacy matrix (`country+0xF88`, `diplomacy+0x8`) at the
-//! target's canonical slot; the cell is active when its war pointer (`relation
-//! status+0x2E8`) is non-null and the pointed relation's retired byte (`relation+0x49`)
-//! is zero. Both are functions of the recorded war relations:
+//! Both read the receiver's diplomacy matrix (its diplomacy status's relation statuses) at the
+//! target's canonical slot; the cell is active when its war pointer is non-null and the pointed
+//! relation's retired byte is zero. Both are functions of the recorded war relations:
 //!
-//! - The retired byte stays zero. Construction clears `+0x48`/`+0x49` as
-//!   one word; loading reads only `+0x48`, and no other store in the image
-//!   reaches a relation's `+0x49`.
+//! - The retired byte stays zero. Construction clears it together with the byte
+//!   before it as one word; loading reads only that preceding byte, and no other store in
+//!   the image reaches a relation's retired byte.
 //! - The war pointer is written only by status construction and reset (both
 //!   null), and relation replacement. Only the war-link replacement helper
 //!   forms the slot's address; linking installs the war in both endpoints'
@@ -17,19 +16,18 @@
 //!   unless duplicated. All install through linking. Peace, capitulation,
 //!   annexation and resets end or reset war relations through unlinking.
 //! - Relation replacement adds the installed war to the cell owner's owned
-//!   relations (diplomacy `+0x20`) and removes a replaced one. That vector's
+//!   relations (in its diplomacy status) and removes a replaced one. That vector's
 //!   only other writers are the other relation-slot setters, each removing
 //!   only its own slot's previous relation, and destruction.
 //!
-//! So at the hourly boundary every non-null cell holds a war in its owner's owned vector
-//! that joins the owner and the cell's target. The WarRelations walk
-//! (`engine::cwar_relation`) visits every positive country's owned vector, fails when a
-//! war endpoint does not resolve to a positive canonical slot or either endpoint cell
-//! does not hold the war, and emits each war once. A complete WarRelations therefore
-//! names exactly the active cells between positive countries, and no positive receiver's
-//! cell toward slot zero holds a war. The country enemy vector (`diplomacy+0x98`) is not
-//! equivalent: the civil-war transfer installs the revolter's wars without rebuilding its
-//! enemy vector.
+//! So at the hourly boundary every non-null cell holds a war in its owner's owned vector that joins
+//! the owner and the cell's target. The WarRelations walk (`engine::cwar_relation`) visits every
+//! positive country's owned vector, fails when a war endpoint does not resolve to a positive
+//! canonical slot or either endpoint cell does not hold the war, and emits each war once. A
+//! complete WarRelations therefore names exactly the active cells between positive countries, and
+//! no positive receiver's cell toward slot zero holds a war. The country enemy vector (in the
+//! diplomacy status) is not equivalent: the civil-war transfer installs the revolter's wars without
+//! rebuilding its enemy vector.
 
 use crate::{
     frame::DecodedFrame,
@@ -122,9 +120,9 @@ impl ReceiverWars {
         &self.targets
     }
 
-    /// `+0x2E8` non-null with the pointed `+0x49` zero, without the country-relation
-    /// query's self and positive-receiver gates. The receiver's own cell and its cell
-    /// toward slot zero never hold a war.
+    /// The war pointer non-null with the pointed retired byte zero, without the country-relation
+    /// query's self and positive-receiver gates. The receiver's own cell and its cell toward slot
+    /// zero never hold a war.
     pub fn pointer_active(&self, target_slot: u32) -> bool {
         self.targets.binary_search(&target_slot).is_ok()
     }

@@ -1,4 +1,4 @@
-//! Unnamed damage-attribution entry in the member's +0x108 array.
+//! Unnamed damage-attribution entry in the member's damage array (`cfex_member::DAMAGE_ENTRIES`).
 
 /// CFEXMember damage-entry stride.
 pub const STRIDE: usize = 0x20;

@@ -53,9 +53,9 @@ pub const RESOURCE_MODIFIER_GATE: usize = 0x1b4;
 pub const RESOURCE_POOL: usize = 0x1b8;
 /// Dynamic-modifier container used by state-scope triggers and serialized.
 pub const DYNAMIC_MODIFIERS: usize = 0x788;
-/// Embedded modifier at +0x608; semantic purpose unresolved.
+/// Embedded modifier; semantic purpose unresolved.
 pub const MODIFIER_608: usize = 0x608;
-/// Embedded modifier at +0x6c8; semantic purpose unresolved.
+/// Embedded modifier; semantic purpose unresolved.
 pub const MODIFIER_6C8: usize = 0x6c8;
 /// Variable-walk address with unresolved container ownership.
 pub const VARIABLES: usize = 0x7f8;
@@ -573,8 +573,8 @@ pub struct Row {
     /// [`SECONDARY_DISPLAY_NAME`] in the caller's name arena ([`read_names`]).
     pub custom_name: NameSpan,
     pub owner_name: NameSpan,
-    /// Retained CStateTemplate+0x140 token, zero for the native null object;
-    /// None is a failed independent capture, never a guessed content value.
+    /// Retained state-template continent token, zero for the native null object; None is a failed
+    /// independent capture, never a guessed content value.
     pub continent: Option<u32>,
 }
 
@@ -879,13 +879,12 @@ pub fn read_movement_infrastructure_selected(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// The two display-name strings at [`PRIMARY_DISPLAY_NAME`] and
-/// [`SECONDARY_DISPLAY_NAME`] over an already-authenticated census, copied
-/// exactly into preallocated storage without an engine call or allocation.
-/// One read covers both headers (0xD0 bytes from +0x38); a heap string adds
-/// its terminator and payload reads. A row whose strings do not fit ends the
-/// returned prefix (the rest are omitted rows); `required_bytes` counts every
-/// row so the arena grows off the game thread. A fault denies the table.
+/// The two display-name strings at [`PRIMARY_DISPLAY_NAME`] and [`SECONDARY_DISPLAY_NAME`] over an
+/// already-authenticated census, copied exactly into preallocated storage without an engine call or
+/// allocation. One read covers both headers (0xD0 bytes from `PRIMARY_DISPLAY_NAME`); a heap string
+/// adds its terminator and payload reads. A row whose strings do not fit ends the returned prefix
+/// (the rest are omitted rows); `required_bytes` counts every row so the arena grows off the game
+/// thread. A fault denies the table.
 pub fn read_names(
     memory: &impl Memory,
     game_state: usize,
@@ -1185,13 +1184,11 @@ pub fn read_flags(
 /// Bytes of [`Globals`].
 const GLOBAL_BYTES: usize = 8 + 8 + 4 + 1 + 4 + 4 + 4 + 16 + 8 + 4 + 8 + 16;
 
-/// The operands every state's movement and railway infrastructure terms and
-/// continent share, as raw bytes: the building database and its infrastructure
-/// definition (database `+0x3B0`; its type `+0x8`, lookup flag `+0x20`, maxima
-/// `+0x2B8` and `+0x2BC`, ordinal `+0x2E0`), the database's template array, the
-/// infrastructure movement-penalty and maximum-level defines, and the state
-/// database with its continent array. Only loaders write them; a caller holding
-/// rows computed from them compares this every hour.
+/// The operands every state's movement and railway infrastructure terms and continent share, as raw
+/// bytes: the building database and its infrastructure definition (held by the database; its type,
+/// lookup flag, both maxima and ordinal), the database's template array, the infrastructure
+/// movement-penalty and maximum-level defines, and the state database with its continent array.
+/// Only loaders write them; a caller holding rows computed from them compares this every hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Globals([u8; GLOBAL_BYTES]);
 

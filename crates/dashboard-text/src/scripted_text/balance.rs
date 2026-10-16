@@ -321,10 +321,10 @@ impl<'a> ScriptedText<'a> {
         Ok(text)
     }
 
-    /// The record's cached `+0xC8` trees for keys 0x98 and 0x99, derived
-    /// from its recorded static-modifier sources and the content stack's
-    /// static modifiers ([`replay::power_balance_derive`]); a source the
-    /// content cannot resolve refuses both by name.
+    /// The record's cached description trees for keys 0x98 and 0x99, derived from its recorded
+    /// static-modifier sources and the content stack's static modifiers
+    /// ([`replay::power_balance_derive`]); a source the content cannot resolve refuses both by
+    /// name.
     fn balance_trees(
         &self,
         sources: &[Vec<u8>],

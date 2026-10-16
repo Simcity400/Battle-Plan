@@ -29,8 +29,7 @@ pub const SUNK: usize = 0x298;
 pub const DELIVERED: usize = 0x2d8;
 /// Allocation size.
 pub const SIZE: usize = 0x380;
-/// Country-resource outgoing exchange pointer array, the giver's list,
-/// with signed count at +0x764.
+/// Country-resource outgoing exchange pointer array, the giver's list, with its signed count.
 pub const OUTGOING: usize = 0x758;
 
 /// Row kinds.
@@ -48,7 +47,7 @@ pub struct Row {
     pub kind: u8,
     /// The variant reference's id (type 70).
     pub variant: u32,
-    /// The receiver's raw country reference (`+0xb8`).
+    /// The receiver's raw country reference.
     pub receiver: u32,
     /// The pool amount, fixed5.
     pub amount_raw: i64,

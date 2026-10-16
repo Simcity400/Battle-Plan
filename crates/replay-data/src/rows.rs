@@ -117,14 +117,13 @@ pub struct ProvinceRow {
     /// attack list asks for it, and for a fortified one's read refusal. Older formats use
     /// NotRecorded.
     pub fort_bunker: Recorded<Option<i64>>,
-    /// The province's controller area (`+0xD0`, compared and searched during route
-    /// finding), as the id of its smallest member province, whose row holds its
-    /// [`Self::area_node`]; zero for a null area. None is a capture refusal. The
-    /// collector reads an area again only when a controller change can have touched it
-    /// (`engine::controller_areas`).
+    /// The province's controller area (compared and searched during route finding), as the id of
+    /// its smallest member province, whose row holds its [`Self::area_node`]; zero for a null area.
+    /// None is a capture refusal. The collector reads an area again only when a controller change
+    /// can have touched it (`engine::controller_areas`).
     pub controller_area: Recorded<Option<u32>>,
-    /// The province's owner area (`+0xD8`) labelled the same way; the route search reads
-    /// only equality and null.
+    /// The province's owner area labelled the same way; the route search reads only equality and
+    /// null.
     pub owner_area: Recorded<Option<u32>>,
     /// On the province whose id labels its controller area, that area's node;
     /// None on every other province. On the label province None refuses the
@@ -334,11 +333,10 @@ pub struct ShipRow {
     pub task_force: u64,
     pub strength: i64,
     pub organisation: i64,
-    /// `ship+0x708`, signed fixed5, at [`Self::EXPERIENCE_STEP`]. Its run-time writers
-    /// are experience awards (accepted fixed5 addition, then the `+0x710` cap),
-    /// assignment during transfer and captain replacement, and damage scaling.
-    /// Construction zeroes it and loading floors a negative saved value at zero. Save
-    /// serialization writes all eight bytes.
+    /// The ship's experience, signed fixed5, at [`Self::EXPERIENCE_STEP`]. Its run-time writers are
+    /// experience awards (accepted fixed5 addition, then the ship's experience cap), assignment
+    /// during transfer and captain replacement, and damage scaling. Construction zeroes it and
+    /// loading floors a negative saved value at zero. Save serialization writes all eight bytes.
     pub experience: i64,
     pub category: u32,
     pub sunk_convoys: i32,

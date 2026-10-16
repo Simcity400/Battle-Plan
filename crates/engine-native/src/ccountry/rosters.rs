@@ -10,9 +10,8 @@ use crate::{
 /// references. No hourly refresh is performed.
 pub const NEIGHBORS: usize = 0x1088;
 
-/// The MIO policy roster's refusal for a null `CCountry+0xF68`
-/// (`policies_header`): the native state of a country without production
-/// status, not a read fault.
+/// The MIO policy roster's refusal for a null `ccountry::PRODUCTION_STATUS` (`policies_header`):
+/// the native state of a country without production status, not a read fault.
 pub const POLICY_STATUS_NULL: &str = "MIO policy production status is null";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

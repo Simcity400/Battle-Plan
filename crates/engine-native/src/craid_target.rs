@@ -10,24 +10,23 @@ use crate::{
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// `scope + 8` CProvince id; zero when that arm is null.
+    /// The scope's CProvince id; zero when that arm is null.
     pub province: u32,
-    /// `scope + 0x20` CProvince id, the save's `leader_province`; zero when
-    /// that arm is null.
+    /// The scope's CProvince id, the save's `leader_province`; zero when that arm is null.
     pub leader_province: u32,
-    /// `scope + 0x10` CState id; zero when that arm is null.
+    /// The scope's CState id; zero when that arm is null.
     pub state: u32,
-    /// `scope + 0` CBuilding's lexer type token; zero when that arm is null.
+    /// The scope building's lexer type token; zero when that arm is null.
     pub building_type: u32,
-    /// The target building's `CBuildingStatus + 0x6c` location id, which the
-    /// save writes as `target.building.location`; zero without a building arm.
+    /// The target building's location id (`cbuilding_status::ID`), which the save writes as
+    /// `target.building.location`; zero without a building arm.
     pub building_location: u32,
     /// Building-location flags: bit 0 selects province and bit 1 selects state.
     pub building_flags: u32,
-    /// Raw `CBuildingStatus + 0x70` country override; the country resolver
+    /// Raw building-status country override (`cbuilding_status::COUNTRY`); the country resolver
     /// uses it when positive, else the location's controller.
     pub building_country: i32,
-    /// `scope + 0x18`, a full character reference; zero when that arm is null.
+    /// The scope's full character reference; zero when that arm is null.
     pub leader_reference: u64,
     /// Resolved leader's captor is the target country. `None` when building,
     /// province or state answers first, or an unresolved reference falls through

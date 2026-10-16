@@ -481,8 +481,8 @@ mod tests {
                 transfer_objects.push((*transfer, object as u64));
             }
             objects.extend(transfer_objects);
-            // A live unit resolves to its CUnit+0x10; the walk never reads it. A unit whose
-            // registry cell holds 0x10 itself casts to a null unit.
+            // A live unit resolves to its unit's secondary base; the walk never reads it. A unit
+            // whose registry cell holds 0x10 itself casts to a null unit.
             objects.extend(live_units.iter().map(|&unit| (unit, 0x20_0010)));
             objects.extend(null_units.iter().map(|&unit| (unit, 0x10)));
             let registry_slots = next(&mut bytes, (combats.len() + 1) * 8);

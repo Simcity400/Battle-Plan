@@ -1,10 +1,10 @@
 //! Naval result side embedded in a retained result. It stores ship/convoy
 //! entries and raw country references.
 //!
-//! The +0x60/+0x68 HQ range is borrowed from task-force +0x728 and is copied
-//! only when its retained +0x58 commander resolves. HQ items dereference
-//! +0x40 before character authentication. Failure withholds this result
-//! detail row alone; its independent result identity survives with unknown details.
+//! The HQ range is borrowed from the task force's attached headquarters and is copied only when its
+//! retained HQ commander resolves. HQ items dereference their character reference before character
+//! authentication. Failure withholds this result detail row alone; its independent result identity
+//! survives with unknown details.
 
 use crate::{Memory, read};
 
@@ -17,9 +17,8 @@ pub struct DetailsRow {
     pub hq_influences: Vec<u64>,
 }
 
-/// Resolve both full leader handles at +0x50/+0x58. Visit the borrowed
-/// +0x60/+0x68 HQ range only when the HQ commander resolves; each item
-/// selects its +0x40 character reference.
+/// Resolve both full leader handles. Visit the borrowed HQ range only when the HQ commander
+/// resolves; each item selects its character reference.
 pub fn capture_details(
     memory: &impl Memory,
     base: usize,

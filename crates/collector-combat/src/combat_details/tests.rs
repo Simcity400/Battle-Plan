@@ -563,11 +563,9 @@ fn an_overflowing_exile_division_is_counted_out_then_kept_after_growth() {
     assert_eq!(rows[1].exile.as_ref().unwrap().occupiers, [22, 23]);
 }
 
-/// The CAS hover's operands project from the side read onto the
-/// side inputs alone: the stored anti-air cache (+0x138) and the prevented
-/// lanes (+0x168/+0x170). The side details keep only their retired places.
-/// Capture rounds the prevented lanes to their display step afterwards, with
-/// every other converted table.
+/// The CAS hover's operands project from the side read onto the side inputs alone: the stored
+/// anti-air cache and the prevented lanes. The side details keep only their retired places. Capture
+/// rounds the prevented lanes to their display step afterwards, with every other converted table.
 #[test]
 fn cas_operands_project_onto_the_side_inputs_alone() {
     let mut captured = Captured::with_capacities(&Capacities {
@@ -1099,8 +1097,8 @@ impl ReserveWorld {
     fn put(&mut self, at: usize, bytes: &[u8]) {
         self.0[at..at + bytes.len()].copy_from_slice(bytes);
     }
-    /// A childless accumulator at `at` holding 0xFB = `value`, labelled; the
-    /// value lies at `at + 0x208`.
+    /// A childless accumulator at `at` holding 0xFB = `value`, labelled; the value lies in its
+    /// word.
     fn leaf(&mut self, at: usize, value: i64) {
         let entries = at + 0x200;
         self.put(at, &(entries as u64).to_le_bytes());

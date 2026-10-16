@@ -85,7 +85,7 @@ const hold = (readHour: number, throughHour: number, totalRaw: string | null): L
   holders: [{ id: 'notIdentified', kind: 'Not identified', name: null, amountRaw: totalRaw }], reason: 'holder identity is not recorded' });
 
 test('command power shows what moved into and out of reserve that day, never the counter as an amount held', () => {
-  // The game's counter sits below zero: +12 reserved at hour 25, 20 released at 26.
+  // The game's counter sits below zero: 12 reserved at hour 25, 20 released at 26.
   const holds = [hold(0, 24, '-7000000'), hold(25, 25, '-5800000'), hold(26, 30, '-7800000'), hold(32, 40, '-1000000')];
   const data = reply({ spending: [spend({ currency: 'Command', category: 'dailyDeficit', chargeRaw: '120001',
     changes: [{ readHour: 26, chargeRaw: '120001', realizedDeltaRaw: '-120001', covered: true, occurrences: 1 }] })],

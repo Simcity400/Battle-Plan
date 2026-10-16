@@ -43,7 +43,7 @@ pub const CREATE_RVA: usize = 0x00ee_e3c0;
 /// Matching-source update; replaces final, current and daily contribution.
 pub const UPDATE_RVA: usize = 0x00ef_01f0;
 
-/// Bytes copied in one guarded batch: every recorded scalar lies below +0x34.
+/// Bytes copied in one guarded batch: every recorded scalar lies in the first 0x34 bytes.
 const HEAD: usize = 0x34;
 
 /// One native contribution in stored order. `reason` indexes the caller's arena.

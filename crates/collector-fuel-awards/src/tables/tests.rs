@@ -100,8 +100,8 @@ fn same_pointer_and_zero_instance_reset_withdraws_only_its_old_window() {
         events[1].started.country_instance = 0;
         events[3].started.country_instance = 0;
         if hour == 25 {
-            // Native dynamic reuse can leave both pointer and +0C at zero.
-            // Reset precedes the next ordinary update, without a branch/gap.
+            // Native dynamic reuse can leave both pointer and count at zero. Reset precedes the
+            // next ordinary update, without a branch/gap.
             events.insert(
                 0,
                 Entry {

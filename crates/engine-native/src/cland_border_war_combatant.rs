@@ -15,7 +15,7 @@ pub const PARTICIPANT_LIFECYCLE_SLOT_RVA: usize = 0x029a_5920;
 pub const VTABLE_ENTRY_COUNT: usize = 34;
 /// Border-war side country used by the tooltip.
 pub const COUNTRY: usize = 0x4a0;
-/// Border-war state pointer; the tooltip reads its +0x58 id.
+/// Border-war state pointer; the tooltip reads its id.
 pub const STATE: usize = 0x4a8;
 /// Win/lose event MSVC strings; stored length establishes presence.
 pub const WIN_EVENT: usize = 0x4e0;

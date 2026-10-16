@@ -11,8 +11,8 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// Foreign-unit visibility scales its stored byte by the viewer's
-/// modifier 0x24B from country +0x5B8.
+/// Foreign-unit visibility scales its stored byte by the viewer's modifier 0x24B from the country's
+/// modifier accumulator.
 pub const UNIT_MODIFIER: u32 = crate::modifier_keys::INTEL_FROM_COMBAT_FACTOR;
 /// Province fog uses country-scoped state modifier key 0x4B for owned
 /// states controlled by another country.

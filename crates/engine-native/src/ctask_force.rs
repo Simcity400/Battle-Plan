@@ -26,7 +26,7 @@ pub mod port_mission;
 
 /// Primary vtable at displacement zero.
 pub const VTABLE_RVA: usize = 0x0294_c480;
-/// Secondary vtable at displacement +0x10.
+/// Secondary vtable at `SECONDARY_BASE`.
 pub const SECONDARY_VTABLE_RVA: usize = 0x0294_c660;
 /// Supply-consumer/reference-object secondary base.
 pub const SECONDARY_BASE: usize = 0x10;
@@ -212,8 +212,8 @@ pub struct CounterRow {
     /// Attached naval-HQ count; nonzero shows the combat control for the viewer's
     /// task force when it is in combat.
     pub attached_headquarters: i32,
-    /// Uncommitted retained CUnit+0x258 bytes, independently copied after the
-    /// established counter prefix. None refuses only the cached-name field.
+    /// Uncommitted retained name-member bytes, independently copied after the established counter
+    /// prefix. None refuses only the cached-name field.
     pub name: Option<crate::cname_group_member::Span>,
     /// Stored supply footer operands independent of motion prefix and cached
     /// name. Ship count/demand are read through the secondary supply object.
@@ -286,11 +286,10 @@ pub const TASK_FIELDS: [(usize, usize); 30] = {
     ]
 };
 
-/// Authenticates a task force's embedded CNavalMission from the first 16 bytes
-/// read at [`NAVAL_MISSION`]: the CNavalMission vtable, then the `+0x08`
-/// task-force back-pointer (mission construction initializes both during
-/// task-force construction). Every reader of the mission checks it for every
-/// task force it observes, so no reader's authentication depends on another
+/// Authenticates a task force's embedded CNavalMission from the first 16 bytes read at
+/// [`NAVAL_MISSION`]: the CNavalMission vtable, then the task-force back-pointer (mission
+/// construction initializes both during task-force construction). Every reader of the mission
+/// checks it for every task force it observes, so no reader's authentication depends on another
 /// reader's buffer having room.
 pub(crate) fn authenticate_mission(
     header: &[u8],
@@ -659,14 +658,13 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
             .capture_mission_risk_union(pointer, hour, demand, guard, contributor))
     }
 
-    /// Visits this authenticated receiver once for motion and an independent
-    /// original same-pass mission-risk demand. Use instead of `visit`, never
-    /// after it. The caller owns nullable-ledger/backlink and original +30 /
-    /// signed-combat-count admission; failures must not be retried or guessed.
-    /// `guard` authenticates the risk keys and speed/weather keys.
-    /// Motion/path/row-capacity failure is retained by the normal census while
-    /// a valid risk-only observation remains available. No native pointer is
-    /// retained. Missing current-hour authentication is an outer refusal.
+    /// Visits this authenticated receiver once for motion and an independent original same-pass
+    /// mission-risk demand. Use instead of `visit`, never after it. The caller owns
+    /// nullable-ledger/backlink and original counter / signed-combat-count admission; failures must
+    /// not be retried or guessed. `guard` authenticates the risk keys and speed/weather keys.
+    /// Motion/path/row-capacity failure is retained by the normal census while a valid risk-only
+    /// observation remains available. No native pointer is retained. Missing current-hour
+    /// authentication is an outer refusal.
     pub fn visit_with_mission_risk(
         &mut self,
         pointer: usize,
@@ -696,11 +694,10 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
             .capture_mission_risk(pointer, hour, demand, guard))
     }
 
-    /// The ordinary visitor's risk demand from its original counter +30 fact
-    /// and signed +1B4 observation. Its combat count shares the old motion
-    /// header attempt even when vector validation, paths or capacity refuses
-    /// motion. A stopped prefix may read the independently reached word once;
-    /// a failed original header cannot be retried. Use instead of either visit.
+    /// The ordinary visitor's risk demand from its original counter fact and signed combat-count
+    /// observation. Its combat count shares the old motion header attempt even when vector
+    /// validation, paths or capacity refuses motion. A stopped prefix may read the independently
+    /// reached word once; a failed original header cannot be retried. Use instead of either visit.
     pub fn visit_with_original_counter_risk(
         &mut self,
         pointer: usize,
@@ -918,11 +915,11 @@ pub const MISSION_CURRENT_REGION: usize = 0x70;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MissionRow {
     pub id: u64,
-    /// Raw country reference at `CNavalMission+0x10`.
+    /// Raw country reference held by the naval mission (`MISSION_OWNER`).
     pub owner: u32,
-    /// Strategic region id at `+0x70`, zero for none.
+    /// Strategic region id (`MISSION_CURRENT_REGION`), zero for none.
     pub current_region: u32,
-    /// Range of accessible region ids (`+0xC8`, count `+0xD4`) in the caller's arena, in order.
+    /// Range of accessible region ids (`cnaval_mission::ACCESSIBLE_REGIONS`) in the caller's arena, in order.
     pub regions_start: usize,
     pub regions_len: usize,
 }

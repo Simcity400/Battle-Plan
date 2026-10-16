@@ -37,8 +37,8 @@ fn multiply(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / SCALE
 }
 
-/// Only members read by the power scorer. The aggregate's +0/+38/+40/+48/+70/+78
-/// are never consumed by either reached readiness chain and are not recorded.
+/// Only members read by the power scorer. The aggregate's other six words are never consumed by
+/// either reached readiness chain and are not recorded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Power {
     ships: i32,

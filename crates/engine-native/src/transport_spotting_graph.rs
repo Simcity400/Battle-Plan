@@ -1,9 +1,8 @@
 //! Independent selected-transport words borrowed from the original stat selector.
 //!
-//! Transport weight/detection read +0x138/+0x160; visibility reads
-//! +0x148/+0x150. The caller owns the original unit +0x138 selector and
-//! stat-definition authentication. Failed selectors are never retried.
-//! Copied numbers do not establish carrier or air-region lifetime.
+//! Transport weight and detection, and visibility, each read their own pair of stat-block words.
+//! The caller owns the original unit stat-block selector and stat-definition authentication. Failed
+//! selectors are never retried. Copied numbers do not establish carrier or air-region lifetime.
 
 use crate::{Memory, read};
 

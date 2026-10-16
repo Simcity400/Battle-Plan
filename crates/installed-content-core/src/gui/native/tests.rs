@@ -1060,8 +1060,8 @@ fn widget_families_keep_their_fields() {
         panic!()
     };
     assert_eq!((browser.position(), browser.size()), ([1, 2], [3, 4]));
-    // The third `size` component writes the first four bytes of the `spriteType` string's
-    // inline buffer (`+0x110`), which its size (0) does not reach: nothing to refuse.
+    // The third `size` component writes the first four bytes of the `spriteType` string's inline
+    // buffer, which its size (0) does not reach: nothing to refuse.
     let c = window.child_named("c").unwrap();
     assert!(c.refusals().is_empty(), "{:?}", c.refusals());
     let Fields::Browser(curve) = &c.fields else {
@@ -1070,11 +1070,10 @@ fn widget_families_keep_their_fields() {
     assert!(curve.sprite.is_empty());
 }
 
-/// The integer component reader writes a browser's `position` on into its `spriteType`
-/// string (`+0x110`): inline bytes change the text as far as its size reaches, a size past
-/// the inline buffer is refused, and the object's end (0x130) is a heap overflow; a
-/// scrollbar's `slider_pos_shift` reaches the child factory, which only a later child kind
-/// calls through.
+/// The integer component reader writes a browser's `position` on into its `spriteType` string:
+/// inline bytes change the text as far as its size reaches, a size past the inline buffer is
+/// refused, and the object's end (0x130) is a heap overflow; a scrollbar's `slider_pos_shift`
+/// reaches the child factory, which only a later child kind calls through.
 #[test]
 fn components_land_in_strings_and_pointers_past_their_fields() {
     engine::executable_tables::initialize_for_tests()
@@ -1099,7 +1098,7 @@ fn components_land_in_strings_and_pointers_past_their_fields() {
         panic!()
     };
     assert_eq!(bar.slots[7], 8);
-    assert!(reasons(window.child_named("t").unwrap())[0].contains("+0x218"));
+    assert!(reasons(window.child_named("t").unwrap())[0].contains("child factory pointer"));
 }
 
 /// Past the child map (skipped by components `%i` stores nothing for), `slider_pos_shift`
@@ -1153,7 +1152,7 @@ fn slider_components_reach_the_scrollbar_types_end() {
     assert_eq!(bar.size, [0, 0]);
     // Thirteen without a parent: the unwritten id decides nothing.
     assert!(window.child_named("n").unwrap().refusals().is_empty());
-    assert!(reasons(window.child_named("o").unwrap())[0].contains("+0x274"));
+    assert!(reasons(window.child_named("o").unwrap())[0].contains("listed field ids' count"));
     assert!(reasons(window.child_named("q").unwrap())[0].contains("heap overflow"));
 }
 

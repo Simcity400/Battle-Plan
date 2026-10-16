@@ -129,19 +129,18 @@ fn walk(
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Balance {
-    /// Complete +0x50 static-modifier roster, including empty sources.
+    /// Complete static-modifier roster, including empty sources.
     pub sources: Vec<Vec<u8>>,
     pub daily: Vec<Node>,
     pub weekly: Vec<Node>,
 }
 
-/// The inputs of a record's cached +0xC8 tree: its complete +0x50
-/// static-modifier roster (count +0x5C), every occurrence in array order, by
-/// `CStaticModifier` script name (+0x1A8), empty sources included. Rebuilding
-/// clears +0xC8 and passes each to filtered modifier addition in this order,
-/// and source addition pushes a new source to the end and adds it the same way,
-/// so playback derives both cached trees from these names and the content
-/// (`replay::power_balance_derive`). No accumulator, child or getter is read.
+/// The inputs of a record's cached description tree: its complete static-modifier roster, every
+/// occurrence in array order, by `CStaticModifier` script name, empty sources included. Rebuilding
+/// clears the tree and passes each to filtered modifier addition in this order, and source addition
+/// pushes a new source to the end and adds it the same way, so playback derives both cached trees
+/// from these names and the content (`replay::power_balance_derive`). No accumulator, child or
+/// getter is read.
 pub fn balance_sources(memory: &impl Memory, record: usize) -> Result<Vec<Vec<u8>>, &'static str> {
     let sources = record
         .checked_add(0x50)
@@ -167,8 +166,8 @@ pub fn balance_sources(memory: &impl Memory, record: usize) -> Result<Vec<Vec<u8
     Ok(names)
 }
 
-/// Rebuilding appends one clone per nonempty static modifier, in +0x50/+0x5C
-/// order. CStaticModifier's script identity is +0x1A8.
+/// Rebuilding appends one clone per nonempty static modifier, in roster order. CStaticModifier's
+/// script identity is its name.
 pub fn balance(memory: &impl Memory, base: usize, record: usize) -> Result<Balance, &'static str> {
     let sources = record
         .checked_add(0x50)

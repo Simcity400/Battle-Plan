@@ -28,17 +28,15 @@ impl Default for PortraitWalk<'_> {
     }
 }
 
-/// Hourly manager census, including characters whose runtime map is empty.
-/// Character serialization reaches the embedded portrait holder. Its entry
-/// array is at +0x08 and its count at +0x14; entries span 0x38 bytes.
-/// Share `part` of `parts` of the roster, contiguous in roster order. Rows
-/// are sorted within the share; the caller merges shares by character.
-/// Entries may be reused only under a complete mutation observation. Roster,
-/// identity, country and array validation still run in their original order.
-/// An optional complete authenticated occurrence census from this same callback
-/// supplies roster identities for reuse.
-/// Portrait headers and changed descriptors are still acquired here. An absent
-/// or differently scoped census takes the ordinary independent native path.
+/// Hourly manager census, including characters whose runtime map is empty. Character serialization
+/// reaches the embedded portrait holder. Its entry array starts the record, followed by its count;
+/// entries span 0x38 bytes. Share `part` of `parts` of the roster, contiguous in roster order. Rows
+/// are sorted within the share; the caller merges shares by character. Entries may be reused only
+/// under a complete mutation observation. Roster, identity, country and array validation still run
+/// in their original order. An optional complete authenticated occurrence census from this same
+/// callback supplies roster identities for reuse. Portrait headers and changed descriptors are
+/// still acquired here. An absent or differently scoped census takes the ordinary independent
+/// native path.
 pub fn walk_portraits(
     memory: &impl Memory,
     base: usize,

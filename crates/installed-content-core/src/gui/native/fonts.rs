@@ -1,12 +1,12 @@
 //! The game's bitmap fonts as read and loaded: `bitmapfont` facts, overrides, the 511-bucket
 //! font registry and its fallback, language families and glyphs from each family's files.
 //!
-//! The file list (`+0xD0`) keeps `path` and `fontfiles` in order: each `path` appends, while
-//! each `fontfiles` clears and replaces the list. At the font's `}`, the list becomes family 0
-//! with no languages. A `bitmapfont_override` appends a family to the font found by lookup and
-//! fallback at the time of reading; repeated `fontfiles` and `languages` lists concatenate. At
-//! each `.gfx` file's end, every font selects the first family containing the game's language
-//! byte for byte, else family 0, and loads that family's files in order.
+//! The file list keeps `path` and `fontfiles` in order: each `path` appends, while each `fontfiles`
+//! clears and replaces the list. At the font's `}`, the list becomes family 0 with no languages. A
+//! `bitmapfont_override` appends a family to the font found by lookup and fallback at the time of
+//! reading; repeated `fontfiles` and `languages` lists concatenate. At each `.gfx` file's end,
+//! every font selects the first family containing the game's language byte for byte, else family 0,
+//! and loads that family's files in order.
 
 use std::collections::BTreeMap;
 
@@ -24,33 +24,32 @@ pub type TextColors = BTreeMap<u8, [f32; 4]>;
 /// The stored facts and constructor defaults of one `bitmapfont`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontFacts {
-    /// `name` (`font+0x10`): the last assignment.
+    /// `name`: the last assignment.
     pub name: Vec<u8>,
-    /// `color` (`+0x58`, 0): `%x`, `0xAARRGGBB`, unpacked as the text object's color. A font
-    /// without one draws (0, 0, 0, 0).
+    /// `color` (0): `%x`, `0xAARRGGBB`, unpacked as the text object's color. A font without one
+    /// draws (0, 0, 0, 0).
     pub color: u32,
-    /// `border_color` (`+0x60`, 0): `%x`, written raw as each glyph vertex's second color.
+    /// `border_color` (0): `%x`, written raw as each glyph vertex's second color.
     pub border_color: u32,
-    /// The file list (`+0xD0`): each `path` appended, each `fontfiles` replacing it.
+    /// The file list: each `path` appended, each `fontfiles` replacing it.
     pub files: Vec<Vec<u8>>,
-    /// `icons_add_height` (`+0x3110`): raises a line to an inline icon's height.
+    /// `icons_add_height`: raises a line to an inline icon's height.
     pub icons_add_height: bool,
-    /// `icon_scale` (`%f`, `+0x3114`, 1.0).
+    /// `icon_scale` (`%f`, 1.0).
     pub icon_scale: f32,
-    /// The font's own `textcolors` (`+0x110`): the first colour of each code (code 0 the last).
+    /// The font's own `textcolors`: the first colour of each code (code 0 the last).
     pub text_colors: TextColors,
-    /// `cursor_offset` (`+0x30`) and `selection_offset` (`+0x38`), integer component reader: the
-    /// four `i32`s from `+0x30`.
+    /// `cursor_offset` and `selection_offset`, integer component reader: the four `i32`s from the
+    /// cursor offset on.
     pub offsets: [i32; 4],
-    /// `+0x50`/`+0x54`, the size font draw divides by (`2 / w`, `2 / h`):
-    /// the constructor copies the graphics context's `+0x180` (the render size when the font is
-    /// built) and nothing rewrites it; `None` keeps that copy, `Some` is what an offset's
-    /// component wrote.
+    /// The viewport size the font draw divides by (`2 / w`, `2 / h`): the constructor copies the
+    /// graphics context's render size (as it is when the font is built) and nothing rewrites it;
+    /// `None` keeps that copy, `Some` is what an offset's component wrote.
     pub viewport: [Option<i32>; 2],
-    /// `+0xC0`, the auxiliary color uploaded as `ModColor`, initially (1, 1, 1, 1). An offset
-    /// component can write it. Text object rendering sets its own auxiliary color before
-    /// drawing and restores white afterwards, so a written color reaches only a text sprite
-    /// bake occurring before any text object has drawn with the font.
+    /// The auxiliary color uploaded as `ModColor`, initially (1, 1, 1, 1). An offset component can
+    /// write it. Text object rendering sets its own auxiliary color before drawing and restores
+    /// white afterwards, so a written color reaches only a text sprite bake occurring before any
+    /// text object has drawn with the font.
     pub aux_color: [f32; 4],
     pub refusals: Vec<Refusal>,
 }
@@ -68,9 +67,9 @@ impl FontFacts {
 /// A `bitmapfont_override` as read.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FontOverride {
-    /// `name` (`+0x8`).
+    /// `name`.
     pub name: Vec<u8>,
-    /// `fontfiles` (`+0x28`) and `languages` (`+0x40`): string list reader, each repeat appending.
+    /// `fontfiles` and `languages`: string list reader, each repeat appending.
     pub files: Vec<Vec<u8>>,
     pub languages: Vec<Vec<u8>>,
 }
@@ -118,8 +117,8 @@ fn hash61(name: &[u8]) -> u32 {
         })
 }
 
-/// The font registry the graphics context keeps (`+0xD4` buckets, 511, `+0xD8`), each font pushed on
-/// its bucket's front once read.
+/// The font registry the graphics context keeps (511 buckets), each font pushed on its bucket's
+/// front once read.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Fonts {
     fonts: Vec<Font>,
@@ -219,7 +218,7 @@ pub struct Glyph {
 /// kerning pair winning.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GlyphSet {
-    /// `lineHeight` (`+0xC00`) and `base` (`+0xC04`), from the first file only.
+    /// `lineHeight` and `base`, from the first file only.
     pub line_height: Option<i32>,
     pub base: Option<i32>,
     /// Each file's page texture as registered: the entry and `.tga` (resolved through
@@ -371,23 +370,23 @@ fn read_fnt(bytes: &[u8], page: u32, set: &mut GlyphSet) {
     }
 }
 
-/// The bitmap font's 0x3620 bytes as offset components write into them from `+0x30`.
+/// The bitmap font's 0x3620 bytes as offset components write into them from the cursor offset on.
 struct FontBytes<'a> {
     font: &'a mut FontFacts,
     image: &'a mut FontImage,
 }
 
-/// The file list's vector (`+0xD0`), initially empty.
+/// The file list's vector, initially empty.
 const FILES: spill::VectorSite = spill::VectorSite {
-    what: "the font's file list (+0xD0)",
+    what: "the font's file list",
     append: "font reader (string vector append)",
     readers: "graphics resource initialization (font family append, family 0)",
     destructor: "font destructor",
 };
 
 /// A `bitmapfont`'s state beyond its named fields during reading: the file vector, text color
-/// entries (0x30 bytes each from `+0x110`: code at `+0x0`, color at `+0x10`, RGBA at `+0x20`)
-/// and the key whose components wrote them.
+/// entries (0x30 bytes each, after the active family: code, then color, then RGBA) and the key
+/// whose components wrote them.
 #[derive(Clone, Debug)]
 struct FontImage {
     files: spill::Vector<Vec<u8>>,
@@ -431,46 +430,46 @@ impl Layout for FontBytes<'_> {
         let font = &mut *self.font;
         let float = f32::from_bits(bits);
         match offset {
-            // `cursor_offset` and `selection_offset`, `font+0x30..+0x3F`.
+            // `cursor_offset` and `selection_offset`.
             0x30..=0x3C => font.offsets[(offset - 0x30) / 4] = bits as i32,
             0x40 | 0x44 => {
-                return Err("the font's lost-device interface vtable (+0x40, font virtual-function table at \
+                return Err("the font's lost-device interface vtable (font virtual-function table at \
                  the image's load address, which the replay does not hold), registered for the \
                  renderer to call through at every device reset"
                     .into());
             }
             0x48 | 0x4C => {
-                return Err("the font's graphics context pointer (+0x48), which the glyph loader reads when \
+                return Err("the font's graphics context pointer, which the glyph loader reads when \
                  the font's files load: a heap address the replay does not hold"
                     .into());
             }
             0x50 | 0x54 => font.viewport[(offset - 0x50) / 4] = Some(bits as i32),
             0x58 => font.color = bits,
             0x60 => font.border_color = bits,
-            // `+0x5C` and `+0x80..+0xAF`, saved and current text colors, rewritten by color
-            // setting or restoration before draws read them. `+0x64..+0x6F` has no constructor
-            // write or reader. The three color objects' virtual-function tables and padding
-            // (`+0x70`, `+0x90`, `+0xB0`) are unused.
+            // The saved text color and the current text colors, rewritten by color setting or
+            // restoration before draws read them. The words between the border color and the
+            // current colors have no constructor write or reader. The three color objects'
+            // virtual-function tables and padding are unused.
             0x5C..=0xBC => {}
             0xC0..=0xCC => font.aux_color[(offset - 0xC0) / 4] = float,
             0xD0..=0xE4 => self
                 .image
                 .files
                 .write(offset - 0xD0, bits, self.image.writer)?,
-            // The families' vector (`+0xE8` data, `+0xF0` capacity, `+0xF4` count, `+0xF8`
-            // allocator) is empty while the font is read. At `}`, resource initialization
-            // appends family 0; changed bits can send that append through null, past capacity
-            // or through an unavailable allocator address.
+            // The families' vector (data, capacity, count and allocator allocator) is empty while
+            // the font is read. At `}`, resource initialization appends family 0; changed bits can
+            // send that append through null, past capacity or through an unavailable allocator
+            // address.
             0xE8..=0xF4 if bits == 0 => {}
             0xE8..=0xFC => {
                 return Err(
-                    "the font's families vector (+0xE8), through which the graphics resource \
+                    "the font's families vector, through which the graphics resource \
                  initialization appends family 0 at the font's `}`: a null block, a count past \
                  its capacity, or an allocator at an address the replay does not hold"
                         .into(),
                 );
             }
-            // The active family, selected and loaded before any draw; padding to `+0x110`.
+            // The active family, selected and loaded before any draw; then padding.
             0x100..=0x10C => {}
             0x110..=0x310C => {
                 let (entry, at) = ((offset - 0x110) / 0x30, (offset - 0x110) % 0x30);
@@ -485,13 +484,12 @@ impl Layout for FontBytes<'_> {
             0x3110 => font.icons_add_height = bits.to_le_bytes()[0] != 0,
             0x3114 => font.icon_scale = float,
             0x3118..=0x3614 => {
-                // The forty glyph buffer cache records (0x20 bytes: text key `+0x0`, last use
-                // `+0x8`, texture `+0x10`, vertex count `+0x14`, vertex buffer `+0x18`), zero
-                // until the first draw.
+                // The forty glyph buffer cache records (0x20 bytes: text key, last use, texture,
+                // vertex count, vertex buffer), zero until the first draw.
                 match (offset - 0x3118) % 0x20 {
                     0 if bits != 0 => {
                         return Err(
-                            "a glyph cache record's text key (+0x3118 on), which the font draw \
+                            "a glyph cache record's text key, which the font draw \
                          matches with a drawn text's hash until the slot ages out on the game's \
                          render clock, drawing nothing for a null buffer: a clock the replay does \
                          not hold"
@@ -500,7 +498,7 @@ impl Layout for FontBytes<'_> {
                     }
                     0x18 | 0x1C if bits != 0 => {
                         return Err(
-                            "a glyph cache record's vertex buffer (+0x3130 on), which font \
+                            "a glyph cache record's vertex buffer, which font \
                          destruction and glyph vertex buffer release free, and drawing binds: \
                          bits that are no buffer"
                                 .into(),
@@ -590,8 +588,8 @@ impl Reader<'_> {
                         record(&mut font.refusals, FILE, word, reason, Cause::Unread);
                     }
                 }
-                // Read integer components into `+0x30` or `+0x38`, including spills beyond them
-                // ([`FontBytes`]).
+                // Read integer components into the cursor or selection offset, including spills
+                // beyond them ([`FontBytes`]).
                 "cursor_offset" | "selection_offset" => {
                     let start = if word == "cursor_offset" { 0x30 } else { 0x38 };
                     let mut written = Vec::new();
@@ -736,9 +734,10 @@ mod tests {
         assert!(font.refusals.is_empty(), "{:?}", font.refusals);
     }
 
-    /// The integer component reader writes the offsets from `+0x30` on: a `cursor_offset`'s third and
-    /// fourth components are the selection offset; from `+0x40` the lost-device interface's
-    /// vtable and the graphics pointer, which the game calls and reads through.
+    /// The integer component reader writes the offsets from the cursor offset on: a
+    /// `cursor_offset`'s third and fourth components are the selection offset; after them come the
+    /// lost-device interface's vtable and the graphics pointer, which the game calls and reads
+    /// through.
     #[test]
     fn offset_components_land_on_the_font() {
         engine::executable_tables::initialize_for_tests()
@@ -760,7 +759,7 @@ mod tests {
         );
         let vtable = font("selection_offset = { 1 2 3 }");
         assert!(
-            vtable.refusals[0].reason.contains("+0x40"),
+            vtable.refusals[0].reason.contains("lost-device interface vtable"),
             "{:?}",
             vtable.refusals
         );
@@ -837,12 +836,12 @@ mod tests {
         // A later `path` through a written capacity copies through the null block.
         let null = font("", &[(0xD8, "3")], "path = \"x\"");
         assert!(
-            null.refusals[0].reason.contains("+0xD0"),
+            null.refusals[0].reason.contains("the font's file list"),
             "{:?}",
             null.refusals
         );
         let families = font("", &[(0xF4, "1")], "");
-        assert!(families.refusals[0].reason.contains("+0xE8"));
+        assert!(families.refusals[0].reason.contains("the font's families vector"));
         let key = font("", &[(0x3118 + 0x20 * 3, "1")], "");
         assert!(key.refusals[0].reason.contains("render clock"));
         let buffer = font("", &[(0x3118 + 0x18, "1")], "");

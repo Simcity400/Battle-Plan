@@ -1,8 +1,10 @@
 //! Writers of country-leader and advisor role rows read by a character-scope
 //! trait check, and of CountryLeaderRoles rows: character country-leader map
-//! `+0x98` (ideology key and role pointer), role traits `+0x50` and current
-//! ideology `+0x140`, and advisor traits `+0xC8`. Advisor map `+0xB0`, its roles,
-//! character parsing, merging and destruction belong to
+//! (`ccharacter::LEADER_MAP_HEAD`; ideology key and role pointer), role traits
+//! (`ccountry_leader::TRAITS`) and current ideology
+//! (`ccountry_leader::CURRENT_IDEOLOGY`), and advisor traits
+//! (`cadvisor::TRAITS`). The advisor map (`ccharacter::ADVISOR_MAP_HEAD`), its
+//! roles, character parsing, merging and destruction belong to
 //! [`crate::advisor_mutations`]. These observe calls; recording never invokes
 //! game functions to obtain data.
 //!
@@ -10,40 +12,44 @@
 //!   country-leader trait addition and both ruler/leader trait swaps. Generic
 //!   and leader trait removal and both swaps compact inline. Every path then
 //!   rebuilds modifiers on the same role in the same call, as do both role
-//!   creators (one after storing `+0x8`) and the virtual name setter. The
-//!   script reader runs inside the character parser, an advisor-family site.
+//!   creators (one after storing the role's character) and the virtual name
+//!   setter. The script reader runs inside the character parser, an
+//!   advisor-family site.
 //! - Map nodes are inserted by the shared helper (parsing, legacy leader
 //!   creation, and creation with registration), and inline by the add-role
-//!   effect, which builds the role from an output, character and definition
-//!   in the same call. Replaced and removed roles run their destructor from
-//!   role removal through range erasure, both creators, parsing and tree
-//!   destruction; role `+0x8` still names the character on entry. Node keys
-//!   are written only on insertion.
+//!   effect, which builds the role from an output, character and definition in
+//!   the same call. Replaced and removed roles run their destructor from role
+//!   removal through range erasure, both creators, parsing and tree
+//!   destruction; the role's character pointer still names the character on
+//!   entry. Node keys are written only on insertion.
 //! - Advisor traits are appended and compacted by trait addition and removal.
 //!   Both, two factories, trait upgrading and the virtual name setter then
 //!   rebuild the same role's modifiers.
-//! - The advisor's cached accumulator (`+0x1B0`) and tooltip key set (`+0x218`,
-//!   accumulator string set `+0x68`) are cleared and refilled only by that
-//!   rebuild, through accumulator clear/add and key insertion, after constructor
-//!   initialization. Callers include combat-experience trait upgrading. The
-//!   factory producing a new object and the name setter then assign the role's
-//!   own block into `+0xF0` and add it into `+0x1B0` in the same call. Of callers
-//!   of accumulator clear, add and both copy helpers, only those three and an
-//!   unrelated unit-medal refill write an accumulator at `+0x1B0`.
+//! - The advisor's cached accumulator (`cadvisor::MODIFIER_ENTRIES`) and
+//!   tooltip key set (`cadvisor::TOOLTIP_KEYS`, the accumulator's string set)
+//!   are cleared and refilled only by that rebuild, through accumulator
+//!   clear/add and key insertion, after constructor initialization. Callers
+//!   include combat-experience trait upgrading. The factory producing a new
+//!   object and the name setter then assign the role's own modifier block and
+//!   add it into the cached accumulator in the same call. Of callers of
+//!   accumulator clear, add and both copy helpers, only those three and an
+//!   unrelated unit-medal refill write an accumulator at the advisor's
+//!   accumulator position (`cadvisor::MODIFIER_ENTRIES`).
 //! - Current ideology is written by both creators before modifier rebuilding,
 //!   the script reader inside parsing, and the ideology-setting effect. That
 //!   effect stores directly on the scope country's ruling party's first leader
 //!   without rebuilding. It resolves the receiver inside the effect, so the
 //!   hook names no character and revokes every certificate. The ideology token
-//!   (`+0x8`) is a database value.
+//!   is a database value.
 //!
-//! - Carried Characters fields are name token `+0x18`, template `+0x20`, display
-//!   name `+0x28`, saved name `+0x48` and gender `+0x70`. Writers are identity/name
-//!   setting (character-name and leader-name effects, three registration paths
-//!   and four other creation/name paths), identity repair (rebuilds `+0x28`),
-//!   parsing and merging (advisor family), and definition building and
-//!   constructors on new objects only. Character destruction first runs the
-//!   advisor family's role-tree destructor.
+//! - Carried Characters fields are name token, template, display name, saved
+//!   name and gender (`ccharacter::NAME_TOKEN_ID`, `TEMPLATE`, `NAME`, `TOKEN`,
+//!   `GENDER`). Writers are identity/name setting (character-name and
+//!   leader-name effects, three registration paths and four other creation/name
+//!   paths), identity repair (rebuilds the display name), parsing and merging
+//!   (advisor family), and definition building and constructors on new objects
+//!   only. Character destruction first runs the advisor family's role-tree
+//!   destructor.
 //!
 //! Scientist rows and operative links are read every hour and need no site.
 
@@ -60,7 +66,7 @@ pub const CHARACTER_NAME: usize = 6;
 pub const CHARACTER_REPAIR: usize = 7;
 
 pub const MUTATIONS: [MutationSite; 8] = [
-    // Leader modifier rebuilding (leader); character at leader+0x8.
+    // Leader modifier rebuilding (leader); character at `ccountry_leader::CHARACTER`.
     MutationSite {
         name: "country_leader_modifiers",
         rva: 0xfb6f50,
@@ -69,7 +75,7 @@ pub const MUTATIONS: [MutationSite; 8] = [
             0x20, 0x55,
         ],
     },
-    // Leader destruction (leader); character at leader+0x8.
+    // Leader destruction (leader); character at `ccountry_leader::CHARACTER`.
     MutationSite {
         name: "country_leader_destroy",
         rva: 0xfb4a90,
@@ -78,7 +84,7 @@ pub const MUTATIONS: [MutationSite; 8] = [
             0x5c, 0x9b,
         ],
     },
-    // Leader-map try_emplace(map = character+0x98, result, key, value).
+    // Leader-map try_emplace(map = the character's leader map, result, key, value).
     MutationSite {
         name: "country_leader_map_insert",
         rva: 0x32b290,
@@ -96,7 +102,7 @@ pub const MUTATIONS: [MutationSite; 8] = [
             0x08, 0x55,
         ],
     },
-    // Advisor modifier rebuild (advisor); character at advisor+0x10.
+    // Advisor modifier rebuild (advisor); character at `cadvisor::CHARACTER`.
     MutationSite {
         name: "advisor_modifiers",
         rva: 0x128ff90,

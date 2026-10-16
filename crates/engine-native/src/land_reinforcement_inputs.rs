@@ -59,11 +59,10 @@ pub struct ContextRow {
     /// Slots thirty and thirty-one are reserved zeroes. Absent branches have zero
     /// operands with separate presence flags; zero does not assert zero game storage.
     pub scalar_values: [i64; 32],
-    ///0 raw retreat;1 raw shattered+24D;2 raw supply-bypass+2AE;
-    ///3 raw core-bypass+2E;4 active-acclimatization reference present;
-    ///5 route-attack branch;6 controller branch(0 neither,1 friendly,2 enemy);
-    ///7 air-cache branch;8 noncore branch;9 infrastructure branch;
-    ///10 raw infrastructure lookup byte;11 normal supply branch=1, naval transfer=2.
+    /// 0 raw retreat;1 raw shattered byte;2 raw supply-bypass byte; 3 raw core-bypass byte;4
+    /// active-acclimatization reference present; 5 route-attack branch;6 controller branch(0
+    /// neither,1 friendly,2 enemy); 7 air-cache branch;8 noncore branch;9 infrastructure branch; 10
+    /// raw infrastructure lookup byte;11 normal supply branch=1, naval transfer=2.
     pub flags: [u8; 12],
     ///0 location province;1 next route province(0 null);2 location state;
     ///3 infrastructure state;4 selected subunit lexer id;5 feature flags;

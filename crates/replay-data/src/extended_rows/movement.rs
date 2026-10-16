@@ -275,8 +275,8 @@ pub struct ArmyOrderPlanRow {
     pub has_child: u8,
     pub owner_override: u64,
     pub assigned_divisions: Vec<u64>,
-    /// Native ordered +0x1E0 predecessor and +0x1F8 successor order
-    /// instances, scoped to `owner_group`: the plan graph the map draws.
+    /// Native ordered predecessor and successor order instances, scoped to `owner_group`: the plan
+    /// graph the map draws.
     pub predecessors: Vec<u32>,
     pub successors: Vec<u32>,
     /// Order-name strings, recorded only for move, invasion and paradrop
@@ -327,8 +327,9 @@ pub struct OrderExecutionInputs {
 value_struct!(OrderExecutionInputs { route_is_ok: Option<u8>, paradrop: Option<ParadropPreparationInputs> });
 opaque_value!(Option<OrderExecutionInputs>);
 
-/// Type4 accumulated preparation+ D8. A later modifier/target refusal keeps
-/// this saved progress while withholding only the complete term group.
+/// Type4 accumulated preparation (`corder_instance::ACCUMULATED_PREPARATION`). A later
+/// modifier/target refusal keeps this saved progress while withholding only the complete term
+/// group.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ParadropPreparationInputs {
     pub progress: i64,
@@ -436,10 +437,10 @@ pub struct FactionTheatreRow {
     pub ordinal: u32,
     /// The faction's sprite key (save `icon`); the pin draws `<icon>_miniature`.
     pub icon: Vec<u8>,
-    /// Theatre +0x48 strategic region ids in native order; the pin sits over
-    /// the first region and its anchor averages every listed region.
+    /// The theatre's strategic region ids in native order; the pin sits over the first region and
+    /// its anchor averages every listed region.
     pub regions: Vec<u32>,
-    /// Count of the theatre's +0x30 country list, the number under the pin.
+    /// Count of the theatre's country list, the number under the pin.
     pub country_count: u32,
     /// Raw country links whose theatre pin is hidden, in stored order.
     pub hidden_for: Vec<u32>,
@@ -607,27 +608,25 @@ pub struct DivisionMovementRow {
     pub order_transport: Recorded<Option<DivisionOrderTransportInputs>>,
     /// Retired current-hour speed graph of the fresh counter route.
     pub fresh: Recorded<Retired>,
-    /// Complete ordered unit+1A8/+1B4 references from this callback hour. Repeats and
-    /// runtime-minted full handles are retained. None is an independent acquisition
-    /// refusal; historical absence is NotRecorded. Entry count equals combat_count; no
-    /// selection or derived query is stored.
+    /// Complete ordered unit combat references from this callback hour. Repeats and runtime-minted
+    /// full handles are retained. None is an independent acquisition refusal; historical absence is
+    /// NotRecorded. Entry count equals combat_count; no selection or derived query is stored.
     pub combat_references: Recorded<Option<UnitCombatReferences>>,
     /// Retired selected-route commander, retreat and exile operands.
     pub selected: Recorded<Retired>,
     /// Retired selected transport weight, transfer and template operands.
     pub transport: Recorded<Retired>,
-    /// Raw signed fixed5 maximum speed of the division's stat block
-    /// (`[division+0x138]+0x290`, a `stat block`), read for a division with a nonempty
-    /// route. Movement-speed calculation starts from this value, scales it by the edge
-    /// modifier, organisation and fuel, floors it at 1 km/h and multiplies by the
-    /// movement scale; the hourly step (vslot 0xD8) adds that product to `numerator`, and
-    /// no field caches it. Playback estimates arrival from this speed alone. None is
-    /// outside demand or a counted guarded refusal; older formats use NotRecorded.
+    /// Raw signed fixed5 maximum speed of the division's stat block (its `stat block`'s
+    /// maximum-speed field), read for a division with a nonempty route. Movement-speed calculation
+    /// starts from this value, scales it by the edge modifier, organisation and fuel, floors it at
+    /// 1 km/h and multiplies by the movement scale; the hourly step (through the unit's
+    /// movement-speed virtual) adds that product to `numerator`, and no field caches it. Playback
+    /// estimates arrival from this speed alone. None is outside demand or a counted guarded
+    /// refusal; older formats use NotRecorded.
     pub base_speed: Recorded<Option<i64>>,
-    /// Division `+0x620`, the fuel the movement speed's fuel ratio divides by the stat
-    /// block's capacity, read with the base speed for a division with a nonempty route;
-    /// the save's `fuel`. None is outside demand or this field's refusal; older formats
-    /// use NotRecorded.
+    /// The division's fuel, which the movement speed's fuel ratio divides by the stat block's
+    /// capacity, read with the base speed for a division with a nonempty route; the save's `fuel`.
+    /// None is outside demand or this field's refusal; older formats use NotRecorded.
     pub fuel: Recorded<Option<i64>>,
 }
 typed_codec!(DivisionMovementRow, 64, |row| row.division as u128,
@@ -645,10 +644,9 @@ typed_codec!(DivisionMovementRow, 64, |row| row.division as u128,
  }
 });
 
-/// Naval stat+2B8 and paradrop stat+5B5 are independent raw observations.
-/// Para modifiers are present only for a unit contributing at its exact
-/// owned primary root and current source province. Missing reached operands
-/// are refusals; a viewer must not infer zero from None.
+/// The naval transport weight and the paradrop stat are independent raw observations. Para
+/// modifiers are present only for a unit contributing at its exact owned primary root and current
+/// source province. Missing reached operands are refusals; a viewer must not infer zero from None.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct DivisionOrderTransportInputs {
     pub naval_weight: Option<i64>,
@@ -1144,8 +1142,8 @@ pub struct DivisionStatusRow {
     /// Member-name generator inputs. None on guarded failure or arena shortage
     /// (counted by capture); older formats use NotRecorded.
     pub naming: Recorded<Option<NameOperands>>,
-    /// Division +0x600/+0x610 fixed5 supply grace. Older formats use NotRecorded; zero is
-    /// a recorded value. With `supply_ratio` (division+0x40), the division's only record
+    /// The division's fixed5 supply grace (maximum and remaining). Older formats use NotRecorded;
+    /// zero is a recorded value. With `supply_ratio` (the division's), the division's only record
     /// of these supply operands: DivisionLandInputs no longer copies them.
     pub supply_grace_maximum: Recorded<i64>,
     pub supply_grace_remaining: Recorded<i64>,
@@ -1186,8 +1184,8 @@ pub struct DivisionStatusRow {
     /// since the read it came from, so every hour holds what the stat block holds. None
     /// is a read refusal; older formats use NotRecorded.
     pub attack_stats: Recorded<Option<DivisionAttackStats>>,
-    /// The fresh acclimatization factor for division `+0x4B8`, which scales the region
-    /// weather term of the attack list. None is a read refusal; older formats use
+    /// The fresh acclimatization factor for the division's acclimatization data, which scales the
+    /// region weather term of the attack list. None is a read refusal; older formats use
     /// NotRecorded.
     pub weather_factor: Recorded<Option<i64>>,
     /// The name member's own template reference ([`Self::naming`]'s generator
@@ -1202,9 +1200,9 @@ pub struct DivisionStatusRow {
     /// The stat block's movement operands ([`DivisionMovementStats`]), read, carried
     /// and refused with [`Self::attack_stats`]. Older formats use NotRecorded.
     pub movement_stats: Recorded<Option<DivisionMovementStats>>,
-    /// Division `+0x498`, signed days out of supply: the movement speed's and
-    /// attrition's out-of-supply penalty divide it by the supply-days define. None is
-    /// this field's read refusal; older formats use NotRecorded.
+    /// The division's signed days out of supply: the movement speed's and attrition's out-of-supply
+    /// penalty divide it by the supply-days define. None is this field's read refusal; older
+    /// formats use NotRecorded.
     pub out_of_supply_days: Recorded<Option<i32>>,
     /// The raw army speed, armour speed, out-of-supply, river crossing and
     /// special-forces out-of-supply entries ([`Self::COMMANDER_KEYS`]) of the commander
@@ -1266,13 +1264,12 @@ impl DivisionStatusRow {
     /// ratios drawn from them can differ from the game in their last digit at boundaries.
     pub const MAXIMUM_STEP: crate::display::Step =
         crate::display::Step::fixed5(10_000, crate::display::Rounding::TowardZeroNonzero);
-    /// `supply_ratio` (`division+0x40`) at the game's display precision: the counter
-    /// hover and supply descriptions print the effective value as a whole percentage (in
-    /// a fixed colour for the hover), every installed mod the same: 0.01 truncated by the
-    /// fixed5 formatter. Truncation commutes with the effective value's `max` against the
-    /// grace share, and every supply crate threshold and LOW_SUPPLY gate in vanilla and
-    /// the installed mods is a multiple of 0.01, so the frames and the low-supply gate
-    /// are unchanged; a mod threshold off that grid could flip at its boundary.
+    /// `supply_ratio` at the game's display precision: the counter hover and supply descriptions
+    /// print the effective value as a whole percentage (in a fixed colour for the hover), every
+    /// installed mod the same: 0.01 truncated by the fixed5 formatter. Truncation commutes with the
+    /// effective value's `max` against the grace share, and every supply crate threshold and
+    /// LOW_SUPPLY gate in vanilla and the installed mods is a multiple of 0.01, so the frames and
+    /// the low-supply gate are unchanged; a mod threshold off that grid could flip at its boundary.
     pub const SUPPLY_RATIO_STEP: crate::display::Step =
         crate::display::Step::fixed5(1_000, crate::display::Rounding::TowardZero);
     /// The wire step of `supply_grace_remaining`: 0.01 hour, which every
@@ -1280,19 +1277,17 @@ impl DivisionStatusRow {
     pub const SUPPLY_GRACE_STEP: crate::display::Step =
         crate::display::Step::fixed5(1_000, crate::display::Rounding::TowardZero);
 
-    /// `supply_grace_remaining` (`division+0x610`, fixed5) as capture stores it. The game
-    /// shows it only as a fixed5 share of `G`, the live `NMilitary.SUPPLY_GRACE` hours,
-    /// scaling both operands before division, at whole percent, truncated: on its own as
-    /// stored supply in a fixed colour, and as the larger of it and the received ratio in
-    /// the unit supply text, low-supply gate, counter supply icon and availability.
-    /// Truncating toward zero to a multiple of `1000 G` keeps that percent for every
-    /// whole positive `G`, and a share on the percent grid keeps every comparison with
-    /// the received ratio (a multiple of 0.01) and with a threshold on that grid. The
-    /// hourly update moves the value by at most 0.15 when it regains and by 0.75 times
-    /// the missing supply share when it spends (vanilla), so it changes the percent only
-    /// every few hours. An unknown or nonpositive `G`, a negative value and one whose
-    /// share product would wrap keep [`Self::SUPPLY_GRACE_STEP`]; a sentinel word stays
-    /// exact.
+    /// `supply_grace_remaining` (fixed5) as capture stores it. The game shows it only as a fixed5
+    /// share of `G`, the live `NMilitary.SUPPLY_GRACE` hours, scaling both operands before
+    /// division, at whole percent, truncated: on its own as stored supply in a fixed colour, and as
+    /// the larger of it and the received ratio in the unit supply text, low-supply gate, counter
+    /// supply icon and availability. Truncating toward zero to a multiple of `1000 G` keeps that
+    /// percent for every whole positive `G`, and a share on the percent grid keeps every comparison
+    /// with the received ratio (a multiple of 0.01) and with a threshold on that grid. The hourly
+    /// update moves the value by at most 0.15 when it regains and by 0.75 times the missing supply
+    /// share when it spends (vanilla), so it changes the percent only every few hours. An unknown
+    /// or nonpositive `G`, a negative value and one whose share product would wrap keep
+    /// [`Self::SUPPLY_GRACE_STEP`]; a sentinel word stays exact.
     pub fn displayed_grace(remaining: i64, grace: Option<i32>) -> i64 {
         match grace {
             Some(hours) if hours > 0 && (0..=i64::MAX / 100_000).contains(&remaining) => {
@@ -1302,18 +1297,17 @@ impl DivisionStatusRow {
         }
     }
 
-    /// Division `+0x2AE` is nonzero: the exile byte lets edge admission bypass province
+    /// The division's exile byte is nonzero: the exile byte lets edge admission bypass province
     /// move access, allowing a move across controller areas within one state owner.
     pub const MOVE_EXILED: u8 = 1;
     /// The cached `can_exfiltrate_from_coast` operand, passed to the path request.
     pub const MOVE_CAN_EXFILTRATE_FROM_COAST: u8 = 2;
-    /// Division `+0x2E` is nonzero: the movement speed's out-of-supply step adds no
-    /// noncore-supply term.
+    /// The division's noncore-supply byte is nonzero: the movement speed's out-of-supply step adds
+    /// no noncore-supply term.
     pub const MOVE_NONCORE_SUPPLY_BYPASS: u8 = 4;
 
-    /// The attrition glyph test: the division's stored attrition (`division+0x438`)
-    /// exceeds the threshold the row records, a signed fixed-point comparison of the same
-    /// read.
+    /// The attrition glyph test: the division's stored attrition exceeds the threshold the row
+    /// records, a signed fixed-point comparison of the same read.
     pub fn has_attrition(&self) -> bool {
         self.attrition_threshold < self.attrition_value
     }
@@ -1363,15 +1357,14 @@ value_struct!(DivisionAcclimatization {
     weight: i64
 });
 
-/// The acclimatization category used to camouflage a division's land model. Division
-/// `+0x4B8` holds the acclimatization data; selection takes the entry with the first
-/// strictly greatest weight above zero, and keeps its category when that category is not
-/// null and the weight reaches the maximum (+0x38) times the live
-/// `NGraphics.ACCLIMATIZATION_CAMO_SHOW_AT`, a wrapping signed product truncated toward
-/// zero by 100,000. The capture applies exactly that test, so a division's camouflage
-/// changes only when the winner or its crossing of the threshold does. The province and
-/// state conditions that follow (`forbid_camo_when`, `change_camo_when`) depend on where
-/// the model stands and stay with the consumer.
+/// The acclimatization category used to camouflage a division's land model. The division's
+/// acclimatization data holds the weights; selection takes the entry with the first strictly
+/// greatest weight above zero, and keeps its category when that category is not null and the weight
+/// reaches the maximum times the live `NGraphics.ACCLIMATIZATION_CAMO_SHOW_AT`, a wrapping signed
+/// product truncated toward zero by 100,000. The capture applies exactly that test, so a division's
+/// camouflage changes only when the winner or its crossing of the threshold does. The province and
+/// state conditions that follow (`forbid_camo_when`, `change_camo_when`) depend on where the model
+/// stands and stay with the consumer.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct DivisionCamouflage {
     /// The category's lexer token; None when no category reaches the
@@ -1610,10 +1603,10 @@ typed_codec!(LandTheatreMemberRow, 128, |row| (row.theater_group as u128) << 64 
 /// root order, computed from the group's then its parent's primary orders'
 /// assigned members, is this order.
 ///
-/// `unit_owner` is the raw `unit+0x1E0` of the unit used by the naval-invasion route
-/// search (zero without a unit); the sea route's path-cost operands for that owner are
-/// the slot-0 relation bytes and co-belligerents of its CountryCounterInputs row, so the
-/// retired `zero_*` and `co_belligerents` fields record nothing.
+/// `unit_owner` is the raw owner of the unit used by the naval-invasion route search (zero without
+/// a unit); the sea route's path-cost operands for that owner are the slot-0 relation bytes and
+/// co-belligerents of its CountryCounterInputs row, so the retired `zero_*` and `co_belligerents`
+/// fields record nothing.
 ///
 /// The save writes only progress among the preparation operands, which the
 /// oracle compares. Unit selection lives in engine::invasion_preparations.
@@ -1674,9 +1667,9 @@ typed_codec!(VolunteerHostRow, 64, |row| (row.country as u128) << 32 | row.posit
 
 /// TheatreAreas: key theatre:ordinal (96 bits), 2 payload mask bits.
 ///
-/// One controller area listed by a volunteer theatre at `+0x18`. `representative` is the
-/// province behind the area's `+0x28`, which is the only member the save writer emits;
-/// `provinces` is the area's whole `+0x30` membership.
+/// One controller area listed by a volunteer theatre. `representative` is the province behind the
+/// area's representative, which is the only member the save writer emits; `provinces` is the area's
+/// whole membership.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TheatreAreaRow {
     /// Full native theatre handle; join it to LandTheatres.
@@ -1692,7 +1685,7 @@ typed_codec!(TheatreAreaRow, 96, |row| (row.theatre as u128) << 32 | row.ordinal
 
 /// StationedUnits: key theatre:ordinal (96 bits), 1 payload mask bit.
 ///
-/// One position of a volunteer theatre's `+0x68` stationed-unit vector.
+/// One position of a volunteer theatre's stationed-unit vector.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StationedUnitRow {
     /// Full native theatre handle; join it to LandTheatres.
@@ -1712,9 +1705,9 @@ typed_codec!(StationedUnitRow, 96, |row| (row.theatre as u128) << 32 | row.ordin
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct OrdersGroupRow {
     pub handle: u64,
-    /// Raw country reference at +0x3c, kept as read like every other raw alias.
+    /// Raw country reference, kept as read like every other raw alias.
     pub country: u32,
-    /// Raw +0x39 discriminator byte, the source of the save's field_marshal_group.
+    /// Raw army-group discriminator byte, the source of the save's field_marshal_group.
     pub is_army_group: u8,
     /// Raw stored byte, written unconditionally to the save.
     pub motorization_level: u8,

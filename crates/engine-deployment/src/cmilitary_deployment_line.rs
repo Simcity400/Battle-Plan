@@ -1,8 +1,7 @@
 //! Military deployment line: identity, repetition count and owned deployment.
 //!
-//! The 0x40-byte line owns a name at +0x20 and amount at +0x28. A null
-//! deployment at +0x30 causes removal, so live lines own a deployment.
-//! The walker authenticates its parent backlink at +0x38.
+//! The 0x40-byte line owns a name and an amount. A null deployment causes removal, so live lines
+//! own a deployment. The walker authenticates its parent backlink.
 
 use crate::{Memory, cmilitary_deployment, cname_group_member, cpdx_array::Array, read};
 
@@ -10,7 +9,7 @@ use crate::{Memory, cmilitary_deployment, cname_group_member, cpdx_array::Array,
 pub const VTABLE_RVA: usize = 0x29a9dc0;
 /// CMilitaryDeploymentLine reference kind.
 pub const REFERENCE_TYPE: u32 = 63;
-/// CMilitaryDeploymentLine reference type word, u32; the shared CReferenceObject qword at +8.
+/// CMilitaryDeploymentLine reference type word, u32; the shared CReferenceObject qword.
 pub const TYPE: usize = 0x08;
 /// CMilitaryDeploymentLine reference id, u32; the high half of the same qword.
 pub const ID: usize = 0x0c;
@@ -58,13 +57,13 @@ pub struct Row {
     pub halting_reason_present: u8,
     /// Raw halting-reason word; meaningful only when the flag byte is set.
     pub halting_reason: i32,
-    /// Arena start of the literal custom division-name bytes from CNameGroupMember +0x88; empty names are valid.
+    /// Arena start of the literal custom division-name bytes from `cname_group_member::OVERRIDE_NAME`; empty names are valid.
     pub custom_name_start: usize,
     /// Custom-name byte length; zero omits the saved name.
     pub custom_name_len: usize,
-    /// Raw flag byte at +0xa8; its save field is emitted only when clear.
+    /// Raw flag byte (`cname_group_member::FLAG_A`); its save field is emitted only when clear.
     pub custom_flag_a: u8,
-    /// Raw flag byte at +0xa9; its save field is emitted only when set.
+    /// Raw flag byte (`cname_group_member::FLAG_B`); its save field is emitted only when set.
     pub custom_flag_b: u8,
 }
 

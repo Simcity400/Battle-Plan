@@ -1,4 +1,4 @@
-//! CLoopHistoryContainer, the circular window reached through CLoopHistory +0x20.
+//! CLoopHistoryContainer, the circular window reached through CLoopHistory's third window.
 
 /// History-window primary vtable.
 pub const VTABLE_RVA: usize = 0x029b_bdb8;

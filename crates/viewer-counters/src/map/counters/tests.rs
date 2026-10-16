@@ -1724,8 +1724,8 @@ fn railway_gun_counters_keep_their_hover_at_both_zoom_levels() {
     }
 }
 
-/// Keep kinds apart before BEF20; guns then compare their stat
-/// definition, and two own guns their idle/reference actions and assigned group.
+/// Keep kinds apart before the definition comparison; guns then compare their stat definition, and
+/// two own guns their idle/reference actions and assigned group.
 #[test]
 fn railway_guns_join_only_guns_of_one_definition_and_own_orders() {
     let countries = countries([(1, Allegiance::Allied), (3, Allegiance::Ours)]);

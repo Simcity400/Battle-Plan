@@ -111,13 +111,13 @@ pub const CONTROLLED_FACTORY_COUNTS: [usize; 3] =
     [MILITARY_FACTORIES, NAVAL_FACTORIES, CIVILIAN_FACTORIES];
 /// Embedded consumer-goods object ([`civ_factory_consumer`]).
 pub const CONSUMER_GOODS: usize = 0x430;
-/// National projects consumer, +0x448 (qword 0x89).
+/// National projects consumer.
 pub const SPECIAL_PROJECTS: usize = 0x448;
-/// Licensed production consumer, +0x460 (qword 0x8c).
+/// Licensed production consumer.
 pub const LICENSED_PRODUCTION: usize = 0x460;
-/// Trade consumer, +0x478 (qword 0x8f).
+/// Trade consumer.
 pub const TRADE: usize = 0x478;
-/// Market contract payment consumer, +0x490 (qword 0x92).
+/// Market contract payment consumer.
 pub const CONTRACT_PAYMENTS: usize = 0x490;
 /// Bytes from the military group to the end of the last consumer: one span
 /// covers every factory field the reader takes.
@@ -638,7 +638,7 @@ pub struct AvailableEquipmentRow {
 pub const AVAILABLE_EQUIPMENT: usize = 0xa0;
 /// CProductionStatus foreign (licensed or lent) equipment roster.
 pub const FOREIGN_EQUIPMENT: usize = 0xe8;
-/// CProductionStatus best-variant candidate list, count at +0xC4.
+/// CProductionStatus best-variant candidate list, with its count.
 pub const BEST_VARIANT_CANDIDATES: usize = 0xb8;
 
 /// Every country's three equipment rosters. Rows past capacity are counted.

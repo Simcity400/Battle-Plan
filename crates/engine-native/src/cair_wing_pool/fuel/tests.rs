@@ -152,7 +152,7 @@ fn fixture() -> Synthetic {
     memory.i32(WING + cair_wing::COUNTRY_OVERRIDE, 0);
     memory.put(WING + cair_wing::MISSION + air_mission::CONTEXT_MODE, &[2]);
     memory.u64(WING + cair_wing::MISSION + air_mission::REGION, 0);
-    // Saved active+B0 deliberately unmapped: current fuel never reads it.
+    // The saved active field deliberately unmapped: current fuel never reads it.
     memory.array(MODULE + defines::MISSION_COSTS_RVA, COSTS, 19);
     for index in 0..19 {
         memory.i64(COSTS + index * 8, 100000);

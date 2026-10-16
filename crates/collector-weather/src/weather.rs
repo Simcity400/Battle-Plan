@@ -411,11 +411,10 @@ pub struct WeatherJob {
     display: DisplayCapture,
     manager: usize,
     manager_authenticated: bool,
-    /// Each region record's weather modifier (`+0x58`) entries for
-    /// `army_attack_factor` and `breakthrough_factor`, raw (`None` for an
-    /// absent key), which the selected army's attack list reads through
-    /// region weather modifier lookup; the outer `None`
-    /// is that region's read refusal. Region order.
+    /// Each region record's weather modifier entries for `army_attack_factor` and
+    /// `breakthrough_factor`, raw (`None` for an absent key), which the selected army's attack list
+    /// reads through region weather modifier lookup; the outer `None` is that region's read
+    /// refusal. Region order.
     combat: Vec<Option<RegionModifiers>>,
     /// Each province record's weather modifier entries
     /// ([`PROVINCE_MODIFIER_KEYS`]); slot order.

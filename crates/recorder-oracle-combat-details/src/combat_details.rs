@@ -486,10 +486,9 @@ fn formation(
     }
 }
 
-/// Naval commanders' timed traits (+0xDE0) against `traits_to_remove`
-/// (0x3969), which the timed-trait writer writes in vector order as each trait's +8 token and
-/// signed remaining days, omitting an empty vector. The saved leader's
-/// presence is `commander_values`' comparison.
+/// Naval commanders' timed traits against `traits_to_remove` (0x3969), which the timed-trait writer
+/// writes in vector order as each trait's token and signed remaining days, omitting an empty
+/// vector. The saved leader's presence is `commander_values`' comparison.
 fn timed_traits(
     r: &mut Report,
     label: &str,

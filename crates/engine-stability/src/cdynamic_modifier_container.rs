@@ -1,4 +1,4 @@
-//! CDynamicModifierContainer, embedded in CCountry at +0xe58.
+//! CDynamicModifierContainer, embedded in CCountry (`ccountry::DYNAMIC_MODIFIERS`).
 //!
 //! Current state is read after the joined hourly update. Daily decrement and
 //! synchronous modifier rebuild finish before that boundary; scripted add/remove
@@ -62,10 +62,9 @@ pub struct Demand {
     pub values: usize,
 }
 
-/// The entry array uses count +0x34 and stride 0x40. Each instance's value
-/// array is sized by its definition's +0x1C4 count. Empty capture storage visits
-/// every retained token/value header, including disabled entries, without row
-/// or payload allocation.
+/// The entry array uses its count and stride 0x40. Each instance's value array is sized by its
+/// definition's value count. Empty capture storage visits every retained token/value header,
+/// including disabled entries, without row or payload allocation.
 pub fn demand(
     memory: &impl Memory,
     base: usize,

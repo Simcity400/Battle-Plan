@@ -1,5 +1,6 @@
 //! Runtime writers of role-census fields no other family patches: a rostered
-//! character's country `+0x68` and role span `[+0x98, +0xD0)` (country-leader
+//! character's country (`ccharacter::COUNTRY`) and role span, from
+//! `ccharacter::LEADER_MAP_HEAD` through `ccharacter::OPERATIVE` (country-leader
 //! map head and size, unit leader pointer, advisor map head and size, scientist
 //! pointer and operative reference). These and the forwarded sites select when
 //! the census can be carried; recording never calls them.
@@ -7,17 +8,18 @@
 //! - Country assignment updates the unit leader too, reached from recruitment,
 //!   registration, both generated-advisor branches, country-character loading
 //!   and retirement. The character parser stores the country through a helper.
-//! - Unit-leader pointers (`+0xA8`) are written by army- and navy-role creation,
-//!   and cleared by the remove-unit-leader and remove-military-role effects.
-//!   Role copying runs inside character merge or on a new character.
-//! - Country-leader map (`+0x98/+0xA0`) insertion is inline in the add-role
+//! - Unit-leader pointers (`ccharacter::UNIT_LEADER`) are written by army- and
+//!   navy-role creation, and cleared by the remove-unit-leader and
+//!   remove-military-role effects. Role copying runs inside character merge or
+//!   on a new character.
+//! - Country-leader map (head and size) insertion is inline in the add-role
 //!   effect; range erasure is reached from role removal. The try-emplace site
 //!   belongs to [`crate::character_role_mutations`].
-//! - Scientist pointers (`+0xC0`) are written by the add-role effect; attach
-//!   and clear belong to [`crate::character_roster_mutations`].
-//! - The operative reference (`+0xC8`) has one setter and one caller, which
-//!   publishes the character first.
-//! - Advisor map (`+0xB0/+0xB8`) writers, parsing, merging and destruction belong
+//! - Scientist pointers (`ccharacter::SCIENTIST`) are written by the add-role
+//!   effect; attach and clear belong to [`crate::character_roster_mutations`].
+//! - The operative reference (`ccharacter::OPERATIVE`) has one setter and one
+//!   caller, which publishes the character first.
+//! - Advisor map (head and size) writers, parsing, merging and destruction belong
 //!   to [`crate::advisor_mutations`]. Constructors and definition building write
 //!   new characters before roster publication, which the roster domain observes.
 //!   Shared tree insertion and extraction helpers run for unrelated maps every
@@ -75,8 +77,9 @@ pub const MUTATIONS: [MutationSite; 8] = [
             0x50, 0x01,
         ],
     ),
-    // Loads the reference at RDX+0x8 into RAX and stores it at RCX+0xC8;
-    // eleven bytes relocate before the return and padding.
+    // Loads the reference held by RDX's object into RAX and stores it in the
+    // character's operative reference; eleven bytes relocate before the return
+    // and padding.
     site(
         "set_operative_reference",
         0xf9_11a0,
@@ -87,8 +90,8 @@ pub const MUTATIONS: [MutationSite; 8] = [
     ),
 ];
 
-/// Both unit-role creators share a prologue whose five-byte RBX store at
-/// RSP+0x10 relocates.
+/// Both unit-role creators share a prologue whose five-byte RBX store to RDX's
+/// home slot relocates.
 const CREATE_ROLE: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x55, 0x57, 0x41, 0x56, 0x48, 0x8b,
 ];

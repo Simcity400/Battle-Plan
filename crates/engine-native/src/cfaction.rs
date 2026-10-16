@@ -31,10 +31,9 @@ pub const MEMBER_COUNT: usize = 0x64;
 pub const NAME_FALLBACK_HOLDER: usize = 0x568;
 /// The same pointer under the name the save gives it.
 pub const TEMPLATE: usize = NAME_FALLBACK_HOLDER;
-/// Faction colour is an embedded colour object with four f32 RGBA
-/// components at +0x10..+0x1c. Construction defaults each to 1.0 and copies
-/// the selected source components. Serialization truncates RGB components
-/// after scaling by 255; alpha is emitted only when it differs from 1.0.
+/// Faction colour is an embedded colour object with four f32 RGBA components (`COLOR_COMPONENTS`).
+/// Construction defaults each to 1.0 and copies the selected source components. Serialization
+/// truncates RGB components after scaling by 255; alpha is emitted only when it differs from 1.0.
 pub const COLOR: usize = 0x9d0;
 /// Offset of the first of the four f32 components inside `CColor`.
 pub const COLOR_COMPONENTS: usize = 0x10;
@@ -55,10 +54,10 @@ pub const DISPLAY_NAME_RVA: usize = 0x00d7_7360;
 pub const CONTAINS_COUNTRY_RVA: usize = 0x00d7_8160;
 /// Embedded faction upgrade-status object.
 pub const UPGRADE_STATUS: usize = 0x838;
-/// Upgrade-status advisor-slot array: signed count +0xA4 and 0x1A8-byte
-/// slots. Each slot starts with a nullable advisor pointer. Idea predicates
-/// compare non-null advisor idea tokens. Departing advisors clear the slot;
-/// serialization retains every slot and emits its character token only when occupied.
+/// Upgrade-status advisor-slot array: a signed count and 0x1A8-byte slots. Each slot starts with a
+/// nullable advisor pointer. Idea predicates compare non-null advisor idea tokens. Departing
+/// advisors clear the slot; serialization retains every slot and emits its character token only
+/// when occupied.
 pub const ADVISOR_SLOTS: usize = UPGRADE_STATUS + 0x98;
 /// Advisor slot stride.
 pub const ADVISOR_SLOT_STRIDE: usize = 0x1a8;
@@ -70,7 +69,7 @@ pub struct AdvisorRow {
     pub faction: u64,
     /// The slot's position; empty slots have no row, so ordinals may skip.
     pub ordinal: u32,
-    /// The advisor's idea token (CAdvisor +0x30) in the caller's arena.
+    /// The advisor's idea token (`cadvisor::IDEA_TOKEN`) in the caller's arena.
     pub token_start: usize,
     pub token_len: usize,
 }

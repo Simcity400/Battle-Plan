@@ -612,7 +612,7 @@ fn read_fleet_batch(
     }
 }
 
-/// Navy reads each fleet's task-force array count at +0xc, without following
+/// Navy reads each fleet's task-force array count (`cfleet::TASK_FORCE_COUNT`), without following
 /// tasks.
 pub fn read_fleet_count(
     memory: &impl Memory,

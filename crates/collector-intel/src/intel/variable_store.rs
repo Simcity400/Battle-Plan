@@ -4,30 +4,24 @@
 //! scope rows, entries and key bytes in walk order, and per scope its store,
 //! the registration its rows were read or carried under and its hash header.
 //!
-//! A quiet hour walks no scope. Before any read the capture takes the
-//! domain's marks ([`Changes::take`]: every store a hooked writer touched
-//! since the previous take, the marks' epoch and the structure token, which
-//! every release and every first-chance C++ exception moves) and the
-//! character roster's token, then reads the scope list's witnesses: the
-//! global root, the country census (the callback's, which costs no read) and
-//! the state array header and slot pointers. When the take, the tokens and
-//! the witnesses all equal those taken before the held walk, its scope list
-//! is this hour's. A recorded scope's store is created only with its owner
-//! (variable store construction runs only in the owners'
-//! constructors and the character loader), so a new global, country, state
-//! or roster character moves a witness or the roster token; it is destroyed
-//! only through the release, which moves the structure token; and the
-//! owners' roots (`CCountry+0x218`, `CState+0x7F8`) are written only by
-//! Their constructors  (country construction,
-//! state construction), a character's store being embedded.
-//! Every writer of a store's nodes, header and seed is a hooked site
-//! ([`engine::script_variable_mutations`]), except a seed change in an
-//! exception's unwinding, which the exception's token move covers; so an
-//! unmarked store's held rows, header and seed are a fresh read's, slot for
-//! slot. The hour publishes the held rows and reads afresh only the marked
-//! stores, its sampled slice's and the stores the held walk could not
-//! certify (unobserved, or one store held by two scopes), each exactly as
-//! the walk reads a scope ([`cvariables::read_store_carried`]).
+//! A quiet hour walks no scope. Before any read the capture takes the domain's marks
+//! ([`Changes::take`]: every store a hooked writer touched since the previous take, the marks'
+//! epoch and the structure token, which every release and every first-chance C++ exception moves)
+//! and the character roster's token, then reads the scope list's witnesses: the global root, the
+//! country census (the callback's, which costs no read) and the state array header and slot
+//! pointers. When the take, the tokens and the witnesses all equal those taken before the held
+//! walk, its scope list is this hour's. A recorded scope's store is created only with its owner
+//! (variable store construction runs only in the owners' constructors and the character loader), so
+//! a new global, country, state or roster character moves a witness or the roster token; it is
+//! destroyed only through the release, which moves the structure token; and the owners' roots
+//! (`ccountry::VARIABLES`, `cstate::VARIABLES`) are written only by Their constructors  (country
+//! construction, state construction), a character's store being embedded. Every writer of a store's
+//! nodes, header and seed is a hooked site ([`engine::script_variable_mutations`]), except a seed
+//! change in an exception's unwinding, which the exception's token move covers; so an unmarked
+//! store's held rows, header and seed are a fresh read's, slot for slot. The hour publishes the
+//! held rows and reads afresh only the marked stores, its sampled slice's and the stores the held
+//! walk could not certify (unobserved, or one store held by two scopes), each exactly as the walk
+//! reads a scope ([`cvariables::read_store_carried`]).
 //!
 //! Any other hour walks every scope ([`cvariables::walk_scopes_carried`]):
 //! it reads every scope's identity and every store's vtable, header and
@@ -78,7 +72,7 @@ struct QuietKey {
 /// The scope list's witnesses, read before any store.
 #[derive(Default)]
 struct Witness {
-    /// The global store (`CGameState+0x980`).
+    /// The global store (`cgame_state::GLOBAL_VARIABLES`).
     global: usize,
     /// The countries in walk order: pointer and id.
     countries: Vec<(usize, u32)>,

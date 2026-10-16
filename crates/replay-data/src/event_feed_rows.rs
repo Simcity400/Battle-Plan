@@ -1,6 +1,6 @@
-//! Owned simulation-event history and interval coverage.
-//! Operation hours filter history; supplying hours govern its first visibility.
-//! The country instance word is native +C, never a writer generation.
+//! Owned simulation-event history and interval coverage. Operation hours filter history; supplying
+//! hours govern its first visibility. The country instance word is the native word after the id,
+//! never a writer generation.
 
 use crate::{
     codec::{Decoder, invalid_static as invalid},
@@ -209,8 +209,8 @@ routes! {
     /// A subject relation application ending the war between overlord and
     /// subject.
     SubjectOverlordEnd = 32,
-    /// A subject relation application ending the subject's other wars, as its
-    /// relation's +0x50/+0x51 bytes select.
+    /// A subject relation application ending the subject's other wars, as its relation's two
+    /// war-ending bytes select.
     SubjectWarsEnd = 33,
     /// A relation status reset.
     StatusResetEnd = 34,
@@ -329,10 +329,10 @@ pub struct EventFeedCause {
     pub route: EventFeedRoute,
     /// The observed operation that one ran inside.
     pub within: EventFeedRoute,
-    /// The PeaceConferences reference (conference +0x8) of the
-    /// conference starting or applying when the event happened.
+    /// The PeaceConferences reference (the conference's own reference) of the conference starting
+    /// or applying when the event happened.
     pub conference: Option<u64>,
-    /// StateTransfer: the state's id at +0x58.
+    /// StateTransfer: the state's id.
     pub state: Option<u32>,
     /// A join: the country whose war the joiner joined, the join helper's
     /// ally operand in RDX.
@@ -340,15 +340,13 @@ pub struct EventFeedCause {
     /// A join: the hostility reason the game passed in R9D: 0 war, 1 puppet,
     /// 2 ally, 3 asked to join, 4 guarantee, 5 not applicable.
     pub reason: Option<u32>,
-    /// The operation's byte operands, bit n set when its byte n is nonzero:
-    /// a join's expansion (bit 0, fifth argument: the joiner fights every
-    /// enemy of the ally's side), a war end's truce (bit 0, second argument),
-    /// an annexation's transfer-troops and AI message bytes (bits 0 and 1),
-    /// a release's on-controlled and force-controller bytes (bits 0 and 1,
-    /// read by the released-state transfer; the release command's
-    /// exclude-releaser-cores byte, bit 0), a state owner change's third and
-    /// fourth bytes (bits 0 and 1) and a conference's cleanup byte (bit 0,
-    /// seventh argument, stored at the conference's +0x3C).
+    /// The operation's byte operands, bit n set when its byte n is nonzero: a join's expansion (bit
+    /// 0, fifth argument: the joiner fights every enemy of the ally's side), a war end's truce (bit
+    /// 0, second argument), an annexation's transfer-troops and AI message bytes (bits 0 and 1), a
+    /// release's on-controlled and force-controller bytes (bits 0 and 1, read by the released-state
+    /// transfer; the release command's exclude-releaser-cores byte, bit 0), a state owner change's
+    /// third and fourth bytes (bits 0 and 1) and a conference's cleanup byte (bit 0, seventh
+    /// argument, stored on the conference).
     pub flags: u8,
 }
 value_struct!(EventFeedCause {

@@ -1,9 +1,7 @@
 //! Military deployment conveyor: one queued order and its lines.
 //!
-//! Its reference base holds the full handle at +8. Construction initializes
-//! the template at +0x20, name at +0x28, zero amount/location at +0x48,
-//! priority one at +0x50, line vector at +0x78, role at +0x90 and closed
-//! flag at +0x94.
+//! Its reference base holds the full handle. Construction initializes the template, the name, zero
+//! amount and location, priority one, the line vector, the role and the closed flag.
 //!
 //! Serialization keeps the template handle, name, integer amount/location/
 //! priority, lexer role token, boolean closed flag and every line. Role
@@ -36,9 +34,9 @@ pub const PRIORITY: usize = 0x50;
 pub const GATED_WORD: usize = 0x54;
 /// Gated conveyor typed reference using the same gate, not recorded.
 pub const GATED_REFERENCE: usize = 0x58;
-/// Deployment-line pointer array at +0x78 with count +0x84.
+/// Deployment-line pointer array with its count.
 pub const LINES: usize = 0x78;
-/// CMilitaryDeploymentConveyor line-array capacity, u32; the CPdxArray header at +0x78 places it at +0x80.
+/// CMilitaryDeploymentConveyor line-array capacity, u32; the CPdxArray header places it after the data pointer.
 pub const LINES_CAPACITY: usize = 0x80;
 /// CMilitaryDeploymentConveyor line-array count, i32.
 pub const LINES_COUNT: usize = 0x84;
@@ -80,8 +78,7 @@ pub struct Row {
     pub closed: u8,
     pub name_start: usize,
     pub name_len: usize,
-    /// Gated raw country reference at +0x98; nonpositive words are absent
-    /// and omitted from the save.
+    /// Gated raw country reference; nonpositive words are absent and omitted from the save.
     pub exile_country: Option<u32>,
 }
 

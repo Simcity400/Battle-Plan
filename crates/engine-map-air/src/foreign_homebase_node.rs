@@ -1,4 +1,4 @@
-//! Anonymous foreign-homebase record in CCountrySupplySystem + 0x1e0.
+//! Anonymous foreign-homebase record in the country supply system (`ccountry_supply_system::FOREIGN_HOMEBASE_DATA`).
 //!
 //! Numeric fields retain signed i64 fixed5 values. Hourly updates advance
 //! elapsed hours by the unit scale.
@@ -24,7 +24,7 @@ pub const ADDED_PENALTY: usize = 0x20;
 pub const SOURCE: usize = 0x28;
 /// Signed fixed5 duration.
 pub const DURATION: usize = 0x48;
-/// Foreign-homebase duplicate u32 province id checked against +0.
+/// Foreign-homebase duplicate u32 province id checked against the node's first word.
 pub const PROVINCE_COPY: usize = 0x50;
 /// Signed fixed5 elapsed hours; increments hourly and resets independently.
 pub const HOURS: usize = 0x58;

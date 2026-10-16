@@ -212,8 +212,8 @@ fn target_country(
     Ok(0)
 }
 
-/// Count only the target country's wings whose mission region at +0xC0
-/// is the target's; retain rows for those wings alone.
+/// Count only the target country's wings whose mission region is the target's; retain rows for
+/// those wings alone.
 fn interception(
     m: &impl Memory,
     base: usize,
@@ -354,8 +354,8 @@ fn anti_air(
     state: usize,
     sink: &mut Sink<'_>,
 ) -> Result<(), &'static str> {
-    // The +0x220 list holds templates with nonzero air defence at +0x314.
-    // Index lookup precedes the healthy-level read.
+    // The building database's air-defence list holds templates with nonzero air defence. Index
+    // lookup precedes the healthy-level read.
     let db = pointer(m, base, cbuilding_database::SINGLETON_RVA)?;
     let types = array(m, db, 0x220, 8)?;
     let status = state
@@ -439,7 +439,8 @@ pub(super) fn wing(
         ],
         sink,
     )?;
-    // The day/night array at +0x370 is bounded by +0x37C, with stride 0x330.
+    // The day/night array (`cweather_manager::PROVINCE_CLOCKS`) is bounded by its count, with
+    // stride 0x330.
     let environment = array(m, manager, 0x370, 0x330)?
         .element(id, 0x330)
         .ok_or("raid tooltip weather province outside array")?;
@@ -468,7 +469,7 @@ pub(super) fn wing(
             sink.push(CONTEXT, BASE_REGION, i64::from(id))?;
         }
         if let Some(ship) = creference_registry::resolve(m, base, host)? {
-            // Use the resolved ship directly, reading +0x728.
+            // Use the resolved ship directly, reading its task force (`cship::TASK_FORCE`).
             authenticate(m, base, ship, crate::cship::VTABLE_RVA)?;
             let task = pointer(m, ship, 0x728)?;
             authenticate(m, base, task, crate::ctask_force::VTABLE_RVA)?;

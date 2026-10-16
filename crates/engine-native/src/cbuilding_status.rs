@@ -373,10 +373,9 @@ fn walk_locations(
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-/// The 16-byte headers of the state table (`CGameState+0x2C8`) and the province
-/// table (`+0x2B0`), in that order, gathered in one guarded round; `None` when
-/// either does not read. Outside a load or reset only nudge mode writes them
-/// (`building_mutations`: game-state construction, destruction and
+/// The 16-byte headers of the state table (on the game state) and the province table, in that
+/// order, gathered in one guarded round; `None` when either does not read. Outside a load or reset
+/// only nudge mode writes them (`building_mutations`: game-state construction, destruction and
 /// reset, province initialization and nudge entry).
 pub fn roots(memory: &impl Memory, game_state: usize) -> Option<[[u8; 16]; 2]> {
     let mut states = [0_u8; 16];

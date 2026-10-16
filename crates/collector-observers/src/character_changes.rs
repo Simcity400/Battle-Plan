@@ -298,9 +298,9 @@ pub fn notify(character: Option<usize>, site: usize) -> Notification<'static> {
 }
 
 /// Hook path: an advisor-family writer touches the advisor map at `map`
-/// (`CCharacter+0xB0`), or names no map (`0`), whose writer revokes every
-/// certificate. Generic tree helpers also reach unrelated maps; their
-/// address never names a registered character.
+/// (`ccharacter::ADVISOR_MAP_HEAD`), or names no map (`0`), whose writer revokes every certificate.
+/// Generic tree helpers also reach unrelated maps; their address never names a registered
+/// character.
 pub fn advisor_map(map: usize) -> Notification<'static> {
     WATCHES.advisor_calls.fetch_add(1, Ordering::Relaxed);
     if map == 0 {

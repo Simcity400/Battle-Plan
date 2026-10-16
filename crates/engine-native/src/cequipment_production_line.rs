@@ -7,9 +7,9 @@ use crate::{
     read_slice,
 };
 
-/// CEquipmentProductionLine resource-demand entry array; compact_market_trade_oil_production_need line+0x58.
+/// CEquipmentProductionLine resource-demand entry array; compact_market_trade_oil_production_need reads it.
 pub const RESOURCE_DEMANDS: usize = 0x58;
-/// CEquipmentProductionLine resource-demand count i32; compact_market_trade_oil_production_need line+0x64.
+/// CEquipmentProductionLine resource-demand count i32; compact_market_trade_oil_production_need reads it.
 pub const RESOURCE_DEMANDS_COUNT: usize = 0x64;
 /// CEquipmentProductionLine CEquipmentVariant pointer.
 pub const EQUIPMENT_VARIANT: usize = 0x88;
@@ -170,8 +170,8 @@ fn max_factories(
     }
     let mut equipment = usize::try_from(u64::from_le_bytes(definition))
         .map_err(|_| "production line equipment type pointer overflow")?;
-    // The type, then its archetype (+0x4d8), which the constructor
-    // self-initializes; only the type's read also takes the archetype link.
+    // The type, then its archetype, which the constructor self-initializes; only the type's read
+    // also takes the archetype link.
     for archetype in [false, true] {
         let mut vtable = [0; 8];
         let mut maximum = [0; 16];

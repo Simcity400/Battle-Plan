@@ -9,23 +9,18 @@
 //! latest complete walk with this hour's, and equal tokens prove that no
 //! observed writer ran in between ([`WatchRegistry::quiet`]).
 //!
-//! The politics capture family ([`crate::politics_changes`]) patches the
-//! country appearance reset and daily politics update and forwards their
-//! calls ([`forwarded`]); the domains observe only while those patches are
-//! enabled. Appearance reset moves both domains. Daily politics always
-//! rewrites popularity through the clamped setter, so a popularity
-//! notification covers its call. Its only inline structure store is the
-//! election-day last election. The guard reads that date before and after
-//! the original, moving structure on return only when it changed, or
-//! covering the whole call when the first read fails ([`Guard`]).
-//! The capital setter runs for every hourly occupation controller change,
-//! whether or not the capital moves, and writes the
-//! structure only through its capital `+0x1018` and original capital
-//! `+0x101C` stores, so its guard reads both before and after the call the
-//! same way. Captures never run while the hourly
-//! original runs, so the next capture sees that notification. Anything
-//! unobserved (disabled, poisoned, an epoch change, a running writer) yields
-//! no token, and the walk reads afresh.
+//! The politics capture family ([`crate::politics_changes`]) patches the country appearance reset
+//! and daily politics update and forwards their calls ([`forwarded`]); the domains observe only
+//! while those patches are enabled. Appearance reset moves both domains. Daily politics always
+//! rewrites popularity through the clamped setter, so a popularity notification covers its call.
+//! Its only inline structure store is the election-day last election. The guard reads that date
+//! before and after the original, moving structure on return only when it changed, or covering the
+//! whole call when the first read fails ([`Guard`]). The capital setter runs for every hourly
+//! occupation controller change, whether or not the capital moves, and writes the structure only
+//! through its capital and original capital stores, so its guard reads both before and after the
+//! call the same way. Captures never run while the hourly original runs, so the next capture sees
+//! that notification. Anything unobserved (disabled, poisoned, an epoch change, a running writer)
+//! yields no token, and the walk reads afresh.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -206,7 +201,7 @@ impl Drop for Guard<'_> {
     }
 }
 
-/// The status's last election `CPoliticalStatus+0xA0`, through a guarded read.
+/// The status's last election (`cpolitical_status::LAST_ELECTION`), through a guarded read.
 fn last_election(status: usize) -> Option<i32> {
     let memory = unsafe { engine::memory::LiveMemory::new() };
     status
@@ -214,7 +209,7 @@ fn last_election(status: usize) -> Option<i32> {
         .and_then(|address| engine::read::<i32>(&memory, address))
 }
 
-/// The country's capital `CCountry+0x1018` and original capital `+0x101C`,
+/// The country's capital (`ccountry::CAPITAL`) and original capital (`ccountry::ORIGINAL_CAPITAL`),
 /// through one guarded read.
 fn capitals(country: usize) -> Option<u64> {
     let memory = unsafe { engine::memory::LiveMemory::new() };

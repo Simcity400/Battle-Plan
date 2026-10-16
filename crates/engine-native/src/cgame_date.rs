@@ -1,7 +1,7 @@
 //! CGameDate includes its secondary persistent subobject.
 //!
-//! The vtable pointers at zero and +0x10 belong to one date object.
-//! Textual save hours range from 1 through 24.
+//! The vtable pointers at `GREGORIAN_BASE` and `PERSISTENT_BASE` belong to one date object. Textual
+//! save hours range from 1 through 24.
 
 /// CGameDate primary vtable.
 pub const VTABLE_RVA: usize = 0x0270_2388;

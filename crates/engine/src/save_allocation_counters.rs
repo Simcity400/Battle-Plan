@@ -1,8 +1,8 @@
-//! Monotonic allocation counters serialized in the game-state save header.
-//! The loader restores twelve of thirteen counters to the same globals
-//! or setters. The unsigned reference ID is different: loading token
-//! 0x2d4d writes game-state +0x49c, while recording reads the ID counter.
-//! All other counters retain the signed i32 format used by the save writer.
+//! Monotonic allocation counters serialized in the game-state save header. The loader restores
+//! twelve of thirteen counters to the same globals or setters. The unsigned reference ID is
+//! different: loading token 0x2d4d writes the game-state word after
+//! `cgame_state::NEXT_EVENT_INSTANCE`, while recording reads the ID counter. All other counters
+//! retain the signed i32 format used by the save writer.
 //!
 //! These are passive scalar reads of globals and two game-state fields.
 //! No engine function is called and no hook is installed.
@@ -49,9 +49,9 @@ pub struct AllocationCounters {
     pub military_deployment_conveyor_index: Option<i32>,
     pub equipment_variant_index: Option<i32>,
     pub country_leader_index: Option<i32>,
-    /// Navy ID saved with token 0x34a5 from game-state +0x74c.
+    /// Navy ID saved with token 0x34a5 from `cgame_state::NAVY_ID`.
     pub navy_id: Option<i32>,
-    /// Land-combat ID saved with token 0x34a6 from game-state +0x748.
+    /// Land-combat ID saved with token 0x34a6 from `cgame_state::LAND_COMBAT_ID`.
     pub land_combat_id: Option<i32>,
     pub multiplayer_random_count: Option<i32>,
 }

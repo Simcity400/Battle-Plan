@@ -9,24 +9,23 @@ use super::*;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OrderedEnemyInputs {
     pub sample_hour: PacketHour,
-    /// Authentic diplomacy+98 raw words, including repeats and zero.
+    /// Authentic enemy-vector raw words, including repeats and zero.
     pub entries: Vec<u32>,
 }
 
 value_struct!(OrderedEnemyInputs { sample_hour: PacketHour, entries: Vec<u32> });
 opaque_value!(Option<OrderedEnemyInputs>);
 
-/// One controller area as the route search reads it, recorded once on the row of its
-/// label province. Its land count `+0x3C` is the number of provinces with its label (the
-/// capture refuses a node whose count differs) and its first land's native nonsea index
-/// is static map content, so neither is stored.
+/// One controller area as the route search reads it, recorded once on the row of its label
+/// province. Its land count is the number of provinces with its label (the capture refuses a node
+/// whose count differs) and its first land's native nonsea index is static map content, so neither
+/// is stored.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ControllerAreaNode {
-    /// The area's representative `+0x28`, set by its area updates: the province costed by
-    /// its state owner and used to order the route search's heap. None is a refusal.
+    /// The area's representative, set by its area updates: the province costed by its state owner
+    /// and used to order the route search's heap. None is a refusal.
     pub first_land: Option<u32>,
-    /// The contacts `+0x90` in native list order, as labels. None is a
-    /// refusal, never an empty list.
+    /// The contacts in native list order, as labels. None is a refusal, never an empty list.
     pub neighbours: Option<Vec<u32>>,
 }
 

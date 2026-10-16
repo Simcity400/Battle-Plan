@@ -61,8 +61,8 @@ fn effective_preserves_raw_or_clamps_without_category_or_callback_reads() {
     for key in [KEY, u32::MAX] {
         for flags in [0, CLAMP_MAXIMUM, u32::MAX] {
             let memory = Fixture::new(key, 0, flags);
-            // Neither category +64 nor callback storage exists. Selector0
-            // bypasses eligibility, including for native signed indexing.
+            // Neither the category word nor callback storage exists. Selector0 bypasses
+            // eligibility, including for native signed indexing.
             for raw in [i64::MIN, -1, 0, 99999, 100000, 100001, i64::MAX] {
                 let expected = if flags & CLAMP_MAXIMUM == 0 {
                     raw

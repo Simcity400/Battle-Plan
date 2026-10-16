@@ -1,15 +1,12 @@
-//! Commanders' retreat bans (DivisionRetreatBans) carried between hours. The
-//! bans are each commander's `cannot_retreat_while_*` values in its two
-//! modifier blocks' accumulators (`CUnitLeader+0x418` and `+0x4D8`), whose
-//! only runtime writers are the naval tree family's commander sites
-//! ([`engine::naval_tree_mutations`]): the leader modifier recalculation tail
-//! and HQ scaling each clear both blocks, copy the base accumulator `+0x358`
-//! in and scale it. Construction, copy construction and destruction bound
-//! the leader's lifetime. Modifier recalculation also assigns the blocks'
-//! Display strings  (`+0x460`,
-//! `+0x520`), which the bans do not read. That family owns the patches and
-//! forwards each call here ([`forwarded`]), which notifies this family's
-//! watch registry for the leader; it never changes game behaviour.
+//! Commanders' retreat bans (DivisionRetreatBans) carried between hours. The bans are each
+//! commander's `cannot_retreat_while_*` values in its two modifier blocks' accumulators (the
+//! ordinary and separate-HQ blocks), whose only runtime writers are the naval tree family's
+//! commander sites ([`engine::naval_tree_mutations`]): the leader modifier recalculation tail and
+//! HQ scaling each clear both blocks, copy the base accumulator in and scale it. Construction, copy
+//! construction and destruction bound the leader's lifetime. Modifier recalculation also assigns
+//! the blocks' Display strings  (one per block), which the bans do not read. That family owns the
+//! patches and forwards each call here ([`forwarded`]), which notifies this family's watch registry
+//! for the leader; it never changes game behaviour.
 //!
 //! Each hour the Presentation job reads every division's group and its
 //! commander, and reads a commander's blocks only when no held read carries

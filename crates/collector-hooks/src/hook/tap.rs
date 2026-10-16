@@ -48,7 +48,7 @@ impl Tap {
     /// # Safety
     /// The caller authenticates the image/sentinel and excludes native return
     /// PCs or incoming branches inside the complete overwritten span. The
-    /// native unwind state and handler scope at site+5 must match the site.
+    /// native unwind state and handler scope at the five-byte return point must match the site.
     /// Disable and quiesce every executable range before dropping this tap.
     pub unsafe fn new(
         site: usize,

@@ -3,9 +3,8 @@ use super::*;
 /// Retired: only create_wargoal's effect-description hover read it. Kept for
 /// older recordings' framing.
 ///
-/// A country's owned war goals in native order. Recipient is the war goal's +0x3C
-/// reference; goal_type is the definition's lexer token (+0x40 -> +8), not a database
-/// ordinal.
+/// A country's owned war goals in native order. Recipient is the war goal's recipient reference;
+/// goal_type is the definition's lexer token (through its definition), not a database ordinal.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct OwnedWargoalRow {
     pub country: u32,
@@ -364,9 +363,8 @@ pub struct PoliticsRow {
     pub ruling_party: Option<u32>,
     /// Stored research-location province, preferred to the capital unless zero.
     pub original_capital: i32,
-    /// What the `has_elections` trigger tests: the elections byte `+0xEC` is nonzero and
-    /// the frequency `+0xE8` is positive
-    /// ([`crate::rows::compatibility::HAS_ELECTIONS_FORMAT`]).
+    /// What the `has_elections` trigger tests: the elections byte is nonzero and the election
+    /// frequency is positive ([`crate::rows::compatibility::HAS_ELECTIONS_FORMAT`]).
     pub has_elections: Recorded<bool>,
 }
 typed_codec!(PoliticsRow, 32, |row| row.country as u128, |key| Self { country: key as u32, ..Default::default() },
@@ -433,7 +431,7 @@ pub struct DecisionRandomItemRow {
     pub ordinal: u32,
     pub token: Vec<u8>,
     pub count: i32,
-    /// Raw numeric target bits at entry+0x14, including signed sentinels.
+    /// Raw numeric target bits of the entry, including signed sentinels.
     pub target: u32,
 }
 typed_codec!(DecisionRandomItemRow, 64, |row| (row.country as u128) << 32 | row.ordinal as u128,
@@ -615,7 +613,7 @@ typed_codec!(CountryExperienceRow, 32, |row| row.country as u128, |key| Self { c
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct OccupationGroupLaw {
     pub occupied: u32,
-    /// Current id through the retained +0x18 country pointer; None is a capture fault.
+    /// Current id through the retained country pointer; None is a capture fault.
     pub scope_country: Option<u32>,
     pub law: Option<Vec<u8>>,
 }
@@ -634,7 +632,7 @@ pub struct OccupationSettingsRow {
     pub occupied: Recorded<Option<Vec<u32>>>,
     /// Older recordings lack this inventory; None is a failed new capture.
     pub group_laws: Recorded<Option<Vec<OccupationGroupLaw>>>,
-    /// The actual database fallback token (+0x48), independent of authored ordering.
+    /// The actual database fallback token, independent of authored ordering.
     pub fallback_law: Recorded<Option<Vec<u8>>>,
 }
 typed_codec!(OccupationSettingsRow, 32, |row| row.country as u128, |key| Self { country: key as u32, ..Default::default() },
@@ -959,10 +957,9 @@ typed_codec!(CountryCivilWarRow, 64, |row| (row.country as u128) << 32 | row.ord
 /// Resolve through CountryLinks. A state read with no cores has a row with
 /// an empty list.
 ///
-/// `claims` is the state's raw claim country references (+0x98) in stored
-/// order, read in the same record: `is_claimed_by` and the claims map modes
-/// compare them as `is_core_of` compares cores. The save writes claims from
-/// the country side (`claims`), as it writes cores.
+/// `claims` is the state's raw claim country references in stored order, read in the same record:
+/// `is_claimed_by` and the claims map modes compare them as `is_core_of` compares cores. The save
+/// writes claims from the country side (`claims`), as it writes cores.
 ///
 /// Sliced, with `StateResourceInputs` (family `raid_state`, owner: the state):
 /// core and claim insertion and removal are hooked, so both lists equal the
@@ -1214,7 +1211,7 @@ pub struct CountryStabilityLineRow {
 impl CountryStabilityLineRow {
     /// The reader could not prove the child's source; `text` holds its label.
     pub const UNPAIRED: u8 = 0;
-    /// A political idea (`political status` +0x50): identity = idea token.
+    /// A political idea (in the `political status` idea array): identity = idea token.
     pub const IDEA: u8 = 1;
     /// The ruling party's first country leader: identity_id = character id.
     pub const COUNTRY_LEADER: u8 = 2;
@@ -1259,7 +1256,7 @@ pub struct ThreatSourceRow {
     pub ordinal: u32,
     /// Raw country reference; resolve through CountryLinks.
     pub country: u32,
-    /// Second raw country reference at +0x0c; its engine role is not established.
+    /// Second raw country reference; its engine role is not established.
     pub second_country: u32,
     pub current_raw: i64,
     pub final_raw: i64,
@@ -1290,9 +1287,9 @@ typed_codec!(ThreatCountryAggregateRow, 32, |row| row.country_slot as u128, |key
 pub struct IncomingDiplomaticActionRow {
     pub country: u32,
     pub ordinal: u32,
-    /// Full incoming diplomatic action handle from the wrapper's +0x08.
+    /// Full incoming diplomatic action handle held by the wrapper.
     pub handle: u64,
-    /// Raw wrapper byte at +0x10; no writer serializes it.
+    /// Raw wrapper byte; no writer serializes it.
     pub status: u8,
     pub action_type: i32,
     pub actor: u32,

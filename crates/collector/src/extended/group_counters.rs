@@ -1,7 +1,7 @@
-//! Hourly COrdersGroup withdrawing byte over its own bounded registry census,
-//! and each group's direct commander's attack operands (`COrdersGroup+0x88`,
-//! `engine::carmy_leader::attack_stats`), which the selected army's attack
-//! list reads through its direct commander lookup.
+//! Hourly COrdersGroup withdrawing byte over its own bounded registry census, and each group's
+//! direct commander's attack operands (`corders_group::LEADER`,
+//! `engine::carmy_leader::attack_stats`), which the selected army's attack list reads through its
+//! direct commander lookup.
 use crate::{
     sampling::qpc,
     spooling::table,

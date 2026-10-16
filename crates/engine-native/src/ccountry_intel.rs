@@ -782,7 +782,7 @@ mod tests {
         let countries = 0x3000;
         let links = countries + N * 8;
         let objects = links + N * 4;
-        // Country objects must span the intel table pointer at +0xfe8.
+        // Country objects must span the intel table pointer (`ccountry::INTEL_TABLE`).
         let tables = objects + N * 0x1000;
         let records = tables + N * 0x20;
         let mut bytes = vec![0_u8; records + N * country_intel_row::STRIDE];

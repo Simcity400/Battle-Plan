@@ -10,15 +10,14 @@ use crate::{
 
 /// Region-weather vtable.
 pub const VTABLE_RVA: usize = 0x0296_0b90;
-/// Region-weather array stride at manager +0x40.
+/// Region-weather array stride (`cweather_manager::REGIONS`).
 pub const STRIDE: usize = 0x160;
 /// Region ID, i32, authenticated against its array slot.
 pub const ID: usize = 0x08;
-/// Embedded modifier collection at +0x58.
+/// Embedded modifier collection.
 pub const MODIFIERS: usize = 0x58;
-/// Independent weather flag bytes, eight bytes apart: light rain +0x108,
-/// heavy rain +0x110, snow +0x118, blizzard +0x120, sandstorm +0x128
-/// and arctic water +0x130. These flags select modifiers.
+/// Independent weather flag bytes, eight bytes apart: light rain, heavy rain, snow, blizzard,
+/// sandstorm and arctic water, in that order from `FLAGS`. These flags select modifiers.
 pub const FLAGS: usize = 0x108;
 /// Snow flag used to accumulate province snow.
 pub const SNOW: usize = 0x118;

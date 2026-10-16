@@ -46,7 +46,7 @@ pub const BORDER_WAR_ATTRITION_FACTOR_RVA: usize = 0x0331_a118;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Terrain {
-    /// CTerrainType+18 MSVC string. Copy separately: label failure preserves values.
+    /// The terrain type's name, an MSVC string. Copy separately: label failure preserves values.
     pub name: Field<usize>,
     pub attrition: Field<i64>,
     /// Original unweighted sum, before the native floor against upkeep+terrain.

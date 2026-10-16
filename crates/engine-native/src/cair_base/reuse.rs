@@ -22,7 +22,7 @@ use crate::{Memory, ccountry};
 /// published.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WalkedBase<'a> {
-    /// The base's `+0x30` slot count.
+    /// The base's `COUNTRY_CONTAINERS` slot count.
     pub slots: u32,
     /// The walk sought the base's dense plan ([`SlotMode`]).
     pub sought_plan: bool,

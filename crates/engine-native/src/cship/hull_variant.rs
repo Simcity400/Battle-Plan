@@ -16,8 +16,8 @@ use crate::{
 const MODULE_COUNT: usize = 0xc4;
 const UPGRADE_LEVEL_SUM: usize = 0x414;
 const MODULE_PRIORITY_SUM: usize = 0x418;
-/// Organisation-bonus refresh stores the linked organisation's +0x148
-/// marker here; serialization writes its nonzero signed value.
+/// Organisation-bonus refresh stores the linked organisation's marker marker here; serialization
+/// writes its nonzero signed value.
 const ORGANISATION_MARKER: usize = 0x4b0;
 /// General definition ordinal. Construction stores the current database
 /// count, null construction stores -1, and copying preserves the field.

@@ -8,10 +8,9 @@ pub const DEFINITIONS: usize = 0xb0;
 pub const DEFINITIONS_COUNT: usize = 0xbc;
 /// Raid-type definition primary vtable.
 pub const TYPE_VTABLE_RVA: usize = 0x0292_a6c8;
-/// Raid type definition `+8`, its lexer token.
+/// Raid type definition's lexer token.
 pub const TYPE_TOKEN: usize = 0x08;
-/// A raid type's `essential_equipment` map at `+0xA40`, passed to stockpile
-/// requirement checking.
+/// A raid type's `essential_equipment` map, passed to stockpile requirement checking.
 pub const ESSENTIAL_EQUIPMENT: usize = 0xa40;
 /// Its `additional_equipment` map.
 pub const ADDITIONAL_EQUIPMENT: usize = 0xa28;
@@ -22,11 +21,9 @@ pub const NODE_EQUIPMENT: usize = 0x20;
 /// checking.
 pub const NODE_AMOUNT: usize = 0x28;
 
-/// Visits, in order, every node of the equipment map (an MSVC `std::map`:
-/// head `+0`, count `+8`; a node's left `+0`, parent `+8`, right `+0x10` and
-/// nil byte `+0x19`) at `at`, after passing its count to `counted`. A read
-/// that fails, or a null object, is `unreadable`; a malformed tree fails by
-/// name.
+/// Visits, in order, every node of the equipment map (an MSVC `std::map`: its head and count; a
+/// node's left, parent and right links and its nil byte) at `at`, after passing its count to
+/// `counted`. A read that fails, or a null object, is `unreadable`; a malformed tree fails by name.
 pub fn equipment_map(
     memory: &impl crate::Memory,
     at: usize,

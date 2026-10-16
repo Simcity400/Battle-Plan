@@ -1,5 +1,6 @@
-//! Hub motorization settings in country supply-system +0x188.
-//! This 0x28-byte record is distinct from the 0xe8-byte simulation node.
+//! Hub motorization settings in the country supply system
+//! (`ccountry_supply_system::HUB_SETTINGS_DATA`). This 0x28-byte record is distinct from the
+//! 0xe8-byte simulation node.
 
 /// Settings record stride.
 pub const STRIDE: usize = 0x28;

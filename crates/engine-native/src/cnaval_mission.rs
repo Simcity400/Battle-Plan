@@ -1,5 +1,5 @@
-//! CNavalMission embedded at CTaskForce+0x360. Counter predicates consume
-//! these operands; offsets use the mission base.
+//! CNavalMission embedded in CTaskForce. Counter predicates consume these operands; offsets use the
+//! mission base.
 
 /// CNavalMission vtable.
 pub const VTABLE_RVA: usize = 0x0296_8408;
@@ -13,8 +13,8 @@ pub const IS_IN_REGIONS: usize = 0x30;
 /// by cancellation. While set, engagement value is zero and the task force
 /// is considered nonengaging.
 pub const RUNNING_AWAY: usize = 0x31;
-/// Loaded engagement-rule array of signed i64 fixed5 values. Header
-/// capacity is +8 and count +0xC; the stored engagement-rule ordinal indexes it.
+/// Loaded engagement-rule array of signed i64 fixed5 values. Header capacity and count follow the
+/// data pointer; the stored engagement-rule ordinal indexes it.
 pub const AGGRESSION_SETTINGS_VALUES_RVA: usize = 0x0332_08f0;
 /// Engagement-value getter returns zero while running away, otherwise the loaded rule value.
 pub const ENGAGEMENT_VALUE_RVA: usize = 0x00f9_f210;
@@ -36,5 +36,5 @@ pub const LOAD_RVA: usize = 0x00fa_49b0;
 pub const ENGAGING_PREDICATE_RVA: usize = 0x00fa_2780;
 /// Counter region-requiring predicate admits mission kinds 1..6 and 9.
 pub const REGION_KIND_PREDICATE_RVA: usize = 0x00fa_2c20;
-/// Counter active predicate uses active byte and kind; kind 9 also requires +0x60.
+/// Counter active predicate uses active byte and kind; kind 9 also requires `BOMBARDMENT_REGION`.
 pub const ACTIVE_PREDICATE_RVA: usize = 0x00fa_2d70;

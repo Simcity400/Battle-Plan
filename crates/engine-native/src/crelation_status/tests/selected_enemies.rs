@@ -1,4 +1,4 @@
-//! Same-pass current +98 acquisition, independent of the legacy set demand.
+//! Same-pass current enemy-vector acquisition, independent of the legacy set demand.
 use super::*;
 use std::cell::RefCell;
 

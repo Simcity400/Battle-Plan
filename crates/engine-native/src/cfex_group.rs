@@ -1,5 +1,5 @@
-//! CFEXGroup layout. Forward side vectors can omit groups; +0x20 links
-//! the opposing group and +0x38 authenticates the owning side.
+//! CFEXGroup layout. Forward side vectors can omit groups; `OPPONENT_GROUP` links the opposing
+//! group and `SIDE` authenticates the owning side.
 
 /// CFEXGroup vtable.
 pub const VTABLE_RVA: usize = 0x02a4_2d18;

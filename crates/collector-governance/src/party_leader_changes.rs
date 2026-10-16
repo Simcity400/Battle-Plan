@@ -356,7 +356,7 @@ callback!(
 );
 // Validate leaders (party).
 callback!(validate_leaders, 8, (party), [party]);
-// Read leaders (reader, token, party + 0x70).
+// Read leaders (reader, token, the party's country leaders).
 callback!(
     read_leaders,
     9,

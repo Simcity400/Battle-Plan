@@ -112,10 +112,10 @@ pub struct Row {
     /// Serialized manager vector: zero historical, one dynamic.
     pub roster: u8,
     pub ordinal: u32,
-    /// Exact unsaved +28 string. This legacy field label is not the saved name.
+    /// Exact unsaved `NAME` string. This legacy field label is not the saved name.
     pub name_start: usize,
     pub name_len: usize,
-    /// Exact +48 string serialized as name; the script token is NAME_TOKEN_ID.
+    /// Exact `TOKEN` string serialized as name; the script token is NAME_TOKEN_ID.
     pub token_start: usize,
     pub token_len: usize,
     /// The `TEMPLATE` pointer, zero without a template. It guards a reuse of
@@ -697,8 +697,8 @@ pub fn identity_with_spans(
     ))
 }
 
-/// The authenticated CCharacter id behind a role's parent pointer: the vtable
-/// and reference type (+0x08) must match before the id (+0x0c) is returned.
+/// The authenticated CCharacter id behind a role's parent pointer: the vtable and reference type
+/// must match before the id is returned.
 pub(crate) fn identity_header(
     memory: &impl Memory,
     base: usize,

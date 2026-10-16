@@ -466,8 +466,8 @@ fn scope_fixture() -> Vec<u8> {
             (BASE + container + 0x100) as u64,
         );
     }
-    // Two historical characters: 44 with one variable, 45 with the empty
-    // sentinel. Their stores are embedded at +0xD8, not pointed to.
+    // Two historical characters: 44 with one variable, 45 with the empty sentinel. Their stores are
+    // embedded, not pointed to.
     let container = 0x8000 + ccharacter::VARIABLES;
     let mut block = fixture(1);
     node(&mut block, 0, 0, b"c", 300_000);

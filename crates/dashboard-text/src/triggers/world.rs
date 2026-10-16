@@ -2391,10 +2391,9 @@ impl<'a> World<'a> {
             .ok_or_else(|| format!("country slot {slot} has no CountryAppearance row"))
     }
 
-    /// The core-owner trigger tests one of the state's cores
-    /// (vector +0xB0, count +0xBC), by raw id or canonical
-    /// slot. `StateCores` equals the game's at every hour (its writers are
-    /// hooked; unmarked states are read once a day).
+    /// The core-owner trigger tests one of the state's cores (its core vector), by raw id or
+    /// canonical slot. `StateCores` equals the game's at every hour (its writers are hooked;
+    /// unmarked states are read once a day).
     pub(super) fn is_core_of(&self, state: u32, country: Option<u32>) -> Result<Eval, String> {
         let cores = get(&self.cores, || {
             Ok(table::<tables::StateCores>(self.frame)?
@@ -2408,9 +2407,9 @@ impl<'a> World<'a> {
         Ok(self.lists(cores, country, "StateCores"))
     }
 
-    /// The claimant trigger tests one of the state's claims (vector +0x98,
-    /// count +0xA4) as the core-owner trigger tests cores: by raw id or
-    /// canonical slot. Claims are hooked as cores are (`StateCores.claims`).
+    /// The claimant trigger tests one of the state's claims (its claim vector) as the core-owner
+    /// trigger tests cores: by raw id or canonical slot. Claims are hooked as cores are
+    /// (`StateCores.claims`).
     pub(super) fn is_claimed_by(&self, state: u32, country: Option<u32>) -> Result<Eval, String> {
         let claims = get(&self.claims, || {
             Ok(table::<tables::StateCores>(self.frame)?

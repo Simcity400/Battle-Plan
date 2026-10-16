@@ -13,9 +13,8 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-/// Stored unit string at primary +0x258, accepting arbitrary supplied bytes.
-/// Serialization uses the secondary receiver at +0x10 and emits its +0x248
-/// name only when the stored length is nonzero.
+/// Stored unit string in the primary object, accepting arbitrary supplied bytes. Serialization uses
+/// the secondary receiver and emits its name only when the stored length is nonzero.
 pub const NAME: usize = 0x258;
 
 /// First-edge ETA operands from passive speed inputs, separate from the
@@ -36,7 +35,7 @@ pub struct FreshEta {
     pub sample_hour: i32,
     pub maximum_speed: Option<i64>,
     pub land_supply_factor: Option<i64>,
-    /// Genuine COrdersGroupMember+0x38 (primary CUnit+0xc0), not +0x440.
+    /// Genuine orders-group member link (`carmy::ORDERS_GROUP`), not the rail assignee (`crailway_gun::ASSIGNEE`).
     pub orders_group: Option<u64>,
 }
 
@@ -77,17 +76,17 @@ pub struct Row {
     pub province: u32,
     /// A naval-transfer association exists (stack kinds 19/20, actions 7-9).
     pub naval_transfer: bool,
-    /// Nonzero transfer+0x24 selects action 9 when moving by sea.
+    /// A nonzero transfer word selects action 9 when moving by sea.
     pub transfer_action_status: bool,
     /// Raw exile state, which clears the location warning.
     pub exiled: bool,
     pub retreat: bool,
     pub strategic_redeployment: bool,
-    /// Stored count at gun +0x42C of its +0x420 combat references, serialized
-    /// as the combat list. A positive count selects action 12 instead of idle 1
-    /// when both the ordinary route and combat vector are empty.
+    /// Stored count (`crailway_gun::REFERENCE_ENTRY_COUNT`) of its combat references, serialized as
+    /// the combat list. A positive count selects action 12 instead of idle 1 when both the ordinary
+    /// route and combat vector are empty.
     pub reference_entry_count: i32,
-    /// Authenticated full COrdersGroup handle behind +0x440, or zero for null.
+    /// Authenticated full COrdersGroup handle behind `crailway_gun::ASSIGNEE`, or zero for null.
     pub assignee_group: u64,
     /// The stat definition's lexical token; the viewer resolves its name and
     /// counter icon from matching content.
@@ -108,8 +107,8 @@ pub struct Row {
     pub combat_role: u8,
     /// Province of the first combat; zero without one.
     pub combat_province: u32,
-    /// Stored count of the gun's CUnit combat vector (+0x1B4), not the saved
-    /// combat reference array behind `reference_entry_count`.
+    /// Stored count of the gun's CUnit combat vector, not the saved combat reference array behind
+    /// `reference_entry_count`.
     pub combat_count: u32,
     /// The logical owner attacks in any of the gun's combats.
     pub attacking: bool,
@@ -483,7 +482,7 @@ fn flag(memory: &impl Memory, address: usize, reason: &'static str) -> Result<bo
         .ok_or(reason)
 }
 
-/// Walks each canonical country's native railway-gun roster (+0x2A8).
+/// Walks each canonical country's native railway-gun roster.
 ///
 /// A null counted roster slot refuses the census. Every unit is checked
 /// against its exact class and vtables, the reference registry, its roster

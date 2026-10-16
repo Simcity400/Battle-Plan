@@ -32,7 +32,7 @@ pub const DOCTRINE_STRIDE: usize = 0xa0;
 pub const ROW_TAG: usize = 8;
 /// CCountryDoctrineStatus tactic-pointer vector.
 pub const TACTICS: usize = 0x28;
-/// One copy spans the row tag through the vector header (+8..+0x38).
+/// One copy spans the row tag through the vector header (inclusive).
 const ROW_SPAN: usize = TACTICS + 0x10 - ROW_TAG;
 const POINTER: usize = 8;
 
@@ -44,9 +44,9 @@ pub struct Row {
     pub unlock_count: usize,
 }
 
-/// One loaded tactic: its object address and its +98 database ID (0 for the
-/// null tactic at index 0), a slot of an open-addressed table keyed by the
-/// address (pointer 0 is an empty slot). The address is never recorded.
+/// One loaded tactic: its object address and its database ID (0 for the null tactic at index 0), a
+/// slot of an open-addressed table keyed by the address (pointer 0 is an empty slot). The address
+/// is never recorded.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RegistryEntry {
     pub pointer: usize,

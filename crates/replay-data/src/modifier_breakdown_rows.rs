@@ -112,11 +112,10 @@ fn copy_printed(
     Ok(true)
 }
 
-/// One power-balance record's (`PowerBalances.ordinal`) static-modifier sources: the
-/// complete `+0x50` roster in array order, every occurrence and empty sources included,
-/// by `static modifier` script name (`+0x1A8`). The cached description tree `+0xC8` is
-/// built from these alone by rebuilds and additions, so playback derives it with the
-/// content's static modifiers ([`crate::power_balance_derive`]).
+/// One power-balance record's (`PowerBalances.ordinal`) static-modifier sources: the complete
+/// source roster in array order, every occurrence and empty sources included, by `static modifier`
+/// script name. The cached description tree is built from these alone by rebuilds and additions, so
+/// playback derives it with the content's static modifiers ([`crate::power_balance_derive`]).
 ///
 /// `daily` and `weekly` are the native cached trees for keys 0x98/0x99 read
 /// as witnesses: every row of recordings made before playback derived them,
@@ -215,12 +214,11 @@ typed_codec!(NavalModifierBreakdownRow, 96,
 });
 
 /// One key's tree of a naval hover source ([`NavalModifierTreeRow`]): the preorder the
-/// modifier-breakdown formatter walks at depth -1 for that key, pruned to the root, the
-/// nonzero leaves and the interior nodes above them. The root keeps its value (convoy
-/// escape and the side sums read it); a root whose native children all pruned keeps one
-/// zero child, so it stays interior and prints nothing, as the native walk does. Only
-/// leaves keep their display bytes (modifier +0x58); a key whose root is zero and prints
-/// nothing is absent.
+/// modifier-breakdown formatter walks at depth -1 for that key, pruned to the root, the nonzero
+/// leaves and the interior nodes above them. The root keeps its value (convoy escape and the side
+/// sums read it); a root whose native children all pruned keeps one zero child, so it stays
+/// interior and prints nothing, as the native walk does. Only leaves keep their display bytes; a
+/// key whose root is zero and prints nothing is absent.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NavalModifierKeyTree {
     pub key: u32,

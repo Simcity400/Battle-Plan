@@ -1,7 +1,6 @@
-//! Special-facility map flag for program provinces. Visibility uses the
-//! province-graphics byte at +0x175B to show the icon at +0x118F. Program
-//! loading and addition set it; per-province and dynamic-country resets
-//! clear it. This is the recording client's map graphics. Program rosters
+//! Special-facility map flag for program provinces. Visibility uses the province-graphics
+//! special-facility byte to show its icon. Program loading and addition set it; per-province and
+//! dynamic-country resets clear it. This is the recording client's map graphics. Program rosters
 //! enumerate every province that can hold a set flag.
 
 use crate::{
@@ -9,7 +8,7 @@ use crate::{
     nproject_cprogram_status, read, walk::Outcome,
 };
 
-/// `CProvinceGraphics+0x175B`, the special-facility flag byte.
+/// The province graphics' special-facility flag byte.
 pub const FACILITY_FLAG: usize = 0x175b;
 
 /// One program province whose flag byte is nonzero.

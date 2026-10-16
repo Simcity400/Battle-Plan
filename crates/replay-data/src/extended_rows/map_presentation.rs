@@ -244,7 +244,7 @@ pub struct NavalSearcher {
     pub reference: Option<u64>,
     /// None is resolver/identity refusal; false is a known dangling reference.
     pub resolves: Option<bool>,
-    /// Generic unit PRIMARY+1D8, independent of logical owner and unit class.
+    /// Generic unit roster owner, independent of logical owner and unit class.
     pub roster_owner: Option<u32>,
 }
 value_struct!(NavalSearcher { reference: Option<u64>, resolves: Option<bool>, roster_owner: Option<u32> });
@@ -305,18 +305,16 @@ pub struct TaskForceCounterInputRow {
 typed_codec!(TaskForceCounterInputRow, 64, |r| r.task_force as u128, |k| Self { task_force: k as u64, ..Default::default() },
  { 0 => (is_in_regions): U8, 1 => (running_away): U8, 2 => (engagement_rule): I32, 3 => (mission_region_count): I32, 4 => (bombardment_region): U32, 5 => (repair_parent): U64, 6 => (detached_activity): I32, 7 => (repair_last_mission): I32, 8 => (received_supply_ratio): I64, 9 => (attached_headquarters): I32, 10 => (name): Opaque, 11 => (supply): Opaque, 12 => (port_mission): Opaque }, |_r| Ok(()));
 
-/// Hourly simulation operands of every class-13 railway gun, keyed by its full handle.
-/// Owners are raw country tags; `province` is its authenticated location (zero when its
-/// roster holds it unlocated). The mixed province occupant order is already in
-/// ProvinceUnitOrder; nothing here is a client's rendered icon, selected country or
-/// camera state. `railway_building_level` is the signed level of the railway building at
-/// the gun's province (`None` for a null rail info or building pointer), the location
-/// warning's input. `combat_role` is 0 without a combat, 1 when the logical owner attacks
-/// in its first combat and 2 otherwise; `combat_province` is that combat's province.
-/// `combat_count` is the stored unit combat-vector count, and `attacking` whether the
-/// owner attacks in any of those combats (the unit-action query's combat branch).
-/// `reference_entry_count` is the stored count (`+0x42C`) of the gun's own combat
-/// reference array, the save's `combat` list.
+/// Hourly simulation operands of every class-13 railway gun, keyed by its full handle. Owners are
+/// raw country tags; `province` is its authenticated location (zero when its roster holds it
+/// unlocated). The mixed province occupant order is already in ProvinceUnitOrder; nothing here is a
+/// client's rendered icon, selected country or camera state. `railway_building_level` is the signed
+/// level of the railway building at the gun's province (`None` for a null rail info or building
+/// pointer), the location warning's input. `combat_role` is 0 without a combat, 1 when the logical
+/// owner attacks in its first combat and 2 otherwise; `combat_province` is that combat's province.
+/// `combat_count` is the stored unit combat-vector count, and `attacking` whether the owner attacks
+/// in any of those combats (the unit-action query's combat branch). `reference_entry_count` is the
+/// stored count of the gun's own combat reference array, the save's `combat` list.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RailwayGunCounterInputRow {
     pub gun: u64,
@@ -329,8 +327,8 @@ pub struct RailwayGunCounterInputRow {
     pub exiled: u8,
     pub retreat: u8,
     pub strategic_redeployment: u8,
-    /// The stored count of the gun's own combat
-    /// references (`+0x420`), which the save writes as its `combat` list.
+    /// The stored count of the gun's own combat references, which the save writes as its `combat`
+    /// list.
     pub reference_entry_count: i32,
     pub assignee_group: u64,
     pub subunit_token: u32,
@@ -345,9 +343,9 @@ pub struct RailwayGunCounterInputRow {
     pub attacking: u8,
     pub ordinary_path: Vec<u32>,
     pub alternate_path: Vec<u32>,
-    /// railway gun's stored unit name (primary+0x258), exact bytes. The getter/setter
-    /// retain no authored-name provenance; display only in the recording's language.
-    /// `None` is a guarded acquisition refusal.
+    /// railway gun's stored unit name (on its primary unit), exact bytes. The getter/setter retain
+    /// no authored-name provenance; display only in the recording's language. `None` is a guarded
+    /// acquisition refusal.
     pub name: Recorded<Option<Vec<u8>>>,
     /// Hourly first-edge native duration inputs, present for a positive
     /// ordinary route. None is outside demand or a counted capture failure;
@@ -381,10 +379,10 @@ value_struct!(RailwayGunEtaOperands {
 });
 opaque_value!(Option<RailwayGunEtaOperands>);
 
-/// Fresh class13 route inputs. Require `sample_hour.fresh_at(frame.hour)`; carried
-/// first-edge inputs never substitute for an absent common domain. Native absence of the
-/// genuine unit+0xc0 group is `Some(0)`, independently of the railway assignee group
-/// already recorded by the counter prefix.
+/// Fresh class13 route inputs. Require `sample_hour.fresh_at(frame.hour)`; carried first-edge
+/// inputs never substitute for an absent common domain. Native absence of the genuine unit's orders
+/// group is `Some(0)`, independently of the railway assignee group already recorded by the counter
+/// prefix.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FreshRailwayCounterEta {
     pub sample_hour: PacketHour,
@@ -568,15 +566,15 @@ pub struct CountryCounterInputRow {
     /// no active-war veto or faction reconstruction is applied. None is a
     /// counted independent read/arena refusal, not an empty set.
     pub co_belligerents: Recorded<Option<Vec<u32>>>,
-    /// Slot-zero +0x2E8 war-pointer presence (0/1), then the pointed relation's
-    /// exact retired byte (zero for a null pointer). Independent of the cache
-    /// set; these native runtime operands have no text-save counterpart.
+    /// Slot-zero war-pointer presence (0/1), then the pointed relation's exact retired byte (zero
+    /// for a null pointer). Independent of the cache set; these native runtime operands have no
+    /// text-save counterpart.
     pub zero_war: Recorded<Option<[u8; 2]>>,
     /// Retired owner-shared transport speeds of the selected transport
     /// preview; the river, naval and theatre domains retired before them.
     pub movement: Recorded<Retired>,
-    /// Exact status0 +288 subject pointer/type/parties, independent of zero_war
-    /// and the directed cache. None is a guarded refusal; text saves omit slot0.
+    /// Exact slot-zero status's subject pointer, type and parties, independent of zero_war and the
+    /// directed cache. None is a guarded refusal; text saves omit slot0.
     pub zero_subject: Recorded<Option<ZeroSubjectInputs>>,
     /// Retained cached ship-name bytes for this row's full `pride_of_the_fleet`
     /// handle. None is unused for a zero or stale reference, otherwise a
@@ -696,14 +694,13 @@ value_struct!(ReservedLaunchSources {
 });
 opaque_value!(Option<ReservedLaunchSources>);
 
-/// One directed diplomacy-status cell reached by the access query.
-/// The enclosing row or packet assigns its receiver and matrix ordinal:
-/// actual Country0's reverse cell or a positive receiver's matrix[0] cell.
-/// `target` is the cell's exact +0x50 raw word, never its matrix ordinal or
-/// a resolved alias. `war` retains +0x2E8 presence and the pointed retired
-/// byte; [0, 0] is native null, [1, 0] is an active-war veto. Each None is
-/// an independent refused or unreached operand. A present subject with no
-/// type is native null; ordered optional parties retain the lazy OR reads.
+/// One directed diplomacy-status cell reached by the access query. The enclosing row or packet
+/// assigns its receiver and matrix ordinal: actual Country0's reverse cell or a positive receiver's
+/// matrix[0] cell. `target` is the cell's exact raw target word, never its matrix ordinal or a
+/// resolved alias. `war` retains the war pointer's presence and the pointed retired byte; [0, 0] is
+/// native null, [1, 0] is an active-war veto. Each None is an independent refused or unreached
+/// operand. A present subject with no type is native null; ordered optional parties retain the lazy
+/// OR reads.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ReverseZeroVisibilityInputs {
     pub target: Option<u32>,
@@ -809,7 +806,7 @@ pub struct ReservedCountryNamingRow {
     /// preserves presence. None is a counted read/arena refusal. Positive bytes
     /// are exact.
     pub original_tag: Recorded<Option<Vec<u8>>>,
-    /// Exact signed +0x130C word, independent of the generator's slot gate.
+    /// Exact signed original-tag reference word, independent of the generator's slot gate.
     pub original_tag_reference: Recorded<Option<i32>>,
     /// Actual country-link vectors, indexed by canonical bucket and holding
     /// ordered raw country references. Empty buckets, duplicate members and
@@ -876,17 +873,17 @@ pub struct OrdersGroupCounterInputRow {
     pub hq_distance: Recorded<Option<i32>>,
     pub leader_enroute_days: Recorded<Option<i32>>,
     pub border_war_presence: Recorded<Option<u8>>,
-    /// Stored signed value used by the invasion communications branch.
-    /// Distinct from +0x1C4 HQ distance; None is a counted independent refusal.
+    /// Stored signed value used by the invasion communications branch. Distinct from the HQ
+    /// distance; None is a counted independent refusal.
     pub invasion_source_distance: Recorded<Option<i32>>,
     /// The commander operands recordings through format 101 captured
     /// ([`OrdersGroupAttackInputs`]); current writers leave it empty
     /// ([`Witnessed`]) unless the collector's `attack_witness` diagnostic
     /// sampled one of the group's divisions.
     pub attack: Recorded<Witnessed<OrdersGroupAttackInputs>>,
-    /// The direct commander's attack operands (`orders group+0x88`,
-    /// [`CommanderAttackStats`]): `Some(None)` for a group without one, None for a
-    /// counted read refusal. Older formats use NotRecorded.
+    /// The direct commander's attack operands (the orders group's direct commander,
+    /// [`CommanderAttackStats`]): `Some(None)` for a group without one, None for a counted read
+    /// refusal. Older formats use NotRecorded.
     pub commander_attack: Recorded<Option<Option<CommanderAttackStats>>>,
     /// The direct commander's terrain movement ([`CommanderMovementStats`]), read and
     /// refused with [`Self::commander_attack`]. Older formats use NotRecorded.
@@ -1063,10 +1060,10 @@ pub struct DivisionTemplateIconRow {
     /// The composition's (definition, count) entries grouped from its three
     /// grids, in stored order.
     pub subunits: Vec<TemplateSubunit>,
-    /// Composition `+0x1D4`, raw: the clone scope of local sub-units and the
-    /// model fallback country.
+    /// The composition's country, raw: the clone scope of local sub-units and the model fallback
+    /// country.
     pub country: i32,
-    /// Composition `+0x1DC` (`foreign_template_tag`), raw.
+    /// The composition's `foreign_template_tag`, raw.
     pub foreign_country: i32,
     /// Saved model category filter; absent when disengaged.
     pub model_category: Option<u64>,
@@ -1112,9 +1109,9 @@ pub struct NavalBaseRow {
     pub country: u32,
     pub level: i32,
     pub healthy_level: i32,
-    /// The complete `+0x40` list as raw country references, in native order:
-    /// every entry up to its live count at `+0x4c`. A count that is not
-    /// positive is empty, as `ccountry_tag::list_contains` reads it.
+    /// The complete country list as raw country references, in native order: every entry up to its
+    /// live count. A count that is not positive is empty, as `ccountry_tag::list_contains` reads
+    /// it.
     pub countries: Vec<u32>,
     /// The list header held a positive count with a null data pointer, which
     /// the game never writes; `countries` is then unknown rather than empty.
@@ -1161,7 +1158,7 @@ pub struct RadarCoverageRow {
     /// Raw country reference; resolve through CountryLinks to a canonical slot.
     pub country: u32,
     pub ordinal: u32,
-    /// Host state id; absent when the native `+0x48` pointer is null.
+    /// Host state id; absent when the native host-state pointer is null.
     pub state: Option<u32>,
     /// Covered province ids in native array order, repeats included.
     pub provinces: Vec<u32>,

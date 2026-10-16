@@ -298,7 +298,7 @@ mod tests {
     const SYSTEM: usize = 0x2200;
     const FACTION_POINTERS: usize = 0x2300;
     const FIRST: usize = 0x3000;
-    // A CFaction spans past its colour at +0x9d0, so the second one sits after every other object.
+    // A CFaction spans past its colour (`cfaction::COLOR`), so the second one sits after every other object.
     const SECOND: usize = 0xb000;
     const TEMPLATE_OBJECT: usize = 0xbc00;
     const TEMPLATE_TOKEN: u32 = 0x4c1a_0042;

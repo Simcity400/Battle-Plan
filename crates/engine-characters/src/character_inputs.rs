@@ -2,12 +2,11 @@
 //! `ccharacter_manager`: leader, advisor and scientist role trait arrays, plus
 //! the unit-leader reference and resolved operands.
 //!
-//! Trait predicates search unit-leader traits, then every matching advisor
-//! and country-leader role, or the scientist role for scientist traits.
-//! The unit leader comes from +0xA8, otherwise registry resolution of +0xC8;
-//! tag and skill predicates use the same selection. Roster pointers copy in
-//! pages, with identities and role fields in one guarded gather per page.
-//! Maps, roles and trait arrays follow their role walks.
+//! Trait predicates search unit-leader traits, then every matching advisor and country-leader role,
+//! or the scientist role for scientist traits. The unit leader comes from
+//! `ccharacter::UNIT_LEADER`, otherwise registry resolution of `ccharacter::OPERATIVE`; tag and
+//! skill predicates use the same selection. Roster pointers copy in pages, with identities and role
+//! fields in one guarded gather per page. Maps, roles and trait arrays follow their role walks.
 //!
 //! Synthetic fixtures cover these walks; live capture and fresh-save agreement
 //! remain unverified.
@@ -28,18 +27,17 @@ use crate::{
 /// The role a trait array belongs to.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
-    /// A country-leader role, by its ideology key in `CCharacter+0x98`.
+    /// A country-leader role, by its ideology key in the character's leader map.
     CountryLeader(i32),
-    /// An advisor role, by its position in `CCharacter+0xB0`.
+    /// An advisor role, by its position in the character's advisor map.
     Advisor(u32),
-    /// The scientist role at `CCharacter+0xC0`.
+    /// The scientist role (`ccharacter::SCIENTIST`).
     #[default]
     Scientist,
 }
 
-/// One trait of a role's array: its lexer token (`+0x8`) and, for a
-/// country-leader trait, its database ordinal (`CCountryLeaderTrait+0x1A0`),
-/// which tells definitions of one name apart.
+/// One trait of a role's array: its lexer token and, for a country-leader trait, its database
+/// ordinal (the trait's database ordinal), which tells definitions of one name apart.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Trait {
     pub token: u32,
@@ -59,16 +57,16 @@ pub struct TraitRow {
 /// The stored operands of the unit leader a reference resolves to.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Leader {
-    /// `CUnitLeader+0xE7C`.
+    /// `cunit_leader::CATEGORY`.
     pub category: i32,
-    /// `CUnitLeader+0x120`, the raw country reference.
+    /// `cunit_leader::OWNER`, the raw country reference.
     pub owner: u32,
-    /// Skill level at +0x1B8 in the unit leader's optional skill object
-    /// selected at +0xE60; `None` when that object is null.
+    /// Skill level in the unit leader's optional skill object (`cunit_leader::SKILL`); `None` when
+    /// that object is null.
     pub skill_level: Option<i32>,
 }
 
-/// One character's nonzero `CCharacter+0xC8`. With a resolved `leader`, its
+/// One character's nonzero `ccharacter::OPERATIVE` reference. With a resolved `leader`, its
 /// assigned traits' definition ordinals are `definitions[start..start + len]`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct OperativeRow {
@@ -406,11 +404,10 @@ pub const CENSUS_PAGE: usize = PAGE;
 /// Bytes of a role map's head node up to its nil byte.
 pub const MAP_SENTINEL: usize = SENTINEL;
 
-/// One occurrence of the roster job's admitted role census: the character's
-/// pointer and id and the bytes that job gathered, in the same stopped-world
-/// callback, at `CCharacter+0x98` (country-leader map header), `+0xB0`
-/// (advisor map header), `+0xC0` (scientist) and `+0xC8` (unit-leader
-/// reference). Each occurrence was authenticated by that job's view.
+/// One occurrence of the roster job's admitted role census: the character's pointer and id and the
+/// bytes that job gathered, in the same stopped-world callback, at the character's country-leader
+/// map header, advisor map header, scientist and unit-leader reference). Each occurrence was
+/// authenticated by that job's view.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Occupant {
     pub pointer: usize,
@@ -795,8 +792,8 @@ fn role_traits(
     scientist_traits(memory, base, field(ccharacter::SCIENTIST), character, table)
 }
 
-/// The country-leader then advisor rows of one character, from its two role
-/// maps (`CCharacter+0x98`, `+0xB0`).
+/// The country-leader then advisor rows of one character, from its two role maps
+/// (`ccharacter::LEADER_MAP_HEAD`).
 fn map_role_traits(
     memory: &impl Memory,
     base: usize,
@@ -865,7 +862,7 @@ fn map_role_traits(
     Ok(())
 }
 
-/// The scientist row of the role at `CCharacter+0xC0`, when it is nonzero.
+/// The scientist row of the role (`ccharacter::SCIENTIST`), when it is nonzero.
 fn scientist_traits(
     memory: &impl Memory,
     base: usize,
@@ -900,9 +897,8 @@ fn non_null(value: u64, reason: &'static str) -> Result<usize, &'static str> {
         .ok_or(reason)
 }
 
-/// One nonempty trait array as a row: each element must be a non-null trait
-/// of `vtable`, whose token is at `+0x8`; a country-leader trait's
-/// (`ordinal`) database ordinal is read with it.
+/// One nonempty trait array as a row: each element must be a non-null trait of `vtable`, whose
+/// token follows it; a country-leader trait's (`ordinal`) database ordinal is read with it.
 fn push_traits(
     memory: &impl Memory,
     array: Array,
@@ -995,9 +991,8 @@ fn place(names: &mut Names<'_>, bytes: &[u8]) -> Result<Option<usize>, &'static 
     Ok(Some(start))
 }
 
-/// One nonzero `CCharacter+0xC8` and, when the registry holds its object,
-/// that unit leader's category, owner, skill level and assigned trait
-/// definitions.
+/// One nonzero `ccharacter::OPERATIVE` reference and, when the registry holds its object, that unit
+/// leader's category, owner, skill level and assigned trait definitions.
 fn operative(
     memory: &impl Memory,
     base: usize,
@@ -1772,8 +1767,8 @@ mod tests {
             (b"GROUP-KEY-ON-THE-HEAP", Some(0x2_0000)),
             (&long, Some(0x2_0000)),
         ];
-        // Shown stored names (+0xA9 clear), inline or heap-held, empty or
-        // not, and one +0xA9 skips.
+        // Shown stored names (programmatic flag clear), inline or heap-held, empty or not, and one
+        // programmatic skip.
         let customs: [(u8, &[u8], Option<usize>); 6] = [
             (0, b"", None),
             (0, b"Code", None),
@@ -1855,7 +1850,7 @@ mod tests {
                                 assert_eq!(
                                     store(true),
                                     store(false),
-                                    "heap {heap:?}, +0xA9 {programmatic}, custom {} bytes, \
+                                    "heap {heap:?}, programmatic {programmatic}, custom {} bytes, \
                                      growing {growing}, {capacity} bytes, {rows} rows, \
                                      {slots} definitions",
                                     name.len()

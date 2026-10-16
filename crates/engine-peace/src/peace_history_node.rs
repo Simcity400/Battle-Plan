@@ -1,5 +1,5 @@
-//! Country-keyed history node used by CPeaceConference+0x1F8.
-//! This is an MSVC tree node without a vtable, not a game object.
+//! Country-keyed history node used by the peace conference. This is an MSVC tree node without a
+//! vtable, not a game object.
 
 use crate::{Memory, cpdx_array::Array, msvc_tree_node, read};
 

@@ -228,8 +228,8 @@ pub(super) struct Building {
     inner: Option<Box<Building>>,
     /// A browser's or curve graph's `spriteType` string, as the component readers can reach it.
     sprite_string: spill::CxxString,
-    /// Why a scrollbar's child factory (`+0x218`) is no longer the one its constructor stored,
-    /// once a `slider_pos_shift` component wrote it.
+    /// Why a scrollbar's child factory is no longer the one its constructor stored, once a
+    /// `slider_pos_shift` component wrote it.
     factory: Option<String>,
 }
 
@@ -731,8 +731,8 @@ impl Reader<'_> {
                     fields.origo = value;
                 }
             }
-            // Case 0x277 reads into a cleared temporary and stores `+0x592`, so a failed read
-            // replaces the tri-state with false.
+            // Case 0x277 reads into a cleared temporary and stores it in the clipping byte, so a
+            // failed read replaces the tri-state with false.
             "clipping" => container(element).clipping = Some(read_bool(&text).unwrap_or(false)),
             "margin" | "background_margin" => {
                 let fields = container(element);
@@ -791,7 +791,7 @@ impl Reader<'_> {
                         match word {
                             "fade_time" => fields.fade_time = value,
                             "fade_delay" => fields.fade_delay = value,
-                            // Read into `+0x558`, then copied to `+0x55C`.
+                            // Read into the show time, then copied to the hide time.
                             "animation_time" => {
                                 fields.show_animation_time = value;
                                 fields.hide_animation_time = value;
@@ -1195,8 +1195,8 @@ impl Reader<'_> {
                     text_box.text_color_code = *code;
                 }
             }
-            // Cases 0x31B and 0x31D read only while unset (`+0x14C`); repeats report an error
-            // and skip nothing.
+            // Cases 0x31B and 0x31D read only while unset; repeats report an error and skip
+            // nothing.
             "context_aware_text" | "bound_text" => {
                 let unset = element
                     .fields
@@ -1294,7 +1294,7 @@ impl Reader<'_> {
                     }
                 });
             }
-            // The integer component reader from `+0x1B8` ([`GridBytes`]).
+            // The integer component reader from `max_slots_horizontal` ([`GridBytes`]).
             "max_slots" => {
                 let mut written = Vec::new();
                 let result = self.components(|index, value| written.push((index, value as u32)));
@@ -1619,7 +1619,8 @@ impl Reader<'_> {
         let text = self.value.text.clone();
         match word {
             "size" | "position" | "bordersize" => {
-                // The integer component reader from `+0x150`, `+0x158` or `+0x160` ([`EditBoxBytes`]).
+                // The integer component reader from `position`, `size` or `borderSize`
+                // ([`EditBoxBytes`]).
                 let start = match word {
                     "position" => 0x150,
                     "size" => 0x158,
@@ -1729,7 +1730,7 @@ impl Reader<'_> {
                     }
                 }
             }
-            // The integer component reader from `+0x1F0` ([`ScrollbarBytes`]).
+            // The integer component reader from `slider_pos_shift` ([`ScrollbarBytes`]).
             "slider_pos_shift" => {
                 let mut written = Vec::new();
                 let result = self.components(|index, value| written.push((index, value as u32)));
@@ -2241,7 +2242,7 @@ fn container(element: &mut Building) -> &mut Container {
     }
 }
 
-/// A grid from `max_slots_horizontal` (`+0x1B8`).
+/// A grid from `max_slots_horizontal`.
 struct GridBytes<'a>(&'a mut Grid);
 
 impl Layout for GridBytes<'_> {
@@ -2263,8 +2264,8 @@ impl Layout for GridBytes<'_> {
     }
 }
 
-/// An edit box's 0x180 bytes from `position` (`+0x150`): the twelve slots kept by
-/// [`EditBox::slots`], through the object's end.
+/// An edit box's 0x180 bytes from `position`: the twelve slots kept by [`EditBox::slots`], through
+/// the object's end.
 struct EditBoxBytes<'a>(&'a mut EditBox);
 
 impl Layout for EditBoxBytes<'_> {
@@ -2278,7 +2279,7 @@ impl Layout for EditBoxBytes<'_> {
     }
 }
 
-/// A scrollbar's 0x2A0 bytes from `slider_pos_shift` (`+0x1F0`).
+/// A scrollbar's 0x2A0 bytes from `slider_pos_shift`.
 struct ScrollbarBytes<'a> {
     bar: &'a mut Scrollbar,
     factory: &'a mut Option<String>,
@@ -2291,8 +2292,8 @@ impl Layout for ScrollbarBytes<'_> {
 
     fn write(&mut self, offset: usize, bits: u32) -> Result<(), String> {
         match offset {
-            // `slider_pos_shift`, then `maxValue`, `minValue`, `stepSize`, `startValue`,
-            // `priority` and the padding at `+0x20C`.
+            // `slider_pos_shift`, then `maxValue`, `minValue`, `stepSize`, `startValue`, `priority`
+            // and the padding after it.
             0x1F0..=0x20C => {
                 let slot = (offset - 0x1F0) / 4;
                 self.bar.slots[slot] = bits;
@@ -2300,47 +2301,46 @@ impl Layout for ScrollbarBytes<'_> {
                     self.bar.min_value_set = true;
                 }
             }
-            // The building container's second constructor argument (`+0x548`), which no later
-            // reader uses.
+            // The building container's second constructor argument, which no later reader uses.
             0x210 | 0x214 => {}
-            // The child factory (the container's `+0x550`), which field dispatch calls through
-            // for each later child kind: failing only if one follows.
+            // The child factory (the container's own factory pointer), which field dispatch calls
+            // through for each later child kind: failing only if one follows.
             0x218 | 0x21C => {
                 self.factory.get_or_insert_with(|| {
                     "follows a slider_pos_shift whose eleventh or twelfth component wrote the \
-                     child factory pointer (+0x218), which the scrollbar reader calls through for \
+                     child factory pointer, which the scrollbar reader calls through for \
                      this child: a heap address the replay does not hold"
                         .into()
                 });
             }
             0x220..=0x23C => {
                 return Err(
-                    "the child map (+0x220: the name tree's virtual-function table at the image's \
+                    "the child map (the name tree's virtual-function table at the image's \
                      load address and its root), which the scrollbar post-load pass walks in \
                      every post-load pass: addresses the replay does not hold"
                         .into(),
                 );
             }
-            // The map's queue of batched inserts (`+0x240`), which the scrollbar destructor
-            // walks through `+0x10` and frees; the map batches nothing here (its flag `+0x230`,
-            // 0 from the constructor, lies in the refused range above).
+            // The map's queue of batched inserts, which the scrollbar destructor walks through its
+            // head and frees; the map batches nothing here (its batching flag, 0 from the
+            // constructor, lies in the refused range above).
             0x240 | 0x244 if bits != 0 => {
                 return Err(
-                    "the child map's batch queue (+0x240), which the scrollbar destructor walks \
+                    "the child map's batch queue, which the scrollbar destructor walks \
                      and frees: bits that are no block"
                         .into(),
                 );
             }
-            // The queue's tail and count (`+0x248`, `+0x250`), which only a batched insert reads
-            // and name tree clearing resets; `+0x254`; `+0x258`, which decides only
-            // the insert's discarded return (name tree insertion); padding to `+0x260`.
+            // The queue's tail and count, which only a batched insert reads and name tree clearing
+            // resets; the map's next two words, the second of which decides only the insert's
+            // discarded return (name tree insertion); then padding.
             0x240..=0x25C => {}
             0x260 => self.bar.horizontal = bits as i32,
             // Padding (the constructor writes nothing there).
             0x264 => {}
             0x268 | 0x26C | 0x278 | 0x27C => {
                 return Err(
-                    "the listed field ids' vector (+0x268 data, +0x278 allocator), which the \
+                    "the listed field ids' vector (its data and allocator pointers), which the \
                      scrollbar destructor frees through that allocator: a heap or load address \
                      the replay does not hold"
                         .into(),
@@ -2367,16 +2367,15 @@ impl Layout for ScrollbarBytes<'_> {
             }
             0x298 => self.bar.use_range_limit = bits.to_le_bytes()[0] != 0,
             0x29C => self.bar.scroll_speed = bits as i32,
-            // `+0x284`, padding.
+            // The padding after `drag`.
             _ => {}
         }
         Ok(())
     }
 }
 
-/// A browser (0x130 bytes: `position` at `+0x100`, `size` at `+0x108`, `spriteType` at
-/// `+0x110`) or curve graph (0x120 bytes: `position` at `+0xF0`, `size` at `+0xF8`,
-/// `spriteType` at `+0x100`): four `i32`s, the string, then the object's end.
+/// A browser (0x130 bytes, ending with `position`, `size` and `spriteType`) or curve graph (0x120
+/// bytes, ending the same way): four `i32`s, the string, then the object's end.
 struct BrowserBytes<'a> {
     fields: &'a mut Browser,
     sprite: &'a mut spill::CxxString,

@@ -4,8 +4,8 @@
 //! start date, parent variant and every produced variant in that order, without
 //! conditional field gates. Loading restores the same fields.
 //!
-//! The i64 at +0x30 defaults to 100,000 and receives the creation argument. It
-//! is not serialized; its exact role remains unknown and capture preserves it raw.
+//! The i64 `UNSERIALIZED_OPERAND` defaults to 100,000 and receives the creation argument. It is not
+//! serialized; its exact role remains unknown and capture preserves it raw.
 
 use crate::{Memory, cequipment_variant, cpdx_array::Array, read};
 
@@ -29,7 +29,7 @@ pub const START_DATE_SERIALIZER_SUBOBJECT: usize = 0x28;
 pub const UNSERIALIZED_OPERAND: usize = 0x30;
 /// CEquipmentProductionLicense produced-variant pointer array.
 pub const EQUIPMENT: usize = 0x38;
-/// Produced-variant array capacity, i32; the CPdxArray header at +0x38 places it at +0x40.
+/// Produced-variant array capacity, i32; the CPdxArray header at `EQUIPMENT` places it after the data pointer.
 pub const EQUIPMENT_CAPACITY: usize = 0x40;
 /// Produced-variant array count, i32.
 pub const EQUIPMENT_COUNT: usize = 0x44;
@@ -61,7 +61,7 @@ pub struct Row {
     pub start_date: i32,
     /// Authenticated parent CEquipmentVariant handle, not a process pointer.
     pub parent: u64,
-    /// Unserialized raw i64 at +0x30.
+    /// Unserialized raw i64 (`UNSERIALIZED_OPERAND`).
     pub operand_raw: i64,
     pub equipment_start: usize,
     pub equipment_len: usize,

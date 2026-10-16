@@ -20,7 +20,7 @@ isolates ACTIVE's release veto; it restores the flags before native dispatch.
 After dispatch, the test-owned installed-site flag independently vetoes release.
 A later normal call must preserve the poisoned observation and queued storage.
 Disable restores the entire sentinel, retains the Hook's executable allocations
-until its drop, and demonstrates native passthrough at `site+5` and the original
+until its drop, and demonstrates native passthrough at the five-byte return point and the original
 RSP. Storage release occurs only after native handlers have returned, ACTIVE is
 zero and the single owned site is restored. No stranded counter is reset.
 

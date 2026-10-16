@@ -34,16 +34,16 @@ pub const DISPLAY_NAME: usize = 0x28;
 pub const VARIANT_NAME: usize = 0x48;
 /// CEquipmentVariant embedded CEquipmentUpgradesInstance.
 pub const UPGRADES: usize = 0x68;
-/// Embedded variant module collection, with data +8 and count +0x14;
-/// its vtable remains unproven.
+/// Embedded variant module collection, with its data pointer and count; its vtable remains
+/// unproven.
 pub const MODULES: usize = 0xb0;
 /// CEquipmentVariant fallback raw i64 for mission group1000/stat23.
 pub const MISSION_1000_STAT_23: usize = 0x218;
 /// CEquipmentVariant fallback raw i64 for mission group2000/stat24.
 pub const MISSION_2000_STAT_24: usize = 0x220;
-/// Equipment-variant map-range stat at slot 0x2E of its ordered stat array.
+/// Equipment-variant map-range stat in its ordered stat array.
 pub const MAP_RANGE_STAT: usize = 0x270;
-/// Variant stat slot 0x2F, the second retained variant-stat lane.
+/// The variant stat after the map range, the second retained variant-stat lane.
 pub const STAT_2F: usize = 0x278;
 /// Variant attack cache, signed i64; live consistency and save agreement remain unverified.
 pub const AIR_ATTACK_CACHE_CANDIDATE: usize = 0x280;
@@ -87,10 +87,9 @@ pub const SERIALIZED_FLAG_2B9D: usize = 0x41e;
 pub const OBSOLETE: usize = 0x424;
 /// CEquipmentVariant explicit entity MSVC string.
 pub const EXPLICIT_ENTITY: usize = 0x430;
-/// Variant icon entry: 0x30 bytes with texture pointer at +0x28.
-/// A new entry is inactive, kind 1 and empty; loaded or constructed overrides
-/// are active. Binding tries this entry before defaults. Serialization writes
-/// an active entry string without its kind.
+/// Variant icon entry: 0x30 bytes with its texture pointer at `ICON_ENTRY_RECORDED`. A new entry is
+/// inactive, kind 1 and empty; loaded or constructed overrides are active. Binding tries this entry
+/// before defaults. Serialization writes an active entry string without its kind.
 pub const ICON_OVERRIDE_ACTIVE: usize = 0x450;
 /// CEquipmentVariant icon entry u32 kind: 0 a GFX sprite name, 1 a texture path.
 pub const ICON_OVERRIDE_KIND: usize = 0x454;

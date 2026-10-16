@@ -38,12 +38,13 @@ pub struct DivisionLandInputsRow {
     /// Raw contributor references and signed amounts, in native order.
     pub manpower: Vec<DivisionManpowerContributor>,
     /// Retired copies of `DivisionStatus.supply_ratio`, `supply_grace_maximum` and
-    /// `supply_grace_remaining`: both tables took them from the same hour's DivisionSeed
-    /// (division+0x40/+0x600/+0x610), so a division's DivisionStatus row is their record.
+    /// `supply_grace_remaining`: both tables took them from the same hour's DivisionSeed (the
+    /// division's supply ratio and supply grace), so a division's DivisionStatus row is their
+    /// record.
     pub received_supply: RetiredI64,
     pub maximum_grace: RetiredI64,
     pub remaining_grace: RetiredI64,
-    /// `division+0x2F8` is nonzero: the division is in a naval transfer.
+    /// The division's naval-transfer pointer is not null: the division is in a naval transfer.
     pub naval_transfer: bool,
 }
 typed_codec!(
@@ -91,8 +92,8 @@ pub struct LandCombatResultsRow {
     /// progress with both outcome bits clear awards the defender.
     pub winners: u8,
     pub border_war: bool,
-    /// Border-war forced end flags +F1..F3 and the two native participation
-    /// predicates queried by its finalizer (255 means not queried).
+    /// Border-war forced end flags and the two native participation predicates queried by its
+    /// finalizer (255 means not queried).
     pub border_end_flags: [u8; 3],
     pub border_terminating: [u8; 2],
     /// Winner selected by round termination's leader on-actions, when dispatched.

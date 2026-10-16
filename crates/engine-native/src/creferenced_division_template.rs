@@ -78,7 +78,7 @@ pub const SUBUNIT_COUNTS: usize = COMPOSITION + 0xa8;
 pub const SUBUNIT_COUNT_STRIDE: usize = 0x10;
 /// Stored composition active-weight operand, serialized and used by counters.
 pub const CUSTOM_ICON: usize = COMPOSITION + 0x1a8;
-/// Contained composition +1AC, token3525; controls custom-icon use under NATO settings.
+/// Contained composition flag, token3525; controls custom-icon use under NATO settings.
 pub const CUSTOM_ICON_NATO: usize = COMPOSITION + 0x1ac;
 /// Contained composition signed count added with i32 wrapping for formation
 /// division counts. The hourly fixed span already contains this word.
@@ -96,7 +96,7 @@ pub struct Span {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SubunitCount {
     pub token: u32,
-    /// A country-local clone (`CDeploymentStatus+0x20`), not the global definition.
+    /// A country-local clone (in the deployment status's clone vector), not the global definition.
     pub local: bool,
     pub count: i32,
 }
@@ -139,10 +139,10 @@ pub struct IconRow {
     pub representative: SubunitCount,
     /// The stored grouped entries, in native order.
     pub counts: Span,
-    /// Composition +0x1D4 (`country`), the clone scope of local definitions and
-    /// the model fallback country; raw signed reference.
+    /// The composition's `country`, the clone scope of local definitions and the model fallback
+    /// country; raw signed reference.
     pub country: i32,
-    /// Composition +0x1DC (`foreign_template_tag`); raw signed reference.
+    /// The composition's `foreign_template_tag`; raw signed reference.
     pub foreign_country: i32,
     /// Saved model category filter, absent when disengaged.
     pub model_category: Option<u64>,
@@ -695,9 +695,8 @@ impl Definitions<'_> {
     }
 }
 
-/// The fallback when +0x190 is null: regiment cell (0,0) when the low-16-bit
-/// real-unit count is nonzero, else the null singleton. The native wrap is
-/// kept.
+/// The fallback when the priority unit is null: regiment cell (0,0) when the low-16-bit real-unit
+/// count is nonzero, else the null singleton. The native wrap is kept.
 fn fallback_priority_unit(
     memory: &impl Memory,
     base: usize,
@@ -746,8 +745,8 @@ const fn record_field(source_offset: usize, destination_offset: usize, len: usiz
     }
 }
 
-/// Composition +0x190 (priority unit) through the unit-type override: one span
-/// holding every fixed scalar and the model entity string's header.
+/// The composition's priority unit through the unit-type override: one span holding every fixed
+/// scalar and the model entity string's header.
 const TAIL: usize = PRIORITY_UNIT;
 const TAIL_END: usize = UNIT_TYPE_OVERRIDE + 4;
 /// Daily tail after the identity and the two MSVC string headers.
@@ -1053,9 +1052,9 @@ fn walk_inner(
     result
 }
 
-/// A template's literal name (`+0x20`) and fallback key (`+0x40`), copied as
-/// [`walk`] copies them into `bytes` from `start`, for a caller holding the
-/// rest of its dictionary row from this hour's [`walk_icons`] ([`IconRow`]).
+/// A template's literal name and fallback key, copied as [`walk`] copies them into `bytes` from
+/// `start`, for a caller holding the rest of its dictionary row from this hour's [`walk_icons`]
+/// ([`IconRow`]).
 pub fn copy_names_growing(
     memory: &impl Memory,
     template: usize,
@@ -1204,7 +1203,7 @@ fn display_name(
     )
 }
 
-/// `literal` is the +0x20 header the named walk gathered with the record.
+/// `literal` is the `NAME` header the named walk gathered with the record.
 fn display_name_buffer(
     memory: &impl Memory,
     wrapper: usize,

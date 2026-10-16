@@ -40,10 +40,10 @@ struct War {
     retired: bool,
 }
 
-/// Native state as the war writers leave it: matrix cells (+2E8), status relation lists
-/// (+D0, first-owner +E8) and owned vectors (+20), changed only through relation
-/// replacement as linking and unlinking drive it. Enemy vectors (+98) change only where a
-/// scenario rebuilds wartime allies.
+/// Native state as the war writers leave it: matrix cells' war pointers, status relation lists
+/// (subrelations, first-owner relations) and owned vectors, changed only through relation
+/// replacement as linking and unlinking drive it. Enemy vectors change only where a scenario
+/// rebuilds wartime allies.
 struct World {
     /// Raw id -> canonical slot; index zero is the sentinel.
     links: Vec<u32>,
@@ -292,8 +292,8 @@ impl World {
     }
 }
 
-/// The country-relation matrix read: the receiver's status for the target slot, its +2E8
-/// war pointer and the pointed +49 retired byte.
+/// The country-relation matrix read: the receiver's status for the target slot, its war pointer and
+/// the pointed retired byte.
 fn native(memory: &impl Memory, receiver: usize, target: usize) -> bool {
     let cells = read::<u64>(memory, diplomacy(receiver) + cdiplomacy_status::RELATIONS).unwrap();
     let status = read::<u64>(memory, cells as usize + target * 8).unwrap();

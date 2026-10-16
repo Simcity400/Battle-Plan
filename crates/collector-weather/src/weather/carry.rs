@@ -1,14 +1,11 @@
 //! The window-following province and region read (`weather_changes`).
 //!
-//! With both suspension bytes (+0x349, +0x34A) and the initial-mode byte
-//! (+0x348) clear, the hourly weather update runs exactly one window pass;
-//! it is the pass's only caller. The pass visits two rotating windows:
-//! Province slots from their cursor  (+0x58), as many as
-//! `provinces_per_update` (+0x2F0) or the whole array, wrapping at the live
-//! Count  (+0x1C); and region slots from their cursor (+0x5C), as many as
-//! `regions_per_update` (+0x2F4), wrapping at the region count (+0x4C)
-//! ([`window`]). Both budgets are parsed from `common/weather.txt`, so mods
-//! set them; each hour sizes its windows from the live words.
+//! With both suspension bytes and the initial-mode byte clear, the hourly weather update runs
+//! exactly one window pass; it is the pass's only caller. The pass visits two rotating windows:
+//! Province slots from their cursor , as many as `provinces_per_update` or the whole array,
+//! wrapping at the live Count ; and region slots from their cursor, as many as
+//! `regions_per_update`, wrapping at the region count ([`window`]). Both budgets are parsed from
+//! `common/weather.txt`, so mods set them; each hour sizes its windows from the live words.
 //!
 //! Every hourly writer of a recorded province or region field is reached
 //! only through those windows. Temperature staging has two callers, both
@@ -93,7 +90,7 @@ pub struct Words {
     pub manager: usize,
     pub provinces: Pass,
     pub regions: Pass,
-    /// +0x348 initial mode, +0x349 and +0x34A suspension.
+    /// The initial mode and the two suspension bytes.
     pub flags: [u8; 3],
 }
 

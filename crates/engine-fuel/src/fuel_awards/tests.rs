@@ -157,9 +157,9 @@ impl Memory for Holes<'_> {
     }
 }
 
-/// The tap pair copies only its operand fields: bytes between them, such as
-/// status+0x58 or the gap between two consumer receipts, are never read. An
-/// unreadable operand still refuses with the operand message.
+/// The tap pair copies only its operand fields: bytes between them, such as the status's unused
+/// tail or the gap between two consumer receipts, are never read. An unreadable operand still
+/// refuses with the operand message.
 #[test]
 fn start_and_settle_read_only_their_operand_fields() {
     let memory = fixture(1);

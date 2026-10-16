@@ -21,7 +21,7 @@ pub const POLITICAL_POWER: usize = 0xe0;
 pub const PARTIES: usize = 0x20;
 /// Live party count, signed i32.
 pub const PARTY_COUNT: usize = 0x2c;
-/// CPoliticalStatus party-array capacity, signed i32; standard CPdxArray header paired with native +0x2c count.
+/// CPoliticalStatus party-array capacity, signed i32; standard CPdxArray header paired with the native `PARTY_COUNT`.
 pub const PARTY_CAPACITY: usize = 0x28;
 /// Active idea-pointer array.
 pub const IDEAS: usize = 0x50;

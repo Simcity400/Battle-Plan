@@ -24,16 +24,15 @@ pub const OWNED_RELATION_COUNT: usize = 0x2c;
 /// used in a war. The diplomacy map mode tests the selected country's goals'
 /// recipients here.
 pub const OWNED_WARGOALS: usize = 0x68;
-/// Enemy raw-country-tag array, count +0xA4. Transport interdiction
-/// uses it; wartime rebuild fills it from opposing per-war lists. Reset
-/// clears it. It is not serialized.
+/// Enemy raw-country-tag array, its count follows the capacity. Transport interdiction uses it;
+/// wartime rebuild fills it from opposing per-war lists. Reset clears it. It is not serialized.
 pub const ENEMY_COUNTRIES: usize = 0x98;
 /// Enemy-country signed count. Nonzero establishes war state before
 /// scanning relations in the ordinary mode.
 pub const ENEMY_COUNTRY_COUNT: usize = ENEMY_COUNTRIES + 0xc;
-/// Wartime-ally raw-tag array, count +0xBC. Rebuild adds nonenemy friendly
-/// countries and marks their relation status, then removes canonical slots
-/// that later wars list as enemies. It is not serialized.
+/// Wartime-ally raw-tag array, its count follows the capacity. Rebuild adds nonenemy friendly
+/// countries and marks their relation status, then removes canonical slots that later wars list as
+/// enemies. It is not serialized.
 pub const WARTIME_ALLIES: usize = 0xb0;
 /// Ordered raw subject references used by faction descriptions.
 pub const SUBJECTS: usize = 0x170;
@@ -47,9 +46,9 @@ pub const FACTION: usize = 0x290;
 pub const CAPITULATED: usize = 0x2e0;
 /// Raw capitulation hour, read as i32.
 pub const CAPITULATED_HOUR: usize = 0x2f0;
-/// CDiplomacyStatus vector at +0x300, distinct from CRelationStatus opinion.
+/// CDiplomacyStatus auxiliary vector, distinct from CRelationStatus opinion.
 pub const AUXILIARY_VECTOR: usize = 0x300;
-/// Diplomacy +0x300 vector count; element semantics remain unproven.
+/// Diplomacy auxiliary vector count; element semantics remain unproven.
 pub const AUXILIARY_VECTOR_COUNT: usize = 0x30c;
 /// CDiplomacyStatus CCurrentAutonomyStatus pointer.
 pub const CURRENT_AUTONOMY_STATUS: usize = 0x350;
@@ -221,8 +220,7 @@ fn read_capitulation(
             .checked_add(offset)
             .ok_or("capitulation address overflow")
     };
-    // The retired last surrender (+0x2B8), faction join (+0x2D0),
-    // legitimacy (+0x1B0) and exile leader count (+0x1B8) are not read, so
+    // The retired last surrender, faction join, legitimacy and exile leader count are not read, so
     // they never refuse the row.
     let mut backlink = [0; 8];
     let mut capitulated = [0; 1];
@@ -375,8 +373,8 @@ mod tests {
 
     #[test]
     fn unreadable_retired_fields_never_refuse_the_row() {
-        // Legitimacy and the exile leader count (+0x1B0, 12 bytes), the last
-        // surrender (+0x2B8) and the faction join (+0x2D0).
+        // Legitimacy and the exile leader count (12 bytes), the last surrender and the faction
+        // join.
         struct Holes<'a>(SliceMemory<'a>);
         impl Memory for Holes<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {

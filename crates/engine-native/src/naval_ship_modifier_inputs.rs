@@ -448,7 +448,7 @@ fn terrain_from_template_with_policy<const TERMINAL: bool>(
     }
 }
 
-/// The template's own terrain (+0x130) when present and active (+0x10).
+/// The template's own terrain when present and active.
 fn template_terrain(
     memory: &impl Memory,
     base: usize,
@@ -560,10 +560,10 @@ const LOCATION_SLOTS: usize = 16;
 struct LocationTerms {
     owner_id: u32,
     target: u32,
-    /// The relation's accumulator (`+0x140`), when the matrix holds one.
+    /// The relation's accumulator, when the matrix holds one.
     relation: Option<usize>,
     selected: usize,
-    /// The weather region record's modifiers (`+0x48`).
+    /// The weather region record's modifiers.
     region: usize,
     /// The province weather record.
     record: usize,
@@ -866,9 +866,9 @@ fn doctrine_kept<const TERMINAL: bool>(
     result
 }
 
-/// `task`'s HQ influence sources (scopes 12 to 15): re-emitted from `memo` when
-/// an earlier ship of the capture read them, else read ([`visit_influence`]
-/// over the task force's `+0x728` array) and kept.
+/// `task`'s HQ influence sources (scopes 12 to 15): re-emitted from `memo` when an earlier ship of
+/// the capture read them, else read ([`visit_influence`] over the task force's
+/// attached-headquarters array) and kept.
 fn influences_kept(
     memory: &impl Memory,
     base: usize,

@@ -172,7 +172,7 @@ pub struct SprawlBuilding {
     pub entity: String,
     pub position: [f32; 3],
     pub rotation: f32,
-    /// City object +8: the lattice province, before displacement.
+    /// The city object's lattice province, before displacement.
     pub province: u32,
     /// The displaced bitmap province owns the resulting city instance.
     pub owner: u32,

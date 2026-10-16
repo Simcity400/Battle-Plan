@@ -24,8 +24,8 @@ pub const AMBIENT_PRESENTATION_GATE_SLOT: usize = 0x68;
 pub const MAP_CONTAINER_ACCESSOR_SLOT: usize = 0x80;
 /// Visibility-map accessor dispatch displacement.
 pub const VISIBILITY_MAP_ACCESSOR_SLOT: usize = 0x78;
-/// Order-edit preview accessor displacement; result +0x1d0 is tested,
-/// while return type and declaring base remain unproven.
+/// Order-edit preview accessor displacement; its result's preview flag is tested, while return type
+/// and declaring base remain unproven.
 pub const ORDER_EDIT_PREVIEW_ACCESSOR_SLOT: usize = 0xc8;
 /// CInGameIdler map-container accessor.
 pub const MAP_CONTAINER_ACCESSOR_RVA: usize = 0x0029_e8c0;
@@ -51,11 +51,10 @@ pub const PAUSED: usize = 0x6c1;
 pub const PAUSE_KIND: usize = 0x6c2;
 /// CInGameIdler forced-pause byte.
 pub const PAUSE_FORCED: usize = 0x6c3;
-/// Camera-root pointer. Its +0x08 backlink must name this owner; eye
-/// and look-at values correspond to the current render view.
+/// Camera-root pointer. Its backlink must name this owner; eye and look-at values correspond to the
+/// current render view.
 pub const CAMERA: usize = 0x750;
-/// Event-head candidate at +0x758 aliases the camera owner pointer;
-/// its interpretation remains conflicting.
+/// Event-head candidate aliases the camera owner pointer; its interpretation remains conflicting.
 pub const LEGACY_CAMERA_EVENT_HEAD: usize = 0x758;
 /// CInGameIdler alert-manager pointer.
 pub const ALERT_MANAGER: usize = 0x798;

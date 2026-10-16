@@ -26,13 +26,13 @@ pub const SERIALIZE_RVA: usize = 0x0150_2590;
 /// One queued incoming diplomatic action, in native queue order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
-    /// Raw country reference of the queue owner at +0x20, preserved as read.
+    /// Raw country reference of the queue owner, preserved as read.
     pub country: u32,
     /// Native vector index; the save writer uses the same index as its key.
     pub ordinal: u32,
-    /// Full CIncomingDiplomaticAction reference at wrapper +0x08.
+    /// Full CIncomingDiplomaticAction reference in the wrapper.
     pub handle: u64,
-    /// Raw wrapper byte at +0x10; the constructor zeroes it and no writer saves it.
+    /// Raw wrapper byte; the constructor zeroes it and no writer saves it.
     pub status: u8,
     /// Raw action-body i32 word.
     pub action_type: i32,
@@ -41,9 +41,9 @@ pub struct Row {
     pub original_actor: u32,
     pub recipient: u32,
     pub original_recipient: u32,
-    /// Raw engine date word at body +0x30, kept in the engine's own representation.
+    /// Raw engine date word in the body, kept in the engine's own representation.
     pub hour: i32,
-    /// Raw engine date word at body +0x48.
+    /// Raw engine second date word in the body.
     pub last_command_hour: i32,
 }
 
@@ -94,8 +94,8 @@ pub fn walk_buffer(
             if owner != country.id {
                 return Err("incoming diplomatic action queue owner differs from its country");
             }
-            // The header is data, capacity and count in the engine's usual
-            // order, which places the count exactly at +0x14.
+            // The header is data, capacity and count in the engine's usual order, which places the
+            // count exactly after the capacity.
             let actions = queue
                 .checked_add(ACTIONS)
                 .and_then(|address| Array::read(memory, address, 8))

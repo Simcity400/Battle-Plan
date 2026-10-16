@@ -1,19 +1,17 @@
-//! Scientist roster at +0xa0 of the country-character object selected by
-//! country +0xff0. No vtable guard identifies the root. The walk authenticates
-//! the country roster, each character vtable and reference type, and each
-//! scientist vtable. The roster root's own identity remains unestablished.
+//! Scientist roster of the country-character object selected by `ccountry::CHARACTERS`. No vtable
+//! guard identifies the root. The walk authenticates the country roster, each character vtable and
+//! reference type, and each scientist vtable. The roster root's own identity remains unestablished.
 
 use crate::{
     Memory, ccharacter, ccountry, cpdx_array::Array, cscientist, read, scientist_roster_entry,
     scientist_skill_entry, walk::Outcome,
 };
 
-/// Wrapper-pointer array data at roster +0xa0.
+/// Wrapper-pointer array data in the roster.
 pub const ENTRIES: usize = 0xa0;
-/// Wrapper capacity, u32, between the +0xa0 data pointer and +0xac count
-/// in the data/capacity/count header.
+/// Wrapper capacity, u32, between the data pointer and the count in the data/capacity/count header.
 pub const CAPACITY: usize = 0xa8;
-/// Wrapper count at roster +0xac.
+/// Wrapper count in the roster.
 pub const COUNT: usize = 0xac;
 
 /// One country roster entry and the scientist state of its character.
@@ -23,11 +21,11 @@ pub struct Row {
     pub country: u32,
     /// Native roster vector position; membership order is engine state.
     pub ordinal: u32,
-    /// CCharacter numeric id at +0x0c, the key the Characters table already uses.
+    /// CCharacter numeric id, the key the Characters table already uses.
     pub character: u32,
-    /// Native CScientist trait-vector count at +0x3c, not its capacity.
+    /// Native CScientist trait-vector count, not its capacity.
     pub trait_count: i32,
-    /// Native CScientist specialization-vector count at +0x11c.
+    /// Native CScientist specialization-vector count.
     pub skill_count: i32,
     /// None is a failed appended-byte read; membership and skills remain available.
     pub active: Option<u8>,
@@ -42,7 +40,7 @@ pub struct SkillRow {
     pub token: u32,
     /// Native signed level; zero is a real level, never an absence.
     pub level: i32,
-    /// Signed experience at record +0x10, independent of level.
+    /// Signed experience in the record, independent of level.
     pub experience_raw: i64,
 }
 
@@ -383,7 +381,7 @@ mod tests {
             );
             p64(&mut bytes, scientist, cscientist::VTABLE_RVA as u64);
         }
-        // The trait vector's capacity at +0x38 deliberately exceeds its count.
+        // The trait vector's capacity deliberately exceeds its count.
         p64(&mut bytes, SC1 + cscientist::TRAIT_DATA, 0x8800);
         p32(&mut bytes, SC1 + cscientist::TRAIT_CAPACITY, 8);
         p32(&mut bytes, SC1 + cscientist::TRAIT_COUNT, 2);
@@ -439,7 +437,7 @@ mod tests {
                     country: 1,
                     ordinal: 0,
                     character: 265,
-                    // +0x38 is the capacity; the native count is +0x3c.
+                    // The word before the count is the capacity; the native count follows it.
                     trait_count: 2,
                     skill_count: 4,
                     active: Some(253),

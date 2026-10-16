@@ -18,9 +18,9 @@ pub const BUILDING: usize = 0x20;
 /// Building location, i32: province/state by building type, -1 for none.
 /// The reference is set when location is present or country is positive.
 pub const BUILDING_LOCATION: usize = 0x28;
-/// Building reference type token (`BUILDING + 0xC`), 0x4c17 for none; saved as `building.template`.
+/// Building reference type token inside the `BUILDING` reference, 0x4c17 for none; saved as `building.template`.
 pub const BUILDING_TYPE: usize = 0x2c;
-/// Building reference i32 country (`BUILDING + 0x10`), positive for a country-scoped building.
+/// Building reference i32 country inside the `BUILDING` reference, positive for a country-scoped building.
 pub const BUILDING_COUNTRY: usize = 0x30;
 /// CRaidSource kind 0 is air_base.
 pub const KIND_AIR_BASE: u32 = 0;

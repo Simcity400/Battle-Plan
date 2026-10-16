@@ -1125,7 +1125,7 @@ fn many_advisors(count: usize) -> ManyAdvisors {
         let character = alloc(&mut bytes, 0x120);
         let head = alloc(&mut bytes, 32);
         let entry = alloc(&mut bytes, character_advisor_node::SIZE);
-        // Header +8 contains data/count/mask and its final overflow byte.
+        // The header after the table pointer contains data/count/mask and its final overflow byte.
         let role = alloc(&mut bytes, cadvisor::TOOLTIP_KEYS + 8 + 17);
         if index == 0 {
             first_role = role;

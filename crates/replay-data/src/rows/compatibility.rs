@@ -135,11 +135,11 @@ pub const RESERVE_SPEED_FORMAT: u16 = FORMAT_VERSION;
 /// this change share the version number but not LandCombatDivisions' field
 /// count, so their blocks read as malformed; no published build wrote them.
 pub const LAND_DIVISION_NUMBERS_FORMAT: u16 = FORMAT_VERSION;
-/// Provisional main+1: AirRegionCombat records each retained regional air-combat holder
-/// (`strategic air+0x170`) with its records and their damage together, read when the
-/// record updater touched it and carried otherwise; playback derives the daily pruning.
-/// The retired AirRegionHistory and AirRegionDamage tables (a whole-table daily walk
-/// without a parent link from damage to record) stay retired.
+/// Provisional main+1: AirRegionCombat records each retained regional air-combat holder (the
+/// strategic air's region-combat table) with its records and their damage together, read when the
+/// record updater touched it and carried otherwise; playback derives the daily pruning. The retired
+/// AirRegionHistory and AirRegionDamage tables (a whole-table daily walk without a parent link from
+/// damage to record) stay retired.
 pub const AIR_REGION_COMBAT_FORMAT: u16 = FORMAT_VERSION;
 
 /// Provisional main+1: Politics appends what the `has_elections` trigger tests

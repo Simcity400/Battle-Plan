@@ -1,23 +1,20 @@
 //! AirRegionalMissions registrations held between hours per country air
 //! object ([`crate::mission_changes`]).
 //!
-//! The walk still visits every country air object and gathers its regional,
-//! all-active and active-region headers (`CStrategicAir+0x98..+0xD8`) each
-//! hour. An object's held registrations (region id, vector ordinal and
-//! mission pointer) are carried, without reading its active-region ids,
-//! regional vectors or mission pointers, only when all of these hold at this
-//! boundary: the same object address, canonical slot and gathered header
-//! bytes as the held read, and no hooked writer touched the object since
-//! that read registered it (same watch epoch and sequence; a load, gap,
-//! recovery, table change, poison or running writer revokes it).
-//! register mission and unregister mission, both hooked,
-//! are the only run-time writers of the regional and all-active vectors; the
-//! carrier mission pass also inserts active-region ids, which moves that
-//! header ([`engine::regional_mission_mutations`]), so equal headers list the
-//! same ids. The walk still checks each carried registration's wing in this
-//! hour's census exactly as it checks a read one and reads the object afresh
-//! on any disagreement ([`engine::cair_regional_mission::walk_carried`]), so
-//! the published rows and outcome are a fresh walk's.
+//! The walk still visits every country air object and gathers its regional, all-active and
+//! active-region headers (the strategic air's mission vector headers) each hour. An object's held
+//! registrations (region id, vector ordinal and mission pointer) are carried, without reading its
+//! active-region ids, regional vectors or mission pointers, only when all of these hold at this
+//! boundary: the same object address, canonical slot and gathered header bytes as the held read,
+//! and no hooked writer touched the object since that read registered it (same watch epoch and
+//! sequence; a load, gap, recovery, table change, poison or running writer revokes it). register
+//! mission and unregister mission, both hooked, are the only run-time writers of the regional and
+//! all-active vectors; the carrier mission pass also inserts active-region ids, which moves that
+//! header ([`engine::regional_mission_mutations`]), so equal headers list the same ids. The walk
+//! still checks each carried registration's wing in this hour's census exactly as it checks a read
+//! one and reads the object afresh on any disagreement
+//! ([`engine::cair_regional_mission::walk_carried`]), so the published rows and outcome are a fresh
+//! walk's.
 //!
 //! When the domain's quiet token is the one taken before the held walk's
 //! first registration, no hooked writer ran since: an object with the held

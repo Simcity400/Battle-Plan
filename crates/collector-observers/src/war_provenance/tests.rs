@@ -197,7 +197,7 @@ fn entry_shims_unwind_to_the_native_return_with_the_original_stack() {
     };
     for entry in CALLBACKS {
         let entry = entry as *const () as usize;
-        // MOV R10,RSP; SUB RSP,0x58: the prologue ends at +7.
+        // MOV R10,RSP; SUB RSP,0x58: the prologue ends after these two instructions.
         let first = unsafe { std::slice::from_raw_parts(entry as *const u8, 7) };
         assert_eq!(first, &[0x49, 0x89, 0xe2, 0x48, 0x83, 0xec, 0x58]);
         let pc = entry as u64 + 7;

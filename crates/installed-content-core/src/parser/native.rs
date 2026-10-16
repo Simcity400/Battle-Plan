@@ -783,8 +783,7 @@ pub struct Reader<'n> {
     /// peek changes its kind to End and retains its text. Resolved tokens are written
     /// back here.
     pub current: Token,
-    /// A peek read `current` ahead (+100); the next advance returns its
-    /// result again.
+    /// A peek read `current` ahead; the next advance returns its result again.
     pending: bool,
     pending_result: bool,
     /// The key slot.

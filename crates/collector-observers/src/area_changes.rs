@@ -226,7 +226,7 @@ pub fn status() -> impl serde::Serialize {
         "carried_areas": work[2],
         "refusals": REFUSALS.load(Ordering::Relaxed),
         "last_refusal": last_refusal,
-        "scope": "cumulative since attach; the Provinces job labels each province's controller and owner areas (CProvince+0xD0/+0xD8, gathered with its movement fields) by their smallest member and records each controller area's representative and ordered contacts once; an hour with no territory province mark publishes the held areas, a marked hour reads again the areas of the marked and re-pointed provinces, the areas they left and their neighbours' areas, and a refused or moved take reads every area; every hour also compares its slice of provinces (by id) and areas (by label) with a fresh read (one in rotation_hours; every one in verify mode) and the first difference makes every later hour read every area (sampled_*)"
+        "scope": "cumulative since attach; the Provinces job labels each province's controller and owner areas (gathered with its movement fields) by their smallest member and records each controller area's representative and ordered contacts once; an hour with no territory province mark publishes the held areas, a marked hour reads again the areas of the marked and re-pointed provinces, the areas they left and their neighbours' areas, and a refused or moved take reads every area; every hour also compares its slice of provinces (by id) and areas (by label) with a fresh read (one in rotation_hours; every one in verify mode) and the first difference makes every later hour read every area (sampled_*)"
     })
 }
 

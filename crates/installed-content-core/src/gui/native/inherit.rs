@@ -1,26 +1,24 @@
 //! The post-load pass: each registered template visits its children using the parent's name
 //! tree as the lookup.
 //!
-//! Containers pass their own tree (`+0x2A0`), retaining the first child of each lowered name.
-//! Backgrounds are outside that tree, so the pass does not reach them. Windows and scrollbars
-//! pass their own trees (`+0x220`), retaining the last child of each name. Drop-downs and
-//! extended scrollbars pass on the incoming tree, while a drop-down's inner container passes
-//! its own. All five extended scrollbar parts, including its background (`+0x198`), receive the
-//! incoming tree. Grids do nothing in this pass. Templates use the global registry for parent
-//! lookup.
+//! Containers pass their own tree, retaining the first child of each lowered name. Backgrounds are
+//! outside that tree, so the pass does not reach them. Windows and scrollbars pass their own trees,
+//! retaining the last child of each name. Drop-downs and extended scrollbars pass on the incoming
+//! tree, while a drop-down's inner container passes its own. All five extended scrollbar parts,
+//! including its background, receive the incoming tree. Grids do nothing in this pass. Templates
+//! use the global registry for parent lookup.
 //!
 //! Buttons with a set `parent` and empty sprite copy the parent's sprite without a null check.
-//! While still empty, they follow that parent's `parent` when set and different from the
-//! button's own name; otherwise the loop repeats forever. The orientation text is parsed
-//! afterwards. Scrollbars with a set `parent` copy unset fields among their twelve listed
-//! fields: empty names, points with a zero coordinate and zero floats. They continue up the
-//! parent chain until all are set; a chain that cannot finish hangs or reads through null. List
-//! boxes always treat `step` as unset, so a set `parent` ends in a null read or an endless
-//! walk. Windows visit their children first. With a set `parent`, they copy any unset field
-//! among the five listed at `+0x260`, continuing up the chain while any stay unset. A
-//! `fullScreen` window then takes the GUI root's extent as its size. Pass order matters: a
-//! previously visited parent supplies its pass result, while an unvisited parent supplies the
-//! values it read ([`windows`]).
+//! While still empty, they follow that parent's `parent` when set and different from the button's
+//! own name; otherwise the loop repeats forever. The orientation text is parsed afterwards.
+//! Scrollbars with a set `parent` copy unset fields among their twelve listed fields: empty names,
+//! points with a zero coordinate and zero floats. They continue up the parent chain until all are
+//! set; a chain that cannot finish hangs or reads through null. List boxes always treat `step` as
+//! unset, so a set `parent` ends in a null read or an endless walk. Windows visit their children
+//! first. With a set `parent`, they copy any unset field among the five listed window keys,
+//! continuing up the chain while any stay unset. A `fullScreen` window then takes the GUI root's
+//! extent as its size. Pass order matters: a previously visited parent supplies its pass result,
+//! while an unvisited parent supplies the values it read ([`windows`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -72,8 +70,8 @@ enum Edit {
 type Place = (usize, usize, Vec<usize>);
 
 /// Run every registered template's post-load pass over `files`, with later templates of a name
-/// replacing earlier ones. `viewport` is the reading client's GUI root extent at load
-/// (`+0x180`), stored less the authored number by a `max_resolution` size.
+/// replacing earlier ones. `viewport` is the reading client's GUI root extent at load, stored less
+/// the authored number by a `max_resolution` size.
 pub(super) fn pass(files: &mut [&mut Gui], viewport: Option<[i32; 2]>) {
     let mut global: BTreeMap<Vec<u8>, (usize, usize)> = BTreeMap::new();
     for (file, gui) in files.iter().enumerate() {
@@ -242,13 +240,13 @@ fn inherited_sprite(element: &Element, parent: &[u8], scope: Scope) -> Result<Ve
         let Some(found) = scope.find(&next) else {
             return Err(format!(
                 "names {:?}, which the lookup does not find: button sprite inheritance reads the \
-                 missing parent through null ([0 + 0x1B0]) and the game crashes",
+                 missing parent's sprite through null and the game crashes",
                 String::from_utf8_lossy(&next)
             ));
         };
         let Some(fields) = found.button() else {
             return Err(format!(
-                "names {}, a {}, whose +0x1B0 button sprite inheritance reads as a button's \
+                "names {}, a {}, whose button sprite inheritance reads as a button's \
                  sprite string: a type-confused read",
                 found.path,
                 found.kind.lookup()
@@ -276,9 +274,9 @@ fn scrollbar(
     place: &Place,
     edits: &mut Vec<(Place, Edit)>,
 ) {
-    // Inspect `listed` ids from `+0x268` on every pass, even without a parent. A negative count
-    // never reaches the end pointer; a count past thirteen reads beyond the block. The
-    // thirteenth slot is unwritten and decides copying only when a parent is set.
+    // Inspect the `listed` field ids on every pass, even without a parent. A negative count never
+    // reaches the end pointer; a count past thirteen reads beyond the block. The thirteenth slot is
+    // unwritten and decides copying only when a parent is set.
     let listed = match usize::try_from(own.listed) {
         Ok(count) if count <= SCROLLBAR_LISTED.len() => count,
         Ok(13) if own.parent.is_empty() => SCROLLBAR_LISTED.len(),
@@ -288,7 +286,7 @@ fn scrollbar(
                 Edit::Refuse(
                     "slider_pos_shift",
                     format!(
-                        "wrote the listed field ids' count (+0x274) as {}, and scrollbar \
+                        "wrote the listed field ids' count as {}, and scrollbar \
                          unset-field test walks that many ids from a block of thirteen (the \
                          thirteenth never written; a negative count never ends): an invalid read",
                         own.listed
@@ -308,7 +306,7 @@ fn scrollbar(
             Edit::Refuse(
                 "minValue",
                 "is not set, and scrollbar unset-field test reads the field the constructor \
-                 leaves uninitialised (+0x1FC) to decide the parent copy: an undefined read"
+                 leaves uninitialised to decide the parent copy: an undefined read"
                     .into(),
             ),
         ));
@@ -364,8 +362,8 @@ fn scrollbar(
                 Edit::Refuse(
                     "minValue",
                     format!(
-                        "is copied from {}, whose minValue the constructor leaves uninitialised \
-                         (+0x1FC): an undefined read",
+                        "is copied from {}, whose minValue the constructor leaves uninitialised: \
+                         an undefined read",
                         found.path
                     ),
                 ),
@@ -444,10 +442,9 @@ fn copy_unset(bar: &mut Scrollbar, from: &Scrollbar, ids: &[u32]) {
 }
 
 /// The window part of the post-load pass, in encounter order: registry templates in name tree
-/// order, then each window's children first and the window itself. Its child tree (`+0x220`)
-/// visits each lowered name once in order, selecting the last child. A parent supplies its
-/// values at the time of copying: its pass result if already visited, otherwise the values it
-/// read.
+/// order, then each window's children first and the window itself. Its child tree visits each
+/// lowered name once in order, selecting the last child. A parent supplies its values at the time
+/// of copying: its pass result if already visited, otherwise the values it read.
 fn windows(
     global: &BTreeMap<Vec<u8>, (usize, usize)>,
     files: &[&mut Gui],
@@ -527,10 +524,10 @@ enum Unfinished {
     Unrecorded(&'static str, String),
 }
 
-/// Test the five listed window keys at `+0x260`: `size` 0x2F, `position` 0x4C, `background`
-/// 0x9C, `verticalBorder` 0xA7 and `horizontalBorder` 0xA6. A point with a zero coordinate or
-/// an empty name is unset. A `max_resolution` axis stores the reading client's root extent less
-/// its number as an `i32`; return `Err` if the caller supplied no `viewport`.
+/// Test the five listed window keys: `size` 0x2F, `position` 0x4C, `background` 0x9C,
+/// `verticalBorder` 0xA7 and `horizontalBorder` 0xA6. A point with a zero coordinate or an empty
+/// name is unset. A `max_resolution` axis stores the reading client's root extent less its number
+/// as an `i32`; return `Err` if the caller supplied no `viewport`.
 fn any_unset(window: &Window, viewport: Option<[i32; 2]>) -> Result<bool, String> {
     let size = stored_size(window, viewport)?;
     let point = |point: [i32; 2]| point[0] == 0 || point[1] == 0;
@@ -541,8 +538,8 @@ fn any_unset(window: &Window, viewport: Option<[i32; 2]>) -> Result<bool, String
         || window.horizontal_border.is_empty())
 }
 
-/// The size `+0x158` holds as the game stored it at load: a `max_resolution` axis the GUI root's
-/// extent less its number (window size reader, `i32`).
+/// The size as the game stored it at load: a `max_resolution` axis the GUI root's extent less its
+/// number (window size reader, `i32`).
 fn stored_size(window: &Window, viewport: Option<[i32; 2]>) -> Result<[i32; 2], String> {
     let mut size = [0i32; 2];
     for (axis, extent) in window.size.iter().enumerate() {
@@ -555,7 +552,7 @@ fn stored_size(window: &Window, viewport: Option<[i32; 2]>) -> Result<[i32; 2], 
                         "was read with no load-time GUI viewport given (read_layers_at, read_at): \
                          window post-load pass tests whether size is set (a zero axis is unset) \
                          while an axis of it is max_resolution, the GUI root's extent (graphics \
-                         context+0x180) when the file was read less a number"
+                         context's render size) when the file was read less a number"
                             .into(),
                     );
                 }
@@ -588,13 +585,13 @@ fn window_fields(
                 return Err(parent(format!(
                     "names {:?}, which the lookup does not find: window post-load pass copies \
                      each unset key through the null pointer it gets (window field inheritance \
-                     reads [0 + 0x158]) and the game crashes",
+                     reads the parent's size through null) and the game crashes",
                     String::from_utf8_lossy(&next)
                 )));
             };
             let Fields::Window(from) = &found.fields else {
                 return Err(parent(format!(
-                    "names {}, a {}, whose +0x138..+0x1C0 window post-load pass reads as a \
+                    "names {}, a {}, whose window post-load pass reads as a \
                      windowType's size, position, background and borders: a type-confused read",
                     found.path,
                     found.kind.lookup()
@@ -626,9 +623,9 @@ fn window_fields(
             if !any_unset(&own, viewport).map_err(unrecorded)? {
                 break;
             }
-            // The parent's `parent` (its vtable `+0x58`) against the window's own name (`+0x48`),
-            // byte for byte: equal, the walk keeps the same parent, which copies nothing new, and
-            // never ends; a chain that comes back round does the same.
+            // The parent's `parent` (read through its vtable) against the window's own name, byte
+            // for byte: equal, the walk keeps the same parent, which copies nothing new, and never
+            // ends; a chain that comes back round does the same.
             if from.parent == name || !seen.insert(next.to_ascii_lowercase()) {
                 return Err(parent(
                     "leaves a listed key unset along a chain of parents that turns back, which \
@@ -639,8 +636,7 @@ fn window_fields(
             next = from.parent;
         }
     }
-    // A `fullScreen` window (`+0x410`) takes the GUI root extent (`+0x210`, then `+0x180`) as
-    // its size.
+    // A `fullScreen` window takes the GUI root's extent (as it then is) as its size.
     if own.full_screen {
         own.size = [WindowExtent::MaxResolution { less: 0 }; 2];
     }

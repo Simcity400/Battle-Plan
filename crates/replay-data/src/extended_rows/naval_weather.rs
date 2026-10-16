@@ -314,13 +314,13 @@ value_struct!(WeatherDisplay { width: u32, height: u32, refresh_interval: i64,
     refresh_identity: u64, edges: Vec<u8> });
 opaque_value!(Option<WeatherDisplay>);
 
-/// WeatherProvinces: the snow word province weather+0x40 holds (winter grading, movement
-/// snow, combat terrain), its permanent snow +0x30 (set at load; movement snow adds it)
-/// and the two display bytes the weather manager keeps for the province at +0x310/+0x328,
-/// which the snow/mud map texture averages. The political province tooltip reads the full
-/// fixed5 temperature +0x118 ([`ProvinceTemperature`]) and raw mud byte +0x130. Display
-/// mud cannot substitute: the weather display ORs raw and custom mud before writing that
-/// byte. The province's day/night record is [`DayNightClock`].
+/// WeatherProvinces: the snow word the province weather record holds (winter grading, movement
+/// snow, combat terrain), its permanent snow (set at load; movement snow adds it) and the two
+/// display bytes the weather manager keeps for the province, which the snow/mud map texture
+/// averages. The political province tooltip reads the full fixed5 temperature
+/// ([`ProvinceTemperature`]) and raw mud byte. Display mud cannot substitute: the weather display
+/// ORs raw and custom mud before writing that byte. The province's day/night record is
+/// [`DayNightClock`].
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct WeatherProvinceRow {
     pub id: u32,
@@ -351,12 +351,11 @@ typed_codec!(WeatherProvinceRow, 32, |row| row.id as u128, |key| Self { id: key 
    row.temperature.record().map(|_| ()).map_err(invalid)
 });
 
-/// A province weather record's modifier (`province weather+0x58`): its raw entries, `None`
-/// for an absent key. The movement speed adds `army_speed_factor` and, for a move into
-/// a province held by an enemy, `army_attack_speed_factor`, each scaled by the
-/// division's acclimatization factor; a moving division at war takes `attrition`, and
-/// `heat_attrition` and `winter_attrition` scaled by acclimatization and the country's
-/// and commander's thermal factors.
+/// A province weather record's modifier (the province weather record's): its raw entries, `None`
+/// for an absent key. The movement speed adds `army_speed_factor` and, for a move into a province
+/// held by an enemy, `army_attack_speed_factor`, each scaled by the division's acclimatization
+/// factor; a moving division at war takes `attrition`, and `heat_attrition` and `winter_attrition`
+/// scaled by acclimatization and the country's and commander's thermal factors.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProvinceWeatherModifiers {
     pub army_speed_factor: Option<i64>,
@@ -370,19 +369,16 @@ value_struct!(ProvinceWeatherModifiers { army_speed_factor: Option<i64>,
     winter_attrition: Option<i64> });
 opaque_value!(Option<ProvinceWeatherModifiers>);
 
-/// A province record's temperature words, `province weather` +0x118 (committed
-/// temperature), +0x128 (committed drift), +0x160 (staged temperature) and +0x170
-/// (working drift).
+/// A province record's temperature words, the `province weather` record's committed temperature,
+/// committed drift, staged temperature and working drift.
 ///
 /// From format 102 a row holds the record's words at its frame's anchor
-/// ([`TemperaturePass::anchor`]): +0x118 and +0x128 in fields 4 and 10, and
-/// the staged words as their wrapping differences from those two in fields
-/// 11 and 12, zero after every commit. The hour's temperature is the hourly
-/// pass's ([`crate::temperature`]) from the anchor through the recorded
-/// hours. Formats 93 to 101 recorded +0x118 at the row's hour in field 4
-/// alone; earlier formats none. Format-102 captures written before the
-/// anchored words share the version but not the layout, so their blocks read
-/// as malformed.
+/// ([`TemperaturePass::anchor`]): committed temperature and drift in fields 4 and 10, and the
+/// staged words as their wrapping differences from those two in fields 11 and 12, zero after every
+/// commit. The hour's temperature is the hourly pass's ([`crate::temperature`]) from the anchor
+/// through the recorded hours. Formats 93 to 101 recorded the committed temperature at the row's
+/// hour in field 4 alone; earlier formats none. Format-102 captures written before the anchored
+/// words share the version but not the layout, so their blocks read as malformed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ProvinceTemperature {
     temperature: Recorded<i64>,
@@ -453,17 +449,16 @@ impl ProvinceTemperature {
     }
 }
 
-/// What the hourly temperature pass read since a frame's anchor, carried by
-/// WeatherProvinces slot zero. The rows hold every record's words read at `anchor`, after
-/// that hour's update, with the update cursor `weather manager+0x58` then. `hours` has
-/// one entry for each later hour through the frame's: the seed `+0x308` after the hourly
-/// weather update added a synchronized 31-bit random integer, when both suspension gates
-/// were clear and the cursor and records moved as one ordinary pass moves them, or None
-/// for an hour whose suspended manager moved nothing. The collector starts a new anchor
-/// at any other hour and every two `KEYFRAME_INTERVAL`s of hours. `anchor_seed` is the
-/// anchor hour's own seed when the hour before proves that hour's ordinary pass, which
-/// lets an anchor be compared with its derivation; `checksum` is
-/// [`crate::temperature::checksum`] of every record's +0x118 read at the frame's hour.
+/// What the hourly temperature pass read since a frame's anchor, carried by WeatherProvinces slot
+/// zero. The rows hold every record's words read at `anchor`, after that hour's update, with the
+/// weather manager's update cursor then. `hours` has one entry for each later hour through the
+/// frame's: the manager's seed after the hourly weather update added a synchronized 31-bit random
+/// integer, when both suspension gates were clear and the cursor and records moved as one ordinary
+/// pass moves them, or None for an hour whose suspended manager moved nothing. The collector starts
+/// a new anchor at any other hour and every two `KEYFRAME_INTERVAL`s of hours. `anchor_seed` is the
+/// anchor hour's own seed when the hour before proves that hour's ordinary pass, which lets an
+/// anchor be compared with its derivation; `checksum` is [`crate::temperature::checksum`] of every
+/// record's committed temperature read at the frame's hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TemperaturePass {
     pub anchor: i32,
@@ -476,18 +471,18 @@ value_struct!(TemperaturePass { anchor: i32, cursor: i32, anchor_seed: Option<u3
     hours: Vec<Option<u32>>, checksum: u64 });
 opaque_value!(Option<TemperaturePass>);
 
-/// The clock a province slot's day/night record holds at the boundary: the manager's
-/// dense array +0x370 (stride 0x330), local hour +0x260 (i32) and night factor +0x240
-/// (fixed5), which the getters return to the province tooltip, land combat and air
-/// spotting. Neither is written to text saves.
+/// The clock a province slot's day/night record holds at the boundary: the manager's dense
+/// day/night array (stride 0x330), the local hour (i32) and night factor (fixed5), which the
+/// getters return to the province tooltip, land combat and air spotting. Neither is written to text
+/// saves.
 ///
-/// The hourly weather update runs the day/night update whenever it finds both suspension
-/// gates (+0x349/+0x34A) clear, and that writes every slot from 1 as a function of the
-/// date and the content ([`crate::day_night`]). Such a row records only that the update
-/// ran ([`ClockState::Updated`]). Slot 0, which no update writes, every slot of a
-/// suspended manager (the console weather toggle, which keeps the existing rows) and a
-/// row whose gates were not read record the clock they hold ([`ClockState::Held`]). A
-/// newly allocated record holds hour 0 and night 100000 until its first update.
+/// The hourly weather update runs the day/night update whenever it finds both suspension gates
+/// clear, and that writes every slot from 1 as a function of the date and the content
+/// ([`crate::day_night`]). Such a row records only that the update ran ([`ClockState::Updated`]).
+/// Slot 0, which no update writes, every slot of a suspended manager (the console weather toggle,
+/// which keeps the existing rows) and a row whose gates were not read record the clock they hold
+/// ([`ClockState::Held`]). A newly allocated record holds hour 0 and night 100000 until its first
+/// update.
 ///
 /// Format 102 adds the source word (field 9); fields 6 and 7 then hold a
 /// held row's clock and zero for an updated one. Format 101 recorded every

@@ -1,11 +1,9 @@
-//! Allocation-free notifications from the native writers of every province's
-//! ordered occupant lists, which ProvinceUnitOrder records
-//! ([`engine::province_unit_mutations`]). A detour only marks the province
-//! its first argument names in the family's [`DirtySet`] (by its guarded id
-//! `CProvince+0xA4`), counts its site and calls the original; it never
-//! changes game behaviour. Both writers run on the game thread. A receiver
-//! whose id does not read marks no id and moves the set's epoch, so the
-//! consumer reads every province.
+//! Allocation-free notifications from the native writers of every province's ordered occupant
+//! lists, which ProvinceUnitOrder records ([`engine::province_unit_mutations`]). A detour only
+//! marks the province its first argument names in the family's [`DirtySet`] (by its guarded id
+//! `cprovince::ID`), counts its site and calls the original; it never changes game behaviour. Both
+//! writers run on the game thread. A receiver whose id does not read marks no id and moves the
+//! set's epoch, so the consumer reads every province.
 //!
 //! The ProvinceUnitOrder capture ([`crate::extended::province_unit_order`])
 //! is the set's one consumer: it reads only the provinces its take returns,
@@ -315,8 +313,7 @@ mod tests {
         (epoch, ids)
     }
 
-    /// A province's guarded `+0xA4` names it; a zero or unreadable id names
-    /// none.
+    /// A province's guarded id names it; a zero or unreadable id names none.
     #[test]
     fn a_receiver_names_its_province_through_the_live_object() {
         let mut province = vec![0_u8; 0x200];

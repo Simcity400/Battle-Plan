@@ -61,12 +61,10 @@ pub fn shows(weight: i64, maximum: i64, show_at: i64) -> bool {
     weight >= maximum.wrapping_mul(show_at) / 100_000
 }
 
-/// Movement availability once [`Strongest`]'s winner is the active category
-/// (`+0x20`): the winning weight's share of the maximum (`+0x38`) behind the
-/// native guard (a zero maximum, or a weight of `i64::MIN`, `MIN + 1` or `MAX`,
-/// stores `0xFFFFFFFF`), times the category's factor (`+0x30`), clamped to `[0,
-/// 1]` and taken from one. A negative product is one. Products wrap and
-/// divisions truncate toward zero.
+/// Movement availability once [`Strongest`]'s winner is the active category: the winning weight's
+/// share of the maximum behind the native guard (a zero maximum, or a weight of `i64::MIN`, `MIN +
+/// 1` or `MAX`, stores `0xFFFFFFFF`), times the category's factor, clamped to `[0, 1]` and taken
+/// from one. A negative product is one. Products wrap and divisions truncate toward zero.
 pub fn movement_factor(weight: i64, maximum: i64, category_factor: i64) -> i64 {
     const ONE: i64 = 100_000;
     let guarded = (weight as u64).wrapping_add(0x7fff_ffff_ffff_fffe) > 0xffff_ffff_ffff_fffc;

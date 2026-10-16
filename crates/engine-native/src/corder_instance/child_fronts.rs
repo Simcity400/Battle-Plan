@@ -128,10 +128,10 @@ impl Scratch {
             return Ok(None);
         }
         owner.state = 4;
-        // Reuse the same-pass OOB producer's full +230/16B observation, including
-        // failure. Its exact-span source cannot serve a new +23C/4B request. The
-        // header's final signed count bounds the loop; vector pointer/capacity
-        // validation is not this scalar's demand.
+        // Reuse the same-pass OOB producer's full 16-byte front-binding observation, including
+        // failure. Its exact-span source cannot serve a new 4-byte request inside it. The header's
+        // final signed count bounds the loop; vector pointer/capacity validation is not this
+        // scalar's demand.
         let address = root
             .pointer()
             .checked_add(carmy_group::MEMBER_DATA)

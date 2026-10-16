@@ -4,12 +4,11 @@
 
 /// CLandBorderWarCombat primary vtable.
 pub const VTABLE_RVA: usize = 0x029a_56e0;
-/// CLandBorderWarCombat secondary vtable at +0x10.
+/// CLandBorderWarCombat secondary vtable (`BODY`).
 pub const BODY_VTABLE_RVA: usize = 0x029a_57c0;
 /// CLandBorderWarCombat secondary-base displacement.
 pub const BODY: usize = 0x10;
-/// Signed fixed5 configured base combat width, initially zero.
-/// Save and load use the value at secondary+0xC8, primary+0xD8.
+/// Signed fixed5 configured base combat width, initially zero. Save and load use this value.
 pub const COMBAT_WIDTH: usize = 0xd8;
 /// Transfer-state byte used by the border-war tooltip.
 pub const TRANSFER_STATE: usize = 0xf0;

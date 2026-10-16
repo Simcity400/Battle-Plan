@@ -46,8 +46,8 @@ pub const ADDITIONAL_ORDER: u32 = 28;
 pub const SOURCE_NAME: u32 = 29;
 pub const SOURCE_NAME_GROUP: u32 = 30;
 pub const SOURCE_CUSTOM_NAME: u32 = 31;
-/// Global subunit +10 discriminator. Scope zero holds ordered database
-/// entries; key zero is the null fallback.
+/// Global subunit discriminator. Scope zero holds ordered database entries; key zero is the null
+/// fallback.
 pub const SUBUNIT_ACTIVE: u32 = 32;
 /// The only row of a raid whose operands could not be read; the other
 /// raids keep theirs.
@@ -208,7 +208,8 @@ fn unit(
 }
 
 fn army(memory: &impl Memory, pointer: usize, sink: &mut Sink<'_>) -> Result<(), &'static str> {
-    // Experience uses +0x430 and sums the signed manpower array at +0x3E0,
+    // Experience uses `carmy::EXPERIENCE` and sums the signed manpower array
+        // (`carmy::MANPOWER_VALUES`),
     // without deduplication.
     for offset in [0x420, 0x428, 0x430] {
         sink.push(ARMY, offset as u32, field(memory, pointer, offset)?)?;
@@ -451,7 +452,7 @@ fn target_inputs(
     sink: &mut Sink<'_>,
 ) -> Result<(), &'static str> {
     if state != 0 {
-        // The resistance branch reads the live state +0x278 numerator.
+        // The resistance branch reads the live state's resistance numerator.
         sink.push(TARGET_STATE, 0x278, field(memory, state, 0x278)?)?;
     }
     if province != 0 {

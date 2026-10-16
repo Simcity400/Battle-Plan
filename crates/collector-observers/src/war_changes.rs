@@ -5,26 +5,22 @@
 //! with the hour's, and equal tokens prove that no observed writer ran in
 //! between ([`WatchRegistry::quiet`]).
 //!
-//! Forwarded sites ([`Site`]) cover relation replacement, the only writer
-//! of a status's war pointer `+0x2E8` and a war's place in both endpoints'
-//! owned (`CDiplomacyStatus+0x20`), sub- and serializable relation vectors.
-//! Its only caller is linked relation replacement, reached by war-link
-//! application and clearing for declaration, joining, civil war, load and
-//! ending a war. Fifteen typed relation slot replacements also insert owned
-//! relations, moving other relations and a war's place in the same vectors.
-//! Instigator and defender setters are the only run-time writers of
-//! `+0x158` after linking. Relation status reset, construction and save
-//! reading, and diplomacy reset are forwarded too. The resets reach a war
-//! only through relation replacement: redundant for the war set, they name
-//! every relation change at its source.
+//! Forwarded sites ([`Site`]) cover relation replacement, the only writer of a status's war pointer
+//! and a war's place in both endpoints' owned (`cdiplomacy_status::OWNED_RELATIONS`), sub- and
+//! serializable relation vectors. Its only caller is linked relation replacement, reached by
+//! war-link application and clearing for declaration, joining, civil war, load and ending a war.
+//! Fifteen typed relation slot replacements also insert owned relations, moving other relations and
+//! a war's place in the same vectors. Instigator and defender setters are the only run-time writers
+//! of the first-was-instigator byte (`cwar_relation::FIRST_WAS_INSTIGATOR`) after linking. Relation
+//! status reset, construction and save reading, and diplomacy reset are forwarded too. The resets
+//! reach a war only through relation replacement: redundant for the war set, they name every
+//! relation change at its source.
 //!
-//! Other recorded fields (endpoints `+0x10`/`+0x14`, start `+0x20` and end
-//! `+0x38` hours, cancel `+0x48` and retired `+0x49` bytes) are written only
-//! during construction, by two initializers and by save reading before the
-//! war is linked. Linking requires a zero cancel byte; there is no later
-//! writer. A linked war is destroyed only inside relation replacement,
-//! after it leaves every vector. Hourly combat settlement rewrites the
-//! casualty counters `+0x50..+0x70`, which are read every hour.
+//! Other recorded fields (endpoints, start and end hours, cancel and retired bytes) are written
+//! only during construction, by two initializers and by save reading before the war is linked.
+//! Linking requires a zero cancel byte; there is no later writer. A linked war is destroyed only
+//! inside relation replacement, after it leaves every vector. Hourly combat settlement rewrites the
+//! casualty counters, which are read every hour.
 //!
 //! The domain observes only while every forwarding family's patches are
 //! enabled ([`Forwarder`]); anything unobserved (disabled, poisoned, an epoch

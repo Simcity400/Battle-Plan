@@ -284,9 +284,9 @@ mod transport_subject_tests {
     }
 }
 
-/// The access-mode writer's secondary+A8 (=primary+B0) emits a pair only for CHAR > 0.
-/// A fresh native save cannot explicitly contain zero/high-bit modes. Keep
-/// duplicates and unsupported saved forms visible instead of normalizing them.
+/// The access-mode writer's access-mode field emits a pair only for CHAR > 0. A fresh native save
+/// cannot explicitly contain zero/high-bit modes. Keep duplicates and unsupported saved forms
+/// visible instead of normalizing them.
 pub fn saved_access_modes(pairs: &[(u32, u8)]) -> io::Result<BTreeMap<u32, u8>> {
     let mut expected = BTreeMap::new();
     for &(region, mode) in pairs {
@@ -358,13 +358,11 @@ pub fn compare_naval_access(
     Ok(())
 }
 
-/// `AceRangeInputs` against the saved ace rosters (`countries.<tag>.ace`, in
-/// roster order) and the saved wings' `ace` references. The ace block carries
-/// `alive` but not its assigned wing `ace+0xE8`; the save names that wing
-/// only from the wing side, the wing's `+0x2E8` reference, which ace assignment
-/// keeps paired with it (assignment, deployment, deletion
-/// and disband; marking an ace dead clears neither). The table is read
-/// for every country each hour.
+/// `AceRangeInputs` against the saved ace rosters (`countries.<tag>.ace`, in roster order) and the
+/// saved wings' `ace` references. The ace block carries `alive` but not its assigned wing; the save
+/// names that wing only from the wing side, the wing's ace reference, which ace assignment keeps
+/// paired with it (assignment, deployment, deletion and disband; marking an ace dead clears
+/// neither). The table is read for every country each hour.
 pub fn compare_ace_inputs(
     frame: &DecodedFrame,
     save: &Save,
@@ -449,17 +447,14 @@ pub fn compare_ace_inputs(
     Ok(())
 }
 
-/// `StockpileArchetypes` against the saved stockpile. The table is the first
-/// array of each country's `production status+0x200` pool, kept for the
-/// archetypes a raid type lists as essential, in whole units capped at the
-/// largest amount any raid type requires (`essential_caps`, by archetype
-/// name); the save writes only the pool's variant rows (`equipments`,
-/// the variant quantity writer). Every quantity reaches both through
-/// variant quantity insertion, which adds it to
-/// the variant and to its archetype's total (the definition's `+0x4D8`), so
-/// each total is the sum of its variants' saved amounts. A variant's
-/// archetype is its `VariantDefinitions.archetype_token`. Every country is
-/// read each hour.
+/// `StockpileArchetypes` against the saved stockpile. The table is the first array of each
+/// country's production status stockpile pool, kept for the archetypes a raid type lists as
+/// essential, in whole units capped at the largest amount any raid type requires (`essential_caps`,
+/// by archetype name); the save writes only the pool's variant rows (`equipments`, the variant
+/// quantity writer). Every quantity reaches both through variant quantity insertion, which adds it
+/// to the variant and to its archetype's total (the definition's archetype link), so each total is
+/// the sum of its variants' saved amounts. A variant's archetype is its
+/// `VariantDefinitions.archetype_token`. Every country is read each hour.
 pub fn compare_stockpile_archetypes(
     frame: &DecodedFrame,
     save: &Save,

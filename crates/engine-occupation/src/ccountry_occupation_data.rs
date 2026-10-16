@@ -66,8 +66,8 @@ pub(crate) fn group_law(
         .and_then(|p| read::<u64>(memory, p))
         .and_then(|p| usize::try_from(p).ok())
         .ok_or("occupied-country law pointer unreadable")?;
-    // The scope's current id comes from the retained pointer, independently
-    // of the historical +0x10 lookup link. A fault need not hide an override.
+    // The scope's current id comes from the retained pointer, independently of the historical
+    // lookup link. A fault need not hide an override.
     let scope_country = scope
         .pointer
         .checked_add(OCCUPIED_COUNTRY_POINTER)
@@ -114,8 +114,8 @@ pub(crate) fn identity(
     if backref != parent as u64 {
         return Err("occupation data parent mismatch");
     }
-    // Insertion resolves the raw tag to its canonical country slot for the map
-    // key; its new data object stores CCountry+8, which can be a raw alias.
+    // Insertion resolves the raw tag to its canonical country slot for the map key; its new data
+    // object stores the country's id, which can be a raw alias.
     if countries.resolve(occupied)?.canonical_slot != entry.key {
         return Err("occupation bucket key differs from occupied country slot");
     }

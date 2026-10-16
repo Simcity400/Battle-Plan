@@ -1,4 +1,4 @@
-//! Row stored between intel-network graph +0x10 and +0x18; its C++ type name is unknown.
+//! Row stored in the intel-network graph's row range; its C++ type name is unknown.
 
 /// Graph-row byte stride.
 pub const STRIDE: usize = 0x50;

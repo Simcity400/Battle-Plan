@@ -426,7 +426,7 @@ unsafe extern "system" fn daily_flags(manager_: usize) -> usize {
 callback!(clear_flag, 4, (manager_, token));
 // Clear flags (manager).
 callback!(clear_flags, 5, (manager_));
-// Assign flags (manager + 8, rows, count).
+// Assign flags (the manager's row array, rows, count).
 callback!(assign_flags, 6, (rows_, source, count));
 // Construct flags (manager).
 callback!(construct_flags, 7, (manager_));

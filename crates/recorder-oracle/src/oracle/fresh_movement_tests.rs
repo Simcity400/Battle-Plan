@@ -431,7 +431,7 @@ fn division_base_speed_is_required_for_a_route_and_never_compared() {
             assert!(report.differences.is_empty(), "{:?}", report.differences);
             assert_eq!(report.compared_tables["DivisionMovement"], 1);
             assert!(report.limitations.iter().any(|(reason, subjects)| {
-                reason.contains("maximum-speed field +0x290 of the stat block at +0x138")
+                reason.contains("the stat block's maximum-speed field")
                     && reason.contains("the save has no counterpart")
                     && subjects == &["DivisionMovement.base_speed: 1 rows recorded, not compared"]
             }));

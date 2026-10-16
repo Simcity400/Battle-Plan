@@ -4,7 +4,7 @@
 pub const STRIDE: usize = 8;
 /// Neighbor province ID, i32.
 pub const PROVINCE_ID: usize = 0;
-/// Railway level, i32; mutation writes the signed maximum/clamped result at +4.
+/// Railway level, i32; mutation writes the signed maximum/clamped result.
 pub const LEVEL: usize = 4;
 /// Sorted-vector insertion helper for rail-pair mutation and loading.
 pub const SORTED_INSERT_RVA: usize = 0x00e7_b440;

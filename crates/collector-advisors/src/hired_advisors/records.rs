@@ -1,23 +1,19 @@
 //! CountryCharacters and CountryRetiredCharacters held between hours
 //! ([`crate::advisor_pool_changes`]).
 //!
-//! A row records one of a country's active (`CCountryCharacters+0x10`) or
-//! retired (`+0x28`) character records: its position and its character's
-//! id. Every writer of either array is a hooked site of the advisor pool
-//! Family  ([`engine::advisor_pool_mutations`]: character registration,
-//! character retirement, civil-war character transfer and retired-record copying, the generate-advisor command around its two
-//! registrations, and the pool's constructor and destructor); a character's
-//! id, and the name token the arrays sort by, are written after publication
-//! only by `repair_containers`, which the roster domain observes
-//! ([`crate::roster_changes`]). So while the quiet tokens and array headers
-//! HiredAdvisors rests on ([`super::appointed`]) are those taken before the
-//! latest complete walk, every row equals that walk's, and such a quiet hour
-//! publishes it without reading any country. The quiet hour of the day that
-//! [`crate::sampled_verify`] gives the tables' key ([`KEY`]; every hour
-//! under `character_record_verify`) walks every country instead and
-//! compares the walk whole with the held rows; a difference disables the
-//! pool domain for the attachment. Any hour that is not quiet walks every
-//! country, and an hour holds its walk when the tokens and headers stood
+//! A row records one of a country's active or retired character records: its position and its
+//! character's id. Every writer of either array is a hooked site of the advisor pool Family 
+//! ([`engine::advisor_pool_mutations`]: character registration, character retirement, civil-war
+//! character transfer and retired-record copying, the generate-advisor command around its two
+//! registrations, and the pool's constructor and destructor); a character's id, and the name token
+//! the arrays sort by, are written after publication only by `repair_containers`, which the roster
+//! domain observes ([`crate::roster_changes`]). So while the quiet tokens and array headers
+//! HiredAdvisors rests on ([`super::appointed`]) are those taken before the latest complete walk,
+//! every row equals that walk's, and such a quiet hour publishes it without reading any country.
+//! The quiet hour of the day that [`crate::sampled_verify`] gives the tables' key ([`KEY`]; every
+//! hour under `character_record_verify`) walks every country instead and compares the walk whole
+//! with the held rows; a difference disables the pool domain for the attachment. Any hour that is
+//! not quiet walks every country, and an hour holds its walk when the tokens and headers stood
 //! still across it.
 use super::appointed::{Domains, Key, key, publish};
 use crate::{

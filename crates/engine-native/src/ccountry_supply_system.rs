@@ -23,8 +23,8 @@ pub const SUPPLY_SYSTEM: usize = 0x70;
 pub const COUNTRY: usize = 0x78;
 /// CCountrySupplySystem companion pointer, validated against the canonical array slot.
 pub const COMPANION: usize = 0x80;
-/// Allocated train array: 0x18-byte entries with a full variant reference
-/// at +0 and signed integer count at +8.
+/// Allocated train array: 0x18-byte entries with a full variant reference first and the signed
+/// integer count after it.
 pub const ALLOCATED_TRAINS: usize = 0x120;
 /// Allocated trucks, signed i32. Add, return and distribution paths update
 /// this cache; post-load roster counts add without first clearing it.
@@ -41,7 +41,7 @@ pub const DISRUPTED_MASK: usize = 0x9c;
 pub const DISRUPTED_MAX_DISTANCE: usize = 0xa0;
 /// Hub-setting array pointer, with 0x28-byte records.
 pub const HUB_SETTINGS_DATA: usize = 0x188;
-/// Hub-setting u32 capacity; the count is separately at +0x194.
+/// Hub-setting u32 capacity; the count is separately `HUB_SETTINGS_COUNT`.
 pub const HUB_SETTINGS_CAPACITY: usize = 0x190;
 /// CCountrySupplySystem hub-settings u32 count.
 pub const HUB_SETTINGS_COUNT: usize = 0x194;

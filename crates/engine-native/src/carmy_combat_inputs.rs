@@ -34,8 +34,8 @@ pub struct ContextModifier {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ContextRow {
     pub template: u64,
-    /// Selected context source: zero is absent, one uses the leader field at
-    /// +0x408, and two uses the leader field at +0x4c8.
+    /// Selected context source: zero is absent, one uses the leader's movement modifier, and two
+    /// uses its separate-HQ movement modifier.
     pub leader_modifier_kind: u8,
     pub country_modifiers: [ContextModifier; 3],
     pub leader_modifiers: [ContextModifier; 3],
@@ -88,7 +88,7 @@ pub struct Row {
     pub commander: u64,
     /// Attack accumulator, defense accumulator, attack base, defense base.
     pub scales: [i64; 4],
-    /// Raw CUnit+0x4A8 latch word for the direction count.
+    /// Raw CUnit latch word (`DIRECTION_GROUP`) for the direction count.
     pub direction_group: i32,
     /// Stored equipment-category mask of the unit stat block. Category triggers
     /// intersect it with their mask for each combatant unit. A division owns its
@@ -392,7 +392,7 @@ pub fn capture_exile_buffer(
     if template == 0 {
         return Ok(Exile::Absent);
     }
-    // Fallback country +0x1EC, a padding word, primary +0x1F4, origin +0x1F8.
+    // The fallback country, a padding word, the primary country and the origin type.
     let operands = bytes::<16>(memory, template, TEMPLATE_COUNTRY_FALLBACK)?;
     let word = |at: usize| i32::from_le_bytes(operands[at..at + 4].try_into().unwrap());
     let mut row = ExileRow {

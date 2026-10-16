@@ -1,15 +1,15 @@
 use super::{ATTACKER, DEFENDER, INDICATOR_FRAME_HIGH, Reader, Source};
 use crate::{Memory, cland_combatant};
 
-/// The four native ordered country-tag sets of one combat, as spans of the
-/// caller's tag arena: attacker primary and secondary, then defender primary and
-/// secondary. They are simulation state, unlike the side's display byte +0xBA.
+/// The four native ordered country-tag sets of one combat, as spans of the caller's tag arena:
+/// attacker primary and secondary, then defender primary and secondary. They are simulation state,
+/// unlike the side's engaged display byte.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CountrySetsRow {
     pub combat: u64,
-    /// CLandCombat +0x98, the marker's frame and the window's indicator icon.
+    /// CLandCombat `INDICATOR_FRAME_HIGH`, the marker's frame and the window's indicator icon.
     pub indicator: u8,
-    /// Attacker then defender CLandCombatant +0x08 flag words.
+    /// Attacker then defender CLandCombatant flag words (`cland_combatant::FLAGS`).
     pub flags: [u32; 2],
     pub start: usize,
     pub lens: [usize; 4],
@@ -30,15 +30,13 @@ impl From<&'static str> for CountrySetError {
     }
 }
 
-/// Read primary (+0x38) and secondary (+0x50) country sets in stored order,
-/// keeping raw tags and aliases. Primary sets select shared vision and
-/// secondary sets the viewer; defender markers check both for shared vision.
-/// Insertion keeps at most one node per country plus tag zero, so `max_len`
-/// is the live country count plus one. Check capacity before following nodes.
+/// Read primary and secondary country sets in stored order, keeping raw tags and aliases. Primary
+/// sets select shared vision and secondary sets the viewer; defender markers check both for shared
+/// vision. Insertion keeps at most one node per country plus tag zero, so `max_len` is the live
+/// country count plus one. Check capacity before following nodes.
 ///
-/// Read marker operands independently of other window context: combat +0x98
-/// indicator byte and side +0x08 flag words. Each side flag and both set
-/// headers at +0x08..+0x64 use one read.
+/// Read marker operands independently of other window context: the combat's indicator byte and the
+/// sides' flag words. Each side's flags and both set headers use one read.
 pub fn read_country_sets(
     memory: &impl Memory,
     base: usize,
@@ -96,7 +94,7 @@ pub fn read_country_sets_buffer(
             cland_combatant::SECONDARY_COUNTRIES,
         ][index % 2]
             - cland_combatant::FLAGS;
-        // Head and tail node pointers, then the signed i32 count at +0x10.
+        // Head and tail node pointers, then the signed i32 count.
         let bytes = &spans[index / 2][offset..offset + 20];
         let head = u64::from_le_bytes(bytes[..8].try_into().unwrap()) as usize;
         let tail = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
@@ -118,7 +116,7 @@ pub fn read_country_sets_buffer(
     for (index, (mut node, tail, count)) in headers.into_iter().enumerate() {
         let mut previous = 0;
         for ordinal in 0..count {
-            // Node: tag u32, then previous and next node pointers at +8/+0x10.
+            // Node: tag u32, then previous and next node pointers.
             let bytes = reader.field::<[u8; 24]>(node, 0)?;
             let tag = u32::from_le_bytes(bytes[..4].try_into().unwrap());
             let prev = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;

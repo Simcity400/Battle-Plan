@@ -197,8 +197,7 @@ pub fn air_term(operands: Option<&AirOperands>) -> Result<i64, String> {
 /// The supply operands of the out-of-supply term.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SupplyOperands {
-    /// Division `+0x600`, `+0x610` and `+0x40`: maximum and remaining grace and the
-    /// received supply ratio.
+    /// The division's maximum and remaining grace and the received supply ratio.
     pub grace_maximum: i64,
     pub grace_remaining: i64,
     pub ratio: i64,
@@ -446,7 +445,7 @@ pub fn organisation_factor(
 /// controller is not needed here.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ProvinceOperands {
-    /// Raw province_definition +0xd2; selects the transport branch.
+    /// Raw province-definition terrain flags; selects the transport branch.
     pub terrain_flags: u8,
     /// One-based terrain index (an i32); finds its `terrain_speed`.
     pub terrain_index: i32,

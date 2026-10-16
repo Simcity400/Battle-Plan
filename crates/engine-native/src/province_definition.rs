@@ -50,12 +50,12 @@ pub const MAX_CENSUS_RECORDS: u32 = 1 << 16;
 /// The movement operands one definition stores, for the one-shot load oracle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MovementDefinition {
-    /// Raw `+0xD2` byte.
+    /// Raw `TERRAIN_FLAGS` byte.
     pub terrain_flags: u8,
     /// One-based terrain ID in the definition's selected terrain object.
     /// The null terrain object holds zero.
     pub terrain_index: i32,
-    /// The `+0x70` entries in native order.
+    /// The `NEIGHBOURS` entries in native order.
     pub neighbours: Vec<crate::province_neighbour::Record>,
 }
 

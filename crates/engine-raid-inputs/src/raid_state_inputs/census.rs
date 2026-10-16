@@ -212,10 +212,8 @@ pub fn state_census(
     Ok(())
 }
 
-/// One state's core countries (+0xB0, count +0xBC) and claim countries
-/// (+0x98, count +0xA4): raw country references in stored order at
-/// `links[start..start + len]` and `links[claims_start..claims_start +
-/// claims_len]`.
+/// One state's core countries and claim countries: raw country references in stored order at
+/// `links[start..start + len]` and `links[claims_start..claims_start + claims_len]`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CoreRow {
     pub state: u32,

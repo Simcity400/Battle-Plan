@@ -6,11 +6,11 @@
 pub const VTABLE_RVA: usize = 0x0296_ce48;
 /// Type descriptor.
 pub const TYPE_DESCRIPTOR_RVA: usize = 0x0323_2d88;
-/// CRaidInstance +8, u32 reference type.
+/// CRaidInstance u32 reference type.
 pub const REFERENCE_TYPE: usize = 0x08;
 /// Raid-instance reference type identifier.
 pub const REFERENCE_TYPE_VALUE: u32 = 84;
-/// CRaidInstance +0x0c, u32 engine reference id.
+/// CRaidInstance u32 engine reference id.
 pub const ID: usize = 0x0c;
 /// Auto-launch boolean byte, serialized only when nonzero.
 pub const AUTO_LAUNCH: usize = 0x30;
@@ -32,7 +32,7 @@ pub const PREPARATION_HOURS: usize = 0x44;
 /// phase-4 hour. Elapsed hours divide it by that speed; serialization emits
 /// `distance` only when nonzero.
 pub const DISTANCE: usize = 0x50;
-/// Owner-object pointer; country handle is at owner+8, class unresolved.
+/// Owner-object pointer; country handle is in the owner object, class unresolved.
 pub const OWNER_OBJECT: usize = 0x58;
 /// Embedded variables object.
 pub const VARIABLES: usize = 0x60;
@@ -174,7 +174,7 @@ pub(crate) fn read_row(
     countries: &ccountry::Reader<'_, impl Memory>,
 ) -> Result<(Row, Array), &'static str> {
     let mut identity = [0_u8; 16];
-    // Phase, outcome, risk and preparation hours (+0x38..+0x48).
+    // Phase, outcome, risk and preparation hours.
     let mut state = [0_u8; 16];
     let mut definition = [0_u8; 8];
     let mut detected = [0_u8; 1];

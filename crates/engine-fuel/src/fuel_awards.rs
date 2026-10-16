@@ -24,9 +24,9 @@ pub const END: (usize, [u8; 16]) = (
         0x48, 0x8b, 0x4b, 0x48, 0x48, 0x8b, 0x41, 0x40, 0x48, 0x01, 0x83, 0xa8, 0, 0, 0, 0x48,
     ],
 );
-/// Division receipt writes, including unrolled and residual paths. RAX is the
-/// division, RDX the actual signed fixed5 receipt with parity rounding. Chained
-/// unwind entries lead to a handler-free body; each site+5 remains in its original entry.
+/// Division receipt writes, including unrolled and residual paths. RAX is the division, RDX the
+/// actual signed fixed5 receipt with parity rounding. Chained unwind entries lead to a handler-free
+/// body; each five-byte return point remains in its original entry.
 pub const LAND: [(usize, [u8; 16]); 5] = [
     (
         0x010d_e1ad,
@@ -67,19 +67,19 @@ pub const NAVAL: (usize, [u8; 16]) = (
         0x48, 1, 0x91, 0xf8, 4, 0, 0, 0xc3, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
     ],
 );
-/// Non-null-container receipt store: RDI base, RDX container, RBX receipt.
-/// The seven-byte store ends before register restoration; site+5 remains
-/// inside the handler-free body.
+/// Non-null-container receipt store: RDI base, RDX container, RBX receipt. The seven-byte store
+/// ends before register restoration; the five-byte return point remains inside the handler-free
+/// body.
 pub const AIR: (usize, [u8; 16]) = (
     0x00c3_c401,
     [
         0x48, 0x89, 0x9a, 0xf0, 0, 0, 0, 0x48, 0x8b, 0x5c, 0x24, 0x30, 0x48, 0x83, 0xc4, 0x20,
     ],
 );
-/// Unconditional fuel-reset prefix, RSI status. Appearance reset reaches it
-/// during runtime reset, country reuse and initialization; a pointer and zero
-/// identity can recur. The eight-byte span follows the handler-free prologue
-/// and contains no interior branch or return address. site+5 shares its unwind state.
+/// Unconditional fuel-reset prefix, RSI status. Appearance reset reaches it during runtime reset,
+/// country reuse and initialization; a pointer and zero identity can recur. The eight-byte span
+/// follows the handler-free prologue and contains no interior branch or return address. The
+/// five-byte return point shares its unwind state.
 pub const RESET: (usize, [u8; 16]) = (
     0x010d_dc69,
     [
@@ -267,21 +267,18 @@ pub fn settle(
     Ok(settle_held(memory, base, begun, status, None)?.0)
 }
 
-/// [`settle`], reading the status again through [`start_held`]; also returns
-/// whether it took `held`. With `held` (located by this status's own BEGIN in
-/// the same invocation) and the same status, only the payload is read again.
-/// Between BEGIN and END nothing writes a country object (see [`start_held`]),
-/// and no fuel-update store writes the status's identity words: the initial
-/// update writes only operand fields +0x8, +0x30, +0x38, +0x60, +0x68, +0x70,
-/// +0x90 and the +0x48 ring through RSI before its tail jump; its continuation
-/// writes +0x70..+0xA0 through RBX up to END. Allocation writes the status's
-/// +0x8 through R13, and the receipt writer passed the status writes only
-/// through RDX, R10, R11 and the army. Its vtable, owner, the owner's backlink
-/// and instance therefore read as BEGIN read them. The controls BEGIN's start
-/// passed (the game-state singleton and both country headers, whose objects
-/// that range neither frees nor replaces) pass again: omitted reads could only
-/// repeat BEGIN's values and outcomes. This holds for a fuel-update invocation
-/// that runs from BEGIN to END without exceptional dispatch.
+/// [`settle`], reading the status again through [`start_held`]; also returns whether it took
+/// `held`. With `held` (located by this status's own BEGIN in the same invocation) and the same
+/// status, only the payload is read again. Between BEGIN and END nothing writes a country object
+/// (see [`start_held`]), and no fuel-update store writes the status's identity words: the initial
+/// update writes only three operand fields and the ring through RSI before its tail jump; its
+/// continuation writes the fields through the end of the operands through RBX up to END. Allocation
+/// writes the status's first operand through R13, and the receipt writer passed the status writes
+/// only through RDX, R10, R11 and the army. Its vtable, owner, the owner's backlink and instance
+/// therefore read as BEGIN read them. The controls BEGIN's start passed (the game-state singleton
+/// and both country headers, whose objects that range neither frees nor replaces) pass again:
+/// omitted reads could only repeat BEGIN's values and outcomes. This holds for a fuel-update
+/// invocation that runs from BEGIN to END without exceptional dispatch.
 pub fn settle_held(
     memory: &impl Memory,
     base: usize,

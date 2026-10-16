@@ -227,10 +227,10 @@ pub(super) fn capture(
         i64::from(creference_registry::resolve(m, base, reference)?.is_some()),
     )?;
     let Some(army) = army else {
-        // The wing name uses inline/heap storage at +0x998, length +0x9A8 and
-        // capacity +0x9B0. Generated and renamed text share that setter without
-        // a source flag; the selected number, key and unused-name choice are
-        // not retained. The viewer uses the recording language for stored text.
+        // The wing name uses inline or heap MSVC string storage (`cair_wing::NAME`). Generated and
+        // renamed text share that setter without a source flag; the selected number, key and
+        // unused-name choice are not retained. The viewer uses the recording language for stored
+        // text.
         return independent_string(m, wing.unwrap() + 0x998, WING_NAME, sink);
     };
     let p = field::<u64>(m, army, 0x340)? as usize;

@@ -1,21 +1,16 @@
-//! Allocation-free notifications from the native writers of everything a
-//! state air base's AirBaseRegistrations subtree reads
-//! ([`engine::air_base_mutations`]). A detour only notifies the shared
-//! watch registry ([`WatchRegistry`]) for the base handle its first argument
-//! names (a base's `+0x8`, a pool's `+0x18`), counts its site and calls the
-//! original; it never changes game behaviour. A receiver whose handle does
-//! not read revokes every certificate. A pool site names an unlinked pool's
-//! zero or invalid reference, which no registered base holds: a carried
-//! base's pools all name it ([`crate::extended::air::RegistrationStore`]).
-//! Two writers are other families' patches, whose detours forward here: the
-//! country air pool capacity setter
-//! ([`crate::raid_changes`], only a store that changes the held value,
-//! [`capacity_written`]) and air base destruction
-//! ([`crate::ship_model_changes`], [`base_destroyed`]). The domain observes
-//! only while its own hooks and both forwarders are enabled. Anything unobserved (disabled, poisoned,
-//! a refused registration, an epoch change, a running writer) makes the
-//! capture read that base afresh
-//! ([`crate::extended::air::RegistrationStore`]).
+//! Allocation-free notifications from the native writers of everything a state air base's
+//! AirBaseRegistrations subtree reads ([`engine::air_base_mutations`]). A detour only notifies the
+//! shared watch registry ([`WatchRegistry`]) for the base handle its first argument names (a base's
+//! handle, a pool's base handle), counts its site and calls the original; it never changes game
+//! behaviour. A receiver whose handle does not read revokes every certificate. A pool site names an
+//! unlinked pool's zero or invalid reference, which no registered base holds: a carried base's
+//! pools all name it ([`crate::extended::air::RegistrationStore`]). Two writers are other families'
+//! patches, whose detours forward here: the country air pool capacity setter
+//! ([`crate::raid_changes`], only a store that changes the held value, [`capacity_written`]) and
+//! air base destruction ([`crate::ship_model_changes`], [`base_destroyed`]). The domain observes
+//! only while its own hooks and both forwarders are enabled. Anything unobserved (disabled,
+//! poisoned, a refused registration, an epoch change, a running writer) makes the capture read that
+//! base afresh ([`crate::extended::air::RegistrationStore`]).
 pub mod registration;
 
 use crate::{
@@ -511,9 +506,8 @@ callback!(destroy_pool, 8, (pool, flags));
 mod tests {
     use super::*;
 
-    /// A base site names its base by `+0x8` and a pool site by the pool's
-    /// `+0x18`; a receiver that does not read names none, so it revokes
-    /// every certificate.
+    /// A base site names its base by its handle and a pool site by the pool's base handle; a
+    /// receiver that does not read names none, so it revokes every certificate.
     #[test]
     fn a_site_names_its_base_by_handle_and_an_unread_receiver_names_none() {
         let site = |name: &str| {

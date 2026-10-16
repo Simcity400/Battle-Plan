@@ -59,15 +59,15 @@ value_struct!(RaidSource {kind: Option<u32>, kind_present: u8, province: u32, sh
 /// `None` when the reference does not resolve.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RaidScope {
-    /// `+8` province id.
+    /// The target scope's province id.
     pub province: u32,
-    /// `+0x10` state id.
+    /// The target scope's state id.
     pub state: u32,
-    /// `+0x18` full character reference.
+    /// The target scope's full character reference.
     pub leader_reference: u64,
-    /// `+0x20` province id, the save's `leader_province`.
+    /// The target scope's province id, the save's `leader_province`.
     pub leader_province: u32,
-    /// `+0` building's lexer type token.
+    /// The target building's lexer type token.
     pub building_type: u32,
     pub building_location: u32,
     pub building_flags: u32,
@@ -397,11 +397,11 @@ pub struct RaidEquipmentRow {
 typed_codec!(RaidEquipmentRow, 64, |row| (row.id as u128) << 32 | row.reference_type as u128, |key| Self { id: (key >> 32) as u32, reference_type: key as u32, ..Default::default() },
  { 0 => (phase): I32, 1 => (end_hour): OptionalI32, 2 => (variants): U64List, 3 => (amounts): Opaque, 4 => (nukes): I32, 5 => (archetype_tokens): U32List, 6 => (archetype_amounts): Opaque }, |_row| Ok(()));
 
-/// RaidCountryInputs: key canonical slot. What raid offers need that `Countries` lacks:
-/// the effective getter values of the range modifiers, the autonomous flag (`game
-/// state+0x370`, absent past the controller arrays) and the convoy reservations as
-/// flattened `(priority, quantity)` pairs. Command power and the ace country modifiers
-/// are [`CountryCommandPowerRow`]'s.
+/// RaidCountryInputs: key canonical slot. What raid offers need that `Countries` lacks: the
+/// effective getter values of the range modifiers, the autonomous flag (the game state's
+/// per-country array, absent past the controller arrays) and the convoy reservations as flattened
+/// `(priority, quantity)` pairs. Command power and the ace country modifiers are
+/// [`CountryCommandPowerRow`]'s.
 ///
 /// Hourly, every country, in the same country pass as `CountryCommandPower`: the game's
 /// offer cache re-checks every offer at least hourly.

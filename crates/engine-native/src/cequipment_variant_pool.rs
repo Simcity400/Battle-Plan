@@ -16,12 +16,11 @@ pub use equipment_entry::Row;
 
 /// CEquipmentVariantPool primary vtable.
 pub const VTABLE_RVA: usize = 0x27330a0;
-/// Equipment-pool archetype-allocation array, initialized before the
-/// variant array at +0x20.
+/// Equipment-pool archetype-allocation array, initialized before the variant array (`ITEMS`).
 pub const ALLOCATIONS: usize = 0x08;
 /// CEquipmentVariantPool archetype-allocation capacity, i32.
 pub const ALLOCATIONS_CAPACITY: usize = 0x10;
-/// CEquipmentVariantPool archetype-allocation count, i32; native allocation operations use pool+8 with 24-byte entries.
+/// CEquipmentVariantPool archetype-allocation count, i32; native allocation operations use `ALLOCATIONS` with 24-byte entries.
 pub const ALLOCATIONS_COUNT: usize = 0x14;
 /// CEquipmentVariantPool row array pointer.
 pub const ITEMS: usize = 0x20;
@@ -63,9 +62,9 @@ pub struct DivisionRow {
     pub amount_raw: i64,
 }
 
-/// Authenticate a genuine CEquipmentVariantPool and return its variant array.
-/// CArmy embeds this object at primary+348 and CProductionStatus at +200;
-/// their familiar +368/+220 array pointers are not the pool's primary address.
+/// Authenticate a genuine CEquipmentVariantPool and return its variant array. CArmy embeds this
+/// object (`carmy::EQUIPMENT_POOL`) and so does CProductionStatus; their familiar item-array
+/// pointers are not the pool's primary address.
 pub fn entries(
     memory: &impl Memory,
     module_base: usize,

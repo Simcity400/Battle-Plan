@@ -1,21 +1,20 @@
 //! A nuclear drop's impact. No game code is called.
 //!
-//! Every launch, through an effect or command, only appends a delayed entry to
-//! its nuke object's queue (`+0x20`). Queue dispatch runs during country
-//! pending refresh in the serial country loop before the hourly update, on the
-//! main thread only, and calls [`IMPACT`] once per ready entry. The impact:
+//! Every launch, through an effect or command, only appends a delayed entry to its nuke object's
+//! queue. Queue dispatch runs during country pending refresh in the serial country loop before the
+//! hourly update, on the main thread only, and calls [`IMPACT`] once per ready entry. The impact:
 //!
-//! - logs the launcher (`CNuke+0x10`, passing on its tag word `+8`), province
-//!   id (`CProvince+0xA4`) and controller (`+0x188`);
+//! - logs the launcher (the nuke's launcher, passing on its tag word), province
+//!   id and controller;
 //!
 //! - subtracts the province's nuclear war-support damage from the state owner's
-//!   war support, resolving the owner through `CProvince+0xC0 -> CState+0xC8`
+//!   war support, resolving the owner through the province's state and its owner
 //!   and using tag zero without a state;
 //!
 //! - for a type other than 1, damages the province's units ([`UNIT_DAMAGE`]),
 //!   destroys aircraft in its air bases' wings and removes healthy building
 //!   levels. Type 1 does all three for every province of the state
-//!   (`CState+0x18`);
+//!   (the state's province list);
 //!
 //! - removes healthy levels of the state's buildings, adds war score, then
 //!   tail-jumps to [`NOTIFY`], its only entry, which dispatches the authored
@@ -42,8 +41,8 @@ pub struct Site {
     pub sentinel: [u8; 16],
 }
 
-/// Impact takes nuke and province pointers in RCX and RDX, saved immediately;
-/// no other argument is read. The five patched bytes save RDX at RSP+0x10.
+/// Impact takes nuke and province pointers in RCX and RDX, saved immediately; no other argument is
+/// read. The five patched bytes save RDX to its home slot.
 pub const IMPACT: Site = Site {
     name: "impact",
     rva: 0x0108_3430,
@@ -52,9 +51,8 @@ pub const IMPACT: Site = Site {
         0x54,
     ],
 };
-/// Notification takes nuke and province pointers, entered only by the impact's
-/// tail jump; RCX and RDX are kept in RSI and RDI. The five patched bytes save
-/// RBX at RSP+0x10.
+/// Notification takes nuke and province pointers, entered only by the impact's tail jump; RCX and
+/// RDX are kept in RSI and RDI. The five patched bytes save RBX to its home slot.
 pub const NOTIFY: Site = Site {
     name: "notify",
     rva: 0x0108_4ff0,
@@ -63,13 +61,11 @@ pub const NOTIFY: Site = Site {
         0x55,
     ],
 };
-/// Unit damage takes nuke and province pointers and returns u64, called by both
-/// province-damage branches of the impact. It walks the province's mixed
-/// occupants (`+0xE0`, count `+0xEC`) in order. For each whose class word
-/// (`+8`) is not 1, it calls the immediate-damage virtual (vtable `+0xC8`) with
-/// random strength and organisation fractions between the `NRaids` minimum and
-/// maximum, flag 1 and the launcher's tag. The five patched bytes push RBX,
-/// RBP, RSI and RDI; RAX is returned unchanged.
+/// Unit damage takes nuke and province pointers and returns u64, called by both province-damage
+/// branches of the impact. It walks the province's mixed occupants (up to their count) in order.
+/// For each whose class word is not 1, it calls the immediate-damage virtual with random strength
+/// and organisation fractions between the `NRaids` minimum and maximum, flag 1 and the launcher's
+/// tag. The five patched bytes push RBX, RBP, RSI and RDI; RAX is returned unchanged.
 pub const UNIT_DAMAGE: Site = Site {
     name: "unit_damage",
     rva: 0x0108_2b10,
@@ -83,13 +79,13 @@ pub const SITES: [Site; 3] = [IMPACT, NOTIFY, UNIT_DAMAGE];
 /// A drop's target and launcher, as the impact reads them on entry.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Strike {
-    /// The launcher (`CNuke+0x10`), named by its own reference (`+8`).
+    /// The launcher named by its own reference.
     pub launcher: CountryIdentity,
-    /// The native type ordinal (`CNuke+0x38`).
+    /// The native type ordinal of the nuke.
     pub nuke_type: u32,
     pub province: u32,
-    /// The province's state id (`CState+0x58`); 0 for a province without a
-    /// state, which has no state buildings and no war support recipient.
+    /// The province's state id (`cstate::ID`); 0 for a province without a state, which has no state
+    /// buildings and no war support recipient.
     pub state: u32,
     /// The war support recipient: the state owner's reference resolved, the
     /// reserved country (reference zero) without a state.
@@ -227,10 +223,10 @@ pub fn strike(
     })
 }
 
-/// A division's class word (`CUnit+8`).
+/// A division's class word (`cunit::CLASS`).
 pub const ARMY_CLASS: u32 = 0;
-/// The class [`UNIT_DAMAGE`] skips by comparing the occupant's +8 class word
-/// with one.
+/// The class [`UNIT_DAMAGE`] skips by comparing the occupant's class word (`cunit::CLASS`) with
+/// one.
 pub const SKIPPED_CLASS: u32 = 1;
 /// A railway gun's class word, passed to unit construction by the railway-gun
 /// constructor.
@@ -243,13 +239,13 @@ pub struct Unit {
     pub handle: u64,
     pub class: u32,
     pub owner: u32,
-    /// Signed fixed5: `CArmy+0x420`, `CRailwayGun+0x3F0`.
+    /// Signed fixed5: `carmy::STRENGTH`, `crailway_gun::CURRENT_STRENGTH`.
     pub strength: i64,
-    /// Signed fixed5 `CArmy+0x428`; a railway gun has none (its getter returns
-    /// a constant and its damage operation ignores the organisation operand).
+    /// Signed fixed5 `carmy::ORGANISATION`; a railway gun has none (its getter returns a constant
+    /// and its damage operation ignores the organisation operand).
     pub organisation: Option<i64>,
-    /// A division's manpower entries summed (`CArmy+0x3E0`, the signed dwords
-    /// the loss walker subtracts from); a railway gun's `+0x3F8`.
+    /// A division's manpower entries summed (`carmy::MANPOWER_VALUES`, the signed dwords the loss
+    /// walker subtracts from); a railway gun's `crailway_gun::MANPOWER`.
     pub manpower: i64,
 }
 
@@ -349,8 +345,8 @@ fn railway_gun(memory: &impl Memory, base: usize, gun: usize) -> Result<Unit, &'
             "nuclear strike railway gun handle unreadable",
         )?,
         class: RAILWAY_GUN_CLASS,
-        // Railway-gun immediate damage resolves the casualty victim from the
-        // roster owner +0x1D8.
+        // Railway-gun immediate damage resolves the casualty victim from the roster owner
+        // (`cunit::ROSTER_OWNER`).
         owner: field(
             memory,
             gun,

@@ -13,8 +13,8 @@ pub struct MutationSite {
     pub sentinel: [u8; 16],
 }
 
-/// Receivers: a country air object (with the region) for the first, a history's
-/// history `+8` window list for the second.
+/// Receivers: a country air object (with the region) for the first, a history's history's window
+/// list for the second.
 pub const MUTATIONS: [MutationSite; 2] = [
     MutationSite {
         name: "region_history",

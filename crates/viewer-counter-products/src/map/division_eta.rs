@@ -16,10 +16,9 @@
 //! Edge distances, terrain flags and the movement defines come from the
 //! matching content stack ([`MovementContent`]), never the recording.
 //!
-//! The progress is the game's movement-arrow fill target (`+0x28`), and
-//! The game draws that arrow only for a unit of the player's own country
-//! that is selected (`unit+0xC`; for a navy also its task force's `+0x24`
-//! word). The viewer's selection drives the movement-arrow layer. Counter
+//! The progress is the game's movement-arrow fill target, and The game draws that arrow only for a
+//! unit of the player's own country that is selected (the unit's selected byte; for a navy also its
+//! task force's selection word). The viewer's selection drives the movement-arrow layer. Counter
 //! and figure positions use the settled route point in [`viewer_foundation::map::counter_move`].
 //!
 //! Counter hovers ([`CounterQueries`]) word a division's estimate, a railway

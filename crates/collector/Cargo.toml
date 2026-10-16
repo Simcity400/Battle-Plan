@@ -215,7 +215,7 @@ projects_changes = ["country_input_changes", "collector-observers/projects_chang
 # and poison on a difference. Off by default: its burn-in passed.
 projects_verify = ["projects_changes", "collector-observers/projects_verify"]
 # WeatherProvinces reads, in an ordinary hour, only the province records the native hourly pass
-# visited (the weather pass's window from the cursor +0x58, provinces_per_update wide) and
+# visited (the weather pass's window from the update cursor, provinces_per_update wide) and
 # carries the rest; the weather writers outside that window (reseed, reset, console, load) are
 # counted by the country input family's hooks, and any of them, a jump of the cursor or a gap reads
 # every record. Without it every record is read every hour.

@@ -385,22 +385,21 @@ fn portrait_text(
     Ok(text)
 }
 
-/// A recording without the side hover inputs ([`LandCombatSideInputs`],
-/// LandCombatDetails field 10) holds no learning traits for the viewing
-/// country's commander, whose portrait shows its learning rows (+0xDF8).
-const LAND_LEARNING_UNRECORDED: &str = "the viewing country's commander shows its learning-trait progress (learning rows +0xDF8), which this recording does not record";
+/// A recording without the side hover inputs ([`LandCombatSideInputs`], LandCombatDetails field 10)
+/// holds no learning traits for the viewing country's commander, whose portrait shows its learning
+/// rows.
+const LAND_LEARNING_UNRECORDED: &str = "the viewing country's commander shows its learning-trait progress (learning rows), which this recording does not record";
 
 /// The capture could not read the live floor that decides which rows show.
 const LAND_LEARNING_UNREAD: &str = "the viewing country's commander shows its learning-trait progress above the live LEADER_TRAITS_XP_SHOW, which could not be read at capture";
 
-/// Nor its description token (+0x80), the portrait's delayed text.
+/// Nor its description token, the portrait's delayed text.
 const LAND_DESCRIPTION_UNRECORDED: &str =
-    "the commander's description token (token +0x80) is not recorded in this recording";
+    "the commander's description token is not recorded in this recording";
 
-/// Nor its timed traits (+0xDE0), which each trait hover tests for its
-/// expiry.
+/// Nor its timed traits, which each trait hover tests for its expiry.
 const LAND_TIMED_TRAITS_UNRECORDED: &str =
-    "LandCombatDetails.side_inputs (timed traits +0xDE0) not recorded";
+    "LandCombatDetails.side_inputs (timed traits) not recorded";
 
 /// The land portrait hover's immediate text. Only the viewing country's
 /// commander lists its learning traits, which the side inputs hold as the

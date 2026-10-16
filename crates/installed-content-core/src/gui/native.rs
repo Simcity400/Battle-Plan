@@ -136,8 +136,7 @@ pub enum Kind {
     Icon,
     /// `buttonType` (0x271).
     Button,
-    /// `checkboxType` (0xC4): a button kept in its own array (`+0x1E0`) and drawn as a
-    /// checkbox.
+    /// `checkboxType` (0xC4): a button kept in its own array and drawn as a checkbox.
     Checkbox,
     /// `guiButtonType` (0x7F): a button a `windowType`, a scrollbar or `guiTypes` builds.
     GuiButton,
@@ -153,7 +152,7 @@ pub enum Kind {
     PositionType,
     /// `listBoxType` (0xA9), list box.
     ListBox,
-    /// `smoothListboxType` (0x1FB), the same list box kept in its own array (`+0x210`).
+    /// `smoothListboxType` (0x1FB), the same list box kept in its own array.
     SmoothListBox,
     /// `textBoxType` (0x85), text box.
     TextSprite,
@@ -435,7 +434,7 @@ const STEP: [Coordinate; 2] = [Coordinate {
 }; 2];
 
 /// An element's position: two coordinates and the `min` and `max` bounds evaluation clamps to.
-/// `step` (`+0x24`) is read but no evaluator uses it.
+/// `step` is read but no evaluator uses it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Position {
     pub x: Coordinate,
@@ -463,7 +462,7 @@ pub struct Size {
     pub size: [Coordinate; 2],
     pub min: [Coordinate; 2],
     pub max: [Coordinate; 2],
-    /// `step` (`+0x24`), unused by size evaluation.
+    /// `step`, unused by size evaluation.
     pub step: [Coordinate; 2],
     pub preserve_aspect_ratio: bool,
 }
@@ -489,15 +488,15 @@ pub struct Margin {
     pub bottom: Coordinate,
 }
 
-/// `pdx_tooltip_anchor` (`+0xB0`..`+0xBA`): the flag `+0xB8` its key sets, then its own key loop.
+/// `pdx_tooltip_anchor`: the read flag its key sets, then its own key loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TooltipAnchor {
-    /// Whether the key was read (`+0xB8`).
+    /// Whether the key was read.
     pub set: bool,
-    /// `x` (`+0xB0`) and `y` (`+0xB4`), `%i`.
+    /// `x` and `y`, `%i`.
     pub x: i32,
     pub y: i32,
-    /// `relative` (`+0xB9`, 1) and `below` (`+0xBA`, 1).
+    /// `relative` (1) and `below` (1).
     pub relative: bool,
     pub below: bool,
 }
@@ -518,27 +517,25 @@ impl Default for TooltipAnchor {
 /// list, so their objects take no pointer input, hover or tooltip.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Common {
-    /// `tooltip`, `tooltipText`, `pdx_tooltip` (`+0x90`): FNV-1a/64 of the value's text, 0 when
-    /// none.
+    /// `tooltip`, `tooltipText`, `pdx_tooltip`: FNV-1a/64 of the value's text, 0 when none.
     pub tooltip: u64,
     /// Authored C-string bytes retained for hash-based localisation.
     pub tooltip_key: Vec<u8>,
-    /// `delayedTooltipText`, `pdx_tooltip_delayed` (`+0x98`).
+    /// `delayedTooltipText`, `pdx_tooltip_delayed`.
     pub delayed_tooltip: u64,
     pub delayed_tooltip_key: Vec<u8>,
-    /// `pdx_disabled_tooltip` (`+0xA0`).
+    /// `pdx_disabled_tooltip`.
     pub disabled_tooltip: u64,
     pub disabled_tooltip_key: Vec<u8>,
-    /// `pdx_disabled_tooltip_delayed` (`+0xA8`).
+    /// `pdx_disabled_tooltip_delayed`.
     pub disabled_tooltip_delayed: u64,
     pub disabled_tooltip_delayed_key: Vec<u8>,
-    /// `hint_tag` (`+0xC0`).
+    /// `hint_tag`.
     pub hint_tag: Vec<u8>,
     pub tooltip_anchor: TooltipAnchor,
-    /// `bound_tooltip` or `context_aware_tooltip` (`+0x68`), read only while empty.
+    /// `bound_tooltip` or `context_aware_tooltip`, read only while empty.
     pub bound_tooltip: BoundLocalization,
-    /// `context_aware_tooltip` (`+0x88`): the tooltip needs the view's scoped localizer
-    /// (`instance+0x78`).
+    /// `context_aware_tooltip`: the tooltip needs the view's scoped localizer.
     pub context_aware_tooltip: bool,
 }
 
@@ -662,18 +659,17 @@ impl BoundLocalization {
 /// clears its output list for every sprite class: no text block draws.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextBlock {
-    /// `color` (`+0x20`), read as a color and initially white.
+    /// `color`, read as a color and initially white.
     pub color: [f32; 4],
-    /// `font` (`+0x30`) and `text` (`+0x50`).
+    /// `font` and `text`.
     pub font: Vec<u8>,
     pub text: Vec<u8>,
-    /// `position` (`+0x70`): integer point reader into a zeroed local; each assignment also adds the
-    /// old position less the new one to `size`.
+    /// `position`: integer point reader into a zeroed local; each assignment also adds the old
+    /// position less the new one to `size`.
     pub position: [i32; 2],
-    /// `size` (`+0x78`): integer point reader into a zeroed local.
+    /// `size`: integer point reader into a zeroed local.
     pub size: [i32; 2],
-    /// `format` (`+0x80`): `left` 0, `right` 1 and `centre` 2 by keyword; anything else leaves
-    /// it.
+    /// `format`: `left` 0, `right` 1 and `centre` 2 by keyword; anything else leaves it.
     pub format: i32,
 }
 
@@ -696,8 +692,8 @@ pub struct Container {
     /// `position`; every assignment also copies itself over `show_position` and
     /// `hide_position`.
     pub position: Position,
-    /// `show_position` (`+0x390`): the rest position after a show animation, from which
-    /// negative and `%%` sizes are measured.
+    /// `show_position`: the rest position after a show animation, from which negative and `%%`
+    /// sizes are measured.
     pub show_position: Position,
     pub hide_position: Position,
     pub size: Size,
@@ -712,55 +708,53 @@ pub struct Container {
     pub clipping: Option<bool>,
     pub margin: Margin,
     pub background_margin: Margin,
-    /// Every `background` block, each read as a button, in order (`+0x270`).
+    /// Every `background` block, each read as a button, in order.
     pub backgrounds: Vec<Element>,
-    /// `scale` (`+0x578`, initially 1.0): the content scale.
+    /// `scale` (initially 1.0): the content scale.
     pub scale: f32,
     /// `show_animation_type`, and `animation_type` (which sets both).
     pub show_animation: Animation,
     pub hide_animation: Animation,
-    /// `fade_type` (`+0x568`): anything but `none` starts the window transparent.
+    /// `fade_type`: anything but `none` starts the window transparent.
     pub fade: Animation,
     /// `fade_time`, milliseconds (the constructor's 1000).
     pub fade_time: i32,
-    /// `fade_delay` (`+0x564`), milliseconds (0): the fade update waits it out.
+    /// `fade_delay`, milliseconds (0): the fade update waits it out.
     pub fade_delay: i32,
-    /// `show_animation_time` (`+0x558`) and `hide_animation_time` (`+0x55C`), milliseconds (the
-    /// constructor's 10 each); `animation_time` writes both.
+    /// `show_animation_time` and `hide_animation_time`, milliseconds (the constructor's 10 each);
+    /// `animation_time` writes both.
     pub show_animation_time: i32,
     pub hide_animation_time: i32,
-    /// `moveable` (`+0x58E`, 0): an immovable window snaps to its old target before moving. Its
-    /// backgrounds also use this flag to decide whether they can drag it.
+    /// `moveable` (0): an immovable window snaps to its old target before moving. Its backgrounds
+    /// also use this flag to decide whether they can drag it.
     pub moveable: bool,
-    /// `autohide_scrollbars` (`+0x58C`, initially 1): a scrollbar is shown during construction
-    /// only when this is `no`.
+    /// `autohide_scrollbars` (initially 1): a scrollbar is shown during construction only when this
+    /// is `no`.
     pub autohide_scrollbars: bool,
-    /// `verticalScrollbar` (`+0x320`) and `horizontalScrollbar` (`+0x340`): named scrollbar
-    /// types instantiated during construction.
+    /// `verticalScrollbar` and `horizontalScrollbar`: named scrollbar types instantiated during
+    /// construction.
     pub vertical_scrollbar: Vec<u8>,
     pub horizontal_scrollbar: Vec<u8>,
-    /// `click_to_front` (`+0x58D`) and `smooth_scrolling` (`+0x591`).
+    /// `click_to_front` and `smooth_scrolling`.
     pub click_to_front: bool,
     pub smooth_scrolling: bool,
-    /// `scroll_wheel_factor` (`+0x56C`, 15.0), `vertical_scroll_step` (`+0x570`, 1.0),
-    /// `horizontal_scroll_step` (`+0x574`, 1.0): `%f`.
+    /// `scroll_wheel_factor` (15.0), `vertical_scroll_step` (1.0), `horizontal_scroll_step` (1.0):
+    /// `%f`.
     pub scroll_wheel_factor: f32,
     pub vertical_scroll_step: f32,
     pub horizontal_scroll_step: f32,
-    /// `drag_scroll` (`+0x593`): each button (`left` 1, `middle` 2, `right` 4, `none` 0) ORed
-    /// in.
+    /// `drag_scroll`: each button (`left` 1, `middle` 2, `right` 4, `none` 0) ORed in.
     pub drag_scroll: u8,
-    /// `closed_position` (`+0x3F0`), `open_position` (`+0x420`), `peek_position` (`+0x450`),
-    /// `peek_check_top_left` (`+0x480`), `peek_check_size` (`+0x4B0`): hover movement positions
-    /// and bounds.
+    /// `closed_position`, `open_position`, `peek_position`, `peek_check_top_left`,
+    /// `peek_check_size`: hover movement positions and bounds.
     pub closed_position: Position,
     pub open_position: Position,
     pub peek_position: Position,
     pub peek_check_top_left: Position,
     pub peek_check_size: Size,
-    /// `+0x590`: set once any of the five hover keys is read, even malformed.
+    /// The hover flag: set once any of the five hover keys is read, even malformed.
     pub peek: bool,
-    /// `upsound`/`show_sound` (`+0x2E0`) and `downsound`/`hide_sound` (`+0x300`).
+    /// `upsound`/`show_sound` and `downsound`/`hide_sound`.
     pub show_sound: Vec<u8>,
     pub hide_sound: Vec<u8>,
 }
@@ -811,7 +805,8 @@ impl Default for Container {
 /// An `iconType`'s fields and constructor defaults.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Icon {
-    /// `spriteType`, `quadTextureSprite` and `buttonMesh` all write `+0x100`; empty when none.
+    /// `spriteType`, `quadTextureSprite` and `buttonMesh` all write the same sprite field; empty
+    /// when none.
     pub sprite: Vec<u8>,
     /// An integer point read into a zeroed local, with both axes then stored as floats.
     /// Integers past 2^24 round to the nearest float. Construction and drawable building
@@ -825,11 +820,11 @@ pub struct Icon {
     /// The constructor's 1.
     pub frame: i32,
     pub rotation: f32,
-    /// `alwaystransparent` and `allwaystransparent` (`+0x13D`).
+    /// `alwaystransparent` and `allwaystransparent`.
     pub always_transparent: bool,
-    /// `+0x13E`, `icon+0x154` bit 6: centred on its position.
+    /// `centerposition`, the icon's flag-word bit 6: centred on its position.
     pub center_position: bool,
-    /// `center_on_anchor`, `+0x13F`, `icon+0x154` bit 7.
+    /// `center_on_anchor`, the icon's flag-word bit 7.
     pub center_on_anchor: bool,
 }
 
@@ -853,30 +848,29 @@ impl Default for Icon {
 /// `multiSpriteButtonType`, `background` or a scrollbar's or drop-down's button part.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Button {
-    /// `spriteType` and `quadTextureSprite` (`+0x1B0`); empty when none. The post-load pass
-    /// copies a sprite from the `parent` chain when empty.
+    /// `spriteType` and `quadTextureSprite`; empty when none. The post-load pass copies a sprite
+    /// from the `parent` chain when empty.
     pub sprite: Vec<u8>,
-    /// `position` (`+0x288`) and `size` (`+0x2C0`): integer point reader into the field.
+    /// `position` and `size`: integer point reader into the field.
     pub position: [i32; 2],
     pub scale: f32,
     pub rotation: f32,
     /// Initially 0; construction passes it on only when above 0.
     pub frame: i32,
-    /// The last `orientation` text (`+0x290`, the constructor's `UPPER_LEFT`).
+    /// The last `orientation` text (the constructor's `UPPER_LEFT`).
     pub orientation_text: Vec<u8>,
-    /// `+0x2B0`: the text orientation, written only by the post-load pass. `None` for a button
-    /// that pass never reaches (a container's or grid's `background`), whose field is left
-    /// uninitialised.
+    /// The text orientation, written only by the post-load pass. `None` for a button that pass
+    /// never reaches (a container's or grid's `background`), whose field is left uninitialised.
     pub orientation: Option<Orientation>,
-    /// `+0x2E5`.
+    /// `centerposition`.
     pub center_position: bool,
-    /// `alwaystransparent` only (`+0x370`); `allwaystransparent` is no button key.
+    /// `alwaystransparent` only; `allwaystransparent` is no button key.
     pub always_transparent: bool,
-    /// `enabled` (`+0x371`, initially 1): `no` disables the button, drawing its Disable state.
+    /// `enabled` (initially 1): `no` disables the button, drawing its Disable state.
     pub enabled: bool,
-    /// `font`, `buttonFont` and `origo` all write `+0x150`.
+    /// `font`, `buttonFont` and `origo` all write the same font field.
     pub font: Vec<u8>,
-    /// `text` and `buttonText` (`+0x268`).
+    /// `text` and `buttonText`.
     pub text: Vec<u8>,
     /// The constructor's 2, center.
     pub format: TextFormat,
@@ -884,31 +878,31 @@ pub struct Button {
     pub vertical_alignment: VerticalAlignment,
     pub multiline: bool,
     pub size: [i32; 2],
-    /// `borderSize` (`+0x2D8`): integer point reader into a zeroed local, both axes copied.
+    /// `borderSize`: integer point reader into a zeroed local, both axes copied.
     pub border_size: [i32; 2],
-    /// `parent` (`+0x1D0`).
+    /// `parent`.
     pub parent: Vec<u8>,
-    /// `upSprite` (`+0x110`), `downSprite` (`+0x130`), `overSprite` (`+0x170`),
-    /// `dissableSprite` (`+0x190`): read, and passed to no constructor.
+    /// `upSprite`, `downSprite`, `overSprite`, `dissableSprite`: read, and passed to no
+    /// constructor.
     pub up_sprite: Vec<u8>,
     pub down_sprite: Vec<u8>,
     pub over_sprite: Vec<u8>,
     pub dissable_sprite: Vec<u8>,
-    /// Each `shortcut` (`+0x210`), appended.
+    /// Each `shortcut`, appended.
     pub shortcuts: Vec<Vec<u8>>,
-    /// `luaClick` (`+0x1F0`).
+    /// `luaClick`.
     pub lua_click: Vec<u8>,
-    /// `callback_type` (`+0x228`) and `callback_argument` (`+0x248`); `web_link` sets the type
-    /// to `web_link` and its text as the argument.
+    /// `callback_type` and `callback_argument`; `web_link` sets the type to `web_link` and its text
+    /// as the argument.
     pub callback_type: Vec<u8>,
     pub callback_argument: Vec<u8>,
-    /// `upsound` (`+0x350`), `downsound` (`+0x330`), `oversound` (`+0x2E8`), `clicksound`
-    /// (`+0x308`; exactly `none` clears it and sets `no_clicksound`).
+    /// `upsound`, `downsound`, `oversound`, `clicksound` (exactly `none` clears it and sets
+    /// `no_clicksound`).
     pub up_sound: Vec<u8>,
     pub down_sound: Vec<u8>,
     pub over_sound: Vec<u8>,
     pub click_sound: Vec<u8>,
-    /// `no_clicksound` (`+0x328`).
+    /// `no_clicksound`.
     pub no_click_sound: bool,
 }
 
@@ -964,29 +958,27 @@ pub struct TextBox {
     /// The last `orientation` string, parsed in the post-load pass.
     pub orientation: Orientation,
     pub vertical_alignment: VerticalAlignment,
-    /// `alwaystransparent` and `allwaystransparent` (`+0x1A8`).
+    /// `alwaystransparent` and `allwaystransparent`.
     pub always_transparent: bool,
-    /// `borderSize` (`+0x16C`).
+    /// `borderSize`.
     pub border_size: [i32; 2],
-    /// `scrollbarType` (`+0x1B0`): a named scrollbar type the box instantiates, clipping its
-    /// text.
+    /// `scrollbarType`: a named scrollbar type the box instantiates, clipping its text.
     pub scrollbar_type: Vec<u8>,
-    /// `fixedsize` (`+0x174`).
+    /// `fixedsize`.
     pub fixed_size: bool,
-    /// `truncate` (`+0x175`, the constructor's 1).
+    /// `truncate` (the constructor's 1).
     pub truncate: bool,
-    /// `multiline` (`+0x176`, the constructor's 1).
+    /// `multiline` (the constructor's 1).
     pub multiline: bool,
-    /// `text_color_code` (`+0x159`): one byte, 0 for none.
+    /// `text_color_code`: one byte, 0 for none.
     pub text_color_code: u8,
-    /// `ignore_special_chars` (`+0x1A9`).
+    /// `ignore_special_chars`.
     pub ignore_special_chars: bool,
-    /// `bound_text` or `context_aware_text` (`+0x138`), read only while empty. Text refresh
-    /// shows it only when `context_aware` is set and the box is shown and queued, through the
-    /// view's scoped localizer (`instance+0x78`). Before that, and otherwise, the box shows
-    /// `text`.
+    /// `bound_text` or `context_aware_text`, read only while empty. Text refresh shows it only when
+    /// `context_aware` is set and the box is shown and queued, through the view's scoped localizer.
+    /// Before that, and otherwise, the box shows `text`.
     pub bound_text: BoundLocalization,
-    /// `context_aware_text` (`+0x158`).
+    /// `context_aware_text`.
     pub context_aware: bool,
 }
 
@@ -1021,23 +1013,21 @@ pub struct Grid {
     pub position: Position,
     pub size: Size,
     pub slot_size: Size,
-    /// `+0x1C0` as stored: `format`'s value, or what `max_slots`' third component wrote
+    /// The format word as stored: `format`'s value, or what `max_slots`' third component wrote
     /// ([`GridFormat::from_value`]).
     pub format: i32,
-    /// `+0x1C4` as stored, the containers' numbering 0 to 8 ([`Orientation::from_value`]), or
-    /// what `max_slots`' fourth component wrote.
+    /// The orientation word as stored, the containers' numbering 0 to 8
+    /// ([`Orientation::from_value`]), or what `max_slots`' fourth component wrote.
     pub orientation: i32,
-    /// `[max_slots_horizontal, max_slots_vertical]` (`+0x1B8`, `+0x1BC`), the constructor's -1
-    /// each.
+    /// `[max_slots_horizontal, max_slots_vertical]`, the constructor's -1 each.
     pub max_slots: [i32; 2],
-    /// `+0x1C8`, initially 1: `add_horizontal`, or the low byte of a fifth `max_slots`
-    /// component. The integer component reader writes an `i32` over this byte and following
-    /// padding; grid construction copies the byte to the instance's fill-direction flag
-    /// (`+0x180`).
+    /// Initially 1: `add_horizontal`, or the low byte of a fifth `max_slots` component. The integer
+    /// component reader writes an `i32` over this byte and following padding; grid construction
+    /// copies the byte to the instance's fill-direction flag.
     pub add_horizontal: bool,
-    /// `padding` (`+0x188`).
+    /// `padding`.
     pub padding: Margin,
-    /// The first `background`, read as a button (`+0x1B0`).
+    /// The first `background`, read as a button.
     pub background: Option<Box<Element>>,
 }
 
@@ -1060,7 +1050,7 @@ impl Default for Grid {
 /// An `OverlappingElementsBoxType`'s fields and constructor defaults.
 #[derive(Clone, Debug, PartialEq)]
 pub struct List {
-    /// `parent` (`+0xF0`), retained without a consumer in the supported lookup paths.
+    /// `parent`, retained without a consumer in the supported lookup paths.
     pub parent: Vec<u8>,
     pub position: [i32; 2],
     pub size: [i32; 2],
@@ -1106,42 +1096,41 @@ impl Default for PositionType {
 /// written straight into the field.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ListBox {
-    /// `offset` (`+0x1A4`).
+    /// `offset`.
     pub offset: [i32; 2],
-    /// `size` (`+0x1AC`).
+    /// `size`.
     pub size: [i32; 2],
-    /// `position` (`+0x19C`).
+    /// `position`.
     pub position: [i32; 2],
-    /// `borderSize` (`+0x1B4`).
+    /// `borderSize`.
     pub border_size: [i32; 2],
-    /// `parent` (`+0x118`): list box post-load pass never finishes for one that is set
-    /// (the element is refused).
+    /// `parent`: list box post-load pass never finishes for one that is set (the element is
+    /// refused).
     pub parent: Vec<u8>,
-    /// `scrollbarType` (`+0x220`).
+    /// `scrollbarType`.
     pub scrollbar_type: Vec<u8>,
-    /// `priority` (`%f`, `+0x1BC`), which the constructor leaves uninitialised: `None` until
-    /// assigned.
+    /// `priority` (`%f`), which the constructor leaves uninitialised: `None` until assigned.
     pub priority: Option<f32>,
-    /// `horizontal` (`%i`, `+0x21C`, 0).
+    /// `horizontal` (`%i`, 0).
     pub horizontal: i32,
-    /// `background` (`+0x138`): a name, not a block.
+    /// `background`: a name, not a block.
     pub background: Vec<u8>,
-    /// `dropDown` (`+0x158`).
+    /// `dropDown`.
     pub drop_down: Vec<u8>,
-    /// `heading` (`+0x178`).
+    /// `heading`.
     pub heading: Vec<u8>,
-    /// `step` and `spacing` (`%i`, both `+0x218`, 1).
+    /// `step` and `spacing` (`%i`, 1).
     pub spacing: i32,
-    /// `orientation` (`+0xF8`), kept as its text.
+    /// `orientation`, kept as its text.
     pub orientation: Vec<u8>,
-    /// `membername` (`+0x240`).
+    /// `membername`.
     pub member_name: Vec<u8>,
-    /// `alwaystransparent`/`allwaystransparent` (`+0x260`).
+    /// `alwaystransparent`/`allwaystransparent`.
     pub always_transparent: bool,
-    /// `clipping` (`+0x261`, 1).
+    /// `clipping` (1).
     pub clipping: bool,
-    /// `scrollbar_side` (`+0x198`): `left` 0, `right` 1 under ASCII case-insensitive
-    /// comparison; anything else is logged and kept (1).
+    /// `scrollbar_side`: `left` 0, `right` 1 under ASCII case-insensitive comparison; anything else
+    /// is logged and kept (1).
     pub scrollbar_side: i32,
 }
 
@@ -1170,19 +1159,20 @@ impl Default for ListBox {
 }
 
 /// An `editBoxType`'s fields and defaults. `position`, `size` and `borderSize` use the integer
-/// component reader, which writes consecutive `i32`s without a count bound. The twelve 32-bit
-/// slots from `+0x150` to the object's end are kept as the game holds them
-/// ([`EditBox::slots`]); accessors read them in the constructor's layout.
+/// component reader, which writes consecutive `i32`s without a count bound. The twelve 32-bit slots
+/// from `position` to the object's end are kept as the game holds them ([`EditBox::slots`]);
+/// accessors read them in the constructor's layout.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EditBox {
-    /// `font` (`+0x110`), initially the null font.
+    /// `font`, initially the null font.
     pub font: Vec<u8>,
-    /// `textureFile` (`+0xF0`).
+    /// `textureFile`.
     pub texture: Vec<u8>,
-    /// `text` (`+0x130`).
+    /// `text`.
     pub text: Vec<u8>,
-    /// `+0x150` to `+0x180`: position, size, borderSize, cursor, orientation, the flag byte and
-    /// `is_multiline`'s byte (each in its own 32-bit slot), and the object's last padding.
+    /// From `position` to the object's end: position, size, borderSize, cursor, orientation, the
+    /// flag byte and `is_multiline`'s byte (each in its own 32-bit slot), and the object's last
+    /// padding.
     pub slots: [i32; 12],
 }
 
@@ -1199,24 +1189,24 @@ impl EditBox {
         [self.slots[4], self.slots[5]]
     }
 
-    /// `cursor` (`+0x168`), integer point reader into a zeroed local, both halves copied.
+    /// `cursor`, integer point reader into a zeroed local, both halves copied.
     pub fn cursor(&self) -> [i32; 2] {
         [self.slots[6], self.slots[7]]
     }
 
-    /// `orientation` (`+0x170`): text orientation reader of each assignment's text, as
-    /// stored ([`Orientation::from_gui_value`]).
+    /// `orientation`: text orientation reader of each assignment's text, as stored
+    /// ([`Orientation::from_gui_value`]).
     pub fn orientation(&self) -> i32 {
         self.slots[8]
     }
 
-    /// The flag byte (`+0x174`, 6): `ignore_tab_navigation` 0x1, `instantTextBoxType` 0x2,
+    /// The flag byte (6): `ignore_tab_navigation` 0x1, `instantTextBoxType` 0x2,
     /// `use_special_chars` 0x4, `only_numbers` 0x8, `ignore_enter` 0x10.
     pub fn flags(&self) -> u8 {
         self.slots[9].to_le_bytes()[0]
     }
 
-    /// `is_multiline` (`+0x178`, 1).
+    /// `is_multiline` (1).
     pub fn is_multiline(&self) -> bool {
         self.slots[10].to_le_bytes()[0] != 0
     }
@@ -1237,52 +1227,50 @@ impl Default for EditBox {
 }
 
 /// A `scrollbarType`'s fields and defaults. Its children (`guiButtonType`, `buttonType`,
-/// `iconType`) belong to the element, with later names replacing earlier ones in its map
-/// (`+0x220`). The name fields refer to those children.
+/// `iconType`) belong to the element, with later names replacing earlier ones in its map. The name
+/// fields refer to those children.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scrollbar {
-    /// `position` (`+0x1D8`), `size` (`+0x1E0`), `borderSize` (`+0x1E8`): integer point reader into
-    /// the field.
+    /// `position`, `size`, `borderSize`: integer point reader into the field.
     pub position: [i32; 2],
     pub size: [i32; 2],
     pub border_size: [i32; 2],
-    /// `+0x1F0` to `+0x20C`, which `slider_pos_shift` (integer component reader) writes from its start
-    /// with no bound: `slider_pos_shift` x and y, then the bits of `maxValue` (`+0x1F8`, 0.0),
-    /// `minValue` (`+0x1FC`, uninitialised), `stepSize` (`+0x200`), `startValue` (`+0x204`),
-    /// `priority` (`+0x208`) and padding.
+    /// The eight words that `slider_pos_shift` (integer component reader) writes from its start
+    /// with no bound: `slider_pos_shift` x and y, then the bits of `maxValue` (0.0), `minValue`
+    /// (uninitialised), `stepSize`, `startValue`, `priority` and padding.
     pub slots: [u32; 8],
     /// Whether `minValue` has been written (the constructor leaves it uninitialised).
     pub min_value_set: bool,
-    /// `horizontal` (`%i`, `+0x260`, 0).
+    /// `horizontal` (`%i`, 0).
     pub horizontal: i32,
-    /// `scroll_speed` (`%i`, `+0x29C`, 1).
+    /// `scroll_speed` (`%i`, 1).
     pub scroll_speed: i32,
-    /// `lockable` (`+0x280`), `drag` (`+0x281`, 1), `useRangeLimit` (`+0x298`).
+    /// `lockable`, `drag` (1), `useRangeLimit`.
     pub lockable: bool,
     pub drag: bool,
     pub use_range_limit: bool,
-    /// `rangeLimitMin` (`+0x288`) and `rangeLimitMax` (`+0x290`), fixed5 reader: the
-    /// value times 100000.
+    /// `rangeLimitMin` and `rangeLimitMax`, fixed5 reader: the value times 100000.
     pub range_limit_min: i64,
     pub range_limit_max: i64,
-    /// `slider` (`+0xF8`), `track` (`+0x118`), `rightButton` (`+0x138`), `leftButton`
-    /// (`+0x158`), `rangeLimitMinIcon` (`+0x178`), `rangeLimitMaxIcon` (`+0x198`): child names.
+    /// `slider`, `track`, `rightButton`, `leftButton`, `rangeLimitMinIcon`, `rangeLimitMaxIcon`:
+    /// child names.
     pub slider: Vec<u8>,
     pub track: Vec<u8>,
     pub right_button: Vec<u8>,
     pub left_button: Vec<u8>,
     pub range_limit_min_icon: Vec<u8>,
     pub range_limit_max_icon: Vec<u8>,
-    /// `parent` (`+0x1B8`): scrollbar post-load pass copies unset fields from it.
+    /// `parent`: scrollbar post-load pass copies unset fields from it.
     pub parent: Vec<u8>,
-    /// `+0x274`, the count of the listed field ids inspected by the unset-field test and
-    /// The post-load pass. The constructor pushes twelve ([`SCROLLBAR_LISTED`]) into a block of
-    /// thirteen; a `slider_pos_shift` component can write the count.
+    /// The count of the listed field ids inspected by the unset-field test and The post-load pass.
+    /// The constructor pushes twelve ([`SCROLLBAR_LISTED`]) into a block of thirteen; a
+    /// `slider_pos_shift` component can write the count.
     pub listed: i32,
 }
 
-/// The field ids initially pushed into `+0x268`, in order: track, slider, rightButton,
-/// leftButton, position, priority, size, borderSize, maxValue, minValue, stepSize, startValue.
+/// The field ids the constructor initially pushes into the listed-field vector, in order: track,
+/// slider, rightButton, leftButton, position, priority, size, borderSize, maxValue, minValue,
+/// stepSize, startValue.
 pub const SCROLLBAR_LISTED: [u32; 12] = [
     0x8B, 0x8A, 0x89, 0x88, 0x4C, 0x8D, 0x2F, 0x86, 0x96, 0x95, 0x97, 0x98,
 ];
@@ -1346,29 +1334,26 @@ impl Default for Scrollbar {
 pub struct ExtendedScrollbar {
     pub position: Position,
     pub size: Size,
-    /// `tileSize` (`+0x154`, size reader).
+    /// `tileSize` (size reader).
     pub tile_size: Size,
-    /// `orientation` (`+0x1E8`) and `origo` (`+0x1EC`), keyword orientation reader.
+    /// `orientation` and `origo`, keyword orientation reader.
     pub orientation: Orientation,
     pub origo: Orientation,
-    /// The fixed5 reader (the value times 100000): `maxValue` (`+0x1C0`), `minValue`
-    /// (`+0x1C8`), `stepSize` (`+0x1D0`, 100000), `startValue` (`+0x1D8`) and
-    /// `smooth_scrolling` (`+0x1E0`, 100000; a number here, not a flag).
+    /// The fixed5 reader (the value times 100000): `maxValue`, `minValue`, `stepSize` (100000),
+    /// `startValue` and `smooth_scrolling` (100000; a number here, not a flag).
     pub max_value: i64,
     pub min_value: i64,
     pub step_size: i64,
     pub start_value: i64,
     pub smooth_scrolling: i64,
-    /// `horizontal` (`+0x1F0`), `lockable` (`+0x1F1`), `drag` (`+0x1F2`, 1), `clickonly`
-    /// (`+0x1F3`), `setTrackFrameOnChange` (`+0x1F4`).
+    /// `horizontal`, `lockable`, `drag` (1), `clickonly`, `setTrackFrameOnChange`.
     pub horizontal: bool,
     pub lockable: bool,
     pub drag: bool,
     pub click_only: bool,
     pub set_track_frame_on_change: bool,
-    /// The five button parts, each a button read once: `background` (`+0x198`), `track`
-    /// (`+0x1A0`), `slider` (`+0x1A8`), `increaseButton` (`+0x1B0`), `decreaseButton`
-    /// (`+0x1B8`).
+    /// The five button parts, each a button read once: `background`, `track`, `slider`,
+    /// `increaseButton`, `decreaseButton`.
     pub background: Option<Box<Element>>,
     pub track: Option<Box<Element>>,
     pub slider: Option<Box<Element>>,
@@ -1403,24 +1388,21 @@ impl Default for ExtendedScrollbar {
     }
 }
 
-/// A `dropDownBoxType`'s fields and defaults. Every key but its own and `name` goes to the
-/// inner `containerWindowType` (`+0x140`): that container's keys, children and common element
-/// fields (`hide`, tooltips) belong to the inner element.
+/// A `dropDownBoxType`'s fields and defaults. Every key but its own and `name` goes to the inner
+/// `containerWindowType`: that container's keys, children and common element fields (`hide`,
+/// tooltips) belong to the inner element.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DropDown {
-    /// `position` (`+0xF0`).
+    /// `position`.
     pub position: Position,
-    /// `clipping` (`+0x14C`, 1), `expandedOnTop` (`+0x148`, 1), `hideHeaderOnExpand`
-    /// (`+0x149`), `contractOnLeave` (`+0x14A`).
+    /// `clipping` (1), `expandedOnTop` (1), `hideHeaderOnExpand`, `contractOnLeave`.
     pub clipping: bool,
     pub expanded_on_top: bool,
     pub hide_header_on_expand: bool,
     pub contract_on_leave: bool,
-    /// `switch_frame_on_expand` (`+0x14B`), which the constructor leaves uninitialised: `None`
-    /// until assigned.
+    /// `switch_frame_on_expand`, which the constructor leaves uninitialised: `None` until assigned.
     pub switch_frame_on_expand: Option<bool>,
-    /// `expandButton` (`+0x130`, a button) and `expandedWindow` (`+0x138`, a
-    /// container), each read once.
+    /// `expandButton` (a button) and `expandedWindow` (a container), each read once.
     pub expand_button: Option<Box<Element>>,
     pub expanded_window: Option<Box<Element>>,
     /// The inner container, never read as an object: no name, no counter.
@@ -1459,30 +1441,28 @@ pub enum WindowExtent {
 /// A `windowType`'s fields and constructor defaults.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Window {
-    /// `position` (`+0x138`), `show_position` (`+0x140`), `hide_position` (`+0x148`):
-    /// The integer point reader.
+    /// `position`, `show_position`, `hide_position`: The integer point reader.
     pub position: [i32; 2],
     pub show_position: [i32; 2],
     pub hide_position: [i32; 2],
-    /// `size` (`+0x158`).
+    /// `size`.
     pub size: [WindowExtent; 2],
-    /// `orientation` (`+0x414`): text orientation reader of the lowered text.
+    /// `orientation`: text orientation reader of the lowered text.
     pub orientation: Orientation,
-    /// `animation_type` (`+0x150`): `accelerated` 0, `decelerated` 1, `smoothstep` 2, `linear`
-    /// 3, anything else 1 (1).
+    /// `animation_type`: `accelerated` 0, `decelerated` 1, `smoothstep` 2, `linear` 3, anything
+    /// else 1 (1).
     pub animation_type: i32,
-    /// `animation_time` (`+0x154`, 10).
+    /// `animation_time` (10).
     pub animation_time: i32,
-    /// `moveable` (`%i`, `+0x1E8`, 1).
+    /// `moveable` (`%i`, 1).
     pub moveable: i32,
-    /// `click_to_front` (`+0x411`), `fullScreen` (`+0x410`).
+    /// `click_to_front`, `fullScreen`.
     pub click_to_front: bool,
     pub full_screen: bool,
-    /// `priority` (`+0x1E4`), which the constructor leaves uninitialised: `None` until assigned.
+    /// `priority`, which the constructor leaves uninitialised: `None` until assigned.
     pub priority: Option<f32>,
-    /// `parent` (`+0xF8`), `background` (`+0x118`, a name), `verticalScrollbar` (`+0x160`),
-    /// `horizontalScrollbar` (`+0x180`), `horizontalBorder` (`+0x1A0`), `verticalBorder`
-    /// (`+0x1C0`), `upsound` (`+0x430`), `downsound` (`+0x450`).
+    /// `parent`, `background` (a name), `verticalScrollbar`, `horizontalScrollbar`,
+    /// `horizontalBorder`, `verticalBorder`, `upsound`, `downsound`.
     pub parent: Vec<u8>,
     pub background: Vec<u8>,
     pub vertical_scrollbar: Vec<u8>,
@@ -1492,9 +1472,8 @@ pub struct Window {
     pub up_sound: Vec<u8>,
     pub down_sound: Vec<u8>,
     /// The indices in [`Element::children`] of the `guiButtonType` and `multiSpriteButtonType`
-    /// children read while `background` already named them. Each is in the name tree (`+0x220`)
-    /// but in no kind's list or order list (`+0x418`), so construction builds it only as the
-    /// background.
+    /// children read while `background` already named them. Each is in the name tree but in no
+    /// kind's list or order list, so construction builds it only as the background.
     pub unlisted: Vec<usize>,
 }
 
@@ -1528,24 +1507,24 @@ impl Default for Window {
 /// A `textBoxType`'s fields and constructor defaults.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TextSprite {
-    /// `font` (`+0x118`), `textureFile` (`+0xF8`), `text` (`+0x138`).
+    /// `font`, `textureFile`, `text`.
     pub font: Vec<u8>,
     pub texture: Vec<u8>,
     pub text: Vec<u8>,
-    /// `position` (`+0x160`) and `borderSize` (`+0xF0`): integer point reader.
+    /// `position` and `borderSize`: integer point reader.
     pub position: [i32; 2],
     pub border_size: [i32; 2],
-    /// `format` (`+0x190`): `left` 0, `right` 1 and `centre` 2 by keyword; `center` and anything
-    /// else leave it unchanged.
+    /// `format`: `left` 0, `right` 1 and `centre` 2 by keyword; `center` and anything else leave it
+    /// unchanged.
     pub format: i32,
-    /// `maxWidth` (`+0x158`) and `maxHeight` (`+0x15C`): `%i`.
+    /// `maxWidth` and `maxHeight`: `%i`.
     pub max_width: i32,
     pub max_height: i32,
-    /// `fixedsize` (`+0x168`).
+    /// `fixedsize`.
     pub fixed_size: bool,
-    /// `orientation` (`+0x16C`): text box post-load pass parses the last text.
+    /// `orientation`: text box post-load pass parses the last text.
     pub orientation: Orientation,
-    /// `textblock` (`+0x198`): each text block read without an error, in order.
+    /// `textblock`: each text block read without an error, in order.
     pub text_blocks: Vec<TextBlock>,
 }
 
@@ -1621,8 +1600,8 @@ pub struct Element {
     /// The full path: the template's name, then each child's.
     pub path: String,
     name: Vec<u8>,
-    /// `hide` (`+0xBB`): copied to the instance's flag `+0x75` bit 4, which prevents the show
-    /// operation from showing it.
+    /// `hide`: copied to the instance's hidden flag (bit 4 of its state byte), which prevents the
+    /// show operation from showing it.
     pub hide: bool,
     /// The other element fields.
     pub common: Common,
@@ -1762,8 +1741,8 @@ impl Element {
         }
     }
 
-    /// This window's position-type name array (`+0x258`) first compares length and bytes, then
-    /// queries its name tree. No case folding or recursion.
+    /// This window's position-type name array first compares length and bytes, then queries its
+    /// name tree. No case folding or recursion.
     pub fn find_instance(&self, name: impl AsRef<[u8]>) -> Option<&Element> {
         let name = name.as_ref();
         self.children
@@ -1771,8 +1750,8 @@ impl Element {
             .find(|child| child.kind == Kind::PositionType && child.name == name)
     }
 
-    /// Recursive kind lookup through child containers in attach order. The instant-text lookup
-    /// uses its own array (`+0x11E0`) when setting text.
+    /// Recursive kind lookup through child containers in attach order. The instant-text lookup uses
+    /// its own array when setting text.
     pub fn find_recursive(&self, kind: Kind, name: impl AsRef<[u8]>) -> Option<&Element> {
         let name = name.as_ref();
         let mut stack = vec![self];
@@ -1792,7 +1771,7 @@ impl Element {
     }
 
     /// This window's own list of that name, else the first found below each child container in
-    /// declaration order (`+0x1330`).
+    /// declaration order.
     pub fn find_list_recursive(&self, name: impl AsRef<[u8]>) -> Option<&Element> {
         let name = name.as_ref();
         let mut stack = vec![self];
@@ -2048,9 +2027,9 @@ pub struct Context {
     unnamed: i32,
 }
 
-/// Reads one `.gui` file as [`read`] does, the GUI root's extent at load (`graphics context+0x180`) being
-/// `viewport`: the reading client's own (the viewer's GUI viewport, a dump's resolution), which a
-/// `windowType`'s `max_resolution` size holds less its number when the post-load pass tests it.
+/// Reads one `.gui` file as [`read`] does, the GUI root's extent at load being `viewport`: the
+/// reading client's own (the viewer's GUI viewport, a dump's resolution), which a `windowType`'s
+/// `max_resolution` size holds less its number when the post-load pass tests it.
 pub fn read_at(bytes: &[u8], viewport: [i32; 2]) -> Gui {
     let mut gui = Context::new().read(bytes);
     inherit::pass(&mut [&mut gui], Some(viewport));
@@ -2094,11 +2073,11 @@ pub fn read_layers(layers: &ResolvedLayers) -> io::Result<Guis> {
     read_layers_with(layers, None)
 }
 
-/// [`read_layers`] with the GUI root's extent at load (`+0x180`) supplied as `viewport`. This
-/// is the reading client's extent: device size clamped to `min_gui`, divided by UI scale and
-/// truncated (the viewer's GUI viewport or a dump's resolution). A `windowType`'s
-/// `max_resolution` axis stores this extent less its number when the post-load pass tests
-/// whether it is set. Without the extent, that window is refused ([`Cause::Unrecorded`]).
+/// [`read_layers`] with the GUI root's extent at load supplied as `viewport`. This is the reading
+/// client's extent: device size clamped to `min_gui`, divided by UI scale and truncated (the
+/// viewer's GUI viewport or a dump's resolution). A `windowType`'s `max_resolution` axis stores
+/// this extent less its number when the post-load pass tests whether it is set. Without the extent,
+/// that window is refused ([`Cause::Unrecorded`]).
 pub fn read_layers_at(layers: &ResolvedLayers, viewport: [i32; 2]) -> io::Result<Guis> {
     read_layers_with(layers, Some(viewport))
 }

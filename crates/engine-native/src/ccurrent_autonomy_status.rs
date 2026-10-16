@@ -40,7 +40,7 @@ pub const TOKEN_PREVIOUS: u32 = 0x36ec;
 pub const TOKEN_NEXT: u32 = 0x01d8;
 /// CCurrentAutonomyStatus vector token.
 pub const TOKEN_VECTOR: u32 = 0x0174;
-/// CCurrentAutonomyStatus +0x68 token.
+/// The CCurrentAutonomyStatus token after `LAST_MODIFIED_HOUR`.
 pub const TOKEN_431D: u32 = 0x431d;
 /// CCurrentAutonomyStatus record token.
 pub const TOKEN_RECORD: u32 = 0x0059;

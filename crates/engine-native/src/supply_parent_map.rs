@@ -3,7 +3,7 @@ use crate::{Memory, read};
 
 /// Companion parent-map data/count/mask/probe header.
 pub const HEADER: usize = 0x28;
-/// Parent buckets have marker+0, key+4 and signed parent province+8.
+/// Parent buckets have a marker, a key and a signed parent province.
 pub const STRIDE: usize = 12;
 
 /// Shared bounded lookup for the three province-keyed supply maps,

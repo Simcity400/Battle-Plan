@@ -7,10 +7,10 @@
 //! leaves the allocation or corrupts something later read in an undefined way. [`spill`]
 //! applies writes in order and stops at the first failure.
 //!
-//! Heap allocations are not zeroed, so a field the constructor never writes has no defined
-//! value. [`CxxString`] models an MSVC `std::string` reached by a spill: its 16-byte buffer
-//! holds inline text with capacity at most 15, or a heap pointer otherwise; size is at `+0x10`
-//! and capacity at `+0x18`. Assignment and destruction use those fields.
+//! Heap allocations are not zeroed, so a field the constructor never writes has no defined value.
+//! [`CxxString`] models an MSVC `std::string` reached by a spill: its 16-byte buffer holds inline
+//! text with capacity at most 15, or a heap pointer otherwise; the size and then the capacity
+//! follow the buffer. Assignment and destruction use those fields.
 
 /// An object's bytes as the component readers can reach them.
 pub(super) trait Layout {
@@ -41,7 +41,7 @@ pub(super) fn spill(
         };
         if let Some(failure) = failure {
             return Err(format!(
-                "holds a component {}, which {writer} writes at +{offset:#X}: {failure}",
+                "holds a component {}, which {writer} writes: {failure}",
                 index + 1
             ));
         }
@@ -221,7 +221,7 @@ impl CxxString {
 /// Where a [`Vector`] sits and who uses it, for the failures' reasons.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct VectorSite {
-    /// The vector, with its offset: `"the animation records' vector (+0x118)"`.
+    /// The vector, with its offset: `"the animation records' vector"`.
     pub what: &'static str,
     /// The native append (growth through the allocator, or a copy to `data + count Ã— size`).
     pub append: &'static str,
@@ -231,10 +231,10 @@ pub(super) struct VectorSite {
     pub destructor: &'static str,
 }
 
-/// The engine vector's layout: data `+0x0`, capacity `+0x8`, count `+0xC`, allocator `+0x10`.
-/// When count equals capacity, append allocates `max(cvttss2si(capacity Ã— 1.5), count + 1)`
-/// elements, moves the counted elements and frees the old block through the allocator.
-/// Otherwise it copies to `data + count Ã— size`. It then increments count.
+/// The engine vector's layout: data pointer, capacity, count, then allocator. When count equals
+/// capacity, append allocates `max(cvttss2si(capacity Ã— 1.5), count + 1)` elements, moves the
+/// counted elements and frees the old block through the allocator. Otherwise it copies to `data +
+/// count Ã— size`. It then increments count.
 #[derive(Clone, Debug)]
 pub(super) struct Vector<T> {
     site: VectorSite,

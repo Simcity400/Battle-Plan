@@ -1,20 +1,23 @@
-//! The runtime writers of per-country fields read hourly by Politics:
-//! capital +0x1018 and original capital +0x101C; political-status last election
-//! +0xA0, ruling party +0xD0, party array +0x20 (count +0x2C), active idea
-//! array +0x50 (count +0x5C) and all their slots; and party popularity +0x88.
+//! The runtime writers of per-country fields read hourly by Politics: capital
+//! and original capital (`ccountry::CAPITAL`, `ORIGINAL_CAPITAL`);
+//! political-status last election, ruling party, party array and count, active
+//! idea array and count (`cpolitical_status::LAST_ELECTION`, `RULING_PARTY`,
+//! `PARTIES`, `PARTY_COUNT`, `IDEAS`, `IDEA_COUNT`) and all their slots; and
+//! party popularity (`cpolitical_party::POPULARITY`).
 //! Observing them tells the collector when the walk may read differently;
 //! recording never calls them.
 //!
-//! Writer coverage includes stores to these fields, loads of country +0xF90
-//! and its accessor followed through registers and calls, and stores outside
-//! indexed functions:
+//! Writer coverage includes stores to these fields, loads of the country's
+//! political status (`ccountry::POLITICAL_STATUS`) and its accessor followed
+//! through registers and calls, and stores outside indexed functions:
 //! - Capitals: the capital setter runs when state controller changes restore
 //!   the original capital, when selecting a replacement, through state
 //!   transfer and capital effects, civil war, peace conferences and capital
 //!   change application. Appearance reset also writes them during dynamic
 //!   reuse and game runtime reset; otherwise only construction and save load.
-//! - The country's political-status pointer and status owner backlink +0xC8
-//!   are written only by constructors. Countries are reused, never rebuilt.
+//! - The country's political-status pointer and status owner backlink
+//!   (`cpolitical_status::COUNTRY`) are written only by constructors.
+//!   Countries are reused, never rebuilt.
 //! - Last election: setting politics, the daily update on election day,
 //!   status clear, construction and save loading. Only appearance reset and
 //!   load completion call the clear.
@@ -88,7 +91,7 @@ pub const SET_POPULARITY_RVA: usize = 0x119_1140;
 /// Each site, how it is patched and the domain its call moves.
 pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     // Capital setting (country, state, preserve): copy the stack pointer to
-    // R11, then spill RBX at +8.
+    // R11, then spill RBX through it to RCX's home slot.
     (
         MutationSite {
             name: "set_capital",
@@ -102,7 +105,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
         Domain::Structure,
     ),
     // Politics setting (status, party, allowed, frequency, date): copy the
-    // stack pointer to RAX, then spill RBX at +8.
+    // stack pointer to RAX, then spill RBX through it to RCX's home slot.
     (
         MutationSite {
             name: "set_politics",
@@ -129,7 +132,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
         Patch::Entry,
         Domain::Both,
     ),
-    // Ruling-party selection (status, group): spill RBX at stack +0x10.
+    // Ruling-party selection (status, group): spill RBX to RDX's home slot.
     (
         MutationSite {
             name: "set_ruling_party",
@@ -143,7 +146,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
         Domain::Structure,
     ),
     // Idea replacement (status, removed, added, flags): copy the stack
-    // pointer to RAX, then spill RBX at +8.
+    // pointer to RAX, then spill RBX through it to RCX's home slot.
     (
         MutationSite {
             name: "set_ideas",
@@ -156,7 +159,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
         Patch::Entry,
         Domain::Structure,
     ),
-    // Popularity addition (party, amount): spill RBX at stack +0x10.
+    // Popularity addition (party, amount): spill RBX to RDX's home slot.
     (
         MutationSite {
             name: "add_popularity",
@@ -217,9 +220,10 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
 /// structure only when last election changes across the call.
 pub const FORWARDED: [&str; 2] = ["reset_country", "politics_daily"];
 
-/// Daily election-day store: the last-election word at status +0xA0 takes
-/// EBX, with R14 retaining the status originally passed in RCX. The daily
-/// popularity call uses the clamped setter.
+/// Daily election-day store: the status's last-election word
+/// (`cpolitical_status::LAST_ELECTION`) takes EBX, with R14 retaining the
+/// status originally passed in RCX. The daily popularity call uses the
+/// clamped setter.
 pub const DAILY_LAST_ELECTION_STORE_RVA: usize = 0xb9_932f;
 
 #[cfg(test)]

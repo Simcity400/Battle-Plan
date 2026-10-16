@@ -15,39 +15,30 @@
 //! under `flag_verify`) afresh, publishes the fresh rows and poisons reuse
 //! on a difference; [`FlagReuse::plan`] takes that choice per scope.
 //!
-//! A quiet hour walks no scope at all. The latest complete walk that held
-//! every scope under its own certificate keeps its rows in walk order, its
-//! countries, its scopes in walk order with each scope's manager and row
-//! count, and the key taken before its first registration: the flag
-//! domain's structure token ([`Changes::structure`]), the character roster's
-//! ([`Changes::roster`]) and the scope `(base, game state)`, with the epoch of
-//! the hour's take of the marked managers ([`Changes::take`]). Every native
-//! writer of a scope root also builds, destroys or clears a manager in the
-//! Same call  (game-state construction and its destructor
-//! game-state destruction for the global root `+0x258`; country construction,
-//! whose `+0x230` is never replaced, and dynamic reuse, whose id change in
-//! dynamic-country allocation is followed by flag clearing
-//! through country appearance reset in the same call; the state
-//! table, built by game-state reset and rebuilt only by the
-//! state editor reload, through state construction and
-//! destroy state, the only writers of a state's vtable, id
-//! `+0x58` and root `+0x540`), and each of those is a structure site, so an
-//! unchanged structure token proves every global, country and state scope
-//! and its manager unchanged; an unchanged roster token proves every
-//! character scope unchanged. Every other writer changes only its manager's
-//! rows and marks it. When both tokens and the country census (the
-//! callback's authenticated census, which costs no read) equal the held
-//! ones and the hour's take returned the held walk's epoch, the walk
-//! publishes the held rows in walk order without walking any scope, reading
-//! afresh only the managers the take marked, whose rows replace their held
-//! ones, and the managers of its sampled slice, which it compares; it finds
-//! them through an index of the held walk (by manager and by sampling
-//! bucket) and copies the held rows between them whole, touching no other
-//! scope; a
-//! difference poisons the flag and roster domains and the hour walks
-//! afresh. While the roster family burns in (`roster_verify`), no hour is
-//! quiet: each walk whose key matched and whose take marked nothing is
-//! compared whole with the held rows.
+//! A quiet hour walks no scope at all. The latest complete walk that held every scope under its own
+//! certificate keeps its rows in walk order, its countries, its scopes in walk order with each
+//! scope's manager and row count, and the key taken before its first registration: the flag
+//! domain's structure token ([`Changes::structure`]), the character roster's ([`Changes::roster`])
+//! and the scope `(base, game state)`, with the epoch of the hour's take of the marked managers
+//! ([`Changes::take`]). Every native writer of a scope root also builds, destroys or clears a
+//! manager in the Same call  (game-state construction and its destructor game-state destruction for
+//! the global root (`cgame_state::GLOBAL_FLAGS`); country construction, whose flag manager
+//! (`ccountry::FLAG_MANAGER`) is never replaced, and dynamic reuse, whose id change in
+//! dynamic-country allocation is followed by flag clearing through country appearance reset in the
+//! same call; the state table, built by game-state reset and rebuilt only by the state editor
+//! reload, through state construction and destroy state, the only writers of a state's vtable, id
+//! the state id and its flag root), and each of those is a structure site, so an unchanged
+//! structure token proves every global, country and state scope and its manager unchanged; an
+//! unchanged roster token proves every character scope unchanged. Every other writer changes only
+//! its manager's rows and marks it. When both tokens and the country census (the callback's
+//! authenticated census, which costs no read) equal the held ones and the hour's take returned the
+//! held walk's epoch, the walk publishes the held rows in walk order without walking any scope,
+//! reading afresh only the managers the take marked, whose rows replace their held ones, and the
+//! managers of its sampled slice, which it compares; it finds them through an index of the held
+//! walk (by manager and by sampling bucket) and copies the held rows between them whole, touching
+//! no other scope; a difference poisons the flag and roster domains and the hour walks afresh.
+//! While the roster family burns in (`roster_verify`), no hour is quiet: each walk whose key
+//! matched and whose take marked nothing is compared whole with the held rows.
 //!
 //! The store follows the IntelResidual job's loan and holds only the
 //! managers of the latest complete walk, so its size follows live demand.

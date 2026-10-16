@@ -275,12 +275,12 @@ fn completion_scripted_dependencies_follow_native_aliases_and_country_name_keys(
 #[test]
 fn completion_refusal_kinds_preserve_offsets_and_content_names() {
     assert_eq!(
-        structural_reason("Project 73 has unsupported native state offset 0x123"),
-        structural_reason("Project 91 has unsupported native state offset 0x123"),
+        structural_reason("Project 73 is in unsupported native state 0x123"),
+        structural_reason("Project 91 is in unsupported native state 0x123"),
     );
     assert_ne!(
-        structural_reason("Project 73 has unsupported native state offset 0x123"),
-        structural_reason("Project 73 has unsupported native state offset 0x456"),
+        structural_reason("Project 73 is in unsupported native state 0x123"),
+        structural_reason("Project 73 is in unsupported native state 0x456"),
     );
     for reason in [
         "Definition token 81 is not recorded",

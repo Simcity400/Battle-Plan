@@ -1,5 +1,5 @@
-//! Retained naval ship entry in its result side +0x20 vector;
-//! it holds either a ship or convoy handle.
+//! Retained naval ship entry in its result side's ship vector; it holds either a ship or convoy
+//! handle.
 
 use crate::capture_text::Value;
 use crate::{Memory, read};
@@ -13,8 +13,8 @@ pub struct HitBuffers<'a> {
     pub required: [usize; 2],
 }
 
-/// Copied cached information at +0x10 and transferred hit arrays remain
-/// retained even after the referenced ship disappears.
+/// Copied cached information and transferred hit arrays remain retained even after the referenced
+/// ship disappears.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DetailsRow {
     pub member: u64,
@@ -97,9 +97,8 @@ pub fn capture_details(
 
 type HitSpans = ([usize; 2], [[usize; 2]; 2]);
 
-/// Ship hit arrays at +0x180/+0x150/+0x168 transfer to result +0xD8/
-/// +0xF0/+0x108. Air arrays +0x100/+0x118/+0x130 transfer to result
-/// +0x40/+0x58/+0x70.
+/// The three ship hit arrays transfer to the result's ship arrays, and the three air arrays to its
+/// air arrays.
 pub(crate) fn capture_hits(
     memory: &impl Memory,
     base: usize,

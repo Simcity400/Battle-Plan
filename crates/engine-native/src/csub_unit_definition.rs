@@ -18,13 +18,12 @@ pub const HARD_ATTACK: usize = 0xc8;
 pub const MAXIMUM_ORGANISATION: usize = 0x280;
 /// CSubUnitDefinition cached max strength, i64/100000.
 pub const MAXIMUM_STRENGTH: usize = 0x288;
-/// Sub-unit definition maximum speed, signed i64 fixed5; division
-/// movement-speed calculation starts from +0x290 in its +0x138 stat block.
+/// Sub-unit definition maximum speed, signed i64 fixed5; division movement-speed calculation starts
+/// from `MAXIMUM_SPEED` in its stat block.
 pub const MAXIMUM_SPEED: usize = 0x290;
-/// Raw fixed5 weight consumed from original stat+2B8 by the unit weight getter.
-/// Transport demand rounds each selected occurrence independently before
-/// signed32 narrowing. No derived template/population count substitutes for
-/// this cache.
+/// Raw fixed5 weight consumed from the original stat block's `TRANSPORT_WEIGHT` by the unit weight
+/// getter. Transport demand rounds each selected occurrence independently before signed32
+/// narrowing. No derived template/population count substitutes for this cache.
 pub const TRANSPORT_WEIGHT: usize = 0x2b8;
 /// Coastal-exfiltration byte initialized true and ANDed across grouped
 /// subunits. Active-stat updates retain it in the army block. It permits
@@ -71,10 +70,9 @@ const MAXIMA_FIELDS: [crate::memory::RecordField; 3] = [
 const MAXIMA_LAYOUT: crate::memory::RecordLayout<'static> =
     crate::memory::RecordLayout::new(&MAXIMA_FIELDS, 25).expect("valid maxima layout");
 
-/// Up to 64 distinct, unheld blocks selected from authenticated census seeds.
-/// Organisation and strength maxima follow the division's +0x138 stat block;
-/// exfiltration eligibility consumes its byte. The status walk still
-/// authenticates each seed before taking its block and inserts it into the
+/// Up to 64 distinct, unheld blocks selected from authenticated census seeds. Organisation and
+/// strength maxima follow the division's stat block; exfiltration eligibility consumes its byte.
+/// The status walk still authenticates each seed before taking its block and inserts it into the
 /// original memo in order.
 pub(crate) struct MaximaBatch {
     bytes: [u8; 64 * 25],
@@ -265,7 +263,7 @@ impl Database {
     }
 }
 
-/// One ordered archetype requirement of a definition (`+0x310` pool).
+/// One ordered archetype requirement of a definition (`ARCHETYPE_REQUIREMENTS` pool).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Requirement {
     /// The archetype CEquipmentType; compared by identity, never published.
@@ -772,13 +770,12 @@ mod movement_tests {
 /// The `CUnitAdjuster` vtable of each entry of [`MOVEMENT_TERRAIN_ADJUSTERS`]
 /// and of a terrain's own adjuster.
 pub const UNIT_ADJUSTER_VTABLE_RVA: usize = 0x0277_3a70;
-/// Unit adjuster stride and its attack component (`+0x10`), used by additive
-/// adjustment.
+/// Unit adjuster stride and its attack component, used by additive adjustment.
 pub const UNIT_ADJUSTER_STRIDE: usize = 0x28;
 pub const UNIT_ADJUSTER_ATTACK: usize = 0x10;
-/// The attack list's stat-block scalars: night `+0x340`, fort
-/// `+0x368`/`+0x370`, river `+0x390`/`+0x398` and snow `+0x3E0`. One span from
-/// the night term through the terrain array header reads them all.
+/// The attack list's stat-block scalars: night (`ATTACK_NIGHT`), fort (`ATTACK_FORT` pair), river
+/// (`ATTACK_RIVER` pair) and snow (`ATTACK_SNOW`). One span from the night term through the terrain
+/// array header reads them all.
 pub const ATTACK_NIGHT: usize = 0x340;
 pub const ATTACK_FORT: usize = 0x368;
 pub const ATTACK_RIVER: usize = 0x390;
@@ -786,11 +783,10 @@ pub const ATTACK_SNOW: usize = 0x3e0;
 const ATTACK_SPAN: usize = MOVEMENT_TERRAIN_ADJUSTERS + 16 - ATTACK_NIGHT;
 /// A unit adjuster's movement component.
 pub const UNIT_ADJUSTER_MOVEMENT: usize = 0x20;
-/// The embedded fort, river and snow unit adjusters the attack span covers;
-/// each is authenticated by its own adjuster vtable before its movement word
-/// (`+0x20`) is kept. The movement speed adds the fort word on an edge into a
-/// fortified province, the river word as a crossing's adjustment and the snow
-/// word on an edge into snow.
+/// The embedded fort, river and snow unit adjusters the attack span covers; each is authenticated
+/// by its own adjuster vtable before its movement word is kept. The movement speed adds the fort
+/// word on an edge into a fortified province, the river word as a crossing's adjustment and the
+/// snow word on an edge into snow.
 pub const MOVEMENT_ADJUSTERS: [usize; 3] = [0x358, 0x380, 0x3d0];
 /// The stat-block word the movement speed's fuel ratio takes its capacity from,
 /// scaled by a define.
@@ -806,7 +802,7 @@ pub struct AttackStats {
     pub fort: [i64; 2],
     pub snow: i64,
     pub night: i64,
-    /// Each terrain adjuster entry's movement (`+0x20`), parallel to `terrain`.
+    /// Each terrain adjuster entry's movement, parallel to `terrain`.
     pub movement_terrain: Vec<i64>,
     /// The fort, river and snow adjusters' movement words; `None` when an
     /// embedded adjuster did not authenticate.

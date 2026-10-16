@@ -271,8 +271,8 @@ impl Names {
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn tag(&self, country: EventFeedCountry) -> Option<String> {
-        // Country reference zero's null object is excluded from the
-        // gain census. Original-tag buckets/physical IDs do not prove its +C.
+        // Country reference zero's null object is excluded from the gain census. Original-tag
+        // buckets/physical IDs do not prove its instance word.
         if country.reference == 0 {
             return None;
         }

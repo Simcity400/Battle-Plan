@@ -18,27 +18,22 @@
 //! under `building_verify`) afresh, publishes the fresh rows and poisons
 //! reuse on a difference.
 //!
-//! A settled hour carries both tables without walking the locations: the
-//! latest walk completed both tables, held every status under a certificate
-//! and agreed with every held row it compared, the hour's take of the
-//! domain's marks ([`Changes::take`]) certifies the epoch taken before that
-//! walk, and the state and province table headers (`CGameState+0x2C8`,
-//! `+0x2B0`) read as they did then. The take visits every registered status
-//! a hooked writer touched since the previous take, and every walked status
-//! is registered, so every other status is the one held. The sites cover
-//! every writer of what locates a status as well as of its rows and headers,
-//! and a status's identity is written only by its constructor (a load or
-//! reset changes the epoch, nudge mode poisons), so every location and every
-//! untouched status and building is the one held. The hour reads each
-//! touched status afresh from the status alone ([`cbuilding_status::refresh`],
-//! which requires its identity to be the held one), registering it first,
-//! and holds its fresh rows at its place in walk order; a quiet hour, whose
-//! take visited no held status, reads none. It also reads its slice's other
-//! held statuses afresh ([`cbuilding_status::reread`]) and compares them
-//! with their held read: a difference, or a status that no longer reads as
-//! held, poisons reuse and the hour walks every location afresh, as it does
-//! when a touched status does not read. `building_verify` takes no settled
-//! hour, so it still compares every held status.
+//! A settled hour carries both tables without walking the locations: the latest walk completed both
+//! tables, held every status under a certificate and agreed with every held row it compared, the
+//! hour's take of the domain's marks ([`Changes::take`]) certifies the epoch taken before that
+//! walk, and the state and province table headers (`cgame_state::STATES`, `cgame_state::PROVINCES`)
+//! read as they did then. The take visits every registered status a hooked writer touched since the
+//! previous take, and every walked status is registered, so every other status is the one held. The
+//! sites cover every writer of what locates a status as well as of its rows and headers, and a
+//! status's identity is written only by its constructor (a load or reset changes the epoch, nudge
+//! mode poisons), so every location and every untouched status and building is the one held. The
+//! hour reads each touched status afresh from the status alone ([`cbuilding_status::refresh`],
+//! which requires its identity to be the held one), registering it first, and holds its fresh rows
+//! at its place in walk order; a quiet hour, whose take visited no held status, reads none. It also
+//! reads its slice's other held statuses afresh ([`cbuilding_status::reread`]) and compares them
+//! with their held read: a difference, or a status that no longer reads as held, poisons reuse and
+//! the hour walks every location afresh, as it does when a touched status does not read.
+//! `building_verify` takes no settled hour, so it still compares every held status.
 //!
 //! The store follows the Governance job's loan and holds only the statuses
 //! of the latest complete walk, so its size follows live demand. Allocation

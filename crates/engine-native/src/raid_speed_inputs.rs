@@ -1,12 +1,12 @@
-//! Stored raid speed inputs. Each phase-4 hour adds speed to travelled
-//! distance at +0x50; the raid arrow also uses speed as its denominator.
+//! Stored raid speed inputs. Each phase-4 hour adds speed to travelled distance
+//! (`craid_instance::DISTANCE`); the raid arrow also uses speed as its denominator.
 //!
 //! - Transport planes: the largest stat 0x3e over nonzero raid-pool entries
 //!   whose variant has the air-transport category bit. If none qualify,
 //!   use the owner's stockpile; if neither pool qualifies, use 100000.
 //! - Convoys: the navy speed defines.
 //! - Otherwise: the wing's ace-modified maximum speed when its reference
-//!   resolves, else the army stat block's maximum speed at +0x290.
+//!   resolves, else the army stat block's maximum speed.
 //!
 //! The remaining operands come from content: land and naval speed modifiers,
 //! naval transfer base speed, raid speed multiplier, ace wing-size limits
@@ -32,26 +32,27 @@ use crate::{
     walk::Outcome,
 };
 
-/// Wing maximum speed at +0x580, before ace scaling.
+/// Wing maximum speed, before ace scaling.
 pub const WING_MAX_SPEED: usize = 0x580;
-/// The army stat block's maximum speed (`CUnit+0x138` -> `+0x290`).
+/// The army stat block's maximum speed (through `cunit::STAT_BLOCK`).
 pub const ARMY_MAX_SPEED: usize = 0x290;
-/// Stored raid end hour at +0x1A0, valid while +0x1B0 is set.
+/// Stored raid end hour, valid while `END_PRESENT` is set.
 pub const END_HOUR: usize = 0x1a0;
 pub const END_PRESENT: usize = 0x1b0;
-/// `CRaidInstance+0xC8`: the raid unit's army then air wing references.
+/// The raid unit's army then air wing references.
 pub const ARMY_REFERENCE: usize = craid_instance::UNIT;
 pub const WING_REFERENCE: usize = craid_instance::UNIT + 8;
-/// The air transport category bit of `CEquipmentVariant+0x408`.
+/// The air transport category bit of `cequipment_variant::CLASSIFIER_FLAGS`.
 pub const AIR_TRANSPORT: u64 = 0x10_0000;
-/// Variant stat 0x3e at +0x100 + 8 * 0x3e.
+/// Variant stat 0x3e in the variant's stat cache.
 pub const TRANSPORT_SPEED_STAT: usize = cequipment_variant::MAXIMUM_SPEED_CACHE_CANDIDATE;
-/// `CAce+0x170` -> `+0x38` CModifier, whose accumulator is at `+0x10`.
+/// The accumulator of the ace type's CModifier, reached through the ace's type.
 pub const ACE_TYPE_ACCUMULATOR: usize = 0x38 + 0x10;
-/// `CAirWing+0x38` -> `+0x40` -> `+0x90`: the pool's country when `+0x9C4` is not positive.
+/// Through the wing's pool (`cair_wing::POOL`) to its owner, then the owner's country
+/// (`POOL_OWNER_COUNTRY`): the pool's country when `cair_wing::COUNTRY_OVERRIDE` is not positive.
 pub const WING_POOL_OWNER: usize = 0x40;
 pub const POOL_OWNER_COUNTRY: usize = 0x90;
-/// The resolved reference of a CUnit or CAirWing points `0x10` into the object.
+/// The resolved reference of a CUnit or CAirWing points at the object's secondary reference base.
 const REFERENCE_OFFSET: usize = 0x10;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -74,19 +75,17 @@ pub struct Row {
     pub transport_from_country: u8,
     /// Neither pool had one: the game asserts and uses 100000.
     pub transport_fallback: u8,
-    /// The wing's ace reference (`+0x2E8`) resolves, and `CAce+0x158`.
+    /// The wing's ace reference resolves, and the ace's alive flag.
     pub ace_present: u8,
     pub ace_alive: u8,
-    /// Only for a living ace: key 2 on its modifiers (`+0x30`) and on its
-    /// type's; its assigned wing's plane count (`+0xE8` resolved `+0x6C`,
-    /// `None` when it does not resolve).
+    /// Only for a living ace: key 2 on its modifiers and on its type's; its assigned wing's plane
+    /// count (resolved from the ace's wing reference, `None` when it does not resolve).
     pub ace_speed: i64,
     pub ace_type_speed: i64,
     pub ace_wing_planes: Option<i32>,
-    /// Only for a living ace: the canonical slot of its owner (`+0xE0`), whose
-    /// key 0x25a scales the ace's speed, and of the wing's country
-    /// (`CAirWing+0x9C4` when positive, else `+0x38` -> `+0x40` -> `+0x90`),
-    /// whose key 0x72 is added.
+    /// Only for a living ace: the canonical slot of its owner, whose key 0x25a scales the ace's
+    /// speed, and of the wing's country (`cair_wing::COUNTRY_OVERRIDE` when positive, else through
+    /// the wing's pool), whose key 0x72 is added.
     pub ace_owner: Option<u32>,
     pub wing_country: Option<u32>,
 }
@@ -140,8 +139,8 @@ fn effective(
     effective_memo(memory, base, key, value.raw, memo)
 }
 
-/// A pool's qualifying transport speeds (`items` at `+0x20`, count `+0x2C`,
-/// `{variant*, i64 amount}`), appended to `arena` from `len`.
+/// A pool's qualifying transport speeds (the pool's items with their count, `{variant*, i64
+/// amount}`), appended to `arena` from `len`.
 fn transports(
     memory: &impl Memory,
     pool: usize,
@@ -325,9 +324,9 @@ pub struct Raid {
     pub end_hour: Option<i32>,
 }
 
-/// Every raid instance of the raid system's country statuses, in their
-/// order, with the current hour (`CGameState+0x468`). Parents are copied 64
-/// per guarded call; each instance is authenticated by its vtable.
+/// Every raid instance of the raid system's country statuses, in their order, with the current hour
+/// (`cgame_state::CURRENT_HOUR`). Parents are copied 64 per guarded call; each instance is
+/// authenticated by its vtable.
 pub fn each_raid(
     memory: &impl Memory,
     base: usize,
@@ -648,7 +647,7 @@ mod tests {
         let row = DEFINITIONS + 2 * modifier_definition::STRIDE;
         m.u32(row + modifier_definition::FEATURE_SELECTOR, 0);
         m.u32(row + modifier_definition::FLAGS, 0);
-        // The wing, its ace and the army; references point 0x10 in.
+        // The wing, its ace and the army; references point at their secondary bases.
         m.register(0x6_0000, WING_HANDLE, WING + 0x10);
         m.register(0x6_1000, ARMY_HANDLE, ARMY + 0x10);
         m.register(0x6_2000, ACE_HANDLE, ACE);

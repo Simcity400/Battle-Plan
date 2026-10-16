@@ -103,16 +103,13 @@ pub const fn cadence(table: TableId) -> Cadence {
         // Hourly updates, type changes and home-base changes remove and re-append
         // registrations, so their order must follow hourly TaskForceMissions.
         TableId::NavalMissionLedgers | TableId::NavalMissionTaskForces => Hourly,
-        // Research inputs: one country slice per hour plus every country a
-        // hooked writer (assignment, levels, bonuses, sharing, the modifier
-        // tree, ideas, scientists) marked since the previous hour, so a change
-        // is read within the hour and a quiet country costs no read. Daily
-        // progress and banked idle days drift only for a country owning a
-        // state: the country's daily update returns before the technology
-        // update when its owned-state count at +0x484 is below 1. They reach
-        // the rows at the country's slice; a stateless country's slice reads
-        // nothing, unless it gained or lost its last state since its last
-        // slice.
+        // Research inputs: one country slice per hour plus every country a hooked writer
+        // (assignment, levels, bonuses, sharing, the modifier tree, ideas, scientists) marked since
+        // the previous hour, so a change is read within the hour and a quiet country costs no read.
+        // Daily progress and banked idle days drift only for a country owning a state: the
+        // country's daily update returns before the technology update when its owned-state count is
+        // below 1. They reach the rows at the country's slice; a stateless country's slice reads
+        // nothing, unless it gained or lost its last state since its last slice.
         TableId::ResearchInputs | TableId::ResearchAppliedBonuses | TableId::ResearchModifiers => {
             Sliced
         }
@@ -217,19 +214,15 @@ pub const fn cadence(table: TableId) -> Cadence {
         // collector also re-reads them whenever the table's data pointer or
         // count changes, as it does the lexer on a new maximum token.
         TableId::ModifierDefinitions => Static,
-        // Relations feed the perspective, opinion predicates and the naval
-        // map's diplomatic gradients. One walk of every owner would spike its
-        // hour at thousands of countries, so each owner's relations are read
-        // in its slice, and each hour also reads every owner a drained mark
-        // names (the collector's opinion_changes): opinion recomputation,
-        // the only run-time opinion store, marks a status whose opinion
-        // changed. Reset and the sixteen relation slot replacements,
-        // including the war body the stability family forwards, are the only
-        // run-time writers of the serializable relation vector at +0xE8 and
-        // mark theirs on every call. Loading and construction end the
-        // observation. A changed opinion or relation is read the hour after
-        // it changed; an hour whose marks are not all handed over reads every
-        // owner.
+        // Relations feed the perspective, opinion predicates and the naval map's diplomatic
+        // gradients. One walk of every owner would spike its hour at thousands of countries, so
+        // each owner's relations are read in its slice, and each hour also reads every owner a
+        // drained mark names (the collector's opinion_changes): opinion recomputation, the only
+        // run-time opinion store, marks a status whose opinion changed. Reset and the sixteen
+        // relation slot replacements, including the war body the stability family forwards, are the
+        // only run-time writers of the serializable relation vector and mark theirs on every call.
+        // Loading and construction end the observation. A changed opinion or relation is read the
+        // hour after it changed; an hour whose marks are not all handed over reads every owner.
         TableId::RelationOpinions | TableId::RelationTuples => Sliced,
         // The Combat Log grows at any hour but only its arrays' last two
         // month entries can change after a read in this or the previous
@@ -248,27 +241,22 @@ pub const fn cadence(table: TableId) -> Cadence {
         // so slot 0 reads the value the day computed; within the day the record
         // changes only when equipment leaves or enters the stockpile outside it.
         TableId::LogisticsEquipment => Daily(0),
-        // The recorded rows are each strategic region's sorted dominance cache
-        // (entries at +0x40, count at +0x4c). Its sole writer runs in the daily
-        // naval step and in the post-read callback the persistent reader
-        // calls when a save loads. The daily step
-        // runs inside the update entered at hour 23, so slot 0 is the first
-        // sample of each cache epoch and certifies every hour of its day; the
-        // political naval FX (viewer naval_dominance.rs) refuses any sample
-        // from an earlier epoch. A load or full refresh reads the cache at its
-        // own hour, which is that epoch's cache until the next midnight.
+        // The recorded rows are each strategic region's sorted dominance cache (its entries and
+        // count). Its sole writer runs in the daily naval step and in the post-read callback the
+        // persistent reader calls when a save loads. The daily step runs inside the update entered
+        // at hour 23, so slot 0 is the first sample of each cache epoch and certifies every hour of
+        // its day; the political naval FX (viewer naval_dominance.rs) refuses any sample from an
+        // earlier epoch. A load or full refresh reads the cache at its own hour, which is that
+        // epoch's cache until the next midnight.
         TableId::NavalSupremacy => Daily(0),
-        // Special projects and their reward histories, which project
-        // triggers in scripted map offers read: the daily pool pass advances
-        // every project inside the hour entered at 23 for every country owning
-        // a state (the country's daily update returns earlier when its
-        // owned-state count at +0x484 is below 1), so each of those is read at
-        // the next hour. Other writers mark their project's owner, which is
-        // read within the hour: start, stop, cancel (including capture),
-        // complete (including completion effects), progress-ratio addition
-        // (ratio effects, capture and supportive scientists), prototype
-        // reward-option application, forced update (dismantling), database
-        // resync and the forwarded country appearance reset.
+        // Special projects and their reward histories, which project triggers in scripted map
+        // offers read: the daily pool pass advances every project inside the hour entered at 23 for
+        // every country owning a state (the country's daily update returns earlier when its
+        // owned-state count is below 1), so each of those is read at the next hour. Other writers
+        // mark their project's owner, which is read within the hour: start, stop, cancel (including
+        // capture), complete (including completion effects), progress-ratio addition (ratio
+        // effects, capture and supportive scientists), prototype reward-option application, forced
+        // update (dismantling), database resync and the forwarded country appearance reset.
         TableId::Projects | TableId::ProjectHistory => Sliced,
         // The panel-only facility programs and breakthrough points keep their
         // slot: their walk is separate from the pools'.
@@ -327,24 +315,19 @@ pub const fn cadence(table: TableId) -> Cadence {
         | TableId::DeploymentManpower
         | TableId::DeploymentEquipment
         | TableId::ProductionLicenseRecords => Daily(8),
-        // DivisionTemplates falls to the hourly arm: counter tooltips, template
-        // triggers and the model selectors read a template's names and
-        // category, which the update command, template effects and the daily
-        // AI category chooser change at any hour. The collector derives it
-        // from the hourly icon walk, carrying only name keys no hooked writer
-        // touched (template_changes).
-        // CountryResources is hourly: a tactic's resource-count trigger reads
-        // its produced (+0x30) and adjustment (+0xE0) pools. Resource addition,
-        // building-resource modification, country release and building level
-        // changes rewrite them at any hour, as does the daily update; a peace
-        // conference recomputes them in full.
-        // ResourceExchanges is hourly: player trade UI commands, the AI's daily
-        // trade commands and import effects create, resize and cancel deals
-        // (amount 0). Civilian-factory consumption can remove them. The hourly
-        // trade task rewrites deliveries and terminates deals, as resource
-        // recalculations do after the changes above. The collector walks the
-        // resource census with both every hour, so ResourceDefinitions,
-        // content set only as it loads (construction, persistent reading and
+        // DivisionTemplates falls to the hourly arm: counter tooltips, template triggers and the
+        // model selectors read a template's names and category, which the update command, template
+        // effects and the daily AI category chooser change at any hour. The collector derives it
+        // from the hourly icon walk, carrying only name keys no hooked writer touched
+        // (template_changes). CountryResources is hourly: a tactic's resource-count trigger reads
+        // its produced and adjustment pools. Resource addition, building-resource modification,
+        // country release and building level changes rewrite them at any hour, as does the daily
+        // update; a peace conference recomputes them in full. ResourceExchanges is hourly: player
+        // trade UI commands, the AI's daily trade commands and import effects create, resize and
+        // cancel deals (amount 0). Civilian-factory consumption can remove them. The hourly trade
+        // task rewrites deliveries and terminates deals, as resource recalculations do after the
+        // changes above. The collector walks the resource census with both every hour, so
+        // ResourceDefinitions, content set only as it loads (construction, persistent reading and
         // cost-token loading), is published with them at no further read.
         TableId::ResourceDefinitions => Hourly,
         TableId::ResearchSlots => Daily(11),
@@ -434,21 +417,17 @@ pub const fn cadence(table: TableId) -> Cadence {
         // Agency creation and renaming can run in any tick, and the agency display
         // reads the stored created byte and name in the hour.
         TableId::IntelligenceAgencies => Cadence::Hourly,
-        // The persistent role and trait tables are hourly: their writers run
-        // between daily ticks, and a tactic's character-scope has_trait reads
-        // unit-leader traits. The trait array (+0xDC8) is filled by learning
-        // and officer commands, add-trait effects and experience passing a
-        // trait threshold during hourly combat. Removal effects erase traits.
-        // Country-leader role effects insert into and erase from the character's
-        // leader roles at +0x98; advisor role effects do the same for +0xB0.
-        // Effects run when an event option is chosen.
-        // HiredAdvisors falls to the hourly arm: has_idea triggers read the
-        // appointed array at +0x58, and an appointment changes at any hour
-        // through insertion from the activate-advisor effect and command, or
-        // unappointment from the fire command, effects, retirement and civil
-        // wars. Owner decision 2026-10-11: trigger inputs stay exact every hour,
-        // made cheap with change hooks; the collector publishes a quiet hour's
-        // held walk (advisor_pool_changes).
+        // The persistent role and trait tables are hourly: their writers run between daily ticks,
+        // and a tactic's character-scope has_trait reads unit-leader traits. The trait array is
+        // filled by learning and officer commands, add-trait effects and experience passing a trait
+        // threshold during hourly combat. Removal effects erase traits. Country-leader role effects
+        // insert into and erase from the character's leader roles; advisor role effects do the same
+        // for its advisor roles. Effects run when an event option is chosen. HiredAdvisors falls to
+        // the hourly arm: has_idea triggers read the appointed array, and an appointment changes at
+        // any hour through insertion from the activate-advisor effect and command, or unappointment
+        // from the fire command, effects, retirement and civil wars. Owner decision 2026-10-11:
+        // trigger inputs stay exact every hour, made cheap with change hooks; the collector
+        // publishes a quiet hour's held walk (advisor_pool_changes).
         TableId::AirAces | TableId::PeaceConferences => Daily(21),
         TableId::IncomingDiplomaticActions
         | TableId::TechSharingGroups

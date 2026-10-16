@@ -59,22 +59,25 @@ pub const MUTATIONS: [MutationSite; 4] = [
     },
 ];
 
-/// Writers of a status's serializable relation vector (+0xE8 data,
-/// +0xF0 capacity, +0xF4 count), recorded with each element's index by
-/// RelationTuples, besides reset above and the war replacement body owned
-/// and forwarded by [`crate::country_input_mutations`]. Each specializes one
-/// typed slot replacement: status, new relation and slot arrive in RCX, RDX
-/// and R8 and are retained in RDI, RSI and RBX. It swap-removes the old
-/// relation from +0xD0 and, when the owner's country (+0x1F0 to +0x288 to +8)
-/// is the relation's first country, from +0xE8, moving the last element into
-/// its place. It deletes the old relation, replaces the slot and uses shared
-/// append for +0xD0 and, for the first country's status, +0xE8. Apply and
+/// Writers of a status's serializable relation vector (data, capacity and
+/// count from `crelation_status::SERIALIZABLE_RELATIONS`), recorded with each
+/// element's index by RelationTuples, besides reset above and the war
+/// replacement body owned and forwarded by [`crate::country_input_mutations`].
+/// Each specializes one typed slot replacement: status, new relation and slot
+/// arrive in RCX, RDX and R8 and are retained in RDI, RSI and RBX. It
+/// swap-removes the old relation from the subrelations
+/// (`crelation_status::SUBRELATIONS`) and, when the owner's country (diplomacy
+/// `crelation_status::DIPLOMACY_STATUS` to `cdiplomacy_status::COUNTRY` to
+/// `ccountry::ID`) is the relation's first country, from the serializable
+/// relations, moving the last element into its place. It deletes the old
+/// relation, replaces the slot and uses shared append for the subrelations
+/// and, for the first country's status, the serializable relations. Apply and
 /// clear call it for both endpoints, so named statuses are a superset of
 /// those whose vectors changed. Construction, initialization and save
 /// loading write type, endpoints, start/end hours, cancel and retired bytes
 /// before apply reaches a replacement; no later nonwar writer was found.
 /// Reset deletes and swap-removes residual elements. All sites share one
-/// prologue, spilling RBX at stack +8.
+/// prologue, spilling RBX to RCX's home slot.
 pub const RELATIONS: [MutationSite; 15] = [
     // Air access and offered-air-access slot replacement (status, new, slot).
     MutationSite {

@@ -1,52 +1,56 @@
 //! The runtime writers of ship fields served from a held ShipModels read
-//! (`cship::HeldShip`): fixed fields, equipment-pool entries, heap
-//! fallback sprite, experience accumulator +0x750, medal-store accumulator
-//! +0x1B0 (store pointer at ship +0x8F8) and carrier air-base pointer +0x730.
+//! (`cship::HeldShip`): fixed fields, equipment-pool entries, heap fallback
+//! sprite, experience accumulator, medal-store accumulator (through the ship's
+//! medal-store pointer) and carrier air-base pointer (`cship::CARRIER_AIR_BASE`).
 //! Observing them tells the collector which ships to reread; recording never
 //! calls them.
 //!
 //! Writer coverage:
-//! - Equipment-stat recalculation rebuilds embedded anti-air +0x218, weather
-//!   factor +0x270, base organisation +0x300 and maximum strength +0x308,
-//!   fallback sprite +0xE8 and model number +0x810. Its six callers are
-//!   creation/load setup, refit, random-part and named-part critical hits,
-//!   critical-hit clearing and ability refresh. Every critical array +0x918
-//!   writer recalculates afterward.
-//! - Refit clears and refills pool +0x40, copy-assigns embedded definition
-//!   +0x80 (class +0x88, valid byte +0x90, sub-unit index +0x60C, formation
-//!   flags +0x628) and erases the carrier base. Refit completion and the
-//!   instant-refit command call it. Creation constructs, deploys and sets
-//!   the pool before setup recalculates the new ship. Load invalidates the hour.
-//! - Experience refresh clears and refills +0x750 at construction, load
-//!   repair and in the hourly helper, only when combat or daily training
-//!   awards have set dirty byte +0x800.
-//! - Carrier-base addition stores ship +0x730. Air-base destruction clears
-//!   its host's pointer, so the base itself is an observed receiver.
+//! - Equipment-stat recalculation rebuilds embedded anti-air, weather factor,
+//!   base organisation and maximum strength, fallback sprite and model number
+//!   (`cship::ANTI_AIR_BASE`, `BASE_ORGANISATION`, `MAXIMUM_STRENGTH`,
+//!   `FALLBACK_SPRITE`, `MODEL_NUMBER`). Its six callers are creation/load
+//!   setup, refit, random-part and named-part critical hits, critical-hit
+//!   clearing and ability refresh. Every critical array writer recalculates
+//!   afterward.
+//! - Refit clears and refills the pool (`cship::EQUIPMENT_POOL`), copy-assigns
+//!   the embedded definition (`cship::SUBUNIT_DEFINITION`: class
+//!   `CLASS_DATABASE_ID`, valid byte `DEFINITION_VALID`, sub-unit index
+//!   `SUBUNIT_INDEX`, formation flags `FORMATION_FLAGS`) and erases the carrier
+//!   base. Refit completion and the instant-refit command call it. Creation
+//!   constructs, deploys and sets the pool before setup recalculates the new
+//!   ship. Load invalidates the hour.
+//! - Experience refresh clears and refills the experience accumulator at
+//!   construction, load repair and in the hourly helper, only when combat or
+//!   daily training awards have set its dirty byte.
+//! - Carrier-base addition stores `cship::CARRIER_AIR_BASE`. Air-base
+//!   destruction clears its host's pointer, so the base itself is an observed
+//!   receiver.
 //! - Medal refresh clears and refills the store accumulator from award,
 //!   save loading and promotion copy. The store pointer changes only at
 //!   construction and load.
 //! - Ship vtable and handle never change; the hourly census compares its
-//!   task force +0x728.
+//!   task force (`cship::TASK_FORCE`).
 //! - `cship::OrganisationOperands` keeps the same certified fields: handle,
-//!   class +0x88, sub-unit index +0x60C, weather factor +0x270, base
-//!   organisation +0x300, and the raw values of +0x750 and the medal store's
-//!   +0x1B0. Its critical header +0x918 is covered by the three critical-hit
-//!   writers above, which all recalculate equipment stats; each entry's count
-//!   and modifier pointee stays a fresh read on both passes of the ship
-//!   modifier calculation. Terrain-class and leader-subunit terms remain
-//!   hourly observations. Only the DLC-set command writes the active modifier
+//!   class, sub-unit index, weather factor, base organisation, and the raw
+//!   values of the experience accumulator and the medal store's accumulator.
+//!   Its critical header is covered by the three critical-hit writers above,
+//!   which all recalculate equipment stats; each entry's count and modifier
+//!   pointee stays a fresh read on both passes of the ship modifier
+//!   calculation. Terrain-class and leader-subunit terms remain hourly
+//!   observations. Only the DLC-set command writes the active modifier
 //!   feature mask, and it then always resets the game world, whose observed
 //!   reset revokes ship and shared-term epochs. Recompute applies current
 //!   effective metadata to the raw values; whole-row carry also compares its
 //!   compact metadata guard.
-//! - Only task-force doctrine rebuilding clears and rebuilds tree +0x640
-//!   (selector +0x20, demand +0x28, support capacity +0x2C, source +0x30),
-//!   from initialization/registration and ship addition and removal.
-//! - Only weather-region modifier refresh clears and rebuilds accumulator
-//!   +0x58 from weather flags and scripted condition values. Callers are
-//!   region update when values change, manager loading and console.
-//!   Day/night update rewrites province night accumulator +0x280 only when
-//!   its factor differs from applied factor +0x268, then stores that factor.
+//! - Only task-force doctrine rebuilding clears and rebuilds the task force's
+//!   doctrine tree (selector, demand, support capacity and source), from
+//!   initialization/registration and ship addition and removal.
+//! - Only weather-region modifier refresh clears and rebuilds its modifier
+//!   accumulator from weather flags and scripted condition values. Callers
+//!   are region update when values change, manager loading and console.
+//!   Day/night update rewrites a province's night accumulator only when its
+//!   factor differs from the applied factor, then stores that factor.
 //!   Equality preserves the accumulator; ShipModels compares the factor
 //!   instead of hooking the hourly pass.
 
@@ -55,7 +59,7 @@ pub use crate::advisor_mutations::MutationSite;
 /// The writers, each forwarded RCX..R9 by its detour (none takes a stack
 /// argument). [`RECEIVER_ARGUMENT`] names the argument that is the receiver.
 pub const MUTATIONS: [MutationSite; 8] = [
-    // The four-byte DL spill at stack +0x10 and saving RBP relocate.
+    // The four-byte DL spill to its home slot and saving RBP relocate.
     MutationSite {
         name: "recalculate_equipment_stats",
         rva: 0xc2_d950,
@@ -64,7 +68,7 @@ pub const MUTATIONS: [MutationSite; 8] = [
             0x41, 0x57,
         ],
     },
-    // The five-byte R9 spill at stack +0x20 relocates.
+    // The five-byte R9 spill to its home slot relocates.
     MutationSite {
         name: "refit",
         rva: 0xc2_4460,
@@ -73,7 +77,7 @@ pub const MUTATIONS: [MutationSite; 8] = [
             0x10, 0x55,
         ],
     },
-    // The five-byte RBX spill at stack +0x10 relocates.
+    // The five-byte RBX spill to RDX's home slot relocates.
     MutationSite {
         name: "rebuild_experience_modifiers",
         rva: 0xc2_d710,
@@ -82,7 +86,7 @@ pub const MUTATIONS: [MutationSite; 8] = [
             0x41, 0x55,
         ],
     },
-    // The five-byte RBX spill at stack +0x20 relocates.
+    // The five-byte RBX spill to R9's home slot relocates.
     MutationSite {
         name: "add_carrier_air_base",
         rva: crate::cstrategic_air_manager::ADD_CARRIER_AIR_BASE_RVA,

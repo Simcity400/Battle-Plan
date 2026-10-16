@@ -481,8 +481,8 @@ impl TraitCapture {
             let array = header
                 .and_then(|header| Array::from_header(header, TRAIT_STRIDE))
                 .ok_or("unit leader trait vector invalid or unreadable")?;
-            // Assigned trait visitor bounds this vector by +0xDD4. Its original acquired
-            // count reserves every occurrence before reads.
+            // Assigned trait visitor bounds this vector by its count. Its original acquired count
+            // reserves every occurrence before reads.
             if self.growing {
                 engine::allocation::reserve(&mut self.occurrences, array.count as usize)
                     .map_err(|_| "character trait occurrence allocation failed")?;
@@ -634,8 +634,8 @@ impl TraitCapture {
     }
 }
 
-/// Assigned trait visitor visits the assigned traits at +0xDC8 (count +0xDD4) as 8-byte
-/// definition pointers.
+/// Assigned trait visitor visits the assigned traits (`cunit_leader::TRAIT_DATA`, with its count)
+/// as 8-byte definition pointers.
 pub(super) const TRAIT_STRIDE: usize = 8;
 
 /// Native trait-vector identity for one owned acquisition.

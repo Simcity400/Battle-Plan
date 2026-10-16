@@ -1,5 +1,6 @@
-//! CAdvisor role object. A role's existence does not assert appointment: the
-//! appointed advisors are the CCountryCharacters +0x58 list (`ccountry_characters.rs`).
+//! CAdvisor role object. A role's existence does not assert appointment: the appointed advisors are
+//! the CCountryCharacters appointed list (`ccountry_characters::APPOINTED_ADVISORS`)
+//! (`ccountry_characters.rs`).
 
 /// Advisor-role vtable.
 pub const VTABLE_RVA: usize = 0x0299_0e60;
@@ -94,8 +95,7 @@ pub fn definitions_demand(
     Ok(demand)
 }
 
-/// Live role and accumulator headers only. The role rebuild writes the +0x1B0
-/// array.
+/// Live role and accumulator headers only. The role rebuild writes the `MODIFIER_ENTRIES` array.
 pub fn modifier_demand(
     memory: &impl crate::Memory,
     base: usize,
@@ -154,10 +154,9 @@ pub fn modifier_demand(
     Ok(demand)
 }
 
-/// Advisor cached tooltip string set: the +0x1B0 accumulator's string set
-/// (+0x68). The rebuild finds or inserts entries with header +8, stride 0x28,
-/// occupied byte +4 and MSVC string +8. Keys are exact bytes in occupied-slot
-/// order, not tokens.
+/// Advisor cached tooltip string set: the `MODIFIER_ENTRIES` accumulator's string set. The rebuild
+/// finds or inserts entries with a header after the table pointer, stride 0x28, an occupied byte
+/// and then the MSVC string. Keys are exact bytes in occupied-slot order, not tokens.
 pub const TOOLTIP_KEYS: usize = 0x218;
 pub const TOOLTIP_CAPACITY_REASON: &str = "advisor tooltip keys exceed admitted capacity";
 
@@ -469,10 +468,10 @@ pub struct Row {
     pub tooltip_failure: Option<&'static str>,
 }
 
-/// Captures persistent advisor roles, with exact map key, idea token and slot.
-/// A role's existence does not assert appointment; the appointed list is
-/// CCountryCharacters +0x58 (`ccountry_characters::walk`, the HiredAdvisors table).
-/// Native order is retained; sorting and row-key validation belong off-thread.
+/// Captures persistent advisor roles, with exact map key, idea token and slot. A role's existence
+/// does not assert appointment; the appointed list is CCountryCharacters' appointed advisors
+/// (`ccountry_characters::walk`, the HiredAdvisors table). Native order is retained; sorting and
+/// row-key validation belong off-thread.
 pub fn walk(
     memory: &impl crate::Memory,
     base: usize,

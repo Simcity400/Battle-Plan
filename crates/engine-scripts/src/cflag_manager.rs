@@ -45,10 +45,9 @@ pub const HEADER: usize = 24;
 /// Dense rows gathered per guarded record call.
 const ROW_BATCH: usize = 64;
 
-/// Whether the daily expiry pass writes the manager: it visits the `+0x14` live
-/// rows and decrements, then removes at zero, only a positive remaining-days
-/// `+0x2A`, so a manager with none is left untouched. An unreadable count or
-/// row answers true.
+/// Whether the daily expiry pass writes the manager: it visits the live rows and decrements, then
+/// removes at zero, only a positive remaining-days the expiry byte, so a manager with none is left
+/// untouched. An unreadable count or row answers true.
 pub fn daily_expiry_writes(memory: &impl Memory, manager: usize) -> bool {
     let (Some(rows), Some(count)) = (
         manager

@@ -2,16 +2,17 @@
 //! role traits. Observing them marks the roster or scientist traits as possibly
 //! changed; recording never calls them.
 //!
-//! - The manager (game state `+0x6A8`, authenticated by its vtable) holds
-//!   historical roster `+0x10` and dynamic roster `+0x28`, arrays of character
-//!   pointers. Only the append helper writes elements and counts; only it calls
-//!   the reallocation helper. All callers insert: dynamic creation with
-//!   registration or portrait (every effect, command, console and daily path
-//!   creating leaders, scientists, operatives or country leaders), four
-//!   historical inserts (civil war, peace conferences, unit transfer and
+//! - The manager (`cgame_state::CHARACTER_MANAGER`, authenticated by its
+//!   vtable) holds the historical and dynamic rosters
+//!   (`ccharacter_manager::HISTORICAL_CHARACTERS`, `DYNAMIC_CHARACTERS`),
+//!   arrays of character pointers. Only the append helper writes elements and
+//!   counts; only it calls the reallocation helper. All callers insert: dynamic
+//!   creation with registration or portrait (every effect, command, console and
+//!   daily path creating leaders, scientists, operatives or country leaders),
+//!   four historical inserts (civil war, peace conferences, unit transfer and
 //!   character generation), start-character building and load reading. No
-//!   erasure, swap, sort or cross-array movement occurs, so existing occurrences
-//!   keep their roster and ordinal.
+//!   erasure, swap, sort or cross-array movement occurs, so existing
+//!   occurrences keep their roster and ordinal.
 //! - Array clearing frees every element through role-tree destruction and
 //!   zeroes the count. It runs from the manager's virtual reader, token reader
 //!   and destructor. Characters are freed only with their whole array or before
@@ -19,20 +20,21 @@
 //! - Manager construction rebuilds it on every load and game reset, from two
 //!   reset paths. The advisor-pool family ([`crate::advisor_pool_mutations`])
 //!   owns that site and forwards calls.
-//! - Character ids (`+0xC`) are written before append, then only by identity
-//!   repair/registration, forwarded by
+//! - Character ids (`ccharacter::ID`) are written before append, then only by
+//!   identity repair/registration, forwarded by
 //!   [`crate::character_role_mutations::CHARACTER_REPAIR`].
-//! - Scientist traits (`+0x30`, capacity `+0x38`, count `+0x3C`, owning character
-//!   `+0x8`) are appended by trait addition (effect, console, pool refill),
-//!   compacted by trait removal (console), and reset/refilled by token assignment
-//!   (role generation, building, trait database reload). Other writers build
-//!   new objects: the builder receives output, character, definition and a
-//!   fourth argument (add-role effect and character definition building);
-//!   attachment swaps a new scientist into character `+0xC0` (creation with
-//!   registration, pool refill and console); clearing removes that pointer
-//!   through the remove-role path; and character parsing, merging and destruction
-//!   are advisor-family sites. The role census gathers the scientist pointer
-//!   afresh every hour.
+//! - Scientist traits (data, capacity and count: `cscientist::TRAIT_DATA`,
+//!   `TRAIT_CAPACITY`, `TRAIT_COUNT`; and the owning character) are appended by
+//!   trait addition (effect, console, pool refill), compacted by trait removal
+//!   (console), and reset/refilled by token assignment (role generation,
+//!   building, trait database reload). Other writers build new objects: the
+//!   builder receives output, character, definition and a fourth argument
+//!   (add-role effect and character definition building); attachment swaps a
+//!   new scientist into `ccharacter::SCIENTIST` (creation with registration,
+//!   pool refill and console); clearing removes that pointer through the
+//!   remove-role path; and character parsing, merging and destruction are
+//!   advisor-family sites. The role census gathers the scientist pointer afresh
+//!   every hour.
 //!
 //! Every site takes only integer or pointer arguments and returns RAX unchanged.
 
@@ -57,8 +59,8 @@ pub const SCIENTIST_TRAIT_REMOVE: usize = 6;
 pub const SCIENTIST_TRAIT_RESET: usize = 7;
 
 pub const MUTATIONS: [(MutationSite, Domain); 8] = [
-    // Roster append (array, unique pointer): the five-byte RBP store at
-    // RSP+0x18 is patched.
+    // Roster append (array, unique pointer): the five-byte RBP store to R8's
+    // home slot is patched.
     (
         MutationSite {
             name: "roster_push",
@@ -70,7 +72,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
         },
         Domain::Roster,
     ),
-    // Roster clearing (array): stores RBP at RSP+0x18.
+    // Roster clearing (array): stores RBP in R8's home slot.
     (
         MutationSite {
             name: "roster_clear",
@@ -82,7 +84,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
         },
         Domain::Roster,
     ),
-    // Scientist building (out, character, definition, _): stores RBX at RSP+0x10.
+    // Scientist building (out, character, definition, _): stores RBX in RDX's home slot.
     (
         MutationSite {
             name: "scientist_build",
@@ -94,7 +96,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
         },
         Domain::Scientists,
     ),
-    // Scientist attachment (character): stores RBX at RSP+0x10.
+    // Scientist attachment (character): stores RBX in RDX's home slot.
     (
         MutationSite {
             name: "scientist_attach",
@@ -118,7 +120,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
         },
         Domain::Scientists,
     ),
-    // Scientist trait addition (scientist, trait): stores RBX at RSP+0x18.
+    // Scientist trait addition (scientist, trait): stores RBX in R8's home slot.
     (
         MutationSite {
             name: "scientist_trait_add",
@@ -131,7 +133,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
         Domain::Scientists,
     ),
     // Scientist trait removal (scientist, trait): reserves 0x28 stack bytes
-    // and loads the count at RCX+0x3C into R10D.
+    // and loads the trait count (`cscientist::TRAIT_COUNT`) into R10D.
     (
         MutationSite {
             name: "scientist_trait_remove",
@@ -144,7 +146,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
         Domain::Scientists,
     ),
     // Scientist trait reset (scientist, tokens): copies the stack pointer to
-    // RAX and stores RBX at RAX+0x10.
+    // RAX and stores RBX in RDX's home slot through it.
     (
         MutationSite {
             name: "scientist_trait_reset",

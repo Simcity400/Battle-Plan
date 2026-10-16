@@ -33,8 +33,8 @@ pub const GET_OR_CREATE_RECORD_RVA: usize = 0x0195_0340;
 pub const UPDATE_RECORD_RVA: usize = 0x0194_f590;
 /// Pruning records older than the runtime timeout from both vectors.
 pub const PRUNE_RVA: usize = 0x0195_01b0;
-/// `NGame.AIR_LOG_TIMEOUT_HOURS`, loaded as an i32 and subtracted from the game
-/// clock at `+0x468` when pruning air records.
+/// `NGame.AIR_LOG_TIMEOUT_HOURS`, loaded as an i32 and subtracted from the game clock
+/// (`cgame_state::CURRENT_HOUR`) when pruning air records.
 pub const LOG_TIMEOUT_RVA: usize = 0x0331_da14;
 
 /// One non-null slot from a completely enumerated, authenticated CStrategicAir
@@ -475,7 +475,7 @@ pub struct Record {
     pub classification: u8,
     pub copied: u8,
     pub attributed_country: u32,
-    /// `+0x20` (causes 0, 1, 2, 6, 7) and `+0x38` (3, 4, 5, 9, 10).
+    /// the first damage vector (causes 0, 1, 2, 6, 7) and the second (3, 4, 5, 9, 10).
     pub damage: [Vec<Damage>; 2],
 }
 
@@ -488,8 +488,8 @@ pub struct Side {
     pub records: Vec<Record>,
 }
 
-/// One holder: its raw owner and both record vectors (`+0x08`, the wings of
-/// the owner's country; `+0x20`, the others').
+/// One holder: its raw owner and both record vectors (the wings of the owner's country; the foreign
+/// vector, the others').
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Holder {
     pub owner: u32,
@@ -608,8 +608,8 @@ fn read_record(memory: &impl Memory, base: usize, address: usize) -> Result<Reco
     })
 }
 
-/// Every non-null holder of every authenticated country air object, in
-/// census and region order: the `+0x170` table is read in pointer batches.
+/// Every non-null holder of every authenticated country air object, in census and region order: the
+/// region-combat table is read in pointer batches.
 pub fn visit_holders(
     memory: &impl Memory,
     base: usize,
@@ -664,11 +664,10 @@ fn holders_of(
     Ok(())
 }
 
-/// The table position of `holder` among the holders of the country air object
-/// whose raw reference (`CStrategicAir+0x90`, copied to the holder's `+0x38`
-/// when the holder is created) is `owner`: the slot `CStrategicAirManager+0x30`
-/// holds at the owner's canonical slot, authenticated as
-/// [`cstrategic_air::visit`] does. `None` when no table slot holds `holder`.
+/// The table position of `holder` among the holders of the country air object whose raw reference
+/// (the strategic air object's country, copied to the holder's owner when the holder is created) is
+/// `owner`: the slot of the strategic air manager's country table holds at the owner's canonical
+/// slot, authenticated as [`cstrategic_air::visit`] does. `None` when no table slot holds `holder`.
 pub fn locate(
     memory: &impl Memory,
     base: usize,

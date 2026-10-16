@@ -1,9 +1,8 @@
 //! On-demand equipment speed for a railway gun's first ordinary route edge.
 //!
-//! Stat 0x3E is reduced from current variant inputs, without reading the
-//! variant's cached +0x2F0 stat. The +0xD0 list already holds selected
-//! equipment bonuses; no research or country bonus census is inferred.
-//! Collections retain order and first-match semantics. Reads are fixed
+//! Stat 0x3E is reduced from current variant inputs, without reading the variant's cached speed
+//! stat. The direct bonus list already holds selected equipment bonuses; no research or country
+//! bonus census is inferred. Collections retain order and first-match semantics. Reads are fixed
 //! for callbacks or growing for workers; unreadable inputs refuse the ETA.
 
 use crate::{
@@ -17,24 +16,23 @@ use crate::{
 pub use crate::cpdx_lexer::MAXIMUM_SPEED_TOKEN;
 const SPEED_STAT: u32 = 0x3e;
 
-// The type's dense stat slots start at +0x148.
+// The type's dense stat slots.
 const TYPE_STATS: usize = 0x148;
-// The direct bonus list is at variant +0xD0 and holds a pointer array.
+// The variant's direct bonus list, a pointer array.
 const DIRECT_BONUSES: usize = 0xd0;
-// Named handles at variant +0xE8 select production +0x178 entries of stride 0xC8, handle at +0xC0.
+// The variant's named handles select production entries of `NAMED_STRIDE`, each with its handle.
 const NAMED_HANDLES: usize = 0xe8;
 const NAMED_BONUSES: usize = 0x178;
 const NAMED_STRIDE: usize = 0xc8;
 const NAMED_HANDLE: usize = 0xc0;
-// Embedded equipment bonuses start at +0x38 or +0x40; their entry
-// arrays start at +8.
+// Embedded equipment bonuses start at one of two places; their entry arrays follow their headers.
 const SPECIFIC_VTABLE_RVA: usize = 0x0270_29e8;
 const BONUS_VTABLE_RVA: usize = 0x0270_2990;
 const NAMED_VTABLE_RVA: usize = 0x0295_9ac0;
-// The industrial-organisation trait bonus is embedded at variant +0x490.
+// The industrial-organisation trait bonus embedded in the variant.
 const MIO_BONUS: usize = 0x490;
 const MIO_VTABLE_RVA: usize = 0x0270_2c38;
-// Upgrade and module stat groups are embedded at +0x40 and +0x128.
+// Upgrade and module stat groups are embedded in the variant.
 const GROUP_VTABLE_RVA: usize = 0x0292_17f8;
 const STATS_VTABLE_RVA: usize = 0x0270_2938;
 
@@ -185,7 +183,7 @@ fn collect_named(
 ) -> Result<usize, &'static str> {
     let handles = array(memory, variant, NAMED_HANDLES, 4)?;
     scratch.required = scratch.required.max(handles.count as usize);
-    // Collect every variant +0xE8 handle before reading selected stats.
+    // Collect every variant named handle before reading selected stats.
     scratch.pointers.ensure(handles.count as usize)?;
     if handles.count == 0 {
         return Ok(0);

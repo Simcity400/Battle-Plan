@@ -286,7 +286,7 @@ fn politics_daily_tap_profile() {
             hooks::bench_begin(world.base, countries * 3, 1);
             let start = Instant::now();
             for receivers in world.receivers.chunks_exact(8) {
-                // Fixture relation0 is country+2200; politics is country+2000.
+                // Fixture relation0 sits 0x200 bytes after politics in each country block.
                 hooks::bench_daily_taps(receivers[0] - 0x200, modifier_frame, rate_frame);
             }
             if iteration >= 10 {

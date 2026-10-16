@@ -1512,13 +1512,12 @@ impl CarryPass<'_> {
     }
 }
 
-/// One base's registration subtree for the log: a state base's held segment
-/// when its certificate and slot mode are the held read's and its links
-/// still resolve as then, otherwise read afresh and held. A host base, every
-/// base without a store, and a base either sampled slice covers (the carry's
-/// or the dense slot check's) is read. A read is held only when every pool it
-/// listed names the base by `+0x18`, the handle that pool's writers notify.
-/// Returns false exactly when the typed walk fails for this base.
+/// One base's registration subtree for the log: a state base's held segment when its certificate
+/// and slot mode are the held read's and its links still resolve as then, otherwise read afresh and
+/// held. A host base, every base without a store, and a base either sampled slice covers (the
+/// carry's or the dense slot check's) is read. A read is held only when every pool it listed names
+/// the base by its base handle, the handle that pool's writers notify. Returns false exactly when
+/// the typed walk fails for this base.
 #[allow(clippy::too_many_arguments)]
 fn registrations(
     log: &mut RawLog<AIR_BASES_N>,
@@ -1985,9 +1984,9 @@ fn copy_air_base_registrations(
                         let mut fields = [(0usize, 0usize); REG_MIRROR_BATCH];
                         let mut complete_wings = 0;
                         for (wing_index, &wing) in wing_pointers[..wing_chunk].iter().enumerate() {
-                            // `copy_records` WING_FIELDS: identity32, then the
-                            // exact +38 backlink. The complete chunk's copied
-                            // prefix precedes any row's semantic validation.
+                            // `copy_records` WING_FIELDS: identity32, then the exact pool backlink.
+                            // The complete chunk's copied prefix precedes any row's semantic
+                            // validation.
                             let identity =
                                 match bspan(log, memory, Some(wing), 32, AIR_REGISTRATIONS_MASK) {
                                     Some(start) => start,
