@@ -15,7 +15,15 @@ fn the_flying_aircraft_draws_whatever_the_map_cutoffs_and_layer_switches() -> io
     let mut scene = fixture.scene()?;
     let document = &fixture.document;
     let (device, queue) = (&fixture.state.device, &fixture.state.queue);
-    let aircraft = scene.fighter().map_err(invalid)?.clone();
+    // There is no default aircraft: fly the first registered entity that bakes, as a user may.
+    let aircraft = document
+        .aircraft
+        .roster()
+        .descriptors
+        .entities
+        .keys()
+        .find_map(|name| document.aircraft.player(name).ok())
+        .ok_or_else(|| invalid("the content registers no entity that can be flown"))?;
     // Above the content's map-object cutoff, with the unit layer switched off: the map draws no
     // aircraft of its own here.
     scene.set_graphics(dashboard::protocol::MapGraphics {

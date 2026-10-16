@@ -52,10 +52,7 @@
 //! refuse only dependent branches. CAS diversion uses the raw mission ratio.
 //! Models, rigs and every define resolve through the recorded content stack.
 //! Presentation clocks and seeds belong to the viewer. Deterministic random
-//! removal supplies selections from unrecorded wall-clock random state. Each plan
-//! also names the viewing country's fighter for the flying mode
-//! ([`AircraftPlan::fighter`]): its largest fighter wing's aircraft through the
-//! same ladder, baked on the hour builder. Training
+//! removal supplies selections from unrecorded wall-clock random state. Training
 //! uses the four initial bomber/fighter arrays; carrier take-off shares the
 //! settled task-force route law.
 //!
@@ -117,6 +114,7 @@ use installed_content::image::native::Decode;
 use installed_content::{
     ResolvedLayers,
     defines::Defines,
+    equipment_graphics::aircraft as aircraft_catalogue,
     map::{MapData, ProvinceKind},
     mesh::{self, Transform},
     regions::StrategicRegion,
@@ -612,74 +610,6 @@ pub(crate) fn candidates(tag: &str, name: &str, archetype: &str, sprite: &str) -
 
 const NOT_LOADED: &str = "its mesh did not load";
 
-/// A name a descriptor file the parser refuses holds (`Roster::unreadable`).
-/// Which of that file's blocks the engine still registers is unverified, so
-/// the name may be declared there, alone or beside another declaration. The
-/// roster registers a clone as the engine does, a copy of its parent, so a
-/// clone of such a name is one too.
-fn unreadable(roster: &mesh::Roster, name: &str) -> Option<String> {
-    roster
-        .unreadable_names
-        .get(name)
-        .map(|path| format!("may be declared in {path}, which does not parse"))
-}
-
-/// The first refused declaration a plane entity uses as
-/// [`ModelLibrary::load`] bakes it: the entity, the `pdxmesh` it names, the
-/// animation the mesh plays for each state it declares and each attached entity.
-fn plane_refusal(
-    roster: &mesh::Roster,
-    entity: &str,
-    ancestors: &BTreeSet<String>,
-) -> Option<String> {
-    let mut ancestors = ancestors.clone();
-    if !ancestors.insert(entity.to_owned()) {
-        return Some(format!("attachment cycle through {entity}"));
-    }
-    if let Some(flaw) = unreadable(roster, entity) {
-        return Some(format!("it {flaw}"));
-    }
-    let descriptors = &roster.descriptors;
-    let inherited = descriptors.inherit(entity)?;
-    if let Some(state) = inherited
-        .states
-        .values()
-        .flatten()
-        .find(|state| !(state.speed.is_finite() && state.speed > 0.))
-    {
-        return Some(format!(
-            "state {} has unsupported non-positive animation_speed {}",
-            state.name, state.speed
-        ));
-    }
-    if let Some(name) = inherited.mesh {
-        if let Some(flaw) = unreadable(roster, name) {
-            return Some(format!("its mesh {name} {flaw}"));
-        }
-        if let Some(definition) = descriptors.meshes.get(name) {
-            for state in inherited.states.values().flatten() {
-                if let Some((_, animation)) = definition
-                    .animations
-                    .iter()
-                    .find(|(declared, _)| *declared == state.animation)
-                    && let Some(flaw) = unreadable(roster, animation)
-                {
-                    return Some(format!("its animation {animation} {flaw}"));
-                }
-            }
-        }
-    }
-    for attachment in &inherited.attachments {
-        if let Some(reason) = plane_refusal(roster, &attachment.entity, &ancestors) {
-            return Some(format!(
-                "its attached entity {} is refused: {reason}",
-                attachment.entity
-            ));
-        }
-    }
-    None
-}
-
 /// Why a wing's aircraft has no entity to draw.
 #[derive(Debug, PartialEq)]
 enum Unresolved {
@@ -758,7 +688,7 @@ fn plane_library<'a>(
     let mut unusable = BTreeMap::new();
     let mut names = Vec::new();
     for entity in declared {
-        match plane_refusal(roster, entity, &BTreeSet::new()) {
+        match roster.refused_declaration(entity) {
             Some(reason) => {
                 unusable.insert(entity.clone(), reason);
             }
@@ -778,7 +708,11 @@ fn plane_library<'a>(
     let library = ModelLibrary::load(layers, decode, &roster.descriptors, &names, warnings)?;
     for name in names {
         if library.slot(&name).is_none() {
-            unusable.insert(name, NOT_LOADED.to_owned());
+            let reason = match library.failed.get(&name) {
+                Some(why) => format!("{NOT_LOADED}: {why}"),
+                None => NOT_LOADED.to_owned(),
+            };
+            unusable.insert(name, reason);
         }
     }
     Ok((library, unusable))
@@ -880,13 +814,13 @@ fn scenario_source(
 /// The first refused declaration a scenario rig uses: the scenario entity,
 /// its mesh and the animation of the state it plays.
 fn scenario_refusal(roster: &mesh::Roster, entity: &str, state: &str) -> Option<String> {
-    if let Some(flaw) = unreadable(roster, entity) {
+    if let Some(flaw) = roster.unreadable(entity) {
         return Some(format!("it {flaw}"));
     }
     let descriptors = &roster.descriptors;
     let inherited = descriptors.inherit(entity)?;
     let mesh = inherited.mesh?;
-    if let Some(flaw) = unreadable(roster, mesh) {
+    if let Some(flaw) = roster.unreadable(mesh) {
         return Some(format!("its mesh {mesh} {flaw}"));
     }
     let state = inherited.states.get(state)?.first()?;
@@ -896,7 +830,7 @@ fn scenario_refusal(roster: &mesh::Roster, entity: &str, state: &str) -> Option<
         .animations
         .iter()
         .find(|(declared, _)| *declared == state.animation)?;
-    unreadable(roster, animation).map(|flaw| format!("its animation {animation} {flaw}"))
+    roster.unreadable(animation).map(|flaw| format!("its animation {animation} {flaw}"))
 }
 
 /// The scenario outcomes the game plays: 0 `default`,
@@ -1515,6 +1449,46 @@ impl AircraftAssets {
     }
 }
 
+impl AircraftAssets {
+    /// The registered descriptor roster the aircraft bake from.
+    pub fn roster(&self) -> &mesh::Roster {
+        &self.roster
+    }
+}
+
+/// A chosen aircraft baked for flying: its slot in [`AircraftAssets::library`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerAircraft {
+    /// The entity or bare mesh name it was chosen by.
+    pub name: String,
+    pub slot: usize,
+}
+
+impl AircraftAssets {
+    /// Bakes a chosen entity or bare mesh on first use, through the same
+    /// roster and checks a recorded flight's entity meets, and returns its
+    /// library slot, or why it cannot be flown. What the roster alone refuses
+    /// ([`aircraft_catalogue::refusal`]) is refused before any file is read, as
+    /// the aircraft catalogue lists it; files that do not load refuse it then,
+    /// and stay refused. It reads files: call it off the UI thread.
+    pub fn player(&self, name: &str) -> Result<PlayerAircraft, String> {
+        if let Some(refusal) = aircraft_catalogue::refusal(&self.roster, name) {
+            return Err(refusal.reason);
+        }
+        match self.resolve(name) {
+            Ok(slot) => Ok(PlayerAircraft {
+                name: name.to_owned(),
+                slot,
+            }),
+            Err(Unresolved::Refused { reason, .. }) => Err(reason),
+            Err(Unresolved::Missing(_)) => Err(NOT_LOADED.to_owned()),
+            Err(Unresolved::Identity | Unresolved::Token(_)) => {
+                unreachable!("a chosen name has no wing identity or equipment token")
+            }
+        }
+    }
+}
+
 /// Each province once, in first listing order.
 fn first_listings(provinces: &[u32]) -> Vec<u32> {
     let mut seen = BTreeSet::new();
@@ -1971,111 +1945,6 @@ pub struct AircraftPlan {
     /// Whether explosions were taken past the launch clock's opening instant.
     opened: bool,
     pub diagnostics: Vec<String>,
-    /// The viewing country's fighter for the flying mode, or why it has none
-    /// ([`viewing_fighter`]).
-    fighter: Fighter,
-}
-
-/// A plan's fighter for the flying mode, or why it has none; a plan built for no hour has none.
-#[derive(Clone, Debug)]
-struct Fighter(Result<PlayerAircraft, String>);
-
-impl Default for Fighter {
-    fn default() -> Self {
-        Self(Err(NO_HOUR.to_owned()))
-    }
-}
-
-/// Why a plan built for no hour has no fighter.
-const NO_HOUR: &str = "no hour is shown";
-
-/// The aircraft the flying mode flies: an entity baked into [`AircraftAssets::library`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PlayerAircraft {
-    /// The entity's name in the recorded content stack.
-    pub name: String,
-    /// Its slot in the aircraft library.
-    pub slot: usize,
-}
-
-/// The mission mask bits of the missions only fighters fly: air superiority (bit 0) and
-/// interception (bit 2), which the flying-aircraft scans draw a reached province for and a
-/// carrier in combat admits over its own region.
-pub const FIGHTER_MISSIONS: u32 = (1 << 0) | (1 << 2);
-
-/// The viewing country's fighter: the primary variant of its wing with the most planes whose
-/// variant flies the fighters' own missions ([`FIGHTER_MISSIONS`]), resolved by the airborne
-/// ladder that draws its flights (`model`) and baked into the library. Wings tie in stored order,
-/// and a wing whose aircraft cannot be drawn gives way to the next.
-fn viewing_fighter(
-    frame: &DecodedFrame,
-    assets: &AircraftAssets,
-    links: &BTreeMap<u32, u32>,
-    ours: u32,
-    model: &dyn Fn(u64, u32) -> Result<Option<String>, String>,
-) -> Result<PlayerAircraft, String> {
-    let error = |error: io::Error| error.to_string();
-    let Available::Complete(wings) = rows::<tables::AirWings>(frame).map_err(error)? else {
-        return Err("the hour's air wings are not completely recorded".into());
-    };
-    let definitions = frame
-        .complete::<tables::VariantDefinitions>()
-        .map_err(error)?;
-    let ours_wings: BTreeSet<u64> = wings
-        .iter()
-        .filter(|wing| wing.planes > 0 && links.get(&effective_country(wing)) == Some(&ours))
-        .map(|wing| wing.id)
-        .collect();
-    let primaries = aircraft_model::primaries(
-        frame.complete::<tables::WingEquipment>().map_err(error)?,
-        |wing| ours_wings.contains(&wing),
-    );
-    let fighters: BTreeSet<u64> = definitions
-        .iter()
-        .filter(|row| row.mission_mask & FIGHTER_MISSIONS != 0)
-        .map(|row| row.id)
-        .collect();
-    let mut candidates: Vec<(&AirWingRow, u64)> = wings
-        .iter()
-        .filter_map(|wing| {
-            let variant = *primaries.get(&wing.id)?;
-            fighters.contains(&variant).then_some((wing, variant))
-        })
-        .collect();
-    candidates.sort_by_key(|(wing, _)| std::cmp::Reverse(wing.planes));
-    let mut refused = Vec::new();
-    for (wing, variant) in candidates {
-        let resolved = model(variant, effective_country(wing))
-            .map_err(Unresolved::Token)
-            .and_then(|entity| entity.ok_or_else(|| Unresolved::Missing(format!("variant {variant}"))))
-            .and_then(|entity| {
-                let slot = assets.resolve(&entity)?;
-                Ok(PlayerAircraft { name: entity, slot })
-            });
-        match resolved {
-            Ok(aircraft) => return Ok(aircraft),
-            Err(why) => refused.push(format!(
-                "wing {}: {}",
-                wing.id,
-                match why {
-                    Unresolved::Identity => "missing equipment identity".to_owned(),
-                    Unresolved::Missing(name) => format!("unresolved aircraft equipment {name}"),
-                    Unresolved::Token(reason) => reason,
-                    Unresolved::Refused { entity, reason } => {
-                        format!("its aircraft entity {entity} is refused: {reason}")
-                    }
-                }
-            )),
-        }
-    }
-    if refused.is_empty() {
-        Err("the viewing country fields no fighter".into())
-    } else {
-        Err(format!(
-            "none of the viewing country's fighters can be drawn: {}",
-            refused.join("; ")
-        ))
-    }
 }
 
 /// Launch explosions' impact ids set this bit, apart from the flights'.
@@ -3344,7 +3213,6 @@ impl AircraftPlan {
             ..TrainingGate::default()
         };
         out.diagnostics.extend(gap);
-        out.fighter = Fighter(viewing_fighter(frame, assets, &links, ours, model));
         let (Available::Complete(wings), Available::Complete(registrations), Some(registry)) = (
             rows::<tables::AirWings>(frame)?,
             rows::<tables::AirRegionalMissions>(frame)?,
@@ -4205,11 +4073,6 @@ impl AircraftPlan {
             .enumerate()
             .filter_map(|(index, launch)| Some((launch.mesh, launch.instance(index, seconds)?)))
             .collect()
-    }
-
-    /// The viewing country's fighter for the flying mode, or why it has none.
-    pub fn fighter(&self) -> Result<&PlayerAircraft, &str> {
-        self.fighter.0.as_ref().map_err(String::as_str)
     }
 
     /// The aircraft in the air at `seconds`, every mission placed so each keeps its player,

@@ -493,6 +493,28 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             findings.extend(content.operatives()?.iter().cloned());
             Ok("Native operative skill definitions, operation assignment names/icons, mission text icons and cooldown/capture-duration content checked through shared operative preparation. Names, experience, assignments, full-reference character portraits, captured state/captor/date and country names require recorded OperativeMemberships, CharacterOperatives, CharacterPortraits, Operations, LexicalTokens, SimulationFeatures, country naming tables and actual supplying reads.".into())
         }
+        aircraft_catalogue::AircraftCatalogue::KEY => {
+            let read = aircraft_catalogue::Content::read(content.catalogue()?)
+                .map_err(|why| why.to_string())?;
+            let listing = read.catalogue(&[]);
+            findings.extend(
+                read.warnings
+                    .iter()
+                    .chain(&listing.diagnostics)
+                    .map(|warning| Finding::new(Kind::Warning, "aircraft catalogue", warning.clone())),
+            );
+            let refused = installed_content::equipment_graphics::aircraft::Catalogue::refusal_counts(&listing.entries);
+            for (kind, count) in refused {
+                let mut finding = Finding::new(Kind::Refused, "aircraft catalogue", kind.label());
+                finding.count = Some(count);
+                findings.push(finding);
+            }
+            Ok(format!(
+                "{} aircraft names among {} entities and meshes, from the registered descriptor roster, equipment categories and graphics pools; models recorded designs saved require recorded VariantDefinitions and LexicalTokens.",
+                listing.entries.iter().filter(|entry| entry.aircraft()).count(),
+                listing.entries.len()
+            ))
+        }
         agency_comparison::AgencyComparison::KEY => {
             findings.extend(content.agency()?.check_agency());
             Ok("Uncreated agency name and defense-label template checked through shared intelligence preparation; created names, defense values, signed acquired upgrade inventory, agency/operative rosters, country identities and dates require recorded IntelligenceAgencies, AgencyUpgradeLevels, LexicalTokens, OperativeMemberships, Countries, CountryLinks and Campaign rows.".into())

@@ -314,6 +314,8 @@ counters: CounterFilter | null,
  * never joined to a path; a mod no longer installed keeps its name.
  */
 visualMods: Array<{ id: string, name: string }> | null, };
+export type FlyAircraftStatus = { aircraft: string | null, state: FlyAircraftState, };
+export type FlyAircraftState = { "kind": "loading" } | { "kind": "ready" } | { "kind": "refused", reason: string, };
 export type RecordedMod = { recordedId: string, name: string, };
 export type ResolvedMapSettings = { graphics: MapGraphics, audio: MapAudio, counters: CounterFilter,
 /**
@@ -3888,6 +3890,62 @@ defenseLabel: string | null,
  * One recording-level reason, rather than repeating it at every agency read.
  */
 upgradesUnrecorded: string | null, warnings: Array<string>, };
+export type AircraftCatalogueParams = { scope: AircraftScope,
+/**
+ * Matched without case against names, titles and what references them;
+ * empty matches every name.
+ */
+query: string,
+/**
+ * The first matching entry to answer.
+ */
+first: number,
+/**
+ * How many matching entries to answer from `first`.
+ */
+count: number, };
+export type AircraftCatalogueReply = {
+/**
+ * How many of the scope's entries match the query.
+ */
+matching: number,
+/**
+ * How many names are an aircraft's, and how many the complete listing has.
+ */
+aircraft: number, all: number, first: number,
+/**
+ * Matching entries from `first`: flyable ones first, then refused ones,
+ * each by name bytes.
+ */
+entries: Array<AircraftEntry>,
+/**
+ * The scope's refused entries, whatever the query, by kind of reason.
+ */
+refusals: Array<AircraftRefusalCount>, warnings: Array<string>, };
+export type AircraftScope = "aircraft" | "all";
+export type AircraftKind = "entity" | "mesh" | "unregistered";
+export type AircraftReference = { "kind": "pool", bucket: string, equipment: string, file: string, } | { "kind": "ladder", key: string, prefix: string | null, } | { "kind": "design", equipment: string, } | { "kind": "cloneOf", of: string, } | { "kind": "clonedBy", by: string, };
+export type AircraftRefusalKind = "unregistered" | "declaration" | "noGeometry";
+export type AircraftRefusal = { kind: AircraftRefusalKind, reason: string, };
+export type AircraftEntry = {
+/**
+ * The entity or mesh name the map flies, exactly as registered.
+ */
+name: string, kind: AircraftKind,
+/**
+ * The localised names of the equipment that references it, in reference
+ * order without repeats; empty when none has one.
+ */
+titles: Array<string>,
+/**
+ * Why it is an aircraft's; empty for a name only the complete listing has.
+ */
+references: Array<AircraftReference>,
+/**
+ * Why it cannot be flown.
+ */
+refusal: AircraftRefusal | null, };
+export type AircraftRefusalCount = { kind: AircraftRefusalKind, label: string, count: number, };
 /** The native command byte budget, including its envelope. */
 export const MAX_MESSAGE_BYTES = 33554432;
 /** Refusals for want of room: a message starting with one may be tried again. */
@@ -3898,6 +3956,6 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "research", "technology-artwork", "country-flags", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "place-names", "country-styles", "country-groups", "wars", "country-stability", "stability-parts", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-ledger", "peace-deals", "resource-balance", "decryption", "production-lines", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "event-feed", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "operative-placements", "operatives-roster", "agency-comparison"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "research", "technology-artwork", "country-flags", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "place-names", "country-styles", "country-groups", "wars", "country-stability", "stability-parts", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-ledger", "peace-deals", "resource-balance", "decryption", "production-lines", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "event-feed", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue"] as const;
 /** Products served separately from whole-branch history reads. */
 export const INTERACTIVE_PRODUCTS = ["focus-artwork", "technology-artwork", "country-flags", "unit-leader-portraits", "land-battle-terrain", "place-names", "country-styles", "air-ace-portraits", "stockpile-artwork"] as const;

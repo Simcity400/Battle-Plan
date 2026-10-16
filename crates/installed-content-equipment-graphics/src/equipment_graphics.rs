@@ -27,6 +27,7 @@ use crate::{
     },
 };
 
+pub mod aircraft;
 pub mod context;
 pub mod countries;
 
@@ -82,12 +83,41 @@ pub struct Context<'a> {
     pub capital_continent: Option<&'a str>,
 }
 
+/// A `graphic_db` file's top-level key, which context a lookup visits it in.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Bucket {
+pub enum Bucket {
     Default,
+    /// A declared country tag, upper-cased.
     Country(String),
+    /// `FACTION_` and three characters, the three as written.
     Faction(String),
+    /// A continent of `map/default.map`, folded.
     Continent(String),
+}
+
+impl std::fmt::Display for Bucket {
+    /// The key as the lookup reads it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Default => f.write_str("default"),
+            Self::Country(tag) => f.write_str(tag),
+            Self::Faction(tag) => write!(f, "FACTION_{tag}"),
+            Self::Continent(continent) => f.write_str(continent),
+        }
+    }
+}
+
+/// One model a graphics pool lists ([`Content::models`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolModel<'a> {
+    pub bucket: &'a Bucket,
+    /// The equipment key the pool is declared under, ASCII-folded as lookups
+    /// compare it.
+    pub equipment: &'a str,
+    /// The `graphic_db` file that declares the pool.
+    pub file: &'a str,
+    /// The model's entity or mesh name, exactly as authored.
+    pub model: &'a str,
 }
 
 /// A pool `limit`, evaluated in an empty scope. Only scope-free predicates
@@ -472,6 +502,25 @@ impl Content {
             }
         }
         Ok(())
+    }
+
+    /// Every model every pool lists, whatever context or limit would visit it:
+    /// by bucket and folded equipment key, each key's pools in declaration
+    /// order and each pool's models as authored. A model listed several times
+    /// is listed each time.
+    pub fn models(&self) -> impl Iterator<Item = PoolModel<'_>> {
+        self.buckets.iter().flat_map(|(bucket, definitions)| {
+            definitions.iter().flat_map(move |(equipment, pools)| {
+                pools.iter().flat_map(move |pool| {
+                    pool.models.iter().map(move |model| PoolModel {
+                        bucket,
+                        equipment,
+                        file: &pool.file,
+                        model,
+                    })
+                })
+            })
+        })
     }
 
     /// Every pool limit predicate the lookup refuses, with its file, bucket,

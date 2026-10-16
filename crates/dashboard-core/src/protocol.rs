@@ -95,6 +95,31 @@ pub enum NativeEvent {
         #[serde(default)]
         overlays: bool,
     },
+    /// Where the aircraft [`MapAction::FlyAircraft`] chose stands: loading,
+    /// ready to fly, or refused with why.
+    FlyAircraft {
+        aircraft: Option<String>,
+        state: FlyAircraftState,
+    },
+}
+
+/// The full map's chosen aircraft and whether it can be flown.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, ts_rs::TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FlyAircraftStatus {
+    pub aircraft: Option<String>,
+    pub state: FlyAircraftState,
+}
+
+/// What loading a chosen aircraft came to. No choice is ready at once.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, ts_rs::TS)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum FlyAircraftState {
+    /// Its files are being read.
+    Loading,
+    Ready,
+    /// It cannot be flown, and why.
+    Refused { reason: String },
 }
 
 /// The manual map interface scales the viewer accepts. `RangeInclusive::contains`
@@ -148,6 +173,11 @@ pub enum MapAction {
         #[serde(default)]
         overlays: bool,
     },
+    /// The aircraft the full map's Fly mode flies: the exact name of an entity
+    /// or bare `pdxmesh` its content stack registers, as the aircraft catalogue
+    /// lists it. `None` chooses none; there is no default. The viewer answers
+    /// with [`NativeEvent::FlyAircraft`].
+    FlyAircraft { aircraft: Option<String> },
 }
 
 /// How the full map's camera moves.
@@ -334,6 +364,16 @@ impl MapAction {
             Self::UiScale { scale } => {
                 if scale.is_some_and(|scale| !MAP_UI_SCALE_RANGE.contains(&scale)) {
                     return Err("Invalid map UI scale");
+                }
+            }
+            Self::FlyAircraft { aircraft } => {
+                // A name is looked up in the map's own registered roster, which
+                // refuses one it does not hold by name.
+                if aircraft
+                    .as_ref()
+                    .is_some_and(|name| name.is_empty() || name.contains('\0'))
+                {
+                    return Err("Invalid aircraft name");
                 }
             }
             Self::Inspect
@@ -773,6 +813,43 @@ mod tests {
             }
             .validate()
             .is_err()
+        );
+    }
+
+    #[test]
+    fn an_aircraft_choice_is_any_nonempty_name_without_nul_or_none() {
+        let choose = |aircraft: Option<&str>| MapAction::FlyAircraft {
+            aircraft: aircraft.map(str::to_owned),
+        };
+        for name in [
+            Some("GER_fighter_equipment_1_entity"),
+            Some("modded plane ü"),
+            Some(&*"x".repeat(4096)),
+            None,
+        ] {
+            assert!(choose(name).validate().is_ok(), "{name:?}");
+        }
+        for name in ["", "plane\0entity"] {
+            assert!(choose(Some(name)).validate().is_err(), "{name:?}");
+        }
+        let action: MapAction =
+            serde_json::from_str(r#"{"kind":"flyAircraft","aircraft":"light_plane_entity"}"#)
+                .unwrap();
+        assert!(matches!(action, MapAction::FlyAircraft { aircraft: Some(name) } if name == "light_plane_entity"));
+        assert!(serde_json::from_str::<MapAction>(r#"{"kind":"flyAircraft","aircraft":null}"#).is_ok());
+        let event = NativeEvent::FlyAircraft {
+            aircraft: Some("light_plane_entity".into()),
+            state: FlyAircraftState::Refused {
+                reason: "its mesh did not load".into(),
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&event).unwrap(),
+            serde_json::json!({
+                "event": "fly_aircraft",
+                "aircraft": "light_plane_entity",
+                "state": { "kind": "refused", "reason": "its mesh did not load" }
+            })
         );
     }
 

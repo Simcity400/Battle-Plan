@@ -5,6 +5,7 @@
 //! service, transport, host and frontend never name a product; they route by
 //! its key.
 
+pub mod aircraft_catalogue;
 pub mod country_flags;
 pub mod event_feed;
 pub mod focus_artwork;
@@ -274,6 +275,7 @@ pub static PRODUCTS: &[Registered] = &[
     register_prepared::<operative_placements::OperativePlacements>(),
     register_prepared::<operatives_roster::OperativesRoster>(),
     register_prepared::<agency_comparison::AgencyComparison>(),
+    register::<aircraft_catalogue::AircraftCatalogue>(),
 ];
 
 pub fn find(key: &str) -> Option<&'static Registered> {

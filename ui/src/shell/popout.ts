@@ -36,6 +36,8 @@ export const configurePopout = (generation: number, options: MapOptions) => invo
  * mode when `overlays`; its status reports the mode and choice it takes. */
 export const setPopoutCameraMode = (generation: number, mode: CameraMode, overlays: boolean) =>
   invoke<void>('popout_camera_mode', { generation, mode, overlays });
+/** Tells pop-out window `generation`'s map the aircraft Fly mode flies, or none; its status reports how it loaded. */
+export const setPopoutFlyAircraft = (generation: number, aircraft: string | null) => invoke<void>('popout_fly_aircraft', { generation, aircraft });
 
 /** The `popout-state` event carries two payloads: the whole state from opening and closing, and
  * the viewer's own status in between. An event no newer than the state shown changes nothing; a

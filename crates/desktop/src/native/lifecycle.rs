@@ -140,6 +140,7 @@ impl NativeHost {
         inner.status.camera_mode = Default::default();
         inner.status.camera_overlays = false;
         inner.pending.gamepad = None;
+        inner.status.fly_aircraft = None;
         inner.last_diagnostic = None;
         if inner.active_dashboard {
             let views = inner.dashboard_views.clone().unwrap_or_default();
@@ -245,6 +246,10 @@ impl NativeHost {
         }
         match event {
             NativeEvent::MapDetails { details } => inner.status.map_details = Some(details),
+            NativeEvent::FlyAircraft { aircraft, state } => {
+                inner.status.fly_aircraft =
+                    Some(dashboard::protocol::FlyAircraftStatus { aircraft, state });
+            }
             NativeEvent::ToggleDiagnostics => {
                 // The shortcut pressed in the native map; the host owns the choice.
                 drop(inner);
@@ -351,6 +356,7 @@ impl NativeHost {
                         inner.generation += 1;
                         inner.status.running = false;
                         inner.status.ready = false;
+                        inner.status.fly_aircraft = None;
                         inner.pending.data.clear();
                         if !inner.shutting_down {
                             let reason = match result {

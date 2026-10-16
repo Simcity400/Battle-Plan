@@ -109,6 +109,7 @@ impl Viewer {
         for action in actions {
             self.host_map_action(action, ctx, frame);
         }
+        self.poll_fly_aircraft(ctx);
         if self.dashboard_active {
             // Full-map loading may have started before the tab changed. Finish
             // it once and lend its verified content to dashboard maps.
@@ -339,8 +340,23 @@ impl Viewer {
             }
             MapAction::Inspect => self.report_map_details(),
             MapAction::CameraMode { mode, overlays } => self.set_camera_mode(mode, overlays, ctx),
+            MapAction::FlyAircraft { aircraft } => self.fly_aircraft.choose(aircraft),
         }
         ctx.request_repaint();
+    }
+
+    /// Advances the chosen aircraft's bake for the open map and reports a
+    /// changed status.
+    fn poll_fly_aircraft(&mut self, ctx: &egui::Context) {
+        let repaint = ctx.clone();
+        let assets = self.document.as_ref().map(|document| &document.content.aircraft);
+        if let Some(status) = self
+            .fly_aircraft
+            .poll(assets, move || repaint.request_repaint())
+            && let Some(embedded) = &self.embedded
+        {
+            embedded.report_fly_aircraft(status);
+        }
     }
 
     fn report_map_details(&self) {

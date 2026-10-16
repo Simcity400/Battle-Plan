@@ -219,6 +219,7 @@ fn main() {
             popout::popout_seek,
             popout::popout_configure,
             popout::popout_camera_mode,
+            popout::popout_fly_aircraft,
             dashboard_service::dashboard_open_source,
             dashboard_service::dashboard_product,
             dashboard_service::dashboard_prepared_query,

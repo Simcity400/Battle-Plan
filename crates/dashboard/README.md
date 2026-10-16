@@ -114,6 +114,10 @@ resolvers and reply builders.
 See [peace-deals.rs](../dashboard-peace-deals/src/products/peace_deals.rs) and the
 [Territory transfers guide](../../ui/src/widgets/territory-transfers/README.md).
 
+### Aircraft catalogue
+
+[aircraft-catalogue](src/products/aircraft_catalogue.rs) answers the Campaign map's Fly aircraft picker a page at a time. It is the [content catalogue of aircraft](../installed-content-equipment-graphics/README.md) over the recording's registered descriptor roster, equipment database and graphics pools, with every model a recorded design saved on any branch: each daily read of `VariantDefinitions`, its type spelled by that hour's `LexicalTokens`. It is built once per source and content binding; each request filters a scope (`aircraft`, names something makes an aircraft's, or `all`, every registered entity and bare mesh and every name a reference makes) by a case-free query over names, titles and reference keys, and answers `count` entries from `first`, flyable ones first. Titles are the localised names of the referencing equipment, a ladder prefix's own (`ENG_fighter_equipment_2`) before the key's. Refused entries keep their reason and are counted by kind over the scope. An equipment database or graphics pools that do not read leave every name listed with that reason; nothing is capped, so every entry is reachable a page at a time.
+
 ## Background preparation
 
 Background preparation defaults on. The optional `background_preparation` choice

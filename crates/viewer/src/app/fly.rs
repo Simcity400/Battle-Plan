@@ -52,6 +52,16 @@ impl Scripted {
     }
 }
 
+/// What the scene draws for the flight this frame: the chosen aircraft's library slot `aircraft`
+/// where the flight's view places it, and nothing at all while no aircraft is chosen, whatever
+/// the view would show.
+pub(super) fn placed(
+    aircraft: Option<usize>,
+    sight: Option<ModelInstance>,
+) -> Option<(usize, ModelInstance)> {
+    aircraft.zip(sight)
+}
+
 /// What the flight knows of the aircraft in library slot `aircraft`: its model's bounding radius
 /// ([`flight::DEFAULT_SIZE`] without one), whether its entity has the explode state, and how the
 /// content's planes meet the ground. Unreadable ground defines meet the drawn surface itself and
@@ -81,18 +91,19 @@ fn airframe(document: &Document, aircraft: Option<usize>) -> Airframe {
 }
 
 impl Viewer {
-    /// The aircraft the flying mode flies. Until the aircraft picker supplies the user's choice,
-    /// it is the shown hour's fighter of the viewing country
-    /// ([`viewer_world::map::aircraft::AircraftPlan::fighter`]).
-    pub(crate) fn fly_aircraft(&self) -> Option<&PlayerAircraft> {
-        self.scene.as_ref()?.fighter().ok()
+    /// The aircraft the flying mode flies over `document`'s map: the one the user chose, once it
+    /// has baked for that map ([`super::fly_aircraft::FlyAircraft::ready`]). There is no default:
+    /// until an aircraft is chosen, the flying mode is a free eye with no model. The map being
+    /// drawn is passed in, as a frame holds it apart from `self.document` while it draws.
+    pub(crate) fn fly_aircraft(&self, document: &Document) -> Option<&PlayerAircraft> {
+        self.fly_aircraft.ready(&document.aircraft)
     }
 
     /// What the flying mode cannot do as the content says: fly an aircraft, or crash it as the
     /// content's planes meet the ground.
     pub(super) fn fly_refusals(&self, document: &Document) -> Vec<String> {
         let mut refusals = Vec::new();
-        if let Some(Err(reason)) = self.scene.as_ref().map(|scene| scene.fighter()) {
+        if let Some(reason) = self.fly_aircraft.refusal() {
             refusals.push(format!(
                 "The flying mode flies without an aircraft: {reason}"
             ));
@@ -126,7 +137,7 @@ impl Viewer {
             values: document.assets.heightmap_texels(),
         };
         let floor = |x: f32, z: f32| field.surface_height(x, z);
-        let aircraft = self.fly_aircraft().map(|aircraft| aircraft.slot);
+        let aircraft = self.fly_aircraft(document).map(|aircraft| aircraft.slot);
         let airframe = airframe(document, aircraft);
         let scripted = self.options.fly;
         let flight = self.flight.get_or_insert_with(|| match scripted {
@@ -147,7 +158,7 @@ impl Viewer {
             &mut self.fly_footprints,
         );
         let sight = flight.sight(map, &floor, &airframe);
-        self.flying = aircraft.zip(sight.aircraft);
+        self.flying = placed(aircraft, sight.aircraft);
         sight.camera
     }
 
@@ -165,13 +176,13 @@ impl Viewer {
     }
 
     /// The flight's state as a window dump reports it.
-    pub(super) fn flight_line(&self) -> Option<String> {
+    pub(super) fn flight_line(&self, document: &Document) -> Option<String> {
         let flight = self.flight.as_ref()?;
         let [x, y, z] = flight.position;
         Some(format!(
             "Flight: {} at {x:.3},{y:.3},{z:.3}, heading {:.2}, pitch {:.2}, bank {:.2} degrees, \
              {:.2} units/s, {:?} view, {:?}, {} crashes",
-            self.fly_aircraft()
+            self.fly_aircraft(document)
                 .map_or("no aircraft", |aircraft| aircraft.name.as_str()),
             flight.yaw.to_degrees(),
             flight.pitch.to_degrees(),

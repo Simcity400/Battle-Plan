@@ -18,7 +18,8 @@
 //! The pop-out's map has its own camera mode and overlay choice: the campaign map's controls
 //! choose them for window `generation` ([`popout_camera_mode`]), and the map's own shortcut cycles
 //! the mode in the window. Its viewer reports both in its status. Controllers reach it while its window is in front
-//! ([`PopOuts::in_front`]).
+//! ([`PopOuts::in_front`]). The campaign's aircraft for Fly mode reaches it by its own command
+//! ([`popout_fly_aircraft`]), and its viewer reports in its status how that aircraft loaded.
 mod lifecycle;
 mod shell;
 
@@ -158,8 +159,9 @@ fn mirrored(action: &MapAction) -> Option<Mirror> {
         | MapAction::Export { .. }
         | MapAction::Inspect
         | MapAction::Folders { .. }
-        // Each map has its own camera.
-        | MapAction::CameraMode { .. } => None,
+        // Each map has its own camera, and each is told its aircraft by its own command.
+        | MapAction::CameraMode { .. }
+        | MapAction::FlyAircraft { .. } => None,
     }
 }
 
@@ -779,6 +781,17 @@ pub fn popout_camera_mode(
     running(&popouts, Some(generation))?.map_action(MapAction::CameraMode { mode, overlays })
 }
 
+/// The aircraft the map of pop-out window `generation` flies in Fly mode: the campaign's one
+/// choice, which the campaign map's controls send to each map; its status reports how it loaded.
+#[tauri::command]
+pub fn popout_fly_aircraft(
+    popouts: State<'_, PopOuts>,
+    generation: u64,
+    aircraft: Option<String>,
+) -> Result<(), String> {
+    running(&popouts, Some(generation))?.map_action(MapAction::FlyAircraft { aircraft })
+}
+
 /// Exports the map of pop-out window `generation`, captured before the save dialog opened; a
 /// window that closed meanwhile is refused.
 pub fn export(popouts: &PopOuts, generation: Option<u64>, path: String) -> Result<(), String> {
@@ -828,6 +841,9 @@ mod tests {
             MapAction::CameraMode {
                 mode: dashboard::protocol::CameraMode::Fly,
                 overlays: true,
+            },
+            MapAction::FlyAircraft {
+                aircraft: Some("plane_entity".into()),
             },
         ] {
             assert_eq!(mirrored(&action), None, "{action:?}");

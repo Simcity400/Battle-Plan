@@ -240,9 +240,11 @@ pub struct ModelLibrary {
     /// against it. Geometry is local to the mesh and shared by all its users.
     geometry_cache: BTreeMap<native::GeometryKey, Arc<super::mesh_shader::Geometry>>,
     attachment_refusals: BTreeMap<String, usize>,
+    /// Each requested name that did not bake, and why.
+    pub failed: BTreeMap<String, String>,
 }
 debug_fields!(ModelLibrary(this) {
-    decode, palette, meshes, materials, textures, spaces, index, paths, animations, rigs, attachment_refusals
+    decode, palette, meshes, materials, textures, spaces, index, paths, animations, rigs, attachment_refusals, failed
 } {
     geometry => this.geometry_cache
 });
@@ -376,7 +378,7 @@ impl ModelLibrary {
         // An empty list bakes an empty library: `chunks` needs a nonzero
         // size and then yields no shard.
         let chunk = unique.len().div_ceil(shards).max(1);
-        let baked: Vec<(ModelLibrary, Vec<String>)> = std::thread::scope(|scope| {
+        let baked: Vec<(ModelLibrary, Vec<(String, String)>)> = std::thread::scope(|scope| {
             let mut handles = Vec::new();
             for shard_names in unique.chunks(chunk).collect::<Vec<_>>() {
                 handles.push(scope.spawn(move || {
@@ -388,7 +390,7 @@ impl ModelLibrary {
                     for name in shard_names {
                         match library.add(layers, descriptors, name) {
                             Ok(()) => {}
-                            Err(error) => missing.push(format!("{name} ({error})")),
+                            Err(error) => missing.push(((*name).clone(), error.to_string())),
                         }
                     }
                     (library, missing)
@@ -406,7 +408,10 @@ impl ModelLibrary {
         };
         let mut missing = Vec::new();
         for (shard, shard_missing) in baked {
-            missing.extend(shard_missing);
+            for (name, error) in shard_missing {
+                missing.push(format!("{name} ({error})"));
+                library.failed.insert(name, error);
+            }
             library.merge(shard);
         }
         if !library.attachment_refusals.is_empty() {
@@ -558,6 +563,7 @@ impl ModelLibrary {
         for (reason, count) in shard.attachment_refusals {
             *self.attachment_refusals.entry(reason).or_default() += count;
         }
+        self.failed.extend(shard.failed);
         let palette_base = self.palette.len();
         self.palette.extend(shard.palette);
         assert_eq!(shard.meshes.len(), shard.rigs.len(), "one rig per mesh");

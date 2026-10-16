@@ -74,6 +74,8 @@ pub fn typescript_contract() -> String {
         protocol::CounterFilter::decl(),
         protocol::CameraMode::decl(),
         protocol::CampaignMapSettings::decl(),
+        protocol::FlyAircraftStatus::decl(),
+        protocol::FlyAircraftState::decl(),
         map_settings::RecordedMod::decl(),
         protocol::ResolvedMapSettings::decl(),
         map_settings::Reply::decl(),

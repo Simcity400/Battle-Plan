@@ -326,6 +326,49 @@ fn the_roster_registers_entities_in_declaration_order() {
     assert_eq!(mesh("vc"), Some("o"));
     assert!(!entities.contains_key("quoted"));
     assert!(roster.unreadable.is_empty());
+    // Each registered copy keeps the parent it named; a dropped clone is none,
+    // and a lower-version redeclaration leaves a copy one.
+    assert_eq!(
+        roster.clones,
+        BTreeMap::from(
+            [
+                ("after_first", "first"),
+                ("child", "base"),
+                ("cross", "child"),
+                ("vc", "v")
+            ]
+            .map(|(child, parent)| (child.to_owned(), parent.to_owned()))
+        )
+    );
+}
+
+/// A plain block that replaces a registered copy leaves a definition of its
+/// own, no longer a clone; a later clone block makes it one again.
+#[cfg(feature = "test-support")]
+#[test]
+fn a_plain_redeclaration_ends_a_copy() {
+    let roster = roster_of(
+        "redeclared-clones",
+        &[
+            (
+                "gfx/models/meshes.gfx",
+                b"objectTypes = { pdxmesh = { name = m file = m.mesh } pdxmesh = { name = n file = n.mesh } }",
+            ),
+            (
+                "gfx/entities/a.asset",
+                br#"entity = { name = "base" pdxmesh = "m" }
+                    entity = { name = "other" pdxmesh = "n" }
+                    entity = { name = "skin" clone = "base" }
+                    entity = { name = "skin" pdxmesh = "n" }
+                    entity = { name = "again" pdxmesh = "n" }
+                    entity = { name = "again" clone = "other" }"#,
+            ),
+        ],
+        &[],
+    );
+    assert_eq!(roster.descriptors.entities["skin"].mesh.as_deref(), Some("n"));
+    assert!(!roster.clones.contains_key("skin"));
+    assert_eq!(roster.clones["again"], "other");
 }
 
 /// A clone of a name an unreadable file holds may copy that file's

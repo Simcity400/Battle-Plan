@@ -283,6 +283,8 @@ struct Outgoing {
     toggle_diagnostics: bool,
     /// The full map's camera mode and overlay choice to report; a newer pair replaces it.
     camera_mode: Option<(CameraMode, bool)>,
+    /// The chosen aircraft's latest status not yet sent.
+    fly_aircraft: Option<dashboard::protocol::FlyAircraftStatus>,
 }
 
 impl Outgoing {
@@ -313,6 +315,7 @@ impl Outgoing {
     fn is_empty(&self) -> bool {
         !self.toggle_diagnostics
             && self.camera_mode.is_none()
+            && self.fly_aircraft.is_none()
             && self.ready.is_none()
             && self.details.is_none()
             && self.state.is_none()
@@ -576,6 +579,12 @@ impl Parent {
                             .map(|response| NativeEvent::Data { response }),
                         outgoing.take_toggle_diagnostics(),
                         outgoing.take_camera_mode(),
+                        outgoing.fly_aircraft.take().map(|status| {
+                            NativeEvent::FlyAircraft {
+                                aircraft: status.aircraft,
+                                state: status.state,
+                            }
+                        }),
                     ];
                     drop(outgoing);
                     output.output_space.notify_all();
@@ -709,6 +718,33 @@ impl Controller {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .details = Some(details);
+        self.shared.output_ready.notify_one();
+    }
+
+    /// Sends the chosen aircraft's status; one not yet sent is replaced.
+    pub fn report_fly_aircraft(&self, mut status: dashboard::protocol::FlyAircraftStatus) {
+        if let dashboard::protocol::FlyAircraftState::Refused { reason } = &mut status.state {
+            *reason = bounded_message(reason);
+        }
+        if status
+            .aircraft
+            .as_ref()
+            .is_some_and(|name| name.len() > MAX_MESSAGE_BYTES / 2)
+        {
+            // An event past the line budget would close the pipe, so a name too
+            // long to echo is reported without it.
+            status = dashboard::protocol::FlyAircraftStatus {
+                aircraft: None,
+                state: dashboard::protocol::FlyAircraftState::Refused {
+                    reason: "The chosen aircraft's name is too long to report".into(),
+                },
+            };
+        }
+        self.shared
+            .outgoing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .fly_aircraft = Some(status);
         self.shared.output_ready.notify_one();
     }
 

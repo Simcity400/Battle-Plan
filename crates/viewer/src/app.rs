@@ -68,6 +68,7 @@ use {
 mod embedded;
 mod faction_highlight;
 pub(crate) mod fly;
+mod fly_aircraft;
 mod presentation;
 mod walk;
 
@@ -116,6 +117,8 @@ fn faction_hover_frame_path_uses_only_prepared_border_inputs() {
 
 #[cfg(test)]
 mod render_failure_tests;
+#[cfg(test)]
+mod fly_render_tests;
 
 /// Per-rebuild CPU laps of one window frame, printed with `BATTLE_PLAN_VIEWER_PROFILE`.
 struct Laps {
@@ -766,6 +769,8 @@ pub struct Viewer {
     /// The screen-space map interface's scale setting; see [`viewer_foundation::map::ui_scale`].
     /// The desktop host sets it with `MapAction::UiScale`.
     pub(crate) ui_scale: Setting,
+    /// The aircraft the host chose for Fly mode and its bake.
+    fly_aircraft: fly_aircraft::FlyAircraft,
     /// The Match game scale and its note, keyed by the monitors' generation
     /// and the document's content, so a frame only re-resolves on a change.
     match_game: Option<MatchGame>,
@@ -1147,6 +1152,7 @@ impl Viewer {
             resolved_settings: Default::default(),
             // The host sends its setting before the map; a capture pins its own.
             ui_scale: Setting::MatchGame,
+            fly_aircraft: Default::default(),
             match_game: None,
             monitor_seen: None,
             map_preferences_seen: None,
@@ -2029,7 +2035,7 @@ impl Viewer {
                     "Camera: {},{},{}",
                     camera.center[0], camera.center[1], camera.height
                 );
-                if let Some(line) = self.flight_line() {
+                if let Some(line) = self.flight_line(document) {
                     println!("{line}");
                 }
                 if let Some(time) = capture.time {

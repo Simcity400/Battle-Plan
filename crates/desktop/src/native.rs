@@ -32,6 +32,9 @@ pub struct HostStatus {
     pub camera_mode: dashboard::protocol::CameraMode,
     /// Whether flying and walking draw the map's interface, as its viewer last reported it.
     pub camera_overlays: bool,
+    /// The aircraft the running viewer was told to fly, as it last reported it;
+    /// a viewer that starts has none until the frontend chooses again.
+    pub fly_aircraft: Option<dashboard::protocol::FlyAircraftStatus>,
 }
 
 #[derive(Default)]
@@ -246,11 +249,18 @@ impl NativeHost {
         if !inner.status.ready || inner.shutting_down {
             return Err("The native map is not ready".into());
         }
-        if matches!(action, dashboard::protocol::MapAction::CameraMode { .. }) {
-            // Only the latest camera mode matters, so quick changes never fill the queue.
-            inner.pending.actions.retain(|queued| {
-                !matches!(queued, dashboard::protocol::MapAction::CameraMode { .. })
-            });
+        if matches!(
+            action,
+            dashboard::protocol::MapAction::CameraMode { .. }
+                | dashboard::protocol::MapAction::FlyAircraft { .. }
+        ) {
+            // Only the latest camera mode and aircraft matter, so quick changes never fill the
+            // queue.
+            let kind = std::mem::discriminant(&action);
+            inner
+                .pending
+                .actions
+                .retain(|queued| std::mem::discriminant(queued) != kind);
         }
         inner.pending.action_room()?;
         if let dashboard::protocol::MapAction::Unload { path } = &action {

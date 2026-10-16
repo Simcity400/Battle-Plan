@@ -1,6 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { CameraMode, ReplayMetadata as GeneratedReplayMetadata } from '../generated/dashboard';
+import type { CameraMode, FlyAircraftStatus, ReplayMetadata as GeneratedReplayMetadata } from '../generated/dashboard';
 
 export type ReplayMetadata = GeneratedReplayMetadata & { revision: string };
 
@@ -26,12 +26,14 @@ export interface DesktopState {
   cameraMode: CameraMode;
   /** Whether flying and walking draw the map's interface, as the viewer last reported it. */
   cameraOverlays: boolean;
+  /** The aircraft the full map was told to fly, as it last answered; none until it has been told. */
+  flyAircraft?: FlyAircraftStatus | null;
 }
 
 export interface MapOptions { country: string | null; fog: boolean }
 export interface ContentFolders { game: string; user: string; contentReady: boolean }
 export interface MapDetails extends ContentFolders { error: string | null; path: string | null; branch: string | null; hour: number | null; messages: string[] }
-export type MapAction = { kind: 'configure'; options: MapOptions } | { kind: 'inspect' } | { kind: 'unload'; path: string } | { kind: 'cameraMode'; mode: CameraMode; overlays: boolean };
+export type MapAction = { kind: 'configure'; options: MapOptions } | { kind: 'inspect' } | { kind: 'unload'; path: string } | { kind: 'cameraMode'; mode: CameraMode; overlays: boolean } | { kind: 'flyAircraft'; aircraft: string | null };
 export function mapAction(action: MapAction): Promise<void> { requireDesktop(); return invoke('map_action', { action }); }
 export function exportMap(viewId?: string): Promise<void> { requireDesktop(); return invoke('export_map', { viewId: viewId ?? null }); }
 

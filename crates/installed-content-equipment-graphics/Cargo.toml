@@ -10,6 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+engine.workspace = true
 installed-content-core.workspace = true
 installed-content-states.workspace = true
 replay.workspace = true

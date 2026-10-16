@@ -3354,6 +3354,7 @@ dependencies = [
 name = "installed-content-equipment-graphics"
 version = "0.1.0"
 dependencies = [
+ "engine",
  "engine-executable",
  "installed-content-core",
  "installed-content-states",

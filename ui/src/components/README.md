@@ -3,6 +3,10 @@
 Reusable controls, popovers, tooltips, country choices and flags. Shared appearance
 and control conventions live in the [frontend guide](../../README.md#shared-appearance-and-controls).
 
+## AircraftPicker
+
+[AircraftPicker.tsx](AircraftPicker.tsx) chooses Fly mode's aircraft from the recording's [aircraft catalogue](../../../crates/dashboard/README.md#aircraft-catalogue): any aircraft model or entity of its content stack, or none. There is no default: until one is chosen the trigger reads "No aircraft chosen", the list says Fly mode is a free camera, and the list opens by itself when Fly mode starts with nothing chosen. The list docks in the shell's side column beside the workspace, which narrows the native map rather than covering it; it is not a popover, so the map-overlay guard leaves the map shown while planes are tried. Its rows page the catalogue through [aircraftCatalogue.ts](../dashboard/aircraftCatalogue.ts), asking only for the pages of rows it shows, with a search over names, titles and references and a scope of aircraft or every registered entity and mesh. Refused models stay listed, greyed, with their reason, keep their places but are no keyboard destinations, and are counted by kind. Choosing one sends it to the map and keeps the list open: the map shows the chosen plane, which is its preview, and the status line follows what the map answered (loading, flying, or why it cannot be flown). Escape or the close button closes the list. [aircraftChoice.ts](../dashboard/aircraftChoice.ts) keeps the choice per recording on this device.
+
 ## VirtualList
 
 [VirtualList.tsx](VirtualList.tsx) renders measured, variable-height ordered rows

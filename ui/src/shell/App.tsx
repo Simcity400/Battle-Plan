@@ -209,6 +209,9 @@ export default function App() {
   };
   const [playbackHost, setPlaybackHost] = useState<HTMLDivElement | null>(null);
   const [campaignHost, setCampaignHost] = useState<HTMLDivElement | null>(null);
+  // Panels docked beside the workspace, such as the aircraft list, narrow the map rather than
+  // cover it, so it stays shown while they are open.
+  const [sideHost, setSideHost] = useState<HTMLElement | null>(null);
   const [metadata, setMetadata] = useState<ReplayMetadata | null>(null);
   const [branch, setBranch] = useState<BranchChoice | null>(null);
   // The host's folders in the desktop app, the development bridge's in a browser.
@@ -406,10 +409,11 @@ export default function App() {
         <section id="panel-analytics" aria-labelledby="tab-analytics" tabIndex={-1}
           className="analytics-panel" hidden={tab !== 'analytics'}>
           <Suspense fallback={<div className="panel-loading" role="status"><span className="spinner" />Loading overview…</div>}>
-            <Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} cameraMode={native.state?.cameraMode ?? 'map'} cameraOverlays={native.state?.cameraOverlays ?? false} onMetadata={setMetadata} onBranch={setBranch} onMapError={setActionError} onUnsaved={setLayoutsUnsaved} pages={pages} playbackHost={playbackHost} />
+            <Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} cameraMode={native.state?.cameraMode ?? 'map'} cameraOverlays={native.state?.cameraOverlays ?? false} onMetadata={setMetadata} onBranch={setBranch} onMapError={setActionError} onUnsaved={setLayoutsUnsaved} pages={pages} playbackHost={playbackHost} flyAircraft={native.state?.flyAircraft ?? null} sideHost={sideHost} />
           </Suspense>
         </section>
       </main>
+      <aside className="workspace-side" ref={setSideHost} aria-label="Map tools" hidden={tab !== 'map'} />
     </div>
   );
 }

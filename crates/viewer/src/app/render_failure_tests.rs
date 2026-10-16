@@ -50,7 +50,7 @@ fn draw(
     output.textures_delta.clear();
 }
 
-fn until(
+pub(super) fn until(
     viewer: &mut Viewer,
     ctx: &egui::Context,
     frame: &eframe::Frame,

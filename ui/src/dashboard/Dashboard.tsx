@@ -4,11 +4,13 @@ import { newId } from '../shell/ids.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { desktopAvailable, errorMessage, recordingName, seekMap, mapAction } from '../shell/api';
-import { configurePopout, popoutClockKey, popoutConfigKey, popoutProblem, popoutStopped, popoutUnloaded, seekPopout, usePopout } from '../shell/popout';
+import { configurePopout, popoutClockKey, popoutConfigKey, popoutProblem, popoutStopped, popoutUnloaded, seekPopout, setPopoutFlyAircraft, usePopout } from '../shell/popout';
 import type { MapOptions, ReplayMetadata } from '../shell/api';
 import MapControls from '../components/MapControls';
 import CameraModeControl from '../components/CameraModeControl';
-import type { CameraMode } from '../generated/dashboard';
+import AircraftPicker from '../components/AircraftPicker';
+import type { CameraMode, FlyAircraftStatus } from '../generated/dashboard';
+import { loadAircraftChoice, saveAircraftChoice } from './aircraftChoice';
 import { Icon } from '../components/Icons';
 import type { DashboardClient, DashboardSource } from './client';
 import { addGridItem, addGridItemBelow, bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate, MAX_WIDGETS, mergeViewPreferences, rebaseWidget, seekPositionFor, stableJson } from './model';
@@ -42,11 +44,15 @@ interface Props { page: PageId; resetToken: number; library: ReplayLibraryState;
   /** Whether any page has layout changes not yet saved, which resetting the pages discards. */
   onUnsaved?: (unsaved: boolean) => void;
   /** The pages that exist; what a deleted page kept while not shown is dropped. */
-  pages?: readonly PageEntry[]; playbackHost?: HTMLElement | null; campaignHost?: HTMLElement | null; onOpenReady?: (open: (() => void) | null) => void }
+  pages?: readonly PageEntry[]; playbackHost?: HTMLElement | null; campaignHost?: HTMLElement | null; onOpenReady?: (open: (() => void) | null) => void;
+  /** What the full map last answered for the aircraft Fly mode flies. */
+  flyAircraft?: FlyAircraftStatus | null;
+  /** Where panels dock beside the workspace, narrowing the map rather than covering it. */
+  sideHost?: HTMLElement | null }
 
 export interface BranchChoice { id: string; choose: (branchId: string) => void }
 
-export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, cameraMode = 'map', cameraOverlays = false, onMetadata, onBranch, onMapError, onUnsaved, pages, playbackHost, campaignHost, onOpenReady }: Props) {
+export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, cameraMode = 'map', cameraOverlays = false, onMetadata, onBranch, onMapError, onUnsaved, pages, playbackHost, campaignHost, onOpenReady, flyAircraft = null, sideHost = null }: Props) {
   const [restored] = useState(() => loadLayouts(undefined, page));
   const [library, setLibrary] = useState(restored.library);
   // The page whose layouts are shown; it trails `page` until the swap below runs.
@@ -425,6 +431,31 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     if (firstReady) setDefaultRoleId((current) => defaultAfterOpen(current, firstReady.id));
   }, [campaigns, roles.bindings]);
   useEffect(() => { if (hasOpened.current && (defaultSource?.path ?? null) !== path) onPrimaryPath?.(defaultSource?.path ?? null); }, [defaultSource, path, onPrimaryPath, campaigns.length]);
+  // Fly mode's aircraft belongs to the campaign the map shows: a name of its content, kept on
+  // this device, with none as the start. Sent again whenever a map becomes ready, as a restarted
+  // viewer flies none.
+  const aircraftPath = defaultSource?.path ?? null;
+  const [aircraft, setAircraft] = useState<string | null>(null);
+  useEffect(() => setAircraft(aircraftPath ? loadAircraftChoice(aircraftPath) : null), [aircraftPath]);
+  const chooseAircraft = useCallback((name: string | null) => {
+    setAircraft(name);
+    if (aircraftPath) saveAircraftChoice(aircraftPath, name);
+  }, [aircraftPath]);
+  useEffect(() => {
+    if (!mapActive || !mapReady || !desktopAvailable) return;
+    let current = true;
+    void mapAction({ kind: 'flyAircraft', aircraft }).catch(cause => {
+      if (current) onMapError?.(errorMessage(cause));
+    });
+    return () => { current = false; };
+  }, [mapActive, mapReady, aircraft, onMapError]);
+  // The pop-out's map flies the same aircraft; each viewer it starts is told when it is ready.
+  useEffect(() => {
+    if (popoutConfig == null) return;
+    let current = true;
+    void setPopoutFlyAircraft(popout.generation, aircraft).catch(cause => { if (current) onMapError?.(errorMessage(cause)); });
+    return () => { current = false; };
+  }, [popoutConfig, popout.generation, aircraft, onMapError]);
 
   const onMapBranch = useCallback((trackId: string, branchId: string) => {
     const source = tracks.find(track => track.id === trackId)?.source;
@@ -480,11 +511,13 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     <PlaybackStrip client={client} clock={clock} tracks={tracks} alignment={template.alignment} defaultRoleId={defaultRoleId} />
     <div className="header-workspace-tools">
     {mapActive && mapReady && desktopAvailable && <CameraModeControl value={cameraMode} onChange={chooseCameraMode} overlays={cameraOverlays} onOverlaysChange={chooseOverlays} />}
+    {mapActive && mapReady && desktopAvailable && cameraMode === 'fly' && <AircraftPicker client={client} source={defaultSource ?? null} chosen={aircraft} status={flyAircraft} onChoose={chooseAircraft} host={sideHost} prompt />}
     {mapActive && <MapControls source={defaultSource ?? null} client={client} metadata={defaultSource?.metadata ?? null} branchId={tracks.find(track => track.roleId === defaultRoleId)?.branch.id ?? null}
       onBranch={id => { const track = tracks.find(track => track.roleId === defaultRoleId); if (track) onMapBranch(track.id, id); }}
       options={mapOptions} onOptions={setMapOptions} poppedOut={popout.open} popoutGeneration={popout.generation} popoutProblem={popoutIssue} popoutStopped={popoutStopped(popout)}
       popoutCameraMode={popout.status?.running ? popout.status.cameraMode : null}
-      popoutCameraOverlays={popout.status?.running ? popout.status.cameraOverlays : false} />}
+      popoutCameraOverlays={popout.status?.running ? popout.status.cameraOverlays : false}
+      aircraft={aircraft} onAircraft={chooseAircraft} popoutFlyAircraft={popout.status?.flyAircraft ?? null} aircraftHost={sideHost} />}
     {active && <>
       {/* The layout picker and the editing tools share one slot, so the bar never shifts or grows. */}
       <div className="toolbar-swap" data-editing={editing || dirty || undefined}>

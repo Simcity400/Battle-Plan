@@ -3047,15 +3047,6 @@ impl Scene {
             .map_or(0, |(pass, _, _)| pass.drawn())
     }
 
-    /// The shown hour's fighter of the viewing country for the flying mode
-    /// ([`crate::map::aircraft::AircraftPlan::fighter`]), or why there is none.
-    pub fn fighter(&self) -> Result<&crate::map::aircraft::PlayerAircraft, &str> {
-        match &self.aircraft {
-            Some((_, _, plan)) => plan.fighter(),
-            None => Err("the map draws no aircraft"),
-        }
-    }
-
     pub fn unit_models_drawn(&self) -> u32 {
         self.unit_models.as_ref().map_or(0, ModelPass::drawn)
     }

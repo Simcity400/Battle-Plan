@@ -10,7 +10,7 @@ It builds on [engine-executable](../engine-executable/README.md) (the executable
 - `parser`, `crt`, `fixed5`, `fields`: byte-preserving trees, native script consumption, number conversion and named scalar refusals.
 - `key_names`, `combat_tactics`, `trigger_keys`, `effect_keys`, `modifiers`: load-point identity and shared dispatch.
 - Authored catalogues retain their database-specific order, duplicate identity and coverage refusals.
-- `gui`, `pdxshader`, `mesh`, `particles`: native GUI, shader declarations and authored model/particle data. Bitmap decoding is exported from [installed-content-image](../installed-content-image/README.md).
+- `gui`, `pdxshader`, `mesh`, `particles`: native GUI, shader declarations and authored model/particle data. Bitmap decoding is exported from [installed-content-image](../installed-content-image/README.md). The registered descriptor roster (`mesh::Roster`, memoized as `ResolvedLayers::descriptor_roster`) keeps each registered clone's parent (`clones`) beside the flattened copy, and `Roster::refused_declaration` names the first declaration an entity uses that cannot be played as registered: one a descriptor file that does not parse may hold, an attachment cycle, or a non-positive `animation_speed`.
 - `map`, `movement`, `province_geometry`, `province_graph`: definition rows, rasters, native geometry and adjacency foundations.
 
 Resolve every authored fact through `ResolvedLayers`, preserving vanilla/DLC/mod layer order, replace_path, filename bytes, recorded coverage and verified reads. Keep the same stack-scoped cache ownership, native recovery, diagnostics and missing-input refusals. Renderer and recorded-world evaluation remain consumers.

@@ -839,6 +839,10 @@ pub struct Roster {
     /// clone whose parent is such a word is one too, with the parent's file:
     /// the parent it copied may be that file's.
     pub unreadable_names: BTreeMap<String, String>,
+    /// Each registered entity that is a copy of another: the parent its `clone`
+    /// named when the block registered. A later plain block of the name
+    /// replaces the copy, and it is no longer one.
+    pub clones: BTreeMap<String, String>,
 }
 
 /// The registered object kinds; only the first is a mesh.
@@ -949,6 +953,75 @@ impl Roster {
                 Ok(None)
             }
         }
+    }
+
+    /// Why a name a descriptor file that does not parse holds is unverified:
+    /// which of that file's blocks the engine still registers is unknown, so
+    /// the name may be declared there ([`Self::unreadable_names`]).
+    pub fn unreadable(&self, name: &str) -> Option<String> {
+        self.unreadable_names
+            .get(name)
+            .map(|path| format!("may be declared in {path}, which does not parse"))
+    }
+
+    /// The first declaration an entity uses, with the entities attached to it,
+    /// that cannot be played as registered, and why: one a descriptor file that
+    /// does not parse may hold ([`Self::unreadable`]), an attachment cycle, or
+    /// a state whose `animation_speed` is not positive, which entity playback
+    /// refuses. It checks the entity, the `pdxmesh` it names, the animation that
+    /// mesh plays for each state it declares and each attached entity. A name
+    /// no entity registers has no declaration to refuse.
+    pub fn refused_declaration(&self, entity: &str) -> Option<String> {
+        self.refused_below(entity, &BTreeSet::new())
+    }
+
+    fn refused_below(&self, entity: &str, ancestors: &BTreeSet<String>) -> Option<String> {
+        let mut ancestors = ancestors.clone();
+        if !ancestors.insert(entity.to_owned()) {
+            return Some(format!("attachment cycle through {entity}"));
+        }
+        if let Some(flaw) = self.unreadable(entity) {
+            return Some(format!("it {flaw}"));
+        }
+        let descriptors = &self.descriptors;
+        let inherited = descriptors.inherit(entity)?;
+        if let Some(state) = inherited
+            .states
+            .values()
+            .flatten()
+            .find(|state| !(state.speed.is_finite() && state.speed > 0.))
+        {
+            return Some(format!(
+                "state {} has unsupported non-positive animation_speed {}",
+                state.name, state.speed
+            ));
+        }
+        if let Some(name) = inherited.mesh {
+            if let Some(flaw) = self.unreadable(name) {
+                return Some(format!("its mesh {name} {flaw}"));
+            }
+            if let Some(definition) = descriptors.meshes.get(name) {
+                for state in inherited.states.values().flatten() {
+                    if let Some((_, animation)) = definition
+                        .animations
+                        .iter()
+                        .find(|(declared, _)| *declared == state.animation)
+                        && let Some(flaw) = self.unreadable(animation)
+                    {
+                        return Some(format!("its animation {animation} {flaw}"));
+                    }
+                }
+            }
+        }
+        for attachment in &inherited.attachments {
+            if let Some(reason) = self.refused_below(&attachment.entity, &ancestors) {
+                return Some(format!(
+                    "its attached entity {} is refused: {reason}",
+                    attachment.entity
+                ));
+            }
+        }
+        None
     }
 }
 
@@ -1114,6 +1187,10 @@ impl Entities {
         let entry = match parent {
             Some((parent, version)) => (overlay(parent, definition), version),
             None => (definition, stored.unwrap_or(version)),
+        };
+        match clone {
+            Some(parent) => roster.clones.insert(name.clone(), parent),
+            None => roster.clones.remove(&name),
         };
         self.0.insert(name, entry);
         Ok(())

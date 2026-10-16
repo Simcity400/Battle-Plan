@@ -274,7 +274,7 @@ fn meshless_aircraft_use_the_shared_actor_player() {
         descriptors,
         ..Default::default()
     };
-    assert_eq!(plane_refusal(&roster, "plane", &BTreeSet::new()), None);
+    assert_eq!(roster.refused_declaration("plane"), None);
 }
 
 #[test]
@@ -364,7 +364,7 @@ fn a_plane_attachment_cycle_is_refused_by_name() {
          entity = { name = child attach = { root = plane } }",
     );
     assert_eq!(
-        plane_refusal(&roster, "plane", &BTreeSet::new()),
+        roster.refused_declaration("plane"),
         Some("its attached entity child is refused: its attached entity plane is refused: attachment cycle through plane".into())
     );
 }
@@ -550,7 +550,7 @@ fn a_plane_using_a_possibly_hidden_declaration_is_refused_with_that_declaration(
         "planes",
         &["hidden_parent_entity", "hidden_mesh", "hidden_animation"],
     );
-    let reason = |entity: &str| plane_refusal(&roster, entity, &BTreeSet::new());
+    let reason = |entity: &str| roster.refused_declaration(entity);
     let copied = format!("it {}", why());
     assert_eq!(reason("GER_plane_entity").as_deref(), Some(copied.as_str()));
     let mesh = format!("its mesh hidden_mesh {}", why());
@@ -592,8 +592,14 @@ fn a_plane_using_a_possibly_hidden_declaration_is_refused_with_that_declaration(
     assert_eq!(unusable["GER_plane_entity"], copied);
     assert_eq!(unusable["hidden_mesh_plane_entity"], mesh);
     // No layer holds the clean plane's mesh file, so it is refused as
-    // not loaded rather than drawn.
-    assert_eq!(unusable["clean_plane_entity"], NOT_LOADED);
+    // not loaded rather than drawn, with why.
+    assert!(
+        unusable["clean_plane_entity"].starts_with(&format!(
+            "{NOT_LOADED}: clean_plane_entity: pdxmesh clean_mesh (clean.mesh) cannot be loaded: "
+        )),
+        "{}",
+        unusable["clean_plane_entity"]
+    );
     assert_eq!(warnings[0].0, installed_content::DiagnosticKind::Refused);
     assert!(
         warnings[0]
@@ -644,15 +650,15 @@ fn a_name_an_unreadable_descriptor_holds_is_refused_not_skipped() {
     }
     let why = format!("may be declared in {path}, which does not parse");
     assert_eq!(
-        plane_refusal(&roster, "GER_plane_entity", &BTreeSet::new()),
+        roster.refused_declaration("GER_plane_entity"),
         Some(format!("it {why}"))
     );
     assert_eq!(
-        plane_refusal(&roster, "JAP_plane_entity", &BTreeSet::new()),
+        roster.refused_declaration("JAP_plane_entity"),
         Some(format!("its mesh ger_mesh {why}"))
     );
     assert_eq!(
-        plane_refusal(&roster, "plane_entity", &BTreeSet::new()),
+        roster.refused_declaration("plane_entity"),
         None
     );
 
@@ -2019,113 +2025,6 @@ fn a_scenario_rig_whose_files_do_not_read_is_refused_and_the_assets_load() {
     assert!(!assets.rigs.contains_key("fighter_1_patrol"));
 }
 
-/// The flying mode's stand-in aircraft: the viewing country's largest fighter wing, through the
-/// airborne ladder, falling back past a wing whose aircraft does not resolve.
-#[test]
-fn the_viewing_countrys_fighter_is_its_largest_fighter_wings_aircraft() {
-    use replay::{
-        frame::{Metrics, TableView},
-        rows::{TableId, TableRows, VariantDefinitionRow, WingEquipmentRow},
-    };
-    let frame = |wings: Vec<AirWingRow>| {
-        let mut frame = DecodedFrame {
-            branch: 1,
-            hour: 42,
-            tables: std::array::from_fn(|index| {
-                TableView::Complete(TableRows::empty(TableId::ALL[index])).into()
-            }),
-            metrics: Metrics::default(),
-        };
-        let equipment = wings
-            .iter()
-            .map(|wing| WingEquipmentRow {
-                wing: wing.id,
-                ordinal: 0,
-                variant: wing.id * 100,
-                amount_raw: 1000,
-            })
-            .collect();
-        // Wing 1 flies bombers; the others fighters, by air superiority or interception alone.
-        let definitions = [(100, 1 << 3), (200, FIGHTER_MISSIONS), (300, 1), (400, 1 << 2), (500, 1)]
-            .map(|(id, mission_mask)| VariantDefinitionRow {
-                id,
-                mission_mask,
-                ..Default::default()
-            })
-            .to_vec();
-        *frame.tables[TableId::AirWings.index()] =
-            TableView::Complete(TableRows::AirWings(wings));
-        *frame.tables[TableId::WingEquipment.index()] =
-            TableView::Complete(TableRows::WingEquipment(equipment));
-        *frame.tables[TableId::VariantDefinitions.index()] =
-            TableView::Complete(TableRows::VariantDefinitions(definitions));
-        frame
-    };
-    let layers = ResolvedLayers::default();
-    let map = MapData {
-        width: 1,
-        height: 1,
-        province_ids: vec![0],
-        definitions: Default::default(),
-        country_colors: Default::default(),
-    };
-    let mut assets = AircraftAssets::load(
-        &layers,
-        Decode::default(),
-        &map,
-        &Defines::new().unwrap(),
-        &BTreeMap::new(),
-        &mut Vec::new(),
-    )
-    .unwrap();
-    assets.roster = Arc::new(roster(
-        "entity = { name = plane_200_entity } entity = { name = plane_300_entity }
-         entity = { name = plane_400_entity } entity = { name = plane_500_entity }",
-    ));
-    let planes = |id, owner, planes| AirWingRow {
-        planes,
-        ..wing(id, owner, 1)
-    };
-    // Raw countries 70 and 71 are the viewing country's slot 7; 80 is another country's.
-    let links = BTreeMap::from([(70, 7), (71, 7), (80, 8)]);
-    let wings = vec![
-        planes(1, 70, 40),
-        planes(2, 70, 5),
-        planes(3, 71, 8),
-        planes(4, 80, 50),
-        AirWingRow {
-            // Lent to the viewing country, it flies as its own.
-            country_override: 70,
-            ..planes(5, 80, 8)
-        },
-    ];
-    let named = |variant: u64, _: u32| Ok(Some(format!("plane_{variant}_entity")));
-    let fighter = viewing_fighter(&frame(wings.clone()), &assets, &links, 7, &named).unwrap();
-    // Wings 3 and 5 tie at eight planes; the first stored wins over the larger bomber wing.
-    assert_eq!(fighter.name, "plane_300_entity");
-    assert_eq!(assets.library().meshes[fighter.slot].name, "plane_300_entity");
-    // A wing whose aircraft the ladder cannot name gives way to the next.
-    let unnamed = |variant: u64, country: u32| {
-        if variant == 300 {
-            Ok(None)
-        } else {
-            named(variant, country)
-        }
-    };
-    let fighter = viewing_fighter(&frame(wings.clone()), &assets, &links, 7, &unnamed).unwrap();
-    assert_eq!(fighter.name, "plane_500_entity");
-    // Another viewing country flies its own; a country with only bombers has none.
-    let other = viewing_fighter(&frame(wings.clone()), &assets, &links, 8, &named).unwrap();
-    assert_eq!(other.name, "plane_400_entity");
-    let bombers = viewing_fighter(&frame(wings[..1].to_vec()), &assets, &links, 7, &named);
-    assert_eq!(bombers, Err("the viewing country fields no fighter".into()));
-    // Every fighter refused is named.
-    let refused = viewing_fighter(&frame(wings), &assets, &links, 7, &|_, _| Ok(None));
-    let reason = refused.unwrap_err();
-    assert!(reason.contains("wing 3: unresolved aircraft equipment variant 300"), "{reason}");
-    assert!(reason.contains("wing 5:") && reason.contains("wing 2:"), "{reason}");
-}
-
 /// The flying mode's crash reads the content's plane ground contact: its height above the surface
 /// and how long the explosion plays before the entity goes.
 #[test]
@@ -2174,4 +2073,104 @@ fn an_explosion_has_played_once_its_own_player_reads_the_delay() {
         }
         .exploded(Some(None))
     );
+}
+
+/// A chosen aircraft bakes once from the map's own roster, an entity or a bare
+/// mesh, and a name the roster refuses is refused before any file is read,
+/// with the reason the aircraft catalogue lists; one whose mesh file does not
+/// read is refused with why, and stays refused.
+#[test]
+fn a_chosen_aircraft_bakes_lazily_or_is_refused_with_why() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+    let root = std::env::temp_dir().join(format!(
+        "viewer-aircraft-player-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut mesh = b"@@b@[object\0[[frame\0[[[mesh\0".to_vec();
+    for (name, values) in [
+        ("p", [0_f32, 0., 0., 1., 0., 0., 0., 1., 0.]),
+        ("n", [0., 1., 0., 0., 1., 0., 0., 1., 0.]),
+    ] {
+        mesh.extend([b'!', name.len() as u8]);
+        mesh.extend(name.as_bytes());
+        mesh.push(b'f');
+        mesh.extend((values.len() as u32).to_le_bytes());
+        mesh.extend(values.into_iter().flat_map(f32::to_le_bytes));
+    }
+    mesh.extend(b"!\x03trii\x03\0\0\0\0\0\0\0\x01\0\0\0\x02\0\0\0");
+    mesh.extend(b"[[[[material\0!\x06shaders\x01\0\0\0\x0e\0\0\0AuthoredShader");
+    for (path, bytes) in [
+        (
+            "gfx/models/planes.gfx",
+            br#"objectTypes = {
+                pdxmesh = { name = "plane_mesh" file = "gfx/models/plane.mesh" }
+                pdxmesh = { name = "absent_mesh" file = "gfx/models/absent.mesh" }
+            }"#
+            .as_slice(),
+        ),
+        (
+            "gfx/entities/planes.asset",
+            br#"
+            entity = { name = "plane_entity" pdxmesh = "plane_mesh" }
+            entity = { name = "ghost_entity" }
+            entity = { name = "absent_file_entity" pdxmesh = "absent_mesh" }
+            entity = { name = "spinner_entity" pdxmesh = "plane_mesh"
+                state = { name = "idle" animation = "spin" animation_speed = 0 } }
+            "#
+            .as_slice(),
+        ),
+        ("gfx/models/plane.mesh", mesh.as_slice()),
+    ] {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+    let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let map = MapData {
+        width: 1,
+        height: 1,
+        province_ids: vec![0],
+        definitions: Default::default(),
+        country_colors: Default::default(),
+    };
+    let assets = AircraftAssets::load(
+        &layers,
+        Decode::default(),
+        &map,
+        &Defines::new().unwrap(),
+        &BTreeMap::new(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(assets.library().slot("plane_entity"), None);
+    let plane = assets.player("plane_entity").unwrap();
+    assert_eq!(plane.name, "plane_entity");
+    assert_eq!(assets.library().slot("plane_entity"), Some(plane.slot));
+    assert_eq!(assets.player("plane_entity"), Ok(plane.clone()));
+    let bare = assets.player("plane_mesh").unwrap();
+    assert_ne!(bare.slot, plane.slot);
+    assert_eq!(
+        assets.player("ghost_entity"),
+        Err("it names no pdxmesh".into())
+    );
+    assert_eq!(
+        assets.player("no_such_entity"),
+        Err("no descriptor registers it".into())
+    );
+    assert_eq!(
+        assets.player("spinner_entity"),
+        Err("state idle has unsupported non-positive animation_speed 0".into())
+    );
+    let absent = assets.player("absent_file_entity").unwrap_err();
+    assert!(
+        absent.starts_with(&format!(
+            "{NOT_LOADED}: absent_file_entity: pdxmesh absent_mesh (gfx/models/absent.mesh) cannot be loaded: "
+        )),
+        "{absent}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(assets.player("absent_file_entity"), Err(absent));
+    assert_eq!(assets.library().slot("ghost_entity"), None);
 }

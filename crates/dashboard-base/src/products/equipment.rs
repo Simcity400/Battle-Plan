@@ -576,6 +576,11 @@ type Units = Result<Arc<installed_content::equipment::Database>, String>;
 
 /// The recorded content stack's equipment types for a catalogue, read on first use.
 pub fn units(_source: &Source, catalogue: &Arc<Catalogue>) -> Units {
+    units_of(catalogue)
+}
+
+/// [`units`] for a consumer that holds only the catalogue.
+pub fn units_of(catalogue: &Catalogue) -> Units {
     catalogue
         .content
         .layers

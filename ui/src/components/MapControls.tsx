@@ -7,13 +7,14 @@ import { useId, useState } from 'react';
 import { desktopAvailable, errorMessage, exportMap } from '../shell/api';
 import { closePopout, nextPopoutMonitor, openPopout, restartPopout, setPopoutCameraMode } from '../shell/popout';
 import CameraModeControl from './CameraModeControl';
-import type { CameraMode } from '../generated/dashboard';
+import AircraftPicker from './AircraftPicker';
+import type { CameraMode, FlyAircraftStatus } from '../generated/dashboard';
 import type { MapOptions, ReplayMetadata } from '../shell/api';
 import { formatDateTime } from '../dashboard/calendar';
 import { Icon } from './Icons';
 import './mapControls.css';
 
-export default function MapControls({ source, client, metadata, branchId, onBranch, options, onOptions, compact = false, viewId, children, onRemove, onReset, poppedOut, popoutGeneration = 0, popoutProblem, popoutStopped, popoutCameraMode, popoutCameraOverlays = false }: {
+export default function MapControls({ source, client, metadata, branchId, onBranch, options, onOptions, compact = false, viewId, children, onRemove, onReset, poppedOut, popoutGeneration = 0, popoutProblem, popoutStopped, popoutCameraMode, popoutCameraOverlays = false, aircraft = null, onAircraft, popoutFlyAircraft = null, aircraftHost = null }: {
   compact?: boolean; viewId?: string; children?: ReactNode; onRemove?: () => void; onReset?: () => void;
   /** The campaign map's pop-out window state; widget maps omit it. */
   poppedOut?: boolean;
@@ -24,6 +25,11 @@ export default function MapControls({ source, client, metadata, branchId, onBran
   /** The pop-out map's camera mode, as its viewer reports it while it runs. */
   popoutCameraMode?: CameraMode | null;
   popoutCameraOverlays?: boolean;
+  /** The campaign's aircraft for Fly mode, how to choose another, and what the pop-out's map
+   * answered for it; the pop-out offers the choice while its camera flies. */
+  aircraft?: string | null; onAircraft?: (aircraft: string | null) => void; popoutFlyAircraft?: FlyAircraftStatus | null;
+  /** Where the aircraft list docks, beside the workspace. */
+  aircraftHost?: HTMLElement | null;
   source: DashboardSource | null; client: DashboardClient;
   metadata: ReplayMetadata | null; branchId: string | null; onBranch: (id: string) => void;
   options: MapOptions; onOptions: (options: MapOptions) => void;
@@ -68,6 +74,8 @@ export default function MapControls({ source, client, metadata, branchId, onBran
           <CameraModeControl value={popoutCameraMode} overlays={popoutCameraOverlays}
             onChange={mode => void setPopoutCameraMode(popoutGeneration, mode, popoutCameraOverlays).catch(cause => setError(errorMessage(cause)))}
             onOverlaysChange={shown => void setPopoutCameraMode(popoutGeneration, popoutCameraMode, shown).catch(cause => setError(errorMessage(cause)))} /></div>}
+        {poppedOut && desktopAvailable && popoutCameraMode === 'fly' && onAircraft && <div className="map-option-row"><span>Pop-out aircraft</span>
+          <AircraftPicker client={client} source={source} chosen={aircraft} status={popoutFlyAircraft} onChoose={onAircraft} host={aircraftHost} /></div>}
         {poppedOut !== undefined && desktopAvailable && (poppedOut ? <>
           <button type="button" className="map-menu-action" disabled={busy} data-tooltip="Save the pop-out window's map as a PNG image" onClick={() => void run(() => exportMap('popout'))}><Icon name="save" />Export pop-out map</button>
           <button type="button" className="map-menu-action" disabled={busy} data-tooltip="Move the pop-out map to the next monitor" onClick={() => void run(() => nextPopoutMonitor(popoutGeneration))}><Icon name="monitor" />Move pop-out to next monitor</button>

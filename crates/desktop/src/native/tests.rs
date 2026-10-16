@@ -489,3 +489,36 @@ fn the_status_carries_the_camera_mode_for_the_interface() {
         (&"map".into(), &false.into())
     );
 }
+
+/// Stepping through many planes queues only the last choice, beside the camera mode, so
+/// the action queue never fills.
+#[test]
+fn only_the_latest_aircraft_choice_waits_for_the_viewer() {
+    use dashboard::protocol::{CameraMode, MapAction};
+    let host = NativeHost::default();
+    host.shared.0.lock().unwrap().status.ready = true;
+    host.map_action(MapAction::CameraMode {
+        mode: CameraMode::Fly,
+        overlays: false,
+    })
+    .unwrap();
+    for index in 0..40 {
+        host.map_action(MapAction::FlyAircraft {
+            aircraft: Some(format!("plane_{index}_entity")),
+        })
+        .unwrap();
+    }
+    host.map_action(MapAction::FlyAircraft { aircraft: None }).unwrap();
+    let inner = host.shared.0.lock().unwrap();
+    let queued: Vec<_> = inner.pending.actions.iter().cloned().collect();
+    assert!(matches!(
+        queued.as_slice(),
+        [
+            MapAction::CameraMode {
+                mode: CameraMode::Fly,
+                overlays: false
+            },
+            MapAction::FlyAircraft { aircraft: None }
+        ]
+    ));
+}
