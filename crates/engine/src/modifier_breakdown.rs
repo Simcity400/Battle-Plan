@@ -1,7 +1,6 @@
 //! Cached modifier trees used for breakdown display.
 //! Labels are stored display strings, distinct from original source keys.
 use crate::{Memory, cpdx_array::Array, modifier_accumulator, msvc_string, read};
-use std::collections::HashSet;
 
 /// Preorder node; child occurrences retain their native order, including aliases.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -31,29 +30,70 @@ pub fn tree(
     root: usize,
     key: u32,
 ) -> Result<Vec<Node>, &'static str> {
+    walk(memory, base, root, key, Names::Every)
+}
+
+/// [`tree`]'s nodes, values and order for one key, reading only what a depth -1
+/// breakdown prints: a node's display bytes are read only for a leaf whose
+/// value is nonzero. Every other node keeps an empty name.
+pub fn printed_nodes(
+    memory: &impl Memory,
+    base: usize,
+    root: usize,
+    key: u32,
+) -> Result<Vec<Node>, &'static str> {
+    walk(memory, base, root, key, Names::NonzeroLeaves)
+}
+
+/// Which nodes' display bytes a walk reads.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Names {
+    Every,
+    NonzeroLeaves,
+}
+
+/// A child entry points at its modifier object; the accumulator the tree
+/// walks lies this far inside it.
+const CHILD_ACCUMULATOR: usize = 0x10;
+
+/// The preorder walk both readers share, the key's definition metadata read
+/// once for the walk (a failed read is read again, as a fresh lookup would).
+fn walk(
+    memory: &impl Memory,
+    base: usize,
+    root: usize,
+    key: u32,
+    names: Names,
+) -> Result<Vec<Node>, &'static str> {
+    let definitions = crate::modifier_definition::DefinitionMemo::default();
     let mut nodes = Vec::new();
+    // The current path: each node with its children and the next child.
     let mut stack: Vec<(usize, Array, u32)> = Vec::new();
-    let mut active = HashSet::<usize>::default();
     let mut address = root;
     loop {
-        if address == 0 || active.contains(&address) {
+        if address == 0 || stack.iter().any(|&(active, ..)| active == address) {
             return Err("modifier breakdown null node or ancestor cycle");
         }
-        crate::allocation::reserve_set(&mut active, 1)
-            .map_err(|_| "modifier breakdown allocation failed")?;
-        active.insert(address);
         let children = address
             .checked_add(CHILDREN)
             .and_then(|p| Array::read(memory, p, 8))
             .ok_or("modifier breakdown children unreadable or invalid")?;
-        let value =
-            modifier_accumulator::lookup_effective_at(memory, base, address, key)?.effective;
-        let name = text(
-            memory,
-            address
-                .checked_add(DISPLAY)
-                .ok_or("modifier breakdown display address overflow")?,
-        )?;
+        let raw = modifier_accumulator::lookup_at(memory, address, key)?;
+        let value = if raw.present {
+            crate::modifier_definition::effective_memo(memory, base, key, raw.raw, &definitions)?
+        } else {
+            0
+        };
+        let name = if names == Names::Every || (children.count == 0 && value != 0) {
+            text(
+                memory,
+                address
+                    .checked_add(DISPLAY)
+                    .ok_or("modifier breakdown display address overflow")?,
+            )?
+        } else {
+            Vec::new()
+        };
         crate::allocation::reserve(&mut nodes, 1)
             .map_err(|_| "modifier breakdown allocation failed")?;
         crate::allocation::reserve(&mut stack, 1)
@@ -65,11 +105,10 @@ pub fn tree(
         });
         stack.push((address, children, 0));
         loop {
-            let Some((parent, children, ordinal)) = stack.last_mut() else {
+            let Some((_, children, ordinal)) = stack.last_mut() else {
                 return Ok(nodes);
             };
             if *ordinal == children.count {
-                active.remove(parent);
                 stack.pop();
                 continue;
             }
@@ -81,7 +120,7 @@ pub fn tree(
                 .ok_or("modifier breakdown child pointer unreadable or null")?;
             *ordinal += 1;
             address = pointer
-                .checked_add(0x10)
+                .checked_add(CHILD_ACCUMULATOR)
                 .ok_or("modifier breakdown child address overflow")?;
             break;
         }
@@ -355,9 +394,30 @@ mod tests {
                 (b"commander".as_slice(), 250, -700)
             );
         }
+        // The printed walk keeps the same nodes, values and order and reads
+        // display bytes only for nonzero leaves.
+        let root = country + crate::ccountry::MODIFIER_ACCUMULATOR;
+        let full = tree(&f, 0, root, keys::LAND_REINFORCE_RATE).unwrap();
+        let printed = printed_nodes(&f, 0, root, keys::LAND_REINFORCE_RATE).unwrap();
+        assert_eq!(printed.len(), full.len());
+        for (printed, full) in printed.iter().zip(&full) {
+            assert_eq!(
+                (printed.children, printed.value),
+                (full.children, full.value)
+            );
+            let shown = full.children == 0 && full.value != 0;
+            assert_eq!(
+                printed.name,
+                if shown { full.name.clone() } else { Vec::new() }
+            );
+        }
         f.array(first + CHILDREN, &[first as u64 - 0x10]);
         assert_eq!(
             tree(&f, 0, first, keys::LAND_REINFORCE_RATE),
+            Err("modifier breakdown null node or ancestor cycle")
+        );
+        assert_eq!(
+            printed_nodes(&f, 0, first, keys::LAND_REINFORCE_RATE),
             Err("modifier breakdown null node or ancestor cycle")
         );
         f.array(first + CHILDREN, &[0]);

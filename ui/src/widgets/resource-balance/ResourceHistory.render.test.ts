@@ -8,6 +8,7 @@ import type TimeChart from '../../charts/TimeChart';
 import type { ResourceBalanceReply } from '../../generated/dashboard';
 import { balanceOf, resourceName } from './balanceData.ts';
 import { formatSigned } from '../../charts/valueAxis.ts';
+import { plotFrame } from '../../charts/frame.ts';
 
 function elements(node: ReactNode): ReactElement<Record<string, unknown>>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
@@ -97,5 +98,20 @@ test('resource chip keys and values match every drawn declaration, including rep
     const missing = renderToStaticMarkup(OverTime(props));
     assert.match(missing, /Resource 1, net Not recorded per day/);
     assert.doesNotMatch(missing, /Resource 1, net 0/);
+    data.series[1].runs = [];
+    const frame = plotFrame(320, 200, { left: 10, right: 10, top: 10, bottom: 10 }, [100, 110], [0, 5], false);
+    const rough = { from: 100, to: 110, width: Math.ceil(frame.plotWidth), approximate: [{ firstHour: 100, lastHour: 110 }],
+      buckets: [{ firstHour: 100, lastHour: 110, firstValue: 3, lastValue: 3, lastValueHour: 100, minHour: 100, minValue: 3, maxHour: 100, maxValue: 3, firstBreak: true, hasBreak: false }] };
+    Object.assign(data, { summaries: [{ id: 1, supply: rough, demand: { ...rough, buckets: rough.buckets.map(bucket => ({ ...bucket,
+      firstValue: 2, lastValue: 2, minValue: 2, maxValue: 2 })) } }] });
+    renderToStaticMarkup(OverTime(props));
+    const commands: unknown[][] = [];
+    const ctx = new Proxy({}, { get: (_target, field) => field === 'globalAlpha' ? 1 : (...args: unknown[]) => commands.push([field, ...args]),
+      set: (_target, field, value) => { commands.push([field, value]); return true; } }) as CanvasRenderingContext2D;
+    for (const layer of state.chart!.layers!) layer.draw?.(ctx, frame, { lineWidth: { series: 2 }, positive: '#0a0', error: '#a00' } as never, { playhead: 111 } as never);
+    assert.ok(commands.some(command => command[0] === 'stroke'), 'resource history draws from its unprepared summary even without exact pool operands');
+    assert.ok(commands.some(command => command[0] === 'fillRect'), 'gap shading uses shared approximate envelope drawing');
+    assert.ok(commands.some(command => command[0] === 'globalAlpha' && command[1] === 0.55));
+    assert.ok(commands.some(command => command[0] === 'setLineDash' && JSON.stringify(command[1]) === '[4,4]'));
   } finally { await vite.close(); delete host.__resourceKeys; }
 });

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { LedgerSpend, LedgerSpendItem, PoliticsLedgerReply } from '../generated/dashboard';
 import { categoryChoices, spendingAt, spendingCountryRequests, spendingGapNote, spendingGaps, spendingGroups, spendingItems, spendingSummary, spendingTableRows, spendLabel,
-  validatePoliticsSpending } from './politicsSpending.ts';
+  validatePoliticsSpending, preparedSpendingTableRows } from './politicsSpending.ts';
 import { MAX_NAME_HOURS } from './countryFacts.ts';
 import { setToken } from './options.ts';
 import { groupTree } from '../charts/sunburst/layout.ts';
@@ -404,4 +404,46 @@ test('malformed identities refuse replies by shape; unrenderable mod art stays m
   assert.throws(() => validatePoliticsSpending(reply({ commandHolds: [
     { readHour: 12, throughHour: 12, totalRaw: 'missing', holders: [], reason: null },
   ] })), /malformed/);
+});
+
+
+test('prepared monthly subtotals preserve wide amounts and count shared paid days once across items', () => {
+  const start = 43_800_000, day = 24, wide = 9007199254740993n;
+  const cost = (id: string, date: number, itemId: string, amount: bigint) => spend({ id, hour: date, readHour: date, itemId,
+    category: 'dailyCosts', chargeRaw: String(amount), realizedDeltaRaw: null,
+    changes: [{ hour: date, readHour: date, chargeRaw: String(amount), realizedDeltaRaw: null, occurrences: 1, covered: true }] });
+  const items = [item('A'), { ...item('B'), groupId: 'different recorded modifier' }];
+  const categories = [{ id: 'dailyCosts', name: 'Daily costs', identified: true }];
+  const legacy = reply({ spending: [...Array.from({ length: 40 }, (_, index) => cost(`A:${index}`, start + index * day, 'A', wide)),
+    ...Array.from({ length: 25 }, (_, index) => cost(`B:${index}`, start + (index + 15) * day, 'B', 7n))], spendItems: items, spendCategories: categories });
+  const aggregate = (id: string, first: number, last: number, count: number, itemId: string, amount: bigint) => ({
+    spend: { ...cost(id, last, itemId, amount * BigInt(count)), occurrences: count,
+      changes: [{ hour: last, readHour: last, chargeRaw: String(amount * BigInt(count)), realizedDeltaRaw: null, occurrences: count, covered: true }] }, firstHour: first, lastHour: last, days: count, count,
+    knownRaw: String(amount * BigInt(count)), knownCount: count,
+  });
+  const prepared = validatePoliticsSpending(reply({ spending: [], spendItems: items, spendCategories: categories,
+    recurring: [aggregate('jan:A', start, start + 30 * day, 31, 'A', wide), aggregate('feb:A', start + 31 * day, start + 39 * day, 9, 'A', wide),
+      aggregate('jan:B', start + 15 * day, start + 30 * day, 16, 'B', 7n), aggregate('feb:B', start + 31 * day, start + 39 * day, 9, 'B', 7n)],
+    recurringDays: [{ currency: 'Political', category: 'dailyCosts', month: 0, days: 31 }, { currency: 'Political', category: 'dailyCosts', month: 1, days: 9 }],
+  }));
+  const expected = spendingTableRows(spendingAt([legacy], 'Political', start + 40 * day), '');
+  const actual = preparedSpendingTableRows([prepared], spendingAt([prepared], 'Political', start + 40 * day), '');
+  assert.deepEqual(actual.map(row => [row.month, row.days, row.amount, row.partial]), expected.map(row => [row.month, row.days, row.amount, row.partial]));
+  assert.equal(spendingSummary(spendingAt([prepared], 'Political', start + 40 * day)).spent, wide * 40n + 7n * 25n);
+});
+
+test('prepared aggregate payments keep a known subtotal when one cost is missing and supply disjoint sunburst counts', () => {
+  const last = spend({ hour: 24, readHour: 29, occurrences: 4, chargeRaw: null, realizedDeltaRaw: null,
+    changes: [{ hour: 24, readHour: 29, occurrences: 4, chargeRaw: null, realizedDeltaRaw: null, covered: false }], covered: false });
+  const prepared = validatePoliticsSpending(reply({ spending: [], recurring: [{ spend: last, firstHour: 0, lastHour: 24, days: 0,
+    count: 4, knownRaw: '27021597764222979', knownCount: 3 }] }));
+  const at = spendingAt([prepared], 'Political', 29);
+  assert.deepEqual(spendingSummary(at), { spent: 27021597764222979n, unknownCosts: 1, uncovered: false });
+  assert.equal(at[0].charge, null);
+  assert.equal(at[0].knownCharges, 3);
+  assert.equal(at[0].missingCharges, 1);
+  const tree = groupTree(spendingItems([prepared], 'Political', { from: null, hour: 29, end: 29 }), { id: 'all', label: 'Spent' });
+  assert.equal(tree.exact, 27021597764222979n);
+  assert.equal(tree.count, 4);
+  assert.equal(spendingItems([prepared], 'Political', { from: null, hour: 28, end: 29 })[0].present, false);
 });

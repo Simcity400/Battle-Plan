@@ -1,7 +1,6 @@
-use super::super::tests::{award_row, fuel_frame, reply_read};
+use super::super::tests::{award_row, fuel_frame, replay_source, reply_read};
 use super::*;
-use crate::test_fixtures::{CAMPAIGN, records};
-use replay::frame::{DecodedFrame, TableView};
+use replay::frame::TableView;
 use replay::rows::{FuelDemandFleet, FuelDemandGroup, Recorded, TableId, TableRows};
 
 fn pack(hour: i32) -> FuelDemandRead {
@@ -26,18 +25,6 @@ fn row(pack: FuelDemandRead) -> CountryFuelRow {
 }
 fn consumption(row: &CountryFuelRow) -> FuelConsumptionRead {
     FuelConsumptionRead::from(&summary_of(row, 100, 100, true, &mut Default::default()))
-}
-fn source(frames: Vec<DecodedFrame>) -> Source {
-    Source::from_replay(
-        crate::SourceKey {
-            source_id: "fuel-current-consumers".into(),
-            revision: "1".into(),
-        },
-        "memory.battleplan".into(),
-        Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap()),
-        &AtomicBool::new(false),
-    )
-    .unwrap()
 }
 
 #[test]
@@ -103,7 +90,7 @@ fn occurrence_history_follows_native_rename_but_refuses_reuse_changed_keys_gaps_
             frame
         })
         .collect();
-    let source = source(frames);
+    let source = replay_source(frames, "fuel-current-consumers");
     let cancelled = AtomicBool::new(false);
     let context = LoadContext { content: None };
     let basis = FuelAwardsParams {
@@ -177,18 +164,6 @@ fn current_required_rows_keep_signed_wrapping_separate_from_burn_and_widened_sum
         summary.known_daily_raw[0],
         reply_read(&row, 100, None).day.unwrap().burned_raw
     );
-    let legacy = consumption(&CountryFuelRow {
-        demand: Recorded::NotRecorded,
-        ..row
-    });
-    assert!(legacy.native_daily_raw.iter().all(Option::is_none));
-    assert!(
-        legacy
-            .reasons
-            .iter()
-            .flatten()
-            .all(|reason| reason.contains("not recorded"))
-    );
 }
 
 #[test]
@@ -220,7 +195,10 @@ fn repeated_air_occurrences_and_partial_names_do_not_discard_known_quantities() 
     assert!(summary.native_daily_raw[0].is_none());
     assert!(summary.native_daily_raw[1].is_none());
     let pack = pack_of(&row, 100).unwrap();
-    let source = source(vec![fuel_frame(100, true, 9001, (1, 2, 3, 4))]);
+    let source = replay_source(
+        vec![fuel_frame(100, true, 9001, (1, 2, 3, 4))],
+        "fuel-current-consumers",
+    );
     let cache = std::sync::OnceLock::new();
     let mut names =
         |bytes: &[u8]| read_name(&source, &LoadContext { content: None }, &cache, bytes);
@@ -290,7 +268,7 @@ fn actual_products_use_supplying_names_topology_and_windows_without_receipt_cont
             frame
         })
         .collect();
-    let source = source(frames);
+    let source = replay_source(frames, "fuel-current-consumers");
     let cancelled = AtomicBool::new(false);
     let context = LoadContext { content: None };
     let params = FuelAwardsParams {
@@ -414,7 +392,7 @@ fn five_thousand_displayed_occurrences_share_one_authenticated_window_and_keep_e
     let mut frame = fuel_frame(100, true, 9001, (1, 2, 3, 4));
     *frame.tables[TableId::CountryFuel.index()] =
         TableView::Complete(TableRows::CountryFuel(vec![row(pack)]));
-    let source = source(vec![frame]);
+    let source = replay_source(vec![frame], "fuel-current-consumers");
     let cancelled = AtomicBool::new(false);
     let context = LoadContext { content: None };
     let basis = FuelAwardsParams {

@@ -1,143 +1,102 @@
-//! Game content layers, identity hashes, and Rust parsers for the viewer.
+//! Shared game content reader paths for recording and playback.
 
-pub mod abilities;
-pub mod adjacencies;
-pub mod adjacency_rules;
-pub mod ambient;
-pub mod autonomy;
-pub mod buildings;
-pub mod characters;
-pub mod cities;
-pub mod collections;
-pub mod combat_tactics;
-pub mod content;
-pub mod country_names;
-pub mod country_scorers;
-pub mod country_tags;
-pub mod coverage;
-pub mod crt;
-pub mod decisions;
-pub mod defines;
-pub mod diplomacy;
-pub mod division_names;
-pub mod doctrines;
-pub mod dynamic_modifiers;
-pub mod effect_keys;
-pub mod equipment;
-pub mod equipment_graphics;
-pub mod events;
-pub mod faction_templates;
-mod fields;
-pub mod fixed5;
-pub mod flags;
-pub mod focus;
-pub mod gfx;
-pub mod gui;
-pub mod ideas;
-pub mod ideologies;
-pub mod image;
-pub mod industrial_organisations;
-pub mod intelligence;
-pub mod key_names;
-pub mod leader_traits;
-pub mod localisation;
-pub mod map;
-pub mod mesh;
-pub mod mio_traits;
+pub use installed_content_abilities::abilities;
+pub use installed_content_core::adjacencies;
+pub use installed_content_core::adjacency_rules;
+pub use installed_content_core::ambient;
+pub use installed_content_core::autonomy;
+pub use installed_content_core::buildings;
+pub use installed_content_core::characters;
+pub use installed_content_core::cities;
+pub use installed_content_core::collections;
+pub use installed_content_core::combat_tactics;
+pub use installed_content_core::content;
+pub use installed_content_core::country_scorers;
+pub use installed_content_core::country_tags;
+pub use installed_content_core::coverage;
+pub use installed_content_core::crt;
+pub use installed_content_core::decisions;
+pub use installed_content_core::defines;
+pub use installed_content_core::diplomacy;
+pub use installed_content_core::doctrines;
+pub use installed_content_core::dynamic_modifiers;
+pub use installed_content_core::effect_keys;
+pub use installed_content_core::equipment;
+pub use installed_content_core::faction_templates;
+pub use installed_content_core::fixed5;
+pub use installed_content_core::flags;
+pub use installed_content_core::gui;
+pub use installed_content_core::ideas;
+pub use installed_content_core::ideologies;
+pub use installed_content_core::industrial_organisations;
+pub use installed_content_core::intelligence;
+pub use installed_content_core::key_names;
+pub use installed_content_core::leader_traits;
+pub use installed_content_core::map;
+pub use installed_content_core::mesh;
+pub use installed_content_core::mio_traits;
+pub use installed_content_core::modifier_definitions;
+pub use installed_content_core::modifiers;
+pub use installed_content_core::movement;
+pub use installed_content_core::names;
+pub use installed_content_core::occupation_laws;
+pub use installed_content_core::opinion_modifiers;
+pub use installed_content_core::parser;
+pub use installed_content_core::particles;
+pub use installed_content_core::pdxshader;
+pub use installed_content_core::positions;
+pub use installed_content_core::power_balance;
+pub use installed_content_core::province_geometry;
+pub use installed_content_core::province_graph;
+pub use installed_content_core::railways;
+pub use installed_content_core::resources;
+pub use installed_content_core::scientist_traits;
+pub use installed_content_core::scope;
+pub use installed_content_core::scoped_variable;
+pub use installed_content_core::script_constants;
+pub use installed_content_core::script_files;
+pub use installed_content_core::scripted_effects;
+pub use installed_content_core::scripted_keys;
+pub use installed_content_core::scripted_triggers;
+pub use installed_content_core::special_projects;
+pub use installed_content_core::static_modifiers;
+pub use installed_content_core::tag_aliases;
+pub use installed_content_core::technology;
+pub use installed_content_core::technology_sharing;
+pub use installed_content_core::terrain;
+pub use installed_content_core::tokens;
+pub use installed_content_core::train_gfx;
+pub use installed_content_core::trigger_keys;
+pub use installed_content_core::triggers;
+pub use installed_content_core::unit_leader;
+pub use installed_content_core::variable_builtins;
+pub use installed_content_core::{
+    Diagnostic, DiagnosticKind, DiagnosticMessage, GatherOptions, GatheredContent, HashStats,
+    ResolveOptions, ResolvedContent, ResolvedLayer, ResolvedLayers, gather, image, resolve,
+};
+pub use installed_content_country_names::country_names;
+pub use installed_content_division_names::division_names;
+pub use installed_content_equipment_graphics::equipment_graphics;
+pub use installed_content_events::events;
+pub use installed_content_focus::focus;
+pub use installed_content_gfx::gfx;
+pub use installed_content_localisation::localisation;
+pub use installed_content_naval_combat_defines::naval_combat_defines;
+pub use installed_content_naval_path::naval_path;
+pub use installed_content_province_area::province_area;
+pub use installed_content_raids::raids;
+pub use installed_content_regions::regions;
+pub use installed_content_scripted_localisation::scripted_localisation;
+pub use installed_content_settings::settings;
+pub use installed_content_state_categories::state_categories;
+pub use installed_content_states::states;
+pub use installed_content_unit_path::unit_path;
+pub use installed_content_wargoals::wargoals;
+pub use installed_content_weather::weather;
+
+#[cfg(test)]
+use installed_content_core::test_support;
+#[cfg(test)]
+mod cross_reader_tests;
 #[cfg(test)]
 mod mod_layers_tests;
-pub mod modifier_definitions;
-pub mod modifiers;
-pub mod movement;
-pub mod names;
-pub mod naval_combat_defines;
-pub mod naval_path;
-pub mod occupation_laws;
-pub mod opinion_modifiers;
-pub mod parser;
-pub mod particles;
-pub mod pdxshader;
-pub mod positions;
-pub mod power_balance;
-pub mod province_area;
-pub mod province_geometry;
-pub mod province_graph;
-pub mod raids;
-pub mod railways;
-pub mod regions;
-pub mod resources;
-pub mod scientist_traits;
-pub mod scope;
-pub mod scoped_variable;
-pub mod script_constants;
-pub mod script_files;
-pub mod scripted_effects;
-pub mod scripted_keys;
-pub mod scripted_localisation;
-pub mod scripted_triggers;
-pub mod settings;
-pub mod special_projects;
-pub mod state_categories;
-pub mod states;
-pub mod static_modifiers;
-pub mod tag_aliases;
-pub mod technology;
-pub mod technology_sharing;
-pub mod terrain;
-pub mod tokens;
-pub mod train_gfx;
-pub mod trigger_keys;
-pub mod triggers;
-pub mod unit_leader;
-pub mod unit_path;
-pub mod variable_builtins;
-pub mod wargoals;
-pub mod weather;
-
-pub use content::{
-    GatherOptions, GatheredContent, HashStats, ResolveOptions, ResolvedContent, ResolvedLayer,
-    ResolvedLayers, gather, resolve,
-};
-
-/// Severity assigned where a content reader creates a diagnostic.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum DiagnosticKind {
-    /// Text the tree parser cannot parse.
-    ParseFailure,
-    /// The native reader reports a field and continues.
-    Misread,
-    /// Reading stops before the rest of a file can be determined.
-    Unsettled,
-    /// The port does not model this form.
-    Unsupported,
-    /// A definition or lookup cannot be used.
-    Refused,
-    /// Several definitions leave the intended result uncertain.
-    Ambiguous,
-    /// Presentation substitutes for unavailable content.
-    Fallback,
-    /// The game logs an error and continues.
-    Logged,
-    /// Another content note that does not prevent its use.
-    Warning,
-}
-
-/// A diagnostic's producer-assigned kind and unchanged message.
-pub type Diagnostic = (DiagnosticKind, String);
-
-/// How a consumer takes a producer's diagnostic.
-pub trait DiagnosticMessage: Sized {
-    fn from_diagnostic(note: Diagnostic) -> Self;
-}
-
-impl DiagnosticMessage for Diagnostic {
-    fn from_diagnostic(note: Diagnostic) -> Self {
-        note
-    }
-}
-
-impl DiagnosticMessage for String {
-    fn from_diagnostic((_, message): Diagnostic) -> Self {
-        message
-    }
-}

@@ -65,6 +65,7 @@ use crate::{
     },
 };
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     io::{self, Read},
     sync::atomic::{AtomicUsize, Ordering},
@@ -74,6 +75,10 @@ mod keyed;
 mod modelled;
 mod predicted;
 mod ramp;
+#[cfg(test)]
+mod test_recording;
+#[cfg(test)]
+mod through_tests;
 
 use keyed::{KeyChanges, KeyReader, KeySet, KeyWriter, MaskList, RowCoding, RowRun};
 use modelled::Model;
@@ -1230,7 +1235,8 @@ impl Anchors {
         let Ok(block) = replay.block_bytes(index) else {
             return Ok(anchors);
         };
-        let Some(Ok(directory)) = is_grouped(block).then(|| Directory::parse(block, index)) else {
+        let Some(Ok(directory)) = is_grouped(&block).then(|| Directory::parse(&block, index))
+        else {
             return Ok(anchors);
         };
         let from = From {
@@ -1239,7 +1245,7 @@ impl Anchors {
             layout: directory.layout,
         };
         for table in TableId::ALL {
-            match seed_table(replay, block, &directory, &from, table) {
+            match seed_table(replay, &block, &directory, &from, table) {
                 Ok(Some((snapshot, latest))) => {
                     anchors.snapshots[table.index()] = snapshot;
                     anchors.latest[table.index()] = Some(latest);
@@ -1510,13 +1516,55 @@ const WINDOW_LOG: u32 = 26;
 /// [`WINDOW_LOG`]. The compressor knows the size, so it sizes its tables to
 /// it, but the frame does not record it: the directory does.
 pub(crate) fn compress_at(raw: &[u8], level: i32) -> io::Result<Vec<u8>> {
+    with_compressor(level, |compressor| compressor.compress(raw))
+}
+
+/// Runs `compress` with this thread's compressor for `level`. Every frame
+/// starts a new session with the same parameters, so a reused context writes
+/// the same bytes as a fresh one; a failed call discards its context.
+fn with_compressor<T>(
+    level: i32,
+    compress: impl FnOnce(&mut zstd::bulk::Compressor<'static>) -> io::Result<T>,
+) -> io::Result<T> {
+    thread_local! {
+        static COMPRESSORS: std::cell::RefCell<BTreeMap<i32, zstd::bulk::Compressor<'static>>> =
+            const { std::cell::RefCell::new(BTreeMap::new()) };
+    }
+    COMPRESSORS.with(|compressors| {
+        let mut compressors = compressors.borrow_mut();
+        let compressor = match compressors.entry(level) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => entry.insert(compressor(level)?),
+        };
+        let result = compress(compressor);
+        if result.is_err() {
+            compressors.remove(&level);
+        }
+        result
+    })
+}
+
+fn compressor(level: i32) -> io::Result<zstd::bulk::Compressor<'static>> {
     let mut compressor = zstd::bulk::Compressor::new(level)?;
     compressor.set_parameter(zstd::zstd_safe::CParameter::ChecksumFlag(true))?;
     compressor.set_parameter(zstd::zstd_safe::CParameter::ContentSizeFlag(false))?;
     if level > 19 {
         compressor.set_parameter(zstd::zstd_safe::CParameter::WindowLog(WINDOW_LOG))?;
     }
-    compressor.compress(raw)
+    Ok(compressor)
+}
+
+/// A fresh context for `level`, and a reused one interrupted mid-frame by an
+/// output buffer that cannot hold the frame.
+#[cfg(test)]
+pub(crate) fn fresh_and_failed_reuse(raw: &[u8], level: i32) -> io::Result<(Vec<u8>, bool)> {
+    let fresh = compressor(level)?.compress(raw)?;
+    let failed = with_compressor(level, |compressor| {
+        let mut short = vec![0; 1];
+        compressor.compress_to_buffer(raw, &mut short)
+    })
+    .is_err();
+    Ok((fresh, failed))
 }
 
 /// Each chosen section (its id, plain length and [`compress`]ed bytes)
@@ -2197,24 +2245,86 @@ struct Directory {
     sections: Vec<Option<(usize, usize, usize)>>,
 }
 
+// The wire decoder admits unsigned u128 varints, at most 19 bytes each.
+const MAX_VARINT_BYTES: usize = 19;
+
 impl Directory {
     fn parse(block: &[u8], index: &BlockIndex) -> io::Result<Self> {
-        let Some(layout) = Layout::of(block).filter(|_| block.len() >= 8) else {
+        Self::parse_extent(block, block.len(), index)
+    }
+
+    fn read(replay: &Replay, index: &BlockIndex) -> io::Result<Self> {
+        if !replay.is_file_backed() {
+            return Self::parse(&replay.block_bytes(index)?, index);
+        }
+        Self::read_from_prefix(replay, index, Self::prefix(replay, index)?)
+    }
+
+    fn prefix<'a>(replay: &'a Replay, index: &BlockIndex) -> io::Result<Cow<'a, [u8]>> {
+        replay.block_range(
+            index,
+            0,
+            super::to_usize(index.length)?.min(8 + 2 * MAX_VARINT_BYTES),
+        )
+    }
+
+    fn read_from_prefix<'a>(
+        replay: &'a Replay,
+        index: &BlockIndex,
+        mut bytes: Cow<'a, [u8]>,
+    ) -> io::Result<Self> {
+        let length = super::to_usize(index.length)?;
+        let mut input = Decoder::new(&bytes);
+        let (_, _, _, count) = Self::counts(&mut input, index)?;
+        let prefix_end = bytes.len() - input.remaining();
+        let end = (prefix_end + count * 3 * MAX_VARINT_BYTES).min(length);
+        if end > bytes.len() {
+            if replay.is_file_backed() {
+                let bytes = bytes.to_mut();
+                let start = bytes.len();
+                engine::allocation::reserve(bytes, end - start)?;
+                bytes.resize(end, 0);
+                let offset = index
+                    .offset
+                    .checked_add(start as u64)
+                    .ok_or_else(|| invalid_static("block offset overflow"))?;
+                replay.read_at(offset, &mut bytes[start..])?;
+            } else {
+                bytes = replay.block_range(index, 0, end)?;
+            }
+        }
+        Self::parse_extent(&bytes, length, index)
+    }
+
+    fn counts(
+        input: &mut Decoder<'_>,
+        index: &BlockIndex,
+    ) -> io::Result<(Layout, u32, usize, usize)> {
+        if input.remaining() < 8 {
+            return Err(invalid_static("block is not a grouped block"));
+        }
+        let prefix = input.take(8)?;
+        let Some(layout) = Layout::of(prefix) else {
             return Err(invalid_static("block is not a grouped block"));
         };
-        let crc = u32::from_le_bytes(block[4..8].try_into().unwrap());
-        let mut input = Decoder::new(&block[8..]);
-        let frames = varint_usize(&mut input)?;
+        let crc = u32::from_le_bytes(prefix[4..8].try_into().unwrap());
+        let frames = varint_usize(input)?;
         let span = i64::from(index.last_hour) - i64::from(index.first_hour) + 1;
         if frames == 0 || frames as i64 > span {
             return Err(invalid_static(
                 "grouped frame count disagrees with its hour range",
             ));
         }
-        let count = varint_usize(&mut input)?;
+        let count = varint_usize(input)?;
         if count > SECTIONS {
             return Err(invalid_static("grouped block has too many sections"));
         }
+        Ok((layout, crc, frames, count))
+    }
+
+    fn parse_extent(bytes: &[u8], block_length: usize, index: &BlockIndex) -> io::Result<Self> {
+        let mut input = Decoder::new(bytes);
+        let (layout, crc, frames, count) = Self::counts(&mut input, index)?;
         let mut entries = Vec::with_capacity(count);
         let mut previous = None;
         for _ in 0..count {
@@ -2232,8 +2342,8 @@ impl Directory {
             }
             entries.push((id, raw, length));
         }
-        let end = block.len() - input.remaining();
-        if crc32fast::hash(&block[8..end]) != crc {
+        let end = bytes.len() - input.remaining();
+        if crc32fast::hash(&bytes[8..end]) != crc {
             return Err(invalid_static("grouped block directory CRC mismatch"));
         }
         let mut sections = vec![None; SECTIONS];
@@ -2242,7 +2352,7 @@ impl Directory {
         for (id, raw, length) in entries {
             let next = offset
                 .checked_add(length)
-                .filter(|next| *next <= block.len())
+                .filter(|next| *next <= block_length)
                 .ok_or_else(|| invalid_static("grouped section outside its block"))?;
             raw_total = raw_total
                 .checked_add(raw)
@@ -2250,7 +2360,7 @@ impl Directory {
             sections[id] = Some((offset, length, raw));
             offset = next;
         }
-        if offset != block.len() {
+        if offset != block_length {
             return Err(invalid_static(
                 "grouped block has trailing or concatenated bytes",
             ));
@@ -2269,7 +2379,22 @@ impl Directory {
         let Some((offset, length, raw)) = self.sections[id] else {
             return Ok(None);
         };
-        let compressed = &block[offset..offset + length];
+        Self::inflate(&block[offset..offset + length], raw).map(Some)
+    }
+
+    fn read_raw(
+        &self,
+        replay: &Replay,
+        index: &BlockIndex,
+        id: usize,
+    ) -> io::Result<Option<Vec<u8>>> {
+        let Some((offset, length, raw)) = self.sections[id] else {
+            return Ok(None);
+        };
+        Self::inflate(&replay.block_range(index, offset, length)?, raw).map(Some)
+    }
+
+    fn inflate(compressed: &[u8], raw: usize) -> io::Result<Vec<u8>> {
         if compressed.get(..4) != Some(&[0x28, 0xb5, 0x2f, 0xfd]) {
             return Err(invalid_static("grouped section is not a zstd frame"));
         }
@@ -2293,7 +2418,7 @@ impl Directory {
         if bytes.len() != raw {
             return Err(invalid_static("grouped section raw length mismatch"));
         }
-        Ok(Some(bytes))
+        Ok(bytes)
     }
 }
 
@@ -2449,6 +2574,135 @@ struct Context<'a> {
     hours: &'a [Hour],
     entries: &'a [u8],
     selected: Option<&'a [TableId]>,
+    complete: bool,
+}
+
+impl Replay {
+    /// Read the selected tables of a block's first frame. Grouped reads validate
+    /// the directory, header, diagnostics, selected keyframes and their anchors;
+    /// later and unrelated table sections are not admitted or marked verified.
+    /// Ordinary table compatibility refusals retain their recorded metadata.
+    pub fn read_keyframe_selected(
+        &self,
+        index: &BlockIndex,
+        tables: &[TableId],
+    ) -> io::Result<Frame> {
+        if index.raw_length > MAX_BLOCK_RAW_BYTES as u64 {
+            return Err(invalid("block exceeds raw size limit"));
+        }
+        let prefix = Directory::prefix(self, index)?;
+        if !is_grouped(&prefix) {
+            return self
+                .read_block_selected(index, tables)?
+                .into_iter()
+                .next()
+                .ok_or_else(|| invalid("empty block"));
+        }
+        if self.format.version() < GROUPED_FORMAT {
+            return Err(invalid(format!(
+                "grouped block in a format {} recording",
+                self.format.version()
+            )));
+        }
+        let directory = Directory::read_from_prefix(self, index, prefix)?;
+        let present = Present::new(self.format.version());
+        check_header_size(directory.frames, &present)?;
+        let header = directory.read_raw(self, index, HEADER)?.unwrap_or_default();
+        read_header(&header, index, directory.frames, &present)?;
+        let diagnostics = directory
+            .read_raw(self, index, DIAGNOSTICS)?
+            .ok_or_else(|| invalid_static("grouped block has no diagnostics"))?;
+        let metrics = read_diagnostics_prefix(
+            &diagnostics,
+            directory.frames,
+            &present,
+            directory.layout == Layout::Timed,
+            1,
+        )?
+        .pop()
+        .expect("one keyframe's metrics");
+        let from = From {
+            position: self.block_position(index),
+            index,
+            layout: directory.layout,
+        };
+        let updates = engine::allocation::collect_vec(TableId::ALL.iter().map(|&table| {
+            if let Some(update) = keyframe_refusal(&directory, self.format, Some(tables), table)? {
+                return Ok(update);
+            }
+            let raw = directory
+                .read_raw(self, index, keyframe_section(table))?
+                .ok_or_else(|| {
+                    invalid(format!("grouped block has no keyframe entry for {table:?}"))
+                })?;
+            Ok(keyframe_update(
+                self,
+                &from,
+                table,
+                &raw,
+                &Budget(AtomicUsize::new(MAX_BLOCK_RAW_BYTES)),
+            )?
+            .update)
+        }))?;
+        Ok(Frame {
+            branch: index.branch,
+            hour: index.first_hour,
+            keyframe: true,
+            metrics,
+            tables: updates
+                .into_iter()
+                .collect::<io::Result<Vec<_>>>()?
+                .try_into()
+                .unwrap(),
+        })
+    }
+
+    /// Read selected tables through `through`, including an equal hour.
+    /// Grouped reads validate the complete directory, header and diagnostics,
+    /// every inflated section's framing and checksum, selected keyframes and
+    /// anchors, and the decoded prefix's ordinary wire grammar and budgets.
+    /// Later frames' column bytes have not been decoded or grammar-verified;
+    /// an early read does not mark the block verified. A whole-block read
+    /// retains ordinary full verification. Interleaved blocks use `visit_block`
+    /// and its ordinary verification and stopping rules. With `parallel`, a
+    /// grouped block's tables decode on the caller's workers, in table order.
+    pub fn read_block_selected_through(
+        &self,
+        index: &BlockIndex,
+        tables: Option<&[TableId]>,
+        through: Hour,
+        parallel: Option<&Parallel<'_>>,
+    ) -> io::Result<Vec<Frame>> {
+        if let Some(block) = self.grouped_block(index)? {
+            let frames = read_through(self, index, &block, tables, parallel, Some(through))?;
+            let mut order = super::BlockOrder::new(index);
+            for frame in &frames {
+                order.next(frame)?;
+            }
+            if frames
+                .last()
+                .is_some_and(|frame| frame.hour == index.last_hour)
+            {
+                order.finish()?;
+                if tables.is_some() && !self.is_verified(index) {
+                    verify(&block, index)?;
+                }
+                self.mark_verified(index);
+            }
+            return Ok(frames);
+        }
+        let mut frames = Vec::new();
+        self.visit_block(index, tables, |frame| {
+            if frame.hour > through {
+                return Ok(false);
+            }
+            let keep_reading = frame.hour < through;
+            engine::allocation::reserve(&mut frames, 1)?;
+            frames.push(frame);
+            Ok(keep_reading)
+        })?;
+        Ok(frames)
+    }
 }
 
 /// Decode a grouped block's frames.
@@ -2458,6 +2712,19 @@ pub(crate) fn read(
     block: &[u8],
     selected: Option<&[TableId]>,
     parallel: Option<&Parallel<'_>>,
+) -> io::Result<Vec<Frame>> {
+    read_through(replay, index, block, selected, parallel, None)
+}
+
+/// The same column reader, optionally stopping at a recorded hour. Parallel
+/// work uses the caller's existing table workers and preserves table order.
+fn read_through(
+    replay: &Replay,
+    index: &BlockIndex,
+    block: &[u8],
+    selected: Option<&[TableId]>,
+    parallel: Option<&Parallel<'_>>,
+    through: Option<Hour>,
 ) -> io::Result<Vec<Frame>> {
     let format = replay.format;
     if format.version() < GROUPED_FORMAT {
@@ -2469,13 +2736,75 @@ pub(crate) fn read(
     let directory = Directory::parse(block, index)?;
     let present = Present::new(format.version());
     let frames = directory.frames;
-    let width = present.width();
+    check_header_size(frames, &present)?;
+    let header = directory.raw(block, HEADER)?.unwrap_or_default();
+    let (hours, entries) = read_header(&header, index, frames, &present)?;
+    let keep = through.map_or(frames, |through| {
+        hours.partition_point(|hour| *hour <= through)
+    });
+    let diagnostics = directory
+        .raw(block, DIAGNOSTICS)?
+        .ok_or_else(|| invalid_static("grouped block has no diagnostics"))?;
+    let timed = directory.layout == Layout::Timed;
+    let metrics = read_diagnostics_prefix(&diagnostics, frames, &present, timed, keep)?;
+    if keep == 0 {
+        return Ok(Vec::new());
+    }
+    let hours = &hours[..keep];
+    let context = Context {
+        replay,
+        index,
+        position: replay.index.iter().position(|block| block == index),
+        block,
+        directory: &directory,
+        format,
+        present: &present,
+        hours,
+        entries: &entries,
+        selected,
+        complete: keep == frames,
+    };
+    let decode = |table: &TableId| table_updates(&context, *table);
+    let decoded = match parallel {
+        Some(parallel) => parallel_map(&TableId::ALL, parallel, decode)?,
+        None => engine::allocation::collect_vec(TableId::ALL.iter().map(decode))?,
+    };
+    let mut columns = Vec::with_capacity(TABLE_COUNT);
+    for updates in decoded {
+        columns.push(updates?.into_iter());
+    }
+    let mut out = Vec::with_capacity(keep);
+    for (position, (hour, metrics)) in hours.iter().zip(metrics).enumerate() {
+        let tables: Vec<TableUpdate> = columns
+            .iter_mut()
+            .map(|updates| updates.next().expect("one update per frame"))
+            .collect();
+        out.push(Frame {
+            branch: index.branch,
+            hour: *hour,
+            keyframe: position == 0,
+            metrics,
+            tables: tables.try_into().unwrap(),
+        });
+    }
+    Ok(out)
+}
+
+fn check_header_size(frames: usize, present: &Present) -> io::Result<()> {
     // A plain block counts its frames, then frames each prefixed by their
     // length; each table's plain updates have their own budget.
     Budget(AtomicUsize::new(MAX_BLOCK_RAW_BYTES))
-        .spend(4 + frames * (4 + present.plain_header_bytes()))?;
-    let header = directory.raw(block, HEADER)?.unwrap_or_default();
-    let mut input = Decoder::new(&header);
+        .spend(4 + frames * (4 + present.plain_header_bytes()))
+}
+
+fn read_header(
+    header: &[u8],
+    index: &BlockIndex,
+    frames: usize,
+    present: &Present,
+) -> io::Result<(Vec<Hour>, Vec<u8>)> {
+    let width = present.width();
+    let mut input = Decoder::new(header);
     let mut hours = Vec::with_capacity(frames);
     hours.push(index.first_hour);
     let mut entries = vec![0xff_u8; width * frames];
@@ -2498,68 +2827,26 @@ pub(crate) fn read(
     if *hours.last().unwrap() != index.last_hour {
         return Err(invalid("block index hour range mismatch"));
     }
-    let metrics = read_diagnostics(
-        &directory
-            .raw(block, DIAGNOSTICS)?
-            .ok_or_else(|| invalid_static("grouped block has no diagnostics"))?,
-        frames,
-        &present,
-        directory.layout == Layout::Timed,
-    )?;
-    let context = Context {
-        replay,
-        index,
-        position: replay.index.iter().position(|block| block == index),
-        block,
-        directory: &directory,
-        format,
-        present: &present,
-        hours: &hours,
-        entries: &entries,
-        selected,
-    };
-    let decode = |table: &TableId| table_updates(&context, *table);
-    let decoded = match parallel {
-        Some(parallel) => parallel_map(&TableId::ALL, parallel, decode)?,
-        None => engine::allocation::collect_vec(TableId::ALL.iter().map(decode))?,
-    };
-    let mut columns = Vec::with_capacity(TABLE_COUNT);
-    for updates in decoded {
-        columns.push(updates?.into_iter());
-    }
-    let mut out = Vec::with_capacity(frames);
-    for (position, (hour, metrics)) in hours.iter().zip(metrics).enumerate() {
-        let tables: Vec<TableUpdate> = columns
-            .iter_mut()
-            .map(|updates| updates.next().expect("one update per frame"))
-            .collect();
-        out.push(Frame {
-            branch: index.branch,
-            hour: *hour,
-            keyframe: position == 0,
-            metrics,
-            tables: tables.try_into().unwrap(),
-        });
-    }
-    Ok(out)
+    Ok((hours, entries))
 }
 
-fn read_diagnostics(
+fn read_diagnostics_prefix(
     raw: &[u8],
     frames: usize,
     present: &Present,
     timed: bool,
+    keep: usize,
 ) -> io::Result<Vec<Metrics>> {
     let mut input = Decoder::new(raw);
     let width = present.width();
     let mut reads = vec![0; width];
     let (mut pool, mut dropped) = (0_u64, 0_u64);
     let tail = present.tables.len() % 8;
-    let mut out = Vec::with_capacity(frames);
+    let mut out = Vec::with_capacity(keep);
     let u64_from = |value: i128| {
         u64::try_from(value).map_err(|_| invalid_static("grouped metric outside its range"))
     };
-    for _ in 0..frames {
+    for frame in 0..frames {
         let total_ns = u64_from(i128::try_from(input.varint()?).unwrap_or(-1))?;
         pool = u64_from(i128::from(pool) + unzigzag(input.varint()?))?;
         dropped = u64_from(i128::from(dropped) + unzigzag(input.varint()?))?;
@@ -2571,27 +2858,136 @@ fn read_diagnostics(
             return Err(invalid_static("grouped read bits name an absent table"));
         }
         let mut table_ns = [0; TABLE_COUNT];
-        for (ordinal, table) in present.tables.iter().enumerate() {
-            if get(&reads, ordinal) && !timed {
-                table_ns[table.index()] = READ_TIME_NOT_RECORDED;
-            } else if get(&reads, ordinal) {
-                let micros = u64::try_from(input.varint()?)
-                    .ok()
-                    .and_then(|micros| micros.checked_add(1))
-                    .filter(|micros| *micros <= u64::MAX / 1000)
-                    .ok_or_else(|| invalid_static("grouped table time outside its range"))?;
-                table_ns[table.index()] = micros * 1000;
+        // Untimed layouts have no per-table values left to validate. Only
+        // materialize sample flags for the metrics the caller retains.
+        if frame < keep || timed {
+            for (ordinal, table) in present.tables.iter().enumerate() {
+                if get(&reads, ordinal) && !timed {
+                    table_ns[table.index()] = READ_TIME_NOT_RECORDED;
+                } else if get(&reads, ordinal) {
+                    let micros = u64::try_from(input.varint()?)
+                        .ok()
+                        .and_then(|micros| micros.checked_add(1))
+                        .filter(|micros| *micros <= u64::MAX / 1000)
+                        .ok_or_else(|| invalid_static("grouped table time outside its range"))?;
+                    table_ns[table.index()] = micros * 1000;
+                }
             }
         }
-        out.push(Metrics {
-            total_ns,
-            table_ns,
-            pool_bytes: pool,
-            dropped_frames: dropped,
-        });
+        if frame < keep {
+            out.push(Metrics {
+                total_ns,
+                table_ns,
+                pool_bytes: pool,
+                dropped_frames: dropped,
+            });
+        }
     }
     input.finish()?;
     Ok(out)
+}
+
+fn keyframe_refusal(
+    directory: &Directory,
+    format: FormatVersion,
+    selected: Option<&[TableId]>,
+    table: TableId,
+) -> io::Result<Option<TableUpdate>> {
+    let version = format.version();
+    let change = &HISTORY[table.index()];
+    let key_id = keyframe_section(table);
+    let later_id = later_section(table);
+    if !change.present(version) {
+        if directory.sections[key_id].is_some() || directory.sections[later_id].is_some() {
+            return Err(invalid_static("grouped block stores an absent table"));
+        }
+        let reason = change
+            .table_gap(table, version)
+            .ok_or_else(|| invalid_static("absent table has no catalogued lifetime gap"))?;
+        return Ok(Some(TableUpdate::Unavailable { reason }));
+    }
+    let gap = change.table_gap(table, version);
+    if gap.is_none() && selected.is_some_and(|selected| !selected.contains(&table)) {
+        return Ok(Some(TableUpdate::Unavailable {
+            reason: "Table not selected for reconstruction".into(),
+        }));
+    }
+    Ok(None)
+}
+
+struct KeyframeUpdate {
+    update: TableUpdate,
+    plain: Vec<u8>,
+    shadow: Shadow,
+    anchored: bool,
+}
+
+fn keyframe_update(
+    replay: &Replay,
+    from: &From<'_>,
+    table: TableId,
+    raw: &[u8],
+    budget: &Budget,
+) -> io::Result<KeyframeUpdate> {
+    let format = replay.format;
+    let change = &HISTORY[table.index()];
+    let fields = change.fields(table, format.version());
+    let discarded = change.table_gap(table, format.version()).is_some();
+    let layout = from.layout;
+    let first = from.index.first_hour;
+    let mut key_input = ColumnReader::open(raw, fields)?;
+    let mut plain = Vec::new();
+    let mut shadow = Shadow::new();
+    let decode = |plain: &[u8], keyframe: bool| -> io::Result<TableUpdate> {
+        let mut input = Decoder::new(plain);
+        let update = decode_update(table, change, format, keyframe, &mut input)?;
+        input.finish()?;
+        Ok(update)
+    };
+    let head = take_head(&mut key_input, None, first, &mut plain, layout)?;
+    let update = if let Some(anchor) = head.anchor {
+        let own = raw.len();
+        let anchor = anchored_keyframe(
+            replay, from, table, fields, discarded, anchor, own, format, false,
+        )?
+        .state;
+        shadow = anchor.shadow;
+        take_body(
+            table,
+            fields,
+            head.status,
+            &mut key_input,
+            &shadow,
+            &mut plain,
+            budget,
+            layout,
+            None,
+        )?;
+        match anchor.rows {
+            None => decode(&plain, false)?,
+            Some(rows) => TableUpdate::Snapshot(apply_anchor_change(rows, decode(&plain, false)?)?),
+        }
+    } else {
+        take_body(
+            table,
+            fields,
+            head.status,
+            &mut key_input,
+            &shadow,
+            &mut plain,
+            budget,
+            layout,
+            None,
+        )?;
+        decode(&plain, true)?
+    };
+    key_input.finish()?;
+    Ok(KeyframeUpdate {
+        update,
+        plain,
+        shadow,
+        anchored: head.anchor.is_some(),
+    })
 }
 
 fn table_updates(context: &Context<'_>, table: TableId) -> io::Result<Vec<TableUpdate>> {
@@ -2601,30 +2997,10 @@ fn table_updates(context: &Context<'_>, table: TableId) -> io::Result<Vec<TableU
     let frames = context.hours.len();
     let key_id = keyframe_section(table);
     let later_id = later_section(table);
-    if !change.present(version) {
-        if context.directory.sections[key_id].is_some()
-            || context.directory.sections[later_id].is_some()
-        {
-            return Err(invalid_static("grouped block stores an absent table"));
-        }
-        let reason = change
-            .table_gap(table, version)
-            .ok_or_else(|| invalid_static("absent table has no catalogued lifetime gap"))?;
-        return Ok(vec![TableUpdate::Unavailable { reason }; frames]);
+    if let Some(update) = keyframe_refusal(context.directory, format, context.selected, table)? {
+        return Ok(vec![update; frames]);
     }
     let gap = change.table_gap(table, version);
-    if gap.is_none()
-        && context
-            .selected
-            .is_some_and(|selected| !selected.contains(&table))
-    {
-        return Ok(vec![
-            TableUpdate::Unavailable {
-                reason: "Table not selected for reconstruction".into(),
-            };
-            frames
-        ]);
-    }
     let fields = change.fields(table, version);
     let ordinal = context.present.ordinal[table.index()];
     let width = context.present.width();
@@ -2633,7 +3009,6 @@ fn table_updates(context: &Context<'_>, table: TableId) -> io::Result<Vec<TableU
         .raw(context.block, key_id)?
         .ok_or_else(|| invalid(format!("grouped block has no keyframe entry for {table:?}")))?;
     let later_raw = context.directory.raw(context.block, later_id)?;
-    let mut key_input = ColumnReader::open(&key_raw, fields)?;
     let mut later_input = match &later_raw {
         Some(raw) => ColumnReader::open(raw, fields)?,
         None => ColumnReader::empty(fields),
@@ -2646,7 +3021,6 @@ fn table_updates(context: &Context<'_>, table: TableId) -> io::Result<Vec<TableU
     };
     let layout = context.directory.layout;
     let budget = Budget(AtomicUsize::new(MAX_BLOCK_RAW_BYTES));
-    let mut shadow = Shadow::new();
     let mut predictor = predicted::Predictor::default();
     // A keyed block's later entries name rows among the table's rows at the
     // frame before and store masks against the masks before them.
@@ -2656,70 +3030,29 @@ fn table_updates(context: &Context<'_>, table: TableId) -> io::Result<Vec<TableU
     let mut model = modelled.then(|| Model::new(fields));
     let mut changes = KeyChanges::default();
     let mut updates = Vec::with_capacity(frames);
-    let mut plain = Vec::new();
-    let first = context.hours[0];
-    let head = take_head(&mut key_input, None, first, &mut plain, layout)?;
-    if let Some(anchor) = head.anchor {
-        let own = context.directory.sections[key_id].map_or(0, |section| section.2);
-        let from = From {
-            position: context.position,
-            index: context.index,
-            layout,
-        };
-        let anchor = anchored_keyframe(
-            context.replay,
-            &from,
-            table,
-            fields,
-            gap.is_some(),
-            anchor,
-            own,
-            context.format,
-            false,
-        )?
-        .state;
-        shadow = anchor.shadow;
-        take_body(
-            table,
-            fields,
-            head.status,
-            &mut key_input,
-            &shadow,
-            &mut plain,
-            &budget,
-            layout,
-            None,
-        )?;
-        updates.push(match anchor.rows {
-            None => decode(&plain, false)?,
-            Some(rows) => TableUpdate::Snapshot(apply_anchor_change(rows, decode(&plain, false)?)?),
-        });
-    } else {
-        take_body(
-            table,
-            fields,
-            head.status,
-            &mut key_input,
-            &shadow,
-            &mut plain,
-            &budget,
-            layout,
-            None,
-        )?;
-        updates.push(decode(&plain, true)?);
-        // Rows among the keyframe's when the block stores it whole; an
-        // anchored change leaves none.
-        if layout.keyed() {
-            keys.advance(table, version, &plain)?;
-        }
+    let from = From {
+        position: context.position,
+        index: context.index,
+        layout,
+    };
+    let KeyframeUpdate {
+        update,
+        mut plain,
+        mut shadow,
+        anchored,
+    } = keyframe_update(context.replay, &from, table, &key_raw, &budget)?;
+    // Whole keyframes seed later row names; anchored changes leave none.
+    if !anchored && layout.keyed() {
+        keys.advance(table, version, &plain)?;
     }
+    updates.push(update);
     advance_shadow(table, version, &plain, &mut shadow)?;
     let rows = match updates.last() {
         Some(TableUpdate::Snapshot(rows)) => Some(rows),
         _ => None,
     };
     settle_advance(table, layout, &mut shadow, rows);
-    key_input.finish()?;
+    let first = context.hours[0];
     for frame in 1..frames {
         let previous = context.hours[frame - 1];
         if !get(
@@ -2806,7 +3139,9 @@ fn table_updates(context: &Context<'_>, table: TableId) -> io::Result<Vec<TableU
             }
         }
     }
-    later_input.finish()?;
+    if context.complete {
+        later_input.finish()?;
+    }
     Ok(updates)
 }
 
@@ -2920,10 +3255,9 @@ fn anchored_keyframe(
                 }),
         }
         .ok_or_else(|| invalid_static("keyframe anchor names no earlier block of its file"))?;
-        let block = replay.block_bytes(block_index)?;
-        let directory = Directory::parse(block, block_index)?;
+        let directory = Directory::read(replay, block_index)?;
         let raw = directory
-            .raw(block, keyframe_section(table))?
+            .read_raw(replay, block_index, keyframe_section(table))?
             .ok_or_else(|| invalid_static("keyframe anchor has no entry for its table"))?;
         let mut input = ColumnReader::open(&raw, fields)?;
         let head = take_head(
@@ -3022,7 +3356,7 @@ pub(crate) fn stored_section(
 ) -> io::Result<(Vec<u8>, Vec<u8>)> {
     let index = &replay.index[position];
     let block = replay.block_bytes(index)?;
-    let directory = Directory::parse(block, index)?;
+    let directory = Directory::parse(&block, index)?;
     let id = match section {
         Section::Header => HEADER,
         Section::Diagnostics => DIAGNOSTICS,
@@ -3031,7 +3365,7 @@ pub(crate) fn stored_section(
     };
     let (offset, length, _) = directory.sections[id].ok_or_else(|| invalid_static("no section"))?;
     let raw = directory
-        .raw(block, id)?
+        .raw(&block, id)?
         .ok_or_else(|| invalid_static("no section"))?;
     Ok((block[offset..offset + length].to_vec(), raw))
 }
@@ -3051,9 +3385,9 @@ pub(crate) fn keyframe_chain(
     loop {
         let index = &replay.index[at];
         let block = replay.block_bytes(index)?;
-        let directory = Directory::parse(block, index)?;
+        let directory = Directory::parse(&block, index)?;
         let raw = directory
-            .raw(block, keyframe_section(table))?
+            .raw(&block, keyframe_section(table))?
             .ok_or_else(|| invalid_static("no keyframe entry"))?;
         let mut input = ColumnReader::open(&raw, fields)?;
         let head = take_head(
@@ -3448,3 +3782,7 @@ mod tests {
         assert!(body(&[1, 0, 1, 1, 9], &bases).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "anchor_read_tests.rs"]
+mod anchor_read_tests;

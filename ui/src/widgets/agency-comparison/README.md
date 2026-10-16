@@ -18,6 +18,7 @@ All created agencies by default, manual/groups/Top N; campaign/follow/pin, inclu
 - Created names preserve literal text, including empty names. Uncreated agencies use content’s default name and muted rows.
 - Upgrade entries retain native positions, duplicate definitions and signed levels; complete lists sum nonnegative levels. Missing/incomplete is Unknown, absent older capture is Not recorded. Definition pictures do not prove acquired-entry icons.
 - Manual tags follow native holder aliases; gaps and replacements never inherit values. Pending/empty choices never request all countries. Names for alphabetic sorting can load all candidates, while flags load only mounted rows. Jump uses the supplying read.
+- Prepared day windows preserve separate agency and operative dates. The parity row model is "Agency comparison values".
 
 ## Files
 

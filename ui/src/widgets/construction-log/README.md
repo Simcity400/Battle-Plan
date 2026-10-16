@@ -11,7 +11,7 @@ One row per observed construction project. Each row has, after its date:
 
 ## Products it reads
 
-[`construction-log-manifest` and `construction-log`](../../../../crates/dashboard/src/products/construction_log.rs) supply the branch's windows and building types, then each window's project histories and factory output. [`place-names`](../../../../crates/dashboard/src/products/place_names.rs) supplies dated state labels through the shared naming hook.
+[`construction-log-manifest` and `construction-log`](../../../../crates/dashboard/src/products/construction_log.rs) supply prepared branch windows and building types, then each window's project histories and factory output. Project-keyed events retain later operands without replacing earlier window pages. [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) supplies dated state labels through the shared naming hook.
 
 ## Settings
 
@@ -55,6 +55,12 @@ Campaign/follow/pin/range are available. With Filter chips on, one line above th
   - The widget holds the shown hour's window, the next during Live and, back from there, as many rows below the drawn ones as are drawn. Short of them it reaches further back, filters included.
   - Rows dated before the oldest window held unbroken wait for it, so the list is always the whole log's newest rows.
   - A far jump keeps the last shown hour until its window arrives.
+
+- Parity builds expose the reached history boundary to the [browser harness](../../../e2e/README.md), so a stable newest window cannot certify a complete log. Ordinary builds expose no test metadata.
+- After normal visible screenshots, parity builds prepare every row through the original history reach, requiring the real history boundary. Complete models retain every ordered project operand, referenced building title and exact dated country/place reference. Complete-history preparation requests no offscreen names or artwork.
+
+- Parity builds expose the reached history boundary to the [browser harness](../../../e2e/README.md), so a stable newest window cannot certify a complete log. Ordinary builds expose no test metadata.
+- After normal visible screenshots, parity builds prepare every row through the original history reach, requiring the real history boundary. Complete models retain every ordered project operand, referenced building title and exact dated country/place reference. Complete-history preparation requests no offscreen names or artwork.
 
 ## Files
 

@@ -78,6 +78,7 @@ test('the mounted Fuel country chooser pins its original actor and restores Foll
     export const useMemo = (make, deps) => { const saved = cell(() => ({ deps, value: make() }));
       if (saved.deps.length !== deps.length || saved.deps.some((dep, i) => !Object.is(dep, deps[i]))) { saved.deps = deps; saved.value = make(); }
       return saved.value; };
+    export const useCallback = (callback, deps) => useMemo(() => callback, deps);
     export const useState = initial => { const saved = cell(() => ({ value: typeof initial === 'function' ? initial() : initial }));
       return [saved.value, next => { const value = typeof next === 'function' ? next(saved.value) : next;
         if (!Object.is(value, saved.value)) globalThis.__fuelCountryMount.changed = true; saved.value = value; }]; };
@@ -85,6 +86,8 @@ test('the mounted Fuel country chooser pins its original actor and restores Foll
       return [saved.value, action => { const value = reduce(saved.value, action);
         if (!Object.is(value, saved.value)) globalThis.__fuelCountryMount.changed = true; saved.value = value; }]; };`;
   const replacements: Record<string, string> = {
+    '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
+    '/dashboard/parityPreparation.ts': 'export const useParityPreparation = () => ({ requested: false, prepare() {} });',
     '/dashboard/products.ts': `const fuels = ${JSON.stringify(fuels)}, consumptions = ${JSON.stringify(consumptions)};
       export function useProducts(_client, requests, active, validate) {
         const state = globalThis.__fuelCountryMount; if (active) state.requests.push(...requests);
@@ -152,8 +155,8 @@ test('the mounted Fuel country chooser pins its original actor and restores Foll
             'const [headerSlot, setHeaderSlot] = useState<HTMLSpanElement | null>(globalThis.__fuelCountryMount.summarySlot);')
           .replace('const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(null);',
             'const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(globalThis.__fuelCountryMount.slot);');
-        if (path.endsWith('/fuel/FuelWidget.tsx') || path.endsWith('/dashboard/comparisonCountries.ts') || path.endsWith('/dashboard/useDiagnostics.ts'))
-          return source.replace("from 'react'", "from 'fuel-country-hooks'").replace("from 'react-dom'", "from 'fuel-country-portals'");
+        if (path.endsWith('/fuel/FuelWidget.tsx') || path.endsWith('/fuel/preparedFuel.ts') || path.endsWith('/dashboard/comparisonCountries.ts') || path.endsWith('/dashboard/useDiagnostics.ts'))
+          return source.replaceAll("from 'react'", "from 'fuel-country-hooks'").replace("from 'react-dom'", "from 'fuel-country-portals'");
         if (path.endsWith('/supply-health/SupplyHealthWidget.tsx')) return source.replace("from 'react-dom'", "from 'fuel-country-portals'");
       },
     }] });
@@ -358,5 +361,42 @@ test('the mounted Fuel country chooser pins its original actor and restores Foll
     const count = state.added.length; originalPick(105, 'X', ['X']); render();
     assert.equal(state.host!.open, false, 'A to B to A clients cannot revive an obsolete drawn-country pick');
     assert.equal(state.added.length, count);
+
+    const preparedRequests: { product: string; params: { reads?: { tag: string; hour: number }[]; tags?: string[]; measures?: string[]; from?: number; to?: number; width?: number } }[] = [];
+    props.runtime.client = { async preparedQuery(_source: unknown, product: string, params: typeof preparedRequests[number]['params']) {
+      preparedRequests.push({ product, params });
+      const tags = [...new Set(params.reads?.map(read => read.tag) ?? params.tags ?? [])];
+      const replies = fuels.filter(reply => tags.includes(reply.tag)).map(reply => ({ ...reply, reads: [] }));
+      if (product === 'series-state') return { branchId: '1', replies, states: params.reads!.map(({ tag, hour }) => ({
+        tag, hour, recorded: true,
+        fuel: fuels.find(reply => reply.tag === tag)?.reads.find(read => read.firstHour <= hour && read.lastHour >= hour) ?? null,
+        consumption: consumptions.find(reply => reply.tag === tag)?.reads.find(read => read.firstHour <= hour && read.lastHour >= hour) ?? null,
+        consumptionSegment: { firstHour: 100, lastHour: 114 },
+      })) };
+      assert.equal(product, 'series-summary');
+      return { branchId: '1', replies, series: tags.flatMap(tag => params.measures!.map(measure => ({ tag, measure,
+        summary: { from: params.from, to: params.to, width: params.width, buckets: [], runs: [] },
+      }))) };
+    } } as unknown as typeof props.runtime.client;
+    const settlePrepared = async () => {
+      for (let turn = 0; turn < 4; turn++) {
+        await new Promise<void>(resolve => setImmediate(resolve));
+        render();
+        assert.equal(state.requests.some(request => ['country-fuel', 'country-fuel-consumption'].includes(request.product)), false,
+          'a prepared mount never requests a whole-branch fuel or consumption reply');
+      }
+    };
+    props.widget = widget; state.hour = 105; unmount(); render(); await settlePrepared();
+    assert.equal(preparedRequests[0].product, 'series-state');
+    state.main!.onSummaryView!({ from: 100, to: 105, width: 200 }); render(); await settlePrepared();
+    assert(preparedRequests.some(request => request.product === 'series-summary' && request.params.width === 200));
+    props.widget = { ...pinned, time: { mode: 'follow' }, options: { ...pinnedOptions, show: 'consumption' } };
+    unmount(); render(); await settlePrepared();
+    const preparedFamilies = state.charts.find(chart => chart.label === 'X: current consumption families')!;
+    assert(preparedFamilies.onSummaryView, 'the mounted consumption breakdown requests shared summaries');
+    preparedFamilies.onSummaryView!({ from: 100, to: 105, width: 160 }); render(); await settlePrepared();
+    assert(preparedRequests.some(request => request.product === 'series-summary' && request.params.measures?.includes('consumption-0')));
+    assert(state.requests.some(request => request.product === 'country-fuel-demand'), 'current recipient details still use the bounded detail product');
+    unmount();
   } finally { await vite.close(); delete globals.__fuelCountryMount; }
 });

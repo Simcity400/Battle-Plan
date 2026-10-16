@@ -418,9 +418,6 @@ fn occupation_trend_all_5000_countries_top_ranking_and_budget() {
 
 #[test]
 fn occupation_trend_request_bounds_are_uncapped_with_shared_tag_validation() {
-    let legacy: OccupationTrendParams =
-        serde_json::from_str(r#"{"branchId":"1","tags":[],"top":null}"#).unwrap();
-    assert!(!legacy.collaboration);
     let mut params = OccupationTrendParams {
         branch_id: "1".into(),
         tags: vec![],

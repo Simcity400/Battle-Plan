@@ -15,6 +15,7 @@ export function powerLedgerModelKey(reply: PoliticsLedgerReply): string {
     reply.tag, reply.decimals, reply.daily ?? [],
     reply.spending.map(row => [row.id, row.countryId, row.hour, row.readHour, row.currency, row.category, row.chargeRaw,
       row.realizedDeltaRaw, row.covered, row.occurrences, row.changes]),
+    reply.recurring ?? [],
     reply.spendCategories.map(row => row.id),
     reply.spendingCoverage.map(row => [row.readHour, row.sinceHour, row.throughHour, row.political, row.command]),
     (reply.balanceChanges ?? []).map(row => [row.countryId, row.hour, row.readHour, row.currency, row.amountRaw, row.realizedDeltaRaw, row.covered]),

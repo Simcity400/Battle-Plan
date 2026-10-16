@@ -38,7 +38,7 @@ export function useAirChoices(widget: WidgetSpec, runtime: WidgetRuntime): Optio
   usePlaybackHour(runtime.clock, true);
   const hour = Math.floor(track ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour ?? track.branch.lastHour : 0);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority', params: { branchId: track.branch.id, view: 'choices' } } : null;
-  const product = useProduct<AirChoices>(runtime.client, request, true, choicesReply);
+  const product = useProduct<AirChoices>(runtime.client, request, true, choicesReply, track?.source);
   const countries = product.data?.countries ?? NO_COUNTRIES;
   const tags = useMemo(() => [...new Set([...countries, ...(product.data?.sides.flatMap(side => side.tag ? [side.tag] : []) ?? [])])], [countries, product.data]);
   const names = useCountriesAt(runtime.client, track, [], hour, true, tags);
@@ -83,10 +83,10 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
   const timelineLast = follow ? previousTimeline ? Math.max(firstHour, timelineRequestLast(lastHour, previousTimeline.dayHours)) : firstHour : lastHour;
   const timelineRequest = track && window && !moment && !beforeBranch && !needsViewpoint ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority',
     params: { branchId: track.branch.id, view: 'timeline', firstHour, lastHour: timelineLast, ...params, ...(mode.regions.length ? {} : { top: Number(options.regionCount) }) } } : null;
-  const timeline = useProduct<AirTimeline>(runtime.client, timelineRequest, active, timelineReply);
+  const timeline = useProduct<AirTimeline>(runtime.client, timelineRequest, active, timelineReply, track?.source);
   const timelineData = timeline.data ?? (follow ? previousTimeline : undefined);
   const windowChoicesRequest = track && moment ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority', params: { branchId: track.branch.id, view: 'choices', windowsOnly: true } } : null;
-  const windowChoices = useProduct<AirChoices>(runtime.client, windowChoicesRequest, active, choicesReply);
+  const windowChoices = useProduct<AirChoices>(runtime.client, windowChoicesRequest, active, choicesReply, track?.source);
   const recordedWindows = windowChoices.data?.windows;
   const wanted = moment && recordedWindows ? momentWindows(recordedWindows, hour) : [];
   const shownWindow = recordedWindows?.[wanted[0]];
@@ -96,24 +96,24 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
     branchId: track.branch.id, view: 'choices', firstHour: momentFirst, lastHour: momentLast,
     ...(mode.regions.length ? { regions: mode.regions } : {}), ...(mode.theatres.length ? { theatres: mode.theatres } : {}),
   } } : null;
-  const choices = useProduct<AirChoices>(runtime.client, choicesRequest, active, choicesReply);
+  const choices = useProduct<AirChoices>(runtime.client, choicesRequest, active, choicesReply, track?.source);
   const identity = track && window && moment && !needsViewpoint ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, contentRevision, params]) : null;
   const windows = useProductWindows<AirMoment>(runtime.client, identity, index => {
     const window = recordedWindows![index];
     return { sourceId: track!.source.id, revision: track!.source.revision, product: 'air-superiority', params: {
       branchId: track!.branch.id, view: 'moment', firstHour: window.firstHour, lastHour: window.lastHour, ...params,
     } };
-  }, wanted, active, momentReply);
+  }, wanted, active, momentReply, track?.source);
   const dayFirst = timelineData ? Math.max(firstHour, timelineRequestLast(lastHour, timelineData.dayHours)) : firstHour;
   const dayRequest = follow && track && timelineData && !beforeBranch && !needsViewpoint ? {
     sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority', params: {
       branchId: track.branch.id, view: 'moment', firstHour: dayFirst,
       lastHour: Math.min(timelineRequestLast(lastHour, timelineData.dayHours) + timelineData.dayHours - 1, track.branch.lastHour), ...params, regions: timelineData.rows.map(row => row.region),
     } } : null;
-  const day = useProduct<AirMoment>(runtime.client, dayRequest, active, momentReply);
+  const day = useProduct<AirMoment>(runtime.client, dayRequest, active, momentReply, track?.source);
   const catalogueRequest = track && !moment && !needsViewpoint ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority',
     params: { branchId: track.branch.id, view: 'choices' } } : null;
-  const catalogue = useProduct<AirChoices>(runtime.client, catalogueRequest, active, choicesReply);
+  const catalogue = useProduct<AirChoices>(runtime.client, catalogueRequest, active, choicesReply, track?.source);
   const labelCatalogue = useMemo(() => catalogue.data?.regions.map(region => region.name), [catalogue.data]);
   const dayData = day.data ?? (follow ? heldAirReply(held, runtime.client, heldIdentity, 'day') : undefined);
   useEffect(() => {

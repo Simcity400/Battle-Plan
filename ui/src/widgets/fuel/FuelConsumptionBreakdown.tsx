@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import DrillParts from '../../charts/drill/DrillParts';
 import type { DrillPart } from '../../charts/drill/DrillParts';
@@ -18,6 +18,7 @@ import { useProduct, useProducts } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
 import type { FuelDemandHistoryReply, FuelDemandPart, FuelDemandReply, FuelConsumptionReply, FuelReply } from '../../generated/dashboard';
 import { formatFuelPart } from './fuelData';
+import { usePreparedFuel, fuelSummaryRuns, useFuelSeriesParity } from './preparedFuel';
 import FuelConsumptionStack from './FuelConsumptionStack';
 import { useDetailView } from './FuelBreakdown';
 import { consumptionAt, consumptionBasis, consumptionCoverage, consumptionForActor, consumptionGeometry, consumptionHistoryNumbers,
@@ -42,12 +43,14 @@ export default function FuelConsumptionBreakdown({ reply, actorSpans, identitySp
   const scope = JSON.stringify([track.source.id, track.branch.id, reply.tag]);
   const requests = [...((identitySpans ?? actorSpans)?.keys() ?? [reply.tag])].map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
     product: 'country-fuel-consumption', params: { branchId: track.branch.id, tag } }));
-  const product = useProducts<FuelConsumptionReply>(runtime.client, requests, chart.active, value => {
+  const prepared = usePreparedFuel(runtime.client, track, requests.map(request=>request.params.tag), Math.floor(hour ?? chart.extent[1]), chart.active, ['consumption-0','consumption-1','consumption-2'], actorSpans, selection?.basis.hour);
+  const legacyProduct = useProducts<FuelConsumptionReply>(runtime.client, requests, chart.active && !prepared.enabled, value => {
     const result = validateFuelConsumption(value);
     if (result.branchId !== track.branch.id || !requests.some(request => request.params.tag === result.tag))
       throw new Error('The selected consumption history belongs to another country or branch.');
     return result;
   });
+  const product = prepared.enabled ? { ...prepared, data: prepared.consumption } : legacyProduct;
   const summaryStore = useMemo(() => new NumericReply<FuelConsumptionReply[]>(), [runtime.client]);
   const numbers = summaryStore.update(JSON.stringify(requests), product.data, values => values.map(value => ({ ...value, warnings: [] })));
   const summaries = product.data ?? numbers;
@@ -74,14 +77,21 @@ export default function FuelConsumptionBreakdown({ reply, actorSpans, identitySp
       country: current.country, countryInstance: current.countryInstance, segmentStartHour: current.segmentStartHour, level: next }); };
   const chosen = consumptionForActor(selection, track.source.metadata.campaignKey, track.branch.id, reply.tag, identitySpans ?? actorSpans);
   const selectionScope = chosen && JSON.stringify(chosen);
-  const coverage = useMemo(() => chosen ? consumptionCoverage(summaries ?? [], chosen, actorSpans) : [],
-    [summaries, actorSpans, selectionScope]); // eslint-disable-line react-hooks/exhaustive-deps
+  const coverage = useMemo(() => {
+    if (!chosen) return [];
+    if (!prepared.enabled) return consumptionCoverage(summaries ?? [], chosen, actorSpans);
+    const point = prepared.states?.states.find(state=>state.tag===chosen.basis.tag && state.hour===chosen.basis.hour);
+    if (!point?.consumptionSegment || point.consumption?.country!==chosen.basis.country || point.consumption.countryInstance!==chosen.basis.countryInstance
+      || point.consumption.segmentStartHour!==chosen.segmentStartHour) return [];
+    const spans = actorSpans ? [...actorSpans.values()].flat().sort((a,b)=>a.firstHour-b.firstHour) : undefined;
+    return spans ? clipToSpans([point.consumptionSegment],spans) : [point.consumptionSegment];
+  }, [summaries, actorSpans, selectionScope, prepared.states]); // eslint-disable-line react-hooks/exhaustive-deps
   const matching = chosen && hour !== null && !!runAt(coverage, hour);
   const part = matching ? data?.parts.find(row => row.key === chosen.key) : null;
-  const owner = useMemo(() => ({ parent: chart.pickOwner, numbers, key: chosen?.key, levelName }), [chart.pickOwner, numbers, chosen?.key, levelName]);
+  const owner = useMemo(() => ({ parent: chart.pickOwner, numbers: prepared.enabled ? prepared.owner : numbers, key: chosen?.key, levelName }), [chart.pickOwner, prepared.enabled ? prepared.owner : numbers, chosen?.key, levelName]);
   const series = useMemo<BreakdownSeries[]>(() => [0, 1, 2].map(kind => ({ id: String(kind), label: reply.consumerNames[kind] ?? 'Consumer name unavailable',
     color: tokens.categories[kind % tokens.categories.length], runs: (summaries ?? []).flatMap(source => {
-      const runs = source.reads.flatMap((read, i, reads) => read.reasons[kind] !== null ? [] : [{
+      const runs = prepared.enabled ? fuelSummaryRuns(prepared.summary(source.tag, `consumption-${kind}`), reply.gainScale) : source.reads.flatMap((read, i, reads) => read.reasons[kind] !== null ? [] : [{
       firstHour: read.firstHour, lastHour: read.lastHour, value: Number(read.positiveDailyRaw[kind]) / reply.gainScale,
       breakBefore: read.startsSegment || i === 0 || reads[i - 1].reasons[kind] !== null || reads[i - 1].lastHour + 1 !== read.firstHour }]);
       return actorSpans ? clipToSpans(runs, actorSpans.get(source.tag) ?? []) : runs;
@@ -89,7 +99,9 @@ export default function FuelConsumptionBreakdown({ reply, actorSpans, identitySp
     amount: at => { const tag = actorSpans ? countryDrillTagAt(actorSpans, at) : reply.tag;
       const source = summaries?.find(value => value.tag === tag), read = source && runAt(source.reads, at); return read && read.reasons[kind] === null
       ? formatFuelPart(BigInt(read.knownDailyRaw[kind]), BigInt(reply.gainScale), digits) : 'Unavailable'; },
-  })), [summaries, actorSpans, reply.tag, reply.gainScale, reply.consumerNames, tokens, digits]);
+  })), [summaries, actorSpans, reply.tag, reply.gainScale, reply.consumerNames, tokens, digits, prepared.summaries]);
+  const parity = useRef<HTMLDivElement>(null);
+  useFuelSeriesParity(parity, runtime.client, track, requests.map(request=>request.params.tag), chart.extent, actorSpans, 'Fuel consumption values', summaries, true);
   const total = useMemo(() => inventory.reduce((sum, part) => sum + (part.raw ?? 0n), 0n), [inventory]);
   const complete = useMemo(() => {
     if (!data || !current || !availableLevel || inventory.some(part => part.raw === null)) return false;
@@ -101,7 +113,7 @@ export default function FuelConsumptionBreakdown({ reply, actorSpans, identitySp
       : levelName.startsWith('command:') ? [0] : levelName.startsWith('fleet:') ? [2] : [0, 1, 2];
     return families.every(kind => current.reasons[kind] === null) && (!levelName.startsWith('command:') || data.topologyReason === null);
   }, [inventory, current, data, availableLevel, levelName, displayed.length]);
-  return <>
+  return <div ref={parity}>
     {product.error && <WidgetState kind="error" what="consumption" detail={product.error} onRetry={product.retry} />}
     {!summary && !product.error && <WidgetState kind="loading" label="Loading current consumption..." />}
     {detail.error && <WidgetState kind="error" what="consumers" detail={detail.error} onRetry={detail.retry} />}
@@ -130,10 +142,10 @@ export default function FuelConsumptionBreakdown({ reply, actorSpans, identitySp
       {data && <ConsumptionTopology data={data} active={chart.active} onLevel={chooseLevel} />}
       {basis && data && availableLevel && <FuelConsumptionStack {...chart} within={within} pickOwner={owner} runtime={runtime} track={track}
         basis={basis} segmentStartHour={data.read.segmentStartHour} parts={displayed} hour={hour} detailHours={reply.detailHours} scale={reply.gainScale} />}
-      {summary && <details><summary>By military branch</summary><BreakdownChart {...chart} within={within} pickOwner={owner} series={series} selectedHour={hour}
+      {summary && <details><summary>By military branch</summary><BreakdownChart {...chart} onSummaryView={prepared.enabled ? prepared.onSummaryView : undefined} onHover={prepared.enabled ? prepared.onHover : undefined} onNavigateHour={prepared.enabled ? prepared.onNavigateHour : undefined} keyboardHour={prepared.keyboardHour} keyboardRevision={prepared.keyboardRevision} within={within} pickOwner={owner} series={series} selectedHour={hour}
         label={`${reply.tag}: current consumption families`} axes={{ xFrom: null, xTo: null, yMin: 0, yMax: null, log: false }} /></details>}
     </>}
-  </>;
+  </div>;
 }
 
 function ConsumptionFacts({ part }: { part: FuelDemandPart }) {

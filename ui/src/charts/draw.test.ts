@@ -37,3 +37,15 @@ test('drawLine held option shares its end dot and theme widths and never smooths
   assert.equal(ctx.lineWidth, tokens.lineWidth.series);
   assert.equal(ctx.strokeStyle, tokens.surface);
 });
+
+test('line geometry follows the complete time scale while its drawn end stays fixed', () => {
+  const ctx = { beginPath() {}, moveTo() {}, lineTo() {}, bezierCurveTo() {}, arc() {}, stroke() {}, fill() {}, setLineDash() {} } as unknown as CanvasRenderingContext2D;
+  const tokens = tokensFromValues(() => 'transparent', 'sans-serif');
+  const runs = [{ firstHour: 0, lastHour: 100, value: 1 }];
+  for (const held of [false, true]) {
+    for (const end of [100, 200, 50]) {
+      const frame = plotFrame(400, 200, { left: 20, right: 20, top: 20, bottom: 20 }, [0, end], [0, 2], false);
+      assert.deepEqual(drawLine(ctx, frame, tokens, runs, 'colour', { held, until: 40 }), { x: frame.toX(40), y: frame.toY(1) });
+    }
+  }
+});

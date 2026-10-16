@@ -92,7 +92,8 @@ fn validate_snapshot(path: &str, revision: &str) -> Result<(), String> {
 #[derive(Default)]
 pub struct Pending {
     pub actions: VecDeque<dashboard::protocol::MapAction>,
-    pub standalone: bool,
+    /// The Campaign map takes the window back from the dashboard's maps.
+    pub campaign_map: bool,
     pub open: Option<OpenRequest>,
     pub seek: Option<Seek>,
     pub close: bool,
@@ -106,7 +107,7 @@ impl Pending {
     fn is_empty(&self) -> bool {
         self.open.is_none()
             && self.actions.is_empty()
-            && !self.standalone
+            && !self.campaign_map
             && self.map_views.is_none()
             && self.seek.is_none()
             && !self.close
@@ -126,7 +127,7 @@ impl Pending {
                     return Err("Map controls queue is full".into());
                 }
                 if let dashboard::protocol::MapAction::Unload { path } = &action {
-                    let path = std::path::Path::new(path);
+                    let path = Path::new(path);
                     if self
                         .open
                         .as_ref()
@@ -144,14 +145,14 @@ impl Pending {
                 }
                 self.actions.push_back(action);
             }
-            NativeCommand::Standalone => {
-                self.standalone = true;
+            NativeCommand::CampaignMap => {
+                self.campaign_map = true;
                 self.map_views = None;
             }
             NativeCommand::MapViews { views } => {
                 validate_map_views(&views)?;
                 self.map_views = Some(views);
-                self.standalone = false;
+                self.campaign_map = false;
                 self.open = None;
                 self.seek = None;
                 self.error = None;
@@ -633,7 +634,7 @@ impl Controller {
         pending.close |= self.closing;
         if !pending.close {
             let applied = (|| {
-                if pending.standalone {
+                if pending.campaign_map {
                     self.window.clear_region()?;
                 }
                 if let Some(bounds) = pending.bounds {

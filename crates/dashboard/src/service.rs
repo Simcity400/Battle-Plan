@@ -7,7 +7,7 @@
 use crate::{
     Config, Source, map_settings,
     products::{self, ContentOptions},
-    protocol::CampaignMapSettings,
+    protocol::ResolvedMapSettings,
     transport::{DataCommand, DataEvent, MAX_REPLY_BYTES, MapSettingsTarget},
 };
 use std::{
@@ -16,7 +16,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Sender},
+        mpsc::{self, SyncSender},
     },
     thread,
 };
@@ -39,11 +39,16 @@ const INTERACTIVE_THREADS: usize = 2;
 /// Where jobs wait: whole-recording work, and hover or label reads and the
 /// history cache's size beside it.
 struct Lanes {
-    history: Sender<LoadJob>,
-    interactive: Sender<LoadJob>,
+    history: SyncSender<LoadJob>,
+    interactive: SyncSender<LoadJob>,
+    refreshes: std::collections::BTreeMap<crate::SourceKey, Arc<AtomicBool>>,
 }
 
-type VisualCatalogue = (PathBuf, PathBuf, Vec<installed_content::content::visual::VisualMod>);
+type VisualCatalogue = (
+    PathBuf,
+    PathBuf,
+    Vec<installed_content::content::visual::InstalledMod>,
+);
 
 struct Inner {
     lease_namespace: uuid::Uuid,
@@ -55,6 +60,10 @@ struct Inner {
     loader: Mutex<Option<Lanes>>,
     signal: Arc<Signal>,
     closed: AtomicBool,
+    preparation: crate::prepared::runner::Runner,
+    preparation_actions: Mutex<()>,
+    background_preparation: AtomicBool,
+    preparation_suspended: AtomicBool,
 }
 
 pub struct Service {
@@ -73,8 +82,8 @@ impl Drop for ThreadExit {
 
 impl Service {
     pub fn new(emit: Arc<dyn Fn(DataEvent) -> bool + Send + Sync>) -> io::Result<Arc<Self>> {
-        let (history, history_jobs) = mpsc::channel::<LoadJob>();
-        let (interactive, interactive_jobs) = mpsc::channel::<LoadJob>();
+        let (history, history_jobs) = mpsc::sync_channel::<LoadJob>(MAX_PENDING);
+        let (interactive, interactive_jobs) = mpsc::sync_channel::<LoadJob>(MAX_PENDING);
         let inner = Arc::new(Inner {
             lease_namespace: uuid::Uuid::new_v4(),
             map_settings: Mutex::new(map_settings::Store::open()),
@@ -85,9 +94,14 @@ impl Service {
             loader: Mutex::new(Some(Lanes {
                 history,
                 interactive,
+                refreshes: std::collections::BTreeMap::new(),
             })),
             signal: Arc::new(Signal::default()),
             closed: AtomicBool::new(false),
+            preparation: crate::prepared::runner::Runner::new()?,
+            preparation_actions: Mutex::new(()),
+            background_preparation: AtomicBool::new(true),
+            preparation_suspended: AtomicBool::new(false),
         });
         let mut threads = Vec::new();
         let spawn_result = (|| -> io::Result<()> {
@@ -100,8 +114,7 @@ impl Service {
                     let load_inner = Arc::clone(&inner);
                     let jobs = Arc::clone(&jobs);
                     threads.push(
-                        thread::Builder::new()
-                            .name(format!("dashboard {lane} {index}"))
+                        crate::prepared::runner::worker_thread(format!("dashboard {lane} {index}"))
                             .spawn(move || {
                                 let _exit = ThreadExit(Arc::clone(&load_inner));
                                 load_inner.run_loader(&jobs);
@@ -134,23 +147,16 @@ impl Service {
 
     /// Game and user folders for products that read artwork or localisation.
     pub fn configure_content(&self, config: &Config, allow_unverified: bool) -> io::Result<()> {
+        self.set_background_preparation(config.background_preparation_enabled());
         let options = match config.resolve_options() {
             Ok(options) => options,
             Err(_) => {
-                *self
-                    .inner
-                    .content
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner()) = None;
+                self.replace_content(None);
                 return Ok(());
             }
         };
         if let Err(error) = engine::executable_tables::initialize(&options.game_dir) {
-            *self
-                .inner
-                .content
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()) = None;
+            self.replace_content(None);
             return Err(io::Error::new(
                 error.kind(),
                 format!("Game tables unavailable: {error}"),
@@ -161,18 +167,149 @@ impl Service {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .configure_game(&config.user_dir);
-        *self
-            .inner
-            .content
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = Some(ContentOptions {
+        self.replace_content(Some(ContentOptions {
             options,
             allow_unverified,
-        });
+        }));
         Ok(())
     }
 
-    pub fn map_settings(&self, replay: &replay::container::Replay) -> CampaignMapSettings {
+    fn replace_content(&self, content: Option<ContentOptions>) {
+        let mut current = self
+            .inner
+            .content
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let key = |value: Option<&ContentOptions>| {
+            value.map(|value| {
+                (
+                    crate::content::content_key(Some(value)),
+                    value.options.cache_dir.clone(),
+                )
+            })
+        };
+        let changed = key(current.as_ref()) != key(content.as_ref());
+        *current = content;
+        drop(current);
+        if !changed {
+            return;
+        }
+        self.inner.preparation.notify_change();
+        self.inner
+            .sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .completed
+            .clear();
+        let sources: Vec<_> = self
+            .inner
+            .sources
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entries
+            .values()
+            .filter_map(std::sync::Weak::upgrade)
+            .collect();
+        let mut latest = std::collections::BTreeMap::<PathBuf, Arc<Source>>::new();
+        let mut revisions = std::collections::BTreeMap::new();
+        for source in sources {
+            let path = source.path().to_owned();
+            let revision = revisions
+                .entry(path.clone())
+                .or_insert_with(|| crate::protocol::replay_revision(&path).ok());
+            if revision.as_deref() == Some(source.key().revision.as_str()) {
+                latest.insert(path, source);
+            }
+        }
+        for source in latest.into_values() {
+            // Manual Cancel and Clear remain effective until an explicit
+            // Start or reopen. Refresh active/completed preparation off-thread.
+            let progress = source.state::<crate::prepared::Progress>();
+            let state = progress
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .state;
+            if !matches!(
+                state,
+                crate::prepared::State::Idle | crate::prepared::State::Cancelled
+            ) && let Err(error) = self.inner.refresh_preparation(source, true)
+            {
+                eprintln!("Preparation refresh: {error}");
+            }
+        }
+    }
+
+    pub fn preparation_preferences(&self) -> crate::prepared::Preferences {
+        self.inner.preparation_preferences()
+    }
+
+    pub fn set_background_preparation(&self, enabled: bool) {
+        self.inner.set_background_preparation(enabled);
+    }
+
+    /// Suspend automatic admission while the host observes a game process.
+    /// Manual Prepare remains available. Cancellation uses the existing block boundary.
+    pub fn set_preparation_suspended(&self, suspended: bool) {
+        self.inner.set_preparation_suspended(suspended);
+    }
+
+    /// Changes only for worker completion or a changed preparation condition.
+    /// Hosts use it to end no-progress admission polling until something changes.
+    pub fn preparation_revision(&self) -> u64 {
+        self.inner.preparation.revision()
+    }
+
+    /// Admit unfinished library recordings, newest first, through the same runner.
+    /// Busy workers leave the path eligible for the next library scan.
+    pub fn prepare_library(&self, paths: &[PathBuf]) -> io::Result<()> {
+        let mut paths: std::collections::BTreeSet<_> = paths
+            .iter()
+            .filter_map(|path| path.canonicalize().ok())
+            .collect();
+        paths.extend(
+            self.inner
+                .sources
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .library
+                .keys()
+                .cloned(),
+        );
+        let mut paths: Vec<_> = paths.into_iter().collect();
+        paths.sort_by_cached_key(|path| {
+            (
+                std::cmp::Reverse(std::fs::metadata(path).and_then(|m| m.modified()).ok()),
+                path.clone(),
+            )
+        });
+        for path in paths {
+            if self.inner.closed.load(Ordering::Acquire)
+                || self.inner.preparation_suspended.load(Ordering::Acquire)
+                || !self.inner.background_preparation.load(Ordering::Acquire)
+            {
+                break;
+            }
+            if let Err(error) = self.inner.prepare_recording(&path) {
+                if error.kind() == io::ErrorKind::WouldBlock {
+                    return Err(error);
+                }
+                // A damaged or unavailable recording must not starve the others.
+                eprintln!("Background preparation of {}: {error}", path.display());
+            }
+        }
+        Ok(())
+    }
+
+    /// Read the map preferences the desktop host saved since this process last read them.
+    pub fn reload_map_settings(&self) {
+        self.inner
+            .map_settings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .reload();
+    }
+
+    pub fn map_settings(&self, replay: &replay::container::Replay) -> ResolvedMapSettings {
         self.inner
             .map_settings
             .lock()
@@ -184,15 +321,30 @@ impl Service {
         &self,
         replay: &replay::container::Replay,
         id: &str,
-    ) -> CampaignMapSettings {
+    ) -> ResolvedMapSettings {
+        self.scoped_map_settings(&map_settings::widget_key(
+            &map_settings::campaign_key(replay),
+            id,
+        ))
+    }
+
+    /// The resolved settings of a scope key ([`map_settings::campaign_key`],
+    /// [`map_settings::widget_key`]).
+    pub fn scoped_map_settings(&self, scope: &str) -> ResolvedMapSettings {
         self.inner
             .map_settings
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&format!(
-                "{}/widget/{id}",
-                map_settings::campaign_key(replay)
-            ))
+            .get(scope)
+    }
+
+    /// Changes whenever a scope's resolved settings may have.
+    pub fn map_settings_generation(&self) -> u64 {
+        self.inner
+            .map_settings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .generation()
     }
 
     pub fn source(&self, id: &str) -> Result<Arc<Source>, String> {
@@ -356,6 +508,61 @@ impl Service {
                 };
                 self.inner.submit(request, job);
             }
+            DataCommand::PreparedQuery { id, request: body } => {
+                let Some(request) = self.inner.begin(id) else {
+                    return;
+                };
+                if let Err(error) = body.validate() {
+                    self.inner.error(request, error.into());
+                    return;
+                }
+                let Some(source) =
+                    self.leased_source(&request, &body.source_id, &body.revision, "Prepared query")
+                else {
+                    return;
+                };
+                self.inner.submit(
+                    Arc::clone(&request),
+                    LoadJob::PreparedQuery {
+                        request,
+                        source,
+                        body,
+                    },
+                );
+            }
+            DataCommand::Preparation {
+                id,
+                source_id,
+                revision,
+                action,
+            } => {
+                let Some(request) = self.inner.begin(id) else {
+                    return;
+                };
+                let Some(source) =
+                    self.leased_source(&request, &source_id, &revision, "Preparation")
+                else {
+                    return;
+                };
+                self.inner.submit(
+                    Arc::clone(&request),
+                    LoadJob::Preparation {
+                        request,
+                        source,
+                        source_id,
+                        action,
+                    },
+                );
+            }
+            DataCommand::PreparationPreferences { id, enabled } => {
+                let Some(request) = self.inner.begin(id) else {
+                    return;
+                };
+                self.inner.submit(
+                    Arc::clone(&request),
+                    LoadJob::PreparationPreferences { request, enabled },
+                );
+            }
             DataCommand::Cancel { id } => {
                 let discarded = self
                     .inner
@@ -386,6 +593,7 @@ impl Service {
 
     pub fn shutdown(&self) {
         self.inner.stop();
+        self.inner.preparation.shutdown();
         // A service thread only requests stop. Keep its handle for the owner's
         // subsequent retirement. Check before locking: another caller may hold
         // the join lock while it waits for this very callback to return.

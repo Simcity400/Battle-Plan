@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isUnjoinedResearch, researchAt, researchArtworkTokens, researchProgressAt, researchRateAt, researchRequest, researchStateAt, validateResearchReply } from './researchData.ts';
-import { coverageAt, researchLanes } from './researchLayout.ts';
+import { isUnjoinedResearch, researchAt, researchEntryAt, researchArtworkTokens, researchProgressAt, researchRateAt, researchRequest, researchStateAt, validateResearchReply } from './researchData.ts';
+import { coverageAt, researchLanes, researchLanesAt } from './researchLayout.ts';
 import { loadProduct } from '../../dashboard/products.ts';
 import type { ResearchEntry, ResearchHistory, ResearchReply } from '../../generated/dashboard';
 import type { DashboardClient, ProductRequest } from '../../dashboard/client';
@@ -72,6 +72,8 @@ test('an hour without a read keeps the history known by then and only its slot s
     const slots = researchAt(read, hour);
     assert.deepEqual(slots[0].entries.filter(e => e.outcome === 'completed').map(e => e.token), ['A']);
     assert.deepEqual(researchLanes(slots, coverageAt(read.coverage, hour), hour).map(lane => lane.slot.index), [0, 1, 2]);
+    assert.deepEqual(researchLanesAt(read, hour).map(lane => lane.items.flatMap(item => item.kind === 'completed' ? [item.entry] : [])),
+      slots.map(slot => slot.entries.filter(entry => entry.outcome === 'completed')));
   }
   const gap = researchAt(read, 300)[0];
   assert.equal(researchStateAt(gap, 300), null, 'the unread hour has no slot state');
@@ -229,4 +231,38 @@ test('text-only research validation retains every one of 5000 technology titles'
   assert.equal(data.artwork[4999].name, 'Technology 4999');
   assert.deepEqual(data.history.coverage, history.coverage);
   assert.deepEqual(data.warnings, ['Synthetic content refusal reason']);
+});
+
+test('same-hour research assignments retain each token and the active assignment', () => {
+  const state = { firstHour: 100, lastHour: 199, token: 'B', entryFirstObservedHour: 100,
+    speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0' };
+  const slot = { index: 0, availability: [{ firstHour: 100, lastHour: 400 }], states: [state],
+    progress: [{ firstHour: 100, lastHour: 100, entryFirstObservedHour: 100, progressRaw: '0', baseDaysRaw: '100000' }],
+    entries: [{ ...entry('A', 100, 100, 'switched'), lastObservedHour: 100 }, entry('B', 100, 200)] };
+  const data: ResearchReply = { ...reply, history: { coverage: [{ firstHour: 100, lastHour: 400 }], slots: [slot] } };
+  assert.equal(validateResearchReply(data), data);
+  assert.equal(researchEntryAt(slot, state, 150)?.token, 'B');
+  const firstToken = { ...data, history: { ...data.history, slots: [{ ...slot, states: [{ ...state, token: 'A' }] }] } };
+  assert.equal(validateResearchReply(firstToken), firstToken, 'state validation retains every same-hour token');
+});
+
+test('same-hour completions retain source order when confirmations arrive out of order', () => {
+  const slot = { index: 0, availability: [{ firstHour: 100, lastHour: 400 }], states: [], progress: [], entries: [
+    { ...entry('A', 100, 100), lastObservedHour: 100, outcomeObservedHour: 300 },
+    { ...entry('B', 100, 100), lastObservedHour: 100, outcomeObservedHour: 200 },
+  ] };
+  const data: ResearchReply = { ...reply, history: { coverage: [{ firstHour: 100, lastHour: 400 }], slots: [slot] } };
+  validateResearchReply(data);
+  const tokensAt = (hour: number) => researchLanesAt(data.history, hour)[0].items.flatMap(item => item.kind === 'completed' ? [item.entry.token] : []);
+  assert.deepEqual(tokensAt(199), []);
+  assert.deepEqual(tokensAt(200), ['B']);
+  assert.deepEqual(tokensAt(300), ['A', 'B']);
+  assert.deepEqual(tokensAt(200), ['B'], 'rewind hides the later-confirmed same-hour completion');
+});
+
+test('research lookups admit no NaN hour', () => {
+  assert.deepEqual(researchAt(history, NaN), []);
+  assert.deepEqual(researchLanesAt(history, NaN), []);
+  assert.equal(researchStateAt(history.slots[0], NaN), null);
+  assert.equal(researchProgressAt(history.slots[0], 100, NaN), null);
 });

@@ -6,7 +6,7 @@ Resource trade as seller → buyer ribbons, with a complete contributor drill fo
 
 ## Products it reads
 
-[`trade-flows`](../../../../crates/dashboard/src/products/trade_flows.rs) supplies sparse native-holder flows, coverage and resource content. A country view outside the chosen countries reads the same product for that country's own tags. Shared country facts provide dated labels, flags and colours.
+[`trade-flows`](../../../../crates/dashboard/src/products/trade_flows.rs) supplies sparse native-holder flows, coverage and resource content. Preparation observes every country through the same trade step and allocates seller/buyer/resource keys only for observed flows. Its native sampler feeds both the observer and progressive current histories. Unprepared histories draw approximate keyframe spans through the shared stack and clipping renderer; zooms of at most thirteen unprepared blocks decode exactly. Exact reads supply written amounts and holder aliases. Total/average measures, cumulative coverage counts and first/last trade dates depend on earlier frames and stay pending until preparation is complete. Fact events and signed cumulative endpoints answer those quantities without decoding history. Dense histories use the shared D-12 stack and per-flow envelope scale; exact windows retain the existing geometry and scale sweep. A country view outside the chosen countries reads the same product for that country's own tags. Shared country facts provide dated labels, flags and colours.
 
 ## Settings
 

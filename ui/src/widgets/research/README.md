@@ -9,7 +9,11 @@ The order each research slot worked through, as **Columns** (the default) or a *
 
 ## Products it reads
 
-[`research`](../../../../crates/dashboard/src/products/research.rs) supplies slot states, assignments, progress, modifier credits, localized text and each technology's research folder; playback resolves them locally. [`technology-artwork`](../../../../crates/dashboard/src/products/technology_artwork.rs) loads pictures in small batches, so names and dates do not wait for them.
+[`research`](../../../../crates/dashboard-base/src/products/research.rs) supplies the reference reply. The prepared research query uses its shared observer and naming to supply the complete selected-country slot states, assignments, progress, modifier credits, localized text and research folders; playback resolves them locally. Pending coverage follows the shared preparation query path. [`technology-artwork`](../../../../crates/dashboard/src/products/technology_artwork.rs) loads pictures in small batches, so names and dates do not wait for them.
+
+Until the requested history is prepared, the shared preparation status says
+"This range is still being prepared." Assignment dates, completions and carried
+slot progress need earlier observations; no keyframe preview replaces them.
 
 ## Settings
 
@@ -36,3 +40,7 @@ Country and campaign/follow/pin; Whole campaign is the default. View (Columns or
 | [researchJourney.ts](researchJourney.ts), [researchBreakdown.ts](researchBreakdown.ts) | Joined assignments and exact time/modifier parts; adjacent tests. |
 | [ResearchExplanation.tsx](ResearchExplanation.tsx), [researchTimeBar.ts](researchTimeBar.ts) | The time breakdown and its segments. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [research.css](research.css) | Settings, the Research list card, registration and layout. |
+
+Lane indexes are built once per immutable history reply. Playback selects revealed row prefixes by binary search, retaining unchanged rows; assignments, held runs and latest progress use indexed lookups. Columns use named native ordered lists on their shared scroll surface. Fitting histories keep native flow and grid stretching; overflowing histories mount the measured viewport rows. Authored padding and opening offsets remain part of row geometry and keyboard scrolling. Tab and Shift+Tab traverse every interactive history row across adjacent slots; opening and closing markers keep their places without becoming keyboard stops. Full histories are clipped when the time breakdown opens, keeping earlier work and hiding future observations.
+
+Parity builds expose complete Columns rows, markers, offsets and exact current slot reads/progress without starting artwork or explanation work. List uses the shared table's complete model. Ordinary builds expose no model provider.

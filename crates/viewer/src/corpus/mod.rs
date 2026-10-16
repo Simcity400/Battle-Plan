@@ -96,7 +96,7 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
             }
         }
     }
-    // The folders the viewer is configured with, unless named.
+    // The desktop app's saved folders, unless named.
     let config = dashboard::Config::load().ok();
     let configured = |path: Option<PathBuf>, pick: fn(&dashboard::Config) -> &PathBuf| {
         path.or_else(|| config.as_ref().map(|config| pick(config).clone()))

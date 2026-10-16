@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import Sunburst from '../../charts/sunburst/Sunburst';
 import type { SunburstProps, SunburstText } from '../../charts/sunburst/Sunburst';
@@ -16,6 +16,7 @@ import type { PowerGain } from '../../dashboard/powerBalance';
 import { formatPower, powerDecimals } from '../../dashboard/powerDecimals';
 import { usePoliticsSpending, useSpendingIdeaTooltips } from '../../dashboard/usePoliticsSpending';
 import { OPTIONS } from './definition';
+import { useParityRows } from '../../dashboard/parityRows';
 
 const NO_WARNINGS: string[] = [];
 const LEVELS = ['categoryLevel', 'itemLevel'];
@@ -30,22 +31,27 @@ export function gainNote(gain: PowerGain | null, digits: number): string | null 
 }
 
 export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
+  const parityRoot = useRef<HTMLDivElement>(null);
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const settings = sunburstSettings(options);
   const digits = powerDecimals(options);
   const text = useMemo<SunburstText>(() => ({ format: (value, exact) => formatPower(exact ?? BigInt(Math.round(value)), digits),
     unit: 'PP', valueLabel: 'Spent', countLabel: 'Payments' }), [digits]);
-  const { track, tags, data, error, retry, ready, reason, selection, groupWarnings } = usePoliticsSpending(widget, runtime, active);
+  const { track, tags, data, finalData, error, retry, ready, reason, selection, groupWarnings } = usePoliticsSpending(widget, runtime, active, true);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window?.lastHour;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
   const end = widget.time.mode === 'range' ? hour : track?.branch.lastHour;
-  const items = useMemo(() => data && hour != null && end != null ? spendingItems(data, 'Political', { from, hour, end }, selection) : [], [data, from, hour, end, selection]);
+  const items = useMemo(() => data && hour != null && end != null ? spendingItems(data, 'Political', { from, hour, end }, selection, finalData ?? data) : [], [data, finalData, from, hour, end, selection]);
   const spends = useMemo(() => data && hour != null ? spendingAt(data, 'Political', hour, from, selection) : [], [data, hour, from, selection]);
   const gaps = useMemo(() => data && hour != null ? spendingGaps(data, 'Political', { from, hour }, selection) : [], [data, hour, from, selection]);
   const gain = useMemo(() => data && hour != null ? powerGain(data, 'Political', { from, hour }, selection) : null, [data, hour, from, selection]);
   const grouped = useMemo(() => spendingGroups(spends), [spends]);
+  useParityRows(parityRoot, () => ({ kind: 'chart', label: 'Political power spending breakdown totals', scope: 'displayed-hour', hour,
+    complete: !!data && !!finalData && ready, total: grouped.size, rows: [...grouped].map(([id, group]) => ({ id,
+      amountRaw: group.recordedCharge.toString(), count: group.rows, knownCharges: group.knownCharges, missingCharges: group.missingCharges,
+      latestHour: group.latest.spend.hour, latestReadHour: group.latest.readHour })) }));
   const ideas = useSpendingIdeaTooltips(widget, runtime, active, data);
   const tooltip = useCallback<NonNullable<SunburstProps['tooltip']>>((node, focus, shown) => {
     const base = sliceTooltip(node, focus, shown);
@@ -73,8 +79,8 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
   if (data.every(reply => !reply.spendingCoverage.length)) return <WidgetState kind="unavailable" message="Political power spending wasn’t recorded." />;
   const notes = [gainNote(gain, digits), spendingGapNote(gaps), ...spendingCostNotes(spendingSummary(spends))].filter(Boolean);
   if (!items.some(item => item.present)) {
-    return <WidgetState kind="empty" icon="sunburst" message="No political power spent in this period." detail={notes.length ? notes.join(' ') : undefined} />;
+    return <div ref={parityRoot} style={{ height: '100%' }}><WidgetState kind="empty" icon="sunburst" message="No political power spent in this period." detail={notes.length ? notes.join(' ') : undefined} /></div>;
   }
-  return <Sunburst label="Political power spending breakdown" items={items} root={ROOT} levels={levels} text={text} settings={settings}
-    hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} footnote={notes.length ? notes.join(' ') : undefined} tooltip={tooltip} />;
+  return <div ref={parityRoot} style={{ height: '100%' }}><Sunburst label="Political power spending breakdown" items={items} root={ROOT} levels={levels} text={text} settings={settings}
+    hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} footnote={notes.length ? notes.join(' ') : undefined} tooltip={tooltip} /></div>;
 }

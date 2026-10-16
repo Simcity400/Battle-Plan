@@ -26,3 +26,5 @@ Top 10 by default, manual/groups; campaign/follow/pin/range, race/lines, launche
 | [RaidTallyWidget.tsx](RaidTallyWidget.tsx) | Shared race/lines and dual measures. |
 | [raidTallyData.ts](raidTallyData.ts) | Validation, native identities, counts and tooltips; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts) | Availability, options and registration. |
+
+The widget reads the prepared raid adapter and exposes the "Raid tally values" parity model.

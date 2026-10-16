@@ -8,8 +8,9 @@ import type { ProductRequest } from '../../dashboard/client';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { EventBadge } from '../../charts/badges';
 import type { PlotFrame } from '../../charts/frame';
+import type { MarkSummary } from '../../charts/markSummary';
 import type { TooltipContent } from '../../charts/tooltip';
-import { governmentBadges, governmentCause, governmentRows, validateGovernmentLedger } from './governmentData.ts';
+import { governmentBadges, governmentCause, governmentEventRows, governmentRows, validateGovernmentLedger } from './governmentData.ts';
 import { partyBadges } from './partyData.ts';
 
 const transition: LedgerGovernment = { country: 1, instance: 1, epoch: '1', sequence: '1', hour: 24, readHour: 26,
@@ -49,6 +50,9 @@ test('government replies authenticate the requested actor and preserve exact nat
   for (const bad of [{ ...ledger, tag: 'another actor' }, { ...ledger, branchId: '2' }, { ...ledger, warnings: [null] }]) {
     assert.throws(() => validateGovernmentLedger(bad, parties));
   }
+  assert.throws(() => validateGovernmentLedger({ ...ledger, governmentMarks: { from: 24, to: 30, width: 1,
+    clusters: [{ firstHour: 25, lastHour: 24, firstOrdinal: '0', count: '1' }] } }), /marks/);
+  assert.ok(governmentEventRows({ ...transition, readHour: 49 }, token => token).some(row => row.value === 'Coup'));
   for (const bad of [{ ...transition, readHour: 23 }, { ...transition, country: -1 }, { ...transition, instance: 0x1_0000_0000 },
     { ...transition, hour: 0x8000_0000 }, { ...transition, epoch: '18446744073709551616' }, { ...transition, sequence: '-1' }]) {
     assert.throws(() => validateGovernmentLedger({ ...ledger, governments: [bad] }, parties));
@@ -58,7 +62,7 @@ test('government replies authenticate the requested actor and preserve exact nat
 test('registered ruling-party renderer requests causes conditionally, respects Pin and keeps parties on refusal', async () => {
   const host = globalThis as typeof globalThis & { __governmentParty?: PartyHistoryReply; __governmentLedger?: PoliticsLedgerReply;
     __governmentError?: string; __governmentRequests?: ProductRequest<Record<string, unknown>>[];
-    __governmentChart?: { badges?: EventBadge[]; tooltip: (hour: number, frame: PlotFrame, badges: readonly EventBadge[]) => TooltipContent } };
+    __governmentChart?: { badges?: EventBadge[]; markSummaries?: MarkSummary[]; tooltip: (hour: number, frame: PlotFrame, badges: readonly EventBadge[]) => TooltipContent } };
   host.__governmentParty = { ...parties, parties: ['mod_old', 'mod_new'].map(token => ({ token,
     runs: [{ firstHour: 24, lastHour: 30, valueRaw: '5000000', startsSegment: true }] })),
     ideologies: [...['mod_old', 'mod_new'].map<PartyHistoryReply['ideologies'][number]>(token => ({ token, name: token, color: [30, 60, 90] })),
@@ -68,10 +72,12 @@ test('registered ruling-party renderer requests causes conditionally, respects P
   host.__governmentLedger = ledger; host.__governmentRequests = requests;
   const replacements: Record<string, string> = {
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
-    '/dashboard/products.ts': `export const useProduct = (_client, request, _active, validate) => {
-      if (!request) return { retry() {} }; globalThis.__governmentRequests.push(request);
+    '/dashboard/products.ts': `export const loadProduct = () => { throw new Error('SSR must not navigate'); };
+    export const useProduct = (_client, request, active, validate) => {
+      if (!request || !active) return { retry() {} }; globalThis.__governmentRequests.push(request);
       if (request.product === 'politics-ledger' && globalThis.__governmentError) return { error: globalThis.__governmentError, retry() {} };
-      return { data: validate(request.product === 'party-history' ? globalThis.__governmentParty : globalThis.__governmentLedger), retry() {} };
+      const party = request.params.mode ? { coverage: { firstHour: 24, lastHour: 30, complete: true }, reply: globalThis.__governmentParty, summaries: [], marks: [], cursor: null, total: '0' } : globalThis.__governmentParty;
+      return { data: validate(request.product === 'party-history' ? party : globalThis.__governmentLedger), retry() {} };
     };`,
     '/charts/TimeChart.tsx': 'export default props => { globalThis.__governmentChart = props; return null; };',
     '/charts/Legend.tsx': 'export default () => null;',
@@ -113,6 +119,18 @@ test('registered ruling-party renderer requests causes conditionally, respects P
     assert.ok(host.__governmentChart?.badges?.some(badge => badge.label.includes('Named transient ideology took power from mod_old')));
     assert.equal(host.__governmentChart?.tooltip(26, {} as PlotFrame, []).rows.find(row => row.label === 'Before / after')?.value,
       'mod_old / Named transient ideology');
+    props.runtime.client.preparedQuery = async () => { throw new Error('SSR must not execute requests'); };
+    requests.length = 0; hour = 30;
+    host.__governmentLedger = { ...ledger, governments: [], governmentMarks: { from: 24, to: 30, width: 1,
+      clusters: [{ firstHour: 24, lastHour: 25, firstOrdinal: '0', count: '2' }] } };
+    render();
+    const preparedRequests = requests.filter(request => request.product === 'politics-ledger');
+    assert.equal(preparedRequests.length, 1);
+    assert.deepEqual(preparedRequests[0].params.marks, { from: 24, to: 30, width: 1 });
+    assert.equal(host.__governmentChart?.badges, undefined);
+    const marks = host.__governmentChart?.markSummaries ?? [];
+    assert.ok(marks.every(summary => summary.clusters.length <= Math.ceil(summary.width / 18)));
+    assert.equal(marks.find(summary => summary.clusters[0]?.tag === 'native')?.clusters[0].firstHour, 24);
   } finally {
     delete host.__governmentParty; delete host.__governmentLedger; delete host.__governmentError;
     delete host.__governmentRequests; delete host.__governmentChart; await vite.close();

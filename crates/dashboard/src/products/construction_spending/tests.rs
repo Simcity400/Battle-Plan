@@ -211,6 +211,10 @@ fn construction_output_never_joins_a_reset_or_hides_ownerless_final_lines() {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn construction_output_reads_only_at_cadence_and_accounts_for_5000_country_owners() {
     use replay::rows::{CountryLinkRow, CountryRow};
     let replay::cadence::Cadence::Daily(slot) =

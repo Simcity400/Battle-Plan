@@ -21,6 +21,57 @@ fn tags() -> HashMap<u32, String> {
     [(1, "opaque victim".into()), (2, "opaque attacker".into())].into()
 }
 
+#[test]
+fn retention_progress_matches_oracle_and_revisits_only_extended_or_new_breaks() {
+    let defines = RetentionDefines {
+        values: Some([Ok(1), Ok(2)]),
+    };
+    let mut progress = RetentionProgress::new(defines.clone());
+    let first = month_start(1940 * 12).unwrap();
+    let mut scan = Scanned::default();
+    for step in 0..20 {
+        let from = first + step * 20000;
+        scan.ship_breaks.push(HourSpan {
+            first_hour: from,
+            last_hour: from + 10000,
+        });
+        scan.convoy_breaks.push(HourSpan {
+            first_hour: from,
+            last_hour: from + 10000,
+        });
+        assert_eq!(progress.update(&scan), &defines.evaluate(&scan));
+    }
+    work::WORK.with(|work| *work.borrow_mut() = work::Work::default());
+    for _ in 0..100 {
+        progress.update(&scan);
+    }
+    assert_eq!(work::WORK.with(|work| work.borrow().retention_spans), 0);
+    scan.ship_breaks.last_mut().unwrap().last_hour += 24;
+    scan.convoy_breaks.last_mut().unwrap().last_hour += 24;
+    let actual = progress.update(&scan).clone();
+    assert_eq!(
+        work::WORK.with(|work| work.borrow().retention_spans),
+        2,
+        "old break history is never revisited when the trailing break extends"
+    );
+    assert_eq!(actual, defines.evaluate(&scan));
+    for values in [
+        [Ok(0), Ok(-1)],
+        [Err("synthetic mod define missing".into()), Ok(2)],
+        [Ok(i32::MAX), Ok(0)],
+    ] {
+        let defines = RetentionDefines {
+            values: Some(values),
+        };
+        let mut progress = RetentionProgress::new(defines.clone());
+        assert_eq!(
+            progress.update(&scan),
+            &defines.evaluate(&scan),
+            "refused content keeps the oracle warning order"
+        );
+    }
+}
+
 impl Tracker {
     fn read_ships(&mut self, out: &mut Scanned, entries: &[SunkShipEntry], hour: i32) {
         let view = TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow {
@@ -922,4 +973,224 @@ fn sinkings_changed_holder_across_gap_marks_only_the_possible_countries() {
     );
     assert!(!scanned.uncertain_victims.contains_key(&(3, 3)));
     assert!(scanned.uncertain_attackers.is_empty());
+}
+
+fn archive_observed(
+    history: &ShipHistory,
+    ships: &mut BTreeMap<u32, ShipEvent>,
+    reads: &mut Vec<i32>,
+) {
+    for (&index, event) in history.ship_indices.iter().zip(&history.scan.ships) {
+        if let Some(prior) = ships.get_mut(&index) {
+            prior.victim = event.victim.clone();
+            prior.attacker = event.attacker.clone();
+            prior.victim_as_of = event.victim_as_of;
+            prior.attacker_as_of = event.attacker_as_of;
+        } else {
+            ships.insert(index, event.clone());
+        }
+    }
+    reads.extend(&history.scan.ship_reads);
+}
+
+#[test]
+fn prepared_ship_history_resumes_duplicate_and_pruning_state_without_recovery_births() {
+    let mut history = ShipHistory::default();
+    let mut archived = BTreeMap::new();
+    let mut reads = Vec::new();
+    let mut oracle = Scanned::default();
+    let mut track = Tracker::default();
+    let format = replay::format::FormatVersion::default();
+    let a = ship(b"same mod name", 1);
+    let b = ship(b"same mod name", 2);
+    for (hour, entries) in [
+        (10, vec![a.clone(), a.clone()]),
+        (11, vec![a.clone(), a, b.clone()]),
+        (12, vec![b]),
+    ] {
+        let mut frame = crate::test_fixtures::source(1, hour, Some(1));
+        frame.metrics.table_ns[TableId::SunkShips.index()] = 1;
+        frame.tables[TableId::SunkShips.index()] =
+            TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow {
+                entries: entries.clone(),
+            }]))
+            .into();
+        history.observe(format, &frame);
+        track.read_ships(&mut oracle, &entries, hour);
+        archive_observed(&history, &mut archived, &mut reads);
+        history.compact();
+        let saved = serde_json::to_value(&history).unwrap();
+        assert!(saved["scan"].get("ships").is_none());
+        assert!(
+            saved["open_ships"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|event| event.as_object().unwrap().len() == 5)
+        );
+        history = serde_json::from_slice(&serde_json::to_vec(&history).unwrap()).unwrap();
+        history.resume(&frame);
+    }
+    assert_eq!(archived.len(), 3);
+    assert_eq!(reads, oracle.ship_reads);
+    for (actual, expected) in archived.values().zip(&oracle.ships) {
+        assert_eq!(actual.entry, expected.entry);
+        assert_eq!(actual.read_hour, expected.read_hour);
+    }
+}
+
+#[test]
+fn prepared_ship_history_retains_multiset_through_unavailable_resume_and_future_read() {
+    let format = replay::format::FormatVersion::default();
+    let mut history = ShipHistory::default();
+    let mut archived = BTreeMap::new();
+    let mut reads = Vec::new();
+    let mut oracle = Scanned::default();
+    let mut track = Tracker::default();
+    let mut a = ship(b"stored mod ship", 9);
+    a.attribution_name = b"attributed mod name".to_vec();
+    a.class_name = b"stored class".to_vec();
+    a.attribution_class_name = b"attributed class".to_vec();
+    a.model_level = -2;
+    a.victim_equipment_variant = u64::MAX;
+    a.damage_source_reference = u64::MAX - 1;
+    a.province = 99;
+    a.province_present = 1;
+    a.battle = u64::MAX;
+    a.attribution_class_token = 123;
+    a.attribution_class_present = 1;
+    a.cause_record = 1;
+    a.assisted_kill = 1;
+    let future = ship(b"future mod ship", 13);
+    for (hour, entries) in [
+        (10, Some(vec![a.clone(), a.clone(), future.clone()])),
+        (11, None),
+        (12, Some(vec![a.clone(), future.clone()])),
+        (13, Some(vec![future])),
+    ] {
+        let mut frame = crate::test_fixtures::source(1, hour, Some(1));
+        frame.metrics.table_ns[TableId::SunkShips.index()] = 1;
+        if let Some(entries) = entries {
+            frame.tables[TableId::SunkShips.index()] =
+                TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow {
+                    entries: entries.clone(),
+                }]))
+                .into();
+            track.read_ships(&mut oracle, &entries, hour);
+        } else {
+            frame.tables[TableId::SunkShips.index()] = TableView::Unavailable {
+                reason: "history failed".into(),
+            }
+            .into();
+            oracle.missing(&mut track, hour, hour);
+        }
+        history.observe(format, &frame);
+        archive_observed(&history, &mut archived, &mut reads);
+        history.compact();
+        let saved = serde_json::to_value(&history).unwrap();
+        assert!(saved["scan"].get("ships").is_none());
+        assert!(
+            saved["open_ships"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|event| event.as_object().unwrap().len() == 5)
+        );
+        history = serde_json::from_slice(&serde_json::to_vec(&history).unwrap()).unwrap();
+        history.resume(&frame);
+    }
+    assert_eq!(archived.len(), 3);
+    assert_eq!(reads, oracle.ship_reads);
+    for (actual, expected) in archived.values().zip(&oracle.ships) {
+        assert_eq!(actual.entry, expected.entry);
+        assert_eq!(actual.read_hour, expected.read_hour);
+    }
+}
+
+#[test]
+fn shared_sinking_observer_matches_oracle_after_commits_resume_append_and_5000_countries() {
+    use crate::prepared::series::{self, tests::Fixture};
+    let flag = AtomicBool::new(false);
+    let mut first = frame(10, 5000);
+    let mut second = frame(11, 5000);
+    let mut missing = frame(13, 5000);
+    let mut appended = frame(17, 5000);
+    let a = ship(b"duplicate retained ship", 9);
+    let b = ship(b"new observed ship", 10);
+    let c = ship(b"gap sinking", 14);
+    for (input, entries) in [
+        (&mut first, vec![a.clone(), a.clone()]),
+        (&mut second, vec![a.clone(), b.clone()]),
+        (&mut appended, vec![b, c]),
+    ] {
+        input.tables[TableId::SunkShips.index()] =
+            TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow { entries }])).into();
+    }
+    missing.tables[TableId::Countries.index()] = TableView::Unavailable {
+        reason: "identity unavailable".into(),
+    }
+    .into();
+    missing.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
+        reason: "identity unavailable".into(),
+    }
+    .into();
+    missing.tables[TableId::SunkShips.index()] = TableView::Unavailable {
+        reason: "history unavailable".into(),
+    }
+    .into();
+    let mut countries = appended.complete::<tables::Countries>().unwrap().to_vec();
+    countries[0].id = 6001;
+    countries[0].tag = b"renamed mod holder".to_vec();
+    countries.sort_by_key(|row| row.id);
+    appended.tables[TableId::Countries.index()] =
+        TableView::Complete(TableRows::Countries(countries)).into();
+    let mut links = appended
+        .complete::<tables::CountryLinks>()
+        .unwrap()
+        .to_vec();
+    links.push(CountryLinkRow {
+        id: 6001,
+        canonical_slot: 1,
+    });
+    appended.tables[TableId::CountryLinks.index()] =
+        TableView::Complete(TableRows::CountryLinks(links)).into();
+    let inputs = vec![first, second, missing, appended];
+    let replay = replay_of(inputs.clone());
+    let fixture = Fixture::new();
+    let mut history = ShipHistory::new(10);
+    let mut archived = BTreeMap::new();
+    let mut reads = Vec::new();
+    let mut convoy_reads = Vec::new();
+    for (index, input) in inputs.iter().enumerate() {
+        history.observe(replay.format, input);
+        history.finish(input.hour);
+        archive_observed(&history, &mut archived, &mut reads);
+        convoy_reads.extend(&history.scan.convoy_reads);
+        history.compact();
+        let mut writer = fixture.writer();
+        series::write_reply(&mut writer, "observer", 0, &history).unwrap();
+        writer.commit().unwrap();
+        history = series::read_reply(&fixture.store, &fixture.key, "observer", 0)
+            .unwrap()
+            .unwrap();
+        history.resume(input);
+        if index == 1 || index + 1 == inputs.len() {
+            let oracle = scan(&replay_of(inputs[..=index].to_vec()), 1, &flag).unwrap();
+            let mut actual = history.scan.metadata();
+            actual.ship_reads = reads.clone();
+            actual.convoy_reads = convoy_reads.clone();
+            assert_eq!(
+                serde_json::to_value(archived.values().collect::<Vec<_>>()).unwrap(),
+                serde_json::to_value(&oracle.ships).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(&actual).unwrap(),
+                serde_json::to_value(&oracle).unwrap()
+            );
+        }
+    }
+    assert_eq!(archived.len(), 4);
+    assert_eq!(archived[&0].victim_as_of, Some(10));
+    assert!(archived.last_key_value().unwrap().1.victim.is_none());
+    assert_eq!(history.scan.country_candidates[&1].len(), 2);
 }

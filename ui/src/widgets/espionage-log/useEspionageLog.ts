@@ -10,7 +10,7 @@ import { operationChoices, operationWindowIdentity, validateEspionageLogReply } 
 export function useEspionageLog(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'espionage-log', params: { branchId: track.branch.id, window: null } } : null;
-  return { track, ...useProduct<EspionageLogReply>(runtime.client, request, active, validateEspionageLogReply) };
+  return { track, ...useProduct<EspionageLogReply>(runtime.client, request, active, validateEspionageLogReply, track?.source) };
 }
 export function useEspionageChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const { data } = useEspionageLog(widget, runtime, true);
@@ -22,5 +22,5 @@ export function useEspionageWindows(track: WidgetRuntime['tracks'][number] | und
   const identity = track ? operationWindowIdentity(track.source.id, track.source.revision, track.branch.id, content) : null;
   return useProductWindows<EspionageLogReply>(runtime.client, identity, window => ({ sourceId: track!.source.id,
     revision: track!.source.revision, product: 'espionage-log', params: { branchId: track!.branch.id, window } }),
-  wanted, active, validateEspionageLogReply);
+  wanted, active, validateEspionageLogReply, track?.source);
 }

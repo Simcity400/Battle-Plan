@@ -9,7 +9,7 @@ use replay::{
     rows::*,
 };
 
-fn frame(hour: i32, count: u32) -> DecodedFrame {
+pub(super) fn frame(hour: i32, count: u32) -> DecodedFrame {
     let mut frame = scale_frame(1, hour, count);
     // Raw zero is the separate reserved country; real synthetic actors use positive slots.
     if let TableView::Complete(TableRows::Countries(rows)) =
@@ -80,7 +80,7 @@ fn frame(hour: i32, count: u32) -> DecodedFrame {
     frame
 }
 
-fn opened(frames: Vec<DecodedFrame>) -> Source {
+pub(super) fn opened(frames: Vec<DecodedFrame>) -> Source {
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
     Source::from_replay(
         SourceKey {
@@ -382,7 +382,7 @@ fn event_feed_mod_focus_and_law_keep_content_artwork_without_technology_events()
             }]));
     }
     let (source, context) =
-        crate::test_fixtures::source_with_content(vec![first, changed], &folder.0);
+        crate::test_fixtures::source_with_content(vec![first.clone(), changed.clone()], &folder.0);
     let politics = politics_content::politics_content(&source, context.content().unwrap()).unwrap();
     assert!(politics.ideas.idea("mod_law").unwrap().unwrap().law);
     let reply = EventFeed::load(
@@ -396,6 +396,7 @@ fn event_feed_mod_focus_and_law_keep_content_artwork_without_technology_events()
         &AtomicBool::new(false),
     )
     .unwrap();
+    prepared::tests::assert_prepared_content(&source, &[first, changed], &context);
     assert_eq!(reply.rows.len(), 2);
     assert!(
         reply
@@ -1161,7 +1162,7 @@ fn event_feed_native_war_end_replaces_the_derived_peace_row_of_its_pair_only() {
                 cause: Default::default(),
             }],
         }]));
-    let source = opened(frames);
+    let source = opened(frames.clone());
     let reply = load(&source, Some(100), Some(103));
     let tag = |index: u32| String::from_utf8(crate::test_fixtures::scale_tag(index)).unwrap();
     let ended: Vec<_> = reply
@@ -1183,6 +1184,7 @@ fn event_feed_native_war_end_replaces_the_derived_peace_row_of_its_pair_only() {
     let mut expected = vec![(103, vec![tag(0), tag(2)]), (103, vec![tag(2), tag(0)])];
     expected.sort();
     assert_eq!(peace, expected);
+    prepared::tests::assert_prepared_content(&source, &frames, &LoadContext { content: None });
 }
 
 #[test]
@@ -1413,5 +1415,48 @@ fn event_feed_fixed_reasons_keep_separate_counts_and_standing_notices() {
             .map(|entry| entry.count.unwrap())
             .sum::<u32>(),
         4
+    );
+}
+
+#[test]
+fn event_feed_same_date_completions_keep_insertion_order_across_decimal_boundaries() {
+    let mut builder = Builder::new(100, 200);
+    for index in 0..101 {
+        let item = builder
+            .item(plain_item(
+                Some(format!("mod_focus_{index}")),
+                None,
+                None,
+                None,
+            ))
+            .unwrap();
+        builder.row(
+            EventFeedKind::FocusCompleted,
+            RowDate::by(if index < 99 { 110 } else { 120 }),
+            vec!["recorded country".into()],
+            Some(item),
+            None,
+        );
+    }
+    let feed = builder.finish().unwrap();
+    let tied: Vec<_> = feed.rows.iter().filter(|row| row.hour == 120).collect();
+    assert_eq!(
+        tied.iter()
+            .map(|row| feed.items[row.item.unwrap() as usize]
+                .token
+                .as_deref()
+                .unwrap())
+            .collect::<Vec<_>>(),
+        ["mod_focus_99", "mod_focus_100"]
+    );
+    let mut prepared: Vec<_> = tied.into_iter().cloned().collect();
+    prepared[0].id = "prepared:3:0:99".into();
+    prepared[1].id = "prepared:3:0:100".into();
+    prepared.reverse();
+    prepared.sort_by(row_order);
+    assert!(prepared[0].id.ends_with(":99"));
+    assert_eq!(
+        row_tie_order(EventFeedKind::WarDeclared, "native:99", "native:100"),
+        std::cmp::Ordering::Greater
     );
 }

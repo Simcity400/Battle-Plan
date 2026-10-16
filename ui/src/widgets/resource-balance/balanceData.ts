@@ -3,6 +3,7 @@ import { intervalIndexOf } from '../../charts/intervalIndex.ts';
 import type { IntervalIndex } from '../../charts/intervalIndex';
 import { runAt } from '../../charts/series.ts';
 import type { Run } from '../../charts/series';
+import type { ChartSummary } from '../../charts/chartSummary';
 import { fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { fixedNumber, formatAmount, formatSigned } from '../../charts/valueAxis.ts';
@@ -82,18 +83,16 @@ export function balanceOf(run: PoolRun): Balance {
 
 /** Signed components sum to the recorded net, including the game's pool
  * rounding rather than silently replacing it with a recomputed balance. */
+export const RESOURCE_PARTS = [
+  { id: 'produced', label: 'Produced' }, { id: 'subjects', label: 'From subjects' }, { id: 'imported', label: 'Imported' },
+  { id: 'projects', label: 'Needed by Special Projects' }, { id: 'production', label: 'Needed by Production Lines' },
+  { id: 'overlord', label: 'To the overlord' }, { id: 'exported', label: 'Export reserve' }, { id: 'unidentified', label: 'Other' },
+] as const;
 export function resourceParts(run: PoolRun) {
   const balance = balanceOf(run);
-  return [
-    { id: 'produced', label: 'Produced', raw: balance.produced },
-    { id: 'subjects', label: 'From subjects', raw: balance.fromSubjects },
-    { id: 'imported', label: 'Imported', raw: balance.imported },
-    { id: 'projects', label: 'Needed by Special Projects', raw: -balance.projects },
-    { id: 'production', label: 'Needed by Production Lines', raw: -balance.production },
-    { id: 'overlord', label: 'To the overlord', raw: -balance.toOverlord },
-    { id: 'exported', label: 'Export reserve', raw: -balance.exportReserve },
-    { id: 'unidentified', label: 'Other', raw: balance.net - (balance.supply - balance.demand) },
-  ];
+  const amounts = [balance.produced, balance.fromSubjects, balance.imported, -balance.projects, -balance.production,
+    -balance.toOverlord, -balance.exportReserve, balance.net - (balance.supply - balance.demand)];
+  return RESOURCE_PARTS.map((part, index) => ({ ...part, raw: amounts[index] }));
 }
 
 /** Demand is presented in its own sign convention; native negative supply or
@@ -188,7 +187,17 @@ export function orderResources(reply: ResourceBalanceReply, hour: number, order:
 /** The token of the resource with the largest supply or demand anywhere in the
  * branch: the over-time view's choice until the user picks (the kit's `largestToken`). */
 export function automaticResource(reply: ResourceBalanceReply): string | null {
-  return largestToken(reply.series.map((series, index) => ({ token: reply.resources[index].token, size: barScale([series], null), recorded: series.runs.length > 0 })));
+  const prepared = reply as ResourceBalanceReply & { campaignSizes?: Record<string, string>; coverage?: { complete: boolean } | null;
+    summaries?: { id: number; supply: ChartSummary; demand: ChartSummary }[] };
+  return largestToken(reply.series.map(series => {
+    const summary = prepared.summaries?.find(item => item.id === series.id);
+    const samples = summary ? [summary.supply, summary.demand].flatMap(line => line.buckets.flatMap(bucket => bucket ? [bucket.maxValue] : [])) : [];
+    const geometry = samples.length ? BigInt(Math.ceil(Math.max(0, ...samples) * 10 ** reply.decimals)) : 0n;
+    const exact = prepared.campaignSizes?.[series.id] !== undefined ? BigInt(prepared.campaignSizes[series.id]) : barScale([series], null);
+    const complete = prepared.campaignSizes?.[series.id] !== undefined && (prepared.coverage === undefined || prepared.coverage?.complete === true);
+    return { token: reply.resources.find(resource => resource.id === series.id)!.token, size: complete || exact > geometry ? exact : geometry,
+      recorded: prepared.campaignSizes?.[series.id] !== undefined || series.runs.length > 0 || samples.length > 0 };
+  }));
 }
 
 /** The resources shown for chosen tokens, in the order chosen: every declaration

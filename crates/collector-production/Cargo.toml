@@ -1,0 +1,27 @@
+[package]
+name = "collector-production"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+test-support = ["collector-memory/test-support"]
+
+[dependencies]
+engine.workspace = true
+replay.workspace = true
+collector-memory.workspace = true
+collector-primitives.workspace = true
+collector-projection.workspace = true
+collector-raw.workspace = true
+
+[dev-dependencies]
+collector-test-support.workspace = true
+engine = { workspace = true, features = ["batch-fallback-test-counts"] }
+collector-memory = { workspace = true, features = ["test-support"] }
+collector-primitives = { workspace = true, features = ["test-support"] }

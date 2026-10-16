@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
 import { CountryFlagUrl } from '../../components/CountryFlag';
@@ -22,13 +22,14 @@ import { resolveWindow } from '../../dashboard/model';
 import { readAt } from '../../dashboard/reads';
 import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
+import { useParityRows } from '../../dashboard/parityRows';
 import { useProductWindows, useWindowDisplay } from '../../dashboard/productWindows';
 import { usePlaybackSpeed } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { AirAcePortrait, AirAcesManifestReply, AirAcesWindowReply } from '../../generated/dashboard';
 import { DEFAULT_SORT, OPTIONS, SORT_CHOICES } from './definition';
-import { aceJump, aceName, aceNameValue, aceCallsign, aceRows, aceStatus, aceTooltip, aircraftName, validateAces, validateAcesWindow, validatePortraits, wingName } from './acesData';
+import { aceJump, aceName, aceNameValue, aceCallsign, aceRowModel, aceRows, aceStatus, aceTooltip, aircraftName, validateAces, validateAcesWindow, validatePortraits, wingName } from './acesData';
 import type { AceRow } from './acesData';
 import './aces.css';
 
@@ -58,7 +59,7 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const loaded = useProduct<AirAcesManifestReply>(runtime.client, track ? {
     sourceId: track.source.id, revision: track.source.revision, product: 'air-aces', params: { branchId: track.branch.id, view: 'manifest' },
-  } : null, active, validateAces);
+  } : null, active, validateAces, track?.source);
   const data = loaded.data;
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content]) : null;
   const target = data ? runIndexAt(data.windows, hour) : -1;
@@ -66,7 +67,7 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   const windows = useProductWindows<AirAcesWindowReply>(runtime.client, identity, index => ({
     sourceId: track!.source.id, revision: track!.source.revision, product: 'air-aces',
     params: { branchId: track!.branch.id, view: 'window', window: index },
-  }), wanted, active && data !== undefined, validateAcesWindow);
+  }), wanted, active && data !== undefined, validateAcesWindow, track?.source);
   const current = windows.data.get(target);
   const display = useWindowDisplay(identity, current, hour, runtime.client);
   const pending = current === undefined;
@@ -102,6 +103,11 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   const tooltip = useCallback((row: AceRow) => fitTooltip([aceTooltip(row, tag => labelAt(row.hour)(tag).name)], viewport), [labelAt, viewport]);
   const diagnostics = useMemo(() => data ? [...data.warnings, ...(detail?.warnings ?? WARNINGS)] : WARNINGS, [data, detail]);
   useDiagnostics(onDiagnostics, diagnostics);
+  const root = useRef<HTMLDivElement>(null);
+  useParityRows(root, () => ({ kind: 'windowed', label: 'Ace roster values',
+    complete: !!data && !!detail && match.ready && !loaded.error, total: rows.length,
+    rows: rows.map(aceRowModel), read, hour: display?.hour ?? hour, window: detail?.window,
+  }));
   if (!track) return <WidgetState kind="empty" icon="star" message="Load a campaign to see its aces." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (loaded.error) return <WidgetState kind="error" detail={loaded.error} onRetry={loaded.retry} />;
@@ -112,7 +118,8 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   if (!recorded) return <WidgetState kind="unavailable" message="Aces were not recorded at this time." />;
   if (!display) return windows.errors.has(target) ? <WidgetState kind="error" detail={windows.errors.get(target)!} onRetry={windows.retry} /> : <WidgetState kind="loading" label="Loading aces..." />;
   if (!rows.length) return <WidgetState kind="empty" icon="star" message="No aces match these settings." />;
-  return <div className="aces-widget">{pending && <div className="aces-loading" role="status">{windows.errors.has(target) ? 'Couldn’t load aces.' : 'Updating…'}{windows.errors.has(target) && <button onClick={windows.retry}>Retry</button>}</div>}<Table key={identity} label="Aces" rows={rows} columns={columns} rowKey={keyOf} sort={sort} setOption={setOption}
+  return <div ref={root} className="aces-widget">{pending && <div className="aces-loading" role="status">{windows.errors.has(target) ? 'Couldn’t load aces.' : 'Updating…'}{windows.errors.has(target) && <button onClick={windows.retry}>Retry</button>}</div>}<Table key={identity} label="Aces" rows={rows} columns={columns} rowKey={keyOf} sort={sort} setOption={setOption}
     rowHeight={50} cellBars={false} rankMarkers={false} density="comfortable"
-    muted={row => !row.run.alive} menu={row => [jumpItem(runtime, track.id, aceJump(row))]} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={speed} /></div>;
+    muted={row => !row.run.alive} menu={row => [jumpItem(runtime, track.id, aceJump(row))]} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={speed}
+    {...(import.meta.env.MODE === 'parity' ? { parity: { complete: true, item: aceRowModel } } : {})} /></div>;
 }

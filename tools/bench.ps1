@@ -435,7 +435,10 @@ function Wait-Quiet {
     if ($spec.PSObject.Properties['ignore_builds'] -and $spec.ignore_builds) { return }
     Enter-BuildPause
     $quietSince = [DateTime]::UtcNow; $warned = $false
+    # Calibration lane: other lanes build continuously; wait at most build_wait_minutes.
+    $buildLimit = [DateTime]::UtcNow.AddMinutes($(if ($spec.PSObject.Properties['build_wait_minutes']) { [double]$spec.build_wait_minutes } else { 1e6 }))
     while ($true) {
+        if ([DateTime]::UtcNow -gt $buildLimit) { Log 'Build processes still running; starting anyway (the screen is measured).'; break }
         $busy = Get-BuildProcesses
         if ($busy.Count -ne 0) {
             if (-not $warned) { Log ("Waiting for build processes to finish: " + ($busy -join ', ')); $warned = $true }
@@ -443,18 +446,21 @@ function Wait-Quiet {
         } elseif (([DateTime]::UtcNow - $quietSince).TotalSeconds -ge 2) { break }
         Start-Sleep -Seconds 1
     }
+    if ($spec.PSObject.Properties['skip_cpu_quiet'] -and $spec.skip_cpu_quiet) { return }
     $null = Wait-CpuQuiet
 }
 
 # ---- reload ------------------------------------------------------------------
 function Invoke-Relaunch([string]$runDir) {
+    # Calibration lane: finish the previous screen's detach before the game is closed.
+    Complete-Pending
     $script:game.Refresh()
     if (-not $script:game.HasExited) {
         # A recorder session must be detached first; a leftover ladder DLL dies with the process.
         if (@($script:game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0) { throw 'Relaunch reload requested while the collector is attached.' }
         if (@(Get-Process -Name recorder -ErrorAction SilentlyContinue).Count) { throw 'Relaunch reload requested while a recorder is running.' }
         if ($script:reader) { $script:reader.Dispose(); $script:reader = $null }
-        $script:game.Kill(); if (-not $script:game.WaitForExit(30000)) { throw 'The game did not exit.' }
+        $script:game.Kill(); if (-not $script:game.WaitForExit(300000)) { throw 'The game did not exit.' }
         Start-Sleep -Seconds 2
     }
     $started = [Diagnostics.Stopwatch]::StartNew()

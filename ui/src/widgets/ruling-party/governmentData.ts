@@ -18,6 +18,13 @@ export function validateGovernmentLedger(data: unknown, expected?: Pick<Politics
       && typeof row.cause === 'string' && optionalText(row.beforeToken) && optionalText(row.afterToken) && typeof row.covered === 'boolean')))) {
     throw new Error('The government history reply is malformed.');
   }
+  const marks = reply.governmentMarks;
+  if (marks != null && (!object(marks) || !Number.isFinite(marks.from) || !Number.isFinite(marks.to) || marks.from > marks.to
+    || !unsigned32(marks.width) || marks.width === 0 || !Array.isArray(marks.clusters) || marks.clusters.length > Math.ceil(marks.width / 18)
+    || !marks.clusters.every(cluster => object(cluster) && signed32(cluster.firstHour) && signed32(cluster.lastHour)
+      && cluster.firstHour <= cluster.lastHour && unsigned64(cluster.firstOrdinal) && unsigned64(cluster.count) && cluster.count !== '0'))) {
+    throw new Error('The government marks are malformed.');
+  }
   return reply;
 }
 
@@ -51,9 +58,14 @@ export function governmentBadges(rows: readonly LedgerGovernment[], name: (token
 
 export function governmentRows(rows: readonly LedgerGovernment[], hour: number, through: number, name: (token: string) => string): TooltipRow[] {
   const day = Math.floor(hour / 24);
-  return visibleGovernmentChanges(rows, Math.min(hour, through)).filter(row => Math.floor(row.hour / 24) === day).flatMap(row => [
+  return visibleGovernmentChanges(rows, Math.min(hour, through)).filter(row => Math.floor(row.hour / 24) === day).flatMap(row => governmentEventRows(row, name));
+}
+
+/** A reached event page has already proven the supplying read independently of its native date. */
+export function governmentEventRows(row: LedgerGovernment, name: (token: string) => string): TooltipRow[] {
+  return [
     { label: `Government / ${formatDateTime(row.hour)}`, value: governmentCause(row.cause), strong: true, divider: true },
     { label: 'Before / after', value: `${row.beforeToken ? name(row.beforeToken) : 'Not identified'} / ${row.afterToken ? name(row.afterToken) : 'Not identified'}` },
     ...(row.covered ? [] : [{ label: 'Some changes may be missing.', tone: 'muted' as const }]),
-  ]);
+  ];
 }

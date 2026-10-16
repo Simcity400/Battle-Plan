@@ -138,7 +138,7 @@ test('linear encoding round-trips every recorded hourly value and leaves fractio
 });
 
 test('native progress matches exact rounding, wrapping, sentinel and overflow vectors', () => {
-  const vectors = JSON.parse(readFileSync(new URL('../../../../crates/dashboard/src/cryptology/test-values.json', import.meta.url), 'utf8')) as [string, number, string, number | null][];
+  const vectors = JSON.parse(readFileSync(new URL('../../../../crates/dashboard-text/src/cryptology/test-values.json', import.meta.url), 'utf8')) as [string, number, string, number | null][];
   for (const [amountRaw, active, thresholdRaw, expected] of vectors) {
     const amount = BigInt(amountRaw), threshold = BigInt(thresholdRaw);
     assert.equal(progressPercent(amount, active, threshold), expected, `${amount}/${threshold}, active ${active}`);

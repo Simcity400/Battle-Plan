@@ -317,6 +317,9 @@ fn stored_manpower_operands_preserve_signed_values_and_pool_omission() {
     assert_eq!(save.countries[b"BBB".as_slice()].manpower_residual, 0);
     assert_eq!(save.states[&1].manpower_available, Some(i32::MAX));
     assert_eq!(save.states[&2].manpower_available, None);
+    // The pool's total is the state's population; an omitted pool leaves it absent.
+    assert_eq!(save.states[&1].population, Some(Some(1)));
+    assert_eq!(save.states[&2].population, None);
 }
 
 #[test]
@@ -551,6 +554,7 @@ countries={ GER={} } states={1={owner=GER}} provinces={}
             demilitarized: None,
             name: None,
             manpower_available: None,
+            population: None,
         },
     );
     assert!(
@@ -909,6 +913,26 @@ fn division_name_block_keeps_every_conditional_key_distinct_from_absence() {
         "division_name={ type=0 name_order=4 name_order=4 }",
     ] {
         assert!(unit(bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn division_supply_days_and_fuel_parse_exactly_and_absent_at_zero() {
+    let unit = |fields: &str| {
+        division_save(&format!(
+            "division={{id={{id=1 type=51}} logical_country=SOV strength=1 organisation=2 {fields}}}"
+        ))
+    };
+    let saved = unit("fuel=604.8 out_of_supply_days=30").unwrap();
+    let presentation = &saved.divisions[&((1_u64 << 32) | 51)].presentation;
+    assert_eq!(presentation.fuel.as_ref().unwrap().raw, 60_480_000);
+    assert_eq!(presentation.out_of_supply_days, Some(30));
+    let saved = unit("").unwrap();
+    let presentation = &saved.divisions[&((1_u64 << 32) | 51)].presentation;
+    assert!(presentation.fuel.is_none());
+    assert_eq!(presentation.out_of_supply_days, None);
+    for fields in ["out_of_supply_days=x", "fuel=1 fuel=1", "fuel=0.000001"] {
+        assert!(unit(fields).is_err(), "{fields}");
     }
 }
 

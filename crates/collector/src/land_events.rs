@@ -1491,7 +1491,7 @@ fn verify_leader_taps(memory: &impl Memory, base: usize) -> Result<[[u8; 16]; 2]
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
-    static EXCLUSIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(super) static EXCLUSIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     /// Held (written) by the owning land test; every other thread's entry
     /// holds it shared for the call, or is diverted while it is owned.
     static GATE: std::sync::RwLock<()> = std::sync::RwLock::new(());
@@ -1676,7 +1676,7 @@ mod tests {
         let _guard = exclusive();
         reset();
         let before = test_support::thread_lost();
-        crate::allocation_failure_tests::with_allocations_denied(|| {
+        crate::test_support::with_allocations_denied(|| {
             refusal("land event field unreadable");
             fail("land frame decode queue full");
         });

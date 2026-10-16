@@ -2,16 +2,31 @@
 use super::*;
 use replay::rows::{LandSideLosses, Recorded};
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct SideLossInputs {
-    manpower: Recorded<i32>,
-    equipment: Recorded<Vec<replay::rows::LandEquipmentLoss>>,
+    manpower: Option<i32>,
+    equipment: Option<Vec<(u64, i64)>>,
+}
+fn amounts(value: &Recorded<Vec<replay::rows::LandEquipmentLoss>>) -> Option<Vec<(u64, i64)>> {
+    match value {
+        Recorded::Value(rows) => rows
+            .iter()
+            .map(|row| (row.variant, row.amount_raw))
+            .collect::<Vec<_>>()
+            .into(),
+        Recorded::NotRecorded => None,
+    }
 }
 impl From<&LandSideLosses> for SideLossInputs {
     fn from(loss: &LandSideLosses) -> Self {
         Self {
-            manpower: loss.manpower.into(),
-            equipment: loss.equipment.clone().into(),
+            manpower: Some(loss.manpower),
+            equipment: loss
+                .equipment
+                .iter()
+                .map(|row| (row.variant, row.amount_raw))
+                .collect::<Vec<_>>()
+                .into(),
         }
     }
 }
@@ -19,9 +34,10 @@ impl From<&LandSideLosses> for SideLossInputs {
 const NOT_RECORDED: &str = "Not in this recording";
 
 /// Equipment designs, each kept once for the branch however often it is read.
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub(super) struct Designs {
     pub(super) values: Vec<LandEquipmentDesign>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     indices: HashMap<LandEquipmentDesign, usize>,
 }
 impl Designs {
@@ -35,17 +51,19 @@ impl Designs {
     }
 }
 /// One side's counters as read; variants pair a branch design with the signed fixed5 amount.
+#[derive(Clone, Serialize, Deserialize)]
 pub(super) struct SideRead {
-    pub(super) manpower: Recorded<i32>,
-    pub(super) equipment: Recorded<Vec<(usize, i64)>>,
+    pub(super) manpower: Option<i32>,
+    pub(super) equipment: Option<Vec<(usize, i64)>>,
 }
 /// Recorded cumulative observer counters, with explicit unknown reads at gaps.
+#[derive(Clone, Serialize, Deserialize)]
 pub(super) struct LossRead {
     pub(super) hour: i32,
     /// True only for the post-flush FinalizeCombat read, never inferred from absence.
     pub(super) terminal: bool,
     /// Attacker then defender, or why neither side's counters were read.
-    pub(super) sides: Result<[SideRead; 2], &'static str>,
+    pub(super) sides: Result<[SideRead; 2], String>,
 }
 impl LossRead {
     pub(super) fn casualties(&self) -> Option<f64> {
@@ -53,10 +71,7 @@ impl LossRead {
             .as_ref()
             .ok()?
             .iter()
-            .map(|side| match side.manpower {
-                Recorded::Value(value) => Some(f64::from(value)),
-                Recorded::NotRecorded => None,
-            })
+            .map(|side| side.manpower.map(f64::from))
             .sum()
     }
     /// Each side's manpower and exact equipment total, for the census.
@@ -66,7 +81,7 @@ impl LossRead {
                 let manpower = manpower(side.manpower);
                 match &side.equipment {
                     // i64 amounts cannot overflow an i128 sum over any recorded list.
-                    Recorded::Value(variants) => LandLossTotal::Known {
+                    Some(variants) => LandLossTotal::Known {
                         manpower,
                         equipment: variants
                             .iter()
@@ -74,13 +89,13 @@ impl LossRead {
                             .sum::<i128>()
                             .to_string(),
                     },
-                    Recorded::NotRecorded => LandLossTotal::Unknown {
+                    None => LandLossTotal::Unknown {
                         manpower,
                         unknown: NOT_RECORDED.into(),
                     },
                 }
             })),
-            Err(reason) => LandLossTotals::Unread((*reason).into()),
+            Err(reason) => LandLossTotals::Unread(reason.clone()),
         };
         LandBattleLossRead {
             hour: self.hour,
@@ -99,7 +114,7 @@ impl LossRead {
             Ok(sides) => LandLossSides::Read(std::array::from_fn(|index| {
                 let side = &sides[index];
                 let manpower = manpower(side.manpower);
-                let Recorded::Value(variants) = &side.equipment else {
+                let Some(variants) = &side.equipment else {
                     previous[index] = None;
                     return LandLossSide::Unknown {
                         manpower,
@@ -134,7 +149,7 @@ impl LossRead {
             })),
             Err(reason) => {
                 *previous = [None, None];
-                LandLossSides::Unread((*reason).into())
+                LandLossSides::Unread(reason.clone())
             }
         };
         LandBattleCourseRead {
@@ -144,10 +159,10 @@ impl LossRead {
         }
     }
 }
-fn manpower(value: Recorded<i32>) -> LandManpower {
+fn manpower(value: Option<i32>) -> LandManpower {
     match value {
-        Recorded::Value(value) => LandManpower::Known(value),
-        Recorded::NotRecorded => LandManpower::Unknown(NOT_RECORDED.into()),
+        Some(value) => LandManpower::Known(value),
+        None => LandManpower::Unknown(NOT_RECORDED.into()),
     }
 }
 impl Episode {
@@ -156,7 +171,7 @@ impl Episode {
         self.losses.push(LossRead {
             hour,
             terminal: false,
-            sides: Err("Losses after the last census not recorded"),
+            sides: Err("Losses after the last census not recorded".into()),
         });
     }
 }
@@ -164,15 +179,12 @@ impl Census {
     fn side_reads(&mut self, hour: i32, losses: &[SideLossInputs; 2]) -> [SideRead; 2] {
         losses.each_ref().map(|loss| SideRead {
             manpower: loss.manpower,
-            equipment: match &loss.equipment {
-                Recorded::Value(equipment) => Recorded::Value(
-                    equipment
-                        .iter()
-                        .map(|entry| (self.design(hour, entry.variant), entry.amount_raw))
-                        .collect(),
-                ),
-                Recorded::NotRecorded => Recorded::NotRecorded,
-            },
+            equipment: loss.equipment.as_ref().map(|equipment| {
+                equipment
+                    .iter()
+                    .map(|&(variant, amount)| (self.design(hour, variant), amount))
+                    .collect()
+            }),
         })
     }
     fn design(&mut self, hour: i32, variant: u64) -> usize {
@@ -197,7 +209,7 @@ impl Census {
             variant: variant.to_string(),
         })
     }
-    pub(super) fn observe_losses(&mut self, frame: &DecodedFrame) {
+    pub(super) fn observe_losses(&mut self, frame: &DecodedFrame, opened: Option<&[u64]>) {
         let progress = slot_read(
             self.format,
             &frame.metrics,
@@ -206,26 +218,47 @@ impl Census {
         )
         .then(|| frame.complete::<tables::LandCombatProgress>().ok())
         .flatten();
-        let by_combat: HashMap<_, _> = progress
-            .into_iter()
-            .flatten()
-            .map(|row| (row.combat, row))
-            .collect();
-        let open: Vec<_> = self
-            .open
-            .iter()
-            .map(|(&combat, &at)| (combat, at))
-            .collect();
+        let open: Vec<_> = match opened {
+            Some(opened) => opened
+                .iter()
+                .filter_map(|combat| self.open.get(combat).map(|at| (*combat, *at)))
+                .collect(),
+            None => self
+                .open
+                .iter()
+                .map(|(&combat, &at)| (combat, at))
+                .collect(),
+        };
         for (combat, at) in open {
-            let losses = by_combat.get(&combat).map(|row| {
+            #[cfg(test)]
+            {
+                self.work.history_visits += 1;
+            }
+            let row = progress.and_then(|progress| {
+                progress
+                    .binary_search_by_key(&combat, |row| row.combat)
+                    .ok()
+                    .map(|at| &progress[at])
+            });
+            #[cfg(test)]
+            {
+                self.work.row_visits += usize::from(row.is_some());
+            }
+            let losses = row.map(|row| {
                 [
                     SideLossInputs {
-                        manpower: row.attacker_manpower_loss,
-                        equipment: row.attacker_equipment_losses.clone(),
+                        manpower: match row.attacker_manpower_loss {
+                            Recorded::Value(value) => Some(value),
+                            Recorded::NotRecorded => None,
+                        },
+                        equipment: amounts(&row.attacker_equipment_losses),
                     },
                     SideLossInputs {
-                        manpower: row.defender_manpower_loss,
-                        equipment: row.defender_equipment_losses.clone(),
+                        manpower: match row.defender_manpower_loss {
+                            Recorded::Value(value) => Some(value),
+                            Recorded::NotRecorded => None,
+                        },
+                        equipment: amounts(&row.defender_equipment_losses),
                     },
                 ]
             });
@@ -243,34 +276,35 @@ impl Census {
                 });
             } else {
                 let reason = "Hourly losses not recorded";
+                self.dirty.insert(at);
                 let episode = &mut self.episodes[at];
                 episode.loss_inputs = None;
                 if episode
                     .losses
                     .last()
-                    .is_some_and(|read| matches!(read.sides, Err(why) if why == reason))
+                    .is_some_and(|read| matches!(&read.sides, Err(why) if why == reason))
                 {
                     continue;
                 }
                 episode.losses.push(LossRead {
                     hour: frame.hour,
                     terminal: false,
-                    sides: Err(reason),
+                    sides: Err(reason.into()),
                 });
             }
         }
     }
-    pub(super) fn observe_results(&mut self, frame: &DecodedFrame, labels: bool) {
+    pub(super) fn observe_results(&mut self, frame: &DecodedFrame, labels: bool) -> io::Result<()> {
         if !slot_read(
             self.format,
             &frame.metrics,
             TableId::LandCombatResults,
             frame.hour,
         ) {
-            return;
+            return Ok(());
         }
         let Ok(results) = frame.complete::<tables::LandCombatResults>() else {
-            return;
+            return Ok(());
         };
         let Some(coverage) = frame
             .complete::<tables::LandEventCoverage>()
@@ -278,9 +312,19 @@ impl Census {
             .and_then(|rows| rows.first())
             .filter(|row| row.complete && row.to_hour == frame.hour)
         else {
-            return;
+            return Ok(());
         };
+        if results.is_empty() {
+            return Ok(());
+        }
+        // Finalizers match the preceding accepted live endpoint, including
+        // constant-counter reads deferred since the last publication.
+        self.materialize()?;
         for result in results {
+            #[cfg(test)]
+            {
+                self.work.row_visits += 1;
+            }
             if result.end_hour <= coverage.from_hour || result.end_hour > coverage.to_hour {
                 continue;
             }
@@ -331,6 +375,7 @@ impl Census {
                     losses: Vec::new(),
                     loss_inputs: None,
                     result: None,
+                    prior_peaks: [None, None, None],
                     runs: vec![LandBattleRun {
                         first_hour: result.end_hour,
                         last_hour: result.end_hour,
@@ -345,6 +390,7 @@ impl Census {
             });
             let losses = result.losses.each_ref().map(SideLossInputs::from);
             let sides = self.side_reads(result.end_hour, &losses);
+            self.dirty.insert(at);
             let episode = &mut self.episodes[at];
             // The combat finalizer mask is distinct from the leader on-action verdict.
             let winner = match result.winners {
@@ -380,5 +426,6 @@ impl Census {
                 self.open.remove(&result.combat);
             }
         }
+        Ok(())
     }
 }

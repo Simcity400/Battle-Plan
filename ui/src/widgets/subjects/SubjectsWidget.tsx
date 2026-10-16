@@ -1,5 +1,5 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { dayLabel } from '../../charts/draw';
@@ -22,6 +22,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
+import { useParityRows } from '../../dashboard/parityRows';
 import { useCountriesAt } from '../../dashboard/useCountriesAt';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useHoverLabels } from '../../dashboard/useHoverLabels';
@@ -44,10 +45,13 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   const viewport = useViewportHeight();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'subjects', params: { branchId: track.branch.id } } : null;
-  const product = useProduct<SubjectReply>(runtime.client, request, active, validateSubjectReply);
+  const product = useProduct<SubjectReply>(runtime.client, request, active, validateSubjectReply, track?.source);
   const data = product.data;
+  const root = useRef<HTMLDivElement>(null);
   // The native catalogue identifies both relation endpoints and dated aliases.
   const groups = useCountryGroups(runtime, track, active);
+  useParityRows(root, () => ({ kind: 'chart', label: 'Subject relations and levels', complete: !!data && !!groups.data,
+    total: data?.runs.length ?? 0, rows: data?.runs ?? [], levels: data?.levels, unobserved: data?.unobserved }));
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
@@ -97,6 +101,7 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, groups.data, groups.error, identities, views, onDiagnostics]);
 
+  return <div ref={root} style={{ display: 'contents' }}>{(() => {
   if (!track) return <WidgetState kind="empty" icon="hierarchy" message="Load a campaign to see its overlords and subjects." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
@@ -181,4 +186,5 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
       onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
     {menu.menu}
   </div>;
+  })()}</div>;
 }

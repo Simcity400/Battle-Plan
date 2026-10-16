@@ -47,7 +47,7 @@ async function fixture() {
   const politics = await vite.ssrLoadModule('/ui/src/dashboard/usePoliticsSpending.ts') as typeof import('./usePoliticsSpending');
   const track = { id: 'main', selectedTag: 'X', axisOffset: 0, branch: { id: 'branch', firstHour: 90, lastHour: 160 },
     source: { id: 'source', revision: '1', metadata: { countries: [] } } };
-  const runtime = { tracks: [track], client: {} } as unknown as WidgetRuntime;
+  const runtime = { tracks: [track], client: {}, clock: { getHour: () => 160 } } as unknown as WidgetRuntime;
   const widget = (selection: CountrySelection): WidgetSpec => ({ id: 'widget', kind: 'generals', title: 'Generals', configVersion: 1,
     trackIds: ['main'], countries: selection, time: { mode: 'follow' } });
   return { state, runtime, widget, countries: countries.useCountriesSelectionAt, politics: politics.usePoliticsSpending,

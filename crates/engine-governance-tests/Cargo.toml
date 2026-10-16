@@ -1,0 +1,19 @@
+[package]
+name = "engine-governance-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+test-support = ["dep:engine-executable", "dep:engine-native", "dep:engine-research", "dep:engine-focus", "engine-native/batch-fallback-test-counts"]
+
+[dependencies]
+engine-executable = { workspace = true, optional = true }
+engine-native = { workspace = true, optional = true }
+engine-research = { workspace = true, optional = true }
+engine-focus = { workspace = true, optional = true }

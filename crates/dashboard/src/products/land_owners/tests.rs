@@ -8,6 +8,234 @@ use replay::{
 use std::sync::atomic::AtomicBool;
 
 #[test]
+fn land_owners_shared_changes_skip_unchanged_rosters_and_bound_one_changed_row() {
+    use super::Scan;
+    use crate::prepared::{
+        frame_changes::FrameChangeTracker,
+        observer_tests::{self, Work},
+    };
+    let format = replay::format::FormatVersion::default();
+    let first = scale_frame(1, 100, 5_000);
+    let work = observer_tests::scaled_work(10, |hours| {
+        let mut scan = Scan::default();
+        let mut tracker = FrameChangeTracker::new();
+        scan.observe(&first, None, Some(&tracker.observe(&first, format)))?;
+        let configured = scan.work;
+        let delta = observer_tests::unchanged_frames(
+            configured,
+            &first,
+            hours as i32,
+            format,
+            |frame, changes| {
+                scan.observe(frame, None, Some(changes))?;
+                Ok(scan.work)
+            },
+        )?;
+        assert_eq!(delta, Work::default());
+        let mut oracle = Scan::default();
+        oracle.observe(&first, None, None)?;
+        observer_tests::assert_reply_parity(&scan.reply(), &oracle.reply())?;
+        Ok(delta)
+    })
+    .unwrap();
+    observer_tests::assert_flat(work);
+
+    let first = ownership_frame(1, 100, 11);
+    let mut next = first.clone();
+    next.hour += 1;
+    if let TableView::Complete(TableRows::States(rows)) = &mut *next.tables[TableId::States.index()]
+    {
+        rows[0].owner = 44;
+    }
+    let mut tracker = FrameChangeTracker::new();
+    let mut scan = Scan::default();
+    scan.observe(&first, None, Some(&tracker.observe(&first, format)))
+        .unwrap();
+    let before = scan.work;
+    scan.observe(&next, None, Some(&tracker.observe(&next, format)))
+        .unwrap();
+    assert_eq!(scan.work.emitted - before.emitted, 1);
+    assert!(scan.work.row_visits - before.row_visits <= 5);
+    let mut oracle = Scan::default();
+    oracle.observe(&first, None, None).unwrap();
+    oracle.observe(&next, None, None).unwrap();
+    observer_tests::assert_reply_parity(&scan.reply(), &oracle.reply()).unwrap();
+
+    // A restored recording-wide scan must revisit identical rows on a lower
+    // branch, so its first witness and branch order remain the oracle's.
+    scan = Scan::read(scan.saved_bytes().unwrap().as_slice()).unwrap();
+    tracker.invalidate();
+    next.branch = 0;
+    next.hour = 90;
+    scan.observe(&next, None, Some(&tracker.observe(&next, format)))
+        .unwrap();
+    oracle.observe(&next, None, None).unwrap();
+    observer_tests::assert_reply_parity(&scan.reply(), &oracle.reply()).unwrap();
+}
+
+#[test]
+fn land_owners_shared_driver_work_is_flat_over_retained_alias_history() {
+    use super::Scan;
+    use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
+    let format = replay::format::FormatVersion::default();
+    let work = observer_tests::scaled_work(10, |history| {
+        let mut scan = Scan::default();
+        let mut tracker = FrameChangeTracker::new();
+        let mut frame = ownership_frame(1, 100, 11);
+        for index in 0..history {
+            frame.hour = 100 + index as i32;
+            if let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *frame.tables[TableId::Countries.index()]
+            {
+                rows.iter_mut()
+                    .find(|row| row.canonical_slot == 7)
+                    .unwrap()
+                    .tag = format!("recorded alias {index}").into_bytes();
+            }
+            scan.observe(&frame, None, Some(&tracker.observe(&frame, format)))?;
+        }
+        assert_eq!(scan.reply().countries.len(), history);
+        let before = scan.reply();
+        let delta =
+            observer_tests::unchanged_frames(scan.work, &frame, 10, format, |frame, changes| {
+                scan.observe(frame, None, Some(changes))?;
+                Ok(scan.work)
+            })?;
+        observer_tests::assert_reply_parity(&scan.reply(), &before)?;
+        Ok(delta)
+    })
+    .unwrap();
+    observer_tests::assert_flat(work);
+}
+
+#[test]
+fn land_owners_changed_country_operands_skip_state_rows_and_keep_shortened_tag_order() {
+    use super::Scan;
+    use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
+    let format = replay::format::FormatVersion::CURRENT;
+    let work = observer_tests::scaled_work(10, |history| {
+        let mut scan = Scan::default();
+        let mut tracker = FrameChangeTracker::new();
+        let mut frame = ownership_frame(1, 100, 11);
+        for index in 0..history {
+            frame.hour = 100 + index as i32;
+            if let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *frame.tables[TableId::Countries.index()]
+            {
+                rows.iter_mut()
+                    .find(|row| row.canonical_slot == 7)
+                    .unwrap()
+                    .tag = format!("{} {index}", "x".repeat(600)).into_bytes();
+            }
+            scan.observe(&frame, None, Some(&tracker.observe(&frame, format)))?;
+        }
+        let before = scan.work;
+        frame.hour += 1;
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            rows[0].political_power_raw = Some(7);
+        }
+        scan.observe(&frame, None, Some(&tracker.observe(&frame, format)))?;
+        assert_eq!(scan.work.row_visits - before.row_visits, 4);
+        assert_eq!(
+            scan.work.history_visits - before.history_visits,
+            0,
+            "balance-only changes skip the ownership join"
+        );
+        assert_eq!(scan.work.emitted - before.emitted, 0);
+        let reply = scan.reply();
+        assert!(
+            reply
+                .countries
+                .windows(2)
+                .all(|rows| rows[0].observed_hour < rows[1].observed_hour)
+        );
+        let restored = Scan::read(scan.saved_bytes()?.as_slice())?;
+        observer_tests::assert_reply_parity(&reply, &restored.reply())?;
+        Ok(observer_tests::Work {
+            row_visits: scan.work.row_visits - before.row_visits,
+            ..Default::default()
+        })
+    })
+    .unwrap();
+    observer_tests::assert_flat(work);
+}
+
+#[test]
+fn land_owners_link_refresh_uses_retained_owners_and_country_keys_after_resume() {
+    use super::Scan;
+    use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
+    let format = replay::format::FormatVersion::CURRENT;
+    let mut read = ownership_frame(1, 100, 11);
+    let mut prepared = Scan::default();
+    let mut oracle = Scan::default();
+    let mut tracker = FrameChangeTracker::new();
+    prepared
+        .observe(&read, None, Some(&tracker.observe(&read, format)))
+        .unwrap();
+    oracle.observe(&read, None, None).unwrap();
+    let slots = std::sync::Arc::clone(&prepared.country_inputs.as_ref().unwrap().2);
+    for hour in 101..=102 {
+        read.hour = hour;
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *read.tables[TableId::Countries.index()]
+        {
+            rows.iter_mut()
+                .find(|row| row.canonical_slot == 7)
+                .unwrap()
+                .tag = format!("recorded alias {hour}").into_bytes();
+        }
+        let before = prepared.work;
+        prepared
+            .observe(&read, None, Some(&tracker.observe(&read, format)))
+            .unwrap();
+        oracle.observe(&read, None, None).unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &slots,
+            &prepared.country_inputs.as_ref().unwrap().2
+        ));
+        assert_eq!(prepared.work.row_visits - before.row_visits, 4);
+        observer_tests::assert_reply_parity(&prepared.reply(), &oracle.reply()).unwrap();
+    }
+    read.hour = 103;
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *read.tables[TableId::CountryLinks.index()]
+    {
+        rows.iter_mut()
+            .find(|row| row.id == 11)
+            .unwrap()
+            .canonical_slot = 8;
+    }
+    let before = prepared.work;
+    prepared
+        .observe(&read, None, Some(&tracker.observe(&read, format)))
+        .unwrap();
+    oracle.observe(&read, None, None).unwrap();
+    assert_eq!(
+        prepared.work.row_visits - before.row_visits,
+        read.complete::<replay::rows::tables::CountryLinks>()
+            .unwrap()
+            .len(),
+        "only changed link rows are visited"
+    );
+    assert!(!std::sync::Arc::ptr_eq(
+        &slots,
+        &prepared.country_inputs.as_ref().unwrap().2
+    ));
+    observer_tests::assert_reply_parity(&prepared.reply(), &oracle.reply()).unwrap();
+    prepared = Scan::read(prepared.saved_bytes().unwrap().as_slice()).unwrap();
+    tracker.invalidate();
+    read.branch = 0;
+    read.hour = 90;
+    prepared
+        .observe(&read, None, Some(&tracker.observe(&read, format)))
+        .unwrap();
+    oracle.observe(&read, None, None).unwrap();
+    observer_tests::assert_reply_parity(&prepared.reply(), &oracle.reply()).unwrap();
+}
+
+#[test]
 fn land_owners_include_transient_and_other_branch_owners_but_not_controllers() {
     let replay = Replay::from_records(
         CAMPAIGN.into(),
@@ -232,5 +460,145 @@ fn land_owners_list_every_country_once_across_branches() {
     assert!(
         bytes < crate::transport::MAX_REPLY_BYTES / 4,
         "{bytes} bytes"
+    );
+}
+
+#[test]
+fn land_owners_prepared_recording_state_matches_after_two_commits_resume_append_and_tag_change() {
+    use super::Scan;
+    use crate::prepared::{frame_changes::FrameChangeTracker, series::tests::Fixture};
+    let mut fixture = Fixture::new();
+    let cancelled = AtomicBool::new(false);
+    let mut renamed = ownership_frame(1, 102, 11);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *renamed.tables[TableId::Countries.index()]
+    {
+        rows.iter_mut()
+            .find(|row| row.canonical_slot == 7)
+            .unwrap()
+            .tag = b"renamed / realm".to_vec();
+    }
+    let mut missing = ownership_frame(3, 81, 66);
+    *missing.tables[TableId::States.index()] = TableView::Unavailable {
+        reason: "synthetic missing ownership".into(),
+    };
+    let batches = [
+        vec![ownership_frame(2, 90, 11), ownership_frame(2, 91, 44)],
+        vec![
+            ownership_frame(1, 100, 11),
+            ownership_frame(1, 101, 44),
+            renamed,
+        ],
+        vec![ownership_frame(3, 80, 66), missing],
+    ];
+    let mut inputs = Vec::new();
+    let mut scan = Scan::default();
+    let mut tracker = FrameChangeTracker::new();
+    for (commit, frames) in batches.into_iter().enumerate() {
+        for frame in &frames {
+            let changes = tracker.observe(frame, replay::format::FormatVersion::CURRENT);
+            scan.observe(frame, None, Some(&changes)).unwrap();
+        }
+        inputs.push(records(frames[0].branch, frames));
+        let replay = Replay::from_records(CAMPAIGN.into(), &inputs).unwrap();
+        scan.complete = true;
+        let mut writer = if commit == 2 {
+            fixture.append_writer()
+        } else {
+            fixture.writer()
+        };
+        writer
+            .write_at("land-owners", 0, scan.saved_bytes().unwrap().as_slice())
+            .unwrap();
+        writer.commit().unwrap();
+        scan = Scan::read(
+            fixture
+                .store
+                .read(&fixture.key, "land-owners", 0)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        tracker.invalidate();
+        assert!(scan.complete);
+        assert_eq!(
+            scan.reply(),
+            crate::land_owners(&replay, None, &cancelled).unwrap(),
+            "commit {commit}"
+        );
+    }
+    assert_eq!(
+        scan.reply()
+            .countries
+            .iter()
+            .map(|country| country.tag.as_str())
+            .collect::<Vec<_>>(),
+        ["FRA", "GER", "MOD", "renamed / realm"]
+    );
+    assert!(
+        scan.reply()
+            .countries
+            .iter()
+            .filter(|country| country.tag == "GER" || country.tag == "FRA")
+            .all(|country| country.observed_branch_id == "1")
+    );
+}
+
+#[test]
+#[cfg(feature = "slow-tests")]
+fn land_owners_prepared_five_thousand_countries_retains_no_hour_history() {
+    use super::Scan;
+    use crate::prepared::{frame_changes::FrameChangeTracker, series::tests::Fixture};
+    let fixture = Fixture::new();
+    let mut scan = Scan::default();
+    let mut tracker = FrameChangeTracker::new();
+    let format = replay::format::FormatVersion::CURRENT;
+    let mut read = scale_frame(2, 90, 5000);
+    scan.observe(&read, None, Some(&tracker.observe(&read, format)))
+        .unwrap();
+    read.branch = 1;
+    read.hour = 100;
+    scan.observe(&read, None, Some(&tracker.observe(&read, format)))
+        .unwrap();
+    let initial = scan.saved_bytes().unwrap();
+    let configured = scan.work;
+    for hour in 101..125 {
+        read.hour = hour;
+        scan.observe(&read, None, Some(&tracker.observe(&read, format)))
+            .unwrap();
+    }
+    assert_eq!(
+        scan.work, configured,
+        "unchanged hours perform no ownership join"
+    );
+    assert_eq!(
+        scan.saved_bytes().unwrap(),
+        initial,
+        "unchanged hours retain exactly the same continuation"
+    );
+    let mut writer = fixture.writer();
+    writer
+        .write_at("land-owners", 0, initial.as_slice())
+        .unwrap();
+    writer.commit().unwrap();
+    let restored = Scan::read(
+        fixture
+            .store
+            .read(&fixture.key, "land-owners", 0)
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(restored.reply().countries.len(), 5000);
+    assert!(
+        restored
+            .reply()
+            .countries
+            .iter()
+            .all(|country| country.observed_branch_id == "1" && country.observed_hour == 100)
+    );
+    eprintln!(
+        "land-owners compressed continuation at 5,000 countries: {} bytes",
+        initial.len()
     );
 }

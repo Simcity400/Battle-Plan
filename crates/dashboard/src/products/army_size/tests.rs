@@ -11,7 +11,7 @@ use replay::{
     },
 };
 
-pub(super) fn frame(hour: i32) -> DecodedFrame {
+pub(crate) fn frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1));
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
         CountryRow {
@@ -783,6 +783,7 @@ fn army_size_refuses_reply_budget() {
         },
         None,
         &cancel,
+        None,
     )
     .unwrap()
     .0;
@@ -809,6 +810,7 @@ fn army_size_refuses_reply_budget() {
         },
         None,
         &cancel,
+        None,
     )
     .unwrap_err();
     assert!(error.to_string().contains("transport reply budget"));
@@ -1506,9 +1508,10 @@ fn army_size_invalid_sparse_rows_name_the_gap_and_preserve_census() {
         &mut result,
         decoded,
         &bad,
-        source.replay_ref(),
-        1,
+        source.replay_ref().format,
+        false,
         &mut state,
+        None,
     );
     assert_eq!(
         result.tracks["origin"].runs[0].totals.values,
@@ -1528,9 +1531,10 @@ fn army_size_invalid_sparse_rows_name_the_gap_and_preserve_census() {
         &mut result,
         decoded,
         &recovery,
-        source.replay_ref(),
-        1,
+        source.replay_ref().format,
+        false,
         &mut state,
+        None,
     );
     let values = result.tracks["origin"].runs.last().unwrap().totals.values;
     assert_eq!(values[0], Some(3));
@@ -1717,6 +1721,7 @@ fn army_size_exact_hp_wire_retains_adjacent_and_large_finite_totals() {
         },
         None,
         &AtomicBool::new(false),
+        None,
     )
     .unwrap()
     .0;
@@ -1750,7 +1755,7 @@ fn army_size_composition_wire_retains_adjacent_wide_counts() {
         tracks: BTreeMap::from([(
             "origin".into(),
             Track {
-                segments: vec![range.clone()],
+                segments: vec![range],
                 runs: raw
                     .into_iter()
                     .enumerate()
@@ -1782,7 +1787,7 @@ fn army_size_composition_wire_retains_adjacent_wide_counts() {
     let source = opened(vec![frame(100)]);
     let request = params(ArmyMeasure::Battalions, ArmyAttribution::Owner);
     let cancelled = AtomicBool::new(false);
-    let (mut series, _) = reply_series(&scan, &request, &range, None, &cancelled).unwrap();
+    let (mut series, _) = reply_series(&scan, &request, &range, None, &cancelled, None).unwrap();
     let types = composition_reply(
         &source,
         &LoadContext { content: None },

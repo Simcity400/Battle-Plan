@@ -1,4 +1,5 @@
 use super::*;
+mod speed;
 use crate::test_fixtures::{CAMPAIGN, records, source};
 use replay::{
     frame::TableView,
@@ -1314,4 +1315,155 @@ fn naval_battles_long_convoy_war_wire_sizes() {
             json_len(&r, MAX_PRODUCT_REPLY_BYTES).unwrap()
         );
     }
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn prepared_naval_matches_oracle_across_commits_resume_append_and_large_census() {
+    use crate::prepared::series::tests::Fixture;
+    let flag = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let mut inputs = Vec::new();
+    for hour in 100..103 {
+        let mut input = frame(hour);
+        let scaled = crate::test_fixtures::scale_frame(1, hour, 5000);
+        input.tables[TableId::Countries.index()] =
+            scaled.tables[TableId::Countries.index()].clone();
+        input.tables[TableId::CountryLinks.index()] =
+            scaled.tables[TableId::CountryLinks.index()].clone();
+        *input.tables[TableId::NavalCombats.index()] =
+            TableView::Complete(TableRows::NavalCombats(
+                (0..2048)
+                    .map(|index| NavalCombatRow {
+                        id: (1_u64 << 48) + index,
+                        province: 45,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ));
+        inputs.push(input);
+    }
+    let mut replay =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![inputs[0].clone()])]).unwrap();
+    for input in &inputs[1..] {
+        replay = replay
+            .append(&[crate::test_fixtures::continuation_records(
+                &replay,
+                1,
+                vec![input.clone()],
+            )])
+            .unwrap();
+    }
+    let source = Source::from_replay(
+        crate::SourceKey {
+            source_id: "prepared-naval".into(),
+            revision: "1".into(),
+        },
+        "prepared-naval.battleplan".into(),
+        Arc::new(replay),
+        &flag,
+    )
+    .unwrap();
+    let fixture = Fixture::new();
+    let mut prepared = Scan::default();
+    let content = crate::products::ships_sunk::prepared_content(&source, &context);
+    let mut changes = crate::prepared::frame_changes::FrameChangeTracker::new();
+    for (index, input) in inputs.iter().enumerate() {
+        prepared.configure(&source, 1, &content).unwrap();
+        let frame_changes = changes.observe(input, source.replay_ref().format);
+        prepared.observe_prepared(input, &frame_changes);
+        prepared
+            .observe_details(&source, &context, input, &flag, &frame_changes)
+            .unwrap();
+        let mut writer = fixture.writer();
+        prepared
+            .publish_block(&source, &context, &mut writer, 1, index, &flag)
+            .unwrap();
+        writer.commit().unwrap();
+        prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
+        prepared.resume(input);
+        changes.invalidate();
+    }
+    let oracle = scan(source.replay_ref(), 1, &flag).unwrap();
+    let windows = super::windows(source.replay_ref(), 1);
+    for index in 0..windows.len() {
+        let params = NavalBattlesParams {
+            branch_id: "1".into(),
+            window: index,
+        };
+        let actual = prepared::query(
+            &source,
+            "naval-battles",
+            serde_json::to_value(&params).unwrap(),
+            &context,
+            &fixture.store,
+            &fixture.key,
+            &flag,
+        )
+        .unwrap();
+        assert_eq!(
+            actual,
+            serde_json::to_value(oracle.reply(&params, &windows).unwrap()).unwrap()
+        );
+    }
+    for measure in ["Ships sunk", "Peak ships", "Length"] {
+        for last_hour in 100..103 {
+            let params = NavalBattlesRankingParams {
+                branch_id: "1".into(),
+                first_hour: 100,
+                last_hour,
+                top_n: 7.0,
+                measure: measure.into(),
+                countries: crate::products::land_battles::LandBattleCountryFilter {
+                    tags: None,
+                    membership: None,
+                    unobserved: vec![],
+                },
+            };
+            let actual = prepared::query(
+                &source,
+                "naval-battles-ranking",
+                serde_json::to_value(&params).unwrap(),
+                &context,
+                &fixture.store,
+                &fixture.key,
+                &flag,
+            )
+            .unwrap();
+            assert_eq!(
+                actual,
+                serde_json::to_value(oracle.ranked(&params, &flag).unwrap()).unwrap()
+            );
+        }
+    }
+    let params = details::NavalBattleDetailsParams {
+        branch_id: "1".into(),
+        battles: oracle
+            .episodes
+            .iter()
+            .take(2)
+            .map(|episode| details::NavalBattleDetailRequest {
+                id: episode.id.clone(),
+                hour: episode.runs[0].first,
+            })
+            .collect(),
+    };
+    let actual = prepared::query(
+        &source,
+        "naval-battle-details",
+        serde_json::to_value(&params).unwrap(),
+        &context,
+        &fixture.store,
+        &fixture.key,
+        &flag,
+    )
+    .unwrap();
+    assert_eq!(
+        actual,
+        serde_json::to_value(NavalBattleDetails::load(&source, &params, &context, &flag).unwrap())
+            .unwrap()
+    );
 }

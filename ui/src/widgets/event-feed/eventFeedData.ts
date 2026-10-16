@@ -68,7 +68,7 @@ export function validateEventFeedReply(value: unknown): EventFeedReply {
       && (NATIVE_KINDS.has(row.kind) || row.tags.length > 0) && row.tags.every(opaqueTag) && roles(row) && cause(row) && strike(row)
       && (row.item === null || (int(row.item) && row.item >= 0 && items !== null && row.item < items.length))
       && (row.amount === null || (int(row.amount) && row.amount > 0)))
-    || new Set(value.rows.map(row => row.id)).size !== value.rows.length
+    || new Set(value.rows.filter(row => !NATIVE_KINDS.has(row.kind)).map(row => row.id)).size !== value.rows.filter(row => !NATIVE_KINDS.has(row.kind)).length
     || !Array.isArray(value.unavailable) || !value.unavailable.every(item => object(item) && typeof item.kind === 'string'
       && typeof item.label === 'string' && typeof item.reason === 'string' && (item.count === null || (int(item.count) && item.count >= 0)))
     || !Array.isArray(value.modifiers) || !value.modifiers.every(modifierFormat)
@@ -79,6 +79,20 @@ export function validateEventFeedReply(value: unknown): EventFeedReply {
   const reply = value as unknown as EventFeedReply;
   for (const item of reply.items) item.icon = drawableIcon(item.icon);
   return reply;
+}
+
+/** Feed-only cursor envelope; source IDs stay internal to this reader. */
+export interface PreparedFeedPage { reply: EventFeedReply; nextCursor: string | null }
+export function validateEventFeedPage(value: unknown): PreparedFeedPage {
+  if (!object(value) || !(value.nextCursor === null || typeof value.nextCursor === 'string')) {
+    throw new Error('The prepared event feed page is malformed.');
+  }
+  const reply = validateEventFeedReply(value.reply);
+  if (reply.windows.length) throw new Error('The prepared event feed page contains a window manifest.');
+  // Live validation may remove every obsolete project candidate. The hook
+  // checks this continuation against the request and earlier page cursors.
+  if (value.nextCursor === '') throw new Error('The event feed page made no progress.');
+  return { reply, nextCursor: value.nextCursor };
 }
 
 export interface FeedEvent { event: EventFeedRow; item: EventFeedItem | null; reply: EventFeedReply }
@@ -101,18 +115,17 @@ export const eventCountryHour = (event: EventFeedRow): number =>
 /** Prepare each page/filter once. Playback only cuts this ordered result by its
  * supplying reads; it never repeats country matching or sorting on each tick. */
 export function filteredEventRows(reply: EventFeedReply, filter: FeedFilter): LogRow<FeedEvent>[] {
+  const occurrences = new Map<string, number>();
   return newestFirst(reply.rows.filter(event => (filter.firstHour === null || event.hour >= filter.firstHour)
     && filter.categories.has(event.category)
     && (filter.allCountries === true || event.tags.some(tag => filter.country(tag, eventCountryHour(event)))))
     // Every listed event is dated to its day: by the game, or by consecutive reads either side of it.
-    .map(event => ({ key: event.id, id: event.id, hour: event.hour, by: false,
-      revealedHour: event.readHour,
-      item: { event, item: event.item === null ? null : reply.items[event.item], reply } })));
-}
-
-/** Country-filtered manifest counts remain possible matches until loaded. */
-export function eventWindowCount(window: EventFeedWindow, categories: ReadonlySet<string>): number {
-  return CATEGORIES.reduce((sum, category) => sum + (categories.has(category.value) ? window.categoryCounts[category.value] : 0), 0);
+    .map(event => {
+      const key = JSON.stringify([event.id, event.readHour]);
+      const occurrence = occurrences.get(key) ?? 0; occurrences.set(key, occurrence + 1);
+      return { key: `${key}:${occurrence}`, id: `${key}:${occurrence}`, hour: event.hour, by: false,
+        revealedHour: event.readHour, item: { event, item: event.item === null ? null : reply.items[event.item], reply } };
+    }));
 }
 
 /** The countries a row names: its participants and a join's ally. */
@@ -234,10 +247,4 @@ export function eventTooltip(at: FeedEvent, name: (tag: string) => string, state
     item.description, rows, note, event.nameHour)];
   if (item?.description) rows.push({ label: item.description });
   return [{ title, icon: item?.icon ?? undefined, rows, note: note || undefined }];
-}
-
-/** Only event-bearing windows overlapping the selected date interval. */
-export function feedWindows(windows: readonly EventFeedWindow[], hour: number, firstHour: number | null): { key: string; index: number; window: EventFeedWindow }[] {
-  return windows.flatMap((window, index) => window.firstHour <= hour && (firstHour === null || window.lastHour >= firstHour)
-    ? [{ key: String(index), index, window }] : []).reverse();
 }

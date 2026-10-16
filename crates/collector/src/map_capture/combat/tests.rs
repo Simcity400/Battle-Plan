@@ -255,7 +255,7 @@ fn combat_take_restore_moves_owned_storage_without_callback_allocation() {
         map.land_combats.rows.as_ptr(),
         map.land_participants.as_ptr(),
     );
-    let request = crate::allocation_failure_tests::with_allocations_denied(|| {
+    let request = crate::test_support::with_allocations_denied(|| {
         let request = map.take_combat_request(0, world.state(), progress);
         assert_eq!(map.land_combats.rows.capacity(), 0);
         assert_eq!(map.land_participants.capacity(), 0);

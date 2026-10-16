@@ -62,13 +62,14 @@ test('a parent that rebuilds its column accessors on every render does not loop 
     createElement: (name: string) => new FakeNode(1, name.toUpperCase(), document),
     createElementNS: (_namespace: string, name: string) => new FakeNode(1, name, document),
     createTextNode: (text: string) => Object.assign(new FakeNode(3, '#text', document), { nodeValue: text }) });
-  const replaced = ['document', 'window', 'getComputedStyle', 'ResizeObserver', 'HTMLIFrameElement', 'IS_REACT_ACT_ENVIRONMENT'] as const;
+  const replaced = ['document', 'window', 'getComputedStyle', 'ResizeObserver', 'cancelAnimationFrame', 'HTMLIFrameElement', 'IS_REACT_ACT_ENVIRONMENT'] as const;
   const host = globalThis as unknown as Record<string, unknown>;
   const before = new Map(replaced.map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   const define = (key: string, value: unknown) => Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
   define('document', document);
   define('window', globalThis);
   define('getComputedStyle', () => ({ ...CSS, getPropertyValue: (name: string) => CSS[name] ?? '' }));
+  define('cancelAnimationFrame', () => {});
   define('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   define('HTMLIFrameElement', class {});
   define('IS_REACT_ACT_ENVIRONMENT', true);

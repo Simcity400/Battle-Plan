@@ -69,8 +69,9 @@ test('faction races request and display numeric totals during a colour failure, 
       export const factionLabelAt = () => 'Faction'; export const factionNameAt = () => 'Faction'; export const factionMemberLabelLimit = () => 1;
       export const factionTooltipForms = () => []; export const factionVisibleMemberTags = () => []; export const validateFactionTotalsReply = value => value;`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => 10;',
-    '/dashboard/products.ts': `const data = {series: [{id: '1', membership: [{firstHour: 0, lastHour: 100}]}], warnings: [], unit: 'Count', unavailableReason: null};
-      export const useProduct = (_client, request) => ({data: request ? data : undefined});`,
+    '/dashboard/preparedFactionTotals.ts': `const data = {series: [{id: '1', membership: [{firstHour: 0, lastHour: 100}]}], warnings: [], unit: 'Count', unavailableReason: null};
+      export const usePreparedFactionTotals = (client, track, params) => ({data: params ? data : undefined, lineSummaries: new Map(), navigation: {},
+        owner: globalThis.__factionRenderHooks.useMemo(() => ({}), [client, JSON.stringify(params)]), onSummaryView() {}, onReachHour() {}});`,
     '/charts/useChartTokens.ts': `export const useViewportHeight = () => 300; export const useChartTokens = () => ({muted: '#888'});`,
     '/charts/race/CountryRaceView.tsx': 'export default props => {globalThis.__factionPresentation.chart = props; return null;};',
     '/charts/race/factionParts.ts': `export * from '/ui/src/charts/race/factionParts.ts?actual'; export const factionNumbers = reply => reply; export const factionParts = () => ({});`,

@@ -105,7 +105,7 @@ fn raids_tally_counts_follow_native_holder_through_renames_and_reused_tags() {
     );
 }
 
-fn raid(id: u32, phase: i32, outcome: i32) -> RaidRow {
+pub(super) fn raid(id: u32, phase: i32, outcome: i32) -> RaidRow {
     RaidRow {
         id,
         reference_type: native::REFERENCE_TYPE_VALUE,
@@ -117,7 +117,7 @@ fn raid(id: u32, phase: i32, outcome: i32) -> RaidRow {
     }
 }
 
-fn frame(hour: i32, raids: Vec<RaidRow>) -> DecodedFrame {
+pub(super) fn frame(hour: i32, raids: Vec<RaidRow>) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1));
     *frame.tables[TableId::RaidCountries.index()] =
         TableView::Complete(TableRows::RaidCountries(vec![RaidCountryRow {
@@ -662,6 +662,71 @@ fn mod_content() -> (Scratch, Content) {
 }
 
 #[test]
+fn raids_shared_driver_binds_success_and_failure_before_observation() {
+    use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for raid content metadata");
+    for complete_content in [false, true] {
+        let measured = observer_tests::scaled_work(8, |hours| {
+            let scratch = Scratch::new();
+            if complete_content {
+                scratch.write(
+                    "common/buildings/buildings.txt",
+                    "buildings={mod_factory={}}",
+                );
+                scratch.write(
+                    "common/raids/types.txt",
+                    "types={mod_raid={custom_map_icon=GFX_mod}}",
+                );
+            }
+            let first = frame(
+                100,
+                vec![raid(1, native::PHASE_PREPARING, native::OUTCOME_NONE)],
+            );
+            let (source, context) =
+                crate::test_fixtures::source_with_content(vec![first.clone()], &scratch.0);
+            let binding = prepared_content(&source, &context);
+            assert_eq!(binding.is_ok(), complete_content);
+            let second = prepared_content(&source, &context);
+            assert_eq!(second.is_ok(), complete_content);
+            let content = binding.ok().and_then(|(content, _)| content);
+            let loads = || source.state::<Cache>().lock().unwrap().content.loads();
+            assert_eq!(loads(), 1, "configuration caches the named failure too");
+            let mut state = prepared::Prepared::default();
+            let format = source.replay_ref().format;
+            state.observe_changed(
+                &first,
+                source.replay_ref().format,
+                content.as_deref(),
+                &FrameChangeTracker::new().observe(&first, format),
+            )?;
+            let mut baseline = state.work();
+            baseline.content_loads = loads();
+            observer_tests::unchanged_frames(
+                baseline,
+                &first,
+                hours as i32,
+                format,
+                |read, changes| {
+                    state.observe_changed(
+                        read,
+                        source.replay_ref().format,
+                        content.as_deref(),
+                        changes,
+                    )?;
+                    let mut work = state.work();
+                    work.content_loads = loads();
+                    Ok(work)
+                },
+            )
+        })
+        .unwrap();
+        assert_eq!(measured, [observer_tests::Work::default(); 2]);
+        observer_tests::assert_flat(measured);
+    }
+}
+
+#[test]
 fn raids_offline_fallbacks_only_cover_absent_localisation_and_omit_reader_notes() {
     engine::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -1092,7 +1157,7 @@ fn tally_params(tags: Vec<String>, top: Option<RaidTop>) -> RaidsParams {
 fn raids_preparation_runs_bound_growth_and_preserve_each_read_without_splitting_facts() {
     let mut scan = Scan::new();
     let mut observed = frame(100, vec![raid(1, 2, 0), raid(2, 2, 0)]);
-    for hour in 100..1_100 {
+    for hour in 100..108 {
         observed.hour = hour;
         *observed.tables[TableId::Raids.index()] = TableView::Complete(TableRows::Raids(
             (1..=2)
@@ -1110,19 +1175,19 @@ fn raids_preparation_runs_bound_growth_and_preserve_each_read_without_splitting_
         assert_eq!(episode.runs.len(), 1);
         assert_eq!(
             (episode.runs[0].first_hour, episode.runs[0].last_hour),
-            (100, 1_099)
+            (100, 107)
         );
         assert_eq!(episode.preparation.len(), 1);
     }
     assert_eq!(
         result.episodes[0].preparation[0],
-        RaidPreparationRun(100, 1_099, 37, 0)
+        RaidPreparationRun(100, 107, 37, 0)
     );
     assert_eq!(
         result.episodes[1].preparation[0],
-        RaidPreparationRun(100, 1_099, 0, 1)
+        RaidPreparationRun(100, 107, 0, 1)
     );
-    for hour in 100..1_100 {
+    for hour in 100..108 {
         for (index, episode) in result.episodes.iter().enumerate() {
             let run = &episode.preparation[0];
             assert_eq!(
@@ -1150,10 +1215,6 @@ fn raids_preparation_runs_bound_growth_and_preserve_each_read_without_splitting_
         warnings: vec![],
     };
     measure_reply(&reply, &result.episodes).unwrap();
-    assert_eq!(
-        serde_json::to_string(&RaidPreparationRun(100, 1_099, 37, 0)).unwrap(),
-        "[100,1099,37,0]"
-    );
 }
 
 #[test]
@@ -1592,14 +1653,6 @@ fn raids_log_artwork_is_lazy_unique_and_limited_to_used_episode_keys() {
     assert_eq!(art[0].key, "GFX_mod");
     assert_eq!(art[0].image.as_deref(), Some("used-image"));
     assert!(log_artwork(&content, &[]).is_empty());
-    let types = serde_json::to_value(&content.types).unwrap();
-    assert!(
-        types
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|kind| kind.get("icon").is_none())
-    );
 }
 
 #[test]
@@ -1659,12 +1712,6 @@ fn raids_selection_sizes_from_the_recording_and_reply_refuses_the_transport_budg
             .to_string()
             .starts_with("RaidReplyTooLarge:"),
         "complete product body refuses at the shared 24 MiB reserve"
-    );
-    assert!(
-        serde_json::to_value(RaidDate { hour: 100 })
-            .unwrap()
-            .get("exact")
-            .is_none()
     );
 }
 

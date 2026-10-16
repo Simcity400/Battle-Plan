@@ -1,21 +1,7 @@
-use super::super::tests::{award_row, fuel_frame};
+use super::super::tests::{award_row, fuel_frame, replay_source};
 use super::*;
-use crate::test_fixtures::{CAMPAIGN, records};
-use replay::frame::{DecodedFrame, TableView};
+use replay::frame::TableView;
 use replay::rows::{Recorded, TableRows};
-
-fn source(frames: Vec<DecodedFrame>, id: &str) -> Source {
-    Source::from_replay(
-        crate::SourceKey {
-            source_id: id.into(),
-            revision: "1".into(),
-        },
-        "memory.battleplan".into(),
-        Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap()),
-        &AtomicBool::new(false),
-    )
-    .unwrap()
-}
 
 #[test]
 fn recipient_history_follows_native_aliases_without_crossing_reset_boundaries() {
@@ -76,7 +62,7 @@ fn recipient_history_follows_native_aliases_without_crossing_reset_boundaries() 
             frame
         })
         .collect();
-    let source = source(frames, "renamed-recipient");
+    let source = replay_source(frames, "renamed-recipient");
     let reply = CountryFuelAwardHistory::load(
         &source,
         &FuelAwardHistoryParams {
@@ -230,7 +216,7 @@ fn history_uses_one_visible_all_country_window_and_authenticates_basis_and_keys(
             frame
         })
         .collect();
-    let source = source(frames, "fuel-recipient-window-5000");
+    let source = replay_source(frames, "fuel-recipient-window-5000");
     let cancelled = AtomicBool::new(false);
     let summary = scanned(&source, 1, &cancelled).unwrap();
     let window = window_reads(&source, 1, 3, &summary, &cancelled).unwrap();

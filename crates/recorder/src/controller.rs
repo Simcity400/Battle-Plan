@@ -182,11 +182,11 @@ pub fn game_start_time(pid: u32) -> Result<u64, String> {
 }
 
 pub fn default_capture_directory() -> PathBuf {
-    recording::default_capture_directory()
+    crate::directories::default_capture_directory()
 }
 
 pub fn resolve_user_directory() -> Result<PathBuf, String> {
-    recording::resolve_user_directory()
+    crate::directories::resolve_user_directory()
 }
 
 /// A capture error in plain words; the original text stays the detail.

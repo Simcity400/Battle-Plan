@@ -9,10 +9,10 @@ How the desktop app turns a recording into widgets. Component details live besid
 | Capture | collector, recorder | Read the running game and write recordings. |
 | Format | replay | The `.battleplan` file, shared by every writer and reader. |
 | Game knowledge | engine, installed-content | Memory layouts of the game, and its installed content. |
-| Map | viewer | The native renderer process. |
+| Map | viewer | The native renderer process the desktop host starts for its maps; on its own it runs only headless tooling. |
 | App | dashboard, desktop, ui | Widget data products and the native data service, the Tauri host, the React interface. |
 
-The viewer executable hosts both the map and the dashboard data service, so a recording is opened once and shared by maps and widgets. The desktop host is the only crate that links Tauri.
+The viewer executable hosts both the map and the dashboard data service, so a recording is opened once and shared by maps and widgets. The desktop host is the only crate that links Tauri; it owns every setting, including the content folders, and sends the viewer what it needs.
 
 ## Data flow
 
@@ -39,4 +39,4 @@ Requests are admitted and cancellable; replies are fragmented. One reply is at m
 
 ## Checks
 
-From the repository root, run `cargo test -p dashboard -p replay-desktop`, `npm.cmd run check:ui` and `npm.cmd run test:ui` for affected changes. Frontend tests are pure node tests; Rust tests use synthetic replays. Native map embedding, throughput and memory still need the desktop host exercised on a real recording before a claim about them.
+From the repository root, run `cargo test -p dashboard -p replay-desktop`, `npm.cmd run check:ui` and `npm.cmd run test:ui` for affected changes, and `cargo test -p dashboard -p replay-desktop --features slow-tests` before merging. Frontend tests are pure node tests; Rust tests use synthetic replays. Native map embedding, throughput and memory still need the desktop host exercised on a real recording before a claim about them.

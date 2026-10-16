@@ -6,9 +6,18 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[lib]
+doctest = false
+
+[features]
+# Tests that take more than about two seconds; see AGENTS.md.
+slow-tests = []
+# Test builds only: published files skip their disk flushes.
+test-support = []
+
 [dependencies]
 replay.workspace = true
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
-uuid = { workspace = true, features = ["v4"] }
+uuid = { workspace = true, features = ["v4", "serde"] }
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

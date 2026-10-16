@@ -1,3 +1,5 @@
+import { mergeSummaries } from '../../charts/chartSummary.ts';
+import type { PreparedResourceReply } from './useResourceBalance';
 import { clipToSpans } from '../../charts/series.ts';
 import type { Span } from '../../charts/series';
 import { drillHour } from '../../charts/drill/drillState.ts';
@@ -31,6 +33,11 @@ export function resourceCountryData(replies: readonly ResourceBalanceReply[], sp
     dealHours.push(...clipToSpans(reply.dealHours, coverage));
   }
   return { ...first, tag, series: [...series.values()].map(item => ({ ...item, runs: item.runs.sort((a, b) => a.firstHour - b.firstHour) })),
+    ...((first as PreparedResourceReply).summaries?.length ? { summaries: first.series.flatMap(series => {
+      const parts = replies.flatMap(reply => (reply as PreparedResourceReply).summaries?.filter(item => item.id === series.id) ?? []);
+      return parts.length ? [{ id: series.id, supply: mergeSummaries(parts.map(part => part.supply)), demand: mergeSummaries(parts.map(part => part.demand)),
+        parts: parts[0].parts.map((_part, index) => mergeSummaries(parts.map(part => part.parts[index]))), total: mergeSummaries(parts.map(part => part.total)) }] : [];
+    }) } : {}),
     trades, dealHours: dealHours.sort((a, b) => a.firstHour - b.firstHour), warnings: [...new Set(replies.flatMap(reply => reply.warnings))] };
 }
 

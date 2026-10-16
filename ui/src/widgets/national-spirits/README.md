@@ -6,7 +6,7 @@ The country’s current national spirits as game icons in acquisition order; cam
 
 ## Products it reads
 
-[`idea-history`](../../../../crates/dashboard/src/products/idea_history.rs) through [useIdeaHistory](../../dashboard/ideaHistory.ts), with [game-style idea tooltips](../../dashboard/useIdeaTooltips.ts).
+[`idea-history`](../../../../crates/dashboard-base/src/products/idea_history.rs) through [useIdeaHistory](../../dashboard/ideaHistory.ts), with [game-style idea tooltips](../../dashboard/useIdeaTooltips.ts).
 
 ## Settings
 

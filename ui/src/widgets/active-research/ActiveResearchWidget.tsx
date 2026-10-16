@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ArtFallback from '../../components/ArtFallback';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -8,8 +8,10 @@ import ListSkeleton from '../../components/Skeleton';
 import WidgetState from '../../components/WidgetState';
 import { rowJumpProps } from '../../charts/jump';
 import ProgressMeter from '../../charts/meter/ProgressMeter';
+import { PreparedLogCoverage } from '../../charts/log/LogList';
 import { hideTooltip, showTooltip } from '../../charts/tooltip';
 import { useChartTokens } from '../../charts/useChartTokens';
+import { useParityRows } from '../../dashboard/parityRows';
 import { contentTitle } from '../../dashboard/contentTitles';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
@@ -35,16 +37,19 @@ const NO_WARNINGS: string[] = [];
 /** One card per research slot open at the hour shown: what it researches, its
  * latest read progress, the game's estimate and idle slots' saved days. */
 export default function ActiveResearchWidget({ widget, runtime, active, onDiagnostics, headerSlot }: WidgetProps) {
+  const parity = useRef<HTMLElement>(null);
   const menu = useContextMenu('Active research actions');
   const owner = useId();
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const live = widget.time.mode === 'follow';
-  const { track, tag, data, error, retry } = useResearchReply(widget, runtime, active);
+  const { track, tag, data, error, retry, preparing } = useResearchReply(widget, runtime, active);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window?.lastHour;
   const { categories } = useChartTokens();
   const slots = useMemo(() => data && hour != null ? researchAt(data.history, hour) : null, [data, hour]);
   const cards = useMemo(() => slots && data && hour != null ? activeSlots(slots, coverageAt(data.history.coverage, hour), hour) : [], [slots, data, hour]);
+  if (import.meta.env.MODE === 'parity') useParityRows(parity, () => ({ kind: 'windowed', label: 'Active research', complete: true, total: cards.length,
+    rows: cards.map((card, index) => ({ index, key: `slot:${card.slot.index}`, item: card.kind === 'idle' ? { ...card, savedRaw: card.savedRaw.toString() } : card })) }));
   const looks = useMemo(() => data ? researchFolderLooks(data, historyTokens(data.history), categories) : new Map(), [data, categories]);
   const tokens = useMemo(() => [...new Set(cards.flatMap(card => card.kind === 'researching' ? [card.token] : []))], [cards]);
   const images = useTechnologyArtwork(runtime.client, track, tokens, active && !!data);
@@ -65,7 +70,7 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <div className="dash-empty" role="status">This time is outside the recording.</div>;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (!data || !slots) return <ListSkeleton label="Loading research…" />;
+  if (!data || !slots) return preparing ? <PreparedLogCoverage coverage={null} /> : <ListSkeleton label="Loading research…" />;
   if (!cards.length) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span>
     <p>No research slots recorded at {researchDate(hour)}.</p></div>;
   const shownSlot = shown ? slots.find(slot => slot.index === shown.slotIndex) : undefined;
@@ -107,7 +112,7 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
         breakdown.openAt(() => target.isConnected ? target.getBoundingClientRect() : null); }}>
       {body}<Icon name="chevron-down" className="active-card-chevron" aria-hidden="true" /></button>;
   };
-  return <section key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} className="active-research" aria-label="Active research">
+  return <section key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} className="active-research" aria-label="Active research" ref={parity}>
     {header}
     <div className="active-cards">{cards.map(card)}</div>
     <Popover menu={breakdown} className="research-popover" aria-label="Research time breakdown">

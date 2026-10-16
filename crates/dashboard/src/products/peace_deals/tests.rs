@@ -9,7 +9,7 @@ use replay::{
 
 const CAMPAIGN: &[u8] = b"derived-peace-fixture";
 
-fn frame(hour: i32, count: u32, settled: bool, conferences: &[u64]) -> DecodedFrame {
+pub(crate) fn frame(hour: i32, count: u32, settled: bool, conferences: &[u64]) -> DecodedFrame {
     let mut tables = std::array::from_fn(|_| TableView::Unavailable {
         reason: "outside peace fixture".into(),
     });
@@ -156,7 +156,7 @@ fn frame(hour: i32, count: u32, settled: bool, conferences: &[u64]) -> DecodedFr
     }
 }
 
-fn replay(frames: Vec<DecodedFrame>) -> Replay {
+pub(crate) fn replay(frames: Vec<DecodedFrame>) -> Replay {
     let first = frames[0].hour;
     let identity = Identity {
         game_version: "synthetic".into(),
@@ -205,7 +205,7 @@ fn scan(frames: Vec<DecodedFrame>) -> PeaceDealsReply {
     scan_branch(&replay(frames), 1, &AtomicBool::new(false)).unwrap()
 }
 
-fn settled_row() -> PeaceSettlementRow {
+pub(super) fn settled_row() -> PeaceSettlementRow {
     PeaceSettlementRow {
         sequence: 8,
         conference: Some(9),
@@ -236,7 +236,7 @@ fn settled_row() -> PeaceSettlementRow {
         ..Default::default()
     }
 }
-fn with_settlement(mut frame: DecodedFrame, row: PeaceSettlementRow) -> DecodedFrame {
+pub(super) fn with_settlement(mut frame: DecodedFrame, row: PeaceSettlementRow) -> DecodedFrame {
     frame.tables[TableId::PeaceSettlements.index()] =
         TableView::Complete(TableRows::PeaceSettlements(vec![row])).into();
     frame.tables[TableId::LexicalTokens.index()] =
@@ -482,17 +482,6 @@ fn compressed_tag_history_never_fills_a_missing_event_hour() {
 }
 
 #[test]
-fn conference_scan_has_no_card_cap_and_transport_refuses_oversized_replies() {
-    let conferences: Vec<_> = (1..=100_001).collect();
-    let reply = scan(vec![frame(100, 0, false, &conferences)]);
-    assert_eq!(reply.deals.len(), conferences.len());
-    let cancelled = AtomicBool::new(false);
-    assert!(crate::transport::json_len(&reply, crate::transport::MAX_REPLY_BYTES).is_none());
-    let error = crate::transport::bounded_json(&reply, &cancelled).unwrap_err();
-    assert!(error.contains("transport byte budget"), "{error}");
-}
-
-#[test]
 fn exact_action_tags_survive_missing_derived_inputs_without_using_publication_hour_tags() {
     for missing in [TableId::States, TableId::WarRelations] {
         let mut event_hour = frame(101, 5, true, &[]);
@@ -625,21 +614,6 @@ fn exact_victory_points_require_their_own_complete_province_read_and_do_not_carr
         assert_eq!(*victory_points_read_hour, None);
         assert_eq!(deal.transfers.links[0].victory_points, None);
     }
-}
-
-#[test]
-fn peace_action_localisation_changes_invalidate_frontend_content_caches() {
-    assert!(
-        crate::products::find(PeaceDeals::KEY)
-            .unwrap()
-            .content_dependent
-    );
-    let contract = crate::typescript_contract();
-    let declaration = contract
-        .lines()
-        .find(|line| line.starts_with("export const CONTENT_PRODUCTS"))
-        .unwrap();
-    assert!(declaration.contains("\"peace-deals\""));
 }
 
 #[test]
@@ -832,6 +806,10 @@ fn truncated_event_tables_preserve_intact_conferences_and_report_lost_events() {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn exact_mod_action_names_follow_recorded_content_order() {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../.cargo-target/w4-peace-fixtures")
@@ -1338,19 +1316,7 @@ fn unresolved_owners_withhold_their_state_without_erasing_other_transfers() {
 
 #[test]
 fn new_subject_released_country_and_government_changes_are_neutral_dated_evidence() {
-    let mut before = frame(100, 3, false, &[9]);
-    let TableView::Complete(TableRows::States(states)) =
-        &mut *before.tables[TableId::States.index()]
-    else {
-        panic!()
-    };
-    states[2].owner = 1001;
-    let TableView::Complete(TableRows::CountryCounterInputs(counters)) =
-        &mut *before.tables[TableId::CountryCounterInputs.index()]
-    else {
-        panic!()
-    };
-    counters[2].owned_state_count = 0;
+    let before = release_before(&[9]);
     let mut after = frame(101, 3, true, &[]);
     *after.tables[TableId::Subjects.index()] =
         TableView::Complete(TableRows::Subjects(vec![SubjectRow {
@@ -1624,19 +1590,7 @@ fn replaced_native_countries_do_not_inherit_derived_war_end_evidence() {
 
 #[test]
 fn replacement_holders_are_not_derived_as_released_countries() {
-    let mut before = frame(100, 3, false, &[9]);
-    let TableView::Complete(TableRows::States(states)) =
-        &mut *before.tables[TableId::States.index()]
-    else {
-        panic!()
-    };
-    states[2].owner = 1001;
-    let TableView::Complete(TableRows::CountryCounterInputs(counters)) =
-        &mut *before.tables[TableId::CountryCounterInputs.index()]
-    else {
-        panic!()
-    };
-    counters[2].owned_state_count = 0;
+    let before = release_before(&[9]);
     let mut after = frame(101, 3, true, &[]);
     let TableView::Complete(TableRows::Countries(countries)) =
         &mut *after.tables[TableId::Countries.index()]
@@ -1781,6 +1735,10 @@ fn branch_validation_cancellation_and_the_per_source_cache_are_explicit() {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn mod_localisation_renames_the_discovered_state_action_and_refuses_unsupported_text() {
     // Fixture files stay inside this worktree's ignored build directory.
     let scratch = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1897,19 +1855,7 @@ fn earlier_existence_is_kept_even_when_war_inputs_are_missing() {
     *early.tables[TableId::WarRelations.index()] = TableView::Unavailable {
         reason: "not read".into(),
     };
-    let mut before = frame(100, 3, false, &[9]);
-    let TableView::Complete(TableRows::States(states)) =
-        &mut *before.tables[TableId::States.index()]
-    else {
-        panic!()
-    };
-    states[2].owner = 1001;
-    let TableView::Complete(TableRows::CountryCounterInputs(counters)) =
-        &mut *before.tables[TableId::CountryCounterInputs.index()]
-    else {
-        panic!()
-    };
-    counters[2].owned_state_count = 0;
+    let before = release_before(&[9]);
     let result = scan(vec![early, before, frame(101, 3, true, &[])]);
     assert!(
         result.deals[0]
@@ -1932,6 +1878,10 @@ fn recording_past_former_card_cap_keeps_every_card_before_budget_refusal() {
             .count(),
         conferences.len()
     );
+    let cancelled = AtomicBool::new(false);
+    assert!(crate::transport::json_len(&reply, crate::transport::MAX_REPLY_BYTES).is_none());
+    let error = crate::transport::bounded_json(&reply, &cancelled).unwrap_err();
+    assert!(error.contains("transport byte budget"), "{error}");
     let error = admitted(reply).unwrap_err();
     assert!(error.to_string().contains("transport budget"));
     assert!(error.to_string().contains("no entries were dropped"));

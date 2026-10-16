@@ -27,10 +27,9 @@ export interface DesktopState {
 export interface MapOptions { country: string | null; fog: boolean }
 export interface ContentFolders { game: string; user: string; contentReady: boolean }
 export interface MapDetails extends ContentFolders { error: string | null; path: string | null; branch: string | null; hour: number | null; messages: string[] }
-export type MapAction = { kind: 'configure'; options: MapOptions } | { kind: 'inspect' } | { kind: 'folders'; game: string; user: string } | { kind: 'unload'; path: string };
+export type MapAction = { kind: 'configure'; options: MapOptions } | { kind: 'inspect' } | { kind: 'unload'; path: string };
 export function mapAction(action: MapAction): Promise<void> { requireDesktop(); return invoke('map_action', { action }); }
 export function exportMap(viewId?: string): Promise<void> { requireDesktop(); return invoke('export_map', { viewId: viewId ?? null }); }
-export function chooseContentFolder(kind: 'game' | 'user', initial: string): Promise<string | null> { requireDesktop(); return invoke('choose_content_folder', { kind, initial }); }
 
 export interface MapBounds {
   x: number;

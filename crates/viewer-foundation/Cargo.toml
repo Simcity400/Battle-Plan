@@ -1,0 +1,30 @@
+[package]
+name = "viewer-foundation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+slow-tests = []
+test-support = ["installed-content/test-support"]
+
+[dependencies]
+replay.workspace = true
+engine.workspace = true
+installed-content.workspace = true
+installed-content-save.workspace = true
+dashboard-core.workspace = true
+dashboard-text.workspace = true
+shader-pipeline = { path = "../shader-pipeline" }
+eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts"] }
+bytemuck = { workspace = true, features = ["derive"] }
+pollster.workspace = true
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[dev-dependencies]
+installed-content = { workspace = true, features = ["test-support"] }

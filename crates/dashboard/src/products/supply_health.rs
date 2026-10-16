@@ -1,15 +1,15 @@
 //! Division supply-icon states, counted at their hourly reads.
 //!
-//! Low supply is false for naval transfer (the pointer at +2F8), otherwise
-//! effective supply < NMilitary.LOW_SUPPLY. Stored signed qwords hold the
-//! received fixed5 fraction (+40), maximum (+600) and remaining (+610) grace.
+//! Low supply is false during naval transfer, otherwise
+//! effective supply < NMilitary.LOW_SUPPLY. Stored signed operands hold the
+//! received fixed5 fraction, maximum grace and remaining grace.
 //! Maximum grace starts with SUPPLY_GRACE (integer hours) * 100000; the hourly
-//! division update passes remaining grace (+610) and its companion (+608) to
+//! division update passes remaining grace and its companion to
 //! the grace updater. We read stored values, never recreate
 //! their update or make them fresher. DivisionStatus records these exact
 //! signed i64 operands (supply_ratio, supply_grace_maximum/remaining) and
 //! DivisionLandInputs the naval-transfer presence, both from the same hour's
-//! authenticated DivisionSeed (engine::carmy), keyed by full u64 handle,
+//! authenticated division seed, keyed by full u64 handle,
 //! hourly in cadence.rs.
 //!
 //! The icon substitutes fixed5 one when supply is not low; otherwise it uses the
@@ -44,31 +44,36 @@
 //! ownership facts. Decoded builder timings exclude fixture mutations/encoding.
 //! Wire timings average 21 real 24-hour block scans, with 5% grace-row churn
 //! and one manpower contributor per division, including selected-table decode.
-//! Selection timings include complete reply byte counting; cached nine-year
-//! histories scan no hours. New tags scan the branch once, sharing a per-branch
-//! in-flight slot outside the cache mutex. Only current-branch country histories
-//! remain cached, without a country/entry budget. The complete selected reply
-//! refuses only past MAX_PRODUCT_REPLY_BYTES.
+//! Selected replies read prepared runs and summaries, with progressive samples
+//! beyond accepted coverage. The complete selected reply refuses only past
+//! MAX_PRODUCT_REPLY_BYTES.
 
 use super::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, recorded_rows, validate_tag};
+use std::collections::BTreeMap;
+
 use crate::{
     Source, content,
-    metadata::{IdentityTrack, check_cancel, slot_read, tagged_countries, validate_campaign},
+    metadata::{IdentityTrack, slot_read, tagged_countries},
     transport::json_len,
 };
+#[cfg(test)]
+use replay::rows::DivisionLandInputsRow;
 use replay::{
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder, ViewIdentity},
-    rows::{DivisionLandInputsRow, DivisionRow, DivisionStatusRow, Recorded, TableId, tables},
+    frame::{DecodedFrame, ViewIdentity},
+    rows::{DivisionRow, DivisionStatusRow, Recorded, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    io,
-    sync::{Arc, Mutex, Weak, atomic::AtomicBool},
-    time::Duration,
-};
+use std::{collections::HashMap, io, sync::atomic::AtomicBool};
 use ts_rs::TS;
+#[cfg(test)]
+use {
+    crate::metadata::{check_cancel, validate_campaign},
+    replay::{container::Replay, frame::FrameDecoder},
+    std::{
+        sync::{Arc, Mutex, Weak},
+        time::Duration,
+    },
+};
 
 pub struct SupplyHealth;
 
@@ -79,7 +84,7 @@ pub struct SupplyHealthParams {
     pub tags: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SupplyHealthRun {
     pub first_hour: i32,
@@ -91,7 +96,7 @@ pub struct SupplyHealthRun {
     pub in_supply: u32,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SupplyHealthSeries {
     pub tag: String,
@@ -110,6 +115,16 @@ pub struct SupplyHealthReply {
     pub missing_inputs: Vec<String>,
     pub series: Vec<SupplyHealthSeries>,
     pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub summaries: Option<Vec<SupplyHealthDisplay>>,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SupplyHealthDisplay {
+    pub tag: String,
+    pub values: Vec<crate::prepared_chart::ChartSummary>,
 }
 
 /// One division's supply-icon operands for an hour: DivisionStatus's received
@@ -123,9 +138,7 @@ struct Supply {
 }
 
 impl Supply {
-    /// None when either table lacks the division or the grace was not
-    /// recorded; such a division cannot be classified.
-    fn of(status: &DivisionStatusRow, land: &DivisionLandInputsRow) -> Option<Self> {
+    fn parts(status: &DivisionStatusRow, naval_transfer: bool) -> Option<Self> {
         let (Recorded::Value(maximum_grace), Recorded::Value(remaining_grace)) =
             (status.supply_grace_maximum, status.supply_grace_remaining)
         else {
@@ -135,12 +148,12 @@ impl Supply {
             received: status.supply_ratio,
             maximum_grace,
             remaining_grace,
-            naval_transfer: land.naval_transfer,
+            naval_transfer,
         })
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 struct Defines {
     grace: i32,
     low: i64,
@@ -153,7 +166,10 @@ pub(crate) fn check_content(layers: &installed_content::ResolvedLayers) -> io::R
 }
 
 fn content_defines(layers: &installed_content::ResolvedLayers) -> io::Result<Defines> {
-    Defines::read(&installed_content::defines::read(layers)?)
+    layers
+        .derived::<crate::catalogue::CachedResult<Defines>>()
+        .get_or_init(|| Defines::read(&installed_content::defines::read(layers)?))
+        .map(|defines| *defines)
 }
 
 impl Defines {
@@ -230,65 +246,85 @@ fn owner(row: &DivisionRow) -> u32 {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Seen {
     identity: IdentityTrack,
     open: bool,
 }
 
+#[derive(Default, Serialize, Deserialize)]
 struct Scan {
     /// The recording's format, which dates its daily tables
     /// ([`crate::metadata::slot_read`]).
+    #[serde(skip)]
     format: replay::format::FormatVersion,
     series: Vec<SupplyHealthSeries>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
     selected: HashMap<String, usize>,
     seen: Vec<Seen>,
+    #[serde(skip)]
     identities: Vec<Option<(u32, u32)>>,
+    #[serde(skip)]
     owners: HashMap<u32, Option<usize>>,
+    #[serde(skip)]
     countries_from: Option<[ViewIdentity; 2]>,
-    country_keys: Vec<(u32, u32, Vec<u8>)>,
-    counts_from: Option<[ViewIdentity; 3]>,
+    #[serde(skip)]
+    country_keys: Option<crate::metadata::CountryKeys>,
+    #[serde(skip)]
     roster_from: Option<ViewIdentity>,
+    #[serde(skip)]
     roster_keys: Vec<(u64, u32)>,
+    #[serde(skip)]
     members: Vec<(u64, usize)>,
+    #[serde(skip)]
     owners_known: bool,
+    #[serde(skip)]
+    transfers: HashMap<u64, bool>,
+    #[serde(skip)]
+    status_inputs: HashMap<u64, Option<Supply>>,
+    #[serde(skip)]
+    populated: std::collections::BTreeSet<usize>,
+    #[serde(skip)]
+    observed: Vec<usize>,
+    #[serde(skip)]
     counts: Vec<Option<[u32; 3]>>,
     available: bool,
+    frontier: Option<i32>,
+    #[serde(skip)]
+    current: Vec<usize>,
+    #[serde(skip)]
+    departed: Vec<usize>,
+    #[serde(skip)]
+    valid: Option<bool>,
+    #[serde(skip)]
+    rejoined: bool,
+    #[cfg(test)]
+    #[serde(skip)]
+    work: crate::prepared::observer_tests::Work,
 }
 
 impl Scan {
-    fn new(tags: &[String]) -> Self {
-        let mut selected = HashMap::new();
-        let mut series = Vec::new();
+    fn add_tags<'a>(&mut self, tags: impl IntoIterator<Item = &'a String>) {
         for tag in tags {
-            if selected.contains_key(tag) {
+            if self.selected.contains_key(tag) {
                 continue;
             }
-            selected.insert(tag.clone(), series.len());
-            series.push(SupplyHealthSeries {
+            self.selected.insert(tag.clone(), self.series.len());
+            self.series.push(SupplyHealthSeries {
                 tag: tag.clone(),
                 identities: None,
                 runs: Vec::new(),
             });
+            self.seen.push(Seen::default());
+            self.identities.push(None);
+            self.counts.push(None);
+            self.countries_from = None;
         }
-        let len = series.len();
-        Self {
-            format: replay::format::FormatVersion::default(),
-            series,
-            selected,
-            seen: (0..len).map(|_| Seen::default()).collect(),
-            identities: vec![None; len],
-            owners: HashMap::new(),
-            countries_from: None,
-            country_keys: Vec::new(),
-            counts_from: None,
-            roster_from: None,
-            roster_keys: Vec::new(),
-            members: Vec::new(),
-            owners_known: false,
-            counts: vec![None; len],
-            available: false,
-        }
+    }
+    fn new(tags: &[String]) -> Self {
+        let mut scan = Self::default();
+        scan.add_tags(tags);
+        scan
     }
 
     fn countries(&mut self, frame: &DecodedFrame) -> io::Result<bool> {
@@ -308,50 +344,140 @@ impl Scan {
             .countries_from
             .as_ref()
             .is_some_and(|previous| previous[1].is(&frame.tables[TableId::CountryLinks.index()]))
-            && countries.len() == self.country_keys.len()
-            && countries
-                .iter()
-                .zip(&self.country_keys)
-                .all(|(row, (id, slot, tag))| {
-                    (row.id, row.canonical_slot) == (*id, *slot) && row.tag == *tag
-                })
+            && self.country_keys.as_ref().is_some_and(|keys| {
+                #[cfg(test)]
+                {
+                    self.work.row_visits += countries.len();
+                }
+                keys.same(countries)
+            })
         {
             self.countries_from = Some(ids.map(|id| frame.tables[id.index()].identity()));
             return Ok(false);
         }
-        self.identities.fill(None);
+        self.identities.resize(self.series.len(), None);
+        self.counts.resize(self.series.len(), None);
         let tagged = tagged_countries(countries, links);
-        let mut slots = HashMap::with_capacity(self.selected.len());
-        for (tag, &index) in &self.selected {
-            if let Some((country, slot)) =
-                tagged.get(tag.as_bytes()).and_then(|lookup| lookup.found())
+        self.seal();
+        let previous = std::mem::take(&mut self.current);
+        let mut present = std::collections::HashSet::new();
+        let mut slots = HashMap::new();
+        for (tag, lookup) in tagged {
+            #[cfg(test)]
             {
+                self.work.row_visits += 1;
+            }
+            let Some(&index) = std::str::from_utf8(tag)
+                .ok()
+                .and_then(|tag| self.selected.get(tag))
+            else {
+                continue;
+            };
+            present.insert(index);
+            self.current.push(index);
+            self.identities[index] = None;
+            if let Some((country, slot)) = lookup.found() {
                 self.identities[index] = Some((slot, country.id));
                 slots.insert(slot, index);
             }
+        }
+        self.departed = previous
+            .into_iter()
+            .filter(|index| !present.contains(index))
+            .collect();
+        for &index in &self.departed {
+            self.identities[index] = None;
+            self.counts[index] = None;
         }
         self.owners = links
             .iter()
             .map(|link| (link.id, slots.get(&link.canonical_slot).copied()))
             .collect();
-        self.country_keys = countries
-            .iter()
-            .map(|row| (row.id, row.canonical_slot, row.tag.clone()))
-            .collect();
+        self.country_keys = Some(crate::metadata::CountryKeys::read(countries));
         self.countries_from = Some(ids.map(|id| frame.tables[id.index()].identity()));
         Ok(true)
     }
 
     /// The real hourly builder, also exercised by the nine-year scale fixture.
     fn observe(&mut self, frame: &DecodedFrame, defines: Defines) -> io::Result<()> {
-        let hour = frame.hour;
-        let countries = self.countries(frame);
-        if countries.is_err() {
-            self.identities.fill(None);
-            self.countries_from = None;
+        self.observe_changes(frame, defines, None).map(|_| ())
+    }
+
+    fn seal(&mut self) {
+        let Some(hour) = self.frontier else {
+            return;
+        };
+        for &index in &self.current {
+            #[cfg(test)]
+            {
+                self.work.history_visits += 1;
+            }
+            let seen = &mut self.seen[index];
+            seen.identity.advance(hour);
+            if seen.open
+                && let Some(run) = self.series[index].runs.last_mut()
+            {
+                run.last_hour = hour;
+            }
         }
-        for (state, identity) in self.seen.iter_mut().zip(&self.identities) {
-            state.open &= state.identity.step(*identity, hour);
+    }
+
+    fn observe_changes(
+        &mut self,
+        frame: &DecodedFrame,
+        defines: Defines,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+    ) -> io::Result<bool> {
+        let hour = frame.hour;
+        self.identities.resize(self.series.len(), None);
+        self.counts.resize(self.series.len(), None);
+        self.departed.clear();
+        self.observed.clear();
+        // Publication seals these endpoints; restore rebuilds only the current
+        // open roster, before its native join is refreshed from the next frame.
+        if !self.rejoined && self.frontier.is_some() {
+            self.current = self
+                .seen
+                .iter()
+                .enumerate()
+                .filter_map(|(index, seen)| {
+                    (seen.open
+                        && self.series[index]
+                            .runs
+                            .last()
+                            .is_some_and(|run| Some(run.last_hour) == self.frontier))
+                    .then_some(index)
+                })
+                .collect();
+        }
+        self.rejoined = true;
+        let continuous = self
+            .frontier
+            .is_some_and(|last| last.checked_add(1) == Some(hour));
+        // Materialise only at a change, before a changed country roster closes
+        // holders. Unchanged frames touch the authenticated frontier alone.
+        let mut relevant = changes.is_none_or(|changes| {
+            [
+                TableId::Divisions,
+                TableId::DivisionLandInputs,
+                TableId::DivisionStatus,
+            ]
+            .iter()
+            .any(|id| changes.rows_changed[id.index()])
+        });
+        if !continuous {
+            self.seal();
+        }
+        let countries = self.countries(frame);
+        relevant |= !matches!(countries, Ok(false));
+        if countries.is_err() {
+            self.seal();
+            self.departed = std::mem::take(&mut self.current);
+            for &index in &self.departed {
+                self.identities[index] = None;
+                self.counts[index] = None;
+            }
+            self.countries_from = None;
         }
         let ids = [
             TableId::Divisions,
@@ -372,36 +498,39 @@ impl Scan {
             && status.is_ok()
             && land_present
             && read;
-        let same = matches!(countries, Ok(false))
-            && self.counts_from.as_ref().is_some_and(|previous| {
-                ids.iter()
-                    .zip(previous)
-                    .all(|(id, seen)| seen.is(&frame.tables[id.index()]))
-            });
-        if !valid {
-            self.counts.fill(None);
-            self.counts_from = None;
-        } else if !same {
-            for (counts, identity) in self.counts.iter_mut().zip(&self.identities) {
-                *counts = identity.map(|_| [0; 3]);
-            }
+        if !relevant && continuous && self.valid == Some(valid) {
+            self.frontier = Some(hour);
+            self.departed.clear();
+            return Ok(false);
+        }
+        let mut full = !continuous
+            || !matches!(countries, Ok(false))
+            || self.valid != Some(valid)
+            || changes.is_none();
+        self.valid = Some(valid);
+        let mut next = BTreeMap::<usize, Option<[u32; 3]>>::new();
+        if valid {
             let divisions = divisions?;
             let same_roster = matches!(countries, Ok(false))
                 && (self
                     .roster_from
                     .as_ref()
-                    .is_some_and(|from| from.is(&frame.tables[TableId::Divisions.index()]))
-                    || (divisions.len() == self.roster_keys.len()
+                    .is_some_and(|view| view.is(&frame.tables[TableId::Divisions.index()]))
+                    || divisions.len() == self.roster_keys.len()
                         && divisions
                             .iter()
                             .zip(&self.roster_keys)
-                            .all(|(row, key)| (row.id, owner(row)) == *key)));
+                            .all(|(row, key)| (row.id, owner(row)) == *key));
             if !same_roster {
+                let before = self.owners_known;
                 self.members.clear();
                 self.owners_known = true;
                 for division in divisions {
+                    #[cfg(test)]
+                    {
+                        self.work.row_visits += 1;
+                    }
                     let Some(index) = self.owners.get(&owner(division)) else {
-                        // An unresolved division might belong to any selected tag.
                         self.owners_known = false;
                         break;
                     };
@@ -409,25 +538,49 @@ impl Scan {
                         self.members.push((division.id, index));
                     }
                 }
+                full |= before != self.owners_known;
                 self.roster_keys = divisions.iter().map(|row| (row.id, owner(row))).collect();
             }
             self.roster_from = Some(frame.tables[TableId::Divisions.index()].identity());
-            if !self.owners_known {
-                self.counts.fill(None);
-            } else {
-                let land = land?;
-                let status = status?;
+            if changes
+                .is_none_or(|changes| changes.rows_changed[TableId::DivisionLandInputs.index()])
+            {
+                self.transfers = land?
+                    .iter()
+                    .map(|row| {
+                        #[cfg(test)]
+                        {
+                            self.work.row_visits += 1;
+                        }
+                        (row.division, row.naval_transfer)
+                    })
+                    .collect();
+            }
+            if changes.is_none_or(|changes| changes.rows_changed[TableId::DivisionStatus.index()]) {
+                self.status_inputs = status?
+                    .iter()
+                    .map(|row| {
+                        #[cfg(test)]
+                        {
+                            self.work.row_visits += 1;
+                        }
+                        (row.division, Supply::parts(row, false))
+                    })
+                    .collect();
+            }
+            if self.owners_known {
                 for &(handle, index) in &self.members {
-                    let row = land
-                        .binary_search_by_key(&handle, |row| row.division)
-                        .ok()
-                        .zip(
-                            status
-                                .binary_search_by_key(&handle, |row| row.division)
-                                .ok(),
-                        )
-                        .and_then(|(l, s)| Supply::of(&status[s], &land[l]));
-                    if let (Some(counts), Some(row)) = (&mut self.counts[index], row) {
+                    let row = self
+                        .status_inputs
+                        .get(&handle)
+                        .copied()
+                        .flatten()
+                        .zip(self.transfers.get(&handle));
+                    let counts = next
+                        .entry(index)
+                        .or_insert_with(|| self.identities[index].map(|_| [0u32; 3]));
+                    if let (Some(counts), Some((mut row, transfer))) = (counts.as_mut(), row) {
+                        row.naval_transfer = *transfer;
                         let bucket = match defines.frame(&row) {
                             3 => 0,
                             1 | 2 => 1,
@@ -437,15 +590,49 @@ impl Scan {
                             crate::invalid("Supply health division count overflow")
                         })?;
                     } else {
-                        self.counts[index] = None;
+                        *counts = None;
                     }
                 }
             }
-            self.counts_from = Some(ids.map(|id| frame.tables[id.index()].identity()));
         }
-        for ((series, seen), counts) in self.series.iter_mut().zip(&mut self.seen).zip(&self.counts)
-        {
-            let Some([no_supply, strained, in_supply]) = *counts else {
+        let populated = next
+            .keys()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let candidates: Vec<_> = if full {
+            self.current.clone()
+        } else {
+            self.populated.union(&populated).copied().collect()
+        };
+        self.populated = populated;
+        for index in candidates {
+            let after = next.remove(&index).unwrap_or_else(|| {
+                (valid && self.owners_known)
+                    .then_some(self.identities[index])
+                    .flatten()
+                    .map(|_| [0; 3])
+            });
+            if !full && self.counts[index] == after {
+                continue;
+            }
+            #[cfg(test)]
+            {
+                self.work.history_visits += 1;
+            }
+            let series = &mut self.series[index];
+            let seen = &mut self.seen[index];
+            if continuous && let Some(frontier) = self.frontier {
+                seen.identity.advance(frontier);
+                if seen.open
+                    && let Some(run) = series.runs.last_mut()
+                {
+                    run.last_hour = frontier;
+                }
+            }
+            seen.open &= seen.identity.step(self.identities[index], hour);
+            self.counts[index] = after;
+            self.observed.push(index);
+            let Some([no_supply, strained, in_supply]) = after else {
                 seen.open = false;
                 continue;
             };
@@ -467,7 +654,11 @@ impl Scan {
             }
             seen.open = true;
         }
-        Ok(())
+        for &index in &self.departed {
+            self.seen[index].open = false;
+        }
+        self.frontier = Some(hour);
+        Ok(true)
     }
 }
 
@@ -477,6 +668,7 @@ fn reply_too_large() -> io::Error {
     )
 }
 
+#[cfg(test)]
 fn scan(
     replay: &Replay,
     branch: u64,
@@ -535,6 +727,7 @@ fn reply(branch_id: String, scan: Scan, warnings: Vec<String>) -> io::Result<Sup
         },
         series: scan.series,
         warnings,
+        summaries: None,
     };
     ensure_reply(&reply)?;
     Ok(reply)
@@ -548,6 +741,7 @@ fn ensure_reply(reply: &SupplyHealthReply) -> io::Result<()> {
 }
 
 #[derive(Default)]
+#[cfg(test)]
 struct Cache {
     branch: Option<u64>,
     defines: Option<Defines>,
@@ -557,6 +751,7 @@ struct Cache {
     inputs: HashMap<u64, bool>,
 }
 
+#[cfg(test)]
 impl Cache {
     fn select_branch(&mut self, branch: u64) {
         self.branch = Some(branch);
@@ -575,6 +770,7 @@ impl Cache {
     }
 }
 
+#[cfg(test)]
 fn cached_scan(
     state: &Mutex<Cache>,
     branch: u64,
@@ -661,6 +857,7 @@ fn land_present(frame: &DecodedFrame) -> bool {
     )
 }
 
+#[cfg(test)]
 fn has_inputs(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<bool> {
     let selected = [TableId::Campaign, TableId::DivisionLandInputs];
     crate::blocks::scan_blocks(
@@ -705,6 +902,7 @@ impl Product for SupplyHealth {
             SupplyHealthRun::decl(),
             SupplyHealthSeries::decl(),
             SupplyHealthReply::decl(),
+            SupplyHealthDisplay::decl(),
         ]
     }
 
@@ -722,6 +920,7 @@ impl Product for SupplyHealth {
         Ok(())
     }
 
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -822,5 +1021,6 @@ impl Product for SupplyHealth {
     }
 }
 
+pub(crate) mod prepared;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

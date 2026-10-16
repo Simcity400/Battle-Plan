@@ -14,14 +14,14 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { countryCapitulationBadges } from '../../dashboard/countryCapitulations';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { useFactionColours } from '../../dashboard/FactionColours';
-import { factionNameReasonAt, factionLines, factionMembershipNote, factionNameAt, factionTotalsModel, factionTotalsRequest, validateFactionTotalsReply } from '../../dashboard/factionTotals';
+import { factionNameReasonAt, factionLines, factionMembershipNote, factionNameAt, factionTotalsModel, factionTotalsRequest } from '../../dashboard/factionTotals';
 import { territoryMeasureLabel } from '../../dashboard/territoryMeasure';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { aggregateGroupRuns, groupLabel, groupShareReason, resolveCountries, topCountries } from '../../dashboard/groups';
+import { groupLabel, groupShareReason, resolveCountries, topCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
+import { usePreparedFactionTotals } from '../../dashboard/preparedFactionTotals';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { NumericReply } from '../../dashboard/numericReply';
@@ -29,10 +29,13 @@ import { factionNumbers } from '../../charts/race/factionParts';
 import type { CountryGroupReply, FactionTotalsReply, TerritoryReply } from '../../generated/dashboard';
 import { toHex } from '../../shell/appearance/color';
 import { definition, OPTIONS } from './definition';
-import { formatTerritory, MEASURES, measureOf, ruleOf, territoryCountryLines, territoryLegend, territoryModel, territoryNote, territoryRequest, territoryShareKeys, TERRITORY_PRESENTATION, territorySegmentAt, territoryWarnings, validateTerritoryReply } from './territoryData';
+import { formatTerritory, MEASURES, measureOf, ruleOf, territoryCountryLines, territoryLegend, territoryModel, territoryNote, territoryRequest, territoryShareKeys, TERRITORY_PRESENTATION, territorySegmentAt, territoryWarnings } from './territoryData';
 import { useRaceTooltip } from '../../charts/race/useRaceTooltip';
 import { CHART_LAYOUT } from '../../charts/tokens';
 import TerritoryShare from './TerritoryShare';
+import { usePreparedTerritory } from './preparedTerritory';
+import { useParityRows } from '../../dashboard/parityRows';
+import { useRef } from 'react';
 import '../../charts/race/countryRace.css';
 
 const NO_WARNINGS: string[] = [];
@@ -86,12 +89,14 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groupReply.data, lastHour, definition.countries.max, true),
     [widget.countries, fallback, groupReply.data, lastHour]);
   const params = track ? factions ? { branchId: track.branch.id, tags: [], top: null } : territoryRequest(track.branch.id, resolved, measure, rule) : null;
-  const request = track && params && (view === 'share' || (!factions && (params.top || params.tags.length)))
-    ? { sourceId: track.source.id, revision: track.source.revision, product: 'territory', params } : null;
-  const countryProduct = useProduct<TerritoryReply>(runtime.client, request, active, validateTerritoryReply);
+  const prepared = usePreparedTerritory(runtime.client,track,params,measure,rule,moment,
+    active && (view==='share' || !factions && !!params && !!(params.top || params.tags.length)),resolved.membership ?? undefined,aggregate && view!=='share' && !factions,resolved.unobserved);
+  const countryProduct = prepared;
+  const parityRoot=useRef<HTMLDivElement>(null);
+  useParityRows(parityRoot,()=>({kind:'chart',label:'Territory values',complete:!!countryProduct.data,total:countryProduct.data?.series.length ?? 0,
+    hour:moment,rows:countryProduct.data?.series.map(series=>({tag:series.tag,values:runAt(series.runs,moment)?.values ?? null})) ?? []}));
   const factionParams = track ? factionTotalsRequest(track.branch.id, widget.countries, { kind: 'territory', measure, rule }, definition.countries.max) : null;
-  const factionRequest = track && factionParams ? { sourceId: track.source.id, revision: track.source.revision, product: 'faction-totals', params: factionParams } : null;
-  const factionProduct = useProduct<FactionTotalsReply>(runtime.client, factionRequest, active, validateFactionTotalsReply);
+  const factionProduct = usePreparedFactionTotals(runtime.client, track, factionParams, moment, active && factions, extent, undefined, false);
   const { error, retry } = factions ? factionProduct : countryProduct;
   const worldStore = useMemo(() => new NumericReply<TerritoryReply>(), [runtime.client]);
   const data = factions ? worldStore.update(numericKey, countryProduct.data, reply => ({ ...reply, warnings: [] })) : countryProduct.data;
@@ -105,12 +110,9 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
     [model, resolved, range, aggregate, view]);
   const lines = useMemo(() => {
     if (factions) return factionLines(factionModel, range);
-    if (!aggregate || view === 'share') return countryLines.filter(line => line.runs.length);
-    const members = resolved.top != null && model ? { ...resolved, tags: model.tags,
-      membership: new Map(model.tags.map(tag => [tag, (model.series.get(tag)!.membership ?? []).map(span => ({ ...span, tag }))])) } : resolved;
-    const runs = aggregateGroupRuns(countryLines, members, range);
-    return runs.length ? [{ tag: GROUP_KEY, runs }] : [];
-  }, [factions, factionModel, aggregate, view, countryLines, resolved, model, range]);
+    if (!aggregate || view === 'share') return countryLines.filter(line => view==='lines' || line.runs.length || prepared.lineSummaries.get(line.tag)?.buckets.some(Boolean));
+    return view==='lines' || prepared.sumRuns.length ? [{tag:GROUP_KEY,runs:prepared.sumRuns}] : [];
+  }, [factions, factionModel, aggregate, view, countryLines, resolved, model, range,prepared.sumRuns,prepared.lineSummaries]);
   const series = useMemo(() => raceSeriesIndex(lines), [lines]);
   const badges = useMemo(() => [...countryCapitulationBadges(groupReply.data,
     !aggregate && view === 'lines' && model ? lines.flatMap(line => {
@@ -173,7 +175,7 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
   if (!sourceData || (factions ? !factionModel : !model) || ((grouped || factions) && !groupData) || (view === 'share' && !data)) return <WidgetState kind="loading" label="Loading territory…" />;
   const unavailable = factions ? factionData?.unavailableReason : measure === 'area' ? data?.areaReason : null;
   if (unavailable) return <WidgetState kind="unavailable" message={measure === 'area' ? 'Map area is unavailable.' : 'Territory is unavailable.'} />;
-  if (!lines.length && view !== 'share') return <WidgetState kind="unavailable" message="Territory totals are unavailable for this selection." />;
+  if (!lines.length && view !== 'share' && view!=='lines') return <WidgetState kind="unavailable" message="Territory totals are unavailable for this selection." />;
   if (factions && factionLooks.loading && !shareFactionColours.size) return <WidgetState kind="loading" label="Loading faction colours…" />;
   if (factions && !lines.every(line => shareFactionColours.has(line.tag))) return <WidgetState kind="unavailable" message={factionColourError ? 'Couldn’t load faction colours.' : 'Faction colours are unavailable.'} />;
   const measureName = MEASURES.find(item => item.value === measure)!.label;
@@ -189,7 +191,7 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
     }));
     const reason = groupReason ?? (factions ? null : shareColourReason(shareTags, tag => shareColours.get(tag)));
     const shareColour = factions ? colorOf : (tag: string) => shareColours.get(tag)!;
-    return <div className="country-race">
+    return <div ref={parityRoot} className="country-race">
       <div className="country-race-chart" onPointerLeave={() => showTip(null)}>
         <TerritoryShare key={`${track.source.id}:${track.branch.id}:${measure}:${rule}`} series={series} worldReply={data!} measure={measure} rule={rule}
           hour={moment} count={shareCount} nameOf={factions ? nameOf : looks.name} countryFlagOf={tag => ({
@@ -205,10 +207,12 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
       </div>{menu.menu}
     </div>;
   }
-  return <CountryRaceView runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead}
+  return <div ref={parityRoot} className="country-race"><CountryRaceView runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead}
     moment={moment} slots={slots} ranked={entries} lines={lines} segmentAt={segmentAt} countryTags={shownTags}
     entityLooks={entityLooks} lineLegendLabel={territoryLegend(false).label}
     badges={badges}
+    lineSummaries={prepared.lineSummaries.size ? prepared.lineSummaries : undefined} onSummaryView={prepared.onSummaryView} onReachHour={prepared.onHoverHour}
+    navigation={prepared} pickOwner={prepared.owner}
     label="Territory" empty={`Not recorded on ${dayLabel(moment)}.`} formatValue={formatTerritory}
     labels={{ race: `Territory, ${countName}, ${dayLabel(moment)}`, lines: `Territory over time, ${countName}`, actions: 'Territory actions' }}
     presentation={{ ...TERRITORY_PRESENTATION, countryLooks: !aggregate, linePadding: CHART_LAYOUT.countryEndLabels }}
@@ -221,5 +225,5 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
     }} lineTooltip={(hour, _tags, labelAt, colour) => {
       return [{ ...seriesTooltip(series, hour, aggregate ? () => ({ name: totalName }) : labelAt(hour),
         colour, formatTerritory, dayLabel(hour), countName, !aggregate), note: territoryNote(measure) }];
-    }} />;
+    }} /></div>;
 }

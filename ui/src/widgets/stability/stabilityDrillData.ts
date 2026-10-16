@@ -5,7 +5,7 @@ import type { Breakdown, DrillAction } from '../../charts/drill/drillState';
 import { clipRuns, isMember } from '../../dashboard/groups.ts';
 import { percentRuns, rawAt } from './stabilityData.ts';
 import type { MembershipRun } from '../../generated/dashboard';
-import { clipToSpans, stretchAt, stretchStarts } from '../../charts/series.ts';
+import { clipToSpans, stretchAt, stretchStarts, runAt } from '../../charts/series.ts';
 import type { Run, Span } from '../../charts/series';
 import type { WidgetSpec, WidgetTime } from '../../dashboard/model';
 import type { CountryStabilityReply, StabilityPartsReply } from '../../generated/dashboard';
@@ -84,7 +84,8 @@ export function stabilityLookSegments(reply: CountryStabilityReply | undefined) 
   ]]));
   return (tag: string, hour: number): number | null => {
     const starts = index.get(tag)?.flatMap(({ runs, starts }) => {
-      const start = stretchAt(runs, starts, hour);
+      const reached = runAt(runs, hour) as (typeof runs[number] & { segmentFirstHour?: number }) | null;
+      const start = reached?.segmentFirstHour ?? stretchAt(runs, starts, hour);
       return start === null ? [] : [start];
     }) ?? [];
     return starts.length ? Math.max(...starts) : null;

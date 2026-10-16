@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isValidElement } from 'react';
+import { createElement, isValidElement } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
@@ -43,7 +43,7 @@ function button(node: ReactNode, label: string): ReactElement<{ onClick: () => v
   return node.type === 'button' && node.props.children === label ? node as ReactElement<{ onClick: () => void }> : button(node.props.children, label);
 }
 
-test('registered politics and losses pins date their native country headers to local picks and Follow after remount', async () => {
+test('registered politics and losses pins retain legacy native-holder fixtures through local picks, Follow and remount', async () => {
   type Cell = { value?: unknown; deps?: readonly unknown[] };
   const state = { cells: [] as Cell[], cursor: 0, effects: [] as (() => unknown)[], clock: 9,
     header: undefined as { hour: number | null; reason: string | null; label: { name: string; flag?: string } | null } | undefined,
@@ -72,6 +72,11 @@ test('registered politics and losses pins date their native country headers to l
       : typeof next === 'function' ? (next as (before: unknown) => unknown)(cell.value) : next; }];
   };
   const leaves: Record<string, string> = {
+    // This probe preserves the original complete numeric fixture while testing
+    // the real registration/body's native holder binding and dated headers.
+    // Prepared query transport and bounded geometry have separate real-hook fixtures.
+    '/widgets/stability/usePreparedPolitics.ts': `const data = ${JSON.stringify(values)};
+      export const usePreparedPolitics = () => ({data,summaryByTag:new Map(),retry(){},onSummaryView(){},onNavigateHour(){},hourLoaded:()=>true});`,
     '/dashboard/products.ts': `const values = ${JSON.stringify(values)}, balance = ${JSON.stringify(balance)}, parts = ${JSON.stringify(parts)},
       ledgers = ${JSON.stringify(ledgers)}, losses = ${JSON.stringify(losses)};
       export const useProduct = (_client, request, active, validate) => {
@@ -80,11 +85,15 @@ test('registered politics and losses pins date their native country headers to l
           : request.product === 'country-measure' ? {...balance, measure: request.params.measure}
           : request.product === 'stability-parts' ? parts.find(row => row.tag === request.params.tag)
           : request.product === 'politics-ledger' ? ledgers.find(row => row.tag === request.params.tag)
-          : request.product === 'equipment-losses' ? losses : undefined;
+          : request.product === 'equipment-losses' ? {...losses, preparedReads:request.params.reads,
+            preparedHeadHour:request.params.headHour, preparedDetailHour:request.params.detailHour,
+            preparedFrom:request.params.from, preparedTo:request.params.to, preparedWidth:request.params.width} : undefined;
         return {data: reply && validate(reply), retry() {}};
       }; export const useProducts = (client, requests, active, validate) => ({data: requests.length
         ? requests.map(request => useProduct(client, request, active, validate).data) : undefined, retry() {}});
-      export const loadProduct = () => Promise.resolve({});`,
+      export const loadProduct = (_client, request) => Promise.resolve({...losses, preparedReads:request.params.reads,
+        preparedHeadHour:request.params.headHour, preparedDetailHour:request.params.detailHour,
+        preparedFrom:request.params.from, preparedTo:request.params.to, preparedWidth:request.params.width});`,
     '/dashboard/useCountryGroups.ts': `const data = ${JSON.stringify(groups)}; export const useCountryGroups = (_runtime, _track, active) => ({data: active ? data : undefined, retry() {}});`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__pinnedCountries.clock; export const usePlaybackSpeed = () => 24;',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({revision: 0,
@@ -133,8 +142,14 @@ test('registered politics and losses pins date their native country headers to l
       const body = kind === 'political-power' || kind === 'command-power' ? Widget(props) as ReactElement<{ config: unknown }> : null;
       const renderBody = () => {
         state.cursor = 0; state.effects = []; state.charts = []; state.detail = undefined; state.header = undefined;
-        state.node = body ? (body.type as (props: unknown) => ReactNode)({...props, config: body.props.config}) : Widget(props);
-        const html = renderToStaticMarkup(state.node);
+        // The fixture retains the original products and local pin state, while
+        // genuinely rendering the registered body gives every shared hook its
+        // React dispatcher, including inactive prepared-query hooks.
+        const Probe = () => {
+          state.node = body ? (body.type as (props: unknown) => ReactNode)({...props, config: body.props.config}) : Widget(props);
+          return state.node;
+        };
+        const html = renderToStaticMarkup(createElement(Probe));
         for (const effect of state.effects) effect();
         return html;
       };
@@ -143,7 +158,7 @@ test('registered politics and losses pins date their native country headers to l
       assert.equal(state.header!.label!.name, 'Y@12');
       assert.equal(state.header!.label!.flag, 'flag:Y@12');
       const pick = (hour: number) => kind === 'equipment-losses' ? state.charts.at(-1)!.onPick!(hour) : state.detail!.onPick(hour);
-      pick(5); renderBody();
+      pick(5); await new Promise(resolve => setImmediate(resolve)); renderBody();
       assert.equal(state.header!.hour, 5);
       assert.equal(state.header!.label!.name, 'X@5');
       button(state.node, 'Follow playback')!.props.onClick(); state.clock = 14; renderBody();
@@ -151,7 +166,7 @@ test('registered politics and losses pins date their native country headers to l
       assert.equal(state.header!.label!.name, 'Y@17', 'a reused X never replaces the selected actor');
       if (kind === 'stability') assert.deepEqual(state.detail!.reply!.stability.parts[0].runs.map(run => run.valueRaw), ['10000', '20000', '20000']);
       if (kind === 'political-power' || kind === 'command-power') assert.deepEqual(state.detail!.index!.reply.daily!.map(row => row.country), [10]);
-      if (kind === 'equipment-losses') assert.deepEqual(state.requests.filter(request => request.product === 'equipment-losses').at(-1)!.params.country,
+      if (kind === 'equipment-losses') assert.deepEqual((state.requests.filter(request => request.product === 'equipment-losses').at(-1)!.params.selection as {country:unknown}).country,
         {slot: 1, countryId: 10, originHour: 5});
       state.clock = 12; renderBody();
       assert.equal(state.header!.hour, 15);

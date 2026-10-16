@@ -36,6 +36,7 @@ import AirLossDrill from './AirLossDrill.tsx';
 import DatedCountryChip from './DatedCountryChip';
 import BombingDrill from './BombingDrill';
 import type { MilitaryAirReply } from '../generated/dashboard';
+import { useParityRows } from './parityRows';
 import './militaryAirLedger.css';
 
 const NO_WARNINGS: string[] = [];
@@ -108,6 +109,12 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   const extentStart = widget.time.mode === 'range' ? from : track?.branch.firstHour ?? from;
   const raceExtent = useMemo<[number, number]>(() => [extentStart, end], [extentStart, end]);
   const root = useRef<HTMLDivElement>(null);
+  useParityRows(root, () => ({ kind: 'chart', label: air ? 'Aircraft loss values' : 'Bombing damage values',
+    complete: !!data && !error && (!grouped || !!groups.data), total: selected.rows.length, from, hour,
+    rows: selected.rows.map(row => ({ tag: row.tag, identity: row.identity, segment: row.segment,
+      dealt: row.dealt.toString(), taken: row.taken.toString(), complete: row.complete })),
+    countries: data?.countries ?? [], leaves: data?.leaves ?? [], observed: data?.observed ?? [], incomplete: data?.incomplete ?? [],
+  }));
   const airKey = JSON.stringify([track?.source.id, track?.branch.id, widget.countries, widget.time, from,
     options.regions, options.causes, options.measure, options.view, options.show]);
   const airScope = useMemo(() => ({ client: runtime.client, key: airKey }), [runtime.client, airKey]);
@@ -206,7 +213,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
         ? { tag: widget.countries.tags[0], identity: pinnedIdentity } : null}
       from={from} hour={airAt} end={end} dealt={metric === 'dealt'} active={active} afterPlayhead={options.afterPlayhead === true} onPick={pickAirDay} pickOwner={airPickOwner} />
       : <WidgetState kind="empty" message="Choose a country to see its aircraft loss causes." />;
-    if (pinnedAir) return <div className="military-air-ledger">
+    if (pinnedAir) return <div ref={root} className="military-air-ledger">
       {!airActor && countrySlot && createPortal(<DatedCountryChip label={null} hour={airAt}
         reason={pinnedIdentity ? 'Country unavailable at this time.'
           : 'Saved country unavailable.'} />, countrySlot)}

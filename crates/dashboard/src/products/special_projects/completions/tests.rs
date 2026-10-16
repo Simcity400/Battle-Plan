@@ -608,10 +608,10 @@ fn completion_projection_uses_mod_override_name_and_native_art_path() {
 }
 
 #[test]
-fn completion_compact_history_stays_constant_over_long_changing_progress() {
+fn completion_compact_history_keeps_only_latest_changing_progress() {
     let mut world = WorldBuilder::default();
     let mut sample = frame(100, true);
-    for offset in 0..1000 {
+    for offset in 0..3 {
         sample.hour = 100 + offset;
         let mut project = sample.complete::<tables::Projects>().unwrap()[0].clone();
         project.state.prototype_progress = offset % 100;

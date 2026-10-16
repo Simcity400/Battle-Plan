@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react';
 import { ChipSet } from '../../components/ChipSet';
 import WidgetState from '../../components/WidgetState';
 import LogList from '../../charts/log/LogList';
+import type { LogListProps } from '../../charts/log/LogList';
 import { logCountryRequests } from '../../charts/log/logData';
 import type { LogRow } from '../../charts/log/logData';
 import { logSettings } from '../../charts/log/logOptions';
@@ -18,6 +19,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useParityPreparation } from '../../dashboard/parityPreparation';
 import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
 import { CATEGORIES, EVENT_ICONS, OPTIONS } from './definition';
 import { Icon } from '../../components/Icons';
@@ -53,7 +55,8 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
   const filter = useMemo<FeedFilter>(() => ({ categories, country: match.matches, firstHour: from, allCountries: !filtered }),
     [categories, match, from, filtered]);
   const filterKey = JSON.stringify([categoriesKey, widget.countries, fallback, from]);
-  const feed = useEventFeed(runtime, track, active && match.ready && inBranch, hour, filter, filterKey, widget.time.mode === 'follow');
+  const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
+  const feed = useEventFeed(runtime, track, active && match.ready && inBranch, hour, filter, filterKey, parity?.requested);
   const [visible, setVisible] = useState<readonly LogRow<FeedEvent>[]>(NO_ROWS);
   const wanted = useMemo(() => logCountryRequests(visible, row => ({ hour: row.item.event.nameHour,
     tags: [...eventTags(row.item.event), ...ideaTargetTags(row.item.item?.idea)] })), [visible]);
@@ -71,6 +74,18 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
       return { ...label, name: eventCountryName(tag, label) };
     };
   }, [labelAt]);
+  let paritySemantic: LogListProps<FeedEvent>['paritySemantic'];
+  let parityHistoryComplete = false;
+  if (import.meta.env.MODE === 'parity') {
+    parityHistoryComplete = !!feed.data && feed.pages.every(page => page.rows !== undefined && !page.error);
+    const complete = parity!.requested && parityHistoryComplete;
+    paritySemantic = { complete, preparation: { prepare: parity!.prepare, ready: () => complete,
+      error: () => feed.error ?? feed.pages.find(page => page.error)?.error ?? null },
+      item: row => ({ event: { ...row.item.event, id: undefined, item: undefined }, item: row.item.item === null ? null : { token: row.item.item.token,
+        name: row.item.item.name, description: row.item.item.description, idea: row.item.item.idea } }),
+      reads: { hour, pages: feed.pages.map(page => ({ key: page.key, firstHour: page.start, lastHour: page.end,
+        count: page.count, status: page.error ? 'failed' : page.rows !== undefined ? 'present' : 'pending', error: page.error ?? null })) } };
+  }
   const chips = CATEGORIES.map(category => ({ value: category.value, label: category.label,
     colour: tokens.categories[category.palette] }));
   // What this recording could not capture is reported with the warnings, never drawn in the feed.
@@ -92,6 +107,7 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
     {log.chips && <div className="log-chips"><ChipSet label="Event categories" chips={chips}
       selected={[...categories]} max={CATEGORIES.length} onToggle={key => setOption?.(key, !categories.has(key))} /></div>}
     <LogList key={feed.identity} pages={feed.pages} label="Event feed" density={log.density} months={log.months}
+      {...(import.meta.env.MODE === 'parity' ? { paritySemantic, parityHistoryComplete } : {})}
       animate={log.animate && widget.time.mode === 'follow'} playhead={widget.time.mode === 'follow' ? hour : null}
       columns={artwork ? COLUMNS : 'minmax(0, 1fr) auto'} onVisible={setVisible} onWantedPages={feed.onWantedPages}
       renderRow={row => {

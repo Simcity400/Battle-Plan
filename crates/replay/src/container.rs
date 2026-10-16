@@ -1,6 +1,7 @@
 //! Independently compressed blocks, an indexed trailer, and atomic publication.
 
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashMap, HashSet},
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
@@ -23,6 +24,9 @@ const HEADER_MAGIC: &[u8; 4] = b"H4RP";
 const TRAILER_MAGIC: &[u8; 4] = b"H4TR";
 const FOOTER_MAGIC: &[u8; 4] = b"H4FT";
 const FOOTER_SIZE: usize = 24;
+mod file_backed;
+mod stream;
+pub use stream::{ReplayCursor, ReplayStream};
 // A decoder allocation bound, not a campaign-size or frame-count limit.
 // V1E branch 6 held 720 valid frames (~5.95 GB raw) between keyframes;
 // writers must close smaller independently decodable blocks before this bound.
@@ -100,6 +104,7 @@ impl RecoveryNote {
 /// The byte backing can later become a mapping without changing block semantics.
 pub struct Replay {
     bytes: Vec<u8>,
+    file: Option<std::sync::Mutex<File>>,
     /// The header version, validated before decoding any frames.
     pub format: FormatVersion,
     pub campaign_id: Vec<u8>,
@@ -666,6 +671,10 @@ impl Replay {
     }
 
     pub fn bytes(&self) -> &[u8] {
+        assert!(
+            self.file.is_none(),
+            "file-backed replay has no in-memory byte slice"
+        );
         &self.bytes
     }
 
@@ -905,6 +914,7 @@ impl Replay {
         }
         Ok(Self {
             bytes: Vec::new(),
+            file: None,
             format,
             campaign_id,
             identity,
@@ -995,39 +1005,49 @@ impl Replay {
             .as_deref()
             .map_or_else(FrameDecoder::new, FrameDecoder::for_tables);
         let mut found = None;
-        let read = self.visit_block(index, selected.as_deref(), |frame| {
-            check()?;
-            if frame.hour > hour {
-                return Ok(false);
-            }
-            let decoded = match decoder.advance(&frame) {
-                Ok(decoded) => decoded,
-                Err(error) => {
-                    if !recording_damage(&error) {
-                        return Err(error);
+        let read = self
+            .read_block_selected_through(index, selected.as_deref(), hour, None)
+            .and_then(|frames| {
+                let mut visit = |frame: Frame| {
+                    check()?;
+                    if frame.hour > hour {
+                        return Ok(false);
                     }
-                    found = Some(gap(crate::codec::try_format(format_args!(
-                        "invalid frame baseline at hour {}: {}",
-                        frame.hour,
-                        crate::codec::diagnostic_text(&error.to_string())
-                    ))?));
-                    return Ok(false);
+                    let decoded = match decoder.advance(&frame) {
+                        Ok(decoded) => decoded,
+                        Err(error) => {
+                            if !recording_damage(&error) {
+                                return Err(error);
+                            }
+                            found = Some(gap(crate::codec::try_format(format_args!(
+                                "invalid frame baseline at hour {}: {}",
+                                frame.hour,
+                                crate::codec::diagnostic_text(&error.to_string())
+                            ))?));
+                            return Ok(false);
+                        }
+                    };
+                    if let Err(error) = validate_campaign(decoded, &self.campaign_id) {
+                        found = Some(gap(engine::allocation::string(
+                            crate::codec::diagnostic_text(&error.to_string()),
+                        )?));
+                        return Ok(false);
+                    }
+                    if frame.hour == hour {
+                        found = Some(SeekResult::Frame(engine::allocation::boxed(
+                            decoded.clone(),
+                        )?));
+                        return Ok(false);
+                    }
+                    Ok(true)
+                };
+                for frame in frames {
+                    if !visit(frame)? {
+                        break;
+                    }
                 }
-            };
-            if let Err(error) = validate_campaign(decoded, &self.campaign_id) {
-                found = Some(gap(engine::allocation::string(
-                    crate::codec::diagnostic_text(&error.to_string()),
-                )?));
-                return Ok(false);
-            }
-            if frame.hour == hour {
-                found = Some(SeekResult::Frame(engine::allocation::boxed(
-                    decoded.clone(),
-                )?));
-                return Ok(false);
-            }
-            Ok(true)
-        });
+                Ok(())
+            });
         if let Err(error) = read {
             if !recording_damage(&error) {
                 return Err(error);
@@ -1106,8 +1126,17 @@ impl Replay {
     ) -> io::Result<Vec<Frame>> {
         if let Some(block) = self.grouped_block(index)? {
             let frames =
-                check_block_frames(index, grouped::read(self, index, block, None, parallel)?)?;
+                check_block_frames(index, grouped::read(self, index, &block, None, parallel)?)?;
             self.mark_verified(index);
+            return Ok(frames);
+        }
+        if self.file.is_some() {
+            let mut frames = Vec::new();
+            self.visit_file_block(index, None, |frame| {
+                engine::allocation::reserve(&mut frames, 1)?;
+                frames.push(frame);
+                Ok(true)
+            })?;
             return Ok(frames);
         }
         let mut inflated = self.inflate(index)?;
@@ -1175,7 +1204,7 @@ impl Replay {
     ) -> io::Result<()> {
         if let Some(block) = self.grouped_block(index)? {
             let frames =
-                check_block_frames(index, grouped::read(self, index, block, selected, None)?)?;
+                check_block_frames(index, grouped::read(self, index, &block, selected, None)?)?;
             for frame in frames {
                 if !visit(frame)? {
                     break;
@@ -1185,10 +1214,13 @@ impl Replay {
             // an interleaved block, a first read checks all of it, here every
             // section's checksum, even after `visit` stops.
             if selected.is_some() && !self.is_verified(index) {
-                grouped::verify(block, index)?;
+                grouped::verify(&block, index)?;
             }
             self.mark_verified(index);
             return Ok(());
+        }
+        if self.file.is_some() {
+            return self.visit_file_block(index, selected, visit);
         }
         let mut raw = Inflated {
             stream: self.inflate(index)?,
@@ -1311,16 +1343,22 @@ impl Replay {
     }
 
     /// A grouped block's stored bytes; `None` for an interleaved block.
-    fn grouped_block(&self, index: &BlockIndex) -> io::Result<Option<&[u8]>> {
+    fn grouped_block(&self, index: &BlockIndex) -> io::Result<Option<Cow<'_, [u8]>>> {
         if index.raw_length > MAX_BLOCK_RAW_BYTES as u64 {
             return Err(invalid("block exceeds raw size limit"));
         }
+        if self.file.is_some() && !self.held_grouped(index)? {
+            return Ok(None);
+        }
         let block = self.block_bytes(index)?;
-        Ok(grouped::is_grouped(block).then_some(block))
+        Ok(grouped::is_grouped(&block).then_some(block))
     }
 
     /// A block's stored bytes.
-    fn block_bytes(&self, index: &BlockIndex) -> io::Result<&[u8]> {
+    fn block_bytes(&self, index: &BlockIndex) -> io::Result<Cow<'_, [u8]>> {
+        if self.file.is_some() {
+            return self.held_block_bytes(index).map(Cow::Owned);
+        }
         let start = to_usize(index.offset)?;
         let end = to_usize(
             index
@@ -1330,6 +1368,7 @@ impl Replay {
         )?;
         self.bytes
             .get(start..end)
+            .map(Cow::Borrowed)
             .ok_or_else(|| invalid("block outside replay"))
     }
 
@@ -1337,20 +1376,20 @@ impl Replay {
     /// block, whose single zstd frame has no sections.
     pub fn block_sections(&self, index: &BlockIndex) -> io::Result<Option<Vec<SectionSize>>> {
         let block = self.block_bytes(index)?;
-        if !grouped::is_grouped(block) {
+        if !grouped::is_grouped(&block) {
             return Ok(None);
         }
-        grouped::sections(block, index).map(Some)
+        grouped::sections(&block, index).map(Some)
     }
 
     /// The table sections of a grouped block split into their columns, each
     /// also compressed alone; `None` for an interleaved block.
     pub fn block_columns(&self, index: &BlockIndex) -> io::Result<Option<Vec<ColumnSizes>>> {
         let block = self.block_bytes(index)?;
-        if !grouped::is_grouped(block) {
+        if !grouped::is_grouped(&block) {
             return Ok(None);
         }
-        grouped::section_columns(block, index).map(Some)
+        grouped::section_columns(&block, index).map(Some)
     }
 
     /// Every section of a grouped block with its plain bytes compressed again
@@ -1362,10 +1401,10 @@ impl Replay {
         levels: &[i32],
     ) -> io::Result<Option<Vec<SectionLevels>>> {
         let block = self.block_bytes(index)?;
-        if !grouped::is_grouped(block) {
+        if !grouped::is_grouped(&block) {
             return Ok(None);
         }
-        grouped::section_levels(block, index, levels).map(Some)
+        grouped::section_levels(&block, index, levels).map(Some)
     }
 
     /// This recording's frames written again by the current block writer, in
@@ -2422,13 +2461,10 @@ fn parallel_map<T: Sync, R: Send>(
 
 mod grouped;
 mod pack;
-mod patch;
+pub mod patch;
 pub use grouped::{ColumnSize, ColumnSizes, STORED_LEVEL, Section, SectionLevels, SectionSize};
 #[cfg(test)]
-pub(crate) use {
-    grouped::{Layout, WRITTEN_LAYOUT},
-    pack::WORKERS as PACK_WORKERS,
-};
+pub(crate) use pack::WORKERS as PACK_WORKERS;
 
 #[cfg(test)]
 mod tests;

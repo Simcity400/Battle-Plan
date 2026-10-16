@@ -5,6 +5,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { AirAcesManifestReply, AirAcesWindowReply } from '../../generated/dashboard';
+import type { TableProps } from '../../charts/table/Table';
+import type { AceRow } from './acesData';
 
 test('ace portrait slots use a helmet and refresh failures retain Retry without artwork reasons', async () => {
   const interval = { firstHour: 100, lastHour: 147 };
@@ -13,7 +15,8 @@ test('ace portrait slots use a helmet and refresh failures retain Retry without 
       wing: null, wingName: null, aircraft: [], alive: true, death: null }] }] };
   const manifest: AirAcesManifestReply = { branchId: '1', ...interval, available: true, unavailable: null,
     observed: [interval], readHours: [100], warnings: [], windows: [interval], aces: [{ id: 'ace', firstSeen: 100 }], variants: {} };
-  const state = { manifest, detail, pending: false, failure: false, portrait: null as string | null, retries: 0 };
+  const state = { manifest, detail, pending: false, failure: false, portrait: null as string | null, retries: 0,
+    parity: undefined as TableProps<AceRow>['parity'], rows: [] as AceRow[] };
   const globals = globalThis as typeof globalThis & { __acePresentation?: typeof state };
   globals.__acePresentation = state;
   const replacements: Record<string, string> = {
@@ -29,10 +32,12 @@ test('ace portrait slots use a helmet and refresh failures retain Retry without 
     '/dashboard/countryNamesAt.ts': `export const nameKey = (hour, tag) => JSON.stringify([hour, tag]);
       export const useCountryFactsAt = () => new Map([[nameKey(100, 'ace'), {image: globalThis.__acePresentation.portrait, missing: 'Synthetic portrait refusal'}]]);`,
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
-    '/charts/table/Table.tsx': `import {createElement} from 'react'; export default props => createElement('div', {},
-      props.rows.map(row => createElement('div', {key: row.key}, props.columns.map(column => createElement('span', {key: column.key}, column.render?.(row))))));`,
+    '/charts/table/Table.tsx': `import {createElement} from 'react'; export default props => {
+      globalThis.__acePresentation.parity = props.parity; globalThis.__acePresentation.rows = props.rows;
+      return createElement('div', {}, props.rows.map(row => createElement('div', {key: row.key},
+        props.columns.map(column => createElement('span', {key: column.key}, column.render?.(row)))))); };`,
   };
-  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+  const vite = await createServer({ configFile: false, mode: 'parity', optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'ace-presentation', enforce: 'pre',
       transform: (_source, id) => Object.entries(replacements).find(([suffix]) => id.replaceAll('\\', '/').endsWith(suffix))?.[1],
     }] });
@@ -43,6 +48,13 @@ test('ace portrait slots use a helmet and refresh failures retain Retry without 
       active: true, onDiagnostics() {} } as unknown as WidgetProps;
     const render = () => renderToStaticMarkup(createElement(Widget, props));
     const missing = render();
+    assert.equal(typeof state.parity?.item, 'function', 'The real widget must supply its exact row projection');
+    const operands = state.parity!.item!(state.rows[0]);
+    assert.deepEqual((operands as { texts: unknown[] }).texts, [{ index: 0, value: 'Synthetic ace' }]);
+    state.manifest = { ...manifest, warnings: ['Synthetic contextual content warning'] };
+    state.detail = { ...detail, warnings: ['Synthetic window diagnostic'] };
+    render();
+    assert.deepEqual(state.parity!.item!(state.rows[0]), operands, 'Contextual warnings must not alter an ace operand');
     assert.match(missing, /art-fallback aces-portrait/);
     assert.doesNotMatch(missing, /Callsign not recorded|Hall of fame|Portrait not recorded|Synthetic portrait refusal|role="img"[^>]*Portrait/);
     state.portrait = 'data:image/png;base64,synthetic';

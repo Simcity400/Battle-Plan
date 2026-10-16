@@ -22,9 +22,9 @@
 //!
 //! Requests name chosen tags, all recorded countries, or a user-selected top N by
 //! dealt + known taken. Unknown losses affect display only, never ranking.
-//! Per-source branch scans retain sampled country totals and are shared
-//! across selections. Pair views retain compressed hourly confirmations in the
-//! same scan, without another decode. A top reply includes every
+//! Background preparation retains sampled totals for every native holder.
+//! Pair windows share its native lifetime runs. The recorded-product scoreboard
+//! adapter also consumes the country branch scan. A top reply includes every
 //! country ever selected, its membership, and runs clipped to it: at most N series cover an hour.
 //!
 //! Every hourly read confirms country totals. Equal consecutive reads merge;
@@ -37,8 +37,8 @@
 //! named only when they change, and stretch starts follow gaps or identity changes.
 //! Campaign names and CASUALTIES_UNKNOWN use the recorded content catalogue.
 //! Naming projections are retained during this same decode, only on change.
-//! Labels resolve only for reply tags; full ranking windows
-//! are cached once for any requested N. Equal samples merge, with implicit
+//! Labels resolve through the recorded content stack; rank-position runs
+//! are prepared once for any requested N. Equal samples merge, with implicit
 //! hourly confirmations; repeated numeric deltas compress without losing points.
 //! A tag changing holder starts a separate wire series, keeping unknown recovery
 //! and the partial-history flag scoped to its opaque country identity.
@@ -76,6 +76,7 @@ use ts_rs::TS;
 pub struct WarCasualties;
 pub mod breakdown;
 pub mod pairs;
+pub(crate) mod prepared;
 // Diplomacy tooltip localisation entry.
 pub(crate) const UNKNOWN_LABEL: &str = "CASUALTIES_UNKNOWN";
 
@@ -200,6 +201,7 @@ impl Product for WarCasualties {
         }
         Ok(())
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -256,7 +258,7 @@ type PairKey = (usize, usize, i32);
 /// overlord's in turn, the only slots its name reads.
 type NameInputs = Vec<(u32, Option<Result<Operands, String>>)>;
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Unknown {
     total: Option<i64>,
     seen: bool,
@@ -307,7 +309,7 @@ impl Unknown {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Country {
     dealt: i128,
     taken: i128,
@@ -316,15 +318,17 @@ struct Country {
     at_least: bool,
     touched: u64,
 }
+#[derive(Serialize, Deserialize)]
 struct HeldPair {
     values: [i64; 4],
     read: u64,
     hour: i32,
     /// Dense first-sighting order, indexing per-pair caches.
     ordinal: usize,
+    generation: u64,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Sample {
     first: i32,
     last: i32,
@@ -374,7 +378,7 @@ fn get(bytes: &mut &[u8]) -> i128 {
     }
     ((value >> 1) as i128) ^ -((value & 1) as i128)
 }
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Track {
     packed: Vec<u8>,
     previous: Sample,
@@ -382,6 +386,7 @@ struct Track {
     checkpoints: Vec<Checkpoint>,
     packed_runs: usize,
 }
+#[derive(Serialize, Deserialize)]
 struct Checkpoint {
     first: i32,
     offset: usize,
@@ -473,6 +478,7 @@ impl Track {
     fn iter(&self) -> impl Iterator<Item = Sample> + '_ {
         self.iter_from(None)
     }
+    #[cfg(test)]
     fn at(&self, hour: i32) -> Option<Sample> {
         if let Some(tail) = &self.tail
             && tail.first <= hour
@@ -528,17 +534,21 @@ impl Track {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 struct Scan {
     identities: Vec<Identity>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     indices: HashMap<Identity, usize>,
     countries: Vec<Country>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     pairs: HashMap<PairKey, HeldPair>,
     live: BTreeMap<String, usize>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_sets")]
     holders: BTreeMap<String, HashSet<Identity>>,
     tracks: BTreeMap<String, Track>,
     bounds: BTreeSet<i64>,
     last_bound: Option<i32>,
-    active: Vec<String>,
+    active: BTreeSet<String>,
     active_dirty: bool,
     observed: Vec<HourSpan>,
     hour: Option<i32>,
@@ -547,8 +557,16 @@ struct Scan {
     incomplete: bool,
     gap_read: Option<u64>,
     touched: Vec<usize>,
+    #[serde(skip)]
+    partial_changed: Vec<usize>,
     /// Each tag's naming operands where they change, in snapshot and row order.
+    #[serde(skip)]
     names: Vec<(String, NameInputs)>,
+    generation: u64,
+    pair_frontier: u64,
+    pair_hour: i32,
+    #[serde(skip)]
+    previous_generation: Option<u64>,
 }
 impl Scan {
     fn new() -> Self {
@@ -562,7 +580,7 @@ impl Scan {
             tracks: BTreeMap::new(),
             bounds: BTreeSet::new(),
             last_bound: None,
-            active: Vec::new(),
+            active: BTreeSet::new(),
             active_dirty: true,
             observed: Vec::new(),
             hour: None,
@@ -571,7 +589,12 @@ impl Scan {
             incomplete: false,
             gap_read: None,
             touched: Vec::new(),
+            partial_changed: Vec::new(),
             names: Vec::new(),
+            generation: 0,
+            pair_frontier: 0,
+            pair_hour: 0,
+            previous_generation: None,
         }
     }
     fn country(&mut self, identity: Identity) -> usize {
@@ -645,7 +668,65 @@ impl Scan {
             }
         }
     }
+    /// Open samples share this scan's accepted and supplying frontiers. Touch
+    /// only the affected tags between publication/gap boundaries.
+    fn materialize(&mut self, tags: &BTreeSet<String>) {
+        let Some(hour) = self.hour else {
+            return;
+        };
+        for tag in tags {
+            if !self.active.contains(tag) {
+                continue;
+            }
+            if let Some(tail) = self
+                .tracks
+                .get_mut(tag)
+                .and_then(|track| track.tail.as_mut())
+            {
+                tail.last = hour;
+                if let Some(read) = self.last_read {
+                    tail.confirmed = tail.confirmed.max(read);
+                }
+            }
+        }
+    }
+    fn seal(&mut self) {
+        self.materialize(&self.active.clone());
+    }
+    fn sample_changes(&mut self, tags: &BTreeSet<String>, read: bool) {
+        if read {
+            let hour = self.last_read.expect("supplying read");
+            for tag in tags {
+                if self.live.contains_key(tag) {
+                    self.sample_tag(tag, hour);
+                }
+            }
+        }
+        if self.active_dirty {
+            self.active = self
+                .live
+                .iter()
+                .filter(|(_, index)| self.countries[**index].relations > 0)
+                .map(|(tag, _)| tag.clone())
+                .collect();
+            self.active_dirty = false;
+        }
+        let Some(hour) = self.hour else {
+            return;
+        };
+        for tag in tags {
+            if self.active.contains(tag)
+                && let Some(tail) = self
+                    .tracks
+                    .get_mut(tag)
+                    .and_then(|track| track.tail.as_mut())
+            {
+                tail.last = hour;
+            }
+        }
+    }
     fn gap(&mut self) {
+        self.seal();
         self.sample();
         self.active.clear();
         self.active_dirty = true;
@@ -658,7 +739,18 @@ impl Scan {
         }
         self.read += 1; // No spanning read can establish an increment across a gap.
     }
+    #[cfg(test)]
     fn begin_hour(&mut self, hour: i32, live: &BTreeMap<String, usize>, changed: bool, read: bool) {
+        self.begin_hour_inputs(hour, live, changed, read, false);
+    }
+    fn begin_hour_inputs(
+        &mut self,
+        hour: i32,
+        live: &BTreeMap<String, usize>,
+        changed: bool,
+        read: bool,
+        sparse: bool,
+    ) {
         if self
             .hour
             .is_some_and(|before| before.checked_add(1) != Some(hour))
@@ -668,13 +760,19 @@ impl Scan {
         if changed && !read {
             // Close the old identities at their read before accepting a carried
             // census. Returning holders need their own next read, never a backfill.
-            self.sample();
+            if sparse {
+                self.seal();
+            } else {
+                self.sample();
+            }
             self.last_read = None;
         }
         if changed {
             self.active_dirty = true;
             if let Some(previous_hour) = self.hour {
-                self.hold(previous_hour);
+                if !sparse {
+                    self.hold(previous_hour);
+                }
                 let lost: Vec<_> = self
                     .live
                     .iter()
@@ -748,9 +846,15 @@ impl Scan {
                 read: 0,
                 hour: self.hour.expect("relation hour"),
                 ordinal,
+                generation: u64::MAX,
             }
         });
-        let spans = pair.read != 0 && pair.read + 1 == self.read;
+        let previous = if self.previous_generation == Some(pair.generation) {
+            self.pair_frontier
+        } else {
+            pair.read
+        };
+        let spans = previous != 0 && previous + 1 == self.read;
         let old = pair.values;
         self.countries[first].taken += i128::from(values[0]) - i128::from(old[0]);
         self.countries[first].dealt += i128::from(values[1]) - i128::from(old[1]);
@@ -765,22 +869,62 @@ impl Scan {
         pair.values = values;
         pair.read = self.read;
         pair.hour = self.hour.expect("relation hour");
+        if self.previous_generation.is_some() {
+            pair.generation = self.generation;
+        }
     }
+    fn relations_begin(&mut self) {
+        self.previous_generation = Some(self.generation);
+        self.generation += 1;
+    }
+    fn relations_advance(&mut self) {
+        self.previous_generation = None;
+        self.pair_frontier = self.read;
+        self.pair_hour = self.hour.expect("relation frontier");
+    }
+    fn relation_hour(&self, pair: &HeldPair) -> i32 {
+        if pair.generation == self.generation {
+            self.pair_hour
+        } else {
+            pair.hour
+        }
+    }
+    #[cfg(test)]
     fn end_hour(&mut self, read: bool) {
+        self.end_hour_inputs(read, false);
+    }
+    fn end_hour_inputs(&mut self, read: bool, sparse: bool) {
+        self.partial_changed.clear();
         if read {
             for &index in &self.touched {
                 self.countries[index].unknown.finish();
             }
             if let Some(before_gap) = self.gap_read.take() {
                 for (&(first, second, _), pair) in &self.pairs {
-                    if pair.read == before_gap {
+                    let read = if self.previous_generation == Some(pair.generation)
+                        || (self.previous_generation.is_none()
+                            && pair.generation == self.generation)
+                    {
+                        self.pair_frontier
+                    } else {
+                        pair.read
+                    };
+                    if read == before_gap {
+                        if !self.countries[first].at_least {
+                            self.touched.push(first);
+                            self.partial_changed.push(first);
+                        }
+                        if !self.countries[second].at_least {
+                            self.touched.push(second);
+                            self.partial_changed.push(second);
+                        }
                         self.countries[first].at_least = true;
                         self.countries[second].at_least = true;
                     }
                 }
             }
         }
-        if read {
+        if read && !sparse {
             self.sample();
         }
     }
@@ -842,8 +986,10 @@ impl Scan {
             observed: self.observed,
             incomplete: self.incomplete,
             windows,
+            #[cfg(test)]
             names: self.names,
             holders: self.holders,
+            #[cfg(test)]
             pairs: pairs::PairHistory::default(),
         })
     }
@@ -859,8 +1005,10 @@ pub struct ScannedCasualties {
     observed: Vec<HourSpan>,
     incomplete: bool,
     windows: Vec<TopWindow>,
+    #[cfg(test)]
     names: Vec<(String, NameInputs)>,
     holders: BTreeMap<String, HashSet<Identity>>,
+    #[cfg(test)]
     pairs: pairs::PairHistory,
 }
 
@@ -955,8 +1103,15 @@ pub fn scanned_branch(
     }
     let result = scan_frames(&replay, branch, cancelled)
         .and_then(|(scan, pairs)| {
-            let mut finished = scan.finish(cancelled)?;
-            finished.pairs = pairs;
+            let finished = scan.finish(cancelled)?;
+            #[cfg(test)]
+            let mut finished = finished;
+            #[cfg(test)]
+            {
+                finished.pairs = pairs;
+            }
+            #[cfg(not(test))]
+            let _ = pairs;
             Ok(finished)
         })
         .map(Arc::new);
@@ -1028,6 +1183,7 @@ impl ScannedCasualties {
 
     /// One country's shared casualties measure, held and dated exactly as in the
     /// product reply. No sample or a recording gap returns `None`, never zero.
+    #[cfg(test)]
     pub fn country_at(&self, tag: &str, hour: i32) -> Option<CasualtyMeasure> {
         let observed = self
             .observed
@@ -1371,11 +1527,30 @@ impl ScannedCasualties {
 }
 
 type CampaignLabels = BTreeMap<String, Vec<String>>;
+fn country_label(
+    catalogue: &crate::catalogue::Catalogue,
+    tag: &str,
+    inputs: &NameInputs,
+) -> String {
+    let operands = inputs
+        .iter()
+        .filter_map(|(slot, input)| Some((*slot, input.clone()?)))
+        .collect();
+    CountryNames::of_operands(&catalogue.localisation, operands)
+        .name(inputs[0].0)
+        .and_then(|name| crate::catalogue::plain_text(&name))
+        .unwrap_or_else(|reason| {
+            catalogue.refuse(&reason, tag);
+            "Country name unavailable".to_owned()
+        })
+}
 #[derive(Default)]
+#[cfg(test)]
 struct LabelScans {
     entries: VecDeque<(u64, Arc<crate::catalogue::Catalogue>, Arc<CampaignLabels>)>,
 }
 
+#[cfg(test)]
 fn branch_labels(
     source: &Source,
     branch: u64,
@@ -1417,17 +1592,7 @@ fn branch_labels(
         if !wanted.contains(tag.as_str()) {
             continue;
         }
-        let operands = inputs
-            .iter()
-            .filter_map(|(slot, input)| Some((*slot, input.clone()?)))
-            .collect();
-        let name = CountryNames::of_operands(&catalogue.localisation, operands)
-            .name(inputs[0].0)
-            .and_then(|name| crate::catalogue::plain_text(&name))
-            .unwrap_or_else(|reason| {
-                catalogue.refuse(&reason, tag);
-                "Country name unavailable".to_owned()
-            });
+        let name = country_label(catalogue, tag, inputs);
         let choices = labels.entry(tag.clone()).or_default();
         if !choices.contains(&name) {
             choices.push(name);
@@ -1552,18 +1717,43 @@ const SCAN_TABLES: [TableId; 8] = [
     TableId::PoliticalParties,
     TableId::Autonomy,
 ];
+#[derive(Serialize, Deserialize)]
 struct ScanFrames {
     scan: Scan,
+    #[serde(skip)]
     census: Option<Census>,
+    #[serde(skip)]
     live: BTreeMap<String, usize>,
+    #[serde(skip)]
     by_slot: HashMap<u32, usize>,
+    #[serde(skip)]
     seen: HashSet<PairKey>,
+    #[serde(skip)]
     endpoints: Vec<(usize, usize)>,
+    #[serde(skip)]
     relation_keys: Vec<(u32, u32, i32)>,
+    #[serde(skip)]
+    current_tags: Vec<Option<String>>,
+    #[serde(skip)]
+    supplying_pairs: BTreeSet<PairKey>,
+    #[serde(skip)]
+    changed_pairs: BTreeSet<PairKey>,
+    #[serde(skip)]
+    changed_endpoints: BTreeSet<usize>,
+    #[serde(skip)]
+    changed_tags: BTreeSet<String>,
+    #[serde(skip)]
+    pending_relations: bool,
+    #[cfg(test)]
+    #[serde(skip)]
+    work: crate::prepared::observer_tests::Work,
     /// The newest naming snapshot, and each tag's latest entry in `scan.names`.
+    #[serde(skip)]
     name_snapshot: Option<replay::frame::DecodedFrame>,
+    #[serde(skip)]
     name_entries: HashMap<String, usize>,
     /// The last compared hour's NAME_INPUTS views, agreeing with the newest snapshot.
+    #[serde(skip)]
     name_views: Vec<ViewIdentity>,
 }
 impl ScanFrames {
@@ -1578,6 +1768,14 @@ impl ScanFrames {
             seen: HashSet::new(),
             endpoints: Vec::new(),
             relation_keys: Vec::new(),
+            current_tags: Vec::new(),
+            supplying_pairs: BTreeSet::new(),
+            changed_pairs: BTreeSet::new(),
+            changed_endpoints: BTreeSet::new(),
+            changed_tags: BTreeSet::new(),
+            pending_relations: true,
+            #[cfg(test)]
+            work: Default::default(),
             name_snapshot: None,
             name_entries: HashMap::new(),
             name_views: Vec::new(),
@@ -1621,7 +1819,28 @@ impl ScanFrames {
         }
     }
     fn frame(&mut self, decoded: &replay::frame::DecodedFrame, replay: &Replay) {
+        self.frame_inputs(decoded, replay, None);
+    }
+    fn frame_changes(
+        &mut self,
+        decoded: &replay::frame::DecodedFrame,
+        replay: &Replay,
+        changes: &crate::prepared::frame_changes::FrameChanges,
+    ) {
+        self.frame_inputs(decoded, replay, Some(changes));
+    }
+    fn frame_inputs(
+        &mut self,
+        decoded: &replay::frame::DecodedFrame,
+        replay: &Replay,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+    ) {
+        let sparse = changes.is_some();
+        self.changed_tags.clear();
+        self.changed_pairs.clear();
+        self.changed_endpoints.clear();
         if validate_campaign(decoded, replay).is_err() {
+            self.changed_tags.extend(self.scan.active.iter().cloned());
             self.scan.gap();
             return;
         }
@@ -1630,21 +1849,33 @@ impl ScanFrames {
             decoded.complete::<tables::CountryLinks>(),
             decoded.complete::<tables::WarRelations>(),
         ) else {
+            self.changed_tags.extend(self.scan.active.iter().cloned());
             self.scan.gap();
             return;
         };
         let mut valid = true;
-        let changed = self.census.as_ref().is_none_or(|(before, before_links)| {
-            before.len() != countries.len()
-                || before.iter().zip(countries).any(|((id, slot, tag), row)| {
-                    *id != row.id || *slot != row.canonical_slot || *tag != row.tag
-                })
-                || before_links != &decoded.tables[TableId::CountryLinks.index()]
-        });
+        let census_changed = self.census.is_none()
+            || changes.is_none_or(|changes| {
+                [TableId::Countries, TableId::CountryLinks]
+                    .iter()
+                    .any(|table| changes.rows_changed[table.index()])
+            });
+        let changed = census_changed
+            && self.census.as_ref().is_none_or(|(before, before_links)| {
+                before.len() != countries.len()
+                    || before.iter().zip(countries).any(|((id, slot, tag), row)| {
+                        *id != row.id || *slot != row.canonical_slot || *tag != row.tag
+                    })
+                    || before_links != &decoded.tables[TableId::CountryLinks.index()]
+            });
         if changed {
             self.live.clear();
             self.by_slot.clear();
             for country in countries {
+                #[cfg(test)]
+                {
+                    self.work.row_visits += 1;
+                }
                 let (Ok(slot), Ok(tag)) = (
                     mapped_slot(country, links),
                     std::str::from_utf8(&country.tag),
@@ -1658,6 +1889,7 @@ impl ScanFrames {
             }
         }
         if !valid {
+            self.changed_tags.extend(self.scan.active.iter().cloned());
             self.census = None;
             self.scan.gap();
             return;
@@ -1673,11 +1905,20 @@ impl ScanFrames {
         } else if let Some((_, before_links)) = &mut self.census {
             before_links.clone_from(&decoded.tables[TableId::CountryLinks.index()]);
         }
-        if self
-            .name_snapshot
-            .as_ref()
-            .is_none_or(|before| changed || !same_name_inputs(before, decoded, &self.name_views))
-        {
+        if changed || self.current_tags.is_empty() {
+            self.current_tags = vec![None; self.scan.identities.len()];
+            for (tag, &index) in &self.live {
+                self.current_tags[index] = Some(tag.clone());
+            }
+        }
+        let names_changed = changes.is_none_or(|changes| {
+            NAME_INPUTS
+                .iter()
+                .any(|table| changes.rows_changed[table.index()])
+        });
+        if self.name_snapshot.as_ref().is_none_or(|before| {
+            changed || (names_changed && !same_name_inputs(before, decoded, &self.name_views))
+        }) {
             let mut snapshot = decoded.clone();
             for table in TableId::ALL {
                 if !NAME_TABLES.contains(&table) {
@@ -1702,18 +1943,23 @@ impl ScanFrames {
             (row.first_country, row.second_country, row.start_hour)
         };
         if changed
-            || self.relation_keys.len() != relations.len()
-            || self
-                .relation_keys
-                .iter()
-                .zip(relations)
-                .any(|(key, row)| *key != relation_key(row))
+            || (changes.is_none_or(|changes| changes.rows_changed[TableId::WarRelations.index()])
+                && (self.relation_keys.len() != relations.len()
+                    || self
+                        .relation_keys
+                        .iter()
+                        .zip(relations)
+                        .any(|(key, row)| *key != relation_key(row))))
         {
             let endpoint =
                 |raw| link_slot(links, raw).and_then(|slot| self.by_slot.get(&slot).copied());
             self.seen.clear();
             self.endpoints.clear();
             for row in relations {
+                #[cfg(test)]
+                {
+                    self.work.row_visits += 1;
+                }
                 match (endpoint(row.first_country), endpoint(row.second_country)) {
                     (Some(first), Some(second)) if first != second => {
                         valid &= self.seen.insert((
@@ -1731,6 +1977,7 @@ impl ScanFrames {
                 .extend(relations.iter().map(relation_key));
         }
         if !valid {
+            self.changed_tags.extend(self.scan.active.iter().cloned());
             self.census = None;
             self.scan.gap();
             return;
@@ -1741,9 +1988,85 @@ impl ScanFrames {
             TableId::WarRelations,
             decoded.hour,
         );
+        self.pending_relations |= !sparse
+            || changed
+            || changes.is_some_and(|changes| changes.rows_changed[TableId::WarRelations.index()])
+            || self
+                .scan
+                .hour
+                .is_none_or(|hour| hour.checked_add(1) != Some(decoded.hour));
+        let process = read && self.pending_relations;
+        // A resumed observer rebuilds its lookup tables from this frame. Only
+        // a changed native census closes continuity on a carried read.
+        let holders_changed = changed && self.scan.live != self.live;
+        if holders_changed {
+            for (tag, &index) in &self.scan.live {
+                if self.live.get(tag) != Some(&index) {
+                    self.changed_tags.insert(tag.clone());
+                    self.changed_endpoints.insert(index);
+                }
+            }
+            for (tag, &index) in &self.live {
+                if self.scan.live.get(tag) != Some(&index) {
+                    self.changed_tags.insert(tag.clone());
+                    self.changed_endpoints.insert(index);
+                }
+            }
+        }
+        // A changed supplying mode changes every active observation's proof.
+        // Equal mode merely advances the scan's single frontier.
+        if self
+            .scan
+            .hour
+            .is_none_or(|hour| hour.checked_add(1) != Some(decoded.hour))
+            || self
+                .scan
+                .hour
+                .is_some_and(|hour| self.scan.last_read == Some(hour))
+                != read
+            || (holders_changed && !read)
+        {
+            self.changed_tags.extend(self.scan.active.iter().cloned());
+        }
+        let mut retired = BTreeSet::new();
+        if process {
+            let mut supplying = BTreeSet::new();
+            for (row, &(first, second)) in relations.iter().zip(&self.endpoints) {
+                #[cfg(test)]
+                {
+                    self.work.row_visits += 1;
+                }
+                supplying.insert((first.min(second), first.max(second), row.start_hour));
+                for index in [first, second] {
+                    if let Some(tag) = &self.current_tags[index] {
+                        self.changed_tags.insert(tag.clone());
+                    }
+                }
+            }
+            self.changed_pairs.extend(supplying.iter().copied());
+            retired.extend(self.supplying_pairs.difference(&supplying).copied());
+            self.changed_pairs.extend(retired.iter().copied());
+            self.supplying_pairs = supplying;
+        }
+        if self.scan.gap_read.is_some() {
+            self.changed_tags.extend(self.scan.active.iter().cloned());
+        }
+        if sparse {
+            self.scan.materialize(&self.changed_tags);
+        }
         self.scan
-            .begin_hour(decoded.hour, &self.live, changed, read);
-        if read {
+            .begin_hour_inputs(decoded.hour, &self.live, holders_changed, read, sparse);
+        if process {
+            if sparse {
+                for key in retired {
+                    if let Some(pair) = self.scan.pairs.get_mut(&key) {
+                        pair.read = self.scan.pair_frontier;
+                        pair.hour = self.scan.pair_hour;
+                        pair.generation = u64::MAX;
+                    }
+                }
+                self.scan.relations_begin();
+            }
             for (row, &(first, second)) in relations.iter().zip(&self.endpoints) {
                 self.scan.relation(
                     first,
@@ -1758,7 +2081,21 @@ impl ScanFrames {
                 );
             }
         }
-        self.scan.end_hour(read);
+        self.scan.end_hour_inputs(read, sparse);
+        if read && sparse {
+            self.scan.relations_advance();
+            self.pending_relations = false;
+        }
+        if sparse {
+            // Lost-in-gap partial flags also affect every lifetime of that holder.
+            for &index in &self.scan.partial_changed {
+                self.changed_endpoints.insert(index);
+                if let Some(tag) = &self.current_tags[index] {
+                    self.changed_tags.insert(tag.clone());
+                }
+            }
+            self.scan.sample_changes(&self.changed_tags, read);
+        }
     }
 }
 fn scan_frames(
@@ -1766,7 +2103,9 @@ fn scan_frames(
     branch: u64,
     cancelled: &AtomicBool,
 ) -> io::Result<(Scan, pairs::PairHistory)> {
-    let mut pairs = pairs::PairHistory::default();
+    let pairs = pairs::PairHistory::default();
+    #[cfg(test)]
+    let mut pairs = pairs;
     check_cadence(cadence::cadence_in(TableId::WarRelations, replay.format))?;
     let mut builder = ScanFrames::new(replay, branch);
     crate::blocks::scan_blocks(
@@ -1789,12 +2128,14 @@ fn scan_frames(
                         break;
                     };
                     builder.frame(decoded, replay);
+                    #[cfg(test)]
                     pairs.observe(&builder.scan);
                 }
             }
             Ok(())
         },
     )?;
+    #[cfg(test)]
     pairs.shrink_to_fit();
     Ok((builder.scan, pairs))
 }

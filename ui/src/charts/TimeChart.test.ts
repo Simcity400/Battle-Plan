@@ -15,6 +15,7 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
   const listeners = new Map<string, (event: unknown) => void>();
   let cursor = 0, visible = true, task: FrameTask | undefined, frame: PlotFrame | undefined;
   const fixture = {
+    reducedMotion: true,
     shownTooltip: null as TooltipContent | null,
     useId: () => 'time-chart-observer',
     useRef(initial: unknown) {
@@ -60,7 +61,7 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
   const replacements: Record<string, string> = {
     '/charts/scheduler.ts': 'export const scheduler = globalThis.__timeChartObserver.scheduler;',
     '/charts/tokens.ts': `export const CHART_LAYOUT = { right: 14 };
-      export const readTokens = () => ({ fontSize: { small: 11 }, motion: 'snappy', reducedMotion: true });
+      export const readTokens = () => ({ fontSize: { small: 11 }, motion: 'snappy', reducedMotion: globalThis.__timeChartObserver.reducedMotion });
       export const subscribeTokens = () => () => {};`,
     '/charts/draw.ts': `export const clipToPlot = () => {}; export const dayLabel = String;
       export const drawAxes = () => {}; export const drawCrosshair = () => {}; export const drawPlayhead = () => {};
@@ -189,7 +190,30 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     assert.deepEqual([...views], [[0, 100]]);
     props.onViewChange = x => { views.push(x); }; canvas = render(); draw(); draw();
     assert.deepEqual(views, [[0, 100], [0, 100]]);
+    const navigation: string[] = [];
+    props.onNavigateHour = name => { navigation.push(name); };
+    canvas = render(); draw(); key(canvas, 'ArrowRight');
+    pointer(); draw();
+    props.keyboardHour = 80; props.keyboardRevision = 1; canvas = render(); draw();
+    assert.deepEqual(seen.at(-1), ['F', 37], 'a delayed key reply cannot reclaim hover after pointer movement');
+    key(canvas, 'ArrowRight');
+    props.keyboardRevision = 2; canvas = render(); draw();
+    assert.deepEqual(seen.at(-1), ['F', 80], 'a fresh key request still accepts the same returned hour');
+    assert.deepEqual(navigation, ['ArrowRight', 'ArrowRight']);
     fixture.unmount(); assert.deepEqual(seen.at(-1), ['F', null]);
+    // An asynchronous prepared extent must settle to the exact same scale as an immediate legacy extent.
+    fixture.reducedMotion = false;
+    props.axes = { ...props.axes, yMin: null, yMax: null };
+    let balanceExtent: [number, number] | null = null;
+    props.layers = [{ draw: (_ctx, drawn) => { frame = drawn; }, extent: () => balanceExtent }];
+    render(); draw(); assert.deepEqual(frame!.y, [0, 1]);
+    balanceExtent = [8, 20]; render();
+    let animating = true, frames = 0;
+    while (animating && frames++ < 300) animating = task!.frame({ now: frames * 16, dt: 16 }) === true;
+    assert.equal(animating, false, 'the animation reaches a final scheduled frame');
+    const preparedY = frame!.y;
+    fixture.unmount(); render(); draw();
+    assert.deepEqual(preparedY, frame!.y, 'settled scale has no residual sub-pixel displacement');
   } finally {
     fixture.unmount(); await vite.close(); delete host.__timeChartObserver;
     for (const [key, descriptor] of globals) {

@@ -184,6 +184,54 @@ fn native_causes_keep_actor_order_aliases_and_each_distinct_occurrence() {
 }
 
 #[test]
+fn native_projection_resume_preserves_late_dates_duplicates_and_sequence_guard() {
+    let frames = BTreeMap::from([(105, frame(105, 2)), (106, frame(106, 2))]);
+    let first = pack(vec![
+        event(1, EventFeedSource::Declaration, 105),
+        event(2, EventFeedSource::Declaration, 105),
+    ]);
+    let mut second = pack(vec![event(3, EventFeedSource::WarEnded, 106)]);
+    second.read_hour = 121;
+    let cancelled = AtomicBool::new(false);
+    let project =
+        |projection: &mut Projection, builder: &mut Builder, pack: &EventFeedHistoryRow| {
+            projection.append(builder, pack, 1, |hour| frames.get(&hour), &cancelled)
+        };
+    let mut oracle = Builder::new(100, 130);
+    let mut original = Projection::default();
+    project(&mut original, &mut oracle, &first).unwrap();
+    project(&mut original, &mut oracle, &second).unwrap();
+    let mut prepared = Builder::new(100, 130);
+    let mut resumed = Projection::default();
+    project(&mut resumed, &mut prepared, &first).unwrap();
+    resumed = serde_json::from_slice(&serde_json::to_vec(&resumed).unwrap()).unwrap();
+    project(&mut resumed, &mut prepared, &second).unwrap();
+    assert_eq!(
+        serde_json::to_value(&prepared.feed.rows).unwrap(),
+        serde_json::to_value(&oracle.feed.rows).unwrap()
+    );
+    assert_eq!(prepared.war_ends, oracle.war_ends);
+    assert_eq!(prepared.feed.rows.len(), 3);
+    assert_eq!(
+        prepared
+            .feed
+            .rows
+            .iter()
+            .map(|row| (row.hour, row.read_hour))
+            .collect::<Vec<_>>(),
+        [(105, 120), (105, 120), (106, 121)]
+    );
+    assert_ne!(prepared.feed.rows[0].id, prepared.feed.rows[1].id);
+    assert_eq!(
+        project(&mut resumed, &mut prepared, &second)
+            .unwrap_err()
+            .to_string(),
+        "Native event occurrence sequence differs"
+    );
+    assert_eq!(prepared.feed.rows.len(), 3);
+}
+
+#[test]
 fn full_instance_read_and_branch_guards_never_use_later_or_reused_aliases() {
     for mode in 0..6 {
         let mut sample = frame(105, 2);
@@ -479,8 +527,7 @@ fn registered_history_loads_later_publication_without_using_the_later_country_in
 }
 
 /// A recorded cause reaches the row in words with its ally's exact
-/// occurrence-hour tag; an older recording's event keeps its row without one,
-/// and an ally without a witness stays unnamed and is counted.
+/// occurrence-hour tag; an ally without a witness stays unnamed and is counted.
 #[test]
 fn recorded_causes_name_their_route_ally_and_operands() {
     let frames = BTreeMap::from([(105, frame(105, 3))]);
@@ -508,14 +555,10 @@ fn recorded_causes_name_their_route_ally_and_operands() {
         ally: Some(identity(9)),
         ..Default::default()
     });
-    let older = EventFeedEvent {
-        cause: Recorded::NotRecorded,
-        ..event(4, EventFeedSource::Annex, 105)
-    };
     let mut builder = Builder::new(100, 130);
     append(
         &mut builder,
-        &pack(vec![join, transfer, unwitnessed, older]),
+        &pack(vec![join, transfer, unwitnessed]),
         &frames,
     )
     .unwrap();
@@ -525,8 +568,7 @@ fn recorded_causes_name_their_route_ally_and_operands() {
         [
             EventFeedKind::WarJoined,
             EventFeedKind::StateTransferred,
-            EventFeedKind::WarJoined,
-            EventFeedKind::Annexed
+            EventFeedKind::WarJoined
         ]
     );
     assert_eq!(
@@ -553,7 +595,6 @@ fn recorded_causes_name_their_route_ally_and_operands() {
     // A state transfer's first byte is SetOwner's, not a truce or troops.
     assert!(transfer.notes.is_empty());
     assert_eq!(rows[2].cause.as_ref().unwrap().ally, None);
-    assert_eq!(rows[3].cause, None);
     assert!(
         builder
             .feed
@@ -584,7 +625,7 @@ fn a_partial_interval_after_a_recorded_event_loss_names_the_detached_recorder() 
             event_losses,
             ..Projection::default()
         }
-        .append_named(&mut builder, partial, |_| None, &AtomicBool::new(false))
+        .append_named(&mut builder, partial, |_, _| None, &AtomicBool::new(false))
         .unwrap();
         builder.feed.unavailable[0].reason.clone()
     };

@@ -1,6 +1,6 @@
 # installed-content
 
-Rust readers for the installed content used by recording, playback and save comparison. This crate owns content layers, identity verification, authored catalogues, assets and the shared text parser. [installed-content-save](../installed-content-save/README.md) owns text-save projections. It does not read live game memory.
+Rust readers for the installed content used by recording, playback and save comparison. This crate exports the shared reader paths and owns integration tests of independent readers. [installed-content-core](../installed-content-core/README.md) owns content identity, shared parsing/dispatch, catalogues and map/asset foundations; the reader crates below own independently used content domains. [installed-content-save](../installed-content-save/README.md) owns text-save projections. It does not read live game memory.
 
 Read the [project rules](../../AGENTS.md) before changing a reader. Consumers should use these shared readers rather than parse the same files again or add a Python runtime dependency.
 
@@ -8,18 +8,47 @@ Read the [project rules](../../AGENTS.md) before changing a reader. Consumers sh
 
 | Area | Entry points and responsibility |
 |---|---|
-| Content stack | [content.rs](src/content.rs): identities, verification and overlays. [physfs_zip.rs](src/content/physfs_zip.rs): native archives. [visual.rs](src/content/visual.rs): explicit cosmetic overlays. |
-| Text readers | [parser.rs](src/parser.rs): byte-preserving data and balanced trees. [parser/native.rs](src/parser/native.rs): script lexer and persistent reader. [script_files.rs](src/script_files.rs): database file order. [crt.rs](src/crt.rs), [fixed5.rs](src/fixed5.rs) and [parser/decimal.rs](src/parser/decimal.rs): number conversions. |
-| Script dispatch | [key_names.rs](src/key_names.rs): load-point names. [trigger_keys.rs](src/trigger_keys.rs), [combat_tactics](src/combat_tactics.rs), [effect_keys.rs](src/effect_keys.rs) and [modifiers.rs](src/modifiers.rs): shared body readers. [tokens.rs](src/tokens.rs): name identity. [coverage.rs](src/coverage.rs): unread suffixes. |
-| Names and text | [localisation.rs](src/localisation.rs), [country_names.rs](src/country_names.rs), [scripted_localisation.rs](src/scripted_localisation.rs), [scripted_keys.rs](src/scripted_keys.rs) and [defines.rs](src/defines.rs). |
-| Authored catalogues | Domain modules such as [equipment.rs](src/equipment.rs), [ideas.rs](src/ideas.rs), [characters.rs](src/characters.rs) and [events.rs](src/events.rs) own database and lookup rules. [lib.rs](src/lib.rs) indexes all modules and defines typed diagnostics. |
-| Artwork and layout | [gui/native.rs](src/gui/native.rs), [gfx.rs](src/gfx.rs), [image](src/image/mod.rs), [mesh.rs](src/mesh.rs), [particles.rs](src/particles.rs) and [pdxshader](src/pdxshader/mod.rs). |
-| Map and movement | [map.rs](src/map.rs), [states.rs](src/states.rs), [province_graph.rs](src/province_graph.rs), [movement.rs](src/movement.rs) and the land/naval path and raid modules. |
-| Preferences | [settings.rs](src/settings.rs): read-only local preferences. |
+| Content stack | [installed-content-core](../installed-content-core/README.md): identities, verification and overlays, native archives, installed-mod discovery and presentation mounts. |
+| Text readers | [installed-content-core](../installed-content-core/README.md): byte-preserving data and balanced trees, the script lexer and persistent reader, database file order and number conversions. |
+| Script dispatch | [installed-content-core](../installed-content-core/README.md): load-point names, shared trigger, tactic, effect and modifier body readers, name identity and unread suffixes. |
+| Names and text | [installed-content-localisation](../installed-content-localisation/README.md), [installed-content-country-names](../installed-content-country-names/README.md), [installed-content-scripted-localisation](../installed-content-scripted-localisation/README.md), and scripted keys and defines in [installed-content-core](../installed-content-core/README.md). |
+| Authored catalogues | Domain modules such as equipment, ideas and characters in [installed-content-core](../installed-content-core/README.md) and [installed-content-events](../installed-content-events/README.md) own database and lookup rules. [lib.rs](src/lib.rs) exports the modules and shared typed diagnostics. |
+| Artwork and layout | Native GUI, meshes, particles and shaders in [installed-content-core](../installed-content-core/README.md); [installed-content-gfx](../installed-content-gfx/README.md). |
+| Image decoding | [installed-content-image](../installed-content-image/README.md): native bitmap decoders and image representations, re-exported as `image`. |
+| Map and movement | The map, province graph and movement in [installed-content-core](../installed-content-core/README.md), [installed-content-states](../installed-content-states/README.md), and the land/naval path and raid crates. |
+| Preferences | [installed-content-settings](../installed-content-settings/README.md): read-only local preferences. |
 
-A catalogue retains definitions, source identity and diagnostics. Duplicate handling, case sensitivity, defaults and enumeration order follow its native database, not a universal merge rule. Reuse catalogues and stack-scoped caches. Presentation and its shared [catalogue](../dashboard/src/catalogue.rs) belong to [dashboard](../dashboard/README.md).
+Dashboard, viewer and shader-pipeline use `installed_content::image`, a re-export of `installed_content_image`. Recorder-app imports `installed_content_image` directly.
+
+A catalogue retains definitions, source identity and diagnostics. Duplicate handling, case sensitivity, defaults and enumeration order follow its native database, not a universal merge rule. Reuse catalogues and stack-scoped caches. Presentation and its shared [catalogue](../dashboard-text/src/catalogue.rs) belong to [dashboard](../dashboard/README.md).
 
 Idea lookup shares the lexer's ASCII case identity and selects the first matching database entry; rereading a held group replaces that entry in place. Advisor lookup, ambiguity and coverage share its native folded string identity. Retain authored spellings for names and assets; localisation and sprite names keep their own case rules. Equipment graphics contexts retain a null archetype separately from a real empty equipment name: the null object's sentinel hash cannot match an authored empty pool key, while a real empty name can.
+
+
+## Reader crates
+
+| Crate | Responsibility |
+|---|---|
+| [installed-content-localisation](../installed-content-localisation/README.md) | Language merge order, substitutions and controls. |
+| [installed-content-country-names](../installed-content-country-names/README.md) | Recorded country naming and selection rules. |
+| [installed-content-unit-path](../installed-content-unit-path/README.md) | Land/transfer paths and selected movement text. |
+| [installed-content-naval-path](../installed-content-naval-path/README.md) | Naval region/province route searches. |
+| [installed-content-raids](../installed-content-raids/README.md) | Raid types, naming, targets and tooltips. |
+| [installed-content-weather](../installed-content-weather/README.md) | Weather entities, thermal intervals and temperature content. |
+| [installed-content-states](../installed-content-states/README.md) | Authored state history and membership. |
+| [installed-content-equipment-graphics](../installed-content-equipment-graphics/README.md) | Graphics pools, equipment contexts and map/state joins. |
+| [installed-content-settings](../installed-content-settings/README.md) | Read-only local game/display settings. |
+| [installed-content-regions](../installed-content-regions/README.md) | Strategic regions and ordered weather periods. |
+| [installed-content-division-names](../installed-content-division-names/README.md) | Division and raid name groups. |
+| [installed-content-events](../installed-content-events/README.md) | Event declarations and ordered options/effects. |
+| [installed-content-focus](../installed-content-focus/README.md) | Focus file order, parse waves and definitions. |
+| [installed-content-scripted-localisation](../installed-content-scripted-localisation/README.md) | Scripted text alternatives, triggers and random lists. |
+| [installed-content-gfx](../installed-content-gfx/README.md) | Graphics descriptors and GUI/sprite registration. |
+| [installed-content-abilities](../installed-content-abilities/README.md) | Commander ability definitions and adjusters. |
+| [installed-content-province-area](../installed-content-province-area/README.md) | Province area in native map cells. |
+| [installed-content-naval-combat-defines](../installed-content-naval-combat-defines/README.md) | Typed naval combat define operands. |
+| [installed-content-state-categories](../installed-content-state-categories/README.md) | State-category identities and modifiers. |
+| [installed-content-wargoals](../installed-content-wargoals/README.md) | War-goal definitions and naming. |
 
 ## Recorded content stack
 
@@ -33,10 +62,18 @@ The persistent content-hash cache is written only when entries change or an abse
 
 Use stack listing/read APIs. `script_files::paths` and `ResolvedLayers::directory_files` list direct files in merged filename byte order. Follow each loader's suffix and recursion rules; recursive loaders generally read files before subdirectories.
 
+`ResolvedLayers::recorded_source_files` returns physical inputs in recorded layer
+order for prepared-file size and modification-time checks: descriptors, each
+folder's inventoried files, and archive paths once per mount. It does not read
+their payloads or change native listing/lookup order.
+
 Consumers retain derived caches through `ResolvedLayers::derived`: clones share
 one resolved stack, another stack or mount roster has independent entries, and
-cosmetic overlay selection starts fresh. Cached reads retain the stack's shared
-diagnostics. Readers keep content inputs immutable during one resolved load.
+the presentation stack has its own. Cached reads retain the stack's shared
+diagnostics. Archive lookups verify every mounted record on each open; covered
+payloads still verify on every read. Prefix reads retain only header bytes while
+streaming verification of the full covered payload. Readers keep content inputs
+immutable during one resolved load.
 
 Paths are bytes (`LayerPath`): archives retain PhysFS name identity; folders use Windows lookup. Use byte-path APIs where required. The shared sanitizer and layer readers own normalization and case rules; decoding archive names or independently normalizing requests changes native identity.
 
@@ -61,17 +98,17 @@ Static keyword, modifier, trigger, effect, equipment, rule and AI metadata comes
 
 Built-in variable names come from the same installation's `documentation/dynamic_variables_documentation.md`. The reader extracts declaration headings by scope, excludes examples, preserves exact spelling and checks sorted names against the supported semantic digests. Missing, changed or duplicate declarations refuse initialization. Mod documentation does not replace executable metadata. Global, country, state and character variable stores use these names; the character scope is documented as `unit_leader`.
 
-Retain conditions and effects as data. Evaluation and descriptions over recorded state belong to [dashboard triggers](../dashboard/src/triggers.rs) and their consumers.
+Retain conditions and effects as data. Evaluation and descriptions over recorded state belong to [dashboard triggers](../dashboard-text/src/triggers.rs) and their consumers.
 
 ## Localisation, defines and scripted text
 
-[Localisation](src/localisation.rs) uses language headers and native line syntax, not YAML or filename-derived languages. Ordinary files in layer/path order keep the first key; `replace/` files run afterwards and overwrite, even over ordinary files in later layers.
+[Localisation](../installed-content-localisation/src/localisation.rs) uses language headers and native line syntax, not YAML or filename-derived languages. Ordinary files in layer/path order keep the first key; `replace/` files run afterwards and overwrite, even over ordinary files in later layers.
 
 Use `Localisation::localise`, `localise_with` or `localise_bytes` for substitution/formatting, and `pieces` for stored controls. Do not interpret raw values with a consumer's colour or substitution grammar. Keep native missing-key behaviour and absent/empty distinctions. `format_scripted_variable` shares numeric formatting with scripted text.
 
-Scripted localisation retains ordered alternatives, triggers and random-list operands; ScriptedKey retains conditional choices. Consumers supply recorded scopes and shared evaluation with each caller's selection rules. Plain text and evaluated `[...]` text are different paths: use dashboard's catalogue and [scripted text](../dashboard/src/scripted_text.rs) helpers. Missing runtime operands are named refusals.
+Scripted localisation retains ordered alternatives, triggers and random-list operands; ScriptedKey retains conditional choices. Consumers supply recorded scopes and shared evaluation with each caller's selection rules. Plain text and evaluated `[...]` text are different paths: use dashboard's catalogue and [scripted text](../dashboard-text/src/scripted_text.rs) helpers. Missing runtime operands are named refusals.
 
-[Defines](src/defines.rs) runs stack scripts in native recursive order on vendored PUC Lua 5.1, including arithmetic, functions and loops. Its sandbox excludes machine-access libraries/file loaders and bounds execution and memory. Script failure refuses the reader; it never substitutes vanilla values. Use its typed getters for numeric, string and boolean defines.
+[Defines](../installed-content-core/src/defines.rs) runs stack scripts in native recursive order on vendored PUC Lua 5.1, including arithmetic, functions and loops. Its sandbox excludes machine-access libraries/file loaders and bounds execution and memory. Script failure refuses the reader; it never substitutes vanilla values. Use its typed getters for numeric, string and boolean defines. Resolved stacks share one immutable evaluated state after repeating the ordinary verified script reads in native order; independent script loads use `Defines::new`.
 
 ## Asset contracts
 
@@ -79,15 +116,21 @@ Scripted localisation retains ordered alternatives, triggers and random-list ope
 
 Name uncovered bytes in diagnostics and machine-readable output, including assets only newer policies cover. Loading a file does not prove hash verification.
 
-Use [gui::native::resources](src/gui/native/resources.rs) for sprite/font registries, texture candidates and frame geometry; [image::native](src/image/native/mod.rs) supplies native decoding. Pass the client's `settings::SettingsKeys::texture_decode`: `force_pow2_textures` changes extents, sizing and UVs. Distinguish native failure from undefined/device-dependent output. Sprite names are exact bytes; refused declarations are not absent names.
+Use [gui::native::resources](../installed-content-core/src/gui/native/resources.rs) for sprite/font registries, texture candidates and frame geometry; [image::native](../installed-content-image/src/native/mod.rs) supplies native decoding. Pass the client's `settings::SettingsKeys::texture_decode`: `force_pow2_textures` changes extents, sizing and UVs. Distinguish native failure from undefined/device-dependent output. Sprite names are exact bytes; refused declarations are not absent names.
 
-Preserve palettes and image origins, authored mip chains, cube faces, glyph metrics, mesh inheritance, skeleton order and attachment transforms. Resource roles determine linear or sRGB sampling. The approved BC7-only exception reads logical DDS extents, the complete declared mip chain and header colour space; its unsupported forms remain named refusals in [load_dds.rs](src/image/native/load_dds.rs). Other formats keep native decoding.
+Preserve palettes and image origins, authored mip chains, cube faces, glyph metrics, mesh inheritance, skeleton order and attachment transforms. Resource roles determine linear or sRGB sampling. The approved BC7-only exception reads logical DDS extents, the complete declared mip chain and header colour space; its unsupported forms remain named refusals in [load_dds.rs](../installed-content-image/src/native/load_dds.rs). Other formats keep native decoding.
 
-[PdxShader](src/pdxshader/program.rs) preserves native effect/include order and hashes resolved inputs. Missing sources or unsupported declarations never select an unrelated effect. Compilation, GPU caches and bindings belong to [shader-pipeline](../shader-pipeline/README.md).
+[PdxShader](../installed-content-core/src/pdxshader/program.rs) preserves native effect/include order and hashes resolved inputs. Missing sources or unsupported declarations never select an unrelated effect. Compilation, GPU caches and bindings belong to [shader-pipeline](../shader-pipeline/README.md).
 
 Artwork uses `program::read_reported`: ordinary uncovered-source reads join the shared read warnings, and missing-include notes join the stack's lazy shader diagnostics. Reporting consumers retain both after rendering.
 
-Explicit cosmetic overlays verify recorded layers first, then alter a presentation copy. Checksum-manifest eligibility is separate from renderer compatibility. Report unsupported content and warn that selected artwork is not recorded verification. The selector neither downloads content nor changes enabled mods.
+## Visual mods
+
+A user can show any installed mod's artwork over a recording that was not made with it. `visual::installed` lists every mod the game could mount: each descriptor directly in the user folder's `mod` directory, and each item of the Workshop folder in the game's own Steam library, mounted in place from its `descriptor.mod` as the launcher mounts it (a `path` there is ignored; an `archive` names a file in the item's folder). A user descriptor of a Workshop item and descriptors naming one source are one mod. Selection ids are `workshop/<item>` or `mod/<file>` and are matched against this catalogue, never joined to a path; a selection keeps its name so a mod no longer installed is still named. A descriptor, source, Workshop folder or listing that cannot be read is listed by name with its problem, and the rest still list. Nothing is downloaded, enabled or written, and there is no eligibility check: a mod's other files never keep its artwork from being shown.
+
+`visual::apply` verifies nothing new and changes no recorded layer. It mounts the selection as ordinary folder or archive layers in `ResolvedLayers::presentation`: the recorded layers, then the selected mods in `native_mod_order` (dependencies, then descriptor path bytes; a cycle shows none of the selection), then the built-in layers the engine mounts above every mod. Each mount keeps its descriptor's `replace_path` for lookups and listings alike. The engine mounts one mod of a display name: a selected mod named as a recorded mod it is not stays hidden, and of selected mods sharing a name the first in mount order is shown, each by name. A mod is mounted as the game mounts it: symbolic links are not followed, an archive keeps names that differ only in case apart, and a folder or archive name in another case than a lower layer's stays its own file, since each layer's lookup stays native; recorded layers still refuse these, which verification cannot order. A mod that cannot be mounted with the others is left out by name and the rest still mount. Mounted layers share the recorded layers' inventories rather than copying them. A selected recorded mod mounts again at its new precedence and still verifies its recorded bytes; another mod's bytes are not verified and are counted per mod in the read diagnostics (`UncoveredReads::overlay_warning`), apart from uncovered recorded reads. An empty selection mounts nothing. What cannot be mounted is a named warning in the returned plan, and the rest still mount.
+
+Map geometry, simulation inputs and every recorded fact read the recorded stack itself; only artwork consumers read `presentation()`, whose memos and derived caches are its own. They load through `ResolvedLayers::artwork`: artwork a mounted mod cannot supply (a file its reader refuses, or a lower file its `replace_path` hides) is loaded from the recording instead and named with why (`UncoveredReads::overlay_refusals`), so a mod never keeps a recording from opening. Which consumers read it is listed in the [viewer guide](../viewer/README.md#campaign-appearance).
 
 ## Native GUI reader
 
@@ -99,11 +142,11 @@ Dependent lookups/draws retain element and subtree refusals for undefined reads,
 
 Map readers share definition rows, raster loading, geometry and adjacencies. Resolve file names/dimensions from the stack; record positions, authored IDs and terrain ordinals are distinct. Map area uses raster cells without physical-area calibration.
 
-[weather/temperature.rs](src/weather/temperature.rs) resolves what playback's temperature pass reads: `common/weather.txt`'s temperature settings, window and terrain modifiers, each province record's activity, neighbours, terrain and last-listing strategic region, and each region template's weather periods ([regions.rs](src/regions.rs)).
+[weather/temperature.rs](../installed-content-weather/src/weather/temperature.rs) resolves what playback's temperature pass reads: `common/weather.txt`'s temperature settings, window and terrain modifiers, each province record's activity, neighbours, terrain and last-listing strategic region, and each region template's weather periods ([regions.rs](../installed-content-regions/src/regions.rs)).
 
-World interfaces supply recorded movement/raid facts. Missing admission inputs stay unknown; do not infer port sea access or runtime caches from nearby assets. [raids/target.rs](src/raids/target.rs) shares target/name joins. The [raid tooltip contract](../viewer/src/map/raids/tooltips/README.md) owns consumer and capture rules.
+World interfaces supply recorded movement/raid facts. Missing admission inputs stay unknown; do not infer port sea access or runtime caches from nearby assets. [raids/target.rs](../installed-content-raids/src/raids/target.rs) shares target/name joins. The [raid tooltip contract](../viewer-raids/src/map/raids/tooltips/README.md) owns consumer and capture rules.
 
-[Selected movement searches](src/unit_path/selected.rs) use recorded current-hour world operands and preserve native neighbour order and caller-specific admission. Missing runtime facts remain refusals.
+[Selected movement searches](../installed-content-unit-path/src/unit_path/selected.rs) use recorded current-hour world operands and preserve native neighbour order and caller-specific admission. Missing runtime facts remain refusals.
 
 ## Refusals
 
@@ -120,14 +163,14 @@ Technology description catalogues retain every indexed declaration in native ord
 3. Preserve order, defaults, redefinitions and required operands; propagate diagnostics and uncertain suffixes through lookups.
 4. Add synthetic regressions for changed behaviour, layered replacements and reached mod forms. Reuse helpers (`test-support` exposes cross-crate fixtures) and update affected consumers together.
 
-[Selected transport](src/unit_path/selected/transport.rs) preserves early returns, per-occurrence rounding and independent output buffers; its message law asks for each operand only when a native branch reaches it.
+[Selected transport](../installed-content-unit-path/src/unit_path/selected/transport.rs) preserves early returns, per-occurrence rounding and independent output buffers; its message law asks for each operand only when a native branch reaches it.
 
 ## Checking changes
 
-Follow [AGENTS.md](../../AGENTS.md) for crate-scoped formatting, clippy and affected tests. Layer changes need order, folder/archive, `replace_path`, identity-failure and changed-file cases. [mod_layers_tests.rs](src/mod_layers_tests.rs) provides synthetic stacks; other tests live beside readers.
+Follow [AGENTS.md](../../AGENTS.md) for crate-scoped formatting, clippy and affected tests. Run the owning reader packages together with `installed-content` for their integration tests. Layer changes need order, folder/archive, `replace_path`, identity-failure and changed-file cases. [mod_layers_tests.rs](src/mod_layers_tests.rs) provides synthetic stacks; other tests live beside readers.
 
 Tests that exercise runtime keyword or registry metadata call `engine::executable_tables::initialize_for_tests()`. Set `BATTLE_PLAN_GAME_DIR` to the supported installation for those tests; an unset variable or incompatible installation is an explicit failure. Fixtures supply synthetic authored content while the immutable metadata comes from that installation. Equipment fixtures initialize this metadata before loading authored content, and shader parsing tests initialize it before using the shared lexer. Tests limited to table decoding and byte lookup use synthetic data without an installation.
 
-Real-game tests are ignored and read-only. Set `BATTLE_PLAN_GAME_DIR` to the game folder; run `cargo test -p installed-content <filter> -- --ignored --nocapture` from the repository root. Example filters: `every_shipped_gui_file_reads`, `every_shipped_gfx_file_reads`. Check each test's environment: corpus audits may require `BATTLE_PLAN_WORKSHOP_DIR`; special projects use `BATTLE_PLAN_SP_GAME`/`BATTLE_PLAN_SP_WORKSHOP`. Missing variables can skip a test, so confirm it read files.
+Real-game tests are ignored and read-only. Set `BATTLE_PLAN_GAME_DIR` to the game folder; select the owning reader package and run `cargo test -p installed-content-core <filter> -- --ignored --nocapture` for core readers from the repository root. Example filters: `every_shipped_gui_file_reads`, `every_shipped_gfx_file_reads`. Check each test's environment: corpus audits may require `BATTLE_PLAN_WORKSHOP_DIR`; special projects use `BATTLE_PLAN_SP_GAME`/`BATTLE_PLAN_SP_WORKSHOP`. Missing variables can skip a test, so confirm it read files.
 
 Compare relevant DLC/mod diagnostics with the [viewer corpus workflow](../viewer/README.md#mod-corpus-check); identity support alone does not prove reader coverage. Asset changes follow [rendering rules](../viewer/README.md#rendering-rules); integration follows the [recorder fresh-save/smoke workflow](../recorder/README.md). Commit synthetic inputs; keep installed content, captures and audits outside Git under [shared storage rules](../../AGENTS.md).

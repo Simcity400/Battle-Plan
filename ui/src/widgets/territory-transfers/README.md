@@ -2,9 +2,13 @@
 
 **What it shows:** Who gained and who lost states in peace settlements: a table of countries (states gained, lost, net, net victory points), or a table of every state that changed hands, from whom, to whom and when.
 
-**Product(s) it reads:** [`peace-deals`](../../../../crates/dashboard/src/products/peace_deals.rs) supplies each settlement's transfer graph, including states handed to a country released in the same settlement; [`place-names`](../../../../crates/dashboard/src/products/place_names.rs) supplies dated state names; [`country-groups`](../../../../crates/dashboard/src/products/country_groups.rs) resolves chosen groups.
+**Product(s) it reads:** The prepared peace-deals query gathers branch events and uses the existing product reply builder.  [`peace-deals`](../../../../crates/dashboard/src/products/peace_deals.rs) supplies each settlement's transfer graph, including states handed to a country released in the same settlement; [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) supplies dated state names; [`country-groups`](../../../../crates/dashboard-base/src/products/country_groups.rs) resolves chosen groups.
 
 **Settings:** Whole world by default; the header's country chip narrows it to transfers involving the chosen countries or groups. Show: Countries (default), Transfers, or a pinned country's transfers. Scope: whole campaign or one conference. Breakdown inline or beside the widget; shared table density, cell bars and a saved sort for each table. Campaign, Follow, Pin and Range.
+
+Unprepared outcomes show the shared "This range is still being prepared." status.
+State-owner comparisons and dated finalizer joins require earlier observations;
+an unprepared span remains pending rather than an empty table or zero balance.
 
 **Notable behaviour:**
 

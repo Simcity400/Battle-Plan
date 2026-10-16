@@ -1458,6 +1458,10 @@ fn casualty_titles_preserve_empty_and_key_equal_localisations() {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn changing_selections_reuses_one_branch_scan_with_content_loaded() {
     let source = opened(research_replay((0..35).map(scale_frame).collect()));
     let (context, _content_folder) = loaded_content(&source);
@@ -1727,7 +1731,7 @@ fn benchmark_builder_bytes(builder: &ScanFrames) -> usize {
         + scan.bounds.len() * 32
         + scan.observed.capacity() * std::mem::size_of::<HourSpan>()
         + scan.touched.capacity() * std::mem::size_of::<usize>()
-        + scan.active.capacity() * std::mem::size_of::<String>()
+        + scan.active.len() * std::mem::size_of::<String>()
         + scan.active.iter().map(String::capacity).sum::<usize>()
         + builder
             .live
@@ -1957,8 +1961,8 @@ fn casualty_routes_share_exact_lifetimes_with_the_current_scoreboard_run_cache()
     let cached = scanned_branch(&source, 1, &cancelled).unwrap();
     let context = LoadContext { content: None };
     let route = |key, params| {
-        let json = (super::super::find(key)
-            .expect("registered casualty product")
+        let json = (super::super::oracle_route(key)
+            .expect("casualty oracle route")
             .load)(&source, "current lease", params, &context, &cancelled)
         .unwrap();
         let envelope: serde_json::Value = serde_json::from_str(&json).unwrap();

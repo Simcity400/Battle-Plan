@@ -1,6 +1,6 @@
-//! Occupied states, as recorded, over a whole branch. Daily reads are dated
+//! Occupied states, as recorded, in prepared replay-block windows. Daily reads are dated
 //! separately from equal-value runs; neither resumes after a gap without a read.
-//! The branch is scanned once; `occupied-states-manifest` sends its replay-block
+//! Preparation observes each frame once; `occupied-states-manifest` sends its replay-block
 //! windows, laws and warnings, and `occupied-states` one window's values as
 //! changes, so no reply grows with the campaign.
 //!
@@ -14,25 +14,27 @@ use super::{
     fixed5_runs::{Fixed5State, NativeFixed5Run, push_fixed5},
     recorded_rows,
 };
+#[cfg(test)]
+use crate::metadata::validate_campaign;
 use crate::{
     Source,
     catalogue::{self, Catalogue, Refusals, View},
-    metadata::{link_slot, mapped_slot, slot_read, validate_campaign},
+    metadata::{link_slot, mapped_slot, slot_read},
     scripted_text,
 };
+#[cfg(test)]
+use replay::container::Replay;
 use replay::{
-    container::Replay,
     frame::{DecodedFrame, TableView},
     rows::{CountryLinkRow, CountryRow, StateResistanceRow, StateRow, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 use std::{
     collections::{BTreeMap, HashMap},
     io,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
 
@@ -48,7 +50,7 @@ pub struct OccupiedStatesParams {
 }
 
 /// A state's values at a read, held until they change, as the scan keeps them.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct OccupiedValues {
     pub name: Option<String>,
     pub name_missing: Option<String>,
@@ -78,20 +80,21 @@ pub(super) struct OccupiedValues {
     pub law_missing: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct OccupiedRun {
     pub first_hour: i32,
     pub last_hour: i32,
     pub value: OccupiedValues,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct StateRuns {
     pub state: u32,
     pub runs: Vec<OccupiedRun>,
 }
 
 /// The branch's occupied states as scanned: each state's equal-value runs.
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub(super) struct OccupiedScan {
     pub states: Vec<StateRuns>,
     pub observed: Vec<OccupiedObservation>,
@@ -122,7 +125,7 @@ pub struct OccupationLawInfo {
 /// A state's values in one window, each as `[hour, value]` changes. Every span
 /// the state is occupied restates each value at its first hour, so none carries
 /// across a gap or from another window. Text values index the reply's `texts`.
-#[derive(Clone, Debug, Default, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct OccupiedSeries {
     pub state: u32,
@@ -154,7 +157,7 @@ pub struct OccupiedSeries {
     pub law_missing: Vec<(i32, Option<usize>)>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct OccupiedStatesReply {
     pub branch_id: String,
@@ -171,7 +174,7 @@ pub struct OccupiedStatesReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct OccupiedStatesManifestReply {
     pub branch_id: String,
@@ -308,11 +311,14 @@ fn occupied(row: &StateResistanceRow) -> bool {
     row.active != 0 && (row.country as i32) > 0
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct CountryIndex {
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
     identities: HashMap<u32, u32>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     names: HashMap<super::country_history::Identity, String>,
-    name_refusals: HashMap<super::country_history::Identity, &'static str>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
+    name_refusals: HashMap<super::country_history::Identity, String>,
 }
 
 fn country_index(
@@ -346,7 +352,7 @@ fn country_index(
             .filter(|tag| !tag.is_empty() && !tag.contains('\0'))
         else {
             let reason = "country tag is empty, contains NUL or is not UTF-8";
-            result.name_refusals.insert((slot, row.id), reason);
+            result.name_refusals.insert((slot, row.id), reason.into());
             refused.note(reason, format!("country {}", row.id));
             continue;
         };
@@ -355,7 +361,7 @@ fn country_index(
             result.names.insert((slot, row.id), tag.to_owned());
         } else {
             let reason = "country tag repeats an earlier country";
-            result.name_refusals.insert((slot, row.id), reason);
+            result.name_refusals.insert((slot, row.id), reason.into());
             refused.note(reason, format!("country {}", row.id));
         }
     }
@@ -425,9 +431,14 @@ mod trend;
 
 pub(super) struct OccupationHistory {
     pub states: OccupiedScan,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read only by the recording oracle in tests")
+    )]
     pub trend: super::occupation_trend::History,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct Cache {
     branch: Option<u64>,
@@ -436,6 +447,7 @@ struct Cache {
 }
 
 /// The occupation products share the daily joins, decoder walk and cache.
+#[cfg(test)]
 pub(super) fn history(
     source: &Source,
     branch: u64,
@@ -475,6 +487,7 @@ pub(super) fn history(
 }
 
 /// The branch's replay blocks, the windows `occupied-states` answers.
+#[cfg(test)]
 fn windows(source: &Source, branch: u64) -> Vec<HourSpan> {
     source
         .replay_ref()
@@ -662,6 +675,7 @@ impl Product for OccupiedStates {
             OccupiedStatesReply::decl(),
         ]
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -696,6 +710,7 @@ impl Product for OccupiedStatesManifest {
             OccupiedStatesManifestReply::decl(),
         ]
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -721,3 +736,5 @@ impl Product for OccupiedStatesManifest {
 mod tests;
 
 mod strength;
+
+pub(crate) mod prepared;

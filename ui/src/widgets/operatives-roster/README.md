@@ -18,6 +18,7 @@ Countries/groups and campaign/follow/pin; include departed in campaign mode, ran
 - First presence/departure say By the observing read; causes are named only when recorded. Capture uses its native date. Jump offers first presence, recorded changes and departure.
 - Roster continuity and native slot/id aliases both bound data; identity alone cannot bridge a missing roster or replacement. Failed reads are not empty rosters. Proven feature absence remains distinct from unknown capture.
 - Departed rows retain last details and projected country hour, explicitly dated. Missing owner never becomes roster country. Operation definitions keep separate supplying dates.
+- Prepared requests use day windows through shared coverage polling; sparse capture witnesses and optional departed rows retain the jump actions and last actual read. The parity model is **Operative roster values**.
 - Request country looks only for mounted rows, retaining pending/refused flag reasons for each actual role.
 
 ## Files

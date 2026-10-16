@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChipSet } from '../../components/ChipSet';
 import { CountryFlagUrl, countryFlagUnavailable } from '../../components/CountryFlag';
 import WidgetState from '../../components/WidgetState';
-import LogList from '../../charts/log/LogList';
+import LogList, { PreparedLogCoverage } from '../../charts/log/LogList';
 import FittedList from '../../charts/FittedList';
 import { logSettings } from '../../charts/log/logOptions';
 import { jumpItem } from '../../charts/jump';
@@ -11,6 +11,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, storableToken, toggleContentSet, UNSTORABLE } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
+import { useParityRows } from '../../dashboard/parityRows';
 import { usePeaceDeals } from '../../dashboard/usePeaceDeals';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
@@ -29,18 +30,21 @@ const chipExtraWidth = (item: PeaceChip) => 7 * 2 + (item.tag != null ? 18 + 4 :
 const chipKey = (item: PeaceChip) => item.key;
 
 export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
+  const parity = useRef<HTMLDivElement>(null);
   const live = widget.time.mode === 'follow';
   usePlaybackHour(runtime.clock, active && live);
   const options = resolveOptions(OPTIONS, widget.options);
   const settings = logSettings(options);
   const actions = typeof options.actions === 'string' ? options.actions : '';
-  const { track, data, error, retry } = usePeaceDeals(widget, runtime, active);
+  const { track, data, error, retry, preparing } = usePeaceDeals(widget, runtime, active);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window?.lastHour;
   const log = useMemo(() => data ? preparePeaceLog(data) : null, [data]);
   const filtered = useMemo(() => log ? filterPeaceLog(log, contentSet(actions).map(contentKey)) : null, [log, actions]);
   const from = widget.time.mode === 'range' ? window?.firstHour ?? Infinity : -Infinity;
   const rows = useMemo(() => filtered && hour != null ? peaceRowsAt(filtered, hour, from) : NO_ROWS, [filtered, hour, from]);
+  if (import.meta.env.MODE === 'parity') useParityRows(parity, () => ({ kind: 'log', label: 'Peace deal values', complete: true, total: rows.length,
+    rows: rows.map((row, index) => ({ index, key: row.key, item: row.item })) }));
   const gapHint = useMemo(() => log && hour != null ? peaceGapHint(peaceGapsIn(log.gaps, hour, from)) : null, [log, hour, from]);
   const chips = useMemo(() => peaceActionChoices(log).map(choice => ({ ...choice, unavailable: storableToken(choice.value) ? undefined : UNSTORABLE })), [log]);
   const [visible, setVisible] = useState<readonly PeaceRow[]>(NO_ROWS);
@@ -65,7 +69,7 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
 
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see its peace conferences." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (!data) return <WidgetState kind="loading" label="Loading peace conferences…" />;
+  if (!data) return preparing ? <PreparedLogCoverage coverage={null} /> : <WidgetState kind="loading" label="Loading peace conferences…" />;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
 
   const country = (tag: string, at: number, name = true) => {
@@ -109,7 +113,7 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
   };
   const chosen = contentSet(actions);
   const empty = chosen.length ? 'No peace conferences match these settings yet.' : 'No peace conferences yet.';
-  return <div className="peace-deals">
+  return <div className="peace-deals" ref={parity}>
     {settings.chips && chips.length > 0 && <div className="log-chips"><ChipSet label="Peace actions" max={Number.MAX_SAFE_INTEGER} selected={chosen.length ? chosen : ['']}
       chips={[{ value: '', label: 'All actions' }, ...chips]} onToggle={value => {
         if (value === '') setOption?.('actions', '');

@@ -1,0 +1,22 @@
+[package]
+name = "collector-primitives"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+test-support = []
+
+[dependencies]
+engine.workspace = true
+serde = { workspace = true, features = ["derive"] }
+collector-status.workspace = true
+windows-sys = { workspace = true, features = ["Win32_System_Performance"] }
+
+[dev-dependencies]
+collector-test-support.workspace = true

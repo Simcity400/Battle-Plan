@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import BreakdownChart from '../../charts/drill/BreakdownChart';
 import type { BreakdownSeries } from '../../charts/drill/BreakdownChart';
@@ -6,6 +6,7 @@ import { runAt } from '../../charts/series';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
+import { useParityRows } from '../../dashboard/parityRows';
 import { NumericReply } from '../../dashboard/numericReply';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useProductWindows } from '../../dashboard/productWindows';
@@ -67,11 +68,14 @@ export default function FuelConsumptionStack({ runtime, track, basis, segmentSta
       labelAt: at => allowed(at) ? runAt(names.get(part.key) ?? [], at)?.recordedName ?? 'Name not recorded' : 'Name not recorded' };
   }), [parts, numeric, names, scale, tokens, within]); // eslint-disable-line react-hooks/exhaustive-deps
   const owner = useMemo(() => ({ parent: chart.pickOwner, identity, numbers, within }), [chart.pickOwner, identity, numbers, within]);
-  return <>
+  const parity = useRef<HTMLDivElement>(null);
+  useParityRows(parity,()=>({kind:'chart',label:'Fuel demand stack values',complete:[...wanted].every(window=>windows.data.has(window)),total:values.reduce((count,reply)=>count+reply.parts.reduce((count,part)=>count+part.runs.length,0),0),
+    rows:values.flatMap(reply=>reply.parts.flatMap(part=>part.runs.map(run=>({key:part.key,...run}))))}));
+  return <div ref={parity}>
     {chart.active && [...wanted].some(window => !windows.data.has(window) && !windows.errors.has(window)) && <p className="drill-empty">Loading consumption history…</p>}
     {[...windows.errors.values()].map((reason, i) => <WidgetState key={i} kind="error" what="consumption history" detail={reason} onRetry={windows.retry} />)}
     <BreakdownChart {...chart} within={within} pickOwner={owner} series={series} selectedHour={hour} tooltipHeight={height} keyHours={keyHours}
       onViewChange={onViewChange}
       label="Displayed individual current consumption required per day" axes={{ xFrom: start - chart.branchStart, xTo: end - chart.branchStart, yMin: 0, yMax: null, log: false }} />
-  </>;
+  </div>;
 }

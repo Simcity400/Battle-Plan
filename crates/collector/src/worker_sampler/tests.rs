@@ -1,5 +1,5 @@
 use super::*;
-use crate::allocation_failure_tests::with_allocations_denied;
+use crate::test_support::with_allocations_denied;
 use std::{hint::black_box, sync::mpsc};
 use windows_sys::Win32::Foundation::{
     STATUS_ACCESS_DENIED, STATUS_ALERTED, STATUS_INVALID_HANDLE, STATUS_TIMEOUT,

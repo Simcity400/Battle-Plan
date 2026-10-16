@@ -75,3 +75,16 @@ test('resource breakdown initial Pin, local history picks and Follow use their a
   drill = reduceDrill(drill, { type: 'pick', hour: 104 });
   assert.equal(resourceMoment(drill, true, 105, 113), 104);
 });
+
+test("prepared resource aliases retain the renamed holder's later extrema and exact moment", () => {
+  const bucket = (firstHour: number, lastHour: number, value: number) => ({ firstHour, lastHour, firstValue: value, lastValue: value,
+    lastValueHour: firstHour, minHour: firstHour, minValue: value, maxHour: firstHour, maxValue: value, firstBreak: true, hasBreak: false });
+  const summary = (first: number, last: number, value: number) => ({ from: 100, to: 120, width: 1, buckets: [bucket(first, last, value)] });
+  const earlier = summary(100, 109, 1), later = summary(110, 120, 9);
+  const replies = ['X', 'Y'].map((tag, index) => ({ branchId: 'b', tag, decimals: 5, resources: [], warnings: [], trades: [], dealHours: [],
+    series: [{ id: 7, runs: [] }], summaries: [{ id: 7, supply: index ? later : earlier, demand: index ? later : earlier,
+      parts: Array(8).fill(index ? later : earlier), total: index ? later : earlier }] }));
+  const joined = resourceCountryData(replies, new Map([['X', [{ firstHour: 100, lastHour: 109 }]], ['Y', [{ firstHour: 110, lastHour: 120 }]]]), 'X') as typeof replies[0];
+  assert.equal(joined.summaries[0].supply.buckets[0].maxValue, 9);
+  assert.equal(joined.summaries[0].total.buckets[0].lastHour, 120);
+});

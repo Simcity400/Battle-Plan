@@ -6,7 +6,7 @@ One country’s active production table at a moment, or line histories across th
 
 ## Products it reads
 
-`production-lines`, `production-line-detail` and `production-line-breakdown` are owned by [production_lines.rs](../../../../crates/dashboard/src/products/production_lines.rs). Detail loads in month windows of recorded line values, without modifier trees; a selected factor has its own branch history from the breakdown.
+`production-lines`, `production-line-detail` and `production-line-breakdown` are owned by [production_lines.rs](../../../../crates/dashboard-base/src/products/production_lines.rs). Detail loads in month windows of recorded line values, without modifier trees; a selected factor has its own branch history from the breakdown.
 
 ## Settings
 

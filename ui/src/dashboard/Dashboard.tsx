@@ -29,6 +29,7 @@ import { campaignSlots, defaultAfterOpen, defaultAfterUnload, includeCampaigns, 
 import { hasMapOverlay, isMapOverlay } from '../shell/mapOverlays';
 import type { Campaign } from './campaigns';
 import { followMapPlayback } from './mapPlayback';
+import type { ParityHost } from './parityFixture';
 
 interface Props { page: PageId; resetToken: number; library: ReplayLibraryState; path: string | null; client: DashboardClient; onPrimaryPath?: (path: string | null) => void; active?: boolean; mapActive?: boolean; mapSwitching?: boolean; mapReady?: boolean; onMetadata: (metadata: ReplayMetadata | null) => void;
   /** The branch the shown campaign plays, and how to play another; null without one. */
@@ -410,7 +411,18 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const runtime = useMemo(() => ({ onMapBranch, tracks, clock, maps, client, campaignTracks: template.tracks, defaultRoleId, alignment: template.alignment, nativeHidden,
     campaigns, recordings, assignCampaign, requestSeek, addWidgetBelow }),
     [onMapBranch, tracks, clock, maps, client, template.tracks, template.alignment, defaultRoleId, nativeHidden, campaigns, recordings, assignCampaign, requestSeek, addWidgetBelow]);
-
+  if (import.meta.env.MODE === 'parity') {
+    // The build mode is fixed for this component's lifetime and removed from a
+    // production bundle together with its hooks and fixture import.
+    const parityHost = useRef<ParityHost | null>(null);
+    parityHost.current = { client, template, runtime, setTemplate, openCampaign };
+    useEffect(() => {
+      let current = true, cleanup: (() => void) | undefined;
+      const ready = import('./parityFixture').then(module => { if (current) cleanup = module.installParityFixture(() => parityHost.current!); });
+      window.__hoi4ParityReady = ready;
+      return () => { current = false; cleanup?.(); if (window.__hoi4ParityReady === ready) delete window.__hoi4ParityReady; };
+    }, [client]);
+  }
 
   return <div className="dashboard">
     {campaignHost && createPortal(<ReplayLibraryMenu library={replayLibrary} client={client} campaigns={campaigns} bindings={roles.bindings} defaultId={defaultRoleId} countryTags={countryTags}
@@ -423,7 +435,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     }} countries={defaultSource?.metadata.countries ?? []} playerCountryId={defaultSource?.metadata.playerCountryId ?? null}
       selectedTag={template.roles.find((role) => role.id === defaultRoleId)?.selectedTag ?? null}
       onChange={(tag) => { if (defaultRoleId) setSelectedCountries((previous) => ({ ...previous, [defaultRoleId]: tag })); }} />
-    <PlaybackStrip clock={clock} tracks={tracks} alignment={template.alignment} defaultRoleId={defaultRoleId} />
+    <PlaybackStrip client={client} clock={clock} tracks={tracks} alignment={template.alignment} defaultRoleId={defaultRoleId} />
     <div className="header-workspace-tools">
     {mapActive && <MapControls source={defaultSource ?? null} client={client} metadata={defaultSource?.metadata ?? null} branchId={tracks.find(track => track.roleId === defaultRoleId)?.branch.id ?? null}
       onBranch={id => { const track = tracks.find(track => track.roleId === defaultRoleId); if (track) onMapBranch(track.id, id); }}

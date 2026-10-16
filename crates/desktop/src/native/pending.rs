@@ -1,6 +1,8 @@
 use super::Inner;
 use dashboard::protocol::{DashboardMapView, NativeCommand, ViewBounds, ViewerState};
-use dashboard::transport::{DataCommand, NATIVE_QUEUE_FULL};
+use dashboard::transport::DataCommand;
+#[cfg(test)]
+use dashboard::transport::NATIVE_QUEUE_FULL;
 use std::collections::VecDeque;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,7 +36,8 @@ impl SeekTarget {
 #[derive(Default)]
 pub(super) struct Pending {
     pub(super) actions: VecDeque<dashboard::protocol::MapAction>,
-    pub(super) standalone: bool,
+    /// Select the Campaign map over the dashboard's maps.
+    pub(super) campaign_map: bool,
     pub(super) bounds: Option<ViewBounds>,
     pub(super) visibility: Option<bool>,
     pub(super) open: Option<(String, String)>,
@@ -45,7 +48,9 @@ pub(super) struct Pending {
 }
 
 /// Data requests queued for the native pipe at most, by count and by bytes.
+#[cfg(test)]
 pub(super) const MAX_QUEUED_DATA: usize = 128;
+#[cfg(test)]
 pub(super) const MAX_QUEUED_DATA_BYTES: usize = dashboard::protocol::MAX_MESSAGE_BYTES;
 /// Map actions queued at most.
 pub(super) const MAX_QUEUED_ACTIONS: usize = 16;
@@ -57,6 +62,7 @@ impl Pending {
     /// says only that there was no room, so the frontend tries the request again.
     ///
     /// [`NATIVE_QUEUE_FULL`]: dashboard::transport::NATIVE_QUEUE_FULL
+    #[cfg(test)]
     pub(super) fn enqueue_data(
         &mut self,
         request: DataCommand,
@@ -93,7 +99,7 @@ impl Pending {
     pub(super) fn can_send(&self, visible: bool) -> bool {
         self.close
             || !self.actions.is_empty()
-            || self.standalone
+            || self.campaign_map
             || self.maps.is_some()
             || !self.data.is_empty()
             || self.bounds.is_some()
@@ -112,8 +118,8 @@ impl Pending {
                 .drain(..)
                 .map(|action| NativeCommand::MapAction { action }),
         );
-        if std::mem::take(&mut self.standalone) {
-            commands.push(NativeCommand::Standalone);
+        if std::mem::take(&mut self.campaign_map) {
+            commands.push(NativeCommand::CampaignMap);
         }
         if let Some(bounds) = self.bounds.take() {
             commands.push(bounds.command());

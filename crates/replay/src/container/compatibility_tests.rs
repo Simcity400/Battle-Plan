@@ -340,7 +340,16 @@ fn legacy_rows(table: TableId, hour: Hour, format: FormatVersion) -> TableRows {
             division: 1,
             ..Default::default()
         }]),
+        TableId::Capitulation => TableRows::Capitulation(vec![Default::default()]),
+        TableId::StateCores => TableRows::StateCores(vec![Default::default()]),
         TableId::RaidTooltipOperands => TableRows::RaidTooltipOperands(vec![Default::default()]),
+        TableId::RaidAirScores => TableRows::RaidAirScores(vec![rows::RaidAirScoreRow {
+            country: 1,
+            region: 7,
+            friendly: 2,
+            enemy: 3,
+            ..Default::default()
+        }]),
         TableId::Ships => TableRows::Ships(vec![rows::ShipRow {
             id: 1,
             ..Default::default()
@@ -1000,6 +1009,12 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
                     row.camouflage = rows::Recorded::NotRecorded;
                     row.attack_stats = rows::Recorded::NotRecorded;
                     row.weather_factor = rows::Recorded::NotRecorded;
+                    row.name_template = rows::Recorded::NotRecorded;
+                    row.movement_stats = rows::Recorded::NotRecorded;
+                    row.out_of_supply_days = rows::Recorded::NotRecorded;
+                    row.commander_modifiers = rows::Recorded::NotRecorded;
+                    row.supply_ratio_exact = rows::Recorded::NotRecorded;
+                    row.supply_grace_exact = rows::Recorded::NotRecorded;
                 }
             }
             TableRows::CountryCounterInputs(rows) => {
@@ -1015,6 +1030,7 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
                     row.attack = rows::Recorded::NotRecorded;
                     row.directed_wars = rows::Recorded::NotRecorded;
                     row.attack_modifiers = rows::Recorded::NotRecorded;
+                    row.movement_modifiers = rows::Recorded::NotRecorded;
                 }
             }
             _ => {}
@@ -1458,7 +1474,7 @@ fn compatibility_current_movement_profile_delta_uses_only_its_actual_suffix() {
     let format = FormatVersion::CURRENT;
     let table = TableId::DivisionMovement;
     let fields = format.fields(table);
-    assert_eq!(fields, 23);
+    assert_eq!(fields, 24);
     let suffix = table
         .last_change()
         .appended
@@ -2040,16 +2056,8 @@ fn compatibility_previous_format_keeps_whole_fuel_packs_and_refuses_only_their_p
 #[test]
 fn compatibility_previous_format_keeps_modifier_sides_and_refuses_only_member_rows() {
     use crate::rows::{CombatModifierValue, LandCombatModifierRow, Retired};
-    use crate::value::{Value, value_struct};
-    // One element of the side list LandCombatModifiers held before
-    // LAND_MODIFIER_ROWS_FORMAT, as its writers encoded it.
-    #[derive(Debug, Default, Clone, PartialEq, Eq)]
-    struct OldDivision {
-        division: u64,
-        ordinal: u32,
-        entries: Vec<CombatModifierValue>,
-    }
-    value_struct!(OldDivision { division: u64, ordinal: u32, entries: Vec<CombatModifierValue> });
+    use crate::value::Value;
+    use replay_data::test_support::OldDivision;
     fn opaque(value: &impl Value, output: &mut Vec<u8>) {
         let mut payload = Vec::new();
         Value::encode(value, &mut payload).unwrap();

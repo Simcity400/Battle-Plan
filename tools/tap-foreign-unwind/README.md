@@ -1,6 +1,6 @@
 # Tap foreign-exception oracle
 
-An independently authored fixture for actual C++ and noncontinuable SEH exceptions through the production Tap, outside the game. The [collector example](../../crates/collector/examples/tap_foreign_unwind.rs) includes production [hook.rs](../../crates/collector/src/hook.rs); [probe.cpp](probe.cpp) supplies native throw/catch and `RaiseException`/`__finally`/`__except` paths.
+An independently authored fixture for actual C++ and noncontinuable SEH exceptions through the production Tap, outside the game. The [collector example](../../crates/collector/examples/tap_foreign_unwind.rs) includes production [hook.rs](../../crates/collector-hooks/src/hook.rs); [probe.cpp](probe.cpp) supplies native throw/catch and `RaiseException`/`__finally`/`__except` paths.
 
 Building requires the production Tap implementation with a `system-unwind` observer API. The observer uses that ABI directly; do not cast a non-unwinding callback to make it compile. The `tap-foreign-probe` feature gates the example so ordinary builds do not require its native DLL.
 

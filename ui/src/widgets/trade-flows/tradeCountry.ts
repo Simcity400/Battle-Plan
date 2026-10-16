@@ -47,6 +47,7 @@ export const countryMeasureUnknown = (known: readonly HourSpan[], measure: Measu
  * deal then are left out. None when nothing is known then (`countryTotal` is null). */
 export function countryParts(flows: readonly Flow[], direction: TradeDirection, by: 'partner' | 'resource', measure: Measure,
   from: number, hour: number, known: readonly HourSpan[]): CountryPart[] {
+  if (measure !== 'current' && flows.some(flow => flow.prepared?.cumulativePending)) return [];
   if (countryMeasureUnknown(known, measure, from, hour)) return [];
   const groups = new Map<string, Flow[]>();
   for (const flow of flows) {
@@ -64,6 +65,7 @@ export function countryParts(flows: readonly Flow[], direction: TradeDirection, 
 
 /** A direction's exact total, or null when it is not known then. */
 export function countryTotal(flows: readonly Flow[], measure: Measure, from: number, hour: number, known: readonly HourSpan[]): bigint | null {
+  if (measure !== 'current' && flows.some(flow => flow.prepared?.cumulativePending)) return null;
   return countryMeasureUnknown(known, measure, from, hour) ? null : measureAmount(flows, measure, from, hour);
 }
 

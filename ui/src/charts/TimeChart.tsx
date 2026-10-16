@@ -3,6 +3,8 @@ import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { ZoomReset } from './ZoomReset';
 import { BADGE_STRIP, badgesAt, drawBadges, visibleBadges } from './badges';
 import type { EventBadge } from './badges';
+import { clusterHour, drawMarkSummary, markClusterAt, markSummaryMatches } from './markSummary';
+import type { MarkCluster, MarkSummary } from './markSummary';
 import { clipToPlot, dayLabel, drawAxes, drawCrosshair, drawPlayhead, drawSelection, VALUE_LABEL_GAP, valueLabelWidth } from './draw';
 import { approach, easeTau } from './easing';
 import { keyTarget } from './rowNavigation';
@@ -73,6 +75,21 @@ export interface TimeChartProps {
   valueTicks?: readonly number[];
   /** Event glyphs along the top edge. Hovering one snaps to its hour. */
   badges?: readonly EventBadge[];
+  /** Prepared screen-width marks. Individual events are fetched by stable range,
+   * so drawing and spoken text never materialise campaign-long event rows. */
+  markSummary?: MarkSummary;
+  markSummaries?: readonly MarkSummary[];
+  markTooltip?: (cluster: MarkCluster) => TooltipContent | null;
+  onMarkHover?: (cluster: MarkCluster | null) => void;
+  /** Reached exact event rows only, for pointer/keyboard hour tooltips. */
+  badgesAtHour?: (hour: number) => readonly EventBadge[];
+  /** Requests display summaries at actual layout width and playback cutoff. */
+  onSummaryView?: (view: { from: number; to: number; width: number }) => void;
+  /** Prepared navigation queries the next exact stop without retaining all dates. */
+  onNavigateHour?: (key: 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End', from: number | null, x: Range, until: number | null) => void;
+  /** The result of the latest owner-scoped navigation request. */
+  keyboardHour?: number | null;
+  keyboardRevision?: unknown;
   /** Tooltip content for a pointer or keyboard hour, including its visible event
    * badges; null shows none. */
   tooltip?: (hour: number, frame: PlotFrame, badges: readonly EventBadge[]) => TooltipContent | null;
@@ -110,7 +127,7 @@ const MIN_SPAN = 14 * 24;
 const BOX_THRESHOLD = 8;
 
 /** What a pointer is over: the crosshair's hour, the hour it is about and any badges. */
-type Pointed = { hour: number; describes: number; badges: readonly EventBadge[] };
+type Pointed = { hour: number; describes: number; badges: readonly EventBadge[]; cluster?: MarkCluster };
 
 /** A box started in a strip zooms time only: the strip has no value axis. */
 type Drag = { mode: 'axis-x'; grab: number } | { mode: 'axis-y'; grab: number } | { mode: 'pan'; lastX: number } | { mode: 'box'; x0: number; y0: number; x1: number; y1: number; timeOnly: boolean };
@@ -130,6 +147,7 @@ export default function TimeChart(props: TimeChartProps) {
   // which the keys act on; what the keyboard hover shows is read out as it changes.
   type Point = { x: number; y: number; clientX: number; clientY: number };
   const hover = useRef<HoverState<Point>>(NO_HOVER);
+  const pendingNavigation = useRef<{ hover: HoverState<Point>; owner: unknown } | null>(null);
   const shownHour = useRef<number | null>(null);
   // The last notified callback owns any outstanding hover facts, even after a render changes the owner.
   const hoverObserver = useRef<{ callback: NonNullable<TimeChartProps['onHover']>;
@@ -157,6 +175,7 @@ export default function TimeChart(props: TimeChartProps) {
     let view: ViewState = EMPTY_VIEW;
     // The badges last described, compared one by one (a count and range could repeat after a pan).
     let spokenFor: readonly EventBadge[] = [];
+    let spokeSummary = false;
     // The view last reported: a handler hears only a new range (or, when it changes, the current one).
     let reported: { handler: (x: Range) => void; x: Range } | null = null;
     let eased: { x: [number, number]; y: [number, number] } | null = null;
@@ -168,8 +187,9 @@ export default function TimeChart(props: TimeChartProps) {
     let zoomedFor = '';
     // Tooltip content for the hovered hour, rebuilt only when the hour, the hovered
     // badges or the data change.
-    let hovered: { hour: number; row: number; badges: readonly EventBadge[]; rows: TimeChartProps['rows']; tooltip: TimeChartProps['tooltip']; revision: unknown; content: TooltipContent | null; key: string } | null = null;
+    let hovered: { hour: number; row: number; badges: readonly EventBadge[]; cluster?: MarkCluster; markTooltip: TimeChartProps['markTooltip']; rows: TimeChartProps['rows']; tooltip: TimeChartProps['tooltip']; revision: unknown; content: TooltipContent | null; key: string } | null = null;
     let keyedBadges: { source: TimeChartProps['badges']; hour: number; badges: readonly EventBadge[] } | null = null;
+    let summaryView: { callback: TimeChartProps['onSummaryView']; from: number; to: number; width: number } | null = null;
 
     const dispatch = (action: ViewAction) => {
       if (!frame) return;
@@ -189,7 +209,8 @@ export default function TimeChart(props: TimeChartProps) {
       // Badges sit above the plot, so a chart with them keeps room there; a strip
       // sits between the plot and the dates.
       const strip = p.strip ? Math.max(0, Math.round(p.strip.height(layoutHeight))) : 0;
-      const padding = { ...DEFAULT_PADDING, ...(p.badges ? { top: BADGE_STRIP } : {}), ...p.padding };
+      const hasBadgeSummary = p.markSummary?.placement !== 'ticks' && p.markSummary || p.markSummaries?.some(summary => summary.placement !== 'ticks');
+      const padding = { ...DEFAULT_PADDING, ...(p.badges || hasBadgeSummary ? { top: BADGE_STRIP } : {}), ...p.padding };
       if (p.rows) {
         padding.left = Math.min(layoutWidth * 0.45, p.rows.labelWidth);
         padding.top = p.padding?.top ?? tokens.fontSize.small * 2 + 4;
@@ -217,6 +238,11 @@ export default function TimeChart(props: TimeChartProps) {
       const fitted = p.fitValues?.(data) ?? null;
       const targetY = resolveY(view, fitted ? { ...p.axes, yMin: p.axes.yMin ?? fitted[0], yMax: p.axes.yMax ?? fitted[1] } : p.axes, data);
       const y: [number, number] = eased ? [glide(eased.y[0], targetY.range[0]), glide(eased.y[1], targetY.range[1])] : [targetY.range[0], targetY.range[1]];
+      const ySpan = Math.abs(targetY.range[1] - targetY.range[0]) || Math.max(1, Math.abs(targetY.range[1]));
+      // The final scheduled frame must paint the fitted scale exactly.
+      if (Math.abs(y[0] - targetY.range[0]) + Math.abs(y[1] - targetY.range[1]) < 1e-5 * ySpan) {
+        y[0] = targetY.range[0]; y[1] = targetY.range[1];
+      }
       eased = { x, y };
       frame = plotFrame(layoutWidth, layoutHeight, padding, x, y, targetY.log, strip, !!p.rows);
       frame.valueTicks = p.valueTicks;
@@ -247,11 +273,26 @@ export default function TimeChart(props: TimeChartProps) {
         p.onViewChange(x);
       }
       if (p.playhead != null && p.playback === 'cursor') drawPlayhead(context, frame, tokens, p.playhead);
-      if (p.badges) drawBadges(context, frame, tokens, p.badges, until);
-      const drawn = p.badges ? visibleBadges(p.badges, frame.x, until) : [];
-      if (drawn.length !== spokenFor.length || drawn.some((badge, index) => badge !== spokenFor[index])) {
+      const preparedMarks = p.markSummary !== undefined || p.markSummaries !== undefined;
+      const summaries = [...(p.markSummary ? [p.markSummary] : []), ...(p.markSummaries ?? [])].filter(summary => markSummaryMatches(summary, frame!, until));
+      for (const summary of summaries) drawMarkSummary(context, frame, tokens, summary);
+      if (!preparedMarks && p.badges) drawBadges(context, frame, tokens, p.badges, until);
+      const summaryRequest = { callback: p.onSummaryView, from: frame.x[0], to: Math.min(frame.x[1], until ?? frame.x[1]), width: Math.ceil(frame.plotWidth) };
+      if (!summaryView || summaryView.callback !== summaryRequest.callback || summaryView.from !== summaryRequest.from
+        || summaryView.to !== summaryRequest.to || summaryView.width !== summaryRequest.width) {
+        summaryView = summaryRequest; p.onSummaryView?.({ from: summaryRequest.from, to: summaryRequest.to, width: summaryRequest.width });
+      }
+      const drawn = !preparedMarks && p.badges ? visibleBadges(p.badges, frame.x, until) : [];
+      if (!preparedMarks && (spokeSummary || drawn.length !== spokenFor.length || drawn.some((badge, index) => badge !== spokenFor[index]))) {
+        spokeSummary = false;
         spokenFor = drawn;
         setSpoken(drawn.map(badge => `${dayLabel(badge.hour)}, ${badge.label}`).join('; '));
+      }
+      if (preparedMarks) {
+        spokeSummary = true;
+        const text = summaries.flatMap(summary => summary.clusters.map(cluster => cluster.badge ? `${dayLabel(cluster.badge.hour)}, ${cluster.badge.label}`
+          : `${dayLabel(cluster.firstHour)} to ${dayLabel(cluster.lastHour)}, ${cluster.count} events`)).join('; ');
+        setSpoken(previous => previous === text ? previous : text);
       }
       p.overlay?.(context, frame, tokens);
       if (drag?.mode === 'box') drawSelection(context, tokens, drag);
@@ -263,6 +304,7 @@ export default function TimeChart(props: TimeChartProps) {
       const plot = frame;
       const hit = hoverAt(hover.current, frame.x, until, point => !drag || drag.mode !== 'box' ? pointedAt(point, plot, p) : null);
       const pointed = hit?.by === 'pointer' ? hit as Pointed : null;
+      p.onMarkHover?.(pointed?.cluster ?? null);
       // The crosshair sits at `hour`; the tooltip and the keys are about `describes`. A
       // keyboard stop at a strip bar the view cuts off is about the bar's read.
       const stop = keyedStopRef.current;
@@ -291,9 +333,9 @@ export default function TimeChart(props: TimeChartProps) {
         const row = Math.max(0, Math.min((p.rows?.labels.length ?? 1) - 1, rowRef.current));
         drawCrosshair(context, frame, tokens, at.hour);
         const hour = Math.floor(at.describes);
-        if (!hovered || hovered.hour !== hour || hovered.row !== row || hovered.rows !== p.rows || hovered.tooltip !== p.tooltip || hovered.revision !== p.revision || !sameBadges(hovered.badges, at.badges)) {
-          hovered = { hour, row, badges: at.badges, rows: p.rows, tooltip: p.tooltip, revision: p.revision,
-            content: p.rows ? p.rows.tooltip(row, hour) : p.tooltip?.(hour, frame, at.badges) ?? null,
+        if (!hovered || hovered.hour !== hour || hovered.row !== row || hovered.rows !== p.rows || hovered.tooltip !== p.tooltip || hovered.revision !== p.revision || hovered.cluster !== pointed?.cluster || hovered.markTooltip !== p.markTooltip || !sameBadges(hovered.badges, at.badges)) {
+          hovered = { hour, row, badges: at.badges, cluster: pointed?.cluster, markTooltip: p.markTooltip, rows: p.rows, tooltip: p.tooltip, revision: p.revision,
+            content: pointed?.cluster ? p.markTooltip?.(pointed.cluster) ?? null : p.rows ? p.rows.tooltip(row, hour) : p.tooltip?.(hour, frame, p.badgesAtHour?.(hour) ?? at.badges) ?? null,
             key: `${hour}:${at.badges.map(badge => `${badge.hour}|${badge.label}`).join(',')}` };
         }
         // The keyboard hover's tooltip sits at the top of its crosshair; layout pixels
@@ -310,7 +352,6 @@ export default function TimeChart(props: TimeChartProps) {
       element.style.cursor = drag?.mode === 'pan' ? 'grabbing' : pointed?.badges.length ? 'pointer' : zone === 'x-axis' ? 'ew-resize'
         : zone === 'y-axis' ? 'ns-resize' : zone === 'plot' || zone === 'strip' ? 'crosshair' : 'default';
 
-      const ySpan = Math.abs(targetY.range[1] - targetY.range[0]) || Math.max(1, Math.abs(targetY.range[1]));
       const settled = Math.abs(x[0] - targetX[0]) + Math.abs(x[1] - targetX[1]) < 1e-3
         && Math.abs(y[0] - targetY.range[0]) + Math.abs(y[1] - targetY.range[1]) < 1e-5 * ySpan;
       return !settled || drag != null;
@@ -321,7 +362,16 @@ export default function TimeChart(props: TimeChartProps) {
      * (`describes`: a plot mark it snaps to, or the strip item's own hour). */
     const pointedAt = (point: { x: number; y: number }, plot: PlotFrame, p: TimeChartProps): Pointed | null => {
       const until = shownUntil(p.playhead, p.playback, p.afterPlayhead === true);
-      const badges = p.badges ? badgesAt(point, plot, p.badges, until) : [];
+      const summaries = [...(p.markSummary ? [p.markSummary] : []), ...(p.markSummaries ?? [])];
+      let cluster: MarkCluster | null = null;
+      for (const summary of summaries) {
+        if (!markSummaryMatches(summary, plot, until)) continue;
+        const next = markClusterAt(point, plot, summary);
+        if (next && (!cluster || Math.abs(plot.toX(clusterHour(next)) - point.x) < Math.abs(plot.toX(clusterHour(cluster)) - point.x))) cluster = next;
+      }
+      if (cluster) return { hour: clusterHour(cluster), describes: cluster.firstHour,
+        badges: cluster.badge ? [cluster.badge] : [], cluster };
+      const badges = !p.markSummary && !p.markSummaries && p.badges ? badgesAt(point, plot, p.badges, until) : [];
       if (badges.length) return { hour: badges[0].hour, describes: badges[0].hour, badges };
       const zone = hitZone(point, plot);
       if (zone !== 'plot' && zone !== 'strip') return null;
@@ -342,6 +392,7 @@ export default function TimeChart(props: TimeChartProps) {
     };
     let secondPress = false;
     const down = (event: PointerEvent) => {
+      pendingNavigation.current = null;
       hover.current = reduceHover(hover.current, { type: 'pointer-down' });
       // A click picks at once; the second press of a double-click never picks again.
       secondPress = event.detail >= 2;
@@ -399,7 +450,7 @@ export default function TimeChart(props: TimeChartProps) {
       wake();
     };
     const cancel = () => { drag = null; wake(); };
-    const leave = () => { pointer = null; hover.current = reduceHover(hover.current, { type: 'pointer-leave' }); hideTooltip(owner); wake(); };
+    const leave = () => { pendingNavigation.current = null; pointer = null; hover.current = reduceHover(hover.current, { type: 'pointer-leave' }); hideTooltip(owner); wake(); };
     const wheel = (event: WheelEvent) => {
       if (!frame) return;
       const point = local(event);
@@ -474,6 +525,20 @@ export default function TimeChart(props: TimeChartProps) {
     if (!props.active) hideTooltip(owner);
   }, [props.active, owner]);
   useEffect(() => { if (task.current) scheduler.wake(task.current); });
+  useEffect(() => {
+    if (!props.active) props.onMarkHover?.(null);
+    return () => props.onMarkHover?.(null);
+  }, [props.active, props.pickOwner, props.onMarkHover]);
+  useEffect(() => {
+    if (props.keyboardHour !== undefined) {
+      const pending = pendingNavigation.current;
+      if (props.onNavigateHour && (!pending || pending.hover !== hover.current || !Object.is(pending.owner, props.pickOwner))) return;
+      pendingNavigation.current = null;
+      keyedStopRef.current = null;
+      hover.current = reduceHover(hover.current, { type: 'key', hour: props.keyboardHour });
+      if (task.current) scheduler.wake(task.current);
+    }
+  }, [props.keyboardHour, props.keyboardRevision, props.pickOwner]);
 
   const wake = () => { if (task.current) scheduler.wake(task.current); };
   const send = (event: HoverEvent<Point>) => { hover.current = reduceHover(hover.current, event); wake(); };
@@ -491,6 +556,11 @@ export default function TimeChart(props: TimeChartProps) {
       // The keyboard takes over from the pointer, stepping on from the hour shown.
       // The strip's bars in view are stops too, so the keys reach everything the pointer can.
       const { x, until } = shown.current;
+      if (props.onNavigateHour) {
+        pendingNavigation.current = { hover: hover.current, owner: props.pickOwner };
+        props.onNavigateHour(event.key, hover.current.keyed ?? shownHour.current, x, until);
+        return;
+      }
       const strip = props.strip;
       const stops = keyStopsFor(props.keyHours, strip, () => strip?.keyTargets?.(x, until) ?? [], x, until);
       const from = hover.current.keyed ?? shownHour.current;
@@ -505,16 +575,19 @@ export default function TimeChart(props: TimeChartProps) {
       }
       return;
     }
+    if (event.key === 'Escape') pendingNavigation.current = null;
     if (event.key === 'Escape' && hover.current.keyed != null) { event.preventDefault(); clearKeyed(); return; }
     if (event.key === 'Escape' && zoomed) { event.preventDefault(); controls.current?.dispatch({ type: 'reset' }); }
     // The hour the hover shows (the keyboard's, or the pointer's), else the playhead.
     const moment = actionHour(shownHour.current, hover.current, props.playhead);
     // Enter or Space picks the moment shown, as a click on the chart would.
     if ((event.key === 'Enter' || event.key === ' ') && props.onPick) {
+      pendingNavigation.current = null;
       event.preventDefault();
       if (pickFrame.current) picks.pick(pickFrame.current, moment ?? props.extent[1]);
     }
     if ((event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) && props.onContextMenu && moment != null) {
+      pendingNavigation.current = null;
       event.preventDefault();
       send({ type: 'menu-key' });
       const bounds = canvas.current!.getBoundingClientRect();

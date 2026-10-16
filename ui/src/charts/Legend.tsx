@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import type { MovingRow } from './rowMotion';
 import type { ReactNode } from 'react';
 import WindowedRows from './WindowedRows';
 import { useChartTokens } from './useChartTokens';
+import { useParityRows } from '../dashboard/parityRows';
 import './charts.css';
 
 export interface LegendItem {
@@ -19,13 +20,21 @@ export interface LegendItem {
 export default function Legend({ items, label, always = false, windowed = false, onVisibleItems }: { items: readonly LegendItem[]; label: string; always?: boolean; windowed?: boolean;
   /** Mounted windowed entries (including leaving rows); empty when hidden or unmounted. */
   onVisibleItems?: (items: readonly LegendItem[]) => void }) {
+  const root = useRef<HTMLUListElement>(null);
+  if (import.meta.env.MODE === 'parity') {
+    useParityRows(root, () => ({
+      kind: 'windowed', label, complete: true, total: items.length,
+      rows: items.map((item, index) => ({ key: item.id, index, item })),
+    }));
+  }
+  windowed ||= items.length > 30;
   useLayoutEffect(() => () => onVisibleItems?.([]), [onVisibleItems]);
   useEffect(() => {
     if (!windowed || items.length < (always ? 1 : 2)) onVisibleItems?.(items.length >= (always ? 1 : 2) ? items : []);
   }, [items, always, windowed, onVisibleItems]);
   if (items.length < (always ? 1 : 2)) return null;
   if (windowed) return <WindowedLegend items={items} label={label} onVisibleItems={onVisibleItems} />;
-  return <ul className="chart-legend" aria-label={label}>{items.map(item => <li key={item.id} data-tooltip={item.tooltip}><Entry item={item} /></li>)}</ul>;
+  return <ul className="chart-legend" aria-label={label} ref={root}>{items.map(item => <li key={item.id} data-tooltip={item.tooltip}><Entry item={item} /></li>)}</ul>;
 }
 
 function WindowedLegend({ items, label, onVisibleItems }: { items: readonly LegendItem[]; label: string; onVisibleItems?: (items: readonly LegendItem[]) => void }) {

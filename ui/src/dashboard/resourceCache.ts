@@ -1,6 +1,7 @@
 /** Bounded immutable results with shared requests and per-consumer cancellation. */
 export class ResourceCache<T> {
   private entries = new Map<string, { controller: AbortController; promise: Promise<T>; users: number; settled: boolean; bytes: number }>();
+  private displacedLoads = 0;
   private maxEntries: number;
   private maxBytes: number;
   private size: (value: T) => number;
@@ -8,7 +9,7 @@ export class ResourceCache<T> {
     this.maxEntries = maxEntries; this.maxBytes = maxBytes; this.size = size;
   }
 
-  get(key: string, load: (signal: AbortSignal) => Promise<T>, signal: AbortSignal): Promise<T> {
+  get(key: string, load: (signal: AbortSignal) => Promise<T>, signal: AbortSignal, retain: (value: T) => boolean = () => true): Promise<T> {
     if (signal.aborted) return Promise.reject(new DOMException('Request cancelled', 'AbortError'));
     let entry = this.entries.get(key);
     if (!entry) {
@@ -18,6 +19,10 @@ export class ResourceCache<T> {
       this.entries.set(key, created);
       created.promise = created.promise.then(value => {
         created.settled = true;
+        if (!retain(value)) {
+          if (this.entries.get(key) === created) this.entries.delete(key);
+          return value;
+        }
         created.bytes = this.size(value);
         this.trim();
         return value;
@@ -49,6 +54,31 @@ export class ResourceCache<T> {
       signal.addEventListener('abort', abort, { once: true });
       current.promise.then(value => finish(() => resolve(value)), error => finish(() => reject(error)));
     });
+  }
+
+  /** Mounted progressive reads can reuse only final results, never another mount's polling. */
+  getSettled(key: string): Promise<T> | undefined {
+    const entry = this.entries.get(key);
+    if (!entry?.settled) return undefined;
+    this.entries.delete(key); this.entries.set(key, entry);
+    return entry.promise;
+  }
+
+  /** Publish a final result without replacing the owners of any outstanding load. */
+  put(key: string, value: T): void {
+    const previous = this.entries.get(key);
+    if (previous && !previous.settled) {
+      // Keep the displaced one-shot load reachable by source cancellation until
+      // its existing consumers finish. Its reply cannot replace the final value.
+      const pendingKey = JSON.stringify([JSON.parse(key)[0], key, ++this.displacedLoads]);
+      this.entries.set(pendingKey, previous);
+      const finished = () => { this.entries.delete(pendingKey); };
+      void previous.promise.then(finished, finished);
+    }
+    this.entries.delete(key);
+    this.entries.set(key, { controller: new AbortController(), promise: Promise.resolve(value),
+      users: 0, settled: true, bytes: this.size(value) });
+    this.trim();
   }
 
   /** Forget every entry of a source, cancelling loads still in flight. */

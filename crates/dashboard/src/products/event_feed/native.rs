@@ -1,119 +1,43 @@
 //! Native observations keep action roles and exact occurrence-hour identity witnesses.
 
 use super::{Builder, EventFeedCause, EventFeedKind, EventFeedRow, check_cancel};
-use crate::metadata::{link_slots, validate_campaign};
+#[cfg(test)]
+use crate::metadata::validate_campaign;
+#[cfg(test)]
+use crate::products::country_history::NativeNames as Names;
 use replay::{
     container::Replay,
     event_feed_rows::{
         EventFeedCause as NativeCause, EventFeedCountry, EventFeedCoverage, EventFeedHistoryRow,
         EventFeedRoute, EventFeedSource,
     },
-    frame::{DecodedFrame, FrameDecoder},
-    rows::{CountryExperienceGainRow, CountryRow, Recorded, TableId, tables},
+    rows::Recorded,
 };
-use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
+#[cfg(test)]
+use replay::{
+    frame::FrameDecoder,
+    rows::{TableId, tables},
+};
+use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::collections::BTreeMap;
+use std::{io, sync::atomic::AtomicBool};
 
-/// Only the exact occurrence's recorded tables can name a full native actor.
-pub(super) struct Names {
-    slots: std::collections::HashMap<u32, u32>,
-    tags: BTreeMap<u32, (u32, u32, String)>,
-}
-impl Names {
-    pub(super) fn at(frame: &DecodedFrame, branch: u64, hour: i32) -> io::Result<Self> {
-        if frame.branch != branch || frame.hour != hour {
-            return Err(io::Error::other(
-                "No same-branch occurrence-hour country witness",
-            ));
-        }
-        for id in [
-            TableId::Countries,
-            TableId::CountryLinks,
-            TableId::CountryExperienceGains,
-        ] {
-            if frame.metrics.table_ns[id.index()] == 0 {
-                return Err(io::Error::other(
-                    "Occurrence-hour country identity was not freshly read",
-                ));
-            }
-        }
-        let countries = frame.complete::<tables::Countries>()?;
-        let links = frame.complete::<tables::CountryLinks>()?;
-        let gains = frame.complete::<tables::CountryExperienceGains>()?;
-        let slots = link_slots(links);
-        let mut holders: BTreeMap<u32, Option<&CountryRow>> = BTreeMap::new();
-        let mut tag_slots: BTreeMap<&[u8], Option<u32>> = BTreeMap::new();
-        for country in countries {
-            let Some(&slot) = slots.get(&country.id) else {
-                continue;
-            };
-            if country.canonical_slot != slot {
-                continue;
-            }
-            holders
-                .entry(slot)
-                .and_modify(|row| *row = None)
-                .or_insert(Some(country));
-            tag_slots
-                .entry(country.tag.as_slice())
-                .and_modify(|seen| *seen = None)
-                .or_insert(Some(slot));
-        }
-        let mut instances: BTreeMap<u32, Option<&CountryExperienceGainRow>> = BTreeMap::new();
-        for gain in gains {
-            if let Some(&slot) = slots.get(&gain.country) {
-                instances
-                    .entry(slot)
-                    .and_modify(|row| *row = None)
-                    .or_insert(Some(gain));
-            }
-        }
-        let mut tags = BTreeMap::new();
-        for (slot, country) in holders {
-            let Some(country) = country else { continue };
-            let Some(Some(gain)) = instances.get(&slot) else {
-                continue;
-            };
-            if gain.country != country.id
-                || tag_slots.get(country.tag.as_slice()) != Some(&Some(slot))
-            {
-                continue;
-            }
-            let Ok(tag) = std::str::from_utf8(&country.tag) else {
-                continue;
-            };
-            if tag.is_empty() || tag.contains('\0') {
-                continue;
-            }
-            // The gain census reads current positive country references and IDs.
-            // Complete describes awards, not identity.
-            tags.insert(slot, (country.id, gain.instance, tag.to_owned()));
-        }
-        Ok(Self { slots, tags })
-    }
-    pub(super) fn tag(&self, country: EventFeedCountry) -> Option<String> {
-        // Country reference zero's null object is excluded from the
-        // gain census. Original-tag buckets/physical IDs do not prove its +C.
-        if country.reference == 0 {
-            return None;
-        }
-        let slot = self.slots.get(&country.reference)?;
-        let (id, instance, tag) = self.tags.get(slot)?;
-        (*id == country.id && *instance == country.instance).then(|| tag.clone())
-    }
-}
-
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub(super) struct Projection {
     last_sequence: Option<u64>,
     /// The branch's recorded event losses, as the reads each lies between.
     event_losses: Vec<(i32, i32)>,
 }
 impl Projection {
-    fn append_named<'a>(
+    pub(super) fn losses(&mut self, replay: &Replay, branch: u64) {
+        self.event_losses = replay.event_losses(branch).collect();
+    }
+    pub(super) fn append_named(
         &mut self,
         builder: &mut Builder,
         pack: &EventFeedHistoryRow,
-        mut names_at: impl FnMut(i32) -> Option<&'a Names>,
+        mut tag_at: impl FnMut(i32, EventFeedCountry) -> Option<String>,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         check_cancel(cancelled)?;
@@ -152,9 +76,8 @@ impl Projection {
         for event in &pack.events {
             check_cancel(cancelled)?;
             self.last_sequence = Some(event.sequence);
-            let named = names_at(event.hour);
-            let participants = [event.actor, event.target]
-                .map(|country| named.and_then(|names| names.tag(country)));
+            let participants =
+                [event.actor, event.target].map(|country| tag_at(event.hour, country));
             // Every window's derived peace rows defer to the exact native end.
             if event.source == EventFeedSource::WarEnded
                 && let [Some(first), Some(second)] = &participants
@@ -185,9 +108,7 @@ impl Projection {
             };
             let cause = match event.cause {
                 Recorded::Value(cause) => {
-                    let ally = cause
-                        .ally
-                        .map(|ally| named.and_then(|names| names.tag(ally)));
+                    let ally = cause.ally.map(|ally| tag_at(event.hour, ally));
                     if ally == Some(None) {
                         builder.sampled_unavailable("nativeEventCountry", "Native event country",
                             format!("The ally of event {} at {} has no exact country-reference, ID and instance witness.",
@@ -233,13 +154,19 @@ impl Projection {
         self.append_named(
             builder,
             pack,
-            |hour| names.get(&hour).and_then(Option::as_ref),
+            |hour, country| {
+                names
+                    .get(&hour)
+                    .and_then(Option::as_ref)
+                    .and_then(|names| names.tag(country))
+            },
             cancelled,
         )
     }
 }
 
 /// Two selected-table passes retain only identities actually used by events.
+#[cfg(test)]
 pub(super) fn scan(
     replay: &Replay,
     branch: u64,
@@ -331,7 +258,7 @@ pub(super) fn scan(
                         .append_named(
                             builder,
                             pack,
-                            |_| None,
+                            |_, _| None,
                             cancelled,
                         )?;
                         continue;
@@ -406,9 +333,12 @@ pub(super) fn scan(
         ..Projection::default()
     };
     for pack in packs {
-        if let Err(error) =
-            projection.append_named(builder, &pack, |hour| names.get(&hour), cancelled)
-        {
+        if let Err(error) = projection.append_named(
+            builder,
+            &pack,
+            |hour, country| names.get(&hour).and_then(|names| names.tag(country)),
+            cancelled,
+        ) {
             check_cancel(cancelled)?;
             builder.sampled_unavailable(
                 "nativeEventCoverage",
@@ -540,5 +470,10 @@ fn route_words(route: EventFeedRoute) -> Option<&'static str> {
     })
 }
 
+#[cfg(test)]
+use replay::{
+    frame::DecodedFrame,
+    rows::{CountryExperienceGainRow, CountryRow},
+};
 #[cfg(test)]
 mod tests;

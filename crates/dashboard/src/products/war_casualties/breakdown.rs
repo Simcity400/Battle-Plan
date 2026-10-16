@@ -3,7 +3,12 @@
 //! have no enemy or domain; neither is invented here.
 
 use super::*;
-use crate::products::wars::{WarName, WarRelationKey, Wars, WarsParams, WarsReply};
+#[cfg(test)]
+use crate::products::wars::Wars;
+use crate::products::wars::WarsParams;
+use crate::products::wars::{WarName, WarRelationKey, WarsReply};
+
+pub(crate) mod prepared;
 
 pub struct CasualtyBreakdown;
 
@@ -191,7 +196,9 @@ struct Projection {
     series: Vec<Series>,
 }
 /// Projections kept for the most recently requested countries.
+#[cfg(test)]
 const CACHED_PROJECTIONS: usize = 4;
+#[cfg(test)]
 struct Cache {
     branch: u64,
     tag: String,
@@ -199,47 +206,12 @@ struct Cache {
     values: Arc<ScannedCasualties>,
     projection: Arc<Projection>,
 }
-fn project(
-    values: &ScannedCasualties,
-    wars: &WarsReply,
-    tag: &str,
+/// One holder continuity walk, shared with branch-wide prepared validation.
+fn country_runs(
+    changes: BTreeMap<i64, Vec<(Identity, bool, i32)>>,
     cancelled: &AtomicBool,
-) -> io::Result<Projection> {
-    let mut reply = Projection {
-        countries: Vec::new(),
-        series: Vec::new(),
-    };
-    let selected_identities = values.selected_identities(&[tag.to_owned()]);
-    // Holder spans use hourly native lifetime reads, including a country's
-    // first relation and losses against an enemy that no longer exists.
-    let mut changes = BTreeMap::<i64, Vec<(Identity, bool, i32)>>::new();
-    for ((_, _, first, second, _), reads) in values.pairs.runs() {
-        check_cancel(cancelled)?;
-        let (country, take_first) = if selected_identities.contains(first) {
-            (*first, true)
-        } else if selected_identities.contains(second) {
-            (*second, false)
-        } else {
-            continue;
-        };
-        for read in reads {
-            if !(if take_first {
-                read.first_live
-            } else {
-                read.second_live
-            }) {
-                continue;
-            }
-            changes
-                .entry(i64::from(read.first_hour))
-                .or_default()
-                .push((country, read.incomplete, 1));
-            changes
-                .entry(i64::from(read.last_hour) + 1)
-                .or_default()
-                .push((country, read.incomplete, -1));
-        }
-    }
+) -> io::Result<Vec<CasualtyBreakdownCountryRun>> {
+    let mut countries: Vec<CasualtyBreakdownCountryRun> = Vec::new();
     let mut active = BTreeMap::<Identity, (i32, i32)>::new();
     let mut changes = changes.into_iter().peekable();
     while let Some((first, events)) = changes.next() {
@@ -265,14 +237,14 @@ fn project(
         let first = first as i32;
         let last = (next - 1) as i32;
         let name = identity(country);
-        if let Some(previous) = reply.countries.last_mut()
+        if let Some(previous) = countries.last_mut()
             && previous.last_hour.checked_add(1) == Some(first)
             && previous.identity == name
             && previous.incomplete == (missing != 0)
         {
             previous.last_hour = last;
         } else {
-            reply.countries.push(CasualtyBreakdownCountryRun {
+            countries.push(CasualtyBreakdownCountryRun {
                 first_hour: first,
                 last_hour: last,
                 identity: name,
@@ -280,8 +252,58 @@ fn project(
             });
         }
     }
+    Ok(countries)
+}
+
+fn project<'a>(
+    records: impl Iterator<Item = (&'a pairs::Key, &'a [pairs::PairRead])> + Clone,
+    wars: &WarsReply,
+    selected_identities: &HashSet<Identity>,
+    cancelled: &AtomicBool,
+    countries: Option<Vec<CasualtyBreakdownCountryRun>>,
+) -> io::Result<Projection> {
+    let countries = match countries {
+        Some(countries) => countries,
+        None => {
+            // Holder spans use hourly native lifetime reads, including a country's
+            // first relation and losses against an enemy that no longer exists.
+            let mut changes = BTreeMap::<i64, Vec<(Identity, bool, i32)>>::new();
+            for ((_, _, first, second, _), reads) in records.clone() {
+                check_cancel(cancelled)?;
+                let (country, take_first) = if selected_identities.contains(first) {
+                    (*first, true)
+                } else if selected_identities.contains(second) {
+                    (*second, false)
+                } else {
+                    continue;
+                };
+                for read in reads {
+                    if !(if take_first {
+                        read.first_live
+                    } else {
+                        read.second_live
+                    }) {
+                        continue;
+                    }
+                    changes
+                        .entry(i64::from(read.first_hour))
+                        .or_default()
+                        .push((country, read.incomplete, 1));
+                    changes
+                        .entry(i64::from(read.last_hour) + 1)
+                        .or_default()
+                        .push((country, read.incomplete, -1));
+                }
+            }
+            country_runs(changes, cancelled)?
+        }
+    };
+    let mut reply = Projection {
+        countries,
+        series: Vec::new(),
+    };
     let mut holders = HashMap::<Identity, Vec<HourSpan>>::new();
-    for ((_, _, first, second, _), _) in values.pairs.runs() {
+    for ((_, _, first, second, _), _) in records.clone() {
         let country = if selected_identities.contains(first) {
             *first
         } else if selected_identities.contains(second) {
@@ -302,9 +324,8 @@ fn project(
                 .collect()
         });
     }
-    let selected: HashSet<_> = values
-        .pairs
-        .runs()
+    let selected: HashSet<_> = records
+        .clone()
         .map(|(key, _)| key)
         .filter(|(_, _, first, second, _)| {
             selected_identities.contains(first) || selected_identities.contains(second)
@@ -324,7 +345,7 @@ fn project(
             }
         }
     }
-    for ((a, b, first, second, start), reads) in values.pairs.runs() {
+    for ((a, b, first, second, start), reads) in records {
         check_cancel(cancelled)?;
         let (country, enemy, take_first) = if selected_identities.contains(first) {
             (*first, b, true)
@@ -440,6 +461,7 @@ impl Product for CasualtyBreakdown {
             .map_err(|_| "Invalid casualty branch")?;
         validate_tag(&p.tag)
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         p: &Self::Params,
@@ -460,29 +482,21 @@ impl Product for CasualtyBreakdown {
             context,
             cancelled,
         )?;
-        let windows: Vec<_> = source
-            .replay()
-            .index
-            .iter()
-            .filter(|block| block.branch == branch)
-            .map(|block| HourSpan {
-                first_hour: block.first_hour,
-                last_hour: block.last_hour,
-            })
-            .collect();
-        let mut reply = CasualtyBreakdownReply { branch_id: p.branch_id.clone(), tag: p.tag.clone(),
-            available: wars.available && !values.observed.is_empty(), windows, window: p.window,
-            observed: values.observed.clone(), countries: Vec::new(), series: Vec::new(), wars: Vec::new(), has_gap: values.incomplete,
-            warnings: vec!["Known losses only: losses with no recorded attacker cannot be assigned to an enemy. Land, naval and air are combined; the recording has no domain split.".into()] };
-        reply.warnings.extend(wars.warnings.iter().cloned());
-        let Some(window) = p.window else {
-            check_reply_bytes(json_bytes(&reply)?)?;
-            return Ok(reply);
-        };
-        let span = reply
-            .windows
-            .get(window)
-            .ok_or_else(|| io::Error::other("Unknown casualty window"))?;
+        let windows = source.block_windows(branch).to_vec();
+        if p.window.is_none() {
+            return build_reply(
+                p,
+                windows,
+                &values.observed,
+                values.incomplete,
+                &wars,
+                None,
+                cancelled,
+            );
+        }
+        if p.window.is_some_and(|window| window >= windows.len()) {
+            return Err(crate::invalid("Unknown casualty window"));
+        }
         let state = source.state::<Vec<Cache>>();
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
         let entry = match state.iter().position(|c| {
@@ -493,7 +507,13 @@ impl Product for CasualtyBreakdown {
         }) {
             Some(hit) => state.remove(hit),
             None => {
-                let projection = Arc::new(project(&values, &wars, &p.tag, cancelled)?);
+                let projection = Arc::new(project(
+                    values.pairs.runs(),
+                    &wars,
+                    &selected,
+                    cancelled,
+                    None,
+                )?);
                 state.retain(|c| c.branch != branch || c.tag != p.tag);
                 Cache {
                     branch,
@@ -509,76 +529,107 @@ impl Product for CasualtyBreakdown {
         state.truncate(CACHED_PROJECTIONS);
         let projection = state[0].projection.clone();
         drop(state);
-        reply.observed = values
-            .observed
+        build_reply(
+            p,
+            windows,
+            &values.observed,
+            values.incomplete,
+            &wars,
+            Some(&projection),
+            cancelled,
+        )
+    }
+}
+
+fn build_reply(
+    p: &CasualtyBreakdownParams,
+    windows: Vec<HourSpan>,
+    observed: &[HourSpan],
+    incomplete: bool,
+    wars: &WarsReply,
+    projection: Option<&Projection>,
+    cancelled: &AtomicBool,
+) -> io::Result<CasualtyBreakdownReply> {
+    let mut reply = CasualtyBreakdownReply { branch_id: p.branch_id.clone(), tag: p.tag.clone(),
+        available: wars.available && !observed.is_empty(), windows, window: p.window,
+        observed: observed.to_vec(), countries: Vec::new(), series: Vec::new(), wars: Vec::new(), has_gap: incomplete,
+        warnings: vec!["Known losses only: losses with no recorded attacker cannot be assigned to an enemy. Land, naval and air are combined; the recording has no domain split.".into()] };
+    reply.warnings.extend(wars.warnings.iter().cloned());
+    let Some(window) = p.window else {
+        check_reply_bytes(json_bytes(&reply)?)?;
+        return Ok(reply);
+    };
+    let span = reply
+        .windows
+        .get(window)
+        .ok_or_else(|| io::Error::other("Unknown casualty window"))?;
+    let projection = projection.ok_or_else(|| crate::invalid("Missing casualty projection"))?;
+    reply.observed = observed
+        .iter()
+        .filter_map(|run| clipped(span, run.first_hour, run.last_hour))
+        .collect();
+    reply.countries = projection
+        .countries
+        .iter()
+        .filter_map(|run| {
+            clipped(span, run.first_hour, run.last_hour).map(|hours| CasualtyBreakdownCountryRun {
+                first_hour: hours.first_hour,
+                last_hour: hours.last_hour,
+                ..run.clone()
+            })
+        })
+        .collect();
+    let mut used_wars = HashSet::new();
+    for series in &projection.series {
+        check_cancel(cancelled)?;
+        let first = series
+            .runs
+            .partition_point(|run| run.last_hour < span.first_hour);
+        let runs: Vec<_> = series.runs[first..]
             .iter()
-            .filter_map(|run| clipped(span, run.first_hour, run.last_hour))
-            .collect();
-        reply.countries = projection
-            .countries
-            .iter()
+            .take_while(|run| run.first_hour <= span.last_hour)
             .filter_map(|run| {
                 clipped(span, run.first_hour, run.last_hour).map(|hours| {
-                    CasualtyBreakdownCountryRun {
-                        first_hour: hours.first_hour,
-                        last_hour: hours.last_hour,
-                        ..run.clone()
+                    if let Some(index) = run.war {
+                        used_wars.insert(&wars.wars[index].id);
                     }
+                    run.reply(hours, wars)
                 })
             })
             .collect();
-        let mut used_wars = HashSet::new();
-        for series in &projection.series {
-            check_cancel(cancelled)?;
-            let first = series
-                .runs
-                .partition_point(|run| run.last_hour < span.first_hour);
-            let runs: Vec<_> = series.runs[first..]
-                .iter()
-                .take_while(|run| run.first_hour <= span.last_hour)
-                .filter_map(|run| {
-                    clipped(span, run.first_hour, run.last_hour).map(|hours| {
-                        if let Some(index) = run.war {
-                            used_wars.insert(&wars.wars[index].id);
-                        }
-                        run.reply(hours, &wars)
-                    })
-                })
-                .collect();
-            if !runs.is_empty() {
-                reply.series.push(CasualtyBreakdownSeries {
-                    runs,
-                    ..series.head.clone()
-                });
-            }
-        }
-        for war in wars.wars.iter().filter(|war| used_wars.contains(&war.id)) {
-            // Ended relations retain the name supplied with their last grouping;
-            // no future observation labels an earlier value.
-            let mut names = Vec::new();
-            for observed in war
-                .observations
-                .iter()
-                .filter(|run| run.first_hour <= span.last_hour)
-            {
-                names.push(CasualtyWarNameRun {
-                    first_hour: observed.first_hour,
-                    last_hour: observed.last_hour.min(span.last_hour),
-                    name: observed.name.clone(),
-                });
-            }
-            reply.wars.push(CasualtyBreakdownWar {
-                id: war.id.clone(),
-                first_hour: war.first_hour,
-                last_hour: war.last_hour.min(span.last_hour),
-                started_by: war.started_by,
-                ended_by: war.ended_by || war.last_hour > span.last_hour,
-                names,
+        if !runs.is_empty() {
+            reply.series.push(CasualtyBreakdownSeries {
+                runs,
+                ..series.head.clone()
             });
         }
-        check_reply_bytes(json_bytes(&reply)?)?;
-        Ok(reply)
     }
+    for war in wars.wars.iter().filter(|war| used_wars.contains(&war.id)) {
+        // Ended relations retain the name supplied with their last grouping;
+        // no future observation labels an earlier value.
+        let mut names = Vec::new();
+        for observed in war
+            .observations
+            .iter()
+            .filter(|run| run.first_hour <= span.last_hour)
+        {
+            names.push(CasualtyWarNameRun {
+                first_hour: observed.first_hour,
+                last_hour: observed.last_hour.min(span.last_hour),
+                name: observed.name.clone(),
+            });
+        }
+        reply.wars.push(CasualtyBreakdownWar {
+            id: war.id.clone(),
+            first_hour: war.first_hour,
+            last_hour: war.last_hour.min(span.last_hour),
+            started_by: war.started_by,
+            ended_by: war.ended_by || war.last_hour > span.last_hour,
+            names,
+        });
+    }
+    check_reply_bytes(json_bytes(&reply)?)?;
+    Ok(reply)
 }
 
 #[cfg(test)]
@@ -625,7 +676,14 @@ mod tests {
             capitulations_unobserved: Vec::new(),
             warnings: Vec::new(),
         };
-        let original = project(&values, &wars, "initial", &AtomicBool::new(false)).unwrap();
+        let original = project(
+            values.pairs.runs(),
+            &wars,
+            &values.selected_identities(&["initial".into()]),
+            &AtomicBool::new(false),
+            None,
+        )
+        .unwrap();
         assert_eq!(original.countries[0].first_hour, 100);
         assert_eq!(original.countries.last().unwrap().last_hour, 101);
         assert!(original.series.iter().any(|series| {
@@ -634,7 +692,14 @@ mod tests {
                 .iter()
                 .any(|run| run.first_hour == 101 && run.value == 13)
         }));
-        let alias = project(&values, &wars, "renamed", &AtomicBool::new(false)).unwrap();
+        let alias = project(
+            values.pairs.runs(),
+            &wars,
+            &values.selected_identities(&["renamed".into()]),
+            &AtomicBool::new(false),
+            None,
+        )
+        .unwrap();
         assert!(alias.series.iter().any(|series| {
             series
                 .runs
@@ -693,7 +758,14 @@ mod tests {
             capitulations_unobserved: Vec::new(),
             warnings: Vec::new(),
         };
-        let reply = project(&values, &wars, "peaceful", &AtomicBool::new(false)).unwrap();
+        let reply = project(
+            values.pairs.runs(),
+            &wars,
+            &values.selected_identities(&["peaceful".into()]),
+            &AtomicBool::new(false),
+            None,
+        )
+        .unwrap();
         assert_eq!(reply.countries.len(), 1);
         assert_eq!(
             (reply.countries[0].first_hour, reply.countries[0].last_hour),
@@ -824,7 +896,14 @@ mod tests {
             capitulations_unobserved: Vec::new(),
             warnings: Vec::new(),
         };
-        let reply = project(&values, &wars, "selected", &AtomicBool::new(false)).unwrap();
+        let reply = project(
+            values.pairs.runs(),
+            &wars,
+            &values.selected_identities(&["selected".into()]),
+            &AtomicBool::new(false),
+            None,
+        )
+        .unwrap();
         assert_eq!(values.country_at("selected", 101).unwrap().read_hour, 101);
         assert_eq!(reply.countries[0].first_hour, 101);
         assert_eq!(reply.series[0].runs[0].first_hour, 101);
@@ -860,7 +939,14 @@ mod tests {
             capitulations_unobserved: Vec::new(),
             warnings: Vec::new(),
         };
-        let reply = project(&values, &wars, "synthetic 0", &AtomicBool::new(false)).unwrap();
+        let reply = project(
+            values.pairs.runs(),
+            &wars,
+            &values.selected_identities(&["synthetic 0".into()]),
+            &AtomicBool::new(false),
+            None,
+        )
+        .unwrap();
         assert_eq!(reply.series.len(), 4999);
         assert_eq!(
             reply

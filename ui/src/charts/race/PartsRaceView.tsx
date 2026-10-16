@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import { createPortal } from 'react-dom';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { countryIdentityIndex } from '../../dashboard/countryIdentity';
+import { countryIdentityIndex, overlayCountryIdentities } from '../../dashboard/countryIdentity';
 import WidgetState from '../../components/WidgetState';
 import CountryPicker from '../../components/CountryPicker';
 import type { IconName } from '../../components/Icons';
@@ -25,6 +25,7 @@ import { dayLabel } from '../draw';
 import DrillHost from '../drill/DrillHost';
 import DrillParts from '../drill/DrillParts';
 import type { Span } from '../series';
+import { clipToSpans, runIndexAt } from '../series';
 import { CHART_LAYOUT } from '../tokens';
 import CountryRaceView from './CountryRaceView';
 import type { CountryRaceViewProps } from './CountryRaceView';
@@ -36,6 +37,15 @@ import { CLOSED_PARTS_RACE, nativePartsRaceNumbers, partsRaceDrillActors, partsR
 import type { NativePartsRaceReply } from './partsRaceDrill';
 import { bindCountryParts, countryPartsSelection, pinNativeCountryParts, savedCountryPartsSelection } from './countryPartsDrillData';
 import { useChartTokens } from '../useChartTokens';
+import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
+import { useParityRows } from '../../dashboard/parityRows';
+import { useParityPreparation } from '../../dashboard/parityPreparation';
+import { summaryShareRuns } from '../share';
+import { summaryStack } from '../chartSummary';
+import type { ChartSummary } from '../chartSummary';
+import type { TimeChartProps } from '../TimeChart';
+import type { DashboardClient, ProductRequest } from '../../dashboard/client';
+import type { BoundTrack } from '../../dashboard/model';
 
 export interface PartsRaceViewConfig {
   product: string; title: string; subject: string; icon: IconName;
@@ -83,7 +93,8 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
     [widget.countries, fallback, groupReply.data, lastHour]);
   const request = track && (resolved.top || resolved.tags.length) ? { sourceId: track.source.id, revision: track.source.revision,
     product: config.product, params: config.request(track.branch.id, resolved, options) } : null;
-  const incoming = useProduct(runtime.client, request, active, config.validate);
+  const prepared = usePreparedRace(runtime.client, track, request, moment, active, config.validate, mergePreparedParts, preparedPartsGeometry, view !== 'race', resolved.membership ?? undefined, view === 'mix');
+  const incoming = prepared;
   const requestScope = JSON.stringify([sourceScope, config.product, request?.params]);
   const numbers = stores.main.update(requestScope, incoming.data, nativePartsRaceNumbers);
   const decorations = useMemo(() => incoming.data ? { parts: incoming.data.parts, warnings: incoming.data.warnings } : undefined, [incoming.data]);
@@ -115,7 +126,8 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
   const cutTo = useCallback((tag: string): readonly Span[] | null => drawing.membership?.get(tag) ?? null, [drawing.membership]);
   const ranked = useMemo(() => numericModel ? rankPartsRace(numericModel, rankedCandidates(drawing, moment, numericModel.tags), moment, slots) : [],
     [numericModel, drawing, moment, slots]);
-  const lineTags = useMemo(() => drawing.top != null ? numericModel?.tags ?? [] : drawing.tags, [drawing, numericModel]);
+  const lineTags = useMemo(() => prepared.dense && !grouped ? [...new Set([...(numericModel?.tags ?? []), ...prepared.summaries.keys()])]
+    : drawing.top != null ? numericModel?.tags ?? [] : drawing.tags, [drawing, numericModel, prepared.dense, prepared.summaries]);
   const mixTag = mixCountry(widget.countries, fallback, ranked);
   const candidateOriginTag = pinned ? widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : mixTag : drill.breakdown;
   const restored = useMemo(() => savedCountryPartsSelection(widget, track),
@@ -129,7 +141,8 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
   // A country's drill follows its census even after it leaves the race's top N.
   const drillRequest = track && originTag ? { sourceId: track.source.id, revision: track.source.revision,
     product: config.product, params: config.request(track.branch.id, { tags: [originTag] }, options) } : null;
-  const incomingDrill = useProduct(runtime.client, drillRequest, active, config.validate);
+  const preparedDrill = usePreparedRace(runtime.client, track, drillRequest, drillAt, active, config.validate, mergePreparedParts, preparedPartsGeometry, true, undefined, true);
+  const incomingDrill = preparedDrill;
   const drillScope = JSON.stringify([sourceScope, config.product, drillRequest?.params]);
   const independentNumbers = stores.drill.update(drillScope, incomingDrill.data, nativePartsRaceNumbers);
   const drillDecorations = useMemo(() => incomingDrill.data ? { parts: incomingDrill.data.parts, warnings: incomingDrill.data.warnings } : undefined, [incomingDrill.data]);
@@ -145,6 +158,12 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
   }
   const selection = pinned ? restored === undefined ? initialOrigin.selection : restored : drill.selection;
   const shownTags = view === 'race' ? ranked.map(entry => entry.tag) : view === 'lines' ? lineTags : mixTag ? [mixTag] : [];
+  useParityRows(drillAnchor, () => {
+    const rows = (prepared.parity?.data?.series ?? []).flatMap(series => series.runs.map(run => ({ tag: series.tag, run,
+      identities: series.identities, membership: series.membership })));
+    return { kind: 'chart', label: `${config.title} exact values`, complete: !!prepared.parity?.complete,
+      total: rows.length, rows, parts: prepared.parity?.data?.parts, warnings: prepared.parity?.data?.warnings };
+  }, { prepare: prepared.parity?.prepare, ready: () => !!prepared.parity?.complete, error: () => prepared.error ?? null });
   useEffect(() => {
     const warnings = [...(data?.warnings ?? []), ...(groupWarnings ?? []), ...(drillReply.data?.warnings ?? [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
@@ -155,8 +174,8 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
   const range = useMemo(() => ({ firstHour, lastHour: lastExtentHour }), [firstHour, lastExtentHour]);
   const lines = useMemo(() => !numericModel || view !== 'lines' ? [] : lineTags.flatMap(tag => {
     const runs = partsRaceLineRuns(numericModel, tag, cutTo(tag), range);
-    return runs.length ? [{ tag, runs }] : [];
-  }), [numericModel, view, lineTags, cutTo, range]);
+    return runs.length || prepared.summaries.has(tag) ? [{ tag, runs }] : [];
+  }), [numericModel, view, lineTags, cutTo, range, prepared.summaries]);
   const segmentAt = useCallback((tag: string, hour: number) => partsRaceSegmentAt(numericModel, tag, hour), [numericModel]);
   const parts = useMemo(() => (model?.reply.parts ?? []).map(part => ({ id: part.key, label: partsRacePartName(part) })), [model]);
   const formatValue = useCallback((value: number) => config.formatValue?.(value, options) ?? formatPartsRaceValue(value), [config.formatValue, options]);
@@ -165,8 +184,9 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
     [model, ranked, split, formatValue, identities, moment]);
   const mixCut = mixTag ? cutTo(mixTag) : null;
   const mixMembership = mixTag ? membershipOf(mixTag) : null;
-  const bands = useMemo(() => numericModel && view === 'mix' && mixTag ? partsRaceMixBands(numericModel, mixTag, mixCut, range) : null,
-    [numericModel, view, mixTag, mixCut, range]);
+  const geometry = useMemo(() => prepared.geometry ? partsRaceModel(prepared.geometry) : numericModel, [prepared.geometry, numericModel]);
+  const bands = useMemo(() => geometry && view === 'mix' && mixTag ? partsRaceMixBands(geometry, mixTag, mixCut, range) : null,
+    [geometry, view, mixTag, mixCut, range]);
   const drillParts = useMemo(() => [...(drillModel?.reply.parts ?? []).map(part => ({ id: part.key, label: partsRacePartName(part) })),
     UNATTRIBUTED_PART], [drillModel]);
   const detailExtent = useMemo<[number, number]>(() => track ? [track.branch.firstHour, track.branch.lastHour] : [0, 1],
@@ -177,8 +197,10 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
   const binding = useMemo(() => nativeDetail && originTag ? bindCountryParts(nativeDetail, originTag,
     selection?.hour ?? initialOrigin.hour, selection?.key ?? null) : null, [nativeDetail, originTag, selection, initialOrigin]);
   const drillTag = missingPinnedDate ? null : binding?.tagAt(drillAt) ?? null;
-  const drillBands = useMemo(() => binding && originTag ? binding.data.bands(originTag, detailRange) : null,
-    [binding, originTag, detailRange]);
+  const drillGeometry = useMemo(() => preparedDrill.geometry ? partsRaceModel(preparedDrill.geometry) : null, [preparedDrill.geometry]);
+  const drillBands = useMemo(() => drillGeometry && drillTag ? partsRaceMixBands(drillGeometry, drillTag, null, detailRange)
+    : binding && originTag ? binding.data.bands(originTag, detailRange) : null,
+    [drillGeometry, drillTag, binding, originTag, detailRange]);
   const colours = useMemo(() => partColours(drillParts, tokens.categories), [drillParts, tokens.categories]);
   const drillValue = drillModel && drillTag ? partsRaceAt(drillModel, drillTag, drillAt) : null;
   const remainder = drillValue?.total == null ? null : drillValue.total - drillValue.values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
@@ -194,9 +216,9 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
   const mix = useMemo(() => {
     if (!model || !mixTag || !bands) return null;
     const at = isMember(mixMembership ?? undefined, moment) ? partsRaceAt(model, mixTag, moment) : null;
-    return { tag: mixTag, bands, compactStack: true, parts: parts.map((part, index) => ({ ...part,
+    return { tag: mixTag, bands, compactStack: true, approximate: prepared.approximate.get(mixTag), parts: parts.map((part, index) => ({ ...part,
       value: at?.values[index] == null ? 'Not known' : formatValue(at.values[index]!) })) };
-  }, [model, mixTag, bands, mixMembership, moment, parts, formatValue]);
+  }, [model, mixTag, bands, mixMembership, moment, parts, formatValue, prepared.approximate]);
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon={config.icon} message={`Load a campaign to see its ${config.subject}.`} />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable"
@@ -243,6 +265,9 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
     pickOwner: mainPickOwner,
     beforeChart: mainPending ? <WidgetState kind="loading" label={`Updating ${config.subject}…`} /> : undefined,
     ranked: entries, lines, parts, mix, segmentAt, countryTags: shownTags, label: config.title,
+    lineSummaries: new Map(lineTags.flatMap(tag => prepared.summaries.has(tag) ? [[tag, prepared.summaries.get(tag)!] as const] : [])),
+    onSummaryView: prepared.onSummaryView, onReachHour: prepared.onReachHour, exactLineTags: prepared.exactLineTags,
+    navigation: prepared.navigation,
     empty: `No ${config.subject} recorded on ${dayLabel(moment)}.`, formatValue, formatTick: config.formatTick?.(options),
     partsLabel, raceLegendParts: split ? parts : [],
     labels: { race: `${config.title}, ${measure}, ${dayLabel(moment)}`, lines: `${config.title} over time, ${measure}`,
@@ -280,12 +305,15 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
       hour: drillAt, playing: true, playhead: liveHour, selection: selection ?? undefined, owner: contextOwner });
   };
   const breakdown = <CountryRaceView {...common} pickOwner={detailPickOwner} view="mix" moment={drillAt} extent={detailExtent}
+    lineSummaries={undefined} onSummaryView={preparedDrill.onSummaryView} onReachHour={preparedDrill.onReachHour}
+    navigation={preparedDrill.navigation}
     playhead={drillAt} countryTags={drillTag ? [drillTag] : []}
     state={!track || missingPinnedDate ? state : drillReply.error ? <WidgetState kind="error" what="the breakdown" detail={drillReply.error} onRetry={drillReply.retry} />
       : originTag && !drillModel ? <WidgetState kind="loading" label={`Loading ${partsLabel.toLowerCase()}…`} /> : undefined}
     parts={historyParts} selectedHour={drillAt} segmentAt={(_, hour) => binding?.data.segmentAt(originTag ?? '', hour) ?? null}
     countryLookHour={(tag, hour) => tag && binding?.tagAt(hour) === tag ? binding.data.readHour(tag, hour) : null}
     mix={originTag && historyBands ? { tag: drillTag ?? originTag, tagAt: hour => binding?.tagAt(hour) ?? null, bands: historyBands, compactStack: true,
+      approximate: preparedDrill.approximate.get(drillTag ?? originTag),
       parts: historyParts.map(part => ({ ...part, value: part.id === ''
         ? remainder == null ? 'Not known' : formatValue(remainder)
         : drillValue?.values[drillParts.indexOf(part)] == null ? 'Not known' : formatValue(drillValue.values[drillParts.indexOf(part)]!) })) } : null}
@@ -349,4 +377,142 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
       </div> : breakdown}
     </DrillHost>
   </div>;
+}
+
+type PreparedPartsReply = NativePartsRaceReply & { summaries?: { tag: string; summary: ChartSummary;
+  parts: { key: string; summary: ChartSummary }[] }[] };
+
+/** The common part schema is aligned once when independently reached pages join. */
+function mergePreparedParts(replies: readonly (NativePartsRaceReply | undefined)[]): NativePartsRaceReply | undefined {
+  const available = replies.filter((reply): reply is NativePartsRaceReply => !!reply);
+  if (!available.length) return undefined;
+  const parts = [...new Map(available.flatMap(reply => reply.parts.map(part => [part.key, part] as const))).values()]
+    .sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+  const countries = new Map<string, NativePartsRaceReply['series'][number]>();
+  for (const reply of available) for (const country of reply.series) {
+    const before = countries.get(country.tag);
+    const runs = [...(before?.runs ?? [])];
+    for (const run of country.runs) {
+      if (runs.some(previous => previous.firstHour <= run.firstHour && previous.lastHour >= run.lastHour)) continue;
+      const values = new Map(reply.parts.map((part, index) => [part.key, run.values[index]]));
+      const aligned = { ...run, values: parts.map(part => values.has(part.key) ? values.get(part.key)! : run.total === null ? null : 0) };
+      const previous = runs.find(previous => previous.firstHour <= aligned.lastHour && previous.lastHour >= aligned.firstHour
+        && previous.total === aligned.total && previous.referenceTotal === aligned.referenceTotal
+        && previous.values.every((value, index) => value === aligned.values[index]));
+      if (previous) {
+        if (aligned.firstHour < previous.firstHour) previous.startsSegment = aligned.startsSegment;
+        previous.firstHour = Math.min(previous.firstHour, aligned.firstHour);
+        previous.lastHour = Math.max(previous.lastHour, aligned.lastHour);
+      }
+      else runs.push(aligned);
+    }
+    countries.set(country.tag, { ...country, ...before, runs: runs.sort((a, b) => a.firstHour - b.firstHour),
+      membership: before?.membership === null || country.membership === null ? null
+        : clipToSpans([{ firstHour: -2147483648, lastHour: 2147483647 }], [...(before?.membership ?? []), ...(country.membership ?? [])]) });
+  }
+  let identities: { tag: string; identities: NativePartsRaceReply['series'][number]['identities'] }[] = [];
+  for (const reply of available) identities = overlayCountryIdentities(identities, reply.series.map(series => ({ tag: series.tag, identities: series.identities })));
+  for (const identity of identities) {
+    const country = countries.get(identity.tag);
+    if (country) countries.set(identity.tag, { ...country, identities: identity.identities });
+  }
+  return { ...available[0], parts, series: [...countries.values()], warnings: [...new Set(available.flatMap(reply => reply.warnings))] };
+}
+
+/** Display geometry stays separate from exact race, hover and drill amounts. */
+function preparedPartsGeometry(reply: PreparedPartsReply | undefined): NativePartsRaceReply | undefined {
+  if (!reply) return undefined;
+  return { ...reply, series: reply.series.map(series => {
+    const summary = reply.summaries?.find(line => line.tag === series.tag)?.summary;
+    if (!summary || summary.runs !== undefined || series.runs.some(run => run.values.some(value => value === null))) return series;
+    const runs = summaryShareRuns(series.runs.map(run => ({ ...run, counts: run.values as number[] })), [summary]);
+    return { ...series, runs: runs.map(run => ({ ...series.runs[runIndexAt(series.runs, run.firstHour)],
+      firstHour: run.firstHour, lastHour: run.lastHour, startsSegment: run.startsSegment === true, values: [...run.counts] })) };
+  }) };
+}
+
+export function usePreparedRace<T extends { series: { tag: string; runs: { firstHour: number; lastHour: number; total?: number | null }[] }[]; warnings: string[] }>(
+  client: DashboardClient, track: BoundTrack | undefined, request: ProductRequest | null, hour: number, active: boolean,
+  validate: (value: unknown) => T, merge: (replies: readonly (T | undefined)[]) => T | undefined,
+  geometry: (reply: (T & Pick<PreparedPartsReply, 'summaries'>) | undefined) => T | undefined,
+  history = true, within?: ReadonlyMap<string, readonly Span[]>, requireParts = false) {
+  const enabled = !!client.preparedQuery && ['air-force-size', 'navy-size', 'country-nukes', 'country-factories'].includes(request?.product ?? '');
+  const key = JSON.stringify([track?.source.id, track?.source.revision, request?.product, request?.params, within && [...within], requireParts]);
+  const owner = useMemo(() => ({ client, key }), [client, key]);
+  const alive = useRef(owner); alive.current = owner;
+  const pending = useRef(new Set<AbortController>());
+  useEffect(() => () => { for (const controller of pending.current) controller.abort(); pending.current.clear(); }, [owner, active]);
+  const [view, setView] = useState<{ key: string; from: number; to: number; width: number }>();
+  const [hover, setHover] = useState<{ key: string; hour: number | null }>();
+  const [keyboard, setKeyboard] = useState<{ owner: typeof owner; hour: number | null; revision: number }>();
+  const [navigationError, setNavigationError] = useState<{ owner: typeof owner; error: string }>();
+  const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
+  const base = (request?.params ?? {}) as Record<string, unknown>;
+  const { branchId, tags, ...fields } = base;
+  const family = { kind: request?.product, ...fields };
+  const bounds = history && view?.key === key ? view : { from: hour, to: hour, width: 1 };
+  const dense = enabled && Math.ceil(bounds.to) - Math.floor(bounds.from) + 1 > bounds.width;
+  const page = (from: number, to: number, width: number): ProductRequest | null => !request ? null : enabled
+    ? { ...request, product: 'series-summary', params: { branchId, tags, family, from, to, width, requireParts, within: within && Object.fromEntries(within) } } : request;
+  const display = useProduct<T & Pick<PreparedPartsReply, 'summaries'>>(client, page(bounds.from, bounds.to, bounds.width), active, value => {
+    const reply = validate(value) as T & Pick<PreparedPartsReply, 'summaries'>;
+    if (reply.summaries !== undefined && (!Array.isArray(reply.summaries)
+      || reply.summaries.some(line => typeof line.tag !== 'string' || !Array.isArray(line.summary?.buckets)))) throw Error('The prepared force summary is malformed.');
+    return reply;
+  }, enabled ? track?.source : undefined);
+  const reached = useProduct(client, enabled ? page(hour, hour, 1) : null, active, validate, track?.source);
+  const pointedHour = hover?.key === key ? hover.hour : null;
+  const pointed = useProduct(client, enabled && pointedHour != null ? page(pointedHour, pointedHour, 1) : null, active, validate, track?.source);
+  const full = useProduct(client, enabled && parity?.requested && track ? page(track.branch.firstHour, track.branch.lastHour,
+    track.branch.lastHour - track.branch.firstHour + 1) : null, active, validate, track?.source);
+  const ends = display.data?.summaries?.flatMap(line => {
+    const bucket = [...line.summary.buckets].reverse().find(bucket => bucket !== null);
+    return bucket ? [{ tag: line.tag, hour: bucket.lastHour }] : [];
+  }) ?? [];
+  const endpoints = useProduct<T & { approximate?: readonly Span[] }>(client, enabled && history && request && ends.length ? { ...request, product: 'series-state',
+    params: { branchId, family: { ...family, top: null, originHour: null }, tags: ends.map(read => read.tag), reads: ends } } : null, active, value => validate(value) as T & { approximate?: readonly Span[] }, track?.source);
+  const summarized = dense || display.data?.summaries?.some(line => line.summary.approximate?.length) === true;
+  const exactEndpoints = endpoints.data?.approximate?.length ? undefined : endpoints.data;
+  const data = useMemo(() => merge(summarized
+    ? [display.data && { ...display.data, series: display.data.series.map(series => ({ ...series, runs: [] })) }, reached.data, pointed.data, exactEndpoints]
+    : [display.data, reached.data, pointed.data, exactEndpoints]),
+    [summarized, display.data, reached.data, pointed.data, exactEndpoints]);
+  const approximate = useMemo(() => new Map(display.data?.summaries?.map(line => [line.tag,
+    summaryStack(line.parts?.map(part => part.summary) ?? [], line.summary).approximate])), [display.data]);
+  const summaries = useMemo(() => new Map(display.data?.summaries?.map(line => [line.tag, line.summary])), [display.data]);
+  const onSummaryView = useCallback<NonNullable<TimeChartProps['onSummaryView']>>(next => {
+    if (next.to < next.from) return;
+    setView(before => before?.key === key && before.from === next.from && before.to === next.to && before.width === next.width ? before : { key, ...next });
+  }, [key]);
+  const onReachHour = useCallback((hour: number | null) => setHover({ key, hour }), [key]);
+  const exactLineTags = useCallback(async (hour: number) => {
+    if (!enabled || !track || !request || !active) return null;
+    const controller = new AbortController(); pending.current.add(controller);
+    try {
+      const reply = validate(await preparedSeriesQuery(client, track.source, 'series-summary', { branchId, tags, family,
+        from: Math.floor(hour), to: Math.floor(hour), width: 1, within: within && Object.fromEntries(within) }, controller.signal));
+      if (controller.signal.aborted || alive.current !== owner) return null;
+      return reply.series.filter(series => series.runs.some(run => run.firstHour <= hour && run.lastHour >= hour && run.total !== null)).map(series => series.tag);
+    } finally { pending.current.delete(controller); }
+  }, [owner, active, enabled]);
+  const onNavigateHour = useCallback<NonNullable<TimeChartProps['onNavigateHour']>>((action, from, x, until) => {
+    if (!enabled || !track || !request || !active) return;
+    setNavigationError(undefined);
+    const controller = new AbortController(); pending.current.add(controller);
+    void preparedSeriesQuery(client, track.source, 'series-next-change', { branchId, tags, family, key: action, from,
+      firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]), within: within && Object.fromEntries(within) }, controller.signal).then(reply => {
+      if (controller.signal.aborted || alive.current !== owner) return;
+      const hour = (reply as { hour: number | null }).hour;
+      setHover({ key, hour }); setKeyboard(previous => ({ owner, hour, revision: (previous?.revision ?? 0) + 1 }));
+    }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setNavigationError({ owner, error: String(error) }); })
+      .finally(() => pending.current.delete(controller));
+  }, [owner, active, enabled]);
+  return { data, dense, summaries, approximate, geometry: useMemo(() => dense ? geometry(display.data) : display.data,
+    [dense, display.data]), error: display.error ?? reached.error ?? pointed.error ?? endpoints.error ?? (navigationError?.owner === owner ? navigationError.error : undefined),
+    retry: () => { setNavigationError(undefined); display.retry(); reached.retry(); pointed.retry(); endpoints.retry(); full.retry(); },
+    onSummaryView: enabled ? onSummaryView : undefined, onReachHour: enabled ? onReachHour : undefined,
+    exactLineTags: enabled ? exactLineTags : undefined,
+    navigation: enabled ? { onNavigateHour, keyboardHour: keyboard?.owner === owner ? keyboard.hour : undefined,
+      keyboardRevision: keyboard?.owner === owner ? keyboard.revision : undefined } : undefined,
+    parity: parity ? { data: full.data, prepare: parity.prepare, complete: !!parity.requested && !!full.data } : undefined };
 }

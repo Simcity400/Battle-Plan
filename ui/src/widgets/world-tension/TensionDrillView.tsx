@@ -8,6 +8,7 @@ import { nudgeApart } from '../../charts/palette';
 import { compactStack, compactStackExtent, forEachCompactStackSegment } from '../../charts/stack';
 import { heldStackSegment } from '../../charts/race/countryRace';
 import { extentOf } from '../../charts/series';
+import { drawLineSummary, extentOfSummary, summaryStack } from '../../charts/chartSummary';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
 import { fitTooltip } from '../../charts/tooltip';
@@ -21,23 +22,31 @@ import { FAILED_FACT, MAX_NAME_HOURS } from '../../dashboard/countryFacts';
 import type { NameAt } from '../../dashboard/countryFacts';
 import { useCountryFlagsAt, useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { STYLES } from '../../dashboard/useCountriesAt';
+import { usePreparedWindow } from '../../dashboard/preparedSeries';
+import { useParityRows } from '../../dashboard/parityRows';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import type { OptionValue } from '../../dashboard/options';
 import { parseColor, toHex } from '../../shell/appearance/color';
-import { contributionPercent, formatContribution, formatTension, formatTensionAxis } from './tensionData';
+import { contributionPercent, countryKey, formatContribution, formatTension, formatTensionAxis, tensionModel } from './tensionData';
+import { mergePreparedTension, validatePreparedTension } from './preparedTension';
 import type { TensionModel } from './tensionData';
 import { tensionCauseAt, tensionDrillAt, tensionDrillHistory, tensionLookAt, tensionShareText, tensionVisibleParts } from './tensionDrill';
 
 /** The full native country stack. Event final amounts stay separate because the
  * product does not record source current amounts or per-read source presence. */
-export default function TensionDrill({ model, runtime, track, active, options, extent, playhead, hour, selectedCause, onCause, onPick }: {
+export default function TensionDrill({ model: reached, runtime, track, active, options, extent, playhead, hour, selectedCause, onCause, onPick }: {
   model: TensionModel; runtime: WidgetRuntime; track: BoundTrack; active: boolean;
   options: Readonly<Record<string, OptionValue>>; extent: [number, number]; playhead: number | null; hour: number;
   selectedCause: number | null; onCause: (index: number | null) => void; onPick: (hour: number) => void;
 }) {
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
+  const [hoverHour,setHoverHour] = useState<number|null>(null);
+  const prepared = usePreparedWindow(runtime.client,track.source,'world-tension',{ branchId: track.branch.id,share: false },extent,
+    [hour,...(hoverHour === null ? [] : [hoverHour])],active,validatePreparedTension,mergePreparedTension);
+  const model = useMemo(() => prepared.data ? tensionModel(prepared.data,reached.lineage,track.source.metadata.countries,
+    new Map(prepared.data.catalogue.map(country => [countryKey(country),country.firstHour]))) : reached,[prepared.data,reached,track.source]);
   const keys = useMemo(() => [...model.raw.keys()], [model]);
   const at = tensionDrillAt(model, hour);
   const [visible, setVisible] = useState<readonly string[]>([]);
@@ -78,7 +87,9 @@ export default function TensionDrill({ model, runtime, track, active, options, e
   const layerColours = useMemo(() => keys.map(key => colours.get(key) ?? tokens.muted).concat(tokens.muted), [keys, colours, tokens.muted]);
   const history = useMemo(() => tensionDrillHistory(model, keys), [model, keys]);
   const stack = useMemo(() => compactStack(history.bands), [history]);
-  const keyHours = useMemo(() => model.reply.reads.map(read => read.firstHour), [model.reply.reads]);
+  const denseParts = useMemo(() => prepared.data && prepared.geometryReady && keys.every(key => prepared.data!.summaries[JSON.stringify(key)])
+    ? keys.map(key => prepared.data!.summaries[JSON.stringify(key)]) : null,[prepared.data,prepared.geometryReady,keys]);
+  const denseStack = useMemo(() => denseParts && prepared.data?.summaries.sum ? summaryStack(denseParts,prepared.data.summaries.sum) : null,[denseParts,prepared.data?.summaries.sum]);
   const [tooltipWanted, setTooltipWanted] = useState<readonly NameAt[]>([]);
   const asked = useRef('');
   const ask = (items: readonly NameAt[]) => {
@@ -90,13 +101,22 @@ export default function TensionDrill({ model, runtime, track, active, options, e
   useEffect(() => { asked.current = ''; setTooltipWanted([]); }, [active, model.reply, track.source.id, track.source.revision, track.branch.id]);
   const tooltipLabels = useCountryLabelsAt(runtime.client, track, tooltipWanted, active,
     Math.max(MAX_NAME_HOURS, new Set(tooltipWanted.map(item => item.hour)).size));
-  const pickOwner = useMemo(() => ({ source: [track.source.id, track.source.revision, track.branch.id], model: model.reply }),
-    [track.source.id, track.source.revision, track.branch.id, model.reply]);
+  const pickOwner = prepared.pickOwner;
   const playback = options.playback as PlaybackMode;
   const until = shownUntil(playhead, playback, options.afterPlayhead === true);
   const layers = useMemo<ChartLayer[]>(() => [{
     draw: (ctx, frame, chartTokens, state) => {
       const to = Math.min(frame.x[1], state.playhead ?? frame.x[1]);
+      const summary = prepared.data?.summaries.world;
+      if (!prepared.geometryReady || !summary || summary.from !== frame.x[0] || summary.to !== to || summary.width !== Math.ceil(frame.plotWidth)) return;
+      if (!summary.runs) {
+        if (denseStack) forEachCompactStackSegment(denseStack.model,frame.x[0],to,0,piece => {
+          const segment=heldStackSegment(piece);
+          drawBands(ctx,frame,chartTokens,segment.hours,segment.bands,layerColours,segment);
+        },denseStack.sample);
+        drawLineSummary(ctx,frame,chartTokens,summary,chartTokens.text,true,state.playhead,{ endDot: false });
+        drawPlayhead(ctx,frame,chartTokens,hour); return;
+      }
       forEachCompactStackSegment(stack, frame.x[0], to, (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth) / 2, piece => {
         const segment = heldStackSegment(piece);
         drawBands(ctx, frame, chartTokens, segment.hours, segment.bands, layerColours, segment);
@@ -105,17 +125,26 @@ export default function TensionDrill({ model, runtime, track, active, options, e
       drawPlayhead(ctx, frame, chartTokens, hour);
     },
     extent: x => {
+      if (!prepared.geometryReady) return null;
+      if (!prepared.data?.summaries.world?.runs) {
+        const bands=denseStack ? compactStackExtent(denseStack.model,x[0],Math.min(x[1],until ?? x[1])) : null;
+        const world=prepared.data?.summaries.world ? extentOfSummary(prepared.data.summaries.world) : null;
+        return bands && world ? [Math.min(bands[0],world[0]),Math.max(bands[1],world[1])] : bands ?? world;
+      }
       const to = Math.min(x[1], until ?? x[1]);
       const bands = compactStackExtent(stack, x[0], to);
       const world = extentOf(history.world, x[0], to);
       return bands && world ? [Math.min(bands[0], world[0]), Math.max(bands[1], world[1])] : bands ?? world;
     },
-  }], [stack, history, layerColours, hour, until]);
+  }], [stack, history, layerColours, hour, until,prepared.data,prepared.geometryReady,denseStack]);
   const menu = useContextMenu('Country contribution actions');
   const cause = selectedCause == null ? null : model.reply.events[selectedCause] ?? null;
   const causeRead = cause ? tensionCauseAt(cause, hour) : null;
   const exact = (raw: string) => formatContribution(model, raw, true, model.contributionDecimals);
-  return <div className="world-tension-drill">
+  const root = useRef<HTMLDivElement>(null);
+  useParityRows(root,() => ({ kind: 'chart',label: 'World tension breakdown',scope: 'displayed-hour',hour,
+    complete: !!at || !!prepared.data?.exactHours.includes(hour),total: at?.parts.length ?? 0,rows: at?.parts ?? [],read: at?.read,remainder: at?.remainder }));
+  return <div ref={root} className="world-tension-drill">
     <DrillParts virtual active={active} onVisible={onVisible} signedShares
       parts={at?.parts.map(part => {
         const sample = samples.get(part.key);
@@ -141,10 +170,16 @@ export default function TensionDrill({ model, runtime, track, active, options, e
       playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
       hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
       axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} active={active}
-      formatValue={formatTensionAxis} keyHours={keyHours}
+      formatValue={formatTensionAxis} keyboardHour={prepared.keyboardHour} keyboardRevision={prepared.keyboardRevision} onNavigateHour={prepared.onNavigateHour}
+      onHover={setHoverHour}
+      onSummaryView={view => prepared.onSummaryView(view,keys.map(key => {
+        const country = prepared.data?.catalogue.find(country => countryKey(country) === key);
+        return { id: JSON.stringify(key),spans: country ? [{ tag: country.key,firstHour: track.branch.firstHour,lastHour: track.branch.lastHour,startsSegment: false }] : [] };
+      }))}
       revision={{ hour, styles, flags, labels: tooltipLabels.labelAt, viewport }} pickOwner={pickOwner} onPick={onPick}
       tooltip={shown => {
         const value = tensionDrillAt(model, shown);
+        if (!value && !prepared.data?.exactHours.includes(Math.floor(shown))) return { title: formatDateTime(shown),rows: [{ label: 'Country contributions',value: 'Loading…' }] };
         if (!value) return { title: formatDateTime(shown), rows: [{ label: 'Country contributions', value: 'Not recorded' }] };
         const tipSamples = new Map(value.parts.flatMap(part => {
           const sample = tensionLookAt(model, part.key, shown, track.branch);

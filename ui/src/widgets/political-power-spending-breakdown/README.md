@@ -6,7 +6,9 @@ The recorded political-power payments of the shown period as a sunburst, categor
 
 ## Products it reads
 
-[`politics-ledger`](../../../../crates/dashboard/src/products/politics_ledger.rs) (`balance` view) through [usePoliticsSpending](../../dashboard/usePoliticsSpending.ts); [politicsSpending.ts](../../dashboard/politicsSpending.ts) owns exact grouping and [powerBalance.ts](../../dashboard/powerBalance.ts) the gain.
+[`politics-ledger`](../../../../crates/dashboard-politics-ledger/src/products/politics_ledger.rs) (`spending` view) through [usePoliticsSpending](../../dashboard/usePoliticsSpending.ts); [politicsSpending.ts](../../dashboard/politicsSpending.ts) owns exact grouping and [powerBalance.ts](../../dashboard/powerBalance.ts) the gain.
+
+Prepared clients request per-item totals and latest matched facts for the selected native-date window. Current and final totals stay separate for Share/Fill, and aggregate payment counts need no list of contributing day IDs.
 
 ## Settings
 

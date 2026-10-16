@@ -12,8 +12,11 @@ import type { DrillPart } from '../drill/DrillParts';
 import { dayLabel, drawBands, drawPlayhead } from '../draw';
 import { runAt } from '../series';
 import { compactStack, compactStackExtent, forEachCompactStackSegment } from '../stack';
+import { drawApproximateSpans, summaryStack } from '../chartSummary';
+import type { ChartSummary } from '../chartSummary';
 import TimeChart from '../TimeChart';
-import type { ChartLayer } from '../TimeChart';
+import type { ChartLayer, TimeChartProps } from '../TimeChart';
+import { useParityRows } from '../../dashboard/parityRows';
 import { useChartTokens } from '../useChartTokens';
 import { heldStackSegment } from './countryRace';
 import { factionPartShare, factionPartWitness } from './factionParts';
@@ -24,10 +27,13 @@ import './factionParts.css';
 /** The same full member inventory serves Faction strength and Territory. Names
  * and flags are requested only for mounted rows at their proven identity hour. */
 export default function FactionPartsView({ model, runtime, track, hour, following, extent, active, pickOwner, onPick,
-  label, formatValue }: {
+  label, formatValue, summaries, totalSummary, onSummaryView, onReachHour, navigation }: {
   model: FactionParts; runtime: WidgetRuntime; track: BoundTrack; hour: number; following: boolean;
   extent: readonly [number, number]; active: boolean; pickOwner: unknown; onPick: (hour: number) => void;
   label: string; formatValue: (value: number) => string;
+  summaries?: Readonly<Record<string, ChartSummary>>; totalSummary?: ChartSummary;
+  onSummaryView?: TimeChartProps['onSummaryView']; onReachHour?: (hour: number | null) => void;
+  navigation?: Pick<TimeChartProps, 'onNavigateHour' | 'keyboardHour' | 'keyboardRevision'>;
 }) {
   const tokens = useChartTokens();
   const hoursPerSecond = usePlaybackSpeed(runtime.clock);
@@ -60,16 +66,33 @@ export default function FactionPartsView({ model, runtime, track, hour, followin
   }, [corrected, plan, styles, context, runtime.client]);
   const bandColors = useMemo(() => [...model.parts.map(part => colors.get(part.id) ?? tokens.muted), tokens.muted], [model, colors, tokens.muted]);
   const stack = useMemo(() => compactStack([...model.parts.map(part => part.runs.filter(run => run.raw != null)), model.remainder]), [model]);
+  const dense = useMemo(() => totalSummary && (!totalSummary.runs || totalSummary.approximate?.length) && summaries && model.parts.every(part => summaries[part.id])
+    ? summaryStack(model.parts.map(part => summaries[part.id]), totalSummary) : null, [model, summaries, totalSummary]);
   const layers = useMemo<ChartLayer[]>(() => [{
     draw: (ctx, frame, chartTokens, state) => {
       const end = Math.min(frame.x[1], state.playhead ?? frame.x[1]);
-      forEachCompactStackSegment(stack, frame.x[0], end, (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth), segment => {
-        const held = heldStackSegment(segment);
-        drawBands(ctx, frame, chartTokens, held.hours, held.bands, bandColors, held);
+      if (totalSummary) {
+        if (totalSummary.from !== frame.x[0] || totalSummary.to !== end || totalSummary.width !== Math.ceil(frame.plotWidth)) return;
+        if (!totalSummary.runs || totalSummary.approximate?.length) {
+          if (dense) drawApproximateSpans(ctx, frame, dense.approximate, end, () => {
+            forEachCompactStackSegment(dense.model, frame.x[0], end, 0, segment => {
+              const held = heldStackSegment(segment);
+              drawBands(ctx, frame, chartTokens, held.hours, held.bands, bandColors, held);
+            }, dense.sample);
+          });
+          return;
+        }
+      }
+      drawApproximateSpans(ctx, frame, totalSummary?.approximate, end, () => {
+        forEachCompactStackSegment(stack, frame.x[0], end, (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth), segment => {
+          const held = heldStackSegment(segment);
+          drawBands(ctx, frame, chartTokens, held.hours, held.bands, bandColors, held);
+        });
       });
     },
-    extent: x => compactStackExtent(stack, x[0], Math.min(x[1], following ? hour : x[1])),
-  }], [stack, bandColors, following, hour]);
+    extent: x => totalSummary && (!totalSummary.runs || totalSummary.approximate?.length) ? dense ? compactStackExtent(dense.model, x[0], Math.min(x[1], following ? hour : x[1])) : null
+      : compactStackExtent(stack, x[0], Math.min(x[1], following ? hour : x[1])),
+  }], [stack, bandColors, following, hour, totalSummary, dense]);
   const whole = runAt(model.total, hour);
   const total = whole ? BigInt(whole.value) : 0n;
   let unknown = 0;
@@ -93,7 +116,10 @@ export default function FactionPartsView({ model, runtime, track, hour, followin
     if (tag && row.label !== tag) row.label += ` (${tag})`;
   }
   const remainder = runAt(model.remainder, hour)?.raw;
-  return <div className="faction-parts">
+  const parityRoot = useRef<HTMLDivElement>(null);
+  useParityRows(parityRoot, () => ({ kind: 'table', label: 'Faction member values', complete: !!whole, hour, total: rows.length,
+    rows: rows.map(row => ({ id: row.id, value: row.raw?.toString() ?? null })) }));
+  return <div ref={parityRoot} className="faction-parts">
     {!whole && <p className="drill-empty">Faction total unavailable on {dayLabel(hour)}.</p>}
     <DrillParts parts={rows} virtual active={active} onVisible={onVisible} signedShares total={whole?.value ?? null} showShares={whole !== null} format={formatValue}
         unattributed={remainder == null ? undefined : { label: 'Not identified', value: Number(remainder), raw: remainder,
@@ -106,6 +132,7 @@ export default function FactionPartsView({ model, runtime, track, hour, followin
         playhead={following ? hour : null} playback="cursor" afterPlayhead={false} windowHours={0} hoursPerSecond={hoursPerSecond}
         active={active} revision={stack} pickOwner={pickOwner} layers={layers} formatValue={formatValue}
         axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} onPick={onPick}
+        onSummaryView={onSummaryView} onHover={onReachHour} {...navigation}
         overlay={(ctx, frame, chartTokens) => drawPlayhead(ctx, frame, chartTokens, hour)}
         tooltip={at => ({ title: dayLabel(at), rows: [{ label: 'Total', value: runAt(model.total, at)
           ? formatValue(runAt(model.total, at)!.value) : 'Not recorded' }] })} />

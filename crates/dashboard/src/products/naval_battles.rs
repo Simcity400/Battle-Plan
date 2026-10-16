@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     Source,
-    metadata::{LinkTags, check_cancel, validate_campaign},
+    metadata::{LinkTags, check_cancel},
     products::battles::{
         self, BattleBound, BattleCountry, BattleEnd, BattleMoment, BattlePlace, BattleRow,
         BattleSide, BattleValue, BattleWarning, BattleWindow, BattleWinner,
@@ -16,18 +16,21 @@ use crate::{
 };
 use replay::{
     container::Replay,
-    frame::{DecodedFrame, FrameDecoder, SharedView},
+    frame::{DecodedFrame, SharedView},
     rows::{NavalResultCountryRow, NavalResultMemberRow, NavalResultRow, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
     sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
+#[cfg(test)]
+use {crate::metadata::validate_campaign, replay::frame::FrameDecoder, std::collections::VecDeque};
 
 mod details;
+pub(crate) mod prepared;
 pub use details::NavalBattleDetails;
 
 pub struct NavalBattles;
@@ -55,7 +58,7 @@ pub struct NavalBattlesRankingParams {
     pub measure: String,
     pub countries: super::land_battles::LandBattleCountryFilter,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct NavalBattleRun {
     pub first_hour: i32,
@@ -65,14 +68,14 @@ pub struct NavalBattleRun {
     /// Ships sunk, Peak ships and Length; ended lengths use linked recorded reads.
     pub measures: Vec<BattleValue>,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct NavalBattleHistory {
     pub id: String,
     pub province_id: u32,
     pub runs: Vec<NavalBattleRun>,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct NavalBattlesReply {
     pub window: usize,
@@ -129,7 +132,7 @@ fn count(label: &str, value: Option<u64>, at_least: bool, reason: &str) -> Battl
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Quantities {
     ships: u64,
     convoys: u64,
@@ -155,7 +158,7 @@ impl Quantities {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct SideSample {
     countries: Vec<String>,
     countries_unknown: Option<String>,
@@ -163,7 +166,7 @@ struct SideSample {
     sunk: Option<u64>,
     convoys_sunk: Option<u64>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Snapshot {
     sides: [SideSample; 2],
     winner: Option<usize>,
@@ -172,7 +175,7 @@ struct Snapshot {
     peak_hour: Option<i32>,
     observed: Option<ObservedBattle>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct ObservedBattle {
     combat: u64,
     province: u32,
@@ -182,16 +185,18 @@ struct ObservedBattle {
     peak_hour: Option<i32>,
     quantities: [Option<Quantities>; 2],
 }
+#[derive(Clone, Serialize, Deserialize)]
 struct Run {
     first: i32,
     last: i32,
     sample: Snapshot,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum Kind {
     Combat,
     Result,
 }
+#[derive(Clone, Serialize, Deserialize)]
 struct Episode {
     reference: u64,
     id: String,
@@ -202,6 +207,7 @@ struct Episode {
     runs: Vec<Run>,
 }
 
+#[derive(Clone)]
 struct ResultInput {
     row: NavalResultRow,
     members: Option<Vec<NavalResultMemberRow>>,
@@ -245,26 +251,48 @@ impl ResultInput {
     }
 }
 
-#[derive(Default)]
-struct Scan {
+#[derive(Default, Serialize, Deserialize)]
+pub(crate) struct Scan {
     episodes: Vec<Episode>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
     results: HashMap<u64, usize>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
     combats: HashMap<u64, usize>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
     result_observations: HashMap<u64, Option<ObservedBattle>>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_set")]
     source_combats: HashSet<u64>,
     last_source: Option<(u64, i32)>,
     recorded_hours: Vec<HourSpan>,
     combat_hours: Vec<HourSpan>,
     result_hours: Vec<HourSpan>,
     tags: LinkTags,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
     tag_identity: HashMap<u32, String>,
     links_known: bool,
     result_links_dirty: bool,
+    #[serde(skip)]
     result_inputs: HashMap<u64, ResultInput>,
+    #[serde(skip)]
     result_views: Vec<SharedView>,
+    #[serde(skip)]
+    result_through: Option<i32>,
+    #[serde(skip)]
+    result_present: Vec<usize>,
+    #[serde(skip)]
+    result_incomplete: usize,
+    #[serde(skip)]
+    combat_incomplete: usize,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     refusals: BTreeMap<(i32, String), usize>,
     hour: i32,
     last_hour: Option<i32>,
+    details: prepared::DetailPreparation,
+    pages: BTreeMap<String, u64>,
+    windows: crate::prepared::series::Accumulator,
+    available: bool,
+    #[serde(skip)]
+    dirty: BTreeSet<usize>,
 }
 
 fn span(spans: &mut Vec<HourSpan>, hour: i32) {
@@ -298,6 +326,37 @@ fn highest(a: Option<u64>, b: Option<u64>) -> Option<u64> {
 }
 
 impl Scan {
+    fn run_last(&self, episode: &Episode, run: &Run) -> i32 {
+        if episode.kind == Kind::Result
+            && let Some(through) = self.result_through
+            && episode
+                .runs
+                .last()
+                .is_some_and(|last| std::ptr::eq(last, run))
+            && self
+                .results
+                .get(&episode.reference)
+                .is_some_and(|index| std::ptr::eq(&self.episodes[*index], episode))
+            && self.result_inputs.contains_key(&episode.reference)
+        {
+            through
+        } else {
+            run.last
+        }
+    }
+    fn extend_results(&mut self) {
+        let Some(hour) = self.result_through.take() else {
+            return;
+        };
+        for &index in &self.result_present {
+            self.episodes[index]
+                .runs
+                .last_mut()
+                .expect("deferred result read")
+                .last = hour;
+            self.dirty.insert(index);
+        }
+    }
     fn refuse(&mut self, reason: &str) {
         self.refuse_rows(reason, 1);
     }
@@ -321,6 +380,7 @@ impl Scan {
         side.countries_unknown = (!known).then(|| "Countries not recorded or unresolved".into());
     }
     fn push(&mut self, index: usize, hour: i32, sample: Snapshot) {
+        self.dirty.insert(index);
         let episode = &mut self.episodes[index];
         if let Some(run) = episode.runs.last_mut()
             && run.last.checked_add(1) == Some(hour)
@@ -355,11 +415,31 @@ impl Scan {
         });
         index
     }
-    fn observe(&mut self, frame: &DecodedFrame) {
+    #[cfg(test)]
+    pub(crate) fn observe(&mut self, frame: &DecodedFrame) {
+        self.observe_with_changes(frame, None);
+    }
+    pub(crate) fn observe_prepared(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: &crate::prepared::frame_changes::FrameChanges,
+    ) {
+        self.observe_with_changes(frame, Some(changes));
+    }
+    fn observe_with_changes(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+    ) {
+        self.available |= frame_available(frame);
         let hour = frame.hour;
         self.hour = hour;
         span(&mut self.recorded_hours, hour);
         let previous_hour = self.last_hour;
+        let contiguous = previous_hour.is_some_and(|last| last.checked_add(1) == Some(hour));
+        if !contiguous {
+            self.extend_results();
+        }
         if self
             .last_hour
             .is_some_and(|last| last.checked_add(1) != Some(hour))
@@ -387,123 +467,191 @@ impl Scan {
         }
         self.links_known = links_known;
 
-        // FrameDecoder validates unique table keys; the participant codec also
-        // rejects side > 1 (replay::rows). These complete reads need no repeats.
-        let participants = frame.complete::<tables::NavalCombatParticipants>().ok();
-        let combat_details = frame.complete::<tables::NavalCombatDetails>().ok();
-        let by_combat = grouped(participants.into_iter().flatten(), |row| row.combat);
-        let combat_details: HashMap<_, _> = combat_details
-            .into_iter()
-            .flatten()
-            .map(|row| (row.combat, row))
-            .collect();
-        if let Ok(rows) = frame.complete::<tables::NavalCombats>() {
-            let present: HashSet<_> = rows.iter().map(|row| row.id).collect();
+        let unchanged_combat = contiguous
+            && !links_changed
+            && self
+                .combat_hours
+                .last()
+                .is_some_and(|span| Some(span.last_hour) == previous_hour)
+            && changes.is_some_and(|changes| {
+                [
+                    TableId::NavalCombats,
+                    TableId::NavalCombatParticipants,
+                    TableId::NavalCombatDetails,
+                ]
+                .iter()
+                .all(|table| !changes.rows_changed[table.index()])
+            });
+        if unchanged_combat {
             span(&mut self.combat_hours, hour);
-            // Ended combats have no display/measure consumer. Store no end;
-            // only complete present reads can select a combat row.
-            self.combats.retain(|id, _| present.contains(id));
-            let mut missing = 0;
-            for row in rows {
-                let index = self
-                    .combats
-                    .get(&row.id)
-                    .copied()
-                    .filter(|index| self.episodes[*index].province == row.province)
-                    .unwrap_or_else(|| self.episode(row.id, row.province, Kind::Combat, hour));
-                self.combats.insert(row.id, index);
-                let mut sides = [SideSample::default(), SideSample::default()];
-                for (which, side) in sides.iter_mut().enumerate() {
-                    let members: Vec<_> = by_combat
-                        .get(&row.id)
-                        .into_iter()
-                        .flatten()
-                        .filter(|row| usize::from(row.side) == which)
-                        .copied()
-                        .collect();
-                    let mut values = Quantities::default();
-                    // Combatant sides are 0 attacker / 1 defender. Sinking writes state 0x20
-                    // without removing the member from its group; group cleanup skips
-                    // terminal state 0x38.
-                    for member in &members {
-                        values.add(member.ship == 0, member.state & 0x20 != 0);
-                    }
-                    side.quantities = participants.map(|_| values);
-                    side.sunk = side.quantities.map(|q| q.sunk);
-                    side.convoys_sunk = side.quantities.map(|q| q.convoys_sunk);
-                    let detail = combat_details
-                        .get(&row.id)
-                        .filter(|d| d.province == row.province);
-                    // Both country lists are recorded.
-                    self.countries(
-                        members
-                            .iter()
-                            .map(|r| r.owner)
-                            .chain(detail.into_iter().flat_map(|d| {
-                                d.sides[which]
-                                    .summary
-                                    .countries
-                                    .iter()
-                                    .chain(&d.sides[which].summary.secondary_countries)
-                                    .copied()
-                            })),
-                        detail.is_some(),
-                        side,
-                    );
-                }
-                let current_peak = sides[0]
-                    .quantities
-                    .zip(sides[1].quantities)
-                    .map(|(a, b)| a.ships + b.ships);
-                let previous = self.episodes[index].runs.last().map(|run| &run.sample);
-                let peak = highest(previous.and_then(|p| p.peak), current_peak);
-                let peak_hour = current_peak
-                    .filter(|peak| previous.and_then(|p| p.peak).is_none_or(|old| *peak > old))
-                    .map(|_| hour)
-                    .or_else(|| previous.and_then(|p| p.peak_hour));
-                if let Some(previous) = previous {
-                    // Groups can be detached; no cumulative roster is promised.
-                    // Keep maxima as floors, never sum samples.
-                    for (side, old) in sides.iter_mut().zip(&previous.sides) {
-                        side.sunk = highest(side.sunk, old.sunk);
-                        side.convoys_sunk = highest(side.convoys_sunk, old.convoys_sunk);
-                    }
-                }
-                missing += usize::from(
-                    sides
-                        .iter()
-                        .any(|s| s.quantities.is_none() || s.countries_unknown.is_some()),
-                );
-                self.push(
-                    index,
-                    hour,
-                    Snapshot {
-                        sides,
-                        winner: None,
-                        end: None,
-                        peak,
-                        peak_hour,
-                        observed: None,
-                    },
-                );
+            // These samples are equal; only accepted coverage and Length advance.
+            for &index in self.combats.values() {
+                self.episodes[index]
+                    .runs
+                    .last_mut()
+                    .expect("complete active census")
+                    .last = hour;
+                self.dirty.insert(index);
             }
-            if missing != 0 {
+            if self.combat_incomplete != 0 {
                 self.refuse_rows(
                     "Active participant quantities or countries incomplete at read",
-                    missing,
+                    self.combat_incomplete,
                 );
             }
         } else {
-            self.refuse("Active combat census unavailable or incomplete");
-            self.combats.clear();
+            // FrameDecoder validates unique table keys; the participant codec also
+            // rejects side > 1 (replay::rows). These complete reads need no repeats.
+            let participants = frame.complete::<tables::NavalCombatParticipants>().ok();
+            let combat_details = frame.complete::<tables::NavalCombatDetails>().ok();
+            let by_combat = grouped(participants.into_iter().flatten(), |row| row.combat);
+            let combat_details: HashMap<_, _> = combat_details
+                .into_iter()
+                .flatten()
+                .map(|row| (row.combat, row))
+                .collect();
+            if let Ok(rows) = frame.complete::<tables::NavalCombats>() {
+                let present: HashSet<_> = rows.iter().map(|row| row.id).collect();
+                span(&mut self.combat_hours, hour);
+                // Ended combats have no display/measure consumer. Store no end;
+                // only complete present reads can select a combat row.
+                self.combats.retain(|id, _| present.contains(id));
+                let mut missing = 0;
+                for row in rows {
+                    #[cfg(test)]
+                    super::sinkings::work::WORK.with(|work| work.borrow_mut().combats += 1);
+                    let index = self
+                        .combats
+                        .get(&row.id)
+                        .copied()
+                        .filter(|index| self.episodes[*index].province == row.province)
+                        .unwrap_or_else(|| self.episode(row.id, row.province, Kind::Combat, hour));
+                    self.combats.insert(row.id, index);
+                    let mut sides = [SideSample::default(), SideSample::default()];
+                    for (which, side) in sides.iter_mut().enumerate() {
+                        let members: Vec<_> = by_combat
+                            .get(&row.id)
+                            .into_iter()
+                            .flatten()
+                            .filter(|row| usize::from(row.side) == which)
+                            .copied()
+                            .collect();
+                        let mut values = Quantities::default();
+                        // Combatant sides are 0 attacker / 1 defender. Sinking writes state 0x20
+                        // without removing the member from its group; group cleanup skips
+                        // terminal state 0x38.
+                        for member in &members {
+                            values.add(member.ship == 0, member.state & 0x20 != 0);
+                        }
+                        side.quantities = participants.map(|_| values);
+                        side.sunk = side.quantities.map(|q| q.sunk);
+                        side.convoys_sunk = side.quantities.map(|q| q.convoys_sunk);
+                        let detail = combat_details
+                            .get(&row.id)
+                            .filter(|d| d.province == row.province);
+                        // Both country lists are recorded.
+                        self.countries(
+                            members
+                                .iter()
+                                .map(|r| r.owner)
+                                .chain(detail.into_iter().flat_map(|d| {
+                                    d.sides[which]
+                                        .summary
+                                        .countries
+                                        .iter()
+                                        .chain(&d.sides[which].summary.secondary_countries)
+                                        .copied()
+                                })),
+                            detail.is_some(),
+                            side,
+                        );
+                    }
+                    let current_peak = sides[0]
+                        .quantities
+                        .zip(sides[1].quantities)
+                        .map(|(a, b)| a.ships + b.ships);
+                    let previous = self.episodes[index].runs.last().map(|run| &run.sample);
+                    let peak = highest(previous.and_then(|p| p.peak), current_peak);
+                    let peak_hour = current_peak
+                        .filter(|peak| previous.and_then(|p| p.peak).is_none_or(|old| *peak > old))
+                        .map(|_| hour)
+                        .or_else(|| previous.and_then(|p| p.peak_hour));
+                    if let Some(previous) = previous {
+                        // Groups can be detached; no cumulative roster is promised.
+                        // Keep maxima as floors, never sum samples.
+                        for (side, old) in sides.iter_mut().zip(&previous.sides) {
+                            side.sunk = highest(side.sunk, old.sunk);
+                            side.convoys_sunk = highest(side.convoys_sunk, old.convoys_sunk);
+                        }
+                    }
+                    missing += usize::from(
+                        sides
+                            .iter()
+                            .any(|s| s.quantities.is_none() || s.countries_unknown.is_some()),
+                    );
+                    self.push(
+                        index,
+                        hour,
+                        Snapshot {
+                            sides,
+                            winner: None,
+                            end: None,
+                            peak,
+                            peak_hour,
+                            observed: None,
+                        },
+                    );
+                }
+                self.combat_incomplete = missing;
+                if missing != 0 {
+                    self.refuse_rows(
+                        "Active participant quantities or countries incomplete at read",
+                        missing,
+                    );
+                }
+            } else {
+                self.refuse("Active combat census unavailable or incomplete");
+                self.combats.clear();
+            }
         }
 
+        if self.result_through.is_some()
+            && !self
+                .result_views
+                .iter()
+                .zip(RESULT_TABLES)
+                .all(|(view, id)| SharedView::ptr_eq(view, &frame.tables[id.index()]))
+        {
+            self.extend_results();
+        }
         self.observe_sources(frame, &previous_combats, previous_hour);
         let Ok(rows) = frame.complete::<tables::NavalResults>() else {
+            self.extend_results();
             self.refuse("Retained result census unavailable or incomplete");
             self.result_views.clear();
             return;
         };
+        let links_changed = self.result_links_dirty;
+        let unchanged = contiguous
+            && !links_changed
+            && self.result_views.len() == RESULT_TABLES.len()
+            && self
+                .result_views
+                .iter()
+                .zip(RESULT_TABLES)
+                .all(|(view, id)| SharedView::ptr_eq(view, &frame.tables[id.index()]));
+        if unchanged {
+            span(&mut self.result_hours, hour);
+            self.result_through = Some(hour);
+            if self.result_incomplete != 0 {
+                self.refuse_rows(
+                    "Result member classification or countries incomplete at read",
+                    self.result_incomplete,
+                );
+            }
+            return;
+        }
+        self.extend_results();
         let ids: HashSet<_> = rows.iter().map(|row| row.id).collect();
         let invalid = rows
             .iter()
@@ -520,45 +668,12 @@ impl Scan {
         span(&mut self.result_hours, hour);
         // A country change during a failed census must still invalidate the
         // next successful result read, even if its raw result rows are equal.
-        let links_changed = std::mem::take(&mut self.result_links_dirty);
+        self.result_links_dirty = false;
         let views = RESULT_TABLES
             .iter()
             .map(|id| frame.tables[id.index()].clone())
             .collect::<Vec<_>>();
-        let unchanged = !links_changed
-            && self.result_views.len() == views.len()
-            && self
-                .result_views
-                .iter()
-                .zip(&views)
-                .all(|(a, b)| SharedView::ptr_eq(a, b));
         self.result_views = views;
-        if unchanged {
-            let mut incomplete = 0;
-            for row in rows {
-                let index = self.results[&row.id];
-                let last = self.episodes[index].runs.last_mut().expect("result read");
-                incomplete += usize::from(
-                    last.sample
-                        .sides
-                        .iter()
-                        .any(|s| s.quantities.is_none() || s.countries_unknown.is_some()),
-                );
-                if last.last.checked_add(1) == Some(hour) {
-                    last.last = hour;
-                } else {
-                    let sample = last.sample.clone();
-                    self.push(index, hour, sample);
-                }
-            }
-            if incomplete != 0 {
-                self.refuse_rows(
-                    "Result member classification or countries incomplete at read",
-                    incomplete,
-                );
-            }
-            return;
-        }
         let mut members = frame.complete::<tables::NavalResultMembers>().ok();
         if let Some(rows) = members {
             let invalid = rows.iter().filter(|r| r.side > 1).count();
@@ -612,6 +727,8 @@ impl Scan {
         self.result_inputs.retain(|id, _| ids.contains(id));
         let mut incomplete = 0;
         for row in rows {
+            #[cfg(test)]
+            super::sinkings::work::WORK.with(|work| work.borrow_mut().results += 1);
             let borrowed_members =
                 members.map(|_| by_result.get(&row.id).map(Vec::as_slice).unwrap_or(&[]));
             let borrowed_countries =
@@ -632,6 +749,7 @@ impl Scan {
                 input.matches(row, borrowed_members, borrowed_countries, detail)
             });
             if continuing.is_some() && !links_changed && !input_changed {
+                self.dirty.insert(index);
                 let last = self.episodes[index].runs.last_mut().expect("result read");
                 incomplete += usize::from(
                     last.sample
@@ -745,6 +863,8 @@ impl Scan {
                 incomplete,
             );
         }
+        self.result_incomplete = incomplete;
+        self.result_present = rows.iter().map(|row| self.results[&row.id]).collect();
     }
 
     fn observe_sources(
@@ -832,6 +952,7 @@ impl Scan {
             });
             if let Some(index) = index {
                 if observed.is_some() {
+                    self.dirty.insert(index);
                     self.episodes[index].resolved_read = Some(frame.hour);
                 } else {
                     self.refuse("Naval source constructor does not match the recorded episode");
@@ -1027,6 +1148,7 @@ impl Scan {
             runs,
         }
     }
+    #[cfg(test)]
     fn reply(
         &self,
         params: &NavalBattlesParams,
@@ -1035,17 +1157,20 @@ impl Scan {
         let window = windows
             .get(params.window)
             .ok_or_else(|| crate::invalid("Battle window not in this recording"))?;
+        self.reply_window(params.window, window)
+    }
+    fn reply_window(&self, ordinal: usize, window: &BattleWindow) -> io::Result<NavalBattlesReply> {
         let mut rows = Vec::new();
         for episode in &self.episodes {
             let first = episode
                 .runs
-                .partition_point(|run| run.last < window.first_hour);
+                .partition_point(|run| self.run_last(episode, run) < window.first_hour);
             let runs = episode.runs[first..]
                 .iter()
                 .take_while(|run| run.first <= window.last_hour)
                 .filter_map(|run| {
                     let first = run.first.max(window.first_hour);
-                    let last = run.last.min(window.last_hour).min(
+                    let last = self.run_last(episode, run).min(window.last_hour).min(
                         episode
                             .resolved_read
                             .and_then(|hour| hour.checked_sub(1))
@@ -1059,7 +1184,7 @@ impl Scan {
             }
         }
         bounded(NavalBattlesReply {
-            window: params.window,
+            window: ordinal,
             interval: window.clone(),
             rows,
             observed: self.observed_in(window.first_hour, window.last_hour),
@@ -1123,7 +1248,7 @@ impl Scan {
             {
                 continue;
             }
-            let read = run.last.min(params.last_hour);
+            let read = self.run_last(episode, run).min(params.last_hour);
             let in_range = match episode.kind {
                 Kind::Combat => read >= params.first_hour,
                 Kind::Result => run
@@ -1206,6 +1331,7 @@ const RESULT_TABLES: [TableId; 4] = [
     TableId::NavalResultCountries,
     TableId::NavalCombatResultDetails,
 ];
+#[cfg(test)]
 const CENSUS_TABLES: [TableId; 11] = [
     TableId::Campaign,
     TableId::Countries,
@@ -1220,6 +1346,7 @@ const CENSUS_TABLES: [TableId; 11] = [
     TableId::NavalResultSources,
 ];
 
+#[cfg(test)]
 fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan> {
     let mut scan = Scan::default();
     crate::blocks::scan_blocks(
@@ -1263,9 +1390,15 @@ fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan
             Ok(())
         },
     )?;
+    scan.extend_results();
     Ok(scan)
 }
 
+fn frame_available(frame: &DecodedFrame) -> bool {
+    frame.complete::<tables::NavalCombats>().is_ok()
+        || frame.complete::<tables::NavalResults>().is_ok()
+}
+#[cfg(test)]
 fn recording_available(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<bool> {
     let selected = [
         TableId::Campaign,
@@ -1293,9 +1426,7 @@ fn recording_available(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> 
                         break;
                     }
                     // Empty complete censuses also prove availability. Stop at the first.
-                    if decoded.complete::<tables::NavalCombats>().is_ok()
-                        || decoded.complete::<tables::NavalResults>().is_ok()
-                    {
+                    if frame_available(decoded) {
                         return Ok(true);
                     }
                 }
@@ -1325,9 +1456,11 @@ fn windows(replay: &Replay, branch: u64) -> Vec<BattleWindow> {
         .collect()
 }
 #[derive(Default)]
+#[cfg(test)]
 struct Cache {
     branches: VecDeque<(u64, Arc<Scan>)>,
 }
+#[cfg(test)]
 impl Cache {
     fn get(&mut self, branch: u64) -> Option<Arc<Scan>> {
         let at = self.branches.iter().position(|(id, _)| *id == branch)?;
@@ -1344,6 +1477,7 @@ impl Cache {
         }
     }
 }
+#[cfg(test)]
 fn census(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Result<Arc<Scan>> {
     let state = source.state::<Cache>();
     let mut cache = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -1376,6 +1510,7 @@ impl Product for NavalBattles {
         ]);
         types
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -1404,6 +1539,7 @@ impl Product for NavalBattlesManifest {
             NavalBattlesManifestReply::decl(),
         ]
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -1448,6 +1584,7 @@ impl Product for NavalBattlesRanking {
             NavalBattlesRankingReply::decl(),
         ]
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,

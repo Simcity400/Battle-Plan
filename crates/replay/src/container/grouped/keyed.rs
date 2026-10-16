@@ -35,20 +35,31 @@ pub(super) const MASKS_KEPT: usize = 64;
 
 /// The keys of one table's rows at the frame before, in order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct KeySet(Vec<u128>);
+pub(super) struct KeySet {
+    keys: Vec<u128>,
+    /// Membership changes within this table's live block.
+    changes: u64,
+}
 
 impl KeySet {
     pub(super) fn clear(&mut self) {
-        self.0.clear();
+        if !self.keys.is_empty() {
+            self.keys.clear();
+            self.changes += 1;
+        }
+    }
+
+    pub(super) fn changes(&self) -> u64 {
+        self.changes
     }
 
     pub(super) fn keys(&self) -> &[u128] {
-        &self.0
+        &self.keys
     }
 
     #[cfg(test)]
     pub(super) fn of(keys: Vec<u128>) -> Self {
-        Self(keys)
+        Self { keys, changes: 0 }
     }
 
     /// Follow one plain update: a snapshot or truncation names every row it
@@ -61,7 +72,7 @@ impl KeySet {
             UNCHANGED => return Ok(()),
             SNAPSHOT | TRUNCATED | DELTA => {}
             _ => {
-                self.0.clear();
+                self.clear();
                 return Ok(());
             }
         }
@@ -76,13 +87,16 @@ impl KeySet {
         })?;
         if status != DELTA {
             // Plain updates hold their rows in increasing key order.
-            self.0 = named;
+            if self.keys != named {
+                self.keys = named;
+                self.changes += 1;
+            }
             return Ok(());
         }
         let mut changes = KeyChanges {
             inserted: named
                 .into_iter()
-                .filter(|key| self.0.binary_search(key).is_err())
+                .filter(|key| self.keys.binary_search(key).is_err())
                 .collect(),
             deleted,
         };
@@ -94,9 +108,11 @@ impl KeySet {
     /// inserted keys the set does not hold and deleted keys, each in
     /// increasing order.
     pub(super) fn apply(&mut self, changes: &mut KeyChanges) {
-        if !changes.inserted.is_empty() {
-            let mut merged = Vec::with_capacity(self.0.len() + changes.inserted.len());
-            let mut held = self.0.iter().copied().peekable();
+        let inserted = !changes.inserted.is_empty();
+        let before = self.keys.len();
+        if inserted {
+            let mut merged = Vec::with_capacity(self.keys.len() + changes.inserted.len());
+            let mut held = self.keys.iter().copied().peekable();
             for &key in &changes.inserted {
                 while let Some(before) = held.next_if(|held| *held < key) {
                     merged.push(before);
@@ -104,13 +120,16 @@ impl KeySet {
                 merged.push(key);
             }
             merged.extend(held);
-            self.0 = merged;
+            self.keys = merged;
             changes.inserted.clear();
         }
         if !changes.deleted.is_empty() {
             let deleted = &changes.deleted;
-            self.0.retain(|key| deleted.binary_search(key).is_err());
+            self.keys.retain(|key| deleted.binary_search(key).is_err());
             changes.deleted.clear();
+        }
+        if inserted || self.keys.len() != before {
+            self.changes += 1;
         }
     }
 }
@@ -137,7 +156,7 @@ pub(super) struct KeyWriter<'a> {
 impl<'a> KeyWriter<'a> {
     pub(super) fn new(keys: &'a KeySet) -> Self {
         Self {
-            keys: &keys.0,
+            keys: keys.keys(),
             at: 0,
             previous: None,
         }
@@ -176,7 +195,7 @@ pub(super) struct KeyReader<'a> {
 impl<'a> KeyReader<'a> {
     pub(super) fn new(keys: &'a KeySet) -> Self {
         Self {
-            keys: &keys.0,
+            keys: keys.keys(),
             at: 0,
             previous: None,
         }
@@ -292,7 +311,10 @@ pub(super) enum RowRun<'a> {
 /// decoded when the entry's rows started.
 pub(super) enum RowRead<'a> {
     Listed(KeyReader<'a>),
-    Modelled(std::vec::IntoIter<(u128, u64, bool)>),
+    Modelled {
+        rows: Vec<(u128, u64, bool)>,
+        at: usize,
+    },
 }
 
 impl<'a> RowCoding<'a> {
@@ -305,7 +327,7 @@ impl<'a> RowCoding<'a> {
     /// rows at the frame before, which can cost less than a byte each.
     pub(super) fn held_rows(&self) -> usize {
         if self.modelled() {
-            self.keys.0.len()
+            self.keys.keys().len()
         } else {
             0
         }
@@ -368,11 +390,10 @@ impl<'a> RowCoding<'a> {
         Ok(match self.model.as_deref_mut() {
             Some(model) => {
                 let (keys, masks) = columns.split_at_mut(MASKS);
-                RowRead::Modelled(
-                    model
-                        .take(table, self.keys, count, &mut keys[KEYS], &mut masks[0])?
-                        .into_iter(),
-                )
+                RowRead::Modelled {
+                    rows: model.take(table, self.keys, count, &mut keys[KEYS], &mut masks[0])?,
+                    at: 0,
+                }
             }
             None => RowRead::Listed(KeyReader::new(self.keys)),
         })
@@ -391,9 +412,20 @@ impl<'a> RowCoding<'a> {
                 let (key, inserted) = reader.take(table, &mut columns[KEYS])?;
                 (key, self.masks.take(width, &mut columns[MASKS])?, inserted)
             }
-            RowRead::Modelled(rows) => rows
-                .next()
-                .ok_or_else(|| invalid("modelled entry has fewer rows than its count"))?,
+            RowRead::Modelled { rows, at } => {
+                let row = rows
+                    .get(*at)
+                    .copied()
+                    .ok_or_else(|| invalid("modelled entry has fewer rows than its count"))?;
+                *at += 1;
+                if *at == rows.len() {
+                    self.model
+                        .as_deref_mut()
+                        .expect("a modelled run has a model")
+                        .recycle_run(std::mem::take(rows));
+                }
+                row
+            }
         };
         self.note_changed(key, inserted);
         Ok((key, mask))
@@ -423,7 +455,7 @@ mod tests {
     const TABLE: TableId = TableId::Divisions;
 
     fn set(keys: &[u128]) -> KeySet {
-        KeySet(keys.to_vec())
+        KeySet::of(keys.to_vec())
     }
 
     #[test]
@@ -537,6 +569,87 @@ mod tests {
         )
         .unwrap();
         assert!(keys.keys().is_empty());
+    }
+
+    #[test]
+    fn key_change_counter_tracks_membership_and_ignores_no_ops() {
+        use crate::rows::{DivisionRow, TableRows};
+        let snapshot = |ids: &[u64], status: u8| {
+            let mut plain = vec![status];
+            if status == TRUNCATED {
+                plain.extend_from_slice(&1_u32.to_le_bytes());
+            }
+            plain.extend_from_slice(&(ids.len() as u32).to_le_bytes());
+            TableRows::Divisions(
+                ids.iter()
+                    .map(|&id| DivisionRow {
+                        id,
+                        ..Default::default()
+                    })
+                    .collect(),
+            )
+            .encode_rows(&mut plain)
+            .unwrap();
+            plain
+        };
+        let format = crate::FORMAT_VERSION;
+        let mut keys = KeySet::default();
+        keys.clear();
+        keys.apply(&mut KeyChanges::default());
+        assert_eq!(keys.changes(), 0);
+        keys.advance(TABLE, format, &snapshot(&[4, 8], SNAPSHOT))
+            .unwrap();
+        assert_eq!(keys.changes(), 1);
+        keys.advance(TABLE, format, &snapshot(&[4, 8], SNAPSHOT))
+            .unwrap();
+        keys.advance(TABLE, format, &snapshot(&[4, 8], TRUNCATED))
+            .unwrap();
+        keys.advance(TABLE, format, &[UNCHANGED]).unwrap();
+        keys.apply(&mut KeyChanges {
+            inserted: Vec::new(),
+            deleted: vec![12],
+        });
+        assert_eq!(keys.changes(), 1);
+        // Equal length does not imply equal membership.
+        keys.apply(&mut KeyChanges {
+            inserted: vec![12],
+            deleted: vec![4],
+        });
+        assert_eq!(keys.keys(), [8, 12]);
+        assert_eq!(keys.changes(), 2);
+        keys.advance(TABLE, format, &snapshot(&[4, 8], TRUNCATED))
+            .unwrap();
+        assert_eq!(keys.changes(), 3);
+        // An ordinary delta advances through the same membership operation.
+        let mut delta = vec![DELTA];
+        delta.extend_from_slice(&9_i32.to_le_bytes());
+        delta.extend_from_slice(&0_u32.to_le_bytes());
+        delta.extend_from_slice(&1_u32.to_le_bytes());
+        put_varint(&mut delta, 4);
+        keys.advance(TABLE, format, &delta).unwrap();
+        assert_eq!(keys.keys(), [8]);
+        assert_eq!(keys.changes(), 4);
+        keys.clear();
+        assert_eq!(keys.changes(), 5);
+        keys.clear();
+        assert_eq!(keys.changes(), 5);
+        keys.advance(TABLE, format, &snapshot(&[4], SNAPSHOT))
+            .unwrap();
+        assert_eq!(keys.changes(), 6);
+        keys.advance(
+            TABLE,
+            format,
+            &[super::super::UNAVAILABLE, 1, 0, 0, 0, b'x'],
+        )
+        .unwrap();
+        assert_eq!(keys.changes(), 7);
+        keys.advance(
+            TABLE,
+            format,
+            &[super::super::UNAVAILABLE, 1, 0, 0, 0, b'x'],
+        )
+        .unwrap();
+        assert_eq!(keys.changes(), 7);
     }
 
     #[test]

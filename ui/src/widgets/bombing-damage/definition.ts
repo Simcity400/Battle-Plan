@@ -14,5 +14,5 @@ export const definition = {
   description: 'Applied aircraft bombing damage inflicted and suffered, in building levels.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 10 }, countries: { max: Number.MAX_SAFE_INTEGER, ranked: true }, defaultCountries: TOP_COUNTRIES,
-  availability: { product: 'military-air-ledger', params: { family: 'bombing' } }, options: OPTIONS,
+  availability: { product: 'military-air-ledger', params: { availability: true, family: 'bombing' } }, options: OPTIONS,
 } as const satisfies WidgetMeta;

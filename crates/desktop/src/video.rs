@@ -116,37 +116,23 @@ pub struct VideoReply {
     /// The manual map interface scales to offer, in percent.
     map_ui_scale_choices: &'static [u32],
 }
-fn game_user_folder(window: &WebviewWindow) -> Result<PathBuf, String> {
-    let current = window.state::<NativeHost>().status().map_details;
-    let (game, user) = match current {
-        Some(details) if !details.game.is_empty() && !details.user.is_empty() => {
-            (PathBuf::from(details.game), PathBuf::from(details.user))
-        }
-        _ => {
-            let config = dashboard::Config::load().map_err(|error| error.to_string())?;
-            let mut game = config.game_dir;
-            let mut arguments = std::env::args_os().skip(1);
-            while let Some(argument) = arguments.next() {
-                if argument == "--game-dir" {
-                    game = PathBuf::from(arguments.next().ok_or("Missing --game-dir folder")?);
-                }
-            }
-            let user =
-                installed_content::settings::configured_user_folder().map_err(|error| error.to_string())?;
-            (game, user)
-        }
-    };
-    engine::executable_tables::initialize(&game)
+/// The host's effective user folder, after initializing the selected game's tables.
+fn game_user_folder() -> Result<PathBuf, String> {
+    let (config, _) = crate::dashboard_service::host_config()?;
+    if config.user_dir.as_os_str().is_empty() {
+        return Err("Choose the Paradox user folder in Settings".into());
+    }
+    engine::executable_tables::initialize(&config.game_dir)
         .map_err(|error| format!("Game tables: {error}"))?;
-    Ok(user)
+    Ok(config.user_dir)
 }
-fn game_settings(window: &WebviewWindow) -> Result<VideoSettings, String> {
-    let user = game_user_folder(window)?;
+fn game_settings() -> Result<VideoSettings, String> {
+    let user = game_user_folder()?;
     parse_game_display(&installed_content::settings::read_keys(&user).map_err(|e| e.to_string())?)
 }
 /// The viewer computes the same from the recording's user folder and the same monitors.
-fn game_map_ui_scale(window: &WebviewWindow) -> Option<f64> {
-    let user = game_user_folder(window).ok()?;
+fn game_map_ui_scale() -> Option<f64> {
+    let user = game_user_folder().ok()?;
     let display = installed_content::settings::read_display(&user).ok()?;
     let scale = display.screen_scale(&installed_content::settings::desktops().ok()?)?;
     dashboard::protocol::MAP_UI_SCALE_RANGE
@@ -176,8 +162,8 @@ fn parse_game_display(keys: &installed_content::settings::SettingsKeys) -> Resul
     settings.validate()?;
     Ok(settings)
 }
-fn reply(window: &WebviewWindow, settings: VideoSettings) -> VideoReply {
-    let (game_settings, game_settings_error) = match game_settings(window) {
+fn reply(settings: VideoSettings) -> VideoReply {
+    let (game_settings, game_settings_error) = match game_settings() {
         Ok(settings) => (Some(settings), None),
         Err(error) => (None, Some(error)),
     };
@@ -185,7 +171,7 @@ fn reply(window: &WebviewWindow, settings: VideoSettings) -> VideoReply {
         settings,
         game_settings,
         game_settings_error,
-        game_map_ui_scale: game_map_ui_scale(window),
+        game_map_ui_scale: game_map_ui_scale(),
         map_ui_scale_choices: &dashboard::protocol::MAP_UI_SCALE_CHOICES,
     }
 }
@@ -202,7 +188,7 @@ pub fn launch_actions(
         .clone()
         .unwrap_or_default();
     let vsync = if settings.use_game_settings {
-        game_settings(window)
+        game_settings()
             .map(|game| game.vsync)
             .unwrap_or(settings.vsync)
     } else {
@@ -230,7 +216,7 @@ pub fn restore(window: &WebviewWindow) -> Result<(), String> {
     let mut stored = state.0.lock().map_err(|e| e.to_string())?;
     if let Ok(settings) = &mut *stored {
         if settings.use_game_settings
-            && let Ok(game) = game_settings(window)
+            && let Ok(game) = game_settings()
         {
             *settings = inherit_game(settings, game);
         }
@@ -247,7 +233,7 @@ pub fn video_settings(
     let mut stored = state.0.lock().map_err(|e| e.to_string())?;
     let mut settings = stored.clone()?;
     if settings.use_game_settings
-        && let Ok(game) = game_settings(&window)
+        && let Ok(game) = game_settings()
     {
         if game.ui_scale != settings.ui_scale {
             apply_scale(&window, &game)?;
@@ -260,7 +246,7 @@ pub fn video_settings(
         settings = inherit_game(&settings, game);
         *stored = Ok(settings.clone());
     }
-    Ok(reply(&window, settings))
+    Ok(reply(settings))
 }
 #[tauri::command]
 pub fn set_video_settings(
@@ -270,7 +256,7 @@ pub fn set_video_settings(
     settings: VideoSettings,
 ) -> Result<VideoReply, String> {
     let mut settings = if settings.use_game_settings {
-        game_settings(&window)?
+        game_settings()?
     } else {
         settings
     };
@@ -312,7 +298,7 @@ pub fn set_video_settings(
         return Err(error);
     }
     *stored = Ok(settings.clone());
-    Ok(reply(&window, settings))
+    Ok(reply(settings))
 }
 
 /// Settings taken over from the game's display settings. The diagnostics

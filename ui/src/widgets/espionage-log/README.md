@@ -19,7 +19,10 @@ All/manual/group countries, campaign/follow/pin/range; content operation types, 
 - Preparation is recorded civilian preparation, not equipment readiness. Execution elapsed/duration uses native sentinels; held reads retain their dates, never recomputed progress.
 - Completion hooks can supply census-unseen outcomes. Bonus, detection and outcome text remain independent; unavailable descriptions have a short status. Slot counts show assigned / available with names listed in slot order, without handles. Non-UTF-8 text is refused by name. Do not request future outcomes.
 - Each row states operation status once and retains its progress meter. Missing row artwork uses a target fallback.
+- Unavailable inline country flags keep a 25-by-16 placeholder slot; decoded flags use the log's 18-by-12 artwork slot, independent of stylesheet load order.
+- Prepared day windows share one stored range per replay block and use shared coverage polling. The scalar parity hook is **Espionage operation values**, alongside the complete log model.
 - Load wanted windows, retaining preceding identity/ending witnesses. Gaps, missing lexical names and unknown endpoint tags never borrow later data. All countries keeps unknown actors visible.
+- After visible captures, parity builds retain every real manifest window intersecting the selected history through the normal reader. All windows and the exact boundary must complete, including when the newest window is empty. Complete models preserve ordered episode operands, recorded type names and exact status, outcome and progress inputs; dated labels, flags and stored description details remain ordinary viewport/tooltip demand. Visible text and screenshots cover mounted rows. Ordinary builds expose no preparation or extra history demand.
 
 ## Files
 

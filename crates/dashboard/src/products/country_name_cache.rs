@@ -128,14 +128,13 @@ mod tests {
         AutonomyRow, CountryAppearanceRow, CountryLinkRow, CountryRow, PoliticalPartyRow,
         PoliticsRow, TableId, TableRows,
     };
-    #[test]
-    fn country_name_cache_ignores_unrelated_values_and_refreshes_naming_operands() {
-        let mut frame = source(1, 24000, Some(1));
+    fn naming_frame(tag: &[u8]) -> DecodedFrame {
+        let mut frame = source(1, 24000, None);
         frame.tables[TableId::Countries.index()] =
             TableView::Complete(TableRows::Countries(vec![CountryRow {
                 id: 7,
                 canonical_slot: 1,
-                tag: b"synthetic".to_vec(),
+                tag: tag.to_vec(),
                 ..Default::default()
             }]))
             .into();
@@ -157,10 +156,16 @@ mod tests {
                 ..Default::default()
             }]))
             .into();
-        frame.tables[TableId::PoliticalParties.index()] =
-            TableView::Complete(TableRows::PoliticalParties(vec![])).into();
         frame.tables[TableId::Autonomy.index()] =
             TableView::Complete(TableRows::Autonomy(vec![])).into();
+        frame
+    }
+
+    #[test]
+    fn country_name_cache_ignores_unrelated_values_and_refreshes_naming_operands() {
+        let mut frame = naming_frame(b"synthetic");
+        frame.tables[TableId::PoliticalParties.index()] =
+            TableView::Complete(TableRows::PoliticalParties(vec![])).into();
         let identity = CountryIdentity { id: 7, slot: 1 };
         let loc = [
             ("synthetic_DEF".to_owned(), "old name".to_owned()),
@@ -371,48 +376,11 @@ mod tests {
             installed_content::country_names::original_or_own_tag(&frame, 0),
             Ok("")
         );
-        let reserved = frame.complete::<tables::ReservedCountryNaming>().unwrap();
-        assert_eq!(
-            reserved[0].original_tag_buckets,
-            Recorded::Value(Some(vec![vec![], vec![7, 7]]))
-        );
-        assert_eq!(
-            reserved[0].country_array,
-            Recorded::Value(Some(vec![0, 7, 7]))
-        );
     }
 
     #[test]
     fn name_cache_refuses_replaced_holder_and_incomplete_country_catalogue() {
-        let mut frame = source(1, 24000, None);
-        frame.tables[TableId::Countries.index()] =
-            TableView::Complete(TableRows::Countries(vec![CountryRow {
-                id: 7,
-                canonical_slot: 1,
-                tag: b"SYN".to_vec(),
-                ..Default::default()
-            }]))
-            .into();
-        frame.tables[TableId::CountryLinks.index()] =
-            TableView::Complete(TableRows::CountryLinks(vec![CountryLinkRow {
-                id: 7,
-                canonical_slot: 1,
-            }]))
-            .into();
-        frame.tables[TableId::CountryAppearance.index()] =
-            TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
-                country: 7,
-                ..Default::default()
-            }]))
-            .into();
-        frame.tables[TableId::Politics.index()] =
-            TableView::Complete(TableRows::Politics(vec![PoliticsRow {
-                country: 7,
-                ..Default::default()
-            }]))
-            .into();
-        frame.tables[TableId::Autonomy.index()] =
-            TableView::Complete(TableRows::Autonomy(vec![])).into();
+        let mut frame = naming_frame(b"SYN");
         let localisation = [("SYN_DEF".into(), "synthetic".into())]
             .into_iter()
             .collect();

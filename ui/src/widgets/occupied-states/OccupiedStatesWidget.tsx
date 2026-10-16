@@ -1,4 +1,6 @@
 import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles.ts';
+import { useRef } from 'react';
+import { useParityRows } from '../../dashboard/parityRows';
 import { useCallback, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import Table, { CellBar, CountryCell } from '../../charts/table/Table';
@@ -48,11 +50,11 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'occupied-states-manifest', params: { branchId: track.branch.id } } : null;
-  const { data: manifest, error, retry } = useProduct<OccupiedStatesManifestReply>(runtime.client, request, active, validateOccupiedStatesManifest);
+  const { data: manifest, error, retry } = useProduct<OccupiedStatesManifestReply>(runtime.client, request, active, validateOccupiedStatesManifest, track?.source);
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, contentRevision]) : null;
   const { target, wanted } = occupiedWindows(manifest?.windows ?? [], hour, follow);
   const windows = useProductWindows<OccupiedStatesReply>(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision,
-    product: 'occupied-states', params: { branchId: track!.branch.id, window: index } }), wanted, active && manifest !== undefined, validateOccupiedStatesReply);
+    product: 'occupied-states', params: { branchId: track!.branch.id, window: index } }), wanted, active && manifest !== undefined, validateOccupiedStatesReply, track?.source);
   const current = windows.data.get(target);
   const display = useWindowDisplay(identity, current, hour, runtime.client);
   const shown = display?.hour ?? hour;
@@ -71,6 +73,9 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
   const view = useMemo(() => display && target >= 0 ? occupiedAt(display.data, shown, matches, options.countryRole === 'occupied' ? 'occupied' : 'occupier', identityKnown) : null,
     [display, target, shown, matches, options.countryRole, identityKnown]);
   const rows = view?.rows ?? EMPTY_ROWS;
+  const parityRoot = useRef<HTMLDivElement>(null);
+  useParityRows(parityRoot, () => ({ kind: 'windowed', label: 'Occupied states values', complete: !!current && !!manifest,
+    total: rows.length, hour: shown, rows: [...rows] }));
   const [visible, setVisible] = useState<readonly OccupiedRow[]>(EMPTY_ROWS);
   const onVisible = useCallback((rows: readonly OccupiedRow[]) => setVisible(rows), []);
   const wantedLabels = useMemo(() => visible.flatMap(row => (['owner', 'occupier', 'occupied'] as const)
@@ -118,7 +123,7 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
   if (!view?.observation) return <WidgetState kind="unavailable" message="Occupied states weren’t recorded at this time." />;
   if (!rows.length && view.selectionUnknown) return <WidgetState kind="unavailable" message="Occupied states unavailable for these countries." />;
   if (!rows.length) return <WidgetState kind={view.observation.complete ? 'empty' : 'unavailable'} message={view.observation.complete ? 'No occupied states match these countries at this moment.' : 'Some occupied states are missing.'} />;
-  return <div className="occupied-states">
+  return <div className="occupied-states" ref={parityRoot}>
     {!current && <p className="occupation-note" role="status">Updating occupied states…</p>}
     {!view.observation.complete && <p className="occupation-note">Some occupied states are missing.</p>}
     {view.selectionUnknown && <p className="occupation-note">Some states couldn’t be matched to these countries.</p>}

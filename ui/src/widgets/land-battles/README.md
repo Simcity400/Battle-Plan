@@ -2,7 +2,7 @@
 
 **What it shows:** Which land battles happened where and when, who attacked whom and who won, and what each side lost, as a log or a biggest-battles list; a click opens one battle's course and equipment losses.
 
-**Products:** [`land-battles-manifest`, `land-battles`, `land-battles-ranking`, `land-battle-course`](../../../../crates/dashboard/src/products/land_battles.rs) and [`land-battle-terrain`](../../../../crates/dashboard/src/products/land_battles/terrain.rs); [`place-names`](../../../../crates/dashboard/src/products/place_names.rs) supplies locations. Uses [shared battles](../battles/README.md) for windows, ranking, filters, names and Jump.
+**Products:** [`land-battles-manifest`, `land-battles`, `land-battles-ranking`, `land-battle-course`](../../../../crates/dashboard/src/products/land_battles.rs) and [`land-battle-terrain`](../../../../crates/dashboard/src/products/land_battles/terrain.rs); [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) supplies locations. Uses [shared battles](../battles/README.md) for windows, ranking, filters, names and Jump.
 
 **Settings:** All countries and the log by default; manual/smart-group filters; Log or Biggest (also a switch beside Live), Biggest by casualties, most divisions at once or length, user-selected top N, month headers, new-row animation, density and where the battle opens (in the widget or beside it); Campaign, Follow, Pin and Range.
 
@@ -21,7 +21,18 @@
 - A result side that lists no countries keeps the countries of the battle's last hourly read, dated at that read; filters and ranking match each side at its own read. A side unknown in both stays unknown and survives every filter.
 - Adjacent complete absence bounds episodes. Gaps split them and end known losses; results cannot join across gaps. Latest-present battles stay ongoing. Disappearance proves neither winner nor final losses.
 - Prefetch cannot reveal future facts. Filter before top N; unknown participants survive. Range ranking uses the full observed peak/length.
+- Parity preparation uses the shared battle reader to retain all selected real windows after visible screenshots. Complete ordered rows retain identities, supplying dates and exact numeric/loss operands without resolving offscreen country/location labels. Bounded rendered samples use the ordinary dated labels and description helpers. Failed or pending history windows refuse completion.
 
 **Files:** [LandBattlesWidget.tsx](LandBattlesWidget.tsx) supplies the BattleViewAdapter and its view; [LandBattleList.tsx](LandBattleList.tsx) draws the rows, header switch and terrain lookup, and [LandBattleDrill.tsx](LandBattleDrill.tsx) the opened battle. [landBattlesData.ts](landBattlesData.ts) validates and projects rows and loss wording; [landBattleCourse.ts](landBattleCourse.ts) validates the course and terrain replies and shapes the drill, tooltip and wording; adjacent tests cover both. `definition.ts`, `index.ts` and `landBattles.css` own settings, registration and style.
 
 Shared framework conventions: [widgets](../README.md).
+
+Land battle queries read prepared block replies, ranking records and course pages.
+The background census uses each accepted frame and persists its derived continuation
+for resume. Plain compressed JSON pages hold exact block replies and compact ranking
+records with prior peaks and supplying loss reads. Courses use stable numeric
+keys from the shared catalogue.
+Ranking reads only records for battles in the selected windows and uses the same
+country filter, measure, tie order and reply builder as the recording product.
+Delayed finalizer facts repair their affected block pages. Manifests read prepared
+availability. The Land battles log and biggest list retain their parity row labels.

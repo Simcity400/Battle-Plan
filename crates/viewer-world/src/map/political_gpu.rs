@@ -1,0 +1,1495 @@
+//! Byte-exact GPU port of the gradient oracle. Only displayed states reach this pass.
+//!
+//! Dirty province boxes include the search halo (including wrapped cells); changes to a
+//! region's thickness or colour additionally invalidate all its provinces. This is the
+//! conservative equivalent of the grown-box dirty-layer overlap rule. The search halo
+//! is necessary even across another shape: the native buckets contain all boundaries.
+//!
+//! Province metadata stays on the CPU because the compute kernel never reads it. CPU-oracle and GPU
+//! readback checks cover full and incremental updates, shared views and large fields.
+//!
+//! Sharing: [`Static`] holds what no hour or perspective changes (IDs, kernel, strategic
+//! geometry) per content and device. Each distinct displayed fill is a [`State`] with its own
+//! country/naval buffers and texture pair; [`View`]s with equal tables share one, and a state is
+//! released with the last view showing it. States dispatch through one shared [`Scratch`].
+
+use std::sync::MutexGuard;
+use viewer_foundation::map::camera::MapSize;
+use viewer_foundation::map::gradient_math::DIVISOR;
+use viewer_foundation::map::gradient_math::FieldDefines;
+use viewer_foundation::map::textures::gradient_size;
+
+use viewer_foundation::map::gpu_contract::{compute_limits, unsupported};
+
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+    sync::{Arc, Mutex, Weak},
+};
+
+use bytemuck::{Pod, Zeroable};
+use eframe::wgpu::{self, util::DeviceExt};
+
+use super::political::Regions;
+use {
+    super::gradient::{self, GRID_CELL, Layer},
+    viewer_foundation::map::province_map::ProvinceMap,
+};
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Params {
+    width: u32,
+    height: u32,
+    columns: u32,
+    rows: u32,
+    stride: u32,
+    packed_ids: u32,
+    count: u32,
+    dispatch_stride: u32,
+    opacity: u32,
+    no_color: u32,
+    distance_cap: u32,
+    distance_in_b: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default, PartialEq, Pod, Zeroable)]
+struct Region {
+    color: u32,
+    alpha_offset: u32,
+    alpha_count: u32,
+    radius: u32,
+    attributes: u32,
+}
+
+#[derive(Clone, Copy)]
+struct Province {
+    pixels: u64,
+    bounds: [u32; 4],
+}
+
+fn buffer(
+    device: &wgpu::Device,
+    label: &str,
+    bytes: &[u8],
+    usage: wgpu::BufferUsages,
+) -> io::Result<wgpu::Buffer> {
+    check_size(device, label, bytes.len().max(4) as u64, usage)?;
+    Ok(
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(label),
+            contents: if bytes.is_empty() { &[0; 4] } else { bytes },
+            usage,
+        }),
+    )
+}
+
+fn check_size(
+    device: &wgpu::Device,
+    label: &str,
+    size: u64,
+    usage: wgpu::BufferUsages,
+) -> io::Result<()> {
+    let limits = device.limits();
+    if size > limits.max_buffer_size
+        || (usage.contains(wgpu::BufferUsages::STORAGE)
+            && size > limits.max_storage_buffer_binding_size)
+    {
+        return Err(unsupported(format!(
+            "{label} needs {size} bytes, device storage limit {}",
+            limits.max_storage_buffer_binding_size
+        )));
+    }
+    Ok(())
+}
+
+fn zero_buffer(
+    device: &wgpu::Device,
+    label: &str,
+    size: u64,
+    usage: wgpu::BufferUsages,
+) -> io::Result<wgpu::Buffer> {
+    check_size(device, label, size, usage)?;
+    Ok(device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size,
+        usage,
+        mapped_at_creation: false,
+    }))
+}
+
+const REGION_BYTES: u64 = std::mem::size_of::<Region>() as u64;
+
+fn rgb(color: [u8; 3]) -> u32 {
+    u32::from_le_bytes([color[0], color[1], color[2], 0])
+}
+
+pub fn check_device(device: &wgpu::Device) -> io::Result<()> {
+    if !compute_limits(&device.limits()) {
+        return Err(unsupported(
+            "device lacks compute with eight storage buffers and 64-thread workgroups",
+        ));
+    }
+    Ok(())
+}
+
+/// One recorded content stack on one device. The weak entry releases everything with the last
+/// scene, independently of CPU content caches.
+#[derive(Default)]
+pub struct Cache(Mutex<Vec<(wgpu::Device, Weak<Static>)>>);
+
+pub struct Inputs<'a> {
+    pub map: ProvinceMap<'a>,
+    pub strategic: &'a [u32],
+    pub field: &'a FieldDefines,
+}
+
+impl Cache {
+    pub fn warm(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        inputs: Inputs<'_>,
+    ) -> io::Result<Arc<Static>> {
+        let mut entries = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        entries.retain(|(_, value)| value.strong_count() != 0);
+        if let Some(shared) = entries
+            .iter()
+            .find_map(|(owner, value)| (owner == device).then(|| value.upgrade()).flatten())
+        {
+            return Ok(shared);
+        }
+        let shared = Arc::new(Static::new(device, queue, inputs)?);
+        entries.push((device.clone(), Arc::downgrade(&shared)));
+        Ok(shared)
+    }
+}
+
+/// What no hour or perspective changes: the province IDs and boxes, the compiled kernel and the
+/// initial strategic output. Each fill updates its own naval attributes.
+pub struct Static {
+    /// Keeps its own output: every new state copies its first layer from it.
+    strategic: PoliticalGpu,
+    /// Dispatch scratch shared by every state.
+    scratch: Arc<Scratch>,
+    size: [u32; 2],
+    field: FieldDefines,
+    strategic_keys: Vec<u32>,
+    registry: Mutex<Registry>,
+    /// Times a registry critical section was checked to exclude other threads.
+    #[cfg(test)]
+    race_checks: std::sync::atomic::AtomicUsize,
+}
+
+/// The fill states of one map and the views using them, behind one lock. Views are created on
+/// loader threads, dropped on the dropper thread and shown on the UI thread: finding a state,
+/// reusing a pooled one, pooling a released one and claiming one's own for an update each
+/// happen whole under this lock, so no view can pick up a state another view is changing.
+#[derive(Default)]
+struct Registry {
+    /// Every live state, shown or pooled; only [`Static::find`] upgrades them.
+    states: Vec<Weak<State>>,
+    /// States no view shows any more, kept for reuse: at most one per live view. Maps stepping
+    /// through hours together would otherwise allocate and fully refill a state on every
+    /// change, because the first map to move cannot update the state the others still show. A
+    /// reused state diffs from the tables it last held, so it stays incremental and exact.
+    pool: Vec<Arc<State>>,
+    views: usize,
+}
+
+impl Registry {
+    /// Pool a state no view holds any more, up to one per live view; drop it otherwise.
+    fn keep(&mut self, state: Arc<State>) {
+        if Arc::strong_count(&state) == 1 && self.pool.len() < self.views {
+            self.pool.push(state);
+        }
+    }
+}
+
+impl Static {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, inputs: Inputs<'_>) -> io::Result<Self> {
+        let Inputs {
+            map,
+            strategic,
+            field,
+        } = inputs;
+        let color = |_| field.navy_neutral;
+        let mut layer = Layer::new(
+            gradient::LayerKind::Fixed(field.strategic_thickness),
+            strategic,
+            &color,
+            field,
+        );
+        layer.region_opacity = 0;
+        layer.no_region_color = field.navy_neutral;
+        let mut gpu = PoliticalGpu::new(device, map, &layer)?;
+        gpu.update(device, queue, &layer)?;
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("warm strategic gradient"),
+        });
+        gpu.dispatch(&mut encoder);
+        queue.submit([encoder.finish()]);
+        let scratch = Arc::new(Scratch::new(device, &gpu.params)?);
+        Ok(Self {
+            strategic: gpu,
+            scratch,
+            size: gradient_size(MapSize {
+                width: map.width,
+                height: map.height,
+            }),
+            field: *field,
+            strategic_keys: strategic.to_vec(),
+            registry: Mutex::new(Registry::default()),
+            #[cfg(test)]
+            race_checks: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    /// A new fill state: its own country resources and texture pair, holding the strategic layer
+    /// and no country fill until its first update.
+    fn state(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> io::Result<Arc<State>> {
+        let empty = vec![0; self.strategic.provinces.len()];
+        let color = |_| [0; 3];
+        let layer = Layer::new(gradient::LayerKind::Country, &empty, &color, &self.field);
+        let gpu = self
+            .strategic
+            .layer_with(device, &layer, Some(Arc::clone(&self.scratch)))?;
+        let navy = |_| self.field.navy_neutral;
+        let mut naval_layer = Layer::new(
+            gradient::LayerKind::Fixed(self.field.strategic_thickness),
+            &self.strategic_keys,
+            &navy,
+            &self.field,
+        );
+        naval_layer.region_opacity = 0;
+        naval_layer.no_region_color = self.field.navy_neutral;
+        let naval =
+            self.strategic
+                .layer_with(device, &naval_layer, Some(Arc::clone(&self.scratch)))?;
+        let [width, height] = self.size;
+        let textures = ["GradientBorderChannel1", "GradientBorderChannel2"].map(|label| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("strategic gradient copy"),
+        });
+        let params = &self.strategic.params;
+        self.strategic.copy(
+            &mut encoder,
+            [&textures[0], &textures[1]],
+            0,
+            &[[0, 0, params.width / 2, params.height / 2]],
+        );
+        queue.submit([encoder.finish()]);
+        let state = Arc::new(State {
+            textures,
+            fill: Mutex::new(Fill {
+                gpu,
+                naval,
+                shown: None,
+            }),
+        });
+        let mut registry = self.registry();
+        registry.states.retain(|state| state.strong_count() != 0);
+        registry.states.push(Arc::downgrade(&state));
+        Ok(state)
+    }
+
+    fn registry(&self) -> MutexGuard<'_, Registry> {
+        self.registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// Test hook at the points where an unlocked registry let another thread interleave: it
+    /// checks from a second thread that the registry is held here.
+    #[cfg(test)]
+    fn race_point(&self) {
+        let excluded = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    matches!(
+                        self.registry.try_lock(),
+                        Err(std::sync::TryLockError::WouldBlock)
+                    )
+                })
+                .join()
+                .unwrap()
+        });
+        assert!(
+            excluded,
+            "the registry must be held across this critical section"
+        );
+        self.race_checks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// A live state already holding this fill, whichever view it was computed for. A pooled one
+    /// leaves the pool in the same critical section, so it is never reused while shown.
+    fn find(&self, regions: &Regions) -> Option<Arc<State>> {
+        let mut registry = self.registry();
+        let found = registry
+            .states
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|state| {
+                state
+                    .lock()
+                    .shown
+                    .as_ref()
+                    .is_some_and(|shown| same_fill(shown, regions))
+            });
+        #[cfg(test)]
+        self.race_point();
+        if let Some(found) = &found {
+            registry.pool.retain(|state| !Arc::ptr_eq(state, found));
+        }
+        found
+    }
+
+    /// A pooled state to update instead of allocating one. Its tables stay for the diff; its
+    /// fill is forgotten before the lock is released, so no view finds it meanwhile.
+    fn recycle(&self) -> Option<Arc<State>> {
+        let mut registry = self.registry();
+        let state = registry.pool.pop()?;
+        state.lock().shown = None;
+        Some(state)
+    }
+
+    /// Pool a state its view no longer shows, if no other view holds it.
+    fn release(&self, state: Arc<State>) {
+        let mut registry = self.registry();
+        #[cfg(test)]
+        if Arc::strong_count(&state) == 1 {
+            self.race_point();
+        }
+        registry.keep(state);
+    }
+
+    /// Take a state only this view holds for an update. Its fill is forgotten under the lock, so
+    /// no other view can find it until it holds the new tables; `false` when another view holds
+    /// it too.
+    fn claim(&self, state: &Arc<State>) -> bool {
+        let _registry = self.registry();
+        if Arc::strong_count(state) != 1 {
+            return false;
+        }
+        state.lock().shown = None;
+        true
+    }
+
+    #[cfg(test)]
+    fn pooled(&self) -> usize {
+        self.registry().pool.len()
+    }
+
+    #[cfg(test)]
+    fn live_states(&self) -> usize {
+        self.registry()
+            .states
+            .iter()
+            .filter(|state| state.strong_count() != 0)
+            .count()
+    }
+}
+
+/// Equal tables fill equal bytes. Colours of unused keys make the test conservative, never wrong.
+fn same_fill(a: &Regions, b: &Regions) -> bool {
+    std::ptr::eq(a, b)
+        || (a.country_of == b.country_of
+            && a.country_colors == b.country_colors
+            && a.strategic_attributes == b.strategic_attributes)
+}
+
+/// One displayed political fill: a country layer's compute state and the texture pair it fills.
+pub struct State {
+    textures: [wgpu::Texture; 2],
+    fill: Mutex<Fill>,
+}
+
+struct Fill {
+    gpu: PoliticalGpu,
+    naval: PoliticalGpu,
+    /// The tables the state was last updated to; `None` until its first update.
+    shown: Option<Arc<Regions>>,
+}
+
+impl State {
+    fn lock(&self) -> MutexGuard<'_, Fill> {
+        self.fill.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// What one more displayed fill costs: its texture pair and the buffers it keeps.
+    #[cfg(test)]
+    pub fn bytes(&self) -> u64 {
+        let textures: u64 = self
+            .textures
+            .iter()
+            .map(|texture| {
+                let size = texture.size();
+                u64::from(size.width) * u64::from(size.height) * 4
+            })
+            .sum();
+        let fill = self.lock();
+        textures + fill.gpu.own_bytes() + fill.naval.own_bytes()
+    }
+}
+
+/// One view's political fill. Views showing equal tables (the same hour in another perspective)
+/// share one state; a view showing a fill no other view shows owns its state and updates it
+/// incrementally. A view leaving a shared state takes a pooled one before allocating. There are
+/// never more states than twice the views: those shown, and at most one pooled per view.
+/// [`View::show`] and [`View::encode`] run on the thread that renders the views.
+pub struct View {
+    base: Arc<Static>,
+    /// The state warmed on the loader for this view's first fill, unless it joins another's.
+    spare: Option<Arc<State>>,
+    shown: Option<Arc<State>>,
+}
+
+impl View {
+    /// Loader side: the static parts, plus a first state so the first hour allocates nothing.
+    pub fn new(base: Arc<Static>, device: &wgpu::Device, queue: &wgpu::Queue) -> io::Result<Self> {
+        base.registry().views += 1;
+        // Constructed first, so a failed allocation still leaves the view count through `drop`.
+        let mut view = Self {
+            base,
+            spare: None,
+            shown: None,
+        };
+        view.spare = Some(match view.base.recycle() {
+            Some(state) => state,
+            None => view.base.state(device, queue)?,
+        });
+        Ok(view)
+    }
+
+    /// The bytes of the state this view shows, if any.
+    #[cfg(test)]
+    pub fn state_bytes(&self) -> Option<u64> {
+        self.shown.as_ref().map(|state| state.bytes())
+    }
+
+    /// The texture pair to draw, `None` until this view's own first fill.
+    pub fn textures(&self) -> Option<&[wgpu::Texture; 2]> {
+        self.shown.as_ref().map(|state| &state.textures)
+    }
+
+    /// Show these tables; `true` when the view now draws a different texture pair.
+    pub fn show(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        regions: &Arc<Regions>,
+    ) -> io::Result<bool> {
+        if let Some(state) = &self.shown
+            && state
+                .lock()
+                .shown
+                .as_ref()
+                .is_some_and(|shown| same_fill(shown, regions))
+        {
+            return Ok(false);
+        }
+        let state = if let Some(state) = self.base.find(regions) {
+            if let Some(spare) = self.spare.take() {
+                self.base.release(spare);
+            }
+            state
+        } else {
+            // A state only this view holds follows it; a shared one stays with the other views.
+            let own = self
+                .shown
+                .as_ref()
+                .filter(|state| self.base.claim(state))
+                .cloned();
+            let state = match own
+                .or_else(|| self.spare.take())
+                .or_else(|| self.base.recycle())
+            {
+                Some(state) => state,
+                None => self.base.state(device, queue)?,
+            };
+            let mut fill = state.lock();
+            fill.gpu.update_regions(device, queue, regions)?;
+            let navy = |_| self.base.field.navy_neutral;
+            let attributes = |id| {
+                regions
+                    .strategic_attributes
+                    .get(&id)
+                    .copied()
+                    .unwrap_or_default()
+            };
+            let mut layer = Layer::new(
+                gradient::LayerKind::Fixed(self.base.field.strategic_thickness),
+                &self.base.strategic_keys,
+                &navy,
+                &self.base.field,
+            );
+            layer.region_opacity = 0;
+            layer.no_region_color = self.base.field.navy_neutral;
+            layer.region_attributes = Some(&attributes);
+            fill.naval.update(device, queue, &layer)?;
+            fill.shown = Some(Arc::clone(regions));
+            drop(fill);
+            state
+        };
+        let changed = !self
+            .shown
+            .as_ref()
+            .is_some_and(|shown| Arc::ptr_eq(shown, &state));
+        if let Some(previous) = self.shown.replace(state)
+            && changed
+        {
+            self.base.release(previous);
+        }
+        Ok(changed)
+    }
+
+    /// Record the shown state's pending fill before terrain; `true` when it dispatched.
+    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) -> bool {
+        let Some(state) = &self.shown else {
+            return false;
+        };
+        let [first, second] = &state.textures;
+        let mut fill = state.lock();
+        let naval = fill.naval.encode(encoder, [first, second], 0);
+        let country = fill
+            .gpu
+            .encode(encoder, [first, second], first.height() / 2);
+        naval || country
+    }
+}
+
+impl Drop for View {
+    fn drop(&mut self) {
+        let held = [self.shown.take(), self.spare.take()];
+        let mut registry = self.base.registry();
+        registry.views -= 1;
+        let views = registry.views;
+        registry.pool.truncate(views);
+        for state in held.into_iter().flatten() {
+            registry.keep(state);
+        }
+    }
+}
+
+/// Buffers a dispatch writes before its copies read them and no later dispatch reads: the
+/// distance scratch and the packed output. Every state of one map may share them, because each
+/// state's passes and its copies are recorded together, and wgpu orders one dispatch's copies
+/// before the next dispatch's writes, within a submission and across submissions. The copies
+/// read only texels the same dispatch recomputed ([`copy_rects`]). Boundary masks are not
+/// scratch: incremental dispatches recompute only dirty cells and keep the others' masks.
+struct Scratch {
+    distances: wgpu::Buffer,
+    output: wgpu::Buffer,
+}
+
+impl Scratch {
+    fn new(device: &wgpu::Device, params: &Params) -> io::Result<Self> {
+        let rw = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+        let cells = u64::from(params.columns) * u64::from(params.rows);
+        Ok(Self {
+            distances: zero_buffer(device, "political cell distances", cells * 4, rw)?,
+            output: zero_buffer(
+                device,
+                "political output bytes",
+                u64::from(params.stride) * u64::from(params.height) * 4,
+                rw | wgpu::BufferUsages::COPY_SRC,
+            )?,
+        })
+    }
+
+    #[cfg(test)]
+    fn bytes(&self) -> u64 {
+        self.distances.size() + self.output.size()
+    }
+}
+
+/// Compiled once, shared by the strategic and country layers.
+struct Kernel {
+    layout: wgpu::BindGroupLayout,
+    pipelines: [wgpu::ComputePipeline; 5],
+}
+
+impl Kernel {
+    fn new(device: &wgpu::Device) -> Self {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("political compute"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("political_fill.wgsl").into()),
+        });
+        let entries = (0..9)
+            .map(|binding| wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: if binding == 0 {
+                        wgpu::BufferBindingType::Uniform
+                    } else {
+                        wgpu::BufferBindingType::Storage {
+                            read_only: !matches!(binding, 5..=7),
+                        }
+                    },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            })
+            .collect::<Vec<_>>();
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("political compute"),
+            entries: &entries,
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("political compute"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let pipelines = [
+            "boundaries",
+            "distance_init",
+            "distance_to_b",
+            "distance_to_a",
+            "field",
+        ]
+        .map(|entry| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(entry),
+                layout: Some(&pipeline_layout),
+                module: &module,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        });
+        Self { layout, pipelines }
+    }
+}
+
+/// Resources belonging to one map. IDs, areas and boxes are derived once from its bitmap.
+pub struct PoliticalGpu {
+    params: Params,
+    uniform: wgpu::Buffer,
+    ids: wgpu::Buffer,
+    provinces: Arc<[Province]>,
+    mapping: Vec<u32>,
+    source_keys: Vec<u32>,
+    mapping_buffer: wgpu::Buffer,
+    keys: HashMap<u32, usize>,
+    free: Vec<usize>,
+    areas: Vec<u64>,
+    thickness: Vec<u32>,
+    regions: Vec<Region>,
+    region_buffer: wgpu::Buffer,
+    alpha: Vec<u8>,
+    alpha_buffer: wgpu::Buffer,
+    alpha_stride: usize,
+    capacity: usize,
+    alpha_keys: HashMap<u32, usize>,
+    alpha_free: Vec<usize>,
+    alpha_slots: usize,
+    cells: wgpu::Buffer,
+    /// Shared by every state of a [`Static`]; a standalone layer has its own.
+    scratch: Arc<Scratch>,
+    dirty_buffer: wgpu::Buffer,
+    indirect: wgpu::Buffer,
+    dirty: Vec<bool>,
+    copies: Vec<[u32; 4]>,
+    group: wgpu::BindGroup,
+    kernel: Arc<Kernel>,
+    field: FieldDefines,
+    kind: gradient::LayerKind,
+    initialized: bool,
+    pending: bool,
+    /// Number of cells in the most recent dispatch, useful to the exactness/performance harness.
+    pub dispatched_cells: usize,
+}
+
+impl PoliticalGpu {
+    pub fn new(device: &wgpu::Device, map: ProvinceMap<'_>, layer: &Layer<'_>) -> io::Result<Self> {
+        Self::new_shared(device, map, layer, None, None)
+    }
+
+    /// Reuse the bitmap upload and province metadata for another layer of this map.
+    #[cfg(test)]
+    pub fn new_layer(&self, device: &wgpu::Device, layer: &Layer<'_>) -> io::Result<Self> {
+        self.layer_with(device, layer, None)
+    }
+
+    /// Like `Self::new_layer`, dispatching through `scratch` when given.
+    fn layer_with(
+        &self,
+        device: &wgpu::Device,
+        layer: &Layer<'_>,
+        scratch: Option<Arc<Scratch>>,
+    ) -> io::Result<Self> {
+        Self::new_shared(
+            device,
+            ProvinceMap {
+                width: self.params.width,
+                height: self.params.height,
+                ids: &[],
+            },
+            layer,
+            Some(self),
+            scratch,
+        )
+    }
+
+    fn new_shared(
+        device: &wgpu::Device,
+        map: ProvinceMap<'_>,
+        layer: &Layer<'_>,
+        shared: Option<&Self>,
+        scratch: Option<Arc<Scratch>>,
+    ) -> io::Result<Self> {
+        if shared.is_none() {
+            map.validate()?;
+        }
+        let limits = device.limits();
+        check_device(device)?;
+        if !map.width.is_multiple_of(DIVISOR)
+            || !map.height.is_multiple_of(DIVISOR)
+            || map.width / 2 > limits.max_texture_dimension_2d
+            || u64::from(map.height) + 2 > u64::from(limits.max_texture_dimension_2d)
+            || map.width > u16::MAX as u32
+            || map.height > u16::MAX as u32
+        {
+            return Err(unsupported(format!(
+                "map dimensions {}x{} exceed the texture/coordinate range or are not divisible by {}",
+                map.width, map.height, DIVISOR
+            )));
+        }
+        let field = *layer.field;
+        let max_thickness = maximum_thickness(layer.kind, &field);
+        let radius = search_radius(max_thickness, &field, map.width, map.height);
+        // Lookups never need distances outside the map or the searched buckets. This also
+        // bounds huge mod-defined reaches without rejecting fields the CPU oracle can render.
+        let reach = gradient::field_reach(max_thickness, &field);
+        let dx = (map.width / 2).min((radius + 1) * GRID_CELL);
+        let dy = (map.height - 1).min((radius + 1) * GRID_CELL);
+        let maximum_squared = u64::from(dx).pow(2) + u64::from(dy).pow(2);
+        let lookup_squared = ((f64::from(reach).max(0.0).powi(2).ceil() as u64).saturating_add(2))
+            .min(maximum_squared);
+        let alpha_stride = (lookup_squared + 1).next_multiple_of(4);
+        check_size(
+            device,
+            "political exact alpha",
+            alpha_stride,
+            wgpu::BufferUsages::STORAGE,
+        )?;
+        if alpha_stride > u64::from(u32::MAX) {
+            return Err(unsupported("alpha lookup exceeds shader addressing range"));
+        }
+        let alpha_stride = alpha_stride as usize;
+        let largest = shared.map_or_else(
+            || map.ids.iter().copied().max().unwrap_or(0) as usize,
+            |map| map.provinces.len() - 1,
+        );
+        if largest >= layer.region_of.len() {
+            return Err(unsupported("province ID is outside the region table"));
+        }
+        // Refuse sparse IDs before allocating a table indexed by them.
+        if (largest as u64 + 1) * 4 > limits.max_storage_buffer_binding_size {
+            return Err(unsupported("province ID table exceeds storage limit"));
+        }
+        let packed = largest <= u16::MAX as usize;
+        let (provinces, ids) = if let Some(shared) = shared {
+            (Arc::clone(&shared.provinces), shared.ids.clone())
+        } else {
+            let mut provinces = vec![
+                Province {
+                    pixels: 0,
+                    bounds: [u32::MAX, u32::MAX, 0, 0]
+                };
+                largest + 1
+            ];
+            for (at, &id) in map.ids.iter().enumerate() {
+                let province = &mut provinces[id as usize];
+                province.pixels += 1;
+                let x = at as u32 % map.width / GRID_CELL;
+                let y = at as u32 / map.width / GRID_CELL;
+                province.bounds[0] = province.bounds[0].min(x);
+                province.bounds[1] = province.bounds[1].min(y);
+                province.bounds[2] = province.bounds[2].max(x);
+                province.bounds[3] = province.bounds[3].max(y);
+            }
+            check_size(
+                device,
+                "political province IDs",
+                map.ids.len() as u64 * if packed { 2 } else { 4 },
+                wgpu::BufferUsages::STORAGE,
+            )?;
+            let ids = if packed {
+                map.ids
+                    .chunks(2)
+                    .map(|pair| pair[0] | (pair.get(1).copied().unwrap_or(0) << 16))
+                    .collect()
+            } else {
+                map.ids.to_vec()
+            };
+            let ids = buffer(
+                device,
+                "political province IDs",
+                bytemuck::cast_slice(&ids),
+                wgpu::BufferUsages::STORAGE,
+            )?;
+            (Arc::from(provinces), ids)
+        };
+        let params = Params {
+            width: map.width,
+            height: map.height,
+            columns: map.width.div_ceil(GRID_CELL),
+            rows: map.height.div_ceil(GRID_CELL),
+            stride: (map.width / 2 * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) / 4,
+            packed_ids: u32::from(packed),
+            count: 0,
+            dispatch_stride: limits.max_compute_workgroups_per_dimension,
+            opacity: u32::from(layer.region_opacity),
+            no_color: rgb(layer.no_region_color),
+            distance_cap: radius.max(1) + 1,
+            distance_in_b: radius.max(1) % 2,
+        };
+        let cell_count = (params.columns * params.rows) as usize;
+        let rw = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+        let uniform = buffer(
+            device,
+            "political params",
+            bytemuck::bytes_of(&params),
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        )?;
+        let mapping = vec![0; provinces.len()];
+        let mapping_buffer = buffer(
+            device,
+            "political region of province",
+            bytemuck::cast_slice(&mapping),
+            rw,
+        )?;
+        let region_buffer = buffer(
+            device,
+            "political regions",
+            bytemuck::bytes_of(&Region::default()),
+            rw,
+        )?;
+        let alpha_buffer = zero_buffer(device, "political exact alpha", 4, rw)?;
+        let cells = zero_buffer(
+            device,
+            "political boundary masks",
+            cell_count as u64 * 36,
+            rw,
+        )?;
+        let scratch = match scratch {
+            Some(scratch) => scratch,
+            None => Arc::new(Scratch::new(device, &params)?),
+        };
+        let dirty_buffer = zero_buffer(device, "political dirty cells", cell_count as u64 * 4, rw)?;
+        let indirect = buffer(
+            device,
+            "political dispatch",
+            &[0; 12],
+            wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+        )?;
+        let kernel = shared.map_or_else(
+            || Arc::new(Kernel::new(device)),
+            |gpu| Arc::clone(&gpu.kernel),
+        );
+        let group = bind(
+            device,
+            &kernel.layout,
+            [
+                &uniform,
+                &ids,
+                &mapping_buffer,
+                &region_buffer,
+                &alpha_buffer,
+                &cells,
+                &scratch.distances,
+                &scratch.output,
+                &dirty_buffer,
+            ],
+        );
+        Ok(Self {
+            params,
+            uniform,
+            ids,
+            provinces,
+            source_keys: vec![0; mapping.len()],
+            mapping,
+            mapping_buffer,
+            keys: HashMap::from([(0, 0)]),
+            free: Vec::new(),
+            areas: vec![0],
+            thickness: vec![u32::MAX],
+            regions: vec![Region::default()],
+            region_buffer,
+            alpha: Vec::new(),
+            alpha_buffer,
+            alpha_stride,
+            capacity: 1,
+            alpha_keys: HashMap::new(),
+            alpha_free: Vec::new(),
+            alpha_slots: 0,
+            cells,
+            scratch,
+            dirty_buffer,
+            indirect,
+            dirty: vec![false; cell_count],
+            copies: Vec::new(),
+            group,
+            kernel,
+            field,
+            kind: layer.kind,
+            initialized: false,
+            pending: false,
+            dispatched_cells: 0,
+        })
+    }
+
+    pub fn update_regions(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        regions: &Regions,
+    ) -> io::Result<()> {
+        let color = |key| regions.country_color(key);
+        let field = self.field;
+        let layer = Layer::new(
+            gradient::LayerKind::Country,
+            &regions.country_of,
+            &color,
+            &field,
+        );
+        self.update(device, queue, &layer)
+    }
+
+    /// Diff compact tables. The queue receives only changed province entries and region/LUT rows.
+    /// A refused update leaves the state as it was; a new state is the only full refill.
+    pub fn update(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layer: &Layer<'_>,
+    ) -> io::Result<()> {
+        if self.field != *layer.field
+            || self.kind != layer.kind
+            || self.params.opacity != u32::from(layer.region_opacity)
+            || self.params.no_color != rgb(layer.no_region_color)
+        {
+            return Err(unsupported(
+                "layer operands changed without rebuilding map resources",
+            ));
+        }
+        if layer.region_of.len() < self.mapping.len() {
+            return Err(unsupported("region table no longer covers the map"));
+        }
+        let region_of = &layer.region_of[..self.mapping.len()];
+        if self.initialized
+            && !self.pending
+            && self.source_keys == region_of
+            && self.keys.iter().all(|(&key, &slot)| {
+                key == 0
+                    || (self.regions[slot].color == rgb((layer.region_color)(key))
+                        && self.regions[slot].attributes
+                            == layer.region_attributes.map_or(0, |read| read(key).packed()))
+            })
+        {
+            self.dispatched_cells = 0;
+            return Ok(());
+        }
+        // Plan the region and lookup tables before touching any state, so the adapter's storage
+        // limit refuses an update rather than half-applying it.
+        let limits = device.limits();
+        let storage = limits
+            .max_storage_buffer_binding_size
+            .min(limits.max_buffer_size);
+        let mut area_of: HashMap<u32, u64> = HashMap::new();
+        for (province, &key) in region_of.iter().enumerate() {
+            if key != 0 {
+                *area_of.entry(key).or_default() += self.provinces[province].pixels;
+            }
+        }
+        let released = self
+            .keys
+            .keys()
+            .filter(|&&key| key != 0 && !area_of.contains_key(&key))
+            .count();
+        let added = area_of
+            .keys()
+            .filter(|key| !self.keys.contains_key(key))
+            .count();
+        let region_slots = self.regions.len() + added.saturating_sub(self.free.len() + released);
+        if region_slots as u64 * REGION_BYTES > storage {
+            return Err(unsupported(format!(
+                "{region_slots} political regions exceed the device storage limit {storage}"
+            )));
+        }
+        let active_thickness: HashSet<u32> = area_of
+            .values()
+            .map(|&area| layer.kind.thickness(area, layer.field).to_bits())
+            .collect();
+        let reusable = self.alpha_free.len()
+            + self
+                .alpha_keys
+                .keys()
+                .filter(|bits| !active_thickness.contains(bits))
+                .count();
+        let new_lookups = active_thickness
+            .iter()
+            .filter(|bits| !self.alpha_keys.contains_key(bits))
+            .count();
+        let alpha_slots = self.alpha_slots + new_lookups.saturating_sub(reusable);
+        if alpha_slots as u64 * self.alpha_stride as u64 > storage {
+            return Err(unsupported(format!(
+                "{alpha_slots} exact alpha lookups of {} bytes exceed the device storage limit {storage}",
+                self.alpha_stride
+            )));
+        }
+
+        self.dirty.fill(!self.initialized || self.pending);
+        let mut changed = Vec::new();
+        self.keys.retain(|key, slot| {
+            if *key == 0 || area_of.contains_key(key) {
+                true
+            } else {
+                self.free.push(*slot);
+                false
+            }
+        });
+        for (province, &key) in region_of.iter().enumerate() {
+            let slot = if let Some(&slot) = self.keys.get(&key) {
+                slot
+            } else {
+                let slot = self.free.pop().unwrap_or_else(|| {
+                    self.regions.push(Region::default());
+                    self.areas.push(0);
+                    self.thickness.push(u32::MAX);
+                    self.regions.len() - 1
+                });
+                self.keys.insert(key, slot);
+                slot
+            };
+            let old = self.mapping[province] as usize;
+            if old != slot {
+                let pixels = self.provinces[province].pixels;
+                if old != 0 {
+                    self.areas[old] -= pixels;
+                }
+                if slot != 0 {
+                    self.areas[slot] += pixels;
+                }
+                self.mapping[province] = slot as u32;
+                changed.push(province);
+            }
+        }
+        let mut affected = vec![false; self.regions.len()];
+        self.alpha_keys.retain(|bits, slot| {
+            if active_thickness.contains(bits) {
+                true
+            } else {
+                self.alpha_free.push(*slot);
+                false
+            }
+        });
+        let mut alpha_changes = Vec::new();
+        for bits in active_thickness {
+            if self.alpha_keys.contains_key(&bits) {
+                continue;
+            }
+            let slot = self.alpha_free.pop().unwrap_or_else(|| {
+                self.alpha_slots += 1;
+                self.alpha.resize(self.alpha_slots * self.alpha_stride, 0);
+                self.alpha_slots - 1
+            });
+            let t = f32::from_bits(bits);
+            let reach = gradient::field_reach(t, layer.field);
+            for (d2, a) in self.alpha[slot * self.alpha_stride..(slot + 1) * self.alpha_stride]
+                .iter_mut()
+                .enumerate()
+            {
+                let d = (d2 as f32).sqrt();
+                *a = if d <= reach {
+                    gradient::field_alpha(d, t, layer.field.center)
+                } else {
+                    0
+                };
+            }
+            self.alpha_keys.insert(bits, slot);
+            alpha_changes.push(slot);
+        }
+        let mut region_changes = Vec::new();
+        for (&key, &slot) in &self.keys {
+            if slot == 0 {
+                continue;
+            }
+            let t = layer.kind.thickness(self.areas[slot], layer.field);
+            let radius = search_radius(t, layer.field, self.params.width, self.params.height);
+            let alpha_slot = self.alpha_keys[&t.to_bits()];
+            let region = Region {
+                color: rgb((layer.region_color)(key)),
+                alpha_offset: (alpha_slot * self.alpha_stride / 4) as u32,
+                alpha_count: self.alpha_stride as u32,
+                radius,
+                attributes: layer.region_attributes.map_or(0, |read| read(key).packed()),
+            };
+            if self.regions[slot] != region {
+                affected[slot] = true;
+                self.regions[slot] = region;
+                region_changes.push(slot);
+            }
+            if self.thickness[slot] != t.to_bits() {
+                affected[slot] = true;
+                self.thickness[slot] = t.to_bits();
+            }
+        }
+        let halo = (self.params.distance_cap + 1).max(
+            ((self.field.optimization_range.max(0.0) / GRID_CELL as f32).ceil() as u32)
+                .min(self.params.columns.max(self.params.rows))
+                + 1,
+        );
+        for &province in &changed {
+            self.mark(province, halo);
+        }
+        for province in 0..self.mapping.len() {
+            if affected[self.mapping[province] as usize] {
+                self.mark(province, 1);
+            }
+        }
+        let rw = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+        let mut rebind = false;
+        if self.regions.len() > self.capacity {
+            // The first update sizes the table to the content's regions; later growth doubles,
+            // never past the storage limit the plan above was checked against.
+            self.capacity = self
+                .regions
+                .len()
+                .max((self.capacity * 2).min((storage / REGION_BYTES) as usize));
+            self.region_buffer = zero_buffer(
+                device,
+                "political regions",
+                self.capacity as u64 * REGION_BYTES,
+                rw,
+            )?;
+            queue.write_buffer(&self.region_buffer, 0, bytemuck::cast_slice(&self.regions));
+            rebind = true;
+        } else {
+            for slot in region_changes {
+                queue.write_buffer(
+                    &self.region_buffer,
+                    slot as u64 * REGION_BYTES,
+                    bytemuck::bytes_of(&self.regions[slot]),
+                );
+            }
+        }
+        if self.alpha.len() as u64 > self.alpha_buffer.size() {
+            let stride = self.alpha_stride as u64;
+            let size = (self.alpha.len() as u64)
+                .max((self.alpha_buffer.size() * 2).min(storage / stride * stride));
+            self.alpha_buffer = zero_buffer(device, "political exact alpha", size, rw)?;
+            queue.write_buffer(&self.alpha_buffer, 0, &self.alpha);
+            rebind = true;
+        } else {
+            for slot in alpha_changes {
+                queue.write_buffer(
+                    &self.alpha_buffer,
+                    (slot * self.alpha_stride) as u64,
+                    &self.alpha[slot * self.alpha_stride..(slot + 1) * self.alpha_stride],
+                );
+            }
+        }
+        if rebind {
+            self.group = bind(
+                device,
+                &self.kernel.layout,
+                [
+                    &self.uniform,
+                    &self.ids,
+                    &self.mapping_buffer,
+                    &self.region_buffer,
+                    &self.alpha_buffer,
+                    &self.cells,
+                    &self.scratch.distances,
+                    &self.scratch.output,
+                    &self.dirty_buffer,
+                ],
+            );
+        }
+        // Contiguous changed entries share an upload; no map-sized CPU data is touched here.
+        for range in runs(&changed) {
+            queue.write_buffer(
+                &self.mapping_buffer,
+                (range.start * 4) as u64,
+                bytemuck::cast_slice(&self.mapping[range]),
+            );
+        }
+        let dirty = self
+            .dirty
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &d)| d.then_some(i as u32))
+            .collect::<Vec<_>>();
+        self.dispatched_cells = dirty.len();
+        self.copies = copy_rects(
+            &dirty,
+            self.params.columns,
+            self.params.width / 2,
+            self.params.height / 2,
+        );
+        self.params.count = dirty.len() as u32;
+        self.pending = !dirty.is_empty();
+        if self.pending {
+            queue.write_buffer(&self.dirty_buffer, 0, bytemuck::cast_slice(&dirty));
+            queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&self.params));
+            let x = self.params.count.min(self.params.dispatch_stride);
+            queue.write_buffer(
+                &self.indirect,
+                0,
+                bytemuck::cast_slice(&[x, self.params.count.div_ceil(x), 1]),
+            );
+        }
+        self.source_keys
+            .copy_from_slice(&layer.region_of[..self.mapping.len()]);
+        Ok(())
+    }
+
+    /// Bytes of the buffers this layer owns and keeps between dispatches.
+    #[cfg(test)]
+    fn own_bytes(&self) -> u64 {
+        [
+            &self.uniform,
+            &self.mapping_buffer,
+            &self.region_buffer,
+            &self.alpha_buffer,
+            &self.cells,
+            &self.dirty_buffer,
+            &self.indirect,
+        ]
+        .iter()
+        .map(|buffer| buffer.size())
+        .sum()
+    }
+
+    fn mark(&mut self, province: usize, halo: u32) {
+        let Province {
+            pixels,
+            bounds: [x0, y0, x1, y1],
+        } = self.provinces[province];
+        if pixels == 0 {
+            return;
+        }
+        let columns = self.params.columns;
+        let span = (x1 - x0 + 1 + 2 * halo).min(columns);
+        for y in y0.saturating_sub(halo)..=(y1 + halo).min(self.params.rows - 1) {
+            for dx in 0..span {
+                let x = (i64::from(x0) - i64::from(halo) + i64::from(dx))
+                    .rem_euclid(i64::from(columns)) as u32;
+                self.dirty[(y * columns + x) as usize] = true;
+            }
+        }
+    }
+
+    /// Record before terrain; `true` when there was a pending update. Buffer copies preserve the
+    /// exact bytes in the sRGB textures.
+    pub fn encode(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        textures: [&wgpu::Texture; 2],
+        origin_y: u32,
+    ) -> bool {
+        if !self.dispatch(encoder) {
+            return false;
+        }
+        self.copy(encoder, textures, origin_y, &self.copies);
+        true
+    }
+
+    /// Run the pending update's passes into the output buffer; `false` when nothing was pending.
+    fn dispatch(&mut self, encoder: &mut wgpu::CommandEncoder) -> bool {
+        if !self.pending {
+            return false;
+        }
+        let dispatch = |encoder: &mut wgpu::CommandEncoder, pipeline: usize, indirect: bool| {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("political fill"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.kernel.pipelines[pipeline]);
+            pass.set_bind_group(0, &self.group, &[]);
+            if indirect {
+                pass.dispatch_workgroups_indirect(&self.indirect, 0);
+            } else {
+                pass.dispatch_workgroups(
+                    self.params.columns.div_ceil(8),
+                    self.params.rows.div_ceil(8),
+                    1,
+                );
+            }
+        };
+        dispatch(encoder, 0, true);
+        dispatch(encoder, 1, false);
+        for step in 0..self.params.distance_cap - 1 {
+            dispatch(encoder, if step % 2 == 0 { 2 } else { 3 }, false);
+        }
+        dispatch(encoder, 4, true);
+        self.pending = false;
+        self.initialized = true;
+        true
+    }
+
+    /// Copy output rectangles `[x, y, width, height]` of both channels into a layer's textures.
+    fn copy(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        textures: [&wgpu::Texture; 2],
+        origin_y: u32,
+        rectangles: &[[u32; 4]],
+    ) {
+        for (channel, texture) in textures.into_iter().enumerate() {
+            for &[x, y, width, height] in rectangles {
+                encoder.copy_buffer_to_texture(
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &self.scratch.output,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: channel as u64
+                                * u64::from(self.params.stride)
+                                * u64::from(self.params.height / 2)
+                                * 4
+                                + u64::from(y * self.params.stride + x) * 4,
+                            bytes_per_row: Some(self.params.stride * 4),
+                            rows_per_image: None,
+                        },
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x,
+                            y: origin_y + y,
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// Texture copies of exactly the dirty cells: each row's runs of consecutive cells, merged down
+/// with the equal run of the row above. A copy never reaches a cell the dispatch did not
+/// recompute, whose output bytes may belong to another state sharing the scratch.
+fn copy_rects(cells: &[u32], columns: u32, width: u32, height: u32) -> Vec<[u32; 4]> {
+    let mut rectangles: Vec<[u32; 4]> = Vec::new();
+    // Rectangles ending at the previous dirty row, by their horizontal span.
+    let mut open: HashMap<(u32, u32), usize> = HashMap::new();
+    let mut previous = None;
+    let mut rest = cells;
+    while let Some(&first) = rest.first() {
+        let row = first / columns;
+        let count = rest.partition_point(|cell| cell / columns == row);
+        let y = row * 8;
+        let h = (height - y).min(8);
+        let adjacent = previous.is_some_and(|previous| previous + 1 == row);
+        let mut next = HashMap::new();
+        let mut run = &rest[..count];
+        while let Some(&start) = run.first() {
+            let length = run
+                .iter()
+                .enumerate()
+                .take_while(|&(i, &cell)| cell == start + i as u32)
+                .count();
+            let x = start % columns * 8;
+            let w = ((run[length - 1] % columns + 1) * 8).min(width) - x;
+            let index = match open.get(&(x, w)).filter(|_| adjacent) {
+                Some(&index) => {
+                    rectangles[index][3] += h;
+                    index
+                }
+                None => {
+                    rectangles.push([x, y, w, h]);
+                    rectangles.len() - 1
+                }
+            };
+            next.insert((x, w), index);
+            run = &run[length..];
+        }
+        open = next;
+        previous = Some(row);
+        rest = &rest[count..];
+    }
+    rectangles
+}
+
+fn maximum_thickness(kind: gradient::LayerKind, field: &FieldDefines) -> f32 {
+    match kind {
+        gradient::LayerKind::Country => {
+            let [thin, thick] = field.country_thickness;
+            // Bound the actual f32 interpolation, whose rounded endpoint can exceed `thick`.
+            thin.max(thin + (thick - thin))
+        }
+        gradient::LayerKind::Fixed(t) => t,
+    }
+}
+
+fn search_radius(thickness: f32, field: &FieldDefines, width: u32, height: u32) -> u32 {
+    let radius =
+        ((thickness + field.center).sqrt() * gradient::RADIUS_MULTIPLIER / GRID_CELL as f32) as u32;
+    // Once every bucket is searched, increasing the radius cannot change traversal order.
+    radius
+        .saturating_add(1)
+        .min(width.div_ceil(GRID_CELL).max(height.div_ceil(GRID_CELL)))
+}
+
+fn bind(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    buffers: [&wgpu::Buffer; 9],
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("political compute"),
+        layout,
+        entries: &buffers
+            .iter()
+            .enumerate()
+            .map(|(i, b)| wgpu::BindGroupEntry {
+                binding: i as u32,
+                resource: b.as_entire_binding(),
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn runs(indices: &[usize]) -> Vec<std::ops::Range<usize>> {
+    let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    for &i in indices {
+        match ranges.last_mut() {
+            Some(last) if last.end == i => last.end += 1,
+            _ => ranges.push(i..i + 1),
+        }
+    }
+    ranges
+}
+
+#[cfg(test)]
+#[path = "political_gpu_tests.rs"]
+pub(crate) mod tests;

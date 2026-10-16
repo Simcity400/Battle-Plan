@@ -112,6 +112,8 @@ export default function GeneralsWidget(props: WidgetProps) {
     : <div className="leader-table"><Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Generals leaderboard" rows={rows} columns={columns} rowKey={rowKey} rowHeight={48} rank
       sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption} cellBars={options.cellBars === true} rankMarkers={options.rankMarkers === true}
       density={options.density === 'compact' ? 'compact' : 'comfortable'} onRowClick={open} tooltip={tooltip} onVisibleRows={setVisible}
+      {...(import.meta.env.MODE === 'parity' ? { parity: { complete: true, reads: { traitCatalogue: data.traits },
+        item: ({ traitCatalogue: _catalogue, ...row }: LeaderRow) => row } } : {})}
       menu={r => [{ ...jumpItem(runtime, track.id, r.career.runs[0].firstHour), label: `Jump to first seen ${formatDateTime(r.career.runs[0].firstHour)}` }, { label: 'Open career', run: () => open(r) }]}
       hoursPerSecond={hoursPerSecond} />
       {!observed?.leaders && <p className="career-note">Some leaders are missing.</p>}

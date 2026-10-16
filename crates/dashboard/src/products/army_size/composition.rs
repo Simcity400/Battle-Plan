@@ -6,7 +6,7 @@ use super::*;
 use crate::catalogue::{Catalogue, catalogue};
 use installed_content::unit_leader::SubUnits;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct RawMixRun {
     pub first: i32,
     pub last: i32,

@@ -20,13 +20,14 @@ test('actual career renderer preserves growing zoom and supplies the shown label
   // Keep the widget and shared career renderer; replace transport, artwork and canvas leaves.
   const replacements: Record<string, string> = {
     '/widgets/generals/useLeaders.ts': `export const useLeaders = () => ({ data: globalThis.__careerData ?? ${JSON.stringify(data)}, retry() {} });`,
+    '/dashboard/parityRows.ts': 'export const useParityRows = (_root, read) => { globalThis.__careerParity = read; };',
     '/widgets/generals/portraits.ts': 'export const useLeaderPortraits = () => ({ at() {}, warnings: [] });',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000; export const useChartTokens = () => ({});',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/charts/timeline/Timeline.tsx': 'export default props => { globalThis.__careerTimelines.push(props); return null; };',
   };
-  const host = globalThis as typeof globalThis & { __careerTimelines?: TimelineProps[]; __careerData?: UnitLeadersData };
+  const host = globalThis as typeof globalThis & { __careerTimelines?: TimelineProps[]; __careerData?: UnitLeadersData; __careerParity?: () => { label: string; hour: number; rows: unknown[]; current: { won: number } } };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'career-renderer-fixture', enforce: 'pre',
       transform: (_source, id) => { const key = Object.keys(replacements).find(key => id.endsWith(key)); return key ? replacements[key] : undefined; },
@@ -64,6 +65,10 @@ test('actual career renderer preserves growing zoom and supplies the shown label
     assert.equal(picked.lanes.at(-1)!.spans[0].positiveCount, 0);
     renderToStaticMarkup(createElement(Career, { ...props, reference: '21474841193', hour: 130,
       widget: { ...props.widget, time: { mode: 'pin', windows: { main: { firstOffset: 0, lastOffset: 20 } } } }, onPick() {} }));
+    assert.equal(host.__careerParity?.().label, 'General career values');
+    assert.equal(host.__careerParity?.().hour, 130);
+    assert.equal(host.__careerParity?.().current.won, 1);
+    assert.deepEqual(host.__careerParity?.().rows, host.__careerTimelines.at(-1)!.lanes);
     assert.equal(host.__careerTimelines.at(-1)!.lanes.at(-1)!.spans[0].positiveCount, 1,
       'A window selects native result dates but eligibility uses the displayed read');
     host.__careerData = structuredClone(data);
@@ -82,7 +87,7 @@ test('actual career renderer preserves growing zoom and supplies the shown label
     assert.equal(tip.note, 'Fleet command history is incomplete.');
     assert.doesNotMatch(JSON.stringify(tip), /999999/);
   } finally {
-    delete host.__careerTimelines; delete host.__careerData;
+    delete host.__careerTimelines; delete host.__careerData; delete host.__careerParity;
     await vite.close();
   }
 });

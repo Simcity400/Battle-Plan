@@ -418,34 +418,45 @@ impl Product for FocusArtwork {
         // Reconstruction misses never hold the cache lock needed by cached icons.
         let decoded = frame.at(&replay, branch, params.hour, needs_frame, cancelled)?;
         check_cancel(cancelled)?;
-        let tokens: BTreeSet<_> = params.tokens.iter().map(String::as_str).collect();
-        let requests: Vec<_> = tokens
-            .into_iter()
-            .map(|token| (token, params.tag.as_str()))
-            .collect();
-        let warnings = art.standing_warnings();
-        let collect = |items: &mut dyn Iterator<Item = artwork::ResolvedArt>| {
-            reply_within(
-                params,
-                warnings,
-                items,
-                cancelled,
-                super::MAX_PRODUCT_REPLY_BYTES,
-            )
-        };
-        if params.icons_only == Some(true) {
-            art.focus_icons_at(&requests, &decoded, collect)
-        } else if params.include_descriptions == Some(false) {
-            if params.text_only == Some(true) {
-                art.focus_titles_at(&requests, &decoded, collect)
-            } else {
-                art.focus_display_at(&requests, &decoded, collect)
-            }
-        } else if params.text_only == Some(true) {
-            art.focus_text_at(&requests, &decoded, collect)
+        present_decoded(art, params, &decoded, cancelled)
+    }
+}
+
+/// The same presentation boundary for already verified preparation frames.
+pub(crate) fn present_decoded(
+    art: &mut artwork::Context,
+    params: &FocusArtworkParams,
+    decoded: &DecodedFrame,
+    cancelled: &AtomicBool,
+) -> io::Result<FocusArtworkReply> {
+    check_cancel(cancelled)?;
+    let tokens: BTreeSet<_> = params.tokens.iter().map(String::as_str).collect();
+    let requests: Vec<_> = tokens
+        .into_iter()
+        .map(|token| (token, params.tag.as_str()))
+        .collect();
+    let warnings = art.standing_warnings();
+    let collect = |items: &mut dyn Iterator<Item = artwork::ResolvedArt>| {
+        reply_within(
+            params,
+            warnings,
+            items,
+            cancelled,
+            super::MAX_PRODUCT_REPLY_BYTES,
+        )
+    };
+    if params.icons_only == Some(true) {
+        art.focus_icons_at(&requests, decoded, collect)
+    } else if params.include_descriptions == Some(false) {
+        if params.text_only == Some(true) {
+            art.focus_titles_at(&requests, decoded, collect)
         } else {
-            art.focus_tree_at(&requests, &decoded, collect)
+            art.focus_display_at(&requests, decoded, collect)
         }
+    } else if params.text_only == Some(true) {
+        art.focus_text_at(&requests, decoded, collect)
+    } else {
+        art.focus_tree_at(&requests, decoded, collect)
     }
 }
 
@@ -663,11 +674,6 @@ mod tests {
                     let valid = icons_only != Some(true)
                         || (text_only != Some(true) && include_descriptions == Some(false));
                     assert_eq!(FocusArtwork::validate(&params).is_ok(), valid, "{params:?}");
-                    let decoded: FocusArtworkParams =
-                        serde_json::from_value(serde_json::to_value(&params).unwrap()).unwrap();
-                    assert_eq!(decoded.icons_only, icons_only);
-                    assert_eq!(decoded.text_only, text_only);
-                    assert_eq!(decoded.include_descriptions, include_descriptions);
                 }
             }
         }
@@ -1523,33 +1529,6 @@ mod tests {
         ));
         assert!(cache.frames.is_empty());
         assert_eq!(cache.bytes, 0);
-    }
-
-    #[test]
-    fn scoped_focus_frames_upgrade_plain_reads_and_supply_later_text_reads() {
-        let mut frame = source(1, 10, Some(100));
-        frame.tables[TableId::ActiveIdeas.index()] =
-            TableView::Complete(TableRows::ActiveIdeas(Vec::new())).into();
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
-        let mut cache = FrameCache::default();
-        let cancelled = AtomicBool::new(false);
-        let narrow = cache.at(&replay, 1, 10, false, &cancelled).unwrap();
-        assert!(matches!(
-            &*narrow.tables[TableId::ActiveIdeas.index()],
-            TableView::Unavailable { .. }
-        ));
-        let broad = cache.at(&replay, 1, 10, true, &cancelled).unwrap();
-        assert!(matches!(
-            &*broad.tables[TableId::ActiveIdeas.index()],
-            TableView::Complete(_)
-        ));
-        let next = cache.at(&replay, 1, 10, false, &cancelled).unwrap();
-        for table in [TableId::Countries, TableId::ActiveIdeas] {
-            assert!(SharedView::ptr_eq(
-                &broad.tables[table.index()],
-                &next.tables[table.index()]
-            ));
-        }
     }
 
     #[test]

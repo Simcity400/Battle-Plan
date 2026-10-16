@@ -1,3 +1,4 @@
+import CampaignPreparation from '../shell/preparation/PreparationView';
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { DashboardClient, ReplayFile } from './client';
@@ -37,6 +38,10 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
   const editingPath = useRef<string | null>(null);
   const contextMenu = useContextMenu('Campaign actions');
   const flagMenu = usePopover('start');
+  const preparationMenu = usePopover('start');
+  const [preparationPath, setPreparationPath] = useState<string | null>(null);
+  const preparationCampaign = preparationPath ? campaigns.find(campaign => sameCampaignPath(campaign.path, preparationPath)) : null;
+  const preparationSource = preparationCampaign ? bindings[preparationCampaign.id]?.source ?? null : null;
   const [flagCampaign, setFlagCampaign] = useState<string | null>(null);
   const flags = useCampaignFlags();
   const names = useRecordingNames();
@@ -62,6 +67,11 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
     const source = campaign ? bindings[campaign.id]?.source : null;
     return [
       { label: 'Rename', icon: 'edit', run: () => beginRename(path) },
+      ...(client.preparationStatus ? [{ label: 'Preparation and storage', run: () => {
+        setPreparationPath(path);
+        const rect = button?.getBoundingClientRect() ?? { left: 16, right: 240, top: 48, bottom: 72 };
+        preparationMenu.openAt(rect);
+      } }] : []),
       ...(source && campaign && button ? [
         { label: 'Change flag', run: () => { setFlagCampaign(campaign.id); flagMenu.trigger.current = button; flagMenu.openAt(() => button.getBoundingClientRect()); } },
         ...(flags[source.metadata.campaignKey] ? [{ label: "Use the shown country's flag", run: () => saveFlag(source.metadata.campaignKey, null) }] : []),
@@ -168,6 +178,10 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
       </div>}
     </div>}
     {contextMenu.menu}
+    <Popover menu={preparationMenu} aria-label="Campaign preparation and storage" className="campaign-preparation">
+      <PopoverHeading title={preparationPath ? displayName(preparationPath) : 'Campaign preparation'} menu={preparationMenu} />
+      {preparationMenu.open && preparationPath && <CampaignPreparation key={`${preparationPath}:${preparationSource?.id ?? ''}:${preparationSource?.revision ?? ''}`} client={client} path={preparationPath} source={preparationSource} name={displayName(preparationPath)} />}
+    </Popover>
     <Popover menu={flagMenu} aria-label="Change campaign flag" className="campaign-flag-picker">
       <PopoverHeading title="Campaign flag" menu={flagMenu} />
       {flagMenu.open && flagSource && <CountryPicker key={flagSource.id} inline client={client} source={flagSource} countries={flagSource.metadata.countries}

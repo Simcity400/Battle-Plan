@@ -1,0 +1,102 @@
+[package]
+name = "collector-observers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+test-support = ["collector-extended-support/test-support"]
+default = ["advisor_changes", "opinion_changes", "character_changes", "advisor_pool_changes", "wing_changes", "roster_changes", "political_status_changes", "rail_changes", "territory_changes", "country_input_changes", "raid_changes", "naval_tree_changes", "area_changes", "world_input_changes", "retreat_ban_changes", "ship_model_changes", "technology_changes", "focus_changes", "projects_changes", "appearance_changes", "counter_changes", "war_changes", "air_base_carry_changes", "unit_leader_changes", "census_changes", "unit_leader_trait_changes", "province_changes", "weather_changes", "visibility_changes", "visibility_verify"]
+advisor_changes = []
+advisor_pool_changes = ["character_changes"]
+advisor_pool_verify = ["advisor_pool_changes"]
+air_base_carry_changes = ["raid_changes", "ship_model_changes"]
+air_base_carry_verify = ["air_base_carry_changes"]
+appearance_changes = ["country_input_changes"]
+appearance_verify = ["appearance_changes"]
+area_changes = []
+area_verify = ["area_changes"]
+census_changes = ["advisor_changes", "roster_changes"]
+census_verify = ["census_changes"]
+character_changes = ["advisor_changes"]
+character_verify = ["character_changes"]
+counter_changes = ["country_input_changes"]
+counter_verify = ["counter_changes"]
+country_input_changes = []
+country_input_verify = ["country_input_changes"]
+focus_changes = ["country_input_changes"]
+focus_verify = ["focus_changes"]
+naval_tree_changes = []
+naval_tree_oracle = []
+naval_tree_verify = ["naval_tree_changes"]
+opinion_changes = []
+opinion_verify = ["opinion_changes"]
+political_status_changes = []
+political_status_verify = ["political_status_changes"]
+projects_changes = ["country_input_changes"]
+projects_verify = ["projects_changes"]
+province_changes = []
+province_verify = ["province_changes"]
+raid_changes = []
+raid_verify = ["raid_changes"]
+rail_changes = []
+rail_verify = ["rail_changes"]
+retreat_ban_changes = ["naval_tree_changes"]
+retreat_ban_verify = ["retreat_ban_changes"]
+roster_changes = []
+roster_verify = ["roster_changes"]
+ship_model_changes = []
+tap-foreign-probe = []
+technology_changes = ["country_input_changes"]
+technology_verify = ["technology_changes"]
+territory_changes = []
+territory_verify = ["territory_changes"]
+unit_leader_changes = ["roster_changes", "naval_tree_changes"]
+unit_leader_trait_changes = ["naval_tree_changes"]
+unit_leader_trait_verify = ["unit_leader_trait_changes"]
+unit_leader_verify = ["unit_leader_changes"]
+visibility_changes = ["country_input_changes"]
+visibility_verify = ["visibility_changes"]
+war_changes = []
+war_verify = ["war_changes"]
+weather_changes = ["country_input_changes"]
+weather_verify = ["weather_changes"]
+wing_changes = []
+wing_verify = ["wing_changes"]
+world_input_changes = []
+world_input_verify = ["world_input_changes"]
+
+[dependencies]
+engine.workspace = true
+replay.workspace = true
+serde = { workspace = true, features = ["derive"] }
+collector-certificates.workspace = true
+collector-extended-support.workspace = true
+collector-hooks.workspace = true
+collector-lifetime.workspace = true
+collector-memory.workspace = true
+collector-primitives.workspace = true
+collector-status.workspace = true
+collector-timing.workspace = true
+crossbeam-queue = "0.3"
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_Threading"] }
+
+[dev-dependencies]
+collector-test-support.workspace = true
+serde_json.workspace = true
+collector-extended-support = { workspace = true, features = ["test-support"] }
+engine = { workspace = true, features = ["batch-fallback-test-counts"] }
+collector-memory = { workspace = true, features = ["test-support"] }
+collector-primitives = { workspace = true, features = ["test-support"] }
+collector-certificates = { workspace = true, features = ["test-support"] }
+collector-hooks = { workspace = true, features = ["test-support"] }
+collector-timing = { workspace = true, features = ["test-support"] }
+collector-lifetime = { workspace = true, features = ["test-support"] }
+
+[build-dependencies]
+cc = "1"

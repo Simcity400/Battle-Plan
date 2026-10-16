@@ -6,7 +6,7 @@ Signed factory IC applied to equipment lines and rocket sites, grouped as produc
 
 ## Products it reads
 
-[`production-spending`](../../../../crates/dashboard/src/products/production_spending.rs) shares Equipment produced’s branch scan and content helpers. [line_output_sites.rs](../../../../crates/engine/src/line_output_sites.rs) defines line-output hook sites.
+[`production-spending`](../../../../crates/dashboard-base/src/products/production_spending.rs) reads Equipment produced’s prepared endpoints and classifications through its existing reply builder. Background preparation computes equipment/refit/Rocket accounting once. One shared spent series supplies exact range maxima for unknown-final ordering; endpoint identities and segments retain range continuity. The widget requests its reached, final and range-baseline dates with the bound prepared source. [line_output_sites.rs](../../../../crates/engine-production/src/line_output_sites.rs) defines line-output hook sites.
 
 ## Settings
 

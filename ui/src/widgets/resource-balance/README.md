@@ -6,7 +6,7 @@ Resource supply/demand and native surplus/shortfall as bars or history, with dea
 
 ## Products it reads
 
-[`resource-balance`](../../../../crates/dashboard/src/products/resource_balance.rs) supplies independent pool/deal coverage and recorded resource definitions.
+[`resource-balance`](../../../../crates/dashboard/src/products/resource_balance.rs) supplies independent pool/deal coverage and recorded resource definitions. Background preparation observes all countries once through the same country step, writing exact pool and deal events, chart summaries and campaign maxima through the shared series store. The observer and progressive reader share native pool extraction. Unprepared histories draw faded approximate keyframe spans immediately; zooms covering at most thirteen unprepared blocks decode exactly. Bars and hover/drill values use exact supplying reads, including dates outside the viewport. Pool parts and surplus shading use the shared approximate drawing. Deal partners stay pending beyond the prepared prefix. Alias drills pass the bound prepared source through the shared product hook.
 
 ## Settings
 

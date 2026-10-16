@@ -14,15 +14,12 @@ compile_error!("collector requires Windows x64 MSVC");
 #[cfg(test)]
 #[used]
 #[unsafe(link_section = ".CRT$XCU")]
-static TEST_THREAD_STACK: unsafe extern "C" fn() = {
-    unsafe extern "C" fn reserve() {
-        if std::env::var_os("RUST_MIN_STACK").is_none() {
-            // SAFETY: CRT initialisers run before main, while this is the only thread.
-            unsafe { std::env::set_var("RUST_MIN_STACK", "33554432") };
-        }
-    }
-    reserve
-};
+static TEST_THREAD_STACK: unsafe extern "C" fn() = crate::test_support::reserve_test_stack;
+
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: crate::test_support::FailingAllocator =
+    crate::test_support::FailingAllocator;
 
 mod acquisition;
 mod acquisition_countries;
@@ -32,121 +29,133 @@ mod acquisition_jobs;
 mod acquisition_states;
 mod acquisition_wars;
 mod advisor_changes;
-mod advisor_pool_changes;
-mod air_base_carry_changes;
+pub(crate) use collector_observers::advisor_pool_changes;
+pub(crate) use collector_observers::air_base_carry_changes;
 mod air_base_changes;
-mod air_losses;
-mod air_record_changes;
+pub(crate) use collector_air_records::air_record_changes;
+pub(crate) use collector_observers::air_losses;
 mod allocation;
 #[cfg(test)]
 mod allocation_failure_tests;
-mod area_changes;
-mod army_stat_changes;
-mod building_bombing;
-mod building_changes;
+pub(crate) use collector_construction::building_changes;
+pub(crate) use collector_division_parts::army_stat_changes;
+pub(crate) use collector_observers::area_changes;
+pub(crate) use collector_observers::building_bombing;
 #[cfg(feature = "callback_profile")]
 mod callback_profile;
-mod census_changes;
-mod character_changes;
-mod combat_log_prune;
-mod construction_ic;
-mod country_input_changes;
+pub(crate) use collector_combat_log::combat_log_prune;
+pub(crate) use collector_observers::census_changes;
+pub(crate) use collector_observers::character_changes;
+pub(crate) use collector_observers::country_input_changes;
+pub(crate) use collector_output::construction_ic;
+pub(crate) use collector_primitives::clock;
 mod country_scale;
+pub(crate) use collector_primitives::country_slots;
 mod decode;
-mod dirty_set;
+pub(crate) use collector_certificates::dirty_set;
 mod division_census;
 mod division_detail;
 mod equipment_destruction;
-mod event_feed_history;
-mod event_feed_observer;
-mod event_ledger;
-mod experience_gains;
+pub(crate) use collector_experience_gains::experience_gains;
+pub(crate) use collector_observers::event_feed_history;
+pub(crate) use collector_observers::event_feed_observer;
+#[cfg(test)]
+use collector_observers::event_ledger;
 mod extended;
-mod fixed_layout;
-mod flag_changes;
+pub(crate) use collector_intel::flag_changes;
+pub(crate) use collector_metadata::fixed_layout;
 #[cfg(all(test, feature = "tap-foreign-probe"))]
 #[path = "../../../tools/tap-foreign-unwind/runtime.rs"]
 mod foreign_unwind_probe;
-mod fuel_awards;
+pub(crate) use collector_fuel_awards::fuel_awards;
+pub(crate) use collector_map_events as map_events;
 mod history;
-mod history_changes;
-mod hook;
+pub(crate) use collector_air_histories::history_changes;
+pub(crate) use collector_hooks::hook;
 #[cfg(test)]
 mod hook_sites_tests;
-mod hook_timing;
+pub(crate) use collector_timing::hook_timing;
 #[cfg(test)]
 mod land_census_scale;
 mod land_events;
-mod line_output;
-mod local_subunit_changes;
-mod logistics_balance;
+pub(crate) use collector_logistics::logistics_balance;
+pub(crate) use collector_model_inputs::local_subunit_changes;
+pub(crate) use collector_output::line_output;
 mod map_capture;
 mod map_spool;
 mod mission_changes;
 mod naval_result_sources;
-mod naval_tree_changes;
+pub(crate) use collector_observers::naval_tree_changes;
 mod navy_ledger_changes;
-mod nuclear_strikes;
+pub(crate) use collector_observers::nuclear_strikes;
 mod operation_outcomes;
-mod opinion_changes;
+pub(crate) use collector_observers::opinion_changes;
 mod orders_parts;
-mod output_hooks;
-mod output_log;
-mod party_changes;
-mod party_leader_changes;
+pub(crate) use collector_governance::party_changes;
+pub(crate) use collector_governance::party_leader_changes;
 #[cfg(test)]
-mod peace_settlement_tests;
-mod peace_settlements;
-mod political_status_changes;
-mod politics_changes;
+use collector_observers::output_log;
+pub(crate) use collector_observers::political_status_changes;
+pub(crate) use collector_peace::peace_settlements;
+pub(crate) use collector_politics::politics_changes;
 mod portrait_changes;
 mod progress;
-mod projection;
-mod province_changes;
+pub(crate) use collector_observers::province_changes;
+pub(crate) use collector_projection::projection;
 mod province_unit_changes;
-mod raid_changes;
-mod rail_changes;
-mod raw;
-mod raw_memory;
-mod raw_plan;
-mod read_accounting;
-mod relation_changes;
-mod retreat_ban_changes;
-mod roster;
-mod roster_changes;
+pub(crate) use collector_memory::read_accounting;
+pub(crate) use collector_observers::raid_changes;
+pub(crate) use collector_observers::rail_changes;
+pub(crate) use collector_primitives::raw_memory;
+pub(crate) use collector_raw::raw;
+#[cfg(test)]
+mod read_accounting_tests;
+pub(crate) use collector_air_relations::relation_changes;
+pub(crate) use collector_metadata::roster;
+pub(crate) use collector_observers::retreat_ban_changes;
+pub(crate) use collector_observers::roster_changes;
 mod runtime;
-mod sampled_verify;
+pub(crate) use collector_certificates::sampled_verify;
 mod sampling;
-mod shared_lane;
-mod ship_model_changes;
-mod slicing;
+#[cfg(test)]
+mod sampling_feature_tests;
+pub(crate) use collector_certificates::slicing;
+pub(crate) use collector_primitives::shared_lane;
+pub(crate) use collector_ship_models::ship_model_changes;
 mod slow_hours;
-mod snapshot_plan;
+pub(crate) use collector_snapshots::snapshot_plan;
+#[cfg(test)]
+mod snapshot_integration_tests;
 mod spool_compare;
 mod spool_helper;
 mod spool_phases;
 mod spool_segments;
 mod spooling;
-mod status;
+pub(crate) use collector_status::status;
+#[cfg(test)]
+mod status_tests;
 mod status_writer;
-mod table_capture;
-mod table_hash;
+pub(crate) use collector_primitives::table_capture;
+pub(crate) use collector_primitives::table_hash;
+pub(crate) use collector_projection::table_conversion;
+#[cfg(test)]
+use collector_test_support as test_support;
 mod template_changes;
-mod territory_changes;
+pub(crate) use collector_memory::terminal;
+pub(crate) use collector_observers::territory_changes;
 mod thread_cpu;
-mod unit_leader_changes;
-mod unit_leader_trait_changes;
+pub(crate) use collector_observers::unit_leader_changes;
+pub(crate) use collector_observers::unit_leader_trait_changes;
 #[cfg(test)]
 mod unit_scale_tests;
-mod variable_changes;
-mod war_changes;
-mod war_provenance;
-mod watch_registry;
-mod wing_changes;
+pub(crate) use collector_certificates::watch_registry;
+pub(crate) use collector_intel::variable_changes;
+pub(crate) use collector_observers::war_changes;
+pub(crate) use collector_observers::wing_changes;
 #[cfg(feature = "worker_sampler")]
 mod worker_sampler;
-mod world_input_changes;
-mod world_lifetime;
+pub(crate) use collector_lifetime::world_lifetime;
+pub(crate) use collector_observers::world_input_changes;
 
 /// How long a test waits on another thread before failing instead of hanging.
 /// Only a hang guard, never a timing check: a full build saturates every core

@@ -34,6 +34,9 @@
 //! region derivation: an equal hour must keep the same political id, because
 //! the border classes are shared, and their upload skipped, only by that id.
 
+use crate::map_views::CounterView;
+use std::cell::Cell;
+use std::sync::MutexGuard;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     io,
@@ -45,34 +48,30 @@ use std::{
     thread,
     time::Instant,
 };
+use viewer_foundation::builder_pool::Pool;
+use viewer_foundation::parallel::Workers;
+use viewer_foundation::worker_priority::background_priority;
 
 use replay::{BranchId, Hour, container::Replay};
 
-use crate::{
-    blocks::BlockReader,
-    document::{Content, Hour as HourView, OverlayTables, PreparedOverlay},
-    engaged_index::EngagedIndex,
-    map::{
-        aircraft::AircraftPlan,
-        border_pass::ClassPlan,
-        camera::Camera,
-        demilitarized::{Zone, ZonePlan},
-        map_buildings::PreparedBuildings,
-        memo::{Keyed, Recent},
-        models::ModelField,
-        name_pass::{NameAreas, PlacedAreas, Placements},
-        orders::OrderField,
-        perspective,
-        political::{self, FrameKey, PoliticalLayers},
-        railways::{RailMesh, RailNetwork},
-        tables::Limitations,
-        textures::{self, IntelMap},
-        trains::TrainPlan,
-        unit_models::PreparedModels,
-        weather::{self, SnowMud},
-        weather_effects,
-    },
-    playback::{Current, Playback},
+use {
+    crate::document::Content, crate::document::Hour as HourView, crate::document::OverlayTables,
+    crate::document::PreparedOverlay, crate::engaged_index::EngagedIndex, crate::playback::Current,
+    crate::playback::Playback, viewer_foundation::blocks::BlockReader,
+    viewer_foundation::map::camera::Camera, viewer_foundation::map::memo::Keyed,
+    viewer_foundation::map::memo::Recent, viewer_foundation::map::name_draw::Placements,
+    viewer_foundation::map::perspective, viewer_foundation::map::ribbon_content::OrderField,
+    viewer_foundation::map::tables::Limitations, viewer_foundation::map::textures,
+    viewer_foundation::map::textures::IntelMap, viewer_foundation::retirement::builder_count,
+    viewer_world::map::aircraft::AircraftPlan, viewer_world::map::border_pass::ClassPlan,
+    viewer_world::map::demilitarized::Zone, viewer_world::map::demilitarized::ZonePlan,
+    viewer_world::map::map_buildings::PreparedBuildings, viewer_world::map::models::ModelField,
+    viewer_world::map::name_pass::NameAreas, viewer_world::map::name_pass::PlacedAreas,
+    viewer_world::map::political, viewer_world::map::political::FrameKey,
+    viewer_world::map::political::PoliticalLayers, viewer_world::map::railways::RailMesh,
+    viewer_world::map::railways::RailNetwork, viewer_world::map::trains::TrainPlan,
+    viewer_world::map::unit_models::PreparedModels, viewer_world::map::weather,
+    viewer_world::map::weather::SnowMud, viewer_world::map::weather_effects,
 };
 
 /// The camera the icon layer and the names are built for.
@@ -101,7 +100,7 @@ pub struct Want {
     pub perspective: perspective::Choice,
     pub show_allied_plans: bool,
     /// The window's counter options and memory, which its hours are laid out with.
-    pub counters: crate::map::counters::CounterView,
+    pub counters: CounterView,
     pub view: View,
     /// The hours of this branch the window holds built, the one on screen
     /// included; the builders do not build them again.
@@ -206,12 +205,11 @@ pub struct Borders {
     pub highlighted: ZonePlan,
 }
 
-/// What the window's header shows of an hour: every country tag for the
-/// viewing-country chooser and the viewing country's own tag. Both walk the
-/// hour's country tables, so they are read here and not on a frame.
+/// The viewing country's own tag at an hour, which presentation continuity
+/// compares. It walks the hour's country tables, so it is read here and not
+/// on a frame.
 #[derive(Debug, Default)]
 pub struct Header {
-    pub countries: Vec<String>,
     pub viewing: Option<String>,
 }
 
@@ -222,16 +220,20 @@ pub struct Layers {
     pub rails: Arc<Rails>,
     pub buildings: Arc<Shared<PreparedBuildings>>,
     /// The building field's refused type tokens
-    /// ([`crate::map::map_buildings::MapBuildingSummary::warnings`]), worded
+    /// ([`viewer_world::map::map_buildings::MapBuildingSummary::warnings`]), worded
     /// with the hour: an hour sharing its neighbour's field still reports its own.
     pub building_warnings: Vec<String>,
     pub trains: TrainPlan,
     pub aircraft: AircraftPlan,
     pub units: PreparedModels,
     /// Shared by the hours whose plan tables are the same
-    /// ([`crate::map::orders::TABLES`]), so the window uploads it once.
+    /// ([`viewer_counter_products::map::orders::TABLES`]), so the window uploads it once.
     pub orders: Arc<OrderField>,
     pub effects: weather_effects::Prepared,
+    /// This hour's nuclear impacts, which start their province effects when presented.
+    pub impacts: Arc<viewer_world::map::strike_effects::Impacts>,
+    /// This hour's map events for the viewing country, presented once each.
+    pub map_text: Arc<viewer_world::map::animated_map_text::events::Prepared>,
     /// Shared by the hours whose fog is the same, so the window writes it once.
     pub intel: Arc<IntelMap>,
     /// Shared so the window can hold the grid it uploaded and compare.
@@ -270,8 +272,15 @@ enum Part {
     Rails(io::Result<Arc<Rails>>),
     Buildings(io::Result<(Arc<Shared<PreparedBuildings>>, Vec<String>)>),
     Movers(io::Result<Box<Movers>>),
-    Fog(io::Result<(Arc<IntelMap>, Limitations, Arc<Header>)>),
+    Fog(io::Result<Box<FogPart>>),
     Snow(io::Result<Arc<SnowMud>>),
+}
+
+struct FogPart {
+    intel: Arc<IntelMap>,
+    limitations: Limitations,
+    header: Arc<Header>,
+    map_text: Arc<viewer_world::map::animated_map_text::events::Prepared>,
 }
 
 struct Movers {
@@ -280,6 +289,7 @@ struct Movers {
     units: PreparedModels,
     orders: Arc<OrderField>,
     effects: weather_effects::Prepared,
+    impacts: Arc<viewer_world::map::strike_effects::Impacts>,
 }
 
 impl Part {
@@ -388,7 +398,7 @@ impl Slots {
 }
 
 /// Hour layers the next hours usually rebuild unchanged, kept by what they
-/// were built from (`map::memo`). A hit hands back the same allocation, so the
+/// were built from (`viewer_foundation::map::memo`). A hit hands back the same allocation, so the
 /// window, which remembers what it uploaded, uploads nothing for it.
 struct Memos {
     /// Country names, by the areas and names they place.
@@ -432,85 +442,6 @@ enum Event {
         ms: f64,
         part: Box<Part>,
     },
-}
-
-type Job = Box<dyn FnOnce() + Send>;
-
-/// Worker threads taking jobs in the order they were given.
-///
-/// The order matters: a part waits only for the previous hour's part, which
-/// was submitted before it and so has already been taken by a thread.
-struct Pool {
-    jobs: Option<mpsc::SyncSender<Job>>,
-    threads: Vec<thread::JoinHandle<()>>,
-}
-
-impl Pool {
-    fn new(count: usize) -> io::Result<Self> {
-        let (jobs, inbox) = mpsc::sync_channel::<Job>(count.saturating_mul(8).max(16));
-        let inbox = Arc::new(Mutex::new(inbox));
-        let threads = (0..count)
-            .map(|index| {
-                let inbox = Arc::clone(&inbox);
-                thread::Builder::new()
-                    .name(format!("hour builder {index}"))
-                    .spawn(move || {
-                        background_priority();
-                        loop {
-                            let job = match inbox.lock() {
-                                Ok(inbox) => inbox.recv(),
-                                Err(_) => return,
-                            };
-                            match job {
-                                Ok(job) => job(),
-                                Err(_) => return,
-                            }
-                        }
-                    })
-            })
-            .collect::<io::Result<Vec<_>>>()?;
-        Ok(Self {
-            jobs: Some(jobs),
-            threads,
-        })
-    }
-
-    fn submit(&self, job: Job) {
-        if let Some(jobs) = &self.jobs {
-            let _ = jobs.send(job);
-        }
-    }
-
-    fn try_submit(&self, job: Job) -> Result<(), Job> {
-        match &self.jobs {
-            Some(jobs) => jobs.try_send(job).map_err(|error| match error {
-                mpsc::TrySendError::Full(job) | mpsc::TrySendError::Disconnected(job) => job,
-            }),
-            None => Err(job),
-        }
-    }
-}
-
-/// The builders lend their turns to a batch split across threads
-/// ([`crate::parallel::Workers`]): a turn taken while the builders are busy
-/// waits in their queue, and the batch does not wait for it.
-impl crate::parallel::Spawn for Pool {
-    fn try_spawn(&self, job: Job) -> Result<(), Job> {
-        self.try_submit(job)
-    }
-
-    fn threads(&self) -> usize {
-        self.threads.len()
-    }
-}
-
-impl Drop for Pool {
-    fn drop(&mut self) {
-        self.jobs = None;
-        for thread in self.threads.drain(..) {
-            let _ = thread.join();
-        }
-    }
 }
 
 /// One worker budget for every map in a native root. Per-view coordinators
@@ -565,7 +496,18 @@ struct DecoderState {
 }
 
 impl SharedDecoder {
-    pub fn seed(&self, playback: Playback) -> io::Result<()> {
+    pub fn seed(&self, mut playback: Playback) -> io::Result<()> {
+        // Asset/source loaders call this off the UI. Install the host's
+        // committed checkpoint reader before this source serves hour workers.
+        if let Some(source) = playback.checkpoint_source() {
+            match source.open() {
+                Ok(Some(checkpoints)) => playback = playback.with_checkpoints(checkpoints),
+                Ok(None) => {}
+                Err(error) => eprintln!(
+                    "Map checkpoint binding unavailable: {error}; using the replay reader"
+                ),
+            }
+        }
         let mut decoder = self.0.lock().map_err(|_| stopped())?;
         if let Current::Frame(frame) = playback.current() {
             decoder
@@ -594,22 +536,6 @@ impl SharedDecoder {
     }
 }
 
-/// Builders for the processors this process may use
-/// ([`crate::parallel::usable_processors`]), not the machine's.
-fn builder_count() -> usize {
-    crate::parallel::usable_processors()
-        .saturating_sub(8)
-        .max(2)
-}
-
-/// A builder pool as the viewer starts one, lent as [`crate::parallel::Workers`].
-#[cfg(test)]
-pub(crate) fn builder_workers() -> io::Result<crate::parallel::Workers> {
-    Ok(crate::parallel::Workers::new(Arc::new(Pool::new(
-        builder_count(),
-    )?)))
-}
-
 /// An hour dispatched and not yet assembled.
 struct Pending {
     ticket: u64,
@@ -622,7 +548,7 @@ struct Pending {
     rails: Option<Arc<Rails>>,
     buildings: Option<(Arc<Shared<PreparedBuildings>>, Vec<String>)>,
     movers: Option<Movers>,
-    fog: Option<(Arc<IntelMap>, Limitations, Arc<Header>)>,
+    fog: Option<FogPart>,
     snow: Option<Arc<SnowMud>>,
     received: usize,
     error: Option<String>,
@@ -709,7 +635,7 @@ impl Pending {
                 Err(error) => self.fail_part(name, rank, error),
             },
             Part::Fog(result) => match result {
-                Ok(value) => self.fog = Some(value),
+                Ok(value) => self.fog = Some(*value),
                 Err(error) => self.fail_part(name, rank, error),
             },
             Part::Snow(result) => match result {
@@ -728,7 +654,12 @@ impl Pending {
         let missing = || "an hour part did not arrive".to_owned();
         let (political, borders) = self.political.ok_or_else(missing)?;
         let movers = self.movers.ok_or_else(missing)?;
-        let (intel, limitations, header) = self.fog.ok_or_else(missing)?;
+        let FogPart {
+            intel,
+            limitations,
+            header,
+            map_text,
+        } = self.fog.ok_or_else(missing)?;
         let (overlay, overlay_tables) = self.overlay.ok_or_else(missing)?;
         let (buildings, building_warnings) = self.buildings.ok_or_else(missing)?;
         Ok(Layers {
@@ -742,6 +673,8 @@ impl Pending {
             units: movers.units,
             orders: movers.orders,
             effects: movers.effects,
+            impacts: movers.impacts,
+            map_text,
             intel,
             snow_mud: self.snow.ok_or_else(missing)?,
             limitations,
@@ -988,7 +921,7 @@ impl DecodeLane {
         Ok(Self { shared })
     }
 
-    fn lock(shared: &LaneShared) -> std::sync::MutexGuard<'_, LaneState> {
+    fn lock(shared: &LaneShared) -> MutexGuard<'_, LaneState> {
         shared
             .state
             .lock()
@@ -1561,6 +1494,7 @@ impl Coordinator {
                             camera,
                             viewport,
                         ),
+                        impacts: Arc::new(view.nuclear_impacts()?),
                     }))
                 })())
             }),
@@ -1577,17 +1511,17 @@ impl Coordinator {
                         textures::intel_map(&view.map, fog).map(Arc::new)
                     })?;
                     let limitations = view.limitations_with(&fog_perspective, Some(&intel))?;
-                    Ok((
+                    Ok(Box::new(FogPart {
                         intel,
                         limitations,
-                        Arc::new(Header {
-                            countries: view.country_tags()?,
+                        header: Arc::new(Header {
                             viewing: view
                                 .vision(&fog_perspective)
                                 .and_then(|vision| view.viewing_tag(&vision))
                                 .ok(),
                         }),
-                    ))
+                        map_text: Arc::new(view.map_text(&vision)),
+                    }))
                 })())
             }),
         );
@@ -1624,13 +1558,13 @@ pub struct Pipeline {
     results: Receiver<Built>,
     want: Option<Want>,
     epoch: u64,
-    received: std::cell::Cell<u64>,
+    received: Cell<u64>,
     requested: Arc<Mutex<Option<(u64, Want)>>>,
     /// The engaged-flag index for the last perspective country asked for,
     /// shared with the coordinator's overlay builds.
     engaged: Engaged,
     /// The builders' turns, which other work may borrow.
-    workers: crate::parallel::Workers,
+    workers: Workers,
     pool: Arc<Pool>,
 }
 
@@ -1643,7 +1577,16 @@ impl Pipeline {
     /// driver and the game's own threads theirs: on the sixteen-thread
     /// machine this is eight builders, and more finished hours no sooner
     /// while spiking the frames they arrived on.
+    #[cfg(test)]
     pub fn new(content: Arc<Content>, replay: Arc<Replay>) -> io::Result<Self> {
+        Self::with_checkpoint_source(content, replay, None)
+    }
+
+    pub fn with_checkpoint_source(
+        content: Arc<Content>,
+        replay: Arc<Replay>,
+        checkpoints: Option<Arc<crate::map_checkpoints::CheckpointSource>>,
+    ) -> io::Result<Self> {
         let parallel = builder_count();
         Self::start(
             content,
@@ -1651,6 +1594,7 @@ impl Pipeline {
             Arc::new(Pool::new(parallel)?),
             None,
             parallel,
+            checkpoints,
         )
     }
 
@@ -1667,6 +1611,7 @@ impl Pipeline {
             Arc::clone(&resources.pool),
             Some(decoder),
             1,
+            None,
         )
     }
 
@@ -1676,6 +1621,7 @@ impl Pipeline {
         pool: Arc<Pool>,
         shared_decoder: Option<Arc<SharedDecoder>>,
         parallel: usize,
+        checkpoints: Option<Arc<crate::map_checkpoints::CheckpointSource>>,
     ) -> io::Result<Self> {
         let (events, inbox) = mpsc::channel();
         // At most one finished hour waits per hour in flight; a window that
@@ -1683,14 +1629,16 @@ impl Pipeline {
         // window dropping `results` releases a coordinator blocked on it.
         let (outbox, results) = mpsc::sync_channel(parallel);
         let requested = Arc::new(Mutex::new(None));
-        let workers = crate::parallel::Workers::new(Arc::clone(&pool) as _);
+        let workers = Workers::new(Arc::clone(&pool) as _);
         let lane = match shared_decoder {
             Some(_) => None,
             None => {
                 let reader = BlockReader::new(Arc::clone(&replay), Arc::new(Dropper::new()?));
-                Some(DecodeLane::start(
-                    Playback::unloaded(Arc::clone(&replay))?.with_reader(reader),
-                )?)
+                let mut playback = Playback::unloaded(Arc::clone(&replay))?.with_reader(reader);
+                if let Some(checkpoints) = checkpoints {
+                    playback = playback.with_checkpoint_source(checkpoints);
+                }
+                Some(DecodeLane::start(playback)?)
             }
         };
         let engaged: Engaged = Arc::new(Mutex::new(None));
@@ -1726,7 +1674,7 @@ impl Pipeline {
             results,
             want: None,
             epoch: 0,
-            received: std::cell::Cell::new(0),
+            received: Cell::new(0),
             requested,
             engaged,
             workers,
@@ -1766,7 +1714,7 @@ impl Pipeline {
 
     /// The builders' threads for work split across threads, such as a raid
     /// batch ([`crate::parallel::Workers`]).
-    pub fn workers(&self) -> crate::parallel::Workers {
+    pub fn workers(&self) -> Workers {
         self.workers.clone()
     }
 
@@ -1824,70 +1772,12 @@ impl Pipeline {
     }
 }
 
-/// Lowers the calling thread below the window's, for threads that build ahead.
-///
-/// A frame that became ready behind builders at normal priority waited out
-/// the rest of a scheduler quantum, 15 ms on Windows: steady playback frames
-/// of 15 to 100 ms with nothing in them but the wait. Below normal priority
-/// the window's thread runs as soon as it is ready and the builders take
-/// the rest.
-pub use crate::worker_priority::background_priority;
-
 fn stopped() -> io::Error {
     io::Error::other("the hour builders stopped")
 }
 
-/// Frees what the window let go of on a thread of its own, so a frame that
-/// swaps in a new hour does not pay for returning the last one's memory.
-///
-/// The destructor runs at the builders' priority, so saturated builders can
-/// starve it. At most one retirement per builder waits behind the one being
-/// freed; past that the caller frees its retirement itself, spending that
-/// frame's time rather than holding an unbounded backlog of hours.
-pub struct Dropper {
-    bin: Option<mpsc::SyncSender<Box<dyn Send>>>,
-}
-
-/// Everything one frame lets go of, handed to the [`Dropper`] as a single
-/// retirement so its bound counts frames, not the pieces of an hour.
-#[derive(Default)]
-pub struct Retired(Vec<Box<dyn Send>>);
-
-impl Retired {
-    pub fn push<T: Send + 'static>(&mut self, value: T) {
-        self.0.push(Box::new(value));
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-impl Dropper {
-    pub fn new() -> io::Result<Self> {
-        Self::with_capacity(builder_count())
-    }
-
-    fn with_capacity(capacity: usize) -> io::Result<Self> {
-        let (bin, inbox) = mpsc::sync_channel::<Box<dyn Send>>(capacity);
-        thread::Builder::new()
-            .name("hour dropper".into())
-            .spawn(move || {
-                background_priority();
-                while inbox.recv().is_ok() {}
-            })?;
-        Ok(Self { bin: Some(bin) })
-    }
-
-    /// Frees `value` off the frame path, or here, without waiting, when the
-    /// queue is full.
-    pub fn drop_later<T: Send + 'static>(&self, value: T) {
-        if let Some(bin) = &self.bin {
-            // A full or closed queue hands the value back; it drops here.
-            let _ = bin.try_send(Box::new(value));
-        }
-    }
-}
+// Removed when playback.rs lands.
+pub use viewer_foundation::retirement::Dropper;
 
 #[cfg(test)]
 mod tests;

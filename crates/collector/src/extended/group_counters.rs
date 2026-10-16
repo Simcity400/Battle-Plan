@@ -12,7 +12,8 @@ use engine::{Memory, carmy_leader, corders_group, walk::Outcome};
 use replay::{
     frame::TableView,
     rows::{
-        CommanderAttackStats, OrdersGroupCounterInputRow, Recorded, TableId, Witnessed, tables,
+        CommanderAttackStats, CommanderMovementStats, OrdersGroupCounterInputRow, Recorded,
+        TableId, Witnessed, tables,
     },
 };
 use std::mem::size_of;
@@ -101,6 +102,12 @@ fn recorded(commander: &carmy_leader::AttackStats) -> CommanderAttackStats {
         night: commander.night,
     }
 }
+
+fn recorded_movement(commander: &carmy_leader::AttackStats) -> CommanderMovementStats {
+    CommanderMovementStats {
+        terrain: commander.movement_terrain.clone(),
+    }
+}
 impl Captured {
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
@@ -130,7 +137,9 @@ impl Captured {
                 .commanders
                 .iter()
                 .filter_map(|(_, commander)| commander.as_ref()?.as_ref())
-                .map(|commander| commander.terrain.capacity() * 8)
+                .map(|commander| {
+                    (commander.terrain.capacity() + commander.movement_terrain.capacity()) * 8
+                })
                 .sum::<usize>()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
@@ -220,6 +229,17 @@ impl Captured {
             .map(|commander| commander.as_ref().map(recorded))
     }
 
+    fn commander_movement(&self, group: u64) -> Option<Option<CommanderMovementStats>> {
+        let at = self
+            .commanders
+            .binary_search_by_key(&group, |(group, _)| *group)
+            .ok()?;
+        self.commanders[at]
+            .1
+            .as_ref()
+            .map(|commander| commander.as_ref().map(recorded_movement))
+    }
+
     pub fn tables(&self) -> [TableView; N] {
         [table::<tables::OrdersGroupCounterInputs, _>(
             self.outcomes()[0],
@@ -229,6 +249,7 @@ impl Captured {
                 // No commander operand is witnessed; current writers leave it empty.
                 attack: Recorded::Value(Witnessed(None)),
                 commander_attack: Recorded::Value(self.commander_attack(r.group)),
+                commander_movement: Recorded::Value(self.commander_movement(r.group)),
                 withdrawing: r.withdrawing,
                 hq_distance: Recorded::Value(r.hq_distance),
                 leader_enroute_days: Recorded::Value(r.leader_enroute_days),
@@ -277,6 +298,29 @@ mod tests {
         // No commander was read: the operands are refused, never zero.
         assert_eq!(rows[0].attack, Recorded::Value(Witnessed(None)));
         assert_eq!(rows[0].commander_attack, Recorded::Value(None));
+        assert_eq!(rows[0].commander_movement, Recorded::Value(None));
+        // A read commander publishes its terrain movement beside its attack.
+        capture.commanders = vec![(
+            (5 << 32) | 53,
+            Some(Some(carmy_leader::AttackStats {
+                leader: 9,
+                terrain: vec![1, 2],
+                movement_terrain: vec![-3, 4],
+                ..Default::default()
+            })),
+        )];
+        let [TableView::Complete(replay::rows::TableRows::OrdersGroupCounterInputs(rows))] =
+            capture.tables()
+        else {
+            panic!("complete primary row");
+        };
+        assert_eq!(
+            rows[0].commander_movement,
+            Recorded::Value(Some(Some(CommanderMovementStats {
+                terrain: vec![-3, 4],
+            })))
+        );
+        capture.commanders.clear();
         let mut work = super::super::division_presentation::CounterWork::default();
         capture.observe_counter_inputs(&mut work);
         let status = serde_json::to_value(work.status()).unwrap();

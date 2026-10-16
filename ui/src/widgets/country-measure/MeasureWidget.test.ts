@@ -28,7 +28,7 @@ for (const kind of ['political-power', 'command-power']) test(`${kind} uses moun
     failedImage: undefined as string | undefined, clock: 100,
     groups: undefined as CountryGroupReply | undefined, ledger: undefined as PoliticsLedgerReply[] | undefined,
     maxima: undefined as CountryStabilityReply | undefined, maximaTagReads: 0,
-    drillHost: undefined as { open: boolean; canFollow: boolean; onFollow: () => void; onPin?: () => void } | undefined,
+    drillHost: undefined as { open: boolean; title: string; canFollow: boolean; onFollow: () => void; onPin?: () => void } | undefined,
     drill: undefined as { hour: number | null; visibleThrough: number; playback: { playhead: number | null } } | undefined,
     added: [] as WidgetSpec[], portals: [] as unknown[],
   };
@@ -81,7 +81,7 @@ for (const kind of ['political-power', 'command-power']) test(`${kind} uses moun
       new Map(wanted.map(row => [nameKey(row.hour, row.tag), row.tag]));`,
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = (_client, _track, wanted) => {
       globalThis.__powerFlags.wanted.push(...wanted); return {labelAt: () => tag => ({name: tag, flag: globalThis.__powerFlags.flag,
-        flagPending: globalThis.__powerFlags.flagPending, flagReason: globalThis.__powerFlags.flagReason}), revision: 0}; };`,
+        flagPending: globalThis.__powerFlags.flagPending, flagReason: globalThis.__powerFlags.flagReason, known: true}), revision: 0}; };`,
     '/dashboard/countryLooks.ts': `export const useCountryLooks = (_client, _track, _tags, hour, _active, segmentAt, _hours, exact, flagTags) => {
       Object.assign(globalThis.__powerFlags, {flagHour: hour, segmentAt, exact, flagTags}); return {
         flag: () => globalThis.__powerFlags.flag, flagPending: () => globalThis.__powerFlags.flagPending,
@@ -198,6 +198,9 @@ for (const kind of ['political-power', 'command-power']) test(`${kind} uses moun
     props.active = true; props.widget.options = { ...props.widget.options, ceiling: true };
     props.widget.countries = { kind: 'group', group: { type: 'faction', id: 'native group' }, membership: 'hour', aggregate: false };
     host.__powerFlagData = balance('700000'); state.groups = groups; state.ledger = ledger(97); state.maxima = maxima('1100001'); render();
+    assert.equal(state.drillHost!.open, false);
+    assert.equal(state.drillHost!.title, 'Daily income and costs', 'a closed breakdown keeps its neutral name even when group facts already identify its actor');
+    assert.deepEqual(state.wanted, [{ tag: actor, hour: 21 }], 'a closed breakdown adds no displayed-day country demand beside the existing hover');
     assert.equal(state.portals.length, 0, 'one current balance stays in its chart/legend without a duplicate header pill');
     const ownerA = chart().pickOwner;
     assert.ok(chart().keyHours!.includes(97));
@@ -247,6 +250,7 @@ for (const kind of ['political-power', 'command-power']) test(`${kind} uses moun
       chart().onPick!(20, { frame, until: null, point: { x: frame.toX(20), y: frame.toY(9) } });
       render();
       assert.equal(state.drill!.hour, 20, `${time.mode} opens at the drawn date`);
+      assert.equal(state.drillHost!.title, `${actor}: Daily income and costs`, 'the open breakdown names its dated actor');
       assert.equal(state.drillHost!.canFollow, true, `${time.mode} can explicitly follow playback`);
       state.drillHost!.onFollow(); render();
       assert.equal(state.drill!.hour, 40, 'Follow uses the source-aligned playback hour');

@@ -1,22 +1,27 @@
 //! One world feed composed from the topic products' witnessed histories.
 //! An exact native date remains separate from the read that revealed it. No
 //! cause is inferred from losing owned states, and no initial snapshot is
-//! promoted to a change. Window discovery and replies share the wire budget.
+//! promoted to a change. Prepared readers compose backward cursor pages.
 
 use super::{
-    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, artwork, country_groups, country_nukes,
+    LoadContext, Product, artwork, country_groups, country_nukes,
     idea_format::{self, LocalisedText, ModifierFormat},
-    idea_history, national_focus, party_history, politics_content, special_projects, subjects,
+    idea_history, national_focus, politics_content, special_projects, subjects,
 };
+#[cfg(test)]
+use super::{MAX_PRODUCT_REPLY_BYTES, party_history};
 use crate::{
     Source,
     catalogue::{self, Catalogue},
     metadata::branch_bounds,
 };
+#[cfg(test)]
 use replay::rows::TableId;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::collections::VecDeque;
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     io,
     sync::{
         Arc,
@@ -30,6 +35,7 @@ mod diplomacy;
 mod native;
 
 mod nuclear;
+pub(crate) mod prepared;
 
 pub struct EventFeed;
 
@@ -206,6 +212,7 @@ pub struct EventFeedCounts {
     pub milestones: u32,
 }
 
+#[cfg(test)]
 impl EventFeedCounts {
     fn add(&mut self, category: EventFeedCategory) -> io::Result<()> {
         let count = match category {
@@ -246,14 +253,17 @@ pub struct EventFeedReply {
 }
 
 #[derive(Default)]
+#[cfg(test)]
 struct Cache {
     branches: VecDeque<(u64, CachedBranch)>,
 }
 #[derive(Clone)]
+#[cfg(test)]
 struct CachedBranch {
     catalogue: Option<Arc<Catalogue>>,
     feed: Arc<Feed>,
 }
+#[cfg(test)]
 impl Cache {
     fn get(&mut self, branch: u64, catalogue: &Option<Arc<Catalogue>>) -> Option<CachedBranch> {
         let index = self.branches.iter().position(|(id, _)| *id == branch)?;
@@ -278,9 +288,11 @@ impl Cache {
     }
 }
 // Cache eviction only; never a limit on recorded branch facts.
+#[cfg(test)]
 const CACHED_BRANCHES: usize = 4;
 type UnavailableKey = (String, String, Option<String>, bool);
 
+#[derive(Serialize, Deserialize)]
 struct Feed {
     first: i32,
     last: i32,
@@ -292,13 +304,16 @@ struct Feed {
     unavailable: Vec<EventFeedUnavailable>,
     warnings: Vec<String>,
 }
+#[derive(Serialize, Deserialize)]
 struct Builder {
     feed: Feed,
     /// Every recorded native war end of the branch, by its hour and the two
     /// countries' tags, so a derived peace row the native row already shows
     /// is not repeated ([`peace_fallback`]).
     war_ends: BTreeSet<(i32, String, String)>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     item_keys: BTreeMap<(Option<String>, Option<String>), Vec<u32>>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     unavailable_keys: BTreeMap<UnavailableKey, (usize, Vec<String>)>,
 }
 /// A derived peace row's focal country and the counterparties no recorded
@@ -492,20 +507,52 @@ impl Builder {
         }
     }
 
+    #[cfg(test)]
     fn finish(mut self) -> io::Result<Feed> {
-        self.feed.rows.sort_by(|a, b| {
-            (a.hour, a.read_hour, a.kind, &a.tags, &a.id).cmp(&(
-                b.hour,
-                b.read_hour,
-                b.kind,
-                &b.tags,
-                &b.id,
-            ))
-        });
+        self.feed.rows.sort_by(row_order);
         self.feed.warnings.sort();
         self.feed.warnings.dedup();
         self.feed.windows = windows(&self.feed, MAX_PRODUCT_REPLY_BYTES)?;
         Ok(self.feed)
+    }
+}
+
+fn row_order(a: &EventFeedRow, b: &EventFeedRow) -> std::cmp::Ordering {
+    (a.hour, a.read_hour, a.kind, &a.tags)
+        .cmp(&(b.hour, b.read_hour, b.kind, &b.tags))
+        .then_with(|| row_tie_order(a.kind, &a.id, &b.id))
+}
+
+// Native occurrence IDs define their tie order. Other rows retain their source
+// insertion order, including the decimal boundary from ordinal 99 to 100.
+fn row_tie_order(kind: EventFeedKind, first: &str, second: &str) -> std::cmp::Ordering {
+    use EventFeedKind::*;
+    if matches!(
+        kind,
+        WarDeclared
+            | WarJoined
+            | CivilWarWarTransferred
+            | Annexed
+            | WarEnded
+            | Released
+            | StateTransferred
+            | PeaceConferenceStarted
+            | NuclearStrike
+    ) {
+        return first.cmp(second);
+    }
+    match (
+        first
+            .rsplit(':')
+            .next()
+            .and_then(|value| value.parse::<u64>().ok()),
+        second
+            .rsplit(':')
+            .next()
+            .and_then(|value| value.parse::<u64>().ok()),
+    ) {
+        (Some(first), Some(second)) => first.cmp(&second),
+        _ => first.cmp(second),
     }
 }
 
@@ -534,6 +581,7 @@ fn plain_item(
     }
 }
 
+#[cfg(test)]
 fn build(
     source: &Source,
     branch: u64,
@@ -599,8 +647,8 @@ fn build(
     }
     for refusal in &diplomacy.unavailable {
         builder.unavailable(
-            refusal.key,
-            refusal.label,
+            &refusal.key,
+            &refusal.label,
             &refusal.reason,
             Some(
                 u32::try_from(refusal.count)
@@ -624,29 +672,7 @@ fn build(
     let mut faction_names = BTreeMap::new();
     for moment in &diplomacy.moments {
         check_cancel(cancelled)?;
-        use EventFeedKind::*;
-        let mut tags = moment.tags.clone();
-        let kind = match moment.kind {
-            "warStarted" => WarStarted,
-            "peace" => {
-                tags = peace_fallback(&builder.war_ends, moment.hour, tags);
-                if tags.len() < 2 {
-                    continue;
-                }
-                Peace
-            }
-            "capitulated" => Capitulated,
-            "ceasedToExist" => CeasedToExist,
-            "factionJoined" => FactionJoined,
-            "factionLeft" => FactionLeft,
-            "guaranteeGranted" => GuaranteeGranted,
-            name => {
-                return Err(io::Error::other(format!(
-                    "Unsupported shared group event {name}"
-                )));
-            }
-        };
-        let item = if let Some(id) = moment.faction {
+        let name = if let Some(id) = moment.faction {
             let name = faction_names
                 .entry((id, moment.name_hour))
                 .or_insert_with(|| {
@@ -661,22 +687,11 @@ fn build(
                     )
                     .ok()
                 });
-            Some(builder.item(plain_item(None, name.clone(), None, None))?)
+            name.clone()
         } else {
             None
         };
-        builder.row(
-            kind,
-            RowDate {
-                hour: moment.hour,
-                read_hour: moment.read_hour,
-                name_hour: moment.name_hour,
-                exact: moment.exact,
-            },
-            tags,
-            item,
-            None,
-        );
+        group_row(&mut builder, moment, name)?;
     }
     for (reason, count) in faction_refusals.counted_diagnostic_lines("faction names are not shown")
     {
@@ -704,20 +719,7 @@ fn build(
         );
     }
     for event in &subject_scan.starts {
-        // The relation stores start_date. The shared scan proves both tags
-        // at that hour before keeping the exact date.
-        builder.row(
-            EventFeedKind::BecameSubject,
-            RowDate {
-                hour: event.hour,
-                read_hour: event.read_hour,
-                name_hour: event.hour,
-                exact: event.exact,
-            },
-            vec![event.subject.clone(), event.overlord.clone()],
-            None,
-            None,
-        );
+        subject_row(&mut builder, event);
     }
     let parties = party_history::scanned_branch(source, branch, cancelled)?;
     for (reason, count) in &parties.refusals {
@@ -817,126 +819,31 @@ fn build(
     if !ideas.observed {
         builder.unavailable("lawChanged", "Laws and advisors", "ActiveIdeas and HiredAdvisors were not recorded complete together with resolved countries.", None);
     }
-    let mut refused_laws = BTreeMap::<String, u32>::new();
-    let mut idea_infos = BTreeMap::new();
-    for (tag, scanned) in &ideas.countries {
+    for scanned in ideas.countries.values() {
         let missing = idea_history::unavailable_additions(scanned);
         if missing > 0 {
             builder.unavailable("ideaAdditionAfterGap", "Law and advisor changes",
                 "Changed holdings after an unrecorded stretch cannot establish whether a law changed or an advisor was hired.",
                 Some(u32::try_from(missing).map_err(|_| io::Error::other("Idea-gap refusal count exceeds u32"))?));
         }
-        for (span, naming) in idea_history::named_additions(scanned) {
-            check_cancel(cancelled)?;
-            let mut item = plain_item(Some(span.token.clone()), None, None, None);
-            let kind = if let Some(content) = &politics {
-                if span.character.is_none()
-                    && matches!(content.ideas.idea(&span.token), Ok(Some(idea)) if !idea.law)
-                {
-                    continue;
-                }
-                let localise = |key: &str, view| content.localised(key, view);
-                let joined = idea_history::Joined::of(content, &localise);
-                let built = span
-                    .character
-                    .as_ref()
-                    .and_then(|holder| scanned.templates.get(&holder.id));
-                let built = match built {
-                    Some(Ok(built)) => Ok(built),
-                    Some(Err(reason)) => Err(reason.as_str()),
-                    None => Err("no recorded holder names its template"),
-                };
-                let key = (
-                    span.token.clone(),
-                    span.slot.clone(),
-                    span.character.as_ref().map(|holder| holder.id),
-                );
-                let info = idea_infos
-                    .entry(key)
-                    .or_insert_with(|| {
-                        idea_history::prepare_info(
-                            &joined,
-                            &span.token,
-                            span.slot.as_deref(),
-                            built,
-                            false,
-                        )
-                        .0
-                    })
-                    .clone();
-                // The idea group's authored law flag selects this branch.
-                let kind = if span.character.is_some() {
-                    EventFeedKind::AdvisorHired
-                } else if info.law {
-                    EventFeedKind::LawChanged
-                } else if !info.effects_known {
-                    *refused_laws.entry(span.token.clone()).or_default() += 1;
-                    continue;
-                } else {
-                    continue;
-                };
-                if let Some(naming) = naming {
-                    let holder = span.character.as_ref();
-                    let script = holder.and_then(|holder| {
-                        (!holder.token.is_empty()).then_some(holder.token.as_str())
-                    });
-                    let (art, problem) = match holder {
-                        Some(holder) => content.held_idea_artwork(
-                            &span.token,
-                            script,
-                            &holder.name,
-                            naming.for_tag(tag),
-                        ),
-                        None => content.idea_artwork(&span.token, None, naming.for_tag(tag)),
-                    };
-                    if let Some(reason) = &problem {
-                        builder.unavailable(
-                            "ideaArtwork",
-                            "Idea artwork",
-                            format!("Idea {}: {reason}", span.token),
-                            Some(1),
-                        );
-                    }
-                    item.name = art.name;
-                    item.icon = art.icon;
-                    item.description = art.description;
-                    if let Some(holder) = holder
-                        && script.is_none()
-                    {
-                        item.icon = None;
-                        let reason = format!(
-                            "Advisor {} ({}) has no recorded script token; portrait refused.",
-                            holder.id, span.token
-                        );
-                        builder.unavailable(
-                            "advisorArtwork",
-                            "Advisor portrait",
-                            reason.clone(),
-                            Some(1),
-                        );
-                    }
-                }
-                item.idea = Some(info);
-                kind
-            } else if span.character.is_some() {
-                EventFeedKind::AdvisorHired
-            } else {
-                *refused_laws.entry(span.token.clone()).or_default() += 1;
-                continue;
-            };
-            let item = builder.item(item)?;
-            builder.row(
-                kind,
-                RowDate::by(span.first_hour),
-                vec![tag.clone()],
-                Some(item),
-                None,
-            );
-        }
     }
-    for (token, count) in refused_laws {
-        builder.unavailable("lawChanged", "Law classification", format!("Idea {token}: the recorded content cannot establish whether this addition is a law."), Some(count));
-    }
+    idea_rows(
+        &mut builder,
+        politics.as_deref(),
+        ideas.countries.iter().flat_map(|(tag, scanned)| {
+            idea_history::named_additions(scanned).map(move |(span, naming)| {
+                (
+                    tag.as_str(),
+                    span,
+                    naming,
+                    span.character
+                        .as_ref()
+                        .and_then(|holder| scanned.templates.get(&holder.id)),
+                )
+            })
+        }),
+        cancelled,
+    )?;
     focus_completion_rows(&mut builder, source, branch, context, cancelled)?;
     let projects = special_projects::completion_events(source, branch, context, cancelled)?;
     builder
@@ -957,36 +864,7 @@ fn build(
         builder.unavailable("projectFinished", "Special projects", reason.clone(), None);
     }
     for event in &projects.events {
-        if let Some(reason) = &event.icon_missing {
-            builder.unavailable(
-                "projectArtwork",
-                "Special project artwork",
-                format!(
-                    "Project {} (definition {}): {reason}",
-                    event.item_token.as_deref().unwrap_or("unknown token"),
-                    event.definition_id
-                ),
-                Some(1),
-            );
-        }
-        let item = builder.item(plain_item(
-            event.item_token.clone(),
-            event.name.clone(),
-            event.icon.clone(),
-            None,
-        ))?;
-        builder.row(
-            EventFeedKind::ProjectFinished,
-            RowDate {
-                hour: event.date.hour,
-                read_hour: event.observed_hour,
-                name_hour: event.date.hour,
-                exact: event.date.exact,
-            },
-            vec![event.tag.clone()],
-            Some(item),
-            None,
-        );
+        project_row(&mut builder, event)?;
     }
     let nukes = country_nukes::scanned_branch(source, branch, cancelled)?;
     if nukes.read_hours.is_empty() {
@@ -1039,7 +917,7 @@ fn build(
                     Some(item) => item,
                     None => {
                         let icon = nuke_art.as_ref().ok().cloned().flatten().flatten();
-                        let item = builder.item(plain_item(None, None, icon, None))?;
+                        let item = nuclear_item(&mut builder, None, catalogue.as_deref(), icon)?;
                         nuke_item = Some(item);
                         item
                     }
@@ -1062,7 +940,12 @@ fn build(
         content.localisation.get(token)?;
         content.localised(token, catalogue::View::Plain)
     }) {
-        let item = builder.item(plain_item(info.token, info.name, icon.clone(), None))?;
+        let item = nuclear_item(
+            &mut builder,
+            Some(&info),
+            catalogue.as_deref(),
+            icon.clone(),
+        )?;
         nuke_items.insert(info.ordinal, item);
     }
     nuclear::scan(&replay, branch, &mut builder, &nuke_items, cancelled)?;
@@ -1092,8 +975,280 @@ fn build(
     builder.finish()
 }
 
+fn project_row(
+    builder: &mut Builder,
+    event: &special_projects::ProjectCompletion,
+) -> io::Result<()> {
+    if let Some(reason) = &event.icon_missing {
+        builder.unavailable(
+            "projectArtwork",
+            "Special project artwork",
+            format!(
+                "Project {} (definition {}): {reason}",
+                event.item_token.as_deref().unwrap_or("unknown token"),
+                event.definition_id
+            ),
+            Some(1),
+        );
+    }
+    let item = builder.item(plain_item(
+        event.item_token.clone(),
+        event.name.clone(),
+        event.icon.clone(),
+        None,
+    ))?;
+    builder.row(
+        EventFeedKind::ProjectFinished,
+        RowDate {
+            hour: event.date.hour,
+            read_hour: event.observed_hour,
+            name_hour: event.date.hour,
+            exact: event.date.exact,
+        },
+        vec![event.tag.clone()],
+        Some(item),
+        None,
+    );
+    Ok(())
+}
+
+fn nuclear_item(
+    builder: &mut Builder,
+    kind: Option<&country_nukes::NukeTypeInfo>,
+    catalogue: Option<&Catalogue>,
+    icon: Option<String>,
+) -> io::Result<u32> {
+    let token = kind.and_then(|kind| kind.token.clone());
+    let name = kind.and_then(|kind| kind.name.clone()).or_else(|| {
+        let token = token.as_deref()?;
+        let content = catalogue?;
+        content.localisation.get(token)?;
+        content.localised(token, catalogue::View::Plain)
+    });
+    builder.item(plain_item(token, name, icon, None))
+}
+
+fn group_kind(kind: &str) -> io::Result<EventFeedKind> {
+    use EventFeedKind::*;
+    Ok(match kind {
+        "warStarted" => WarStarted,
+        "peace" => Peace,
+        "capitulated" => Capitulated,
+        "ceasedToExist" => CeasedToExist,
+        "factionJoined" => FactionJoined,
+        "factionLeft" => FactionLeft,
+        "guaranteeGranted" => GuaranteeGranted,
+        name => {
+            return Err(io::Error::other(format!(
+                "Unsupported shared group event {name}"
+            )));
+        }
+    })
+}
+fn group_row(
+    builder: &mut Builder,
+    moment: &country_groups::changes::Change,
+    name: Option<String>,
+) -> io::Result<()> {
+    let kind = group_kind(&moment.kind)?;
+    let tags = if kind == EventFeedKind::Peace {
+        peace_fallback(&builder.war_ends, moment.hour, moment.tags.clone())
+    } else {
+        moment.tags.clone()
+    };
+    if kind == EventFeedKind::Peace && tags.len() < 2 {
+        return Ok(());
+    }
+    let item = moment
+        .faction
+        .map(|_| builder.item(plain_item(None, name, None, None)))
+        .transpose()?;
+    builder.row(
+        kind,
+        RowDate {
+            hour: moment.hour,
+            read_hour: moment.read_hour,
+            name_hour: moment.name_hour,
+            exact: moment.exact,
+        },
+        tags,
+        item,
+        None,
+    );
+    Ok(())
+}
+fn subject_row(builder: &mut Builder, event: &subjects::SubjectStart) {
+    // The subject scan proves both tags at the stored relation date before using it.
+    builder.row(
+        EventFeedKind::BecameSubject,
+        RowDate {
+            hour: event.hour,
+            read_hour: event.read_hour,
+            name_hour: event.hour,
+            exact: event.exact,
+        },
+        vec![event.subject.clone(), event.overlord.clone()],
+        None,
+        None,
+    );
+}
+fn focus_row(
+    builder: &mut Builder,
+    event: &national_focus::FocusCompletion,
+    presentation: Option<(&crate::Artwork, Option<&String>)>,
+) -> io::Result<()> {
+    let mut item = plain_item(Some(event.token.clone()), None, None, None);
+    if let Some((art, refusal)) = presentation {
+        item.name = art.name.clone();
+        item.icon = art.icon.clone();
+        item.description = art.description.clone();
+        if let Some(reason) = refusal {
+            builder.unavailable(
+                "focusPresentation",
+                "Focus presentation",
+                format!("Focus {}: {reason}", event.token),
+                Some(1),
+            );
+        }
+    }
+    let item = builder.item(item)?;
+    builder.row(
+        EventFeedKind::FocusCompleted,
+        RowDate::by(event.hour),
+        vec![event.tag.clone()],
+        Some(item),
+        None,
+    );
+    Ok(())
+}
+
+/// The same content/artwork builder consumes recorded additions or prepared pages.
+fn idea_rows<'a>(
+    builder: &mut Builder,
+    politics: Option<&politics_content::PoliticsContent>,
+    additions: impl IntoIterator<
+        Item = (
+            &'a str,
+            &'a idea_history::IdeaSpan,
+            Option<&'a crate::products::identity::NamingCountry>,
+            Option<&'a Result<installed_content::characters::BuiltTemplate, String>>,
+        ),
+    >,
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    let mut refused_laws = BTreeMap::<String, u32>::new();
+    let mut idea_infos = BTreeMap::new();
+    for (tag, span, naming, built) in additions {
+        check_cancel(cancelled)?;
+        let mut item = plain_item(Some(span.token.clone()), None, None, None);
+        let kind = if let Some(content) = politics {
+            if span.character.is_none()
+                && matches!(content.ideas.idea(&span.token), Ok(Some(idea)) if !idea.law)
+            {
+                continue;
+            }
+            let localise = |key: &str, view| content.localised(key, view);
+            let joined = idea_history::Joined::of(content, &localise);
+            let built = match built {
+                Some(Ok(built)) => Ok(built),
+                Some(Err(reason)) => Err(reason.as_str()),
+                None => Err("no recorded holder names its template"),
+            };
+            let key = (
+                span.token.clone(),
+                span.slot.clone(),
+                span.character.as_ref().map(|holder| holder.id),
+            );
+            let info = idea_infos
+                .entry(key)
+                .or_insert_with(|| {
+                    idea_history::prepare_info(
+                        &joined,
+                        &span.token,
+                        span.slot.as_deref(),
+                        built,
+                        false,
+                    )
+                    .0
+                })
+                .clone();
+            // The idea group's authored law flag selects this branch.
+            let kind = if span.character.is_some() {
+                EventFeedKind::AdvisorHired
+            } else if info.law {
+                EventFeedKind::LawChanged
+            } else if !info.effects_known {
+                *refused_laws.entry(span.token.clone()).or_default() += 1;
+                continue;
+            } else {
+                continue;
+            };
+            if let Some(naming) = naming {
+                let holder = span.character.as_ref();
+                let script = holder
+                    .and_then(|holder| (!holder.token.is_empty()).then_some(holder.token.as_str()));
+                let (art, problem) = match holder {
+                    Some(holder) => content.held_idea_artwork(
+                        &span.token,
+                        script,
+                        &holder.name,
+                        naming.for_tag(tag),
+                    ),
+                    None => content.idea_artwork(&span.token, None, naming.for_tag(tag)),
+                };
+                if let Some(reason) = &problem {
+                    builder.unavailable(
+                        "ideaArtwork",
+                        "Idea artwork",
+                        format!("Idea {}: {reason}", span.token),
+                        Some(1),
+                    );
+                }
+                item.name = art.name;
+                item.icon = art.icon;
+                item.description = art.description;
+                if let Some(holder) = holder
+                    && script.is_none()
+                {
+                    item.icon = None;
+                    let reason = format!(
+                        "Advisor {} ({}) has no recorded script token; portrait refused.",
+                        holder.id, span.token
+                    );
+                    builder.unavailable(
+                        "advisorArtwork",
+                        "Advisor portrait",
+                        reason.clone(),
+                        Some(1),
+                    );
+                }
+            }
+            item.idea = Some(info);
+            kind
+        } else if span.character.is_some() {
+            EventFeedKind::AdvisorHired
+        } else {
+            *refused_laws.entry(span.token.clone()).or_default() += 1;
+            continue;
+        };
+        let item = builder.item(item)?;
+        builder.row(
+            kind,
+            RowDate::by(span.first_hour),
+            vec![tag.to_owned()],
+            Some(item),
+            None,
+        );
+    }
+    for (token, count) in refused_laws {
+        builder.unavailable("lawChanged", "Law classification", format!("Idea {token}: the recorded content cannot establish whether this addition is a law."), Some(count));
+    }
+    Ok(())
+}
+
 /// One selective forward decode per block supplies both lean completion
 /// observations and their artwork. No event hour performs a replay seek.
+#[cfg(test)]
 fn focus_completion_rows(
     builder: &mut Builder,
     source: &Source,
@@ -1184,29 +1339,13 @@ fn focus_completion_rows(
                             .unwrap_or_default()
                     };
                     for (index, event) in events.iter().enumerate() {
-                        let mut item = plain_item(Some(event.token.clone()), None, None, None);
-                        if let Some((art, refusal)) = presented.get(index) {
-                            item.name = art.name.clone();
-                            item.icon = art.icon.clone();
-                            item.description = art.description.clone();
-                            if let Some(reason) = refusal {
-                                builder.unavailable(
-                                    "focusPresentation",
-                                    "Focus presentation",
-                                    format!("Focus {}: {reason}", event.token),
-                                    Some(1),
-                                );
-                            }
-                        }
-                        let item = builder.item(item)?;
-                        // Completed-focus entries retain ordinal/token, no date.
-                        builder.row(
-                            EventFeedKind::FocusCompleted,
-                            RowDate::by(event.hour),
-                            vec![event.tag.clone()],
-                            Some(item),
-                            None,
-                        );
+                        focus_row(
+                            builder,
+                            event,
+                            presented
+                                .get(index)
+                                .map(|(art, reason)| (art, reason.as_ref())),
+                        )?;
                     }
                 }
             }
@@ -1297,6 +1436,7 @@ fn reply(feed: &Feed, branch: &str, first: i32, last: i32, with_rows: bool) -> E
 
 /// Admission serializes borrowed rows, before cloning any page. A remapped
 /// reference has at most ten decimal digits (the recorded u32 field width).
+#[cfg(test)]
 fn window_fits(feed: &Feed, branch: &str, first: i32, last: i32, budget: usize) -> bool {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -1341,6 +1481,7 @@ fn window_fits(feed: &Feed, branch: &str, first: i32, last: i32, budget: usize) 
 
 /// Count serialized rows and distinct artwork before allocating a window reply.
 /// Entire hours stay together; a single oversized hour is refused with its count.
+#[cfg(test)]
 fn windows(feed: &Feed, budget: usize) -> io::Result<Vec<EventFeedWindow>> {
     let base = crate::transport::json_len(
         &EventFeedReply {
@@ -1474,6 +1615,7 @@ impl Product for EventFeed {
             _ => Err("Invalid event-feed hour window"),
         }
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -1532,11 +1674,11 @@ impl Product for EventFeed {
             last,
             params.first_hour.is_some(),
         );
-        if crate::transport::json_len(&result, MAX_PRODUCT_REPLY_BYTES).is_none() {
-            return Err(io::Error::other(
+        super::check_reply_budget(&result).map_err(|_| {
+            io::Error::other(
                 "The requested event-feed window exceeds the shared reply budget; request the indexed windows",
-            ));
-        }
+            )
+        })?;
         Ok(result)
     }
 }

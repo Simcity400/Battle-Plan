@@ -1,3 +1,4 @@
+import { useParityRows } from '../dashboard/parityRows';
 import { Popover, usePopover } from './Popover';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CountryMetadata } from '../shell/api';
@@ -74,6 +75,8 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
       return { country: { ...country, name }, search: `${name} ${country.tag}`.toLowerCase() };
     });
   }, [countries, roster, sourceKey, allowedTags, flagAt?.branchId, flagAt?.hour, heldNames, choiceReads]); // eslint-disable-line react-hooks/exhaustive-deps
+  useParityRows(listbox, () => ({ kind: 'table', label: 'Land-owning countries', complete: !loading && roster.key === sourceKey,
+    total: roster.countries.length, rows: roster.key === sourceKey ? roster.countries : [] }));
   const byTag = useMemo(() => new Map(choices.map(({ country }) => [country.tag, country])), [choices]);
   const selected = useMemo(() => selectedTag == null ? countries.find((country) => country.id === playerCountryId)
     : byTag.get(selectedTag) ?? countries.find((country) => country.tag === selectedTag), [countries, playerCountryId, selectedTag, byTag]);
@@ -160,7 +163,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   useEffect(() => {
     if (!source || allowedTags) return;
     const controller = new AbortController();
-    void loadProduct<LandOwners>(client, { sourceId: source.id, revision: source.revision, product: 'land-owners', params: {} }, controller.signal).then(result => {
+    void loadProduct<LandOwners>(client, { sourceId: source.id, revision: source.revision, product: 'land-owners', params: {} }, controller.signal, undefined, source).then(result => {
       if (!controller.signal.aborted) {
         setRoster({ key: sourceKey, countries: result.countries, error: null });
         onCountries?.(source.id, source.revision, result.countries);

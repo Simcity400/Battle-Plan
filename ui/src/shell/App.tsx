@@ -5,7 +5,6 @@ import {
   errorMessage,
   openReplay,
   selectNativeView,
-  mapAction,
 } from './api';
 import { Icon } from '../components/Icons';
 import type { IconName } from '../components/Icons';
@@ -20,8 +19,8 @@ import { useDesktopState, useMapSurface } from './useNativeViewer';
 import { nativeDashboardClient } from '../dashboard/nativeClient';
 import { browserDashboardClient } from '../dashboard/browserClient';
 import type { BranchChoice } from '../dashboard/Dashboard';
-import Settings, { SettingsNav, settingsSections } from './Settings';
-import type { SettingsSection, SettingsTarget } from './Settings';
+import { settingsSections } from './settingsMetadata';
+import type { SettingsSection, SettingsTarget } from './settingsMetadata';
 import { useAppearance } from './appearance/useAppearance';
 import { useSidebarIconMenu } from './appearance/SidebarIconMenu';
 import Backdrop from './appearance/Backdrop';
@@ -37,6 +36,8 @@ const browserRecordings = import.meta.env.DEV && !desktopAvailable;
 
 // Shell-only changes (sidebar, popovers, native state) leave the dashboard and its header alone.
 const Dashboard = memo(lazy(() => import('../dashboard/Dashboard')));
+const Settings = lazy(() => import('./Settings'));
+const SettingsNav = lazy(() => import('./Settings').then(module => ({ default: module.SettingsNav })));
 type Tab = 'map' | 'analytics' | 'settings';
 const PAGE_KEY = 'hoi4-replay.analytics-page.v1';
 const SIDEBAR_KEY = 'hoi4-replay.sidebar.v1';
@@ -210,7 +211,8 @@ export default function App() {
   const [campaignHost, setCampaignHost] = useState<HTMLDivElement | null>(null);
   const [metadata, setMetadata] = useState<ReplayMetadata | null>(null);
   const [branch, setBranch] = useState<BranchChoice | null>(null);
-  const [browserFolders, setBrowserFolders] = useState<ContentFolders | null>(null);
+  // The host's folders in the desktop app, the development bridge's in a browser.
+  const [folders, setFolders] = useState<ContentFolders | null>(null);
   const [folderError, setFolderError] = useState<string | null>(null);
   const setupChecked = useRef(false);
   const openCampaign = useRef<(() => void) | null>(null);
@@ -233,21 +235,14 @@ export default function App() {
   const lastNativePath = useRef<string | null>(null);
   const content = useRef<HTMLElement>(null);
   const native = useDesktopState(retry);
-  const folders = desktopAvailable ? native.state?.mapDetails ?? null : browserFolders;
   useEffect(() => { contentRevision(client).observe(folders); }, [client, folders?.game, folders?.user, folders?.contentReady]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!client.contentFolders) return;
     const controller = new AbortController();
-    void client.contentFolders(controller.signal).then(value => { if (!controller.signal.aborted) setBrowserFolders(value); })
+    void client.contentFolders(controller.signal).then(value => { if (!controller.signal.aborted) setFolders(value); })
       .catch(cause => { if (!controller.signal.aborted) setFolderError(errorMessage(cause)); });
     return () => controller.abort();
   }, [client]);
-  useEffect(() => {
-    if (!desktopAvailable || !native.state?.ready) return;
-    let current = true;
-    void mapAction({ kind: 'inspect' }).catch(cause => { if (current) setFolderError(errorMessage(cause)); });
-    return () => { current = false; };
-  }, [native.state?.ready]);
   useEffect(() => {
     if (!folders || setupChecked.current) return;
     setupChecked.current = true;
@@ -340,8 +335,8 @@ export default function App() {
         </div>
         <div className="sidebar-body">
         {tab === 'settings'
-          ? <SettingsNav section={settingsSection} onBack={() => void changeTab(lastView.current)} onSection={section => openSettings(section)}
-            onTarget={target => openSettings(target.section, target)} disabled={switching} />
+          ? <Suspense fallback={null}><SettingsNav section={settingsSection} onBack={() => void changeTab(lastView.current)} onSection={section => openSettings(section)}
+            onTarget={target => openSettings(target.section, target)} disabled={switching} /></Suspense>
           : <nav className="sidebar-menu" aria-label="Views">
             <AnalyticsNav pages={pages} page={page} active={tab === 'analytics'} disabled={switching} onPages={changePages} onDelete={deletePage} iconMenu={iconMenu}
               onChoose={id => { choosePage(id); void changeTab('analytics'); }} />
@@ -370,8 +365,8 @@ export default function App() {
       <main className="workspace" ref={content}>
         {workspaceBackdrop.kind !== 'same' && <Backdrop className="is-workspace" backdrop={{ ...workspaceBackdrop, kind: workspaceBackdrop.kind }} image={appearance.workspaceImage} />}
         <section id="panel-settings" aria-label="Settings" tabIndex={-1} className="settings-panel" hidden={tab !== 'settings'}>
-          {tab === 'settings' && <Settings section={settingsSection} target={settingsTarget} onTargetShown={clearSettingsTarget} folders={folders} folderError={folderError} onFoldersChange={value => { setBrowserFolders(value); setFolderError(null); }} native={native.state} metadata={metadata} branch={branch} library={replayLibrary} client={client} appearance={appearance}
-            onResetPages={pagesReset()} />}
+          {tab === 'settings' && <Suspense fallback={<p role="status">Loading settings?</p>}><Settings section={settingsSection} target={settingsTarget} onTargetShown={clearSettingsTarget} folders={folders} folderError={folderError} onFoldersChange={value => { setFolders(value); setFolderError(null); }} native={native.state} metadata={metadata} branch={branch} library={replayLibrary} client={client} appearance={appearance}
+            onResetPages={pagesReset()} /></Suspense>}
         </section>
         <section id="panel-map" aria-labelledby="tab-map" tabIndex={-1}
           className="map-panel" hidden={tab !== 'map'}>

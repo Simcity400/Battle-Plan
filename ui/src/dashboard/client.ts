@@ -1,3 +1,4 @@
+import type { PreparationRequest, PreparationReply, PreparationPreferences } from '../shell/preparation/contract';
 import type { RecorderSettings as PanelRecorderSettings } from '../recorder/status';
 import type { ContentFolders, MapBounds, MapOptions, ReplayMetadata } from '../shell/api';
 import type { CampaignMapSettings, HistoryCacheReply, MapSettingsReply } from '../generated/dashboard';
@@ -80,7 +81,13 @@ export interface DashboardClient {
   nativeMaps?: boolean;
   openSource(path: string, signal: AbortSignal): Promise<DashboardSource>;
   releaseSource(id: string): Promise<void>;
+  preparationPreferences?(enabled: boolean | null, signal: AbortSignal): Promise<PreparationPreferences>;
+  preparationStatus?(request: PreparationRequest, signal: AbortSignal): Promise<PreparationReply>;
+  prepareSource?(request: PreparationRequest, signal: AbortSignal): Promise<PreparationReply>;
+  cancelPreparation?(request: PreparationRequest, signal: AbortSignal): Promise<PreparationReply>;
+  clearPreparation?(request: PreparationRequest, signal: AbortSignal): Promise<PreparationReply>;
   product<T>(request: ProductRequest, signal: AbortSignal): Promise<ProductReply<T>>;
+  preparedQuery?<T>(source: DashboardSource, product: string, params: unknown, options: { signal: AbortSignal }): Promise<T>;
   mapSettings?(sourceId: string, revision: string, settings: CampaignMapSettings | null, signal: AbortSignal, target?: MapSettingsTarget): Promise<MapSettingsReply>;
   /** The widget history cache's size, after clearing it when asked. */
   historyCache?(clear: boolean, signal: AbortSignal): Promise<HistoryCacheReply>;

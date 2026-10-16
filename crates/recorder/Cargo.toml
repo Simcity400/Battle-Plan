@@ -6,10 +6,26 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[lib]
+doctest = false
+
+[[bin]]
+name = "recorder"
+path = "src/main.rs"
+# No tests of its own; `cargo test` would only build and link an empty harness.
+test = false
+
 [features]
 alloc-fault-injection = []
 
 [dependencies]
+recorder-oracle.workspace = true
+recorder-movement-oracle.workspace = true
+recorder-derived.workspace = true
+recorder-replay.workspace = true
+recorder-sizes.workspace = true
+recorder-metrics.workspace = true
+recorder-platform.workspace = true
 engine.workspace = true
 replay.workspace = true
 installed-content.workspace = true
@@ -19,5 +35,6 @@ zstd = "0.13"
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Diagnostics_Debug", "Win32_System_Memory", "Win32_System_Console", "Win32_System_Registry", "Win32_System_Environment", "Win32_System_Performance", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+recorder-test-support.workspace = true
 # Hand-built movement maps for the movement oracle tests.
 installed-content = { workspace = true, features = ["test-support"] }

@@ -1,0 +1,1816 @@
+//! Entity clocks, state selection, weighted variants and attachment poses.
+//! Presentation seed is 0x414e494d XOR the stable unit handle. The engine's
+//! shared RNG state and state-entry times are not recorded. Reconstructed
+//! combat entry phases remain reconstructions. Clocks and state-entry history
+//! belong to the viewer, never the recording client's renderer.
+
+use super::models::{ModelInstance, PaletteJoint};
+use installed_content::mesh::{self, EntityState, JointPose, Transform};
+use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::{collections::BTreeMap, sync::Arc};
+
+pub const SEED: u32 = 0x414e_494d;
+pub const IDLE: u32 = 0;
+pub const MOVE: u32 = 1;
+pub const ATTACK: u32 = 2;
+pub const DEFEND: u32 = 3;
+pub const RETREAT: u32 = 4;
+pub const SUPPORT: u32 = 5;
+pub const TRAINING: u32 = 6;
+pub const TRAIN: u32 = 7;
+/// The game switches building entities between these authored states. They
+/// use their own state-entry clock and authored random starts, without the
+/// unit figure's reconstructed phase spread.
+pub const BUILDING_IDLE: u32 = 8;
+pub const BUILDING_DAMAGED: u32 = 9;
+/// The game sends idle only for use_animation=yes; no unit phase spread.
+pub const AMBIENT_IDLE: u32 = 10;
+pub const STOPPED: u32 = 11;
+/// The first code of a content-named stage ([`named_stage`]).
+pub const NAMED: u32 = 0x4000_0000;
+// A callback requests once; unlike a raid stage it does not request again
+// after an automatic next_state.
+const DIRECT: u32 = 0x8000_0000;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Request {
+    pub time: f32,
+    /// Naval callbacks carry their phase age even while active age is frozen.
+    /// Ordinary producer callbacks use only `time`.
+    pub phase_time: Option<f32>,
+    pub state: String,
+}
+
+/// Entity seconds, separate from the scenario's playback rate.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Clock {
+    pub time: f32,
+    /// Naval wrappers can suppress traversal while played clips keep advancing.
+    /// Other producers retain their ordinary single-clock behavior with `None`.
+    pub phase: Option<Phase>,
+    pub requests: Arc<Vec<Request>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Phase {
+    pub time: f32,
+    /// A manager root is visited while hidden; an attached hull is not.
+    /// Played animation instances advance globally in either case.
+    pub root_advances_hidden: bool,
+    /// Also initializes an actor hidden before its first rendered placement.
+    pub instance: ModelInstance,
+}
+
+/// A stage the content names, such as a raid type's `unit_animations`
+/// stage: its state and the intro that leads into it. The code, from
+/// [`NAMED`] up, is what [`state_name`] spells and [`stage_intro`] reads.
+/// Stages are interned for the process, bounded by the content's distinct
+/// stages.
+///
+/// The root node requests nothing while already in the stage's state or intro.
+/// Otherwise it requests the intro when one exists and the entity is not freshly
+/// shown, or the state itself. A newly shown raid arrow takes the state at once,
+/// as does an entity created from a loaded save.
+/// The viewer's fresh entity is a player with no history: a first placement,
+/// a seek ([`super::models::ModelPass::reset_animation`]) or a dump.
+pub fn named_stage(state: &str, intro: Option<&str>) -> u32 {
+    let mut names = NAMES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let index = match names
+        .iter()
+        .position(|(known, known_intro)| *known == state && *known_intro == intro)
+    {
+        Some(index) => index,
+        None => {
+            names.push((
+                Box::leak(state.to_owned().into_boxed_str()),
+                intro.map(|intro| &*Box::leak(intro.to_owned().into_boxed_str())),
+            ));
+            names.len() - 1
+        }
+    };
+    NAMED + index as u32
+}
+
+/// A single native state request, permitting authored `next_state` afterward.
+pub fn named_request(state: &str) -> u32 {
+    named_stage(state, None) | DIRECT
+}
+
+type Stage = (&'static str, Option<&'static str>);
+static NAMES: OnceLock<Mutex<Vec<Stage>>> = OnceLock::new();
+
+fn named(state: u32) -> Option<Stage> {
+    let state = state & !DIRECT;
+    let names = NAMES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    names.get(state.checked_sub(NAMED)? as usize).copied()
+}
+
+/// The intro of a [`named_stage`] code; `None` for every other state.
+pub fn stage_intro(state: u32) -> Option<&'static str> {
+    named(state).and_then(|(_, intro)| intro)
+}
+
+pub fn state_name(state: u32) -> &'static str {
+    if state >= NAMED {
+        return named(state).map_or("idle", |(name, _)| name);
+    }
+    match state {
+        MOVE => "move",
+        ATTACK => "attack",
+        DEFEND => "defend",
+        RETREAT => "retreat",
+        SUPPORT => "support_attack",
+        TRAINING => "training",
+        // The game sends idle while the wagon is visible. The train .gfx
+        // deliberately maps idle to train_locomotive_1_moving, and move to
+        // its stationary clip. Choosing a state by its English name is wrong.
+        TRAIN => "idle",
+        BUILDING_IDLE => "idle",
+        BUILDING_DAMAGED => "damaged",
+        _ => "idle",
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Clip {
+    pub state: EntityState,
+    pub animation: Option<Arc<mesh::Animation>>,
+}
+#[derive(Debug, Clone)]
+pub struct Node {
+    pub mesh: Arc<mesh::Mesh>,
+    pub native: Option<Arc<super::mesh_pose::Source>>,
+    pub clips: Vec<Clip>,
+    pub default: String,
+    pub follows_parent: bool,
+    pub parent: Option<(usize, String, String)>,
+    pub scale: f32,
+    /// The pdxmesh scale inside `scale`. The engine bakes it into the mesh
+    /// and skeleton, so event particles do not carry it.
+    pub mesh_scale: f32,
+    pub skin_base: Option<u32>,
+    pub rigid: u32,
+    /// Entity locators in the node's frame, with their `parent_joint`.
+    pub locators: BTreeMap<String, (Transform, Option<String>)>,
+}
+
+/// A joint's pose under which event particles take the entity scale only:
+/// the engine's baked skeleton keeps the scaled joint position but not the
+/// pdxmesh scale in its basis.
+pub fn joint_event_local(joint: &Transform, mesh_scale: f32) -> Transform {
+    joint.compose(&Transform::from_trs(
+        [0.0; 3],
+        [0.0, 0.0, 0.0, 1.0],
+        1.0 / mesh_scale.max(f32::EPSILON),
+    ))
+}
+
+/// A locator's node-space transform: under its parent joint's pose when the
+/// skeleton has that joint (locator times joint world), otherwise in
+/// entity space, as the engine keeps a locator whose joint it cannot find.
+pub fn locator_local(locator: &Transform, joint: Option<&Transform>) -> Transform {
+    joint.map_or(*locator, |joint| joint.compose(locator))
+}
+#[derive(Debug, Clone, Default)]
+pub struct Rig {
+    pub nodes: Vec<Node>,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// The integer mixer for state variants and start offsets, including signed mask.
+#[derive(Clone)]
+pub struct Random {
+    seed: u32,
+    index: u32,
+}
+impl Random {
+    pub fn new(seed: u32) -> Self {
+        Self { seed, index: 0 }
+    }
+
+    pub fn next_word(&mut self) -> u32 {
+        let mut x = self.seed.wrapping_add(self.index.wrapping_mul(0xb529_7a4d));
+        self.index = self.index.wrapping_add(1);
+        x = (x ^ (x >> 8)).wrapping_add(0x68e3_1da4);
+        x = (x ^ (x << 8)).wrapping_mul(0x1b56_c4e9);
+        x = (x ^ (x >> 8)).wrapping_mul(0x92d6_8ca2);
+        (x ^ (x >> 8)) & 0x7fff_ffff
+    }
+    fn fraction(&mut self) -> f32 {
+        self.next_word() as f32 / 2147483648.0
+    }
+}
+
+struct Playing {
+    requested: String,
+    clip: usize,
+    start: f32,
+    event_time: f32,
+    phase_offset: f32,
+    previous: Option<(usize, f32)>,
+    admitted_kept: BTreeMap<usize, f32>,
+    propagate: bool,
+    random: Random,
+    cycle: u64,
+    /// The clip reached its end and the node entered an automatic successor
+    /// since the state was last requested.
+    completed: bool,
+}
+pub struct Player {
+    nodes: Vec<Option<Playing>>,
+    native_samples: Vec<Option<NativeSample>>,
+    last: f32,
+    phase: Option<(f32, f32)>,
+    requested: usize,
+    direct_state: Option<u32>,
+    kept: Vec<Kept>,
+    event_refusals: BTreeMap<String, usize>,
+}
+
+struct Kept {
+    source: usize,
+    definition: mesh::EntityEvent,
+    start: f32,
+    end: f32,
+    seed: u32,
+    key: EventKey,
+}
+
+#[derive(Clone, Copy)]
+struct NativeSample {
+    clip: usize,
+    age: f32,
+    time: f32,
+    previous: Option<(usize, f32, f32)>,
+}
+
+/// Exact presentation identity; RNG seeds need not be unique across actors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EventKey {
+    pub pass: u64,
+    pub model: usize,
+    actor: (u32, u32),
+    node: usize,
+    state: (usize, u32),
+    event: usize,
+}
+
+impl EventKey {
+    /// This identity without its pass namespace, which differs between passes built alike.
+    #[cfg(test)]
+    pub(crate) fn without_pass(self) -> Self {
+        Self { pass: 0, ..self }
+    }
+
+    /// The emitting actor's `(mesh, seed, identity)` animation key.
+    pub fn actor(&self) -> (usize, u32, u32) {
+        (self.model, self.actor.0, self.actor.1)
+    }
+}
+
+#[derive(Clone)]
+pub struct Event {
+    pub definition: mesh::EntityEvent,
+    pub transform: Transform,
+    pub age: f32,
+    pub seed: u32,
+    pub key: EventKey,
+    /// Event age at which emission stops, retaining live particles.
+    pub emission_end: Option<f32>,
+    /// Whether the display hides the event's actor or layer. Every simulation still advances
+    /// on it; only its particles and light go unsubmitted.
+    pub hidden: bool,
+}
+
+fn event_key(
+    instance: ModelInstance,
+    node: usize,
+    event: usize,
+    playing: Option<&Playing>,
+) -> EventKey {
+    EventKey {
+        pass: 0,
+        model: 0,
+        actor: instance.animation_key(),
+        node,
+        state: playing.map_or((0, 0), |playing| {
+            (playing.clip, playing.event_time.to_bits())
+        }),
+        event,
+    }
+}
+
+fn event_seed(
+    instance: ModelInstance,
+    node: usize,
+    event: usize,
+    playing: Option<&Playing>,
+) -> u32 {
+    let state = if instance.animation & DIRECT != 0 {
+        playing.map_or(0, |playing| {
+            (playing.clip as u32).rotate_left(16) ^ playing.event_time.to_bits().rotate_left(3)
+        }) ^ instance.animation_epoch.rotate_left(11)
+    } else {
+        0
+    };
+    instance.animation_seed ^ (node as u32).rotate_left(8) ^ event as u32 ^ state
+}
+
+/// The game finishes kept emitters at both an explicit request and an
+/// automatic next_state, without retiring children whose state stays put.
+fn keep_events(
+    kept: &mut Vec<Kept>,
+    node: &Node,
+    index: usize,
+    playing: &Playing,
+    time: f32,
+    instance: ModelInstance,
+    phase_time: Option<f32>,
+) {
+    let clip = &node.clips[playing.clip];
+    let elapsed = time - playing.start + playing.phase_offset;
+    let length = duration(clip);
+    for (ordinal, event) in clip.state.events.iter().enumerate() {
+        if !event.keep_particle || event.particle.is_none() {
+            continue;
+        }
+        let clock = if !event.trigger_once && clip.state.looping && length > 0. {
+            elapsed.rem_euclid(length)
+        } else {
+            elapsed
+        };
+        let event_time = (event.time - clip.state.start) / clip.state.speed;
+        let retained = if let Some(phase) = phase_time {
+            playing
+                .admitted_kept
+                .get(&ordinal)
+                .map(|origin| (phase - origin, *origin))
+        } else {
+            (clock >= event_time).then_some((clock - event_time, time - (clock - event_time)))
+        };
+        if let Some((age, origin)) = retained {
+            let mut definition = event.clone();
+            definition.time = 0.;
+            definition.trigger_once = false;
+            definition.sound = None;
+            definition.id = None;
+            kept.push(Kept {
+                source: index,
+                definition,
+                start: origin,
+                end: age,
+                seed: event_seed(instance, index, ordinal, Some(playing)),
+                key: event_key(instance, index, ordinal, Some(playing)),
+            });
+        }
+    }
+}
+
+fn pick(node: &Node, name: &str, random: &mut Random, native: bool) -> Option<usize> {
+    if native {
+        let variants = node
+            .clips
+            .iter()
+            .enumerate()
+            .filter(|(_, clip)| clip.state.name == name);
+        let count = variants.clone().count();
+        if count <= 1 {
+            return variants.clone().next().map(|(index, _)| index);
+        }
+        // Sum signed-positive native weights in i64,
+        // draw in double precision, or choose uniformly when all are zero.
+        let fraction = f64::from(random.next_word()) / 2_147_483_648.0;
+        let total: i64 = variants
+            .clone()
+            .map(|(_, clip)| i64::from(chance_weight(clip).max(0)))
+            .sum();
+        if total > 0 {
+            let target = (fraction * total as f64) as i64;
+            let mut cumulative = 0_i64;
+            for (index, clip) in variants.clone() {
+                cumulative += i64::from(chance_weight(clip).max(0));
+                if target < cumulative {
+                    return Some(index);
+                }
+            }
+        }
+        return variants
+            .clone()
+            .nth((fraction * count as f64) as usize)
+            .map(|(index, _)| index);
+    }
+    let total: f32 = node
+        .clips
+        .iter()
+        .filter(|c| c.state.name == name)
+        .map(|c| c.state.chance.max(0.0))
+        .sum();
+    if total <= 0.0 {
+        return None;
+    }
+    let mut draw = random.fraction() * total;
+    for (i, clip) in node
+        .clips
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.state.name == name)
+    {
+        draw -= clip.state.chance.max(0.0);
+        if draw <= 0.0 {
+            return Some(i);
+        }
+    }
+    None
+}
+fn duration(clip: &Clip) -> f32 {
+    clip.animation.as_ref().map_or(0.0, |a| a.duration()) / clip.state.speed.max(0.0001)
+}
+
+fn played_animation(node: &Node, clip: usize) -> bool {
+    node.clips[clip].animation.is_some() && node.native.as_ref().is_none_or(|source| source.pdxmesh)
+}
+fn chance_weight(clip: &Clip) -> i32 {
+    clip.state
+        .chance_weight
+        .unwrap_or_else(|| (f64::from(clip.state.chance.max(0.0)) * 100_000.0) as i32)
+}
+fn clip_phase(clip: &Clip, age: f32) -> f32 {
+    let Some(animation) = &clip.animation else {
+        return age * clip.state.speed + clip.state.start;
+    };
+    let length = animation.samples.saturating_sub(1).max(1) as f32 / animation.fps;
+    let phase = age * clip.state.speed + clip.state.start;
+    if clip.state.looping {
+        phase.rem_euclid(length)
+    } else {
+        phase.clamp(0.0, length)
+    }
+}
+
+fn advance_sample(node: &Node, mut sample: NativeSample, time: f32) -> NativeSample {
+    let delta = time - sample.time;
+    sample.age += delta;
+    sample.previous = sample.previous.and_then(|(old, age, weight)| {
+        let blend = node.clips[sample.clip].state.blend;
+        let weight = if blend > 0.0 {
+            weight + delta / blend
+        } else {
+            1.0
+        };
+        (weight < 1.0).then_some((old, age + delta, weight))
+    });
+    sample.time = time;
+    sample
+}
+fn sample(clip: &Clip, age: f32) -> Vec<JointPose> {
+    clip.animation.as_ref().map_or_else(Vec::new, |a| {
+        a.sample(
+            age * clip.state.speed + clip.state.start,
+            clip.state.looping,
+        )
+    })
+}
+
+impl Player {
+    pub fn new(rig: &Rig) -> Self {
+        Self {
+            nodes: (0..rig.nodes.len()).map(|_| None).collect(),
+            native_samples: vec![None; rig.nodes.len()],
+            last: -1.0,
+            phase: None,
+            requested: 0,
+            direct_state: None,
+            kept: Vec::new(),
+            event_refusals: BTreeMap::new(),
+        }
+    }
+
+    /// Replay every crossed callback before sampling the actor. Both a fresh
+    /// shifted flight and a skipped frame enter states at their callback time.
+    /// Missing states do nothing. Ordinary callbacks skip the current state;
+    /// naval callbacks force reentry.
+    /// All poses and effects still use
+    /// evaluate, shared with buildings and ordinary meshed entities.
+    pub fn evaluate_clock(
+        &mut self,
+        rig: &Rig,
+        instance: ModelInstance,
+        clock: &Clock,
+        palette: &mut [PaletteJoint],
+        events: &mut Vec<Event>,
+    ) {
+        self.evaluate_clock_inner(rig, instance, clock, palette, events, true);
+    }
+
+    /// Hidden wrappers retain explicit requests and played phases, without
+    /// admitting state events or automatic successors.
+    pub fn advance_hidden(&mut self, rig: &Rig, clock: &Clock) {
+        if let Some(phase) = clock.phase {
+            self.evaluate_clock_inner(rig, phase.instance, clock, &mut [], &mut Vec::new(), false);
+        }
+    }
+
+    /// An attached entity without a played animation is not visited through a
+    /// hidden parent. Its local phase freezes; played animation instances
+    /// advance in the separate global animation-manager pass.
+    #[cfg(test)]
+    pub fn phase_advances_hidden(&self, rig: &Rig) -> bool {
+        self.native_samples
+            .first()
+            .copied()
+            .flatten()
+            .zip(rig.nodes.first())
+            .is_some_and(|(sample, root)| played_animation(root, sample.clip))
+    }
+
+    pub fn event_refusals(&self) -> &BTreeMap<String, usize> {
+        &self.event_refusals
+    }
+
+    fn evaluate_clock_inner(
+        &mut self,
+        rig: &Rig,
+        mut instance: ModelInstance,
+        clock: &Clock,
+        palette: &mut [PaletteJoint],
+        events: &mut Vec<Event>,
+        admitted: bool,
+    ) {
+        if clock.time < self.last
+            || clock
+                .phase
+                .zip(self.phase)
+                .is_some_and(|(phase, (_, previous))| phase.time < previous)
+        {
+            *self = Self::new(rig);
+        }
+        self.event_refusals.clear();
+        let Some(root) = rig.nodes.first() else {
+            return;
+        };
+        let initial = self
+            .direct_state
+            .unwrap_or_else(|| named_stage(&root.default, None) | DIRECT);
+        let mut cursor = self.phase.unwrap_or((0.0, 0.0));
+        self.phase = clock.phase.map(|_| cursor);
+        let native_flags = instance.native_flags;
+        instance.native_flags &= !8;
+        instance.animation = initial;
+        let mut discarded = Vec::new();
+        if self.direct_state.is_none() {
+            self.evaluate_inner(
+                rig,
+                instance,
+                0.0,
+                palette,
+                &mut discarded,
+                admitted && clock.phase.is_none(),
+            );
+            self.direct_state = Some(initial);
+            discarded.clear();
+        }
+        for request in &clock.requests[self.requested..] {
+            if request.time > clock.time
+                || clock
+                    .phase
+                    .is_some_and(|phase| request.phase_time.is_some_and(|time| time > phase.time))
+            {
+                break;
+            }
+            if clock.phase.is_some() {
+                let phase_time = request.phase_time.unwrap_or(request.time);
+                self.offset_phase(
+                    rig,
+                    (phase_time - cursor.1) - (request.time - cursor.0),
+                    clock.phase.is_some_and(|phase| phase.root_advances_hidden),
+                );
+                cursor = (request.time, phase_time);
+                self.phase = Some(cursor);
+            }
+            self.evaluate_inner(
+                rig,
+                instance,
+                request.time,
+                palette,
+                &mut discarded,
+                admitted && clock.phase.is_none(),
+            );
+            let exists = root
+                .clips
+                .iter()
+                .any(|clip| clip.state.name == request.state);
+            let current = self.nodes[0]
+                .as_ref()
+                .map(|p| root.clips[p.clip].state.name.as_str());
+            if exists && (clock.phase.is_some() || current != Some(request.state.as_str())) {
+                if let Some(playing) = &mut self.nodes[0] {
+                    playing.requested.clear();
+                }
+                instance.animation = named_stage(&request.state, None) | DIRECT;
+                // Naval normal-state range belongs to the first callback,
+                // not factory default or later damage/death requests.
+                instance.native_flags = if self.requested == 0 {
+                    native_flags
+                } else {
+                    native_flags & !8
+                };
+                self.direct_state = Some(instance.animation);
+                self.evaluate_inner(
+                    rig,
+                    instance,
+                    request.time,
+                    palette,
+                    &mut discarded,
+                    admitted && clock.phase.is_none(),
+                );
+            }
+            self.requested += 1;
+            discarded.clear();
+        }
+        if let Some(phase) = clock.phase {
+            self.offset_phase(
+                rig,
+                (phase.time - cursor.1) - (clock.time - cursor.0),
+                phase.root_advances_hidden,
+            );
+            self.phase = Some((clock.time, phase.time));
+        }
+        instance.native_flags = native_flags & !8;
+        self.evaluate_inner(rig, instance, clock.time, palette, events, admitted);
+        if admitted && clock.phase.is_some() {
+            self.finish_phase(rig, instance, clock.time);
+        }
+    }
+
+    fn offset_phase(&mut self, rig: &Rig, extra: f32, root_advances: bool) {
+        for (index, playing) in self.nodes.iter_mut().enumerate() {
+            if let Some(playing) = playing
+                && ((index == 0 && root_advances)
+                    || played_animation(&rig.nodes[index], playing.clip))
+            {
+                playing.phase_offset += extra;
+            }
+        }
+    }
+
+    fn finish_phase(&mut self, rig: &Rig, instance: ModelInstance, time: f32) {
+        // The rig is parent-first. Native visits attached children in reverse
+        // order and finishes each subtree before its parent.
+        for (index, node) in rig.nodes.iter().enumerate().rev() {
+            let Some(playing) = &mut self.nodes[index] else {
+                continue;
+            };
+            let clip = &node.clips[playing.clip];
+            let age = time - playing.start + playing.phase_offset;
+            let played =
+                self.native_samples[index].filter(|sample| played_animation(node, sample.clip));
+            let finished = if let Some(sample) = played {
+                let actual = &node.clips[sample.clip];
+                let length = actual
+                    .animation
+                    .as_ref()
+                    .map_or(0.0, |animation| animation.duration());
+                clip_phase(actual, sample.age) >= length
+            } else {
+                age * clip.state.speed + clip.state.start >= duration(clip) * clip.state.speed
+            };
+            if clip.state.looping || !finished {
+                continue;
+            }
+            if clip.state.next_state.is_none() && chance_weight(clip) < 1 {
+                continue;
+            }
+            let next = clip.state.next_state.as_deref().unwrap_or(&clip.state.name);
+            let Some(next_clip) = pick(node, next, &mut playing.random, true) else {
+                continue;
+            };
+            if instance.animation & DIRECT != 0 {
+                keep_events(
+                    &mut self.kept,
+                    node,
+                    index,
+                    playing,
+                    time,
+                    instance,
+                    self.phase.map(|(_, phase)| phase),
+                );
+            }
+            playing.previous =
+                Some(played.map_or((playing.clip, age), |sample| (sample.clip, sample.age)));
+            playing.clip = next_clip;
+            playing.propagate = true;
+            playing.admitted_kept.clear();
+            playing.completed = false;
+            playing.start = time;
+            playing.event_time = self.phase.map_or(time, |(_, phase)| phase);
+            let range = node.clips[next_clip].state.random_start;
+            playing.phase_offset = if range > 0.0 {
+                playing.random.fraction() * range / node.clips[next_clip].state.speed
+            } else {
+                0.0
+            };
+            playing.cycle += 1;
+            // The setter propagates immediately, before an ancestor's own
+            // finish. Use the same bounded rig pass without effects or another
+            // automatic finish; this also refreshes retained played samples.
+            self.evaluate_inner(rig, instance, time, &mut [], &mut Vec::new(), false);
+        }
+    }
+
+    pub fn native_locals(
+        &self,
+        rig: &Rig,
+        index: usize,
+    ) -> std::io::Result<Option<super::mesh_pose::Locals>> {
+        let Some(playing) = self.native_samples[index] else {
+            return Ok(None);
+        };
+        let node = &rig.nodes[index];
+        let sample = |clip: usize, age| {
+            let clip = &node.clips[clip];
+            clip.animation
+                .as_ref()
+                .map(|a| {
+                    super::mesh_pose::sample(
+                        a,
+                        age * clip.state.speed + clip.state.start,
+                        clip.state.looping,
+                    )
+                })
+                .transpose()
+        };
+        let Some(mut locals) = sample(playing.clip, playing.age)? else {
+            return Ok(None);
+        };
+        if let Some((old, age, weight)) = playing.previous {
+            let old = sample(old, age)?.ok_or_else(|| {
+                std::io::Error::other("native crossfade source animation unavailable")
+            })?;
+            if old.len() < locals.len() {
+                return Err(std::io::Error::other(
+                    "native crossfade source has fewer records than destination",
+                ));
+            }
+            for (new, old) in locals.iter_mut().zip(old) {
+                *new = super::mesh_pose::blend(old, *new, weight);
+            }
+        }
+        Ok(Some(super::mesh_pose::Locals {
+            poses: locals,
+            crossfade: playing.previous.is_some(),
+        }))
+    }
+
+    /// The root animation's current clip phase, not entity age.
+    pub fn root_clip_phase(&self, rig: &Rig) -> f64 {
+        let Some((sample, root)) = self
+            .native_samples
+            .first()
+            .copied()
+            .flatten()
+            .zip(rig.nodes.first())
+        else {
+            return 0.0;
+        };
+        let clip = &root.clips[sample.clip];
+        if !played_animation(root, sample.clip) {
+            return 0.0;
+        }
+        let Some(animation) = &clip.animation else {
+            return 0.0;
+        };
+        if !animation.fps.is_finite() || animation.fps <= 0.0 || animation.samples == 0 {
+            return 0.0;
+        }
+        let duration =
+            f64::from(animation.samples.saturating_sub(1).max(1)) / f64::from(animation.fps);
+        let phase = f64::from(sample.age * clip.state.speed + clip.state.start);
+        if clip.state.looping {
+            phase.rem_euclid(duration)
+        } else {
+            phase.clamp(0.0, duration)
+        }
+    }
+    /// Work is bounded by the current rig and elapsed state boundaries. The
+    /// caller discards players for despawned instances, never retaining replay history.
+    pub fn evaluate(
+        &mut self,
+        rig: &Rig,
+        instance: ModelInstance,
+        time: f32,
+        palette: &mut [PaletteJoint],
+        events: &mut Vec<Event>,
+    ) {
+        self.event_refusals.clear();
+        self.evaluate_inner(rig, instance, time, palette, events, true);
+    }
+
+    fn evaluate_inner(
+        &mut self,
+        rig: &Rig,
+        instance: ModelInstance,
+        time: f32,
+        palette: &mut [PaletteJoint],
+        events: &mut Vec<Event>,
+        admitted: bool,
+    ) {
+        let event_start = events.len();
+        if time < self.last {
+            self.nodes.iter_mut().for_each(|n| *n = None);
+            self.native_samples.fill(None);
+        }
+        self.last = time;
+        let mut worlds: Vec<Vec<Transform>> = Vec::with_capacity(rig.nodes.len());
+        let mut placements = Vec::<Transform>::with_capacity(rig.nodes.len());
+        let mut states: Vec<Option<(usize, f32, u64, bool)>> = Vec::with_capacity(rig.nodes.len());
+        for (index, node) in rig.nodes.iter().enumerate() {
+            let timeline = self.phase.map_or(time, |(_, phase)| phase);
+            if node.native.as_ref().is_some_and(|source| source.pdxmesh)
+                && let Some(sample) =
+                    self.native_samples[index].filter(|sample| played_animation(node, sample.clip))
+            {
+                self.native_samples[index] = Some(advance_sample(node, sample, timeline));
+            }
+            let parent_state = node.parent.as_ref().and_then(|(parent, _, handle)| {
+                let (clip, age, cycle, entered) = states[*parent]?;
+                let state = &rig.nodes[*parent].clips[clip].state;
+                let name = state
+                    .propagate
+                    .iter()
+                    .find(|(h, _)| h == handle)
+                    .or_else(|| state.propagate.iter().find(|(h, _)| h == "all"))
+                    .map_or(state.name.as_str(), |(_, name)| name.as_str());
+                Some((
+                    name.to_owned(),
+                    age,
+                    cycle,
+                    entered,
+                    age * state.speed + state.start,
+                ))
+            });
+            let requested = if index == 0 {
+                state_name(instance.animation).to_owned()
+            } else if node.follows_parent {
+                parent_state
+                    .as_ref()
+                    .map_or_else(|| node.default.clone(), |p| p.0.clone())
+            } else {
+                node.default.clone()
+            };
+            let exists = node.clips.iter().any(|c| c.state.name == requested);
+            let chosen = if exists {
+                requested
+            } else if (self.phase.is_some() || node.native.is_some())
+                && index != 0
+                && let Some(playing) = &self.nodes[index]
+            {
+                playing.requested.clone()
+            } else {
+                node.default.clone()
+            };
+            let stage =
+                (index == 0 && instance.animation >= NAMED && instance.animation & DIRECT == 0)
+                    .then(|| stage_intro(instance.animation));
+            let (changed, chosen) = match (stage, &self.nodes[index]) {
+                // A stage asks for nothing while the entity
+                // is in its state or its intro, then for the authored intro,
+                // or for the state when the entity is fresh or the type
+                // authors no intro. An intro the entity lacks is still asked
+                // for, but a missing state leaves the entity unchanged because
+                // the default request flags select no alternate action.
+                (Some(intro), Some(playing)) => {
+                    let current = node.clips[playing.clip].state.name.as_str();
+                    let settled = current == chosen || Some(current) == intro;
+                    match intro {
+                        _ if settled => (false, chosen),
+                        None => (true, chosen),
+                        Some(intro) if node.clips.iter().any(|c| c.state.name == intro) => {
+                            (true, intro.to_owned())
+                        }
+                        Some(_) => (false, chosen),
+                    }
+                }
+                (Some(_), None) => (true, chosen),
+                // A same-state request returns before finishing live events.
+                (None, playing) => (
+                    playing.as_ref().is_none_or(|p| p.requested != chosen)
+                        || (self.phase.is_some()
+                            && node.follows_parent
+                            && exists
+                            && parent_state.as_ref().is_some_and(|parent| parent.3)),
+                    chosen,
+                ),
+            };
+            if changed {
+                if instance.animation & DIRECT != 0
+                    && let Some(playing) = &self.nodes[index]
+                {
+                    keep_events(
+                        &mut self.kept,
+                        node,
+                        index,
+                        playing,
+                        time,
+                        instance,
+                        self.phase.map(|(_, phase)| phase),
+                    );
+                }
+                let seed =
+                    SEED ^ instance.animation_seed ^ (index as u32).wrapping_mul(0x9e37_79b9);
+                let mut random = self.nodes[index]
+                    .as_ref()
+                    .map_or_else(|| Random::new(seed), |p| p.random.clone());
+                let previous = if node.native.as_ref().is_some_and(|source| source.pdxmesh) {
+                    self.native_samples[index]
+                        .filter(|sample| played_animation(node, sample.clip))
+                        .map(|sample| (sample.clip, sample.age))
+                } else {
+                    self.nodes[index]
+                        .as_ref()
+                        .map(|p| (p.clip, time - p.start + p.phase_offset))
+                };
+                self.nodes[index] =
+                    pick(node, &chosen, &mut random, self.phase.is_some()).map(|clip| {
+                        // Idle has no random start: the request keeps its default
+                        // zero range, so initialization falls back to the
+                        // authored `animation_random_start_time`, which no shipped
+                        // entity sets. The game still shows neighbouring figures in
+                        // different poses, so the spread is their unrecorded
+                        // state-entry times. This five-second range is that
+                        // stand-in, not a native constant.
+                        let random_range = if index == 0
+                            && instance.native_flags & 8 != 0
+                            && instance.animation_phase > 0.0
+                        {
+                            instance.animation_phase
+                        } else if index == 0 && matches!(instance.animation, IDLE | DEFEND) {
+                            5.0
+                        } else {
+                            node.clips[clip].state.random_start
+                        };
+                        let random_range = if self.phase.is_some() {
+                            if random_range > 0.0 {
+                                random_range
+                            } else {
+                                0.0
+                            }
+                        } else {
+                            random_range
+                        };
+                        // Unknown combat entry time: deterministic distribution over its clip.
+                        let phase = if self.phase.is_some() && random_range == 0.0 {
+                            0.0
+                        } else if previous.is_none()
+                            && index == 0
+                            && matches!(instance.animation, ATTACK | SUPPORT)
+                        {
+                            random.fraction() * duration(&node.clips[clip])
+                        } else {
+                            random.fraction() * random_range
+                        };
+                        let start = if self.phase.is_some() {
+                            time
+                        } else if previous.is_none()
+                            && instance.animation_epoch == 0
+                            && !matches!(
+                                instance.animation,
+                                BUILDING_IDLE | BUILDING_DAMAGED | AMBIENT_IDLE
+                            )
+                            && instance.animation < NAMED
+                        {
+                            -phase
+                        } else {
+                            time - if instance.animation & DIRECT != 0 {
+                                phase / node.clips[clip].state.speed
+                            } else {
+                                phase
+                            }
+                        };
+                        Playing {
+                            requested: chosen,
+                            clip,
+                            // A building or a named stage enters its state on
+                            // the viewer's wall clock, advancing by each frame's delta.
+                            start,
+                            event_time: self.phase.map_or(start, |(_, phase)| phase),
+                            previous,
+                            admitted_kept: BTreeMap::new(),
+                            propagate: self.phase.is_some(),
+                            phase_offset: if self.phase.is_some() {
+                                phase / node.clips[clip].state.speed
+                            } else {
+                                0.0
+                            },
+                            random,
+                            cycle: 0,
+                            completed: false,
+                        }
+                    });
+            }
+            let mut state_info = None;
+            let mut pose = Vec::new();
+            if let Some(playing) = &mut self.nodes[index] {
+                let entered = std::mem::take(&mut playing.propagate);
+                let mut age = time - playing.start + playing.phase_offset;
+                if index == 0 && instance.animation == TRAIN {
+                    age = instance.animation_phase + time;
+                }
+                let has_played = played_animation(node, playing.clip)
+                    || self.native_samples[index]
+                        .is_some_and(|sample| played_animation(node, sample.clip));
+                if admitted
+                    && node.follows_parent
+                    && let Some((_, parent_age, cycle, _, parent_phase)) = &parent_state
+                    && (self.phase.is_none() || !has_played)
+                {
+                    age = if self.phase.is_some() {
+                        let state = &node.clips[playing.clip].state;
+                        (*parent_phase - state.start) / state.speed
+                    } else {
+                        *parent_age
+                    };
+                    if self.phase.is_some() {
+                        playing.phase_offset = age - (time - playing.start);
+                    }
+                    playing.cycle = *cycle;
+                } else if admitted && self.phase.is_none() {
+                    // A looping state repeats its clip; nonlooping variants re-enter
+                    // next_state (or the requested state) and redraw the authored chance.
+                    for _ in 0..128 {
+                        let clip = &node.clips[playing.clip];
+                        let length = duration(clip);
+                        if clip.state.looping || length <= 0.0 || age < length {
+                            break;
+                        }
+                        let next = clip
+                            .state
+                            .next_state
+                            .as_deref()
+                            .unwrap_or(&playing.requested);
+                        let Some(next_clip) = pick(node, next, &mut playing.random, false) else {
+                            break;
+                        };
+                        if instance.animation & DIRECT != 0 {
+                            keep_events(
+                                &mut self.kept,
+                                node,
+                                index,
+                                playing,
+                                playing.start + length,
+                                instance,
+                                None,
+                            );
+                        }
+                        playing.previous = Some((playing.clip, length));
+                        playing.clip = next_clip;
+                        playing.start += length;
+                        playing.event_time = playing.start;
+                        playing.cycle += 1;
+                        playing.completed = true;
+                        age = time - playing.start + playing.phase_offset;
+                    }
+                }
+                let clip = &node.clips[playing.clip];
+                let length = duration(clip);
+                let cycle = if clip.state.looping && length > 0.0 {
+                    (age / length).floor().max(0.0) as u64
+                } else {
+                    playing.cycle
+                };
+                let mut local_age = if self.phase.is_some() && clip.animation.is_some() {
+                    (clip_phase(clip, age) - clip.state.start) / clip.state.speed
+                } else if clip.state.looping && length > 0.0 {
+                    age.rem_euclid(length)
+                } else {
+                    age
+                };
+                let native_previous = playing.previous.and_then(|(old, old_age)| {
+                    let elapsed = self.phase.map_or(time - playing.start, |(_, phase)| {
+                        phase - playing.event_time
+                    });
+                    let blend = clip.state.blend;
+                    let weight = if blend > 0.0 { elapsed / blend } else { 1.0 };
+                    (weight < 1.0
+                        && node.clips[old].animation.is_some()
+                        && clip.animation.is_some())
+                    .then_some((
+                        old,
+                        old_age + if self.phase.is_some() { elapsed } else { 0.0 },
+                        weight,
+                    ))
+                });
+                // A non-null animationless state changes entity events, but
+                // The game leaves the actual played pdxmesh clip untouched.
+                let retained = (clip.animation.is_none()
+                    && node.native.as_ref().is_some_and(|source| source.pdxmesh))
+                .then(|| {
+                    self.native_samples[index].filter(|sample| played_animation(node, sample.clip))
+                })
+                .flatten()
+                .map(|sample| advance_sample(node, sample, timeline));
+                let native = retained.unwrap_or(NativeSample {
+                    clip: playing.clip,
+                    age,
+                    time: timeline,
+                    previous: native_previous,
+                });
+                if retained.is_some() {
+                    local_age = (clip_phase(&node.clips[native.clip], native.age)
+                        - clip.state.start)
+                        / clip.state.speed;
+                }
+                self.native_samples[index] = Some(native);
+                if !admitted {
+                    states.push(Some((playing.clip, local_age, cycle, entered)));
+                    continue;
+                }
+                let played = &node.clips[native.clip];
+                let mut locals = sample(played, native.age);
+                if let Some((old, old_age, t)) = native.previous
+                    && let (Some(old_animation), Some(animation)) =
+                        (&node.clips[old].animation, &played.animation)
+                {
+                    let old_values = sample(&node.clips[old], old_age);
+                    let old_by_name: BTreeMap<_, _> = old_animation
+                        .joints
+                        .iter()
+                        .zip(old_values)
+                        .map(|(j, v)| (j.name.as_str(), v))
+                        .collect();
+                    for (joint, value) in animation.joints.iter().zip(&mut locals) {
+                        if let Some(old) = old_by_name.get(joint.name.as_str()) {
+                            *value = old.blend(*value, t);
+                        }
+                    }
+                }
+                if let Some(animation) = &played.animation {
+                    pose = node.mesh.sampled_pose(animation, &locals);
+                }
+                state_info = Some((playing.clip, local_age, cycle, entered));
+            } else {
+                self.native_samples[index] = None;
+            }
+            if !admitted {
+                states.push(None);
+                continue;
+            }
+            if pose.is_empty() {
+                let count = node
+                    .mesh
+                    .skeleton
+                    .iter()
+                    .map(|j| j.index as usize + 1)
+                    .max()
+                    .unwrap_or(0);
+                pose = vec![Transform::IDENTITY; count];
+                for joint in &node.mesh.skeleton {
+                    pose[joint.index as usize] = node
+                        .mesh
+                        .bind_pose(&joint.name)
+                        .unwrap_or(Transform::IDENTITY);
+                }
+            }
+            let parent = node
+                .parent
+                .as_ref()
+                .map_or(Transform::IDENTITY, |(parent, joint, _)| {
+                    let joint = rig.nodes[*parent]
+                        .mesh
+                        .joint(joint)
+                        .and_then(|j| worlds[*parent].get(j.index as usize))
+                        .copied()
+                        .or_else(|| {
+                            // A meshless parent's locator still places children.
+                            rig.nodes[*parent]
+                                .locators
+                                .get(joint)
+                                .map(|(local, _)| *local)
+                        })
+                        .unwrap_or(Transform::IDENTITY);
+                    placements[*parent].compose(&joint)
+                });
+            let own = parent.compose(&Transform::from_trs(
+                [0.0; 3],
+                [0.0, 0.0, 0.0, 1.0],
+                node.scale,
+            ));
+            palette[node.rigid as usize - rig.start] = PaletteJoint::from_transform(&own);
+            if let Some(base) = node.skin_base {
+                for joint in &node.mesh.skeleton {
+                    let matrix = joint
+                        .inverse_bind
+                        .map(|inverse| pose[joint.index as usize].compose(&inverse))
+                        .filter(Transform::is_finite)
+                        .unwrap_or(Transform::IDENTITY);
+                    palette[base as usize + joint.index as usize - rig.start] =
+                        PaletteJoint::from_transform(&own.compose(&matrix));
+                }
+            }
+            if let Some((clip, age, _cycle, _entered)) = state_info {
+                let mut authored = node.clips[clip]
+                    .state
+                    .events
+                    .iter()
+                    .map(|event| (event, age, None, None, None))
+                    .collect::<Vec<_>>();
+                // Before entering the spline's visible interval, the game
+                // sends move; its keep_particle exhaust survives
+                // the switch to idle. Reconstruct that entry from
+                // the same seeded departure that places the locomotive.
+                if index == 0 && instance.animation == TRAIN {
+                    authored.extend(
+                        node.clips
+                            .iter()
+                            .filter(|c| c.state.name == "move")
+                            .flat_map(|c| c.state.events.iter())
+                            .filter(|e| e.keep_particle)
+                            .map(|e| (e, time + instance.animation_phase, None, None, None)),
+                    );
+                }
+                authored.extend(
+                    self.kept
+                        .iter()
+                        .filter(|kept| kept.source == index)
+                        .map(|kept| {
+                            (
+                                &kept.definition,
+                                self.phase.map_or(time, |(_, phase)| phase) - kept.start,
+                                Some(kept.end),
+                                Some(kept.seed),
+                                Some(kept.key),
+                            )
+                        }),
+                );
+                for (event_index, (event, age, emission_end, seed, key)) in
+                    authored.into_iter().enumerate()
+                {
+                    if self.phase.is_some()
+                        && event.trigger_once
+                        && emission_end.is_none()
+                        && let Some(playing) = &self.nodes[index]
+                        && time - playing.start > duration(&node.clips[clip])
+                        && (!self.native_samples[index]
+                            .is_some_and(|sample| played_animation(node, sample.clip))
+                            || node.clips[clip].state.looping)
+                    {
+                        continue;
+                    }
+                    let event_clock = if self.phase.is_some() && emission_end.is_none() {
+                        age
+                    } else if event.trigger_once {
+                        if instance.animation_epoch != 0
+                            || matches!(
+                                instance.animation,
+                                BUILDING_IDLE | BUILDING_DAMAGED | AMBIENT_IDLE
+                            )
+                            || instance.animation >= NAMED
+                        {
+                            self.nodes[index]
+                                .as_ref()
+                                .map_or(age, |p| time - p.start + p.phase_offset)
+                        } else {
+                            time + instance.animation_phase
+                        }
+                    } else {
+                        age
+                    };
+                    // Compare events with clip phase, while particle age uses
+                    // elapsed entity time.
+                    let event_time = if instance.animation & DIRECT != 0 && emission_end.is_none() {
+                        (event.time - node.clips[clip].state.start) / node.clips[clip].state.speed
+                    } else {
+                        event.time
+                    };
+                    if event_clock < event_time {
+                        continue;
+                    }
+                    let local = if node.native.is_some() {
+                        // Resolve native packets after every actor's current
+                        // sample is available, with caller-specific precedence.
+                        Transform::IDENTITY
+                    } else {
+                        node.mesh
+                            .joint(&event.node)
+                            .and_then(|j| pose.get(j.index as usize))
+                            .map(|joint| joint_event_local(joint, node.mesh_scale))
+                            .or_else(|| {
+                                let (locator, joint) = node.locators.get(&event.node)?;
+                                let joint = joint
+                                    .as_deref()
+                                    .and_then(|name| node.mesh.joint(name))
+                                    .and_then(|joint| pose.get(joint.index as usize));
+                                Some(locator_local(locator, joint))
+                            })
+                            .or_else(|| {
+                                node.mesh
+                                    .bind_pose(&event.node)
+                                    .map(|joint| joint_event_local(&joint, node.mesh_scale))
+                            })
+                            .unwrap_or(Transform::IDENTITY)
+                    };
+                    let transform = own.compose(&local);
+                    if node.native.is_none() && transform.uniform_scale() <= 1e-6 {
+                        continue;
+                    }
+                    events.push(Event {
+                        definition: event.clone(),
+                        transform: world_transform(instance).compose(&transform),
+                        age: event_clock - event_time,
+                        seed: seed.unwrap_or_else(|| {
+                            event_seed(instance, index, event_index, self.nodes[index].as_ref())
+                        }),
+                        key: key.unwrap_or_else(|| {
+                            event_key(instance, index, event_index, self.nodes[index].as_ref())
+                        }),
+                        emission_end,
+                        hidden: false,
+                    });
+                }
+            }
+            states.push(state_info);
+            placements.push(own);
+            worlds.push(pose);
+        }
+        if admitted
+            && events[event_start..]
+                .iter()
+                .any(|event| rig.nodes[event.key.node].native.is_some())
+        {
+            self.resolve_events(rig, instance, event_start, events);
+        }
+        if admitted && let Some((_, phase)) = self.phase {
+            for event in &events[event_start..] {
+                if event.definition.keep_particle
+                    && event.definition.particle.is_some()
+                    && event.emission_end.is_none()
+                    && let Some(playing) = &mut self.nodes[event.key.node]
+                {
+                    playing
+                        .admitted_kept
+                        .insert(event.key.event, phase - event.age);
+                }
+            }
+        }
+    }
+
+    fn resolve_events(
+        &mut self,
+        rig: &Rig,
+        instance: ModelInstance,
+        start: usize,
+        events: &mut Vec<Event>,
+    ) {
+        use super::mesh_pose::{self, Binding, LookupMode};
+        let actors = mesh_pose::actors(rig, Some(self), false);
+        let mut ordinal = 0;
+        events.retain_mut(|event| {
+            let current = ordinal;
+            ordinal += 1;
+            if current < start { return true; }
+            let index = event.key.node;
+            let node = &rig.nodes[index];
+            let Some(source) = &node.native else { return true; };
+            let resolve = || {
+                let actor = &actors[index];
+                let local = match mesh_pose::lookup(source, &event.definition.node, LookupMode::Event) {
+                    None => mesh_pose::IDENTITY,
+                    Some(binding) => {
+                        let no_palette = matches!(binding, Binding::Locator(locator) if locator.parent.is_none())
+                            || self.native_samples[index].is_none_or(|sample| !played_animation(node, sample.clip));
+                        binding.local(if no_palette { Ok(None) } else {
+                            actor.pose.as_ref().map(|pose| Some(pose.joints.as_slice())).map_err(Clone::clone)
+                        })?
+                    }
+                };
+                let matrix = mesh_pose::multiply(*actor.world.as_ref().map_err(Clone::clone)?, local);
+                Ok::<_, String>(Transform {
+                    basis: std::array::from_fn(|column| std::array::from_fn(|row| matrix[column][row])),
+                    translation: [matrix[3][0], matrix[3][1], matrix[3][2]],
+                })
+            };
+            match resolve() {
+                Ok(transform) if transform.is_finite() => {
+                    event.transform = world_transform(instance).compose(&transform);
+                    event.transform.uniform_scale() > 1e-6
+                }
+                result => {
+                    let why = result.err().unwrap_or_else(|| "native event transform is nonfinite".to_owned());
+                    *self.event_refusals.entry(format!("refused state event node {:?}: {why}", event.definition.node)).or_default() += 1;
+                    false
+                }
+            }
+        });
+    }
+}
+
+pub fn world_transform(instance: ModelInstance) -> Transform {
+    // The game preserves the aircraft caller's full route/rig basis, including roll.
+    if instance.native_flags & 4 != 0 {
+        return Transform {
+            basis: instance
+                .native_basis
+                .map(|axis| axis.map(|v| v * instance.scale)),
+            translation: instance.position,
+        };
+    }
+    let (s, c) = instance.rotation.sin_cos();
+    let (sp, cp) = instance.pitch.sin_cos();
+    Transform {
+        basis: [[c, 0.0, s], [-s * sp, cp, c * sp], [-s * cp, -sp, c * cp]],
+        translation: instance.position,
+    }
+    .compose(&Transform::from_trs(
+        [0.0; 3],
+        [0.0, 0.0, 0.0, 1.0],
+        instance.scale,
+    ))
+}
+
+/// A raid unit's entity for tests: a cruise state, and a dive stage whose
+/// intro chains into it, each clip two seconds long.
+#[cfg(any(test, feature = "test-support"))]
+pub fn stage_rig(dive_intro: bool) -> Rig {
+    let mut animation = mesh::Animation::default();
+    animation.fps = 1.0;
+    animation.samples = 3;
+    let animation = Arc::new(animation);
+    let clip = |name: &str, looping: bool, next: Option<&str>| Clip {
+        state: EntityState {
+            name: name.into(),
+            chance: 1.0,
+            speed: 1.0,
+            looping,
+            next_state: next.map(str::to_owned),
+            ..EntityState::default()
+        },
+        animation: Some(Arc::clone(&animation)),
+    };
+    let mut clips = vec![clip("cruise", true, None), clip("dive", true, None)];
+    if dive_intro {
+        clips.push(clip("dive_intro", false, Some("dive")));
+    }
+    Rig {
+        nodes: vec![Node {
+            mesh: Arc::new(mesh::Mesh::default()),
+            native: None,
+            clips,
+            default: "cruise".into(),
+            follows_parent: false,
+            parent: None,
+            scale: 1.0,
+            mesh_scale: 1.0,
+            skin_base: None,
+            rigid: 0,
+            locators: BTreeMap::new(),
+        }],
+        start: 0,
+        end: 1,
+    }
+}
+
+impl Player {
+    /// The root's played animation as an owner that retires its entity at the
+    /// end of the root clip reads it: the clip's play position since the root
+    /// entered it, and its animation's length, both in animation seconds.
+    /// `None` when the root plays no animation: such an owner reads zero
+    /// against zero and retires the entity.
+    pub fn root_play_position(&self, rig: &Rig) -> Option<(f32, f32)> {
+        let node = rig.nodes.first()?;
+        let playing = self.nodes.first()?.as_ref()?;
+        let (clip, age) = match self.native_samples.first().copied().flatten() {
+            Some(sample) => (sample.clip, sample.age),
+            None => (
+                playing.clip,
+                self.last - playing.start + playing.phase_offset,
+            ),
+        };
+        if !played_animation(node, clip) {
+            return None;
+        }
+        let clip = &node.clips[clip];
+        let length = clip.animation.as_ref()?.duration();
+        // A clip that ended and entered its automatic successor between two
+        // reads has reached its length, whatever the successor now plays.
+        if playing.completed {
+            return Some((length, length));
+        }
+        Some((age.max(0.0) * clip.state.speed + clip.state.start, length))
+    }
+
+    /// Current root clip, phase entry time, RNG draw count and automatic cycle.
+    /// Getter-only integration fixtures can prove they do not admit setters.
+    #[cfg(test)]
+    pub fn root_entry(&self) -> Option<(usize, f32, u32, u64)> {
+        let playing = self.nodes.first()?.as_ref()?;
+        Some((
+            playing.clip,
+            playing.event_time,
+            playing.random.index,
+            playing.cycle,
+        ))
+    }
+
+    /// The state its root node plays, for tests.
+    #[cfg(test)]
+    pub fn root_playing<'r>(&self, rig: &'r Rig) -> Option<&'r str> {
+        let playing = self.nodes.first()?.as_ref()?;
+        Some(rig.nodes[0].clips[playing.clip].state.name.as_str())
+    }
+}
+
+/// Evaluates `player` for a root request at `time` and names the state its
+/// root node then plays.
+#[cfg(any(test, feature = "test-support"))]
+pub fn root_state(player: &mut Player, rig: &Rig, animation: u32, time: f32) -> String {
+    let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];
+    let instance = ModelInstance {
+        animation,
+        animation_seed: 7,
+        scale: 1.0,
+        ..ModelInstance::default()
+    };
+    player.evaluate(rig, instance, time, &mut palette, &mut Vec::new());
+    player.nodes[0]
+        .as_ref()
+        .map_or_else(String::new, |playing| {
+            rig.nodes[0].clips[playing.clip].state.name.clone()
+        })
+}
+
+#[cfg(test)]
+mod naval_clock_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aircraft_callbacks_allow_automatic_states_and_finish_kept_events() {
+        let mut rig = stage_rig(true);
+        rig.nodes[0].clips[2].state.events.push(mesh::EntityEvent {
+            time: 0.1,
+            particle: Some("drop".into()),
+            keep_particle: true,
+            ..Default::default()
+        });
+        let mut player = Player::new(&rig);
+        let mut palette = [PaletteJoint::IDENTITY];
+        let instance = ModelInstance {
+            scale: 1.,
+            animation_seed: 7,
+            ..Default::default()
+        };
+        let mut clock = Clock {
+            time: 1.2,
+            phase: None,
+            requests: Arc::new(vec![
+                Request {
+                    time: 1.,
+                    phase_time: None,
+                    state: "dive_intro".into(),
+                },
+                Request {
+                    time: 4.,
+                    phase_time: None,
+                    state: "dive".into(),
+                },
+                Request {
+                    time: 4.1,
+                    phase_time: None,
+                    state: "missing".into(),
+                },
+            ]),
+        };
+        let mut events = Vec::new();
+        player.evaluate_clock(&rig, instance, &clock, &mut palette, &mut events);
+        assert_eq!(player.root_playing(&rig), Some("dive_intro"));
+        assert!((events[0].age - 0.1).abs() < 1e-5);
+        clock.time = 4.2;
+        events.clear();
+        player.evaluate_clock(&rig, instance, &clock, &mut palette, &mut events);
+        assert_eq!(player.root_playing(&rig), Some("dive"));
+        assert_eq!(player.nodes[0].as_ref().unwrap().start, 3.);
+        assert_eq!(events.len(), 1);
+        assert!((events[0].age - 3.1).abs() < 1e-5);
+        assert!((events[0].emission_end.unwrap() - 1.9).abs() < 1e-5);
+    }
+
+    fn building_rig() -> Rig {
+        let clip = |name: &str, events| Clip {
+            state: EntityState {
+                name: name.into(),
+                chance: 1.0,
+                speed: 1.0,
+                events,
+                ..EntityState::default()
+            },
+            animation: None,
+        };
+        Rig {
+            nodes: vec![Node {
+                native: None,
+                mesh: Arc::new(mesh::Mesh::default()),
+                clips: vec![
+                    clip("idle", Vec::new()),
+                    clip(
+                        "damaged",
+                        vec![mesh::EntityEvent {
+                            time: 0.1,
+                            particle: Some("building_damaged_particle".into()),
+                            trigger_once: true,
+                            ..mesh::EntityEvent::default()
+                        }],
+                    ),
+                ],
+                default: "idle".into(),
+                follows_parent: false,
+                parent: None,
+                scale: 1.0,
+                mesh_scale: 1.0,
+                skin_base: None,
+                rigid: 0,
+                locators: BTreeMap::new(),
+            }],
+            start: 0,
+            end: 1,
+        }
+    }
+
+    #[test]
+    fn a_joint_event_keeps_the_joint_position_but_not_the_mesh_scale() {
+        let mesh_scale = 0.14;
+        let own = Transform::from_trs([0.0; 3], [0.0, 0.0, 0.0, 1.0], 0.8 * mesh_scale);
+        let joint = Transform::from_trs([0.0, 10.0, 0.0], [0.0, 0.0, 0.0, 1.0], 1.0);
+        let world = own.compose(&joint_event_local(&joint, mesh_scale));
+        let at = world.transform_point([0.0; 3]);
+        assert!((at[1] - 10.0 * 0.8 * mesh_scale).abs() < 1e-5, "{at:?}");
+        assert!((world.uniform_scale() - 0.8).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_locator_follows_its_parent_joint_pose() {
+        let mut locator = Transform::IDENTITY;
+        locator.translation = [0.0, 1.0, 0.0];
+        let joint = Transform::from_trs([5.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], 1.0);
+        assert_eq!(
+            locator_local(&locator, Some(&joint)).transform_point([0.0; 3]),
+            [5.0, 1.0, 0.0]
+        );
+        assert_eq!(
+            locator_local(&locator, None).transform_point([0.0; 3]),
+            [0.0, 1.0, 0.0],
+            "a joint the skeleton lacks leaves the locator in entity space"
+        );
+    }
+
+    #[test]
+    fn building_damage_event_uses_state_entry_and_repair_stops_it() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let rig = building_rig();
+        let mut player = Player::new(&rig);
+        let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];
+        let mut events = Vec::new();
+        let mut instance = ModelInstance {
+            animation: BUILDING_IDLE,
+            animation_seed: 81,
+            scale: 1.0,
+            ..ModelInstance::default()
+        };
+        player.evaluate(&rig, instance, 50.0, &mut palette, &mut events);
+        assert_eq!(player.nodes[0].as_ref().unwrap().start, 50.0);
+        assert!(events.is_empty());
+
+        instance.animation = BUILDING_DAMAGED;
+        player.evaluate(&rig, instance, 60.0, &mut palette, &mut events);
+        assert!(events.is_empty());
+        player.evaluate(&rig, instance, 60.2, &mut palette, &mut events);
+        assert_eq!(events.len(), 1);
+        assert!((events[0].age - 0.1).abs() < 0.00001);
+
+        events.clear();
+        instance.animation = BUILDING_IDLE;
+        player.evaluate(&rig, instance, 61.0, &mut palette, &mut events);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn newly_created_damaged_building_does_not_use_the_global_elapsed_clock() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let rig = building_rig();
+        let mut player = Player::new(&rig);
+        let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];
+        let mut events = Vec::new();
+        let instance = ModelInstance {
+            animation: BUILDING_DAMAGED,
+            scale: 1.0,
+            ..ModelInstance::default()
+        };
+        player.evaluate(&rig, instance, 120.0, &mut palette, &mut events);
+        assert!(events.is_empty());
+        player.evaluate(&rig, instance, 120.2, &mut palette, &mut events);
+        assert_eq!(events.len(), 1);
+        assert!((events[0].age - 0.1).abs() < 0.00001);
+    }
+
+    fn playing_state<'r>(player: &Player, rig: &'r Rig) -> &'r str {
+        let playing = player.nodes[0].as_ref().expect("the root node plays");
+        &rig.nodes[0].clips[playing.clip].state.name
+    }
+
+    fn raid_unit(stage: u32) -> ModelInstance {
+        ModelInstance {
+            animation: stage,
+            animation_seed: 7,
+            scale: 1.0,
+            ..ModelInstance::default()
+        }
+    }
+
+    #[test]
+    fn a_stage_crossed_during_playback_plays_its_intro_then_its_state() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let rig = stage_rig(true);
+        let mut player = Player::new(&rig);
+        let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];
+        let mut events = Vec::new();
+        let cruise = raid_unit(named_stage("cruise", None));
+        let dive = raid_unit(named_stage("dive", Some("dive_intro")));
+        player.evaluate(&rig, cruise, 10.0, &mut palette, &mut events);
+        assert_eq!(playing_state(&player, &rig), "cruise");
+        // The wall clock, not the replay hour, runs the intro.
+        player.evaluate(&rig, dive, 11.0, &mut palette, &mut events);
+        assert_eq!(playing_state(&player, &rig), "dive_intro");
+        assert_eq!(player.nodes[0].as_ref().unwrap().start, 11.0);
+        player.evaluate(&rig, dive, 12.9, &mut palette, &mut events);
+        assert_eq!(playing_state(&player, &rig), "dive_intro");
+        // The intro's `next_state` takes it into the stage's state, which
+        // then holds: a stage asks for nothing while its state plays.
+        player.evaluate(&rig, dive, 13.1, &mut palette, &mut events);
+        assert_eq!(playing_state(&player, &rig), "dive");
+        player.evaluate(&rig, dive, 30.0, &mut palette, &mut events);
+        assert_eq!(playing_state(&player, &rig), "dive");
+    }
+
+    #[test]
+    fn a_fresh_entity_mid_stage_shows_the_state_from_its_own_entry() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        // A first placement, a seek or a dump creates a fresh arrow,
+        // which requests
+        // the state, not the intro.
+        let rig = stage_rig(true);
+        let mut player = Player::new(&rig);
+        let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];
+        let mut events = Vec::new();
+        let dive = raid_unit(named_stage("dive", Some("dive_intro")));
+        player.evaluate(&rig, dive, 50.0, &mut palette, &mut events);
+        assert_eq!(playing_state(&player, &rig), "dive");
+        assert_eq!(player.nodes[0].as_ref().unwrap().start, 50.0);
+    }
+
+    #[test]
+    fn a_stage_whose_intro_the_entity_lacks_keeps_the_current_state() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let rig = stage_rig(false);
+        let mut player = Player::new(&rig);
+        let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];
+        let mut events = Vec::new();
+        player.evaluate(
+            &rig,
+            raid_unit(named_stage("cruise", None)),
+            10.0,
+            &mut palette,
+            &mut events,
+        );
+        // The failed intro request changes nothing, frame after frame.
+        let dive = raid_unit(named_stage("dive", Some("dive_intro")));
+        player.evaluate(&rig, dive, 11.0, &mut palette, &mut events);
+        assert_eq!(playing_state(&player, &rig), "cruise");
+        assert_eq!(player.nodes[0].as_ref().unwrap().start, 10.0);
+        player.evaluate(&rig, dive, 30.0, &mut palette, &mut events);
+        assert_eq!(playing_state(&player, &rig), "cruise");
+        // A type that authors no intro asks for the state itself.
+        let plain = raid_unit(named_stage("dive", None));
+        player.evaluate(&rig, plain, 31.0, &mut palette, &mut events);
+        assert_eq!(playing_state(&player, &rig), "dive");
+        // A fresh entity is asked for the state, intro or not.
+        let mut fresh = Player::new(&rig);
+        fresh.evaluate(&rig, dive, 40.0, &mut palette, &mut events);
+        assert_eq!(playing_state(&fresh, &rig), "dive");
+        assert_eq!(stage_intro(dive.animation), Some("dive_intro"));
+        assert_eq!(state_name(dive.animation), "dive");
+        assert_eq!(stage_intro(IDLE), None);
+    }
+}

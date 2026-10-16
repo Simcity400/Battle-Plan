@@ -82,6 +82,8 @@ export interface TimelineProps {
    * when none), so a widget can ask for what only those lanes show, such as names
    * and flags at the playhead. */
   onLanesInView?: (first: number, last: number) => void;
+  onSummaryView?: (view: { from: number; to: number; width: number }, lanes: readonly TimelineLane[]) => void;
+  onNavigateHour?: (lane: TimelineLane, from: number, forward: boolean) => Promise<number | null>;
   active: boolean;
   revision: unknown;
 }
@@ -334,6 +336,10 @@ export default function Timeline(props: TimelineProps) {
       if (keyed.current && (viewed.current?.[0] !== target[0] || viewed.current?.[1] !== target[1])) queueMicrotask(() => refreshKeyed.current());
       viewed.current = target;
       eased = x;
+      const summaryView = { from: x[0], to: Math.min(x[1], p.playhead ?? x[1]), width: Math.ceil(plotWidth()) };
+      if (summaryView.to >= summaryView.from) queueMicrotask(() => {
+        if (latest.current === p) p.onSummaryView?.(summaryView, p.lanes.slice(Math.max(0, inView[0]), inView[1] + 1));
+      });
       const bottom = AXIS_HEIGHT + geometry.current.height;
       const right = left + plotWidth();
       const fallback = (id: string, px: number, top: number, width: number, height: number, opacity: number, icon: 'flask' | 'sparkle', plot = false) => {
@@ -728,7 +734,7 @@ export default function Timeline(props: TimelineProps) {
   // With the keyboard: Up and Down choose a lane, Left and Right step through its
   // bars (up to the playhead); the bar's tooltip shows beside the lane and is read out.
   // The lane is remembered by id, so lanes coming and going never move the selection.
-  const keyed = useRef<{ lane: number; id: string; span: number; spanId?: string } | null>(null);
+  const keyed = useRef<{ lane: number; id: string; span: number; spanId?: string; hour?: number; navigation?: Promise<void> } | null>(null);
   const refreshKeyed = useRef<() => void>(() => {});
   // After Escape, no tooltip until the pointer moves again.
   const quiet = useRef(false);
@@ -784,13 +790,16 @@ export default function Timeline(props: TimelineProps) {
     const span = stop?.span ?? null;
     // With no bar in view, the lane is described at an hour in view, never one outside it.
     const [viewFrom, viewTo] = viewed.current ?? p.extent;
+    if (at.hour != null && (at.hour < viewFrom || at.hour > Math.min(viewTo, p.playhead ?? viewTo))) {
+      at.hour = undefined; at.navigation = undefined;
+    }
     // A view lying after the playback moment shows nothing yet: nothing is described.
     if (!span && p.playhead != null && viewFrom > p.playhead) { notifyHover(null); hideTooltip(owner); setSpoken(`${lane.label}: not reached yet`); return; }
     // A stop is described at its whole hour, as hover floors the pointer's, so a band's
     // stop gives the value of its step.
-    const hour = stop ? Math.floor(stop.hour) : Math.floor(Math.max(viewFrom, Math.min(labelMoment(p.playhead, viewTo, p.labelHour), viewTo)));
+    const hour = at.hour ?? (stop ? Math.floor(stop.hour) : Math.floor(Math.max(viewFrom, Math.min(labelMoment(p.playhead, viewTo, p.labelHour), viewTo))));
     // With no bar reachable, the lane's holder at that hour (as hover resolves it), not an empty slot.
-    const holder = span ?? spanAt(lane.spans, hour);
+    const holder = at.hour == null ? span ?? spanAt(lane.spans, hour) : spanAt(lane.spans, hour);
     const shown = holder && holder.firstHour <= (p.playhead ?? Infinity) ? holder : null;
     notifyHover(hour);
     const raw = p.tooltip(lane, shown, hour);
@@ -832,6 +841,7 @@ export default function Timeline(props: TimelineProps) {
       const remembered = keyed.current && lanes.findIndex(lane => lane.id === keyed.current!.id);
       if (keyed.current && remembered != null && remembered >= 0) keyed.current.lane = remembered;
       else keyed.current = null;
+      const hadKey = keyed.current !== null;
       const at = keyed.current ?? { lane: 0, id: lanes[0].id, span: Math.max(0, bars(0) - 1) };
       if (keyed.current) {
         if (event.key === 'ArrowDown') { at.lane = Math.min(lanes.length - 1, at.lane + 1); at.span = Math.max(0, bars(at.lane) - 1); }
@@ -840,10 +850,33 @@ export default function Timeline(props: TimelineProps) {
         if (event.key === 'ArrowRight') at.span = Math.min(Math.max(0, bars(at.lane) - 1), at.span + 1);
       }
       at.id = lanes[at.lane].id;
+      if (props.onNavigateHour && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+        const selected = at;
+        const [from, to] = viewed.current ?? props.extent;
+        const first = !hadKey;
+        const forward = hadKey && event.key === 'ArrowRight';
+        keyed.current = selected;
+        const request = selected.navigation ?? Promise.resolve();
+        selected.navigation = request.then(async () => {
+          const p = latest.current, view = viewed.current ?? p.extent;
+          if (keyed.current !== selected || view[0] !== from || view[1] !== to || !p.active) return;
+          const lane = p.lanes.find(lane => lane.id === selected.id);
+          if (!lane || !p.onNavigateHour) return;
+          const start = first ? Math.floor(labelMoment(p.playhead, to, p.labelHour)) + 1
+            : selected.hour ?? barsOf(selected.lane)[selected.span]?.hour ?? labelMoment(p.playhead, to, p.labelHour);
+          const hour = await p.onNavigateHour(lane, start, forward);
+          const currentView = viewed.current ?? latest.current.extent;
+          if (keyed.current !== selected || currentView[0] !== from || currentView[1] !== to || !latest.current.active) return;
+          if (hour !== null && hour >= from && hour <= Math.min(to, latest.current.playhead ?? to)) selected.hour = hour;
+          showKeyed();
+        }).catch(() => { if (keyed.current === selected) showKeyed(); });
+        return;
+      }
+      const next = { ...at, hour: undefined, navigation: undefined };
       // A key press chooses the bar by position; the id then follows it through zoom.
-      at.spanId = undefined;
-      keyed.current = at;
-      revealLane(at.lane, barsOf(at.lane)[at.span]?.span);
+      next.spanId = undefined;
+      keyed.current = next;
+      revealLane(next.lane, barsOf(next.lane)[next.span]?.span);
       showKeyed();
       return;
     }
@@ -866,7 +899,7 @@ export default function Timeline(props: TimelineProps) {
     const stops = activeLane ? barsOf(activeIndex) : [];
     const same = keyed.current?.spanId == null ? -1 : stops.findIndex(stop => stop.id === keyed.current!.spanId);
     const selected = keyed.current ? stops[same >= 0 ? same : Math.max(0, Math.min(keyed.current.span, stops.length - 1))] : undefined;
-    const menuHour = selected ? selected.hour : labelMoment(props.playhead, props.extent[1], props.labelHour);
+    const menuHour = keyed.current?.hour ?? (selected ? selected.hour : labelMoment(props.playhead, props.extent[1], props.labelHour));
     if ((event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) && props.onContextMenu && menuHour != null) {
       event.preventDefault();
       const bounds = spacer.current!.getBoundingClientRect();

@@ -1,0 +1,1631 @@
+use super::*;
+
+#[test]
+fn recorded_effect_inputs_project_exact_bytes_and_keep_decision_cadence() {
+    let mut capacity = Capacities::default();
+    capacity.raise_for_effect_inputs(
+        cpolitical_status::IdeaDemand { rows: 1, bytes: 3 },
+        cdecision_status::RandomItemDemand { rows: 1, bytes: 3 },
+    );
+    let mut captured = Captured::with_capacities(&capacity);
+    captured.timed_ideas.rows[0] = cpolitical_status::TimedIdeaRow {
+        country: 5_000,
+        ordinal: 7,
+        token_start: 0,
+        token_len: 3,
+        days: i32::MIN,
+    };
+    captured.timed_ideas.outcome = Outcome::Rows { len: 1 };
+    captured.random_items.rows[0] = cdecision_status::RandomItemRow {
+        country: 5_000,
+        ordinal: 3,
+        token_start: 0,
+        token_len: 3,
+        count: i32::MAX,
+        target: -1,
+    };
+    captured.random_items.outcome = Outcome::Rows { len: 1 };
+    for text in [
+        &mut captured.timed_idea_text,
+        &mut captured.random_item_text,
+    ] {
+        text.first[..3].copy_from_slice(&[b'x', 0, 255]);
+        text.len = 3;
+    }
+    let tables = captured.tables();
+    let TableView::Complete(rows::TableRows::TimedIdeas(timed)) = &tables[23] else {
+        panic!("timed ideas unavailable");
+    };
+    assert_eq!(timed[0].token, [b'x', 0, 255]);
+    assert_eq!(
+        (timed[0].country, timed[0].ordinal, timed[0].days),
+        (5_000, 7, i32::MIN)
+    );
+    let TableView::Complete(rows::TableRows::DecisionRandomItems(random)) = &tables[24] else {
+        panic!("random items unavailable");
+    };
+    assert_eq!(random[0].token, [b'x', 0, 255]);
+    assert_eq!((random[0].count, random[0].target), (i32::MAX, u32::MAX));
+    for hour in 0..24 {
+        assert!(replay::cadence::should_walk(
+            TableId::TimedIdeas,
+            hour,
+            false
+        ));
+        assert_eq!(
+            replay::cadence::should_walk(TableId::DecisionRandomItems, hour, false),
+            replay::cadence::should_walk(TableId::Decisions, hour, false)
+        );
+    }
+}
+
+#[test]
+fn breakdown_capture_keeps_the_original_push_capacity_trace() {
+    use engine::memory::SliceMemory;
+    const STATE: usize = 0x100;
+    const MANAGER: usize = 0x800;
+    const RECORDS: usize = 0x1000;
+    let mut bytes = vec![0_u8; RECORDS + 17 * power_balance_record::STRIDE];
+    bytes[STATE + engine::cgame_state::POWER_BALANCE_MANAGER
+        ..STATE + engine::cgame_state::POWER_BALANCE_MANAGER + 8]
+        .copy_from_slice(&(MANAGER as u64).to_le_bytes());
+    bytes[MANAGER + power_balance_manager::RECORDS..MANAGER + power_balance_manager::RECORDS + 8]
+        .copy_from_slice(&(RECORDS as u64).to_le_bytes());
+    for record in 0..17 {
+        // Empty cached accumulator with an empty inline label.
+        let capacity = RECORDS + record * power_balance_record::STRIDE + 0xc8 + 0x48 + 24;
+        bytes[capacity..capacity + 8].copy_from_slice(&15_u64.to_le_bytes());
+    }
+    let mut captured = Captured::vacant();
+    let mut previous = Vec::<rows::PowerBalanceModifierBreakdownRow>::new();
+    for count in [1_usize, 2, 5, 9, 2, 0, 17] {
+        let header = ((count as u64) << 32) | count as u64;
+        bytes[MANAGER + power_balance_manager::RECORDS + 8
+            ..MANAGER + power_balance_manager::RECORDS + 16]
+            .copy_from_slice(&header.to_le_bytes());
+        captured.breakdowns.clear();
+        captured.balances.outcome = Outcome::Rows { len: count };
+        captured.capture_breakdowns(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            0,
+            STATE,
+            0,
+        );
+        previous.clear();
+        for _ in 0..count {
+            previous.push(rows::PowerBalanceModifierBreakdownRow::default());
+        }
+        assert_eq!(captured.breakdown_outcome, Outcome::Rows { len: count });
+        assert_eq!(captured.breakdowns.capacity(), previous.capacity());
+        for (record, row) in captured.breakdowns.iter().enumerate() {
+            assert_eq!(row.record, record as u32);
+            assert!(row.sources.is_empty());
+            for nodes in [&row.daily, &row.weekly] {
+                if BREAKDOWN_WITNESS
+                    && crate::sampled_verify::Check::hourly(0, false).covers(record as u64)
+                {
+                    assert_eq!(nodes.len(), 1);
+                    assert_eq!((nodes[0].children, nodes[0].value), (0, 0));
+                    assert!(nodes[0].name.is_empty());
+                } else {
+                    assert!(nodes.is_empty());
+                }
+            }
+        }
+    }
+}
+
+/// Production reads each record's source roster and no cached tree:
+/// playback derives the trees ([`replay::power_balance_derive`]). A record
+/// whose +0xC8 tree cannot be read still publishes its sources, which the
+/// hourly tree walk this replaced refused.
+#[test]
+fn breakdown_capture_reads_sources_without_the_cached_trees() {
+    use engine::memory::SliceMemory;
+    const STATE: usize = 0x100;
+    const MANAGER: usize = 0x800;
+    const RECORDS: usize = 0x1000;
+    const SOURCES: usize = 0x1400;
+    const STATICS: usize = 0x2000;
+    fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
+        bytes[at..at + value.len()].copy_from_slice(value);
+    }
+    fn name(bytes: &mut [u8], at: usize, text: &[u8]) {
+        // An inline MSVC string: bytes, then size +0x10 and capacity +0x18.
+        put(bytes, at, text);
+        put(bytes, at + 0x10, &(text.len() as u64).to_le_bytes());
+        put(bytes, at + 0x18, &15_u64.to_le_bytes());
+    }
+    let mut bytes = vec![0_u8; STATICS + 0x400];
+    put(
+        &mut bytes,
+        STATE + engine::cgame_state::POWER_BALANCE_MANAGER,
+        &(MANAGER as u64).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        MANAGER + power_balance_manager::RECORDS,
+        &(RECORDS as u64).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        MANAGER + power_balance_manager::RECORDS + 8,
+        &((1_u64 << 32) | 1).to_le_bytes(),
+    );
+    // Two occurrences of the first source and one of the second, in order.
+    put(&mut bytes, RECORDS + 0x50, &(SOURCES as u64).to_le_bytes());
+    put(
+        &mut bytes,
+        RECORDS + 0x58,
+        &((3_u64 << 32) | 3).to_le_bytes(),
+    );
+    for (ordinal, source) in [STATICS, STATICS + 0x200, STATICS].into_iter().enumerate() {
+        put(
+            &mut bytes,
+            SOURCES + ordinal * 8,
+            &(source as u64).to_le_bytes(),
+        );
+    }
+    name(&mut bytes, STATICS + 0x1a8, b"first");
+    name(&mut bytes, STATICS + 0x200 + 0x1a8, b"second");
+    // The cached tree's children header lists a child at a null array.
+    put(
+        &mut bytes,
+        RECORDS + 0xc8 + 0x18 + 8,
+        &((1_u64 << 32) | 1).to_le_bytes(),
+    );
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    assert!(engine::modifier_breakdown::balance(&memory, 0, RECORDS).is_err());
+    let mut captured = Captured::vacant();
+    captured.balances.outcome = Outcome::Rows { len: 1 };
+    // An hour whose slice the record is not in: no witness even in a
+    // `breakdown_witness` build.
+    let hour = (0..24)
+        .find(|&hour| !crate::sampled_verify::Check::hourly(hour, false).covers(0))
+        .unwrap();
+    captured.capture_breakdowns(&memory, 0, STATE, hour);
+    assert_eq!(captured.breakdown_outcome, Outcome::Rows { len: 1 });
+    assert_eq!(
+        captured.breakdowns,
+        [rows::PowerBalanceModifierBreakdownRow {
+            record: 0,
+            sources: vec![b"first".to_vec(), b"second".to_vec(), b"first".to_vec()],
+            daily: Vec::new(),
+            weekly: Vec::new(),
+        }]
+    );
+}
+
+#[test]
+fn incomplete_breakdown_tree_cannot_publish_a_default_row() {
+    let mut captured = Captured::vacant();
+    captured.breakdowns = vec![rows::PowerBalanceModifierBreakdownRow {
+        record: 7,
+        sources: Vec::new(),
+        daily: vec![rows::ModifierBreakdownNode {
+            children: 1,
+            value: 11,
+            name: b"missing child".to_vec(),
+        }],
+        weekly: vec![rows::ModifierBreakdownNode {
+            children: 0,
+            value: 21,
+            name: b"weekly root".to_vec(),
+        }],
+    }];
+    captured.breakdown_outcome = Outcome::Rows { len: 1 };
+    assert!(
+        matches!(captured.breakdowns_table(), TableView::Unavailable { reason }
+        if reason == "power balance modifier breakdown copy failed")
+    );
+}
+
+#[test]
+fn party_leader_role_identity_survives_capture_at_country_scale() {
+    use engine::{ccharacter, ccountry, ccountry_leader, cideology_group, memory::SliceMemory};
+    let mut bytes = vec![0_u8; 0x3000];
+    let mut word = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    word(0x100, ccountry::VTABLE_RVA as u64);
+    word(0x100 + ccountry::POLITICAL_STATUS, 0x1200);
+    word(0x1200, cpolitical_status::VTABLE_RVA as u64);
+    word(0x1200 + cpolitical_status::COUNTRY, 0x100);
+    word(0x1200 + cpolitical_status::PARTIES, 0x1400);
+    word(0x1200 + cpolitical_status::PARTIES + 8, (1 << 32) | 1);
+    word(0x1400, 0x1500);
+    word(0x1500, cpolitical_party::VTABLE_RVA as u64);
+    word(0x1500 + cpolitical_party::ID, 7);
+    word(0x1500 + cpolitical_party::IDEOLOGY_GROUP, 0x1600);
+    word(0x1600, cideology_group::VTABLE_RVA as u64);
+    word(0x1600 + cideology_group::ID, 7);
+    word(0x1500 + cpolitical_party::COUNTRY_LEADERS, 0x1700);
+    word(
+        0x1500 + cpolitical_party::COUNTRY_LEADERS + 8,
+        (1 << 32) | 1,
+    );
+    word(0x1700, 0x1800);
+    word(0x1800, ccountry_leader::VTABLE_RVA as u64);
+    word(0x1800 + ccountry_leader::CHARACTER, 0x1a00);
+    word(0x1800 + ccountry_leader::LEADER_ID, 12);
+    word(0x1800 + 0x140, 0x2500); // Changed ideology; the role key is still -7.
+    word(0x1a00, ccharacter::VTABLE_RVA as u64);
+    word(
+        0x1a00 + ccharacter::TYPE,
+        (91_u64 << 32) | u64::from(ccharacter::REFERENCE_TYPE),
+    );
+    word(0x1a00 + ccharacter::LEADER_MAP_HEAD, 0x1c00);
+    word(0x1a00 + ccharacter::LEADER_MAP_SIZE, 1);
+    for offset in [0, 8, 16] {
+        word(0x1c00 + offset, 0x1c40);
+        word(0x1c40 + offset, 0x1c00);
+    }
+    word(0x1c00 + 0x18, 1 << 8);
+    word(0x1c40 + 0x20, u64::from((-7_i32) as u32));
+    word(0x1c40 + 0x28, 0x1800);
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let reader = cpolitical_status::Reader::new(&memory, 0, 0x100).unwrap();
+    let mut captured = Captured::vacant();
+    captured.party_leaders = CaptureRows::new(5_000);
+    for (index, destination) in captured.party_leaders.rows.iter_mut().enumerate() {
+        assert_eq!(
+            reader.party_leaders(index as u32 + 1, std::slice::from_mut(destination)),
+            Outcome::Rows { len: 1 }
+        );
+    }
+    captured.party_leaders.outcome = Outcome::Rows { len: 5_000 };
+    let tables = captured.tables();
+    let TableView::Complete(TableRows::PartyLeaders(rows)) = &tables[21] else {
+        panic!("leaders missing")
+    };
+    assert_eq!(rows.len(), 5_000);
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(
+            (row.country, row.character, row.role, row.leader_id),
+            (index as u32 + 1, Some(91), Some(-7), 12)
+        );
+    }
+}
+
+#[test]
+fn hourly_research_conversion_preserves_native_inputs_and_bonus_failures() {
+    let mut captured = Captured::vacant();
+    let mut input = engine::research_inputs::Row::default();
+    input.slot.country = 11;
+    input.slot.index = 2;
+    input.slot.technology_present = 1;
+    input.slot.technology_handle = 77;
+    input.template_index = 3;
+    input.slot.database_index = 3;
+    let mut token = engine::msvc_string::Text::default();
+    token.bytes[..3].copy_from_slice(b"abc");
+    token.len = 3;
+    input.token = engine::research_inputs::Text::Inline(token);
+    input.progress_raw = i64::MAX;
+    input.speed_bonus_raw = i64::MIN;
+    captured.research_inputs.rows.push(input);
+    captured.research_inputs.outcome = Outcome::Rows { len: 1 };
+    captured.research_bonuses.outcome = Outcome::Unavailable {
+        reason: "bonus read failed",
+    };
+    let tables = captured.tables();
+    let TableView::Complete(TableRows::ResearchInputs(rows)) = &tables[18] else {
+        panic!("inputs missing")
+    };
+    assert_eq!(rows[0].index, 2);
+    assert_eq!(rows[0].database_index, replay::rows::Recorded::Value(3));
+    assert_eq!(rows[0].token, b"abc");
+    assert_eq!(rows[0].progress_raw, i64::MAX);
+    assert_eq!(rows[0].speed_bonus_raw, i64::MIN);
+    assert!(matches!(&tables[19], TableView::Unavailable { .. }));
+    for table in [
+        TableId::ResearchInputs,
+        TableId::ResearchAppliedBonuses,
+        TableId::ResearchModifiers,
+    ] {
+        for hour in 0..8 {
+            assert!(replay::cadence::should_walk(table, hour, false));
+        }
+    }
+}
+
+#[test]
+fn hourly_modifier_conversion_preserves_identity_signed_operands_and_source_text() {
+    let mut captured = Captured::vacant();
+    let mut row = engine::research_modifiers::Row {
+        country: 11,
+        index: u32::MAX,
+        ordinal: 7,
+        kind: engine::research_modifiers::Kind::CountrySource,
+        raw: i64::MIN,
+        auxiliary: i64::MAX,
+        count: u32::MAX,
+        source_id: 91,
+        ..Default::default()
+    };
+    let mut name = engine::msvc_string::Text::default();
+    name.bytes[..4].copy_from_slice(b"idea");
+    name.len = 4;
+    row.name = engine::research_inputs::Text::Inline(name);
+    captured.research_modifiers.rows.push(row);
+    captured.research_modifiers.outcome = Outcome::Rows { len: 1 };
+    let tables = captured.tables();
+    let TableView::Complete(TableRows::ResearchModifiers(rows)) = &tables[20] else {
+        panic!("modifiers missing")
+    };
+    assert_eq!(
+        (rows[0].country, rows[0].index, rows[0].ordinal),
+        (11, u32::MAX, 7)
+    );
+    assert_eq!(
+        (rows[0].raw, rows[0].auxiliary, rows[0].count),
+        (i64::MIN, i64::MAX, u32::MAX)
+    );
+    assert_eq!(rows[0].kind, rows::ResearchModifierRow::COUNTRY_SOURCE);
+    assert_eq!(rows[0].name, b"idea");
+}
+
+#[test]
+fn owned_governance_vacancy_has_no_buffer_allocation() {
+    fn assert_send<T: Send>() {}
+    assert_send::<Captured>();
+    let captured = Captured::vacant();
+    assert_eq!(captured.allocated_bytes(), 0);
+    assert!(captured.dictionary.is_empty());
+    assert!(captured.technology_pointers.is_empty());
+    assert_eq!(captured.technology_pointers.capacity(), 0);
+}
+
+#[test]
+fn owned_governance_failure_preserves_cadence() {
+    for force_full in [false, true] {
+        let mut captured = Captured::vacant();
+        captured.definition_text.first = vec![1, 2, 3];
+        captured.definition_text.len = 3;
+        captured.definition_text.required = 7;
+        captured.modifier_values.first = vec![11, 12];
+        captured.modifier_values.len = 2;
+        captured.modifier_values.required = 4;
+        captured.dictionary_required = 9;
+        let context = CaptureContext {
+            base: 0,
+            game_state: 0,
+            hour: 1,
+            force_full,
+        };
+        let report = captured.fail_owned_capture(context, "worker stopped");
+        assert_eq!(report.ticks, [0; N]);
+        assert_eq!(captured.definition_text.len, 0);
+        assert_eq!(captured.definition_text.required, 0);
+        assert_eq!(captured.modifier_values.len, 0);
+        assert_eq!(captured.modifier_values.required, 0);
+        assert_eq!(captured.dictionary_required, 0);
+        for (index, outcome) in captured.outcomes().into_iter().enumerate() {
+            let skipped = !replay::cadence::should_walk(TABLES[index], context.hour, force_full);
+            assert_eq!(
+                outcome,
+                Outcome::Unavailable {
+                    reason: if skipped {
+                        replay::cadence::SKIPPED_REASON
+                    } else {
+                        "worker stopped"
+                    },
+                },
+                "{index}",
+            );
+        }
+    }
+}
+
+#[test]
+fn large_census_growth_leaves_quarter_capacity_free_without_power_of_two_inflation() {
+    let mut capacity = Capacities::default();
+    capacity.rows[2] = 4;
+    let mut captured = Captured::with_capacities(&capacity);
+    assert_eq!(
+        captured.technology_pointers.len(),
+        captured.technologies.rows.len()
+    );
+    let research_bytes = |captured: &Captured| {
+        captured.technologies.allocated_bytes()
+            + captured.technology_pointers.capacity() * size_of::<usize>()
+    };
+    let other_bytes = captured.allocated_bytes() - research_bytes(&captured);
+    captured.technology_pointers[0] = 0x1234;
+    captured.technologies.outcome = Outcome::Truncated {
+        len: 4,
+        unread_rows: 246_996,
+    };
+    captured.grow(&mut capacity);
+    assert_eq!(capacity.rows[2], 329_334);
+    assert!(247_000 <= capacity.rows[2] - capacity.rows[2] / 4);
+    assert_eq!(captured.technology_pointers.len(), capacity.rows[2]);
+    assert_eq!(
+        captured.technology_pointers.len(),
+        captured.technologies.rows.len()
+    );
+    assert_eq!(captured.technology_pointers[0], 0x1234);
+    assert_eq!(
+        captured.allocated_bytes(),
+        other_bytes + research_bytes(&captured)
+    );
+    let pointers = captured.technology_pointers.as_ptr();
+    let allocated = captured.allocated_bytes();
+    captured.technologies.outcome = Outcome::Rows { len: 247_000 };
+    captured.grow(&mut capacity);
+    assert_eq!(capacity.rows[2], 329_334);
+    captured.reset();
+    assert_eq!(captured.technology_pointers.as_ptr(), pointers);
+    assert_eq!(captured.technology_pointers[0], 0x1234);
+    assert_eq!(captured.allocated_bytes(), allocated);
+}
+#[test]
+fn prior_failure_and_unread_count_survive_later_empty_country() {
+    let mut outcome = Outcome::Truncated {
+        len: 2,
+        unread_rows: 3,
+    };
+    append(&mut outcome, Outcome::Rows { len: 0 });
+    assert_eq!(
+        outcome,
+        Outcome::Truncated {
+            len: 2,
+            unread_rows: 3
+        }
+    );
+    append(
+        &mut outcome,
+        Outcome::Unavailable {
+            reason: "invalid country",
+        },
+    );
+    append(&mut outcome, Outcome::Rows { len: 4 });
+    assert_eq!(
+        outcome,
+        Outcome::Unavailable {
+            reason: "invalid country"
+        }
+    );
+}
+#[test]
+fn native_decision_source_keys_and_non_utf8_literals_survive_conversion() {
+    let mut capacity = Capacities::default();
+    capacity.rows[9] = 1;
+    capacity.decision_text = 2;
+    capacity.decision_countries = 1;
+    let mut captured = Captured::with_capacities(&capacity);
+    captured.decisions.rows[0] = cdecision_status::Row {
+        container: cdecision_status::Container::Targeted,
+        token_len: 2,
+        days: i32::MIN,
+        country_target: u32::MAX,
+        ..Default::default()
+    };
+    captured.decisions.outcome = Outcome::Rows { len: 1 };
+    captured.decision_text.first[..2].copy_from_slice(&[0xff, b'x']);
+    captured.decision_text.len = 2;
+    captured.decision_countries.first[0] = 17;
+    captured.decision_countries.len = 1;
+    let tables = captured.tables();
+    let TableView::Complete(rows::TableRows::Decisions(rows)) = &tables[9] else {
+        panic!()
+    };
+    assert_eq!(rows[0].country, 17);
+    assert_eq!(rows[0].container, 3);
+    assert_eq!(rows[0].token, [0xff, b'x']);
+    assert_eq!(rows[0].days, i32::MIN);
+    assert_eq!(rows[0].country_target, u32::MAX);
+    captured.decisions.rows[0].token_len = 3;
+    assert!(matches!(
+        captured.tables()[9],
+        TableView::Unavailable { .. }
+    ));
+}
+
+/// Shared synthetic address space for the copy/decode split harness.
+/// Two countries share one template object; rosters hold native holes and
+/// unsorted acquisition order; ids cover heap and inline storage.
+#[cfg(test)]
+/// Shared synthetic address space for the governance walks: two authenticated
+/// countries with inline, absent and heap focus tokens plus one- and
+/// two-entry completed rosters.
+pub mod focus_test_kit {
+    use super::{Capacities, Captured};
+    use engine::memory::SliceMemory;
+    use engine::{
+        ccontinuous_national_focus, ccountry, cgame_state, cnational_focus,
+        cnational_focus_progress, cnational_focus_tree,
+    };
+
+    pub const BASE: usize = 0x1400_0000;
+    const MEM: usize = 0x1_0000;
+    const GS: usize = 0x1_0000;
+    const CTAB: usize = 0x1_1000;
+    const LTAB: usize = 0x1_1200;
+    const C1: usize = 0x1_2000;
+    /// Country 2's object.
+    pub const C2: usize = 0x1_4000;
+    /// The two countries' focus progress objects.
+    pub const R1: usize = 0x1_6000;
+    pub const R2: usize = 0x1_7000;
+    const TT1: usize = 0x1_8000;
+    const FC1: usize = 0x1_8200;
+    /// Country 2's selected focus.
+    pub const FC2: usize = 0x1_8300;
+    const CC1: usize = 0x1_8400;
+    const FA: usize = 0x1_8500;
+    const FB: usize = 0x1_8600;
+    const FC: usize = 0x1_8700;
+    const RS1: usize = 0x1_8800;
+    const RS2: usize = 0x1_8900;
+    const HB: usize = 0x1_8a00;
+    const HEAP_TOKEN: &[u8] = b"completed_heap_token_longer_than_fifteen";
+
+    pub struct Fixture {
+        pub bytes: Vec<u8>,
+    }
+
+    impl Fixture {
+        pub fn w64(&mut self, addr: usize, value: u64) {
+            let at = addr - MEM;
+            self.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        }
+
+        pub fn w32(&mut self, addr: usize, value: u32) {
+            let at = addr - MEM;
+            self.bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+
+        fn inline(&mut self, addr: usize, value: &[u8]) {
+            assert!(value.len() <= 15);
+            let at = addr - MEM;
+            self.bytes[at..at + 32].fill(0);
+            self.bytes[at..at + value.len()].copy_from_slice(value);
+            self.w64(addr + 16, value.len() as u64);
+            self.w64(addr + 24, 15);
+        }
+
+        fn heap_token(&mut self, addr: usize, value: &[u8]) {
+            let at = addr - MEM;
+            self.bytes[at..at + 32].fill(0);
+            self.w64(addr, HB as u64);
+            self.w64(addr + 16, value.len() as u64);
+            self.w64(addr + 24, value.len() as u64);
+            let heap = HB - MEM;
+            self.bytes[heap..heap + value.len()].copy_from_slice(value);
+            self.bytes[heap + value.len()] = 0;
+        }
+
+        fn country(&mut self, country: usize, id: u32, tree: usize, root: usize) {
+            self.w64(country, (BASE + ccountry::VTABLE_RVA) as u64);
+            self.w32(country + ccountry::ID, id);
+            // Each country owns a state, so its focus drifts daily.
+            self.w32(country + ccountry::OWNED_STATE_COUNT, 1);
+            self.w64(country + ccountry::FOCUS_TREE, tree as u64);
+            self.w64(country + ccountry::FOCUS_PROGRESS, root as u64);
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn root(
+            &mut self,
+            root: usize,
+            current: usize,
+            continuous: usize,
+            progress: i64,
+            paused: u8,
+            count: i32,
+            roster: usize,
+            roster_count: u32,
+        ) {
+            self.w64(root, (BASE + cnational_focus_progress::VTABLE_RVA) as u64);
+            self.w64(root + cnational_focus_progress::CURRENT, current as u64);
+            self.w64(
+                root + cnational_focus_progress::CURRENT + 8,
+                continuous as u64,
+            );
+            self.w64(root + cnational_focus_progress::PROGRESS, progress as u64);
+            self.bytes[root - MEM + cnational_focus_progress::PAUSED] = paused;
+            self.w32(
+                root + cnational_focus_progress::COMPLETED_COUNT,
+                count as u32,
+            );
+            self.w64(
+                root + cnational_focus_progress::COMPLETED_DATA,
+                roster as u64,
+            );
+            self.w32(
+                root + cnational_focus_progress::COMPLETED_DATA + 8,
+                roster_count,
+            );
+            self.w32(
+                root + cnational_focus_progress::COMPLETED_DATA + 12,
+                roster_count,
+            );
+        }
+
+        pub fn world() -> Self {
+            let mut fixture = Self {
+                bytes: vec![0; 0x1_0000],
+            };
+            fixture.w64(GS + cgame_state::COUNTRIES, CTAB as u64);
+            fixture.w32(GS + cgame_state::COUNTRIES + 8, 4);
+            fixture.w32(GS + cgame_state::COUNTRIES + 12, 3);
+            fixture.w64(GS + cgame_state::COUNTRY_LINKS, LTAB as u64);
+            fixture.w32(GS + cgame_state::COUNTRY_LINKS + 8, 4);
+            fixture.w32(GS + cgame_state::COUNTRY_LINKS + 12, 3);
+            fixture.w64(CTAB, 0);
+            fixture.w64(CTAB + 8, C1 as u64);
+            fixture.w64(CTAB + 16, C2 as u64);
+            fixture.w32(LTAB, 0);
+            fixture.w32(LTAB + 4, 1);
+            fixture.w32(LTAB + 8, 2);
+            fixture.country(C1, 1, TT1, R1);
+            fixture.country(C2, 2, 0, R2);
+            fixture.inline(TT1 + cnational_focus_tree::TOKEN, b"tree_one");
+            fixture.root(R1, FC1, CC1, 12_345, 1, 1, RS1, 1);
+            fixture.inline(FC1 + cnational_focus::TOKEN, b"active_one");
+            fixture.inline(CC1 + ccontinuous_national_focus::TOKEN, b"cont_one");
+            fixture.inline(FA + cnational_focus::TOKEN, b"done_a");
+            fixture.w64(RS1, FA as u64);
+            fixture.root(R2, FC2, 0, -7, 0, 2, RS2, 2);
+            fixture.inline(FC2 + cnational_focus::TOKEN, b"active_two");
+            fixture.heap_token(FB + cnational_focus::TOKEN, HEAP_TOKEN);
+            fixture.inline(FC + cnational_focus::TOKEN, b"done_c");
+            fixture.w64(RS2, FB as u64);
+            fixture.w64(RS2 + 8, FC as u64);
+            fixture
+        }
+
+        pub fn memory(&self) -> SliceMemory<'_> {
+            SliceMemory {
+                base: MEM,
+                bytes: &self.bytes,
+            }
+        }
+
+        pub fn captured() -> Captured {
+            Captured::with_capacities(&Capacities::default())
+        }
+    }
+}
+
+#[test]
+fn daily_governance_sources_keep_politics_and_research_siblings_independent() {
+    use focus_test_kit::{BASE, Fixture};
+    struct Sources<'a> {
+        memory: engine::memory::SliceMemory<'a>,
+        ideas: std::cell::Cell<usize>,
+        fail_ideas: bool,
+    }
+    impl Memory for Sources<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            let private = [
+                0x1_9000 + cpolitical_status::IDEAS,
+                0x1_a000 + cpolitical_status::IDEAS,
+            ];
+            if private
+                .iter()
+                .any(|&at| address <= at && at < address.saturating_add(output.len()))
+            {
+                self.ideas.set(self.ideas.get() + 1);
+                if self.fail_ideas {
+                    return false;
+                }
+            }
+            self.memory.copy(address, output)
+        }
+    }
+    let mut fixture = Fixture::world();
+    for (country, politics) in [(0x1_2000, 0x1_9000), (0x1_4000, 0x1_a000)] {
+        fixture.w64(country + ccountry::POLITICAL_STATUS, politics as u64);
+        fixture.w64(politics, (BASE + cpolitical_status::VTABLE_RVA) as u64);
+        fixture.w64(politics + cpolitical_status::COUNTRY, country as u64);
+    }
+    for fail_ideas in [false, true] {
+        for hour in 0..24 {
+            let memory = engine::memory::CountedMemory::new(Sources {
+                memory: fixture.memory(),
+                ideas: Default::default(),
+                fail_ideas,
+            });
+            let mut captured = Fixture::captured();
+            let accounting = read_accounting::Capture::new();
+            captured.capture(&memory, BASE, 0x1_0000, hour, false);
+            let counts = accounting.finish();
+            assert_eq!(captured.politics.outcome, Outcome::Rows { len: 2 });
+            assert_eq!(captured.parties.outcome, Outcome::Rows { len: 0 });
+            // Ideas are hourly (replay::cadence).
+            assert!(memory.0.ideas.get() > 0, "hour={hour}");
+            // ResearchSlots reads on its daily slot.
+            let (index, slot) = (3, 11);
+            assert_eq!(
+                counts[TABLES[index].index()].spans > 0,
+                hour == slot,
+                "table={:?} hour={hour}",
+                TABLES[index]
+            );
+            // Technologies and focus are sliced; a new store reads every
+            // country at once.
+            for index in [0, 2] {
+                assert!(counts[TABLES[index].index()].spans > 0, "hour={hour}");
+            }
+            for (index, outcome) in captured.outcomes().into_iter().enumerate() {
+                if !replay::cadence::should_walk(TABLES[index], hour, false) {
+                    assert_eq!(
+                        outcome,
+                        Outcome::Unavailable {
+                            reason: replay::cadence::SKIPPED_REASON
+                        }
+                    );
+                    assert_eq!(counts[TABLES[index].index()].spans, 0);
+                }
+            }
+            if fail_ideas {
+                assert!(matches!(
+                    captured.ideas.outcome,
+                    Outcome::Unavailable { .. }
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn failed_native_technology_name_does_not_request_deferred_arena_growth() {
+    use focus_test_kit::{BASE, Fixture};
+    const TEMPLATE: usize = 0x1_c000;
+    const HEAP: usize = 0x9000_0000;
+    const LENGTH: usize = 32768;
+    let mut fixture = Fixture::world();
+    for (owner, country) in [0x1_2000, 0x1_4000].into_iter().enumerate() {
+        let status = 0x1_a000 + owner * 0x200;
+        let roster = 0x1_a400 + owner * 0x20;
+        let technology = 0x1_b000 + owner * 0x200;
+        fixture.w64(country + ccountry::TECHNOLOGY_STATUS, status as u64);
+        fixture.w64(status, (BASE + ctechnology_status::VTABLE_RVA) as u64);
+        fixture.w64(status + ctechnology_status::COUNTRY, country as u64);
+        fixture.w64(
+            status + ctechnology_status::TECHNOLOGIES_DATA,
+            roster as u64,
+        );
+        for offset in [8, 12] {
+            fixture.w32(status + ctechnology_status::TECHNOLOGIES_DATA + offset, 1);
+        }
+        fixture.w64(roster, technology as u64);
+        fixture.w64(technology, (BASE + ctechnology::VTABLE_RVA) as u64);
+        fixture.w32(technology + ctechnology::DEFINITION_INDEX, 3);
+        fixture.w64(technology + ctechnology::STATUS, status as u64);
+        fixture.w64(technology + ctechnology::TEMPLATE, TEMPLATE as u64);
+    }
+    fixture.w64(TEMPLATE + ctechnology_template::ID, HEAP as u64);
+    fixture.w64(TEMPLATE + ctechnology_template::ID + 16, LENGTH as u64);
+    fixture.w64(TEMPLATE + ctechnology_template::ID + 24, LENGTH as u64);
+    fixture.w32(TEMPLATE + ctechnology_template::DATABASE_INDEX, 1);
+    fixture.w32(TEMPLATE + ctechnology_template::TECHNOLOGY_HANDLE, 3);
+    struct Fault<'a>(engine::memory::SliceMemory<'a>);
+    impl Memory for Fault<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == HEAP + LENGTH && output.len() == 1 {
+                output[0] = 0;
+                return true;
+            }
+            self.0.copy(address, output)
+        }
+    }
+    let mut capacity = Capacities {
+        definition_text: 0,
+        ..Default::default()
+    };
+    let mut captured = Captured::with_capacities(&capacity);
+    captured.capture(&Fault(fixture.memory()), BASE, 0x1_0000, 0, true);
+    assert_eq!(captured.technologies.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(
+        captured.definitions.outcome,
+        Outcome::Unavailable {
+            reason: "technology id bytes unreadable",
+        }
+    );
+    assert_eq!(captured.definition_text.required, 0);
+    captured.grow(&mut capacity);
+    assert_eq!(capacity.definition_text, 0);
+    assert_eq!(captured.definition_text.first.capacity(), 0);
+}
+
+/// Countries 1 and 2 (`Fixture::world`), each with a two-technology roster
+/// reaching the same two templates.
+fn technology_fixture() -> focus_test_kit::Fixture {
+    use focus_test_kit::{BASE, Fixture};
+    let mut fixture = Fixture::world();
+    for (owner, country) in [0x1_2000, 0x1_4000].into_iter().enumerate() {
+        let status = 0x1_a000 + owner * 0x200;
+        let roster = 0x1_a400 + owner * 0x20;
+        fixture.w64(country + ccountry::TECHNOLOGY_STATUS, status as u64);
+        fixture.w64(status, (BASE + ctechnology_status::VTABLE_RVA) as u64);
+        fixture.w64(status + ctechnology_status::COUNTRY, country as u64);
+        fixture.w64(
+            status + ctechnology_status::TECHNOLOGIES_DATA,
+            roster as u64,
+        );
+        for offset in [8, 12] {
+            fixture.w32(status + ctechnology_status::TECHNOLOGIES_DATA + offset, 2);
+        }
+        for index in 0..2 {
+            let technology = fixture_technology(owner, index);
+            let definition = index;
+            let template = 0x1_c000 + definition * 0x600;
+            fixture.w64(roster + index * 8, technology as u64);
+            fixture.w64(technology, (BASE + ctechnology::VTABLE_RVA) as u64);
+            fixture.w32(technology + ctechnology::DEFINITION_INDEX, 0x8000_0001);
+            fixture.w64(technology + ctechnology::STATUS, status as u64);
+            fixture.w64(technology + ctechnology::TEMPLATE, template as u64);
+        }
+    }
+    for (index, handle) in [0x8000_0001, 0x8000_0001].into_iter().enumerate() {
+        let template = 0x1_c000 + index * 0x600;
+        fixture.w64(
+            template + ctechnology_template::ID,
+            u32::from_le_bytes(*b"tech") as u64,
+        );
+        fixture.w64(template + ctechnology_template::ID + 16, 4);
+        fixture.w64(template + ctechnology_template::ID + 24, 15);
+        fixture.w32(
+            template + ctechnology_template::DATABASE_INDEX,
+            index as u32 + 1,
+        );
+        fixture.w32(template + ctechnology_template::TECHNOLOGY_HANDLE, handle);
+    }
+    fixture
+}
+
+/// Technology `index` of the `owner`th roster in [`technology_fixture`].
+fn fixture_technology(owner: usize, index: usize) -> usize {
+    0x1_b000 + (owner * 2 + index) * 0x200
+}
+
+/// Gives the `owner`th country of [`technology_fixture`] one authenticated
+/// research slot per technology in `assigned`, in that roster order, each
+/// with its roster position as its index.
+fn assign_slots(fixture: &mut focus_test_kit::Fixture, owner: usize, assigned: &[usize]) {
+    use focus_test_kit::BASE;
+    let status = 0x1_a000 + owner * 0x200;
+    let slots = 0x1_d000 + owner * 0x400;
+    let roster = status + ctechnology_status::RESEARCH_SLOTS_DATA;
+    fixture.w64(roster, slots as u64);
+    fixture.w32(roster + 8, assigned.len() as u32);
+    fixture.w32(roster + 12, assigned.len() as u32);
+    for (position, &technology) in assigned.iter().enumerate() {
+        let slot = slots + 0x100 + position * 0x80;
+        fixture.w64(slots + position * 8, slot as u64);
+        fixture.w64(slot, (BASE + cresearch_slot::VTABLE_RVA) as u64);
+        fixture.w32(slot + cresearch_slot::TECHNOLOGY_HANDLE, 0x8000_0001);
+        fixture.w64(slot + cresearch_slot::STATUS, status as u64);
+        fixture.w64(slot + cresearch_slot::TECHNOLOGY, technology as u64);
+        fixture.w64(slot + cresearch_slot::RESEARCH_SPEED, 100_000);
+        fixture.w32(slot + cresearch_slot::INDEX, position as u32);
+    }
+}
+
+#[test]
+fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_order() {
+    use focus_test_kit::BASE;
+    let fixture = technology_fixture();
+    struct Reads<'a> {
+        memory: engine::memory::SliceMemory<'a>,
+        spans: std::cell::RefCell<Vec<(usize, usize)>>,
+    }
+    impl Memory for Reads<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.spans.borrow_mut().push((address, destination.len()));
+            self.memory.copy(address, destination)
+        }
+    }
+    let memory = Reads {
+        memory: fixture.memory(),
+        spans: Default::default(),
+    };
+    let mut captured = Captured::vacant();
+    assert_eq!(captured.allocated_bytes(), 0);
+    let mut enabled = [false; N];
+    enabled[2] = true;
+    enabled[4] = true;
+    captured.technology_selection = SliceSelection::new(true);
+    captured.technology_selection.reset(0, true);
+    let mut store = SliceFingerprints::new();
+    let changes = crate::country_input_changes::Domain::enabled(64);
+    let result = acquire(
+        &memory,
+        BASE,
+        0x1_0000,
+        captured.buffers(),
+        &enabled,
+        Slices {
+            technologies: &mut store,
+            focus: &mut SliceFingerprints::new(),
+            changes: &changes,
+        },
+        None,
+    );
+    assert_eq!(result.outcomes[2], Outcome::Rows { len: 4 });
+    assert_eq!(result.outcomes[4], Outcome::Rows { len: 2 });
+    assert_eq!(result.lens[1], 8);
+    assert_eq!(
+        captured.technologies.rows[..4]
+            .iter()
+            .map(|row| (row.country, row.database_index, row.technology_handle))
+            .collect::<Vec<_>>(),
+        [
+            (1, 1, 0x8000_0001),
+            (1, 2, 0x8000_0001),
+            (2, 1, 0x8000_0001),
+            (2, 2, 0x8000_0001)
+        ]
+    );
+    assert_eq!(
+        captured
+            .definitions
+            .rows
+            .iter()
+            .map(|row| (row.database_index, row.technology_handle))
+            .collect::<Vec<_>>(),
+        [(1, 0x8000_0001), (2, 0x8000_0001)]
+    );
+    assert_eq!(
+        captured.allocated_bytes(),
+        captured.technologies.rows.capacity() * size_of::<ctechnology::Row>()
+            + captured.technology_pointers.capacity() * size_of::<usize>()
+            + captured.definitions.rows.capacity() * size_of::<ctechnology_template::Row>()
+            + captured.definition_text.first.capacity()
+            + captured.dictionary.capacity() * size_of::<ctechnology_template::Entry>()
+    );
+    let spans = memory.spans.borrow();
+    for owner in 0..2 {
+        assert_eq!(
+            spans
+                .iter()
+                .filter(|&&span| span
+                    == (
+                        0x1_a000 + owner * 0x200 + ctechnology_status::TECHNOLOGIES_DATA,
+                        16
+                    ))
+                .count(),
+            // The walk's read only: without the same pass's ResearchSlots
+            // rows (not enabled here) no roster is held, so the hold re-reads
+            // no identity.
+            1
+        );
+        assert_eq!(
+            spans
+                .iter()
+                .filter(|&&span| span == (0x1_c000 + owner * 0x600 + ctechnology_template::ID, 32))
+                .count(),
+            1
+        );
+    }
+    drop(spans);
+    // Later hours read only their slice, new owners and unpublished reads;
+    // every roster read reaches both templates.
+    fn read(
+        captured: &mut Captured,
+        memory: &impl Memory,
+        enabled: &[bool; N],
+        (hour, force_full): (i32, bool),
+        store: &mut SliceFingerprints,
+        changes: &crate::country_input_changes::Domain,
+    ) -> (Vec<u32>, usize) {
+        crate::sampled_verify::begin_hour(hour);
+        captured.technology_selection.reset(hour, force_full);
+        let result = acquire(
+            memory,
+            BASE,
+            0x1_0000,
+            captured.buffers(),
+            enabled,
+            Slices {
+                technologies: store,
+                focus: &mut SliceFingerprints::new(),
+                changes,
+            },
+            None,
+        );
+        let owners = captured.technologies.rows[..result.outcomes[2].len()]
+            .iter()
+            .map(|row| row.country)
+            .collect();
+        (owners, result.outcomes[4].len())
+    }
+    // With the same pass's ResearchSlots rows a full hour holds both
+    // rosters, and country 1's slice carries its held roster, admitting no
+    // definition.
+    enabled[3] = true;
+    let mut at = |hour, force_full, store: &mut SliceFingerprints| {
+        read(
+            &mut captured,
+            &memory,
+            &enabled,
+            (hour, force_full),
+            store,
+            &changes,
+        )
+    };
+    assert_eq!(at(1, true, &mut store), (vec![1, 1, 2, 2], 2));
+    assert_eq!(at(25, false, &mut store), (vec![1, 1], 0));
+    assert_eq!(at(3, false, &mut store), (vec![], 0));
+    // An unpublished full hour is read again at the next hour.
+    assert_eq!(at(4, true, &mut store), (vec![1, 1, 2, 2], 2));
+    // The complete census saw only countries 1 and 2.
+    let selection = &captured.technology_selection;
+    assert!(selection.live(1) && selection.live(2) && !selection.live(3));
+    selection.invalidate(&mut store);
+    let mut at = |hour, force_full, store: &mut SliceFingerprints| {
+        read(
+            &mut captured,
+            &memory,
+            &enabled,
+            (hour, force_full),
+            store,
+            &changes,
+        )
+        .0
+    };
+    assert_eq!(at(5, false, &mut store), [1, 1, 2, 2]);
+    assert!(at(6, false, &mut store).is_empty());
+    // A forgotten store makes every country new: read at once.
+    store.forget();
+    assert_eq!(at(7, false, &mut store), [1, 1, 2, 2]);
+}
+
+/// A hooked technology writer's mark reads its country within the hour,
+/// alone. Daily progress moves without a mark and the country's slice
+/// carries its held roster with its assigned technologies' progress read
+/// afresh; a level written
+/// without a mark is a missed writer: the slice whose sampled comparison
+/// covers the country reads it whole and disables reuse, and every country
+/// is read from then on.
+#[test]
+fn a_marked_technology_roster_is_read_within_the_hour_and_an_unmarked_change_poisons() {
+    use crate::country_input_changes::{Domain, Table};
+    let mut fixture = technology_fixture();
+    assign_slots(&mut fixture, 0, &[fixture_technology(0, 0)]);
+    let changes = Domain::enabled(64);
+    let mut captured = Captured::vacant();
+    let mut enabled = [false; N];
+    enabled[2] = true;
+    enabled[3] = true;
+    enabled[4] = true;
+    let mut store = SliceFingerprints::new();
+    let mut at = |fixture: &focus_test_kit::Fixture, hour: i32| {
+        crate::sampled_verify::begin_hour(hour);
+        captured.technology_selection.reset(hour, false);
+        let result = acquire(
+            &fixture.memory(),
+            focus_test_kit::BASE,
+            0x1_0000,
+            captured.buffers(),
+            &enabled,
+            Slices {
+                technologies: &mut store,
+                focus: &mut SliceFingerprints::new(),
+                changes: &changes,
+            },
+            None,
+        );
+        let rows = captured.technologies.rows[..result.outcomes[2].len()].to_vec();
+        let mut owners: Vec<u32> = rows.iter().map(|row| row.country).collect();
+        owners.dedup();
+        (owners, rows)
+    };
+    // Nothing held yet: every country is read, outside its slice.
+    assert_eq!(at(&fixture, 5).0, [1, 2]);
+    assert!(at(&fixture, 6).0.is_empty());
+    // A level setter marks country 2: read at once, then not again.
+    changes.write(Table::Technologies, 2);
+    assert_eq!(at(&fixture, 7).0, [2]);
+    assert!(at(&fixture, 8).0.is_empty());
+    // A research writer leaves the technology rows alone.
+    changes.write(Table::Research, 1);
+    changes.write_every(Table::Research);
+    assert!(at(&fixture, 9).0.is_empty());
+    // Daily progress moves unmarked on the technology a slot researches:
+    // slice 1 carries the roster with that progress read afresh.
+    fixture.w64(
+        fixture_technology(0, 0) + ctechnology::LIVE_PROGRESS,
+        260_000,
+    );
+    let (owners, rows) = at(&fixture, 25);
+    assert_eq!(owners, [1]);
+    assert_eq!(rows[0].progress_raw, 260_000);
+    assert!(!changes.poisoned(Table::Technologies));
+    // A level changed with no mark is not read early, and slice 2 carries
+    // the held level.
+    fixture.w32(fixture_technology(1, 1) + ctechnology::LEVEL, 3);
+    assert!(at(&fixture, 27).0.is_empty());
+    let (owners, rows) = at(&fixture, 50);
+    assert_eq!(owners, [2]);
+    assert_eq!(rows[1].level, 0);
+    assert!(!changes.poisoned(Table::Technologies));
+    // The slice whose sampled comparison covers country 2 finds it.
+    assert_eq!(at(&fixture, 2 + 576).0, [2]);
+    assert!(changes.poisoned(Table::Technologies));
+    assert_eq!(at(&fixture, 3 + 576).0, [1, 2]);
+}
+
+/// One hour's focus read through the family's stores: the countries whose
+/// rows it returned, in census order.
+fn focus_hour(
+    captured: &mut Captured,
+    fixture: &focus_test_kit::Fixture,
+    hour: i32,
+    store: &mut SliceFingerprints,
+    changes: &crate::country_input_changes::Domain,
+) -> Vec<u32> {
+    let mut enabled = [false; N];
+    enabled[0] = true;
+    enabled[1] = true;
+    captured.focus_selection.reset_daily(hour, false);
+    let result = acquire(
+        &fixture.memory(),
+        focus_test_kit::BASE,
+        0x1_0000,
+        captured.buffers(),
+        &enabled,
+        Slices {
+            technologies: &mut SliceFingerprints::new(),
+            focus: store,
+            changes,
+        },
+        None,
+    );
+    assert!(matches!(result.outcomes[1], Outcome::Rows { .. }));
+    captured.focus.rows[..result.outcomes[0].len()]
+        .iter()
+        .map(|row| row.country)
+        .collect()
+}
+
+/// A country that owns no state runs no daily focus step
+/// (daily country update returns first), so the boundary does
+/// not read it; whether it owns one is checked at the boundary, which reads
+/// a country that gained or lost its last state since the previous one.
+#[test]
+fn the_focus_boundary_reads_only_countries_owning_a_state() {
+    use crate::country_input_changes::Domain;
+    use focus_test_kit::C2;
+    let mut fixture = focus_test_kit::Fixture::world();
+    let changes = Domain::enabled(64);
+    let mut captured = focus_test_kit::Fixture::captured();
+    let mut store = SliceFingerprints::new();
+    assert_eq!(
+        focus_hour(&mut captured, &fixture, 5, &mut store, &changes),
+        [1, 2]
+    );
+    // Country 2 loses its last state: nothing until the boundary, which
+    // reads it once for the change, then the next boundary skips it.
+    fixture.w32(C2 + ccountry::OWNED_STATE_COUNT, 0);
+    assert!(focus_hour(&mut captured, &fixture, 6, &mut store, &changes).is_empty());
+    assert_eq!(
+        focus_hour(&mut captured, &fixture, 24, &mut store, &changes),
+        [1, 2]
+    );
+    assert!(focus_hour(&mut captured, &fixture, 25, &mut store, &changes).is_empty());
+    assert_eq!(
+        focus_hour(&mut captured, &fixture, 48, &mut store, &changes),
+        [1]
+    );
+    // It gains a state: read at the next boundary.
+    fixture.w32(C2 + ccountry::OWNED_STATE_COUNT, 3);
+    assert!(focus_hour(&mut captured, &fixture, 50, &mut store, &changes).is_empty());
+    assert_eq!(
+        focus_hour(&mut captured, &fixture, 72, &mut store, &changes),
+        [1, 2]
+    );
+}
+
+/// Focus is read for every country at the first hour after the daily tick,
+/// which advances every country's progress, and between those only for the
+/// countries a hooked focus writer marked: a selection made at hour 5 is
+/// read at the next hour, not at the next day. Daily progress compares equal
+/// at the boundary; a selection no hook saw disables reuse there.
+#[test]
+fn focus_is_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write() {
+    use crate::country_input_changes::{Domain, Table};
+    use engine::cnational_focus_progress as progress;
+    use focus_test_kit::{FC2, R1, R2};
+    let mut fixture = focus_test_kit::Fixture::world();
+    let changes = Domain::enabled(64);
+    let mut captured = focus_test_kit::Fixture::captured();
+    let mut store = SliceFingerprints::new();
+    // Nothing held: every country, off the boundary too.
+    assert_eq!(
+        focus_hour(&mut captured, &fixture, 5, &mut store, &changes),
+        [1, 2]
+    );
+    // No rotating slice: a quiet hour reads nobody, country 1's slot too.
+    assert!(focus_hour(&mut captured, &fixture, 1, &mut store, &changes).is_empty());
+    assert!(focus_hour(&mut captured, &fixture, 6, &mut store, &changes).is_empty());
+    // A selection marks country 2: read at the next hour, alone.
+    fixture.w64(R2 + progress::PROGRESS, 4_000);
+    changes.write(Table::Focus, 2);
+    assert_eq!(
+        focus_hour(&mut captured, &fixture, 7, &mut store, &changes),
+        [2]
+    );
+    assert_eq!(captured.focus.rows[0].progress, 4_000);
+    assert!(focus_hour(&mut captured, &fixture, 8, &mut store, &changes).is_empty());
+    // The daily tick advances both countries' progress: every country is
+    // read at the boundary, and the unmarked progress compares equal.
+    fixture.w64(R1 + progress::PROGRESS, 99_000);
+    fixture.w64(R2 + progress::PROGRESS, 9_000);
+    assert_eq!(
+        focus_hour(&mut captured, &fixture, 24, &mut store, &changes),
+        [1, 2]
+    );
+    assert_eq!(captured.focus.rows[0].progress, 99_000);
+    assert!(!changes.poisoned(Table::Focus));
+    // A selection no hook marked waits for the boundary, whose comparison
+    // disables reuse; every country is read from then on.
+    fixture.w64(R1 + progress::CURRENT, FC2 as u64);
+    assert!(focus_hour(&mut captured, &fixture, 25, &mut store, &changes).is_empty());
+    assert_eq!(
+        focus_hour(&mut captured, &fixture, 48, &mut store, &changes),
+        [1, 2]
+    );
+    assert!(changes.poisoned(Table::Focus));
+    assert_eq!(
+        focus_hour(&mut captured, &fixture, 49, &mut store, &changes),
+        [1, 2]
+    );
+}
+
+/// A drifting country no writer marked is carried at its slice: of its
+/// roster only the status, roster and slot headers, its slots and their
+/// assigned technology's progress are read, and its rows equal a full read
+/// of the same memory. Before, the slice read every technology's fields and
+/// template again.
+#[test]
+fn an_unmarked_technology_slice_reads_only_progress() {
+    use crate::country_input_changes::Domain;
+    let mut fixture = technology_fixture();
+    let changes = Domain::enabled(64);
+    let mut captured = Captured::vacant();
+    let mut enabled = [false; N];
+    enabled[2] = true;
+    enabled[3] = true;
+    enabled[4] = true;
+    let mut store = SliceFingerprints::new();
+    struct Reads<'a> {
+        memory: engine::memory::SliceMemory<'a>,
+        addresses: std::cell::RefCell<Vec<usize>>,
+    }
+    impl Memory for Reads<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.addresses.borrow_mut().push(address);
+            self.memory.copy(address, destination)
+        }
+    }
+    let mut at = |fixture: &focus_test_kit::Fixture, hour: i32| {
+        crate::sampled_verify::begin_hour(hour);
+        captured.technology_selection.reset(hour, false);
+        let memory = Reads {
+            memory: fixture.memory(),
+            addresses: Default::default(),
+        };
+        let result = acquire(
+            &memory,
+            focus_test_kit::BASE,
+            0x1_0000,
+            captured.buffers(),
+            &enabled,
+            Slices {
+                technologies: &mut store,
+                focus: &mut SliceFingerprints::new(),
+                changes: &changes,
+            },
+            None,
+        );
+        let rows = captured.technologies.rows[..result.outcomes[2].len()].to_vec();
+        (rows, memory.addresses.into_inner())
+    };
+    // Country 1's one research slot is assigned its second technology.
+    assign_slots(&mut fixture, 0, &[fixture_technology(0, 1)]);
+    // The first hour reads and holds both rosters.
+    at(&fixture, 5);
+    fixture.w64(
+        fixture_technology(0, 1) + ctechnology::LIVE_PROGRESS,
+        310_000,
+    );
+    let (carried, addresses) = at(&fixture, 25);
+    // The unassigned technology and the definitions are not read at all;
+    // the assigned one only by the ResearchSlots walk and its progress.
+    let unassigned = fixture_technology(0, 0);
+    assert!(
+        addresses.iter().all(|&address| {
+            !(unassigned..unassigned + 0x200).contains(&address)
+                && (0..2).all(|template| {
+                    address != 0x1_c000 + template * 0x600 + ctechnology_template::ID
+                })
+        }),
+        "a carried slice reads no unassigned technology and no definition"
+    );
+    assert_eq!(carried.len(), 2);
+    assert_eq!(carried[1].progress_raw, 310_000);
+    // The same rows as a full read of the same memory.
+    let (full, _) = at(&fixture, 2 * 576 + 1);
+    assert_eq!(carried, full);
+}
+
+/// Memory that fails reads of `address` while `remaining` lasts, recording
+/// the progress reads in order.
+struct Faulty<'a> {
+    memory: engine::memory::SliceMemory<'a>,
+    address: usize,
+    remaining: std::cell::Cell<u32>,
+    progress: std::cell::RefCell<Vec<usize>>,
+}
+
+impl Memory for Faulty<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        if (address & 0xff) == ctechnology::LIVE_PROGRESS & 0xff
+            && (0x1_b000..0x1_b800).contains(&address)
+        {
+            self.progress.borrow_mut().push(address);
+        }
+        if address == self.address && self.remaining.get() != 0 {
+            self.remaining.set(self.remaining.get() - 1);
+            return false;
+        }
+        self.memory.copy(address, destination)
+    }
+}
+
+/// A carried roster reads its assigned technologies' progress in roster
+/// order, whatever the slots' order. A progress read that fails is the
+/// country's failure when its bounded serial fallback also fails. The
+/// relaxed read-order rule permits a gather to consume a transient fault
+/// and publish the successful serial fallback's rows.
+#[test]
+fn a_carried_roster_reads_progress_in_roster_order_and_keeps_a_persistent_failure() {
+    use crate::country_input_changes::Domain;
+    let mut fixture = technology_fixture();
+    // Slot 0 researches the second technology, slot 1 the first.
+    assign_slots(
+        &mut fixture,
+        0,
+        &[fixture_technology(0, 1), fixture_technology(0, 0)],
+    );
+    let changes = Domain::enabled(64);
+    let mut captured = Captured::vacant();
+    let mut enabled = [false; N];
+    enabled[2] = true;
+    enabled[3] = true;
+    enabled[4] = true;
+    let mut store = SliceFingerprints::new();
+    let mut at = |fixture: &focus_test_kit::Fixture, hour: i32, address: usize, faults: u32| {
+        crate::sampled_verify::begin_hour(hour);
+        captured.technology_selection.reset(hour, false);
+        let memory = Faulty {
+            memory: fixture.memory(),
+            address,
+            remaining: std::cell::Cell::new(faults),
+            progress: Default::default(),
+        };
+        let result = acquire(
+            &memory,
+            focus_test_kit::BASE,
+            0x1_0000,
+            captured.buffers(),
+            &enabled,
+            Slices {
+                technologies: &mut store,
+                focus: &mut SliceFingerprints::new(),
+                changes: &changes,
+            },
+            None,
+        );
+        (result.outcomes[2], memory.progress.into_inner())
+    };
+    // Held at hour 5.
+    assert!(matches!(at(&fixture, 5, 0, 0).0, Outcome::Rows { .. }));
+    let first = fixture_technology(0, 0) + ctechnology::LIVE_PROGRESS;
+    let second = fixture_technology(0, 1) + ctechnology::LIVE_PROGRESS;
+    // Slice 1 carries: the first technology's progress before the second's
+    // (the ResearchSlots walk then reads them in slot order).
+    let (outcome, progress) = at(&fixture, 25, 0, 0);
+    assert_eq!(outcome, Outcome::Rows { len: 2 });
+    assert_eq!(progress[..2], [first, second]);
+    // A transient gather fault is consumed; the one serial fallback succeeds.
+    let (outcome, progress) = at(&fixture, 49, first, 1);
+    assert_eq!(outcome, Outcome::Rows { len: 2 });
+    assert_eq!(progress[..3], [first, first, second]);
+    // The held country remains usable, but a persistent fault still fails.
+    let (outcome, _) = at(&fixture, 73, first, u32::MAX);
+    assert!(
+        matches!(outcome, Outcome::Unavailable { .. }),
+        "{outcome:?}"
+    );
+}
+
+/// A persistent fault at each operand a carried roster of country 1 reads
+/// (its status pointer and identity, roster header and assigned
+/// technology's progress) gives the carried slice exactly the
+/// ResearchTechnologies outcome a full read meets at the same fault.
+#[test]
+fn a_carried_roster_fails_as_the_full_walk_at_each_fault() {
+    use crate::country_input_changes::Domain;
+    let mut fixture = technology_fixture();
+    assign_slots(&mut fixture, 0, &[fixture_technology(0, 1)]);
+    let status = 0x1_a000;
+    let faults = [
+        0x1_2000 + ccountry::TECHNOLOGY_STATUS,
+        status,
+        status + ctechnology_status::COUNTRY,
+        status + ctechnology_status::TECHNOLOGIES_DATA,
+        fixture_technology(0, 1) + ctechnology::LIVE_PROGRESS,
+    ];
+    let capture = |store: &mut SliceFingerprints,
+                   changes: &Domain,
+                   (hour, force_full): (i32, bool),
+                   (address, remaining): (usize, u32)| {
+        crate::sampled_verify::begin_hour(hour);
+        let mut captured = Captured::vacant();
+        let mut enabled = [false; N];
+        enabled[2] = true;
+        enabled[3] = true;
+        enabled[4] = true;
+        captured.technology_selection.reset(hour, force_full);
+        let memory = Faulty {
+            memory: fixture.memory(),
+            address,
+            remaining: std::cell::Cell::new(remaining),
+            progress: Default::default(),
+        };
+        acquire(
+            &memory,
+            focus_test_kit::BASE,
+            0x1_0000,
+            captured.buffers(),
+            &enabled,
+            Slices {
+                technologies: store,
+                focus: &mut SliceFingerprints::new(),
+                changes,
+            },
+            None,
+        )
+        .outcomes[2]
+    };
+    for address in faults {
+        let full = capture(
+            &mut SliceFingerprints::new(),
+            &Domain::enabled(64),
+            (0, true),
+            (address, u32::MAX),
+        );
+        assert!(
+            matches!(full, Outcome::Unavailable { .. }),
+            "{address:#x}: {full:?}"
+        );
+        let changes = Domain::enabled(64);
+        let mut store = SliceFingerprints::new();
+        assert!(matches!(
+            capture(&mut store, &changes, (5, false), (0, 0)),
+            Outcome::Rows { .. }
+        ));
+        let carried = capture(&mut store, &changes, (25, false), (address, u32::MAX));
+        assert_eq!(carried, full, "{address:#x}");
+    }
+}
+
+/// Memory that fails the `nth` read (from one) of `address`, and every later
+/// read when `persistent` is set, counting every read of it.
+struct NthFault<'a> {
+    memory: engine::memory::SliceMemory<'a>,
+    address: usize,
+    nth: u32,
+    persistent: bool,
+    reads: std::cell::Cell<u32>,
+}
+
+impl Memory for NthFault<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        if address == self.address {
+            let read = self.reads.get() + 1;
+            self.reads.set(read);
+            if read == self.nth || (self.persistent && read > self.nth) {
+                return false;
+            }
+        }
+        self.memory.copy(address, destination)
+    }
+}
+
+/// Two research slots assigned one technology: the carried roster reads
+/// its progress once, as the full walk's roster row does, so the progress
+/// reads give the carried slice the full walk's outcomes. Under the relaxed
+/// rule, the slot gather may consume a one-shot second-read fault and publish
+/// its successful fallback; a persistent second-read fault still refuses
+/// ResearchSlots. The carried technology roster itself reads progress once.
+#[test]
+fn two_slots_on_one_technology_read_its_progress_once_in_the_carried_roster() {
+    use crate::country_input_changes::Domain;
+    let mut fixture = technology_fixture();
+    let shared = fixture_technology(0, 1);
+    assign_slots(&mut fixture, 0, &[shared, shared]);
+    let progress = shared + ctechnology::LIVE_PROGRESS;
+    let capture = |store: &mut SliceFingerprints,
+                   changes: &Domain,
+                   (hour, force_full): (i32, bool),
+                   (nth, persistent): (u32, bool)| {
+        crate::sampled_verify::begin_hour(hour);
+        let mut captured = Captured::vacant();
+        let mut enabled = [false; N];
+        enabled[2] = true;
+        enabled[3] = true;
+        enabled[4] = true;
+        captured.technology_selection.reset(hour, force_full);
+        let memory = NthFault {
+            memory: fixture.memory(),
+            address: progress,
+            nth,
+            persistent,
+            reads: std::cell::Cell::new(0),
+        };
+        let outcomes = acquire(
+            &memory,
+            focus_test_kit::BASE,
+            0x1_0000,
+            captured.buffers(),
+            &enabled,
+            Slices {
+                technologies: store,
+                focus: &mut SliceFingerprints::new(),
+                changes,
+            },
+            None,
+        )
+        .outcomes;
+        (outcomes[2..4].to_vec(), memory.reads.get())
+    };
+    for (nth, persistent) in [(0, false), (2, false), (2, true)] {
+        let (full, full_reads) = capture(
+            &mut SliceFingerprints::new(),
+            &Domain::enabled(64),
+            (0, true),
+            (nth, persistent),
+        );
+        let changes = Domain::enabled(64);
+        let mut store = SliceFingerprints::new();
+        let (held, _) = capture(&mut store, &changes, (5, false), (0, false));
+        assert!(
+            held.iter()
+                .all(|outcome| matches!(outcome, Outcome::Rows { .. }))
+        );
+        let (carried, carried_reads) =
+            capture(&mut store, &changes, (25, false), (nth, persistent));
+        assert_eq!(carried_reads, full_reads, "progress reads, fault {nth}");
+        // A slice hour publishes only its countries' technology rows, so
+        // complete ResearchTechnologies rows differ in length from the full
+        // hour's; any other outcome must be the full walk's. ResearchSlots is
+        // walked whole in both.
+        match (full[0], carried[0]) {
+            (Outcome::Rows { .. }, Outcome::Rows { .. }) => {}
+            (full, carried) => assert_eq!(carried, full, "fault {nth}"),
+        }
+        assert!(matches!(carried[0], Outcome::Rows { .. }), "{carried:?}");
+        assert_eq!(carried[1], full[1], "fault {nth}");
+        if persistent {
+            assert!(
+                matches!(carried[1], Outcome::Unavailable { .. }),
+                "{carried:?}"
+            );
+        } else {
+            assert!(matches!(carried[1], Outcome::Rows { .. }), "{carried:?}");
+        }
+    }
+}

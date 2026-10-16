@@ -1,3 +1,6 @@
+import { validatePreparationReply, validatePreparationPreferences } from '../shell/preparation/contract.ts';
+import { validateProductReply } from './client.ts';
+import type { PreparationAction, PreparationRequest, PreparationReply, PreparationPreferences } from '../shell/preparation/contract';
 import type { SourceReply } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource, HistoryCacheReply, MapSettingsReply, ProductReply, ProductRequest, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
@@ -34,7 +37,7 @@ function chooseRecording(): Promise<string | null> {
 async function request<T>(body: { type: string; request?: ProductRequest; sourceId?: string; [key: string]: unknown }, signal?: AbortSignal,
   releaseLate?: (value: T) => Promise<void>): Promise<T> {
   const lane: BrowserRequestLane = body.type === 'release' ? 'control'
-    : body.type === 'product' && interactiveProducts.has(body.request!.product) ? 'interactive' : 'history';
+    : body.type === 'preparedQuery' || body.type === 'preparation' || body.type === 'product' && interactiveProducts.has(body.request!.product) ? 'interactive' : 'history';
   return requests.run(lane, async active => {
     const response = await fetch('/api/recordings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: active });
     const text = await response.text();
@@ -54,6 +57,10 @@ if (typeof window !== 'undefined') addEventListener('pagehide', event => {
   for (const sourceId of leases) navigator.sendBeacon('/api/recordings', new Blob([JSON.stringify({ type: 'release', sourceId })], { type: 'application/json' }));
 });
 
+async function preparation(action: PreparationAction, query: PreparationRequest, signal: AbortSignal) {
+  return validatePreparationReply(await request<PreparationReply>({ type: 'preparation', id: query.requestId, sourceId: query.sourceId, revision: query.revision, action }, signal), query);
+}
+
 export const browserDashboardClient: DashboardClient = {
   available: true, nativeMaps: false,
   contentFolders: signal => request({ type: 'contentFolders' }, signal),
@@ -64,6 +71,16 @@ export const browserDashboardClient: DashboardClient = {
   setReplayFolder: folder => request<ReplayLibrary>({ type: 'setReplayFolder', folder }),
   chooseReplayFolder: (initial = '') => request({ type: 'chooseFolder', kind: 'replay', initial }),
 
+  preparationPreferences: async (enabled, signal) => validatePreparationPreferences(await request<PreparationPreferences>({ type: 'preparationPreferences', id: crypto.randomUUID(), enabled }, signal)),
+  preparationStatus: (query, signal) => preparation('status', query, signal),
+  async preparedQuery<T>(source: DashboardSource, product: string, params: unknown, options: { signal: AbortSignal }): Promise<T> {
+    const query = { sourceId: source.id, revision: source.revision, product, params };
+    const reply = await request<ProductReply<T>>({ type: 'preparedQuery', request: query }, options.signal);
+    return validateProductReply(reply, query).data;
+  },
+  prepareSource: (query, signal) => preparation('start', query, signal),
+  cancelPreparation: (query, signal) => preparation('cancel', query, signal),
+  clearPreparation: (query, signal) => preparation('clear', query, signal),
   async mapSettings(sourceId, revision, settings, signal, target = { scope: 'campaign' }) {
     const reply = await request<MapSettingsReply>({ type: 'mapSettings', sourceId, revision, settings, target }, signal);
     if (reply.sourceId !== sourceId || reply.revision !== revision) throw new Error('Map settings do not match this campaign');

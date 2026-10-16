@@ -114,18 +114,6 @@ fn trade_flows_read_every_hour_and_never_cross_gaps() {
 }
 
 #[test]
-fn trade_flows_for_chosen_countries_keep_only_their_deals() {
-    use crate::products::trade_flows::scan;
-    let tags = ["SPR".to_owned()];
-    let scanned = scan(&trade_replay(), 1, Some(&tags), &AtomicBool::new(false)).unwrap();
-    let (countries, flows) = scanned.reply_flows();
-    assert_eq!(countries, ["GER", "SPR"]);
-    assert_eq!(flows.len(), 1);
-    // What the deals are known for does not depend on who is asked about.
-    assert_eq!(span_pairs(&scanned.known), [(100, 104), (106, 108)]);
-}
-
-#[test]
 fn trade_flows_are_unknown_after_a_missing_table_and_count_what_they_cannot_name() {
     use crate::products::trade_flows::scan;
     let deal = [(0x33, 21, 9001, 800_000), (0x66, 777, 9001, 5)];
@@ -380,6 +368,10 @@ fn world_trade_frame(hour: i32, count: u32) -> DecodedFrame {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn a_whole_world_of_trade_fits_one_reply_with_every_flow() {
     use crate::products::{
         LoadContext, Product,
@@ -607,6 +599,9 @@ fn trade_country_census_stays_complete_when_chosen_deals_are_filtered() {
     let selected = scan(&replay, 1, Some(&["SPR".into()]), &AtomicBool::new(false)).unwrap();
     assert_eq!(all.reply_flows().1.len(), 2);
     assert_eq!(selected.reply_flows().1.len(), 1);
+    assert_eq!(selected.reply_flows().0, ["GER", "SPR"]);
+    // Coverage does not depend on the chosen countries.
+    assert_eq!(span_pairs(&selected.known), [(100, 104), (106, 108)]);
     assert_eq!(
         serde_json::to_value(&selected.country_identities).unwrap(),
         serde_json::to_value(&all.country_identities).unwrap(),

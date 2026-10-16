@@ -106,7 +106,7 @@ pub(super) fn assign_sides_with_anchors(
 }
 
 /// Only assignment identity is needed to check whether published keys change.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct SideKey {
     pub present: String,
     factions: Vec<u64>,

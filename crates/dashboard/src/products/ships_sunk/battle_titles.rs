@@ -14,7 +14,7 @@ use installed_content::{
     localisation::Argument, province_geometry::ProvinceGeometry, regions::StrategicRegion,
 };
 use replay::{
-    frame::FrameDecoder,
+    frame::{DecodedFrame, FrameDecoder},
     rows::{TableId, tables},
 };
 use serde::{Deserialize, Serialize};
@@ -35,7 +35,7 @@ pub struct ShipsSunkBattleTitlesParams {
     pub rows: Vec<u32>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ShipBattleTitle {
     pub index: u32,
@@ -45,7 +45,7 @@ pub struct ShipBattleTitle {
     pub missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ShipsSunkBattleTitlesReply {
     pub rows: Vec<ShipBattleTitle>,
@@ -68,10 +68,17 @@ struct Geography {
 }
 impl Geography {
     fn read(cat: &Catalogue) -> Result<Self, String> {
+        let regions =
+            installed_content::regions::read(&cat.content.layers).map_err(|error| error.to_string());
+        Self::from_regions(cat, regions.as_ref())
+    }
+    fn from_regions(
+        cat: &Catalogue,
+        regions: Result<&installed_content::regions::StrategicRegions, &String>,
+    ) -> Result<Self, String> {
         let geometry =
             ProvinceGeometry::read(&cat.content.layers).map_err(|error| error.to_string())?;
-        let regions =
-            installed_content::regions::read(&cat.content.layers).map_err(|error| error.to_string())?;
+        let regions = regions.map_err(Clone::clone)?;
         let states = cat.cached_states()?;
         let candidates =
             battle_name_candidates(&regions.regions, states.states.definitions(), &|province| {
@@ -95,12 +102,13 @@ impl Geography {
         }
         let warnings = regions
             .notes
-            .into_iter()
+            .iter()
+            .cloned()
             .chain(states.warnings.iter().map(|note| note.message.clone()))
             .collect();
         Ok(Self {
             geometry,
-            regions: regions.regions,
+            regions: regions.regions.clone(),
             province_regions,
             candidates,
             factor: states
@@ -133,6 +141,24 @@ fn geography(source: &Source, cat: &Arc<Catalogue>) -> Result<Arc<Geography>, St
     let geo = Geography::read(cat).map(Arc::new);
     cache.content = Some((Arc::clone(cat), geo.clone()));
     geo
+}
+
+pub(crate) fn configure_geography(
+    source: &Source,
+    cat: &Arc<Catalogue>,
+    content: &super::NameContent,
+) {
+    let state = source.state::<Cache>();
+    let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+    if cache
+        .content
+        .as_ref()
+        .is_some_and(|(from, _)| Arc::ptr_eq(from, cat))
+    {
+        return;
+    }
+    let geo = Geography::from_regions(cat, content.regions.as_ref()).map(Arc::new);
+    cache.content = Some((Arc::clone(cat), geo));
 }
 
 // Battle title arguments receive text rather than a localisation key.
@@ -201,6 +227,44 @@ pub(crate) fn check_content(cat: &Catalogue) -> Result<Vec<String>, String> {
     Ok(warnings)
 }
 
+fn initial(index: u32, ship: &sinkings::ShipEvent) -> ShipBattleTitle {
+    let missing = (ship.entry.battle != 0 && ship.entry.cause_record == 0).then(|| {
+        if ship.entry.province_present == 0 {
+            "Battle province not recorded"
+        } else {
+            "Battle title hour not recorded"
+        }
+        .to_owned()
+    });
+    ShipBattleTitle {
+        index,
+        hour: ship.read_hour,
+        name: None,
+        missing,
+    }
+}
+fn title_value<'a>(
+    geo: &Geography,
+    cat: &Catalogue,
+    (region, picked): (u32, Option<u32>),
+    place: impl FnOnce(u32) -> Option<&'a place_names::PlaceName>,
+) -> Result<String, String> {
+    let name = if let Some(province) = picked {
+        let name = place(province).ok_or_else(|| "Battle-name province not resolved".to_owned())?;
+        if let Some(reason) = &name.missing {
+            return Err(reason.clone());
+        }
+        name.name
+            .clone()
+            .ok_or_else(|| "Battle-name province not recorded".to_owned())?
+    } else {
+        let key = &geo.regions[&region].name_key;
+        cat.localised(key, View::Plain)
+            .ok_or_else(|| format!("Region title {key} is unavailable in the recorded language"))?
+    };
+    title(cat, &name)
+}
+
 fn checked(mut reply: ShipsSunkBattleTitlesReply) -> io::Result<ShipsSunkBattleTitlesReply> {
     let mut refused = Refusals::default();
     for row in &reply.rows {
@@ -258,31 +322,16 @@ impl Product for ShipsSunkBattleTitles {
                 .get(index as usize)
                 .ok_or_else(|| crate::invalid("Unknown ships sunk title row"))?;
             let at = reply.rows.len();
-            reply.rows.push(ShipBattleTitle {
-                index,
-                hour: ship.read_hour,
-                name: None,
-                missing: None,
-            });
-            // The full reference identifies the group; never use a low word
-            // or guess a result by place/date. Causes have no battle.
-            if ship.entry.battle != 0 && ship.entry.cause_record == 0 {
-                reply.rows[at].missing = Some(
-                    if ship.entry.province_present == 0 {
-                        "Battle province not recorded"
-                    } else {
-                        "Battle title hour not recorded"
-                    }
-                    .into(),
-                );
-                if ship.entry.province_present != 0 {
-                    wanted
-                        .entry(ship.read_hour)
-                        .or_default()
-                        .entry(ship.entry.province)
-                        .or_default()
-                        .push(at);
-                }
+            let row = initial(index, ship);
+            let needs = row.missing.is_some();
+            reply.rows.push(row);
+            if needs && ship.entry.province_present != 0 {
+                wanted
+                    .entry(ship.read_hour)
+                    .or_default()
+                    .entry(ship.entry.province)
+                    .or_default()
+                    .push(at);
             }
         }
         if wanted.is_empty() {
@@ -412,27 +461,8 @@ impl Product for ShipsSunkBattleTitles {
                             .cloned()
                             .unwrap_or_else(|| "Battle title hour not recorded".into())
                     })
-                    .and_then(|(region, picked)| {
-                        let name = if let Some(province) = picked {
-                            let name = names
-                                .get(&(*province, hour))
-                                .ok_or_else(|| "Battle-name province not resolved".to_owned())?;
-                            if let Some(reason) = &name.missing {
-                                return Err(reason.clone());
-                            }
-                            name.name
-                                .clone()
-                                .ok_or_else(|| "Battle-name province not recorded".to_owned())?
-                        } else {
-                            let key = &geo.regions[region].name_key;
-                            // Copy the template's name text, including its empty default.
-                            cat.localised(key, View::Plain).ok_or_else(|| {
-                                format!(
-                                    "Region title {key} is unavailable in the recorded language"
-                                )
-                            })?
-                        };
-                        title(&cat, &name)
+                    .and_then(|selection| {
+                        title_value(&geo, &cat, *selection, |picked| names.get(&(picked, hour)))
                     });
                 for &at in rows {
                     match &value {
@@ -449,5 +479,283 @@ impl Product for ShipsSunkBattleTitles {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct PreparedTitle {
+    row: ShipBattleTitle,
+    place: Option<place_names::PlaceName>,
+    error: Option<String>,
+}
+#[derive(Default, Serialize, Deserialize)]
+pub(crate) struct Prepared {
+    rows: crate::prepared::series::Accumulator,
+    metadata: crate::prepared::series::Accumulator,
+    published: usize,
+}
+#[derive(Serialize, Deserialize)]
+struct TitleWarnings {
+    geography: Vec<String>,
+    places: Vec<String>,
+}
+impl Prepared {
+    pub(crate) fn observe(
+        &mut self,
+        source: &Source,
+        context: &LoadContext,
+        frame: &DecodedFrame,
+        ships: &[sinkings::ShipEvent],
+        indices: &[u32],
+        flag: &AtomicBool,
+    ) -> io::Result<()> {
+        check_cancel(flag)?;
+        // Global immutable scan indices; the shared scan alone discovers occurrences.
+        let first = indices.partition_point(|index| (*index as usize) < self.published);
+        let new: Vec<_> = indices[first..]
+            .iter()
+            .copied()
+            .zip(&ships[first..])
+            .collect();
+        let mut rows: Vec<_> = new
+            .iter()
+            .map(|(index, ship)| PreparedTitle {
+                row: initial(*index, ship),
+                place: None,
+                error: None,
+            })
+            .collect();
+        let mut notes = TitleWarnings {
+            geography: Vec::new(),
+            places: Vec::new(),
+        };
+        let wanted: Vec<_> = (0..new.len())
+            .filter(|&at| rows[at].row.missing.is_some() && new[at].1.entry.province_present != 0)
+            .map(|at| (at, new[at].1))
+            .collect();
+        if !wanted.is_empty() {
+            let content = context
+                .content()
+                .and_then(|content| catalogue::catalogue(source, content));
+            let geo = content
+                .as_ref()
+                .map_err(ToString::to_string)
+                .and_then(|cat| geography(source, cat));
+            match (content, geo) {
+                (Ok(cat), Ok(geo)) => {
+                    notes.geography = geo.warnings.clone();
+                    match recorded_rows::<tables::Provinces>(frame) {
+                        Ok(provinces) => {
+                            let points = provinces
+                                .iter()
+                                .map(|row| (row.id, row.victory_points))
+                                .collect();
+                            let selections: BTreeMap<_, _> = wanted
+                                .iter()
+                                .map(|(at, ship)| (*at, pick(&geo, &points, ship.entry.province)))
+                                .collect();
+                            let requests: BTreeSet<_> = selections
+                                .values()
+                                .filter_map(|value| {
+                                    value.as_ref().ok().and_then(|(_, province)| *province)
+                                })
+                                .collect();
+                            let places = if requests.is_empty() {
+                                Ok(place_names::PlaceNamesReply {
+                                    places: vec![],
+                                    states: vec![],
+                                    warnings: vec![],
+                                })
+                            } else {
+                                place_names::at_frame(
+                                    source,
+                                    &place_names::PlaceNamesParams {
+                                        branch_id: frame.branch.to_string(),
+                                        land: false,
+                                        places: requests
+                                            .into_iter()
+                                            .map(|province_id| place_names::PlaceNameRequest {
+                                                province_id,
+                                                hour: frame.hour,
+                                            })
+                                            .collect(),
+                                        states: vec![],
+                                    },
+                                    context,
+                                    frame,
+                                    flag,
+                                )
+                            };
+                            match places {
+                                Ok(places) => {
+                                    notes.places = places.warnings;
+                                    for (at, selection) in selections {
+                                        rows[at].place = selection
+                                            .as_ref()
+                                            .ok()
+                                            .and_then(|(_, picked)| {
+                                                picked.and_then(|province| {
+                                                    places
+                                                        .places
+                                                        .iter()
+                                                        .find(|name| name.province_id == province)
+                                                })
+                                            })
+                                            .cloned();
+                                        let value = selection.and_then(|selection| {
+                                            title_value(&geo, &cat, selection, |_| {
+                                                rows[at].place.as_ref()
+                                            })
+                                        });
+                                        match value {
+                                            Ok(name) => {
+                                                rows[at].row.name = Some(name);
+                                                rows[at].row.missing = None;
+                                            }
+                                            Err(reason) => rows[at].row.missing = Some(reason),
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    for (at, selection) in selections {
+                                        match selection {
+                                            Ok((region, None)) => match title_value(
+                                                &geo,
+                                                &cat,
+                                                (region, None),
+                                                |_| None,
+                                            ) {
+                                                Ok(name) => {
+                                                    rows[at].row.name = Some(name);
+                                                    rows[at].row.missing = None;
+                                                }
+                                                Err(reason) => rows[at].row.missing = Some(reason),
+                                            },
+                                            Ok((_, Some(_))) => {
+                                                rows[at].error = Some(error.to_string())
+                                            }
+                                            Err(reason) => rows[at].row.missing = Some(reason),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            for (at, _) in &wanted {
+                                rows[*at].error = Some(error.to_string());
+                            }
+                        }
+                    }
+                }
+                (Err(error), _) => {
+                    for (at, _) in &wanted {
+                        rows[*at].row.missing = Some(error.to_string());
+                    }
+                }
+                (_, Err(reason)) => {
+                    for (at, _) in &wanted {
+                        rows[*at].row.missing = Some(reason.clone());
+                    }
+                }
+            }
+        }
+        if !rows.is_empty() {
+            self.metadata.event(0, frame.hour, &notes)?;
+        }
+        for row in rows {
+            self.rows.event(0, frame.hour, &row)?;
+        }
+        self.rows.through(frame.hour);
+        self.metadata.through(frame.hour);
+        if let Some(index) = indices.last() {
+            self.published = self.published.max(*index as usize + 1);
+        }
+        Ok(())
+    }
+    pub(crate) fn flush(
+        &mut self,
+        writer: &mut store::Writer,
+        branch: u64,
+        flag: &AtomicBool,
+    ) -> io::Result<()> {
+        self.rows
+            .flush(writer, &format!("sinking-titles-{branch}"), 0, flag)?;
+        self.metadata
+            .flush(writer, &format!("sinking-title-warnings-{branch}"), 0, flag)
+    }
+}
+pub(crate) fn prepared_query(
+    params: &ShipsSunkBattleTitlesParams,
+    store: &store::Store,
+    key: &store::SourceKey,
+    flag: &AtomicBool,
+) -> io::Result<ShipsSunkBattleTitlesReply> {
+    ShipsSunkBattleTitles::validate(params).map_err(crate::invalid)?;
+    let branch: u64 = params.branch_id.parse().expect("validated branch");
+    let mut rows =
+        crate::prepared::series::Reader::new(store, key, format!("sinking-titles-{branch}"), flag)?;
+    let mut notes = crate::prepared::series::Reader::new(
+        store,
+        key,
+        format!("sinking-title-warnings-{branch}"),
+        flag,
+    )?;
+    let mut reply = ShipsSunkBattleTitlesReply {
+        rows: vec![],
+        warnings: vec![],
+    };
+    let mut place_names = BTreeMap::new();
+    let mut geography_reads = BTreeSet::new();
+    let mut place_warnings = Vec::new();
+    let mut geography_written = false;
+    let mut place_reads = BTreeSet::new();
+    for &index in &params.rows {
+        check_cancel(flag)?;
+        let value = rows
+            .events(&[0], i32::MIN, i32::MAX, u64::from(index), 1)?
+            .rows
+            .into_iter()
+            .next()
+            .ok_or_else(|| crate::invalid("Unknown ships sunk title row"))?;
+        let title: PreparedTitle = serde_json::from_value(value.row)?;
+        if let Some(error) = title.error {
+            return Err(crate::invalid(error));
+        }
+        // No battle/cause needs neither geography nor place warnings.
+        if title.row.name.is_some()
+            || (title
+                .row
+                .missing
+                .as_deref()
+                .is_some_and(|reason| reason != "Battle province not recorded"))
+        {
+            geography_reads.insert(title.row.hour);
+        }
+        if let Some(place) = title.place {
+            place_reads.insert(title.row.hour);
+            place_names.insert((place.province_id, place.hour), place);
+        }
+        reply.rows.push(title.row);
+    }
+    for hour in geography_reads {
+        if let Some((_, value)) = notes.latest_event(0, hour)? {
+            let notes: TitleWarnings = serde_json::from_value(value)?;
+            // The old builder reports geography once per request, across read hours.
+            if !geography_written {
+                reply.warnings.extend(notes.geography);
+                geography_written = true;
+            }
+            if place_reads.contains(&hour) {
+                place_warnings.extend(notes.places);
+            }
+        }
+    }
+    if !place_names.is_empty() {
+        let named = place_names::checked(place_names::PlaceNamesReply {
+            places: place_names.into_values().collect(),
+            states: vec![],
+            warnings: place_warnings,
+        })?;
+        reply.warnings.extend(named.warnings);
+    }
+    checked(reply)
+}
 #[cfg(test)]
 mod tests;

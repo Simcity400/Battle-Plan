@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { dayLabel, tracePath } from '../../charts/draw';
+import { drawApproximateSpans, drawLineSummary } from '../../charts/chartSummary';
+import type { ChartSummary } from '../../charts/chartSummary';
+import { plotFrame } from '../../charts/frame';
 import { jumpItem } from '../../charts/jump';
 import { categoricalPalette, SECONDARY_DASH } from '../../charts/palette';
 import { curveSegments, runAt, spansCovered } from '../../charts/series';
@@ -19,14 +22,15 @@ import { groupRuns, groupUnobserved, worldFilter } from '../../dashboard/groups'
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
+import { usePreparedWindow } from '../../dashboard/preparedSeries';
+import { useParityRows } from '../../dashboard/parityRows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useHoverLabels } from '../../dashboard/useHoverLabels';
 import { inSpans } from '../../charts/timeline/layout';
-import type { AutonomyReply } from '../../generated/dashboard';
+import { mergePreparedAutonomy, validatePreparedAutonomy } from './preparedAutonomy';
 import { mix } from '../../shell/appearance/color';
 import { absentAt, autonomyViews, chosenViews, clipSubject, formatProgress, formatScore, laneLabels, levelName, membershipUnknownFor, noLanesMessage, overlordIdentityUnknownFor, runOf, subjectLane,
-  validateAutonomyReply } from './autonomyData';
+  } from './autonomyData';
 import type { SubjectLane } from './autonomyData';
 import { OPTIONS } from './definition';
 import './autonomy.css';
@@ -41,11 +45,14 @@ const LANE_PAD = 8;
 /** One subject's lane: its level over time as coloured bands,
  * the move-up and move-down scores as the dashed top and bottom edges, its
  * progress between them as a line, and a dot where the level changed. */
-function paintLane(ctx: CanvasRenderingContext2D, lane: SubjectLane, geometry: LaneGeometry, tokens: ChartTokens, colour: (span: string) => string): void {
+function paintLane(ctx: CanvasRenderingContext2D, lane: SubjectLane, geometry: LaneGeometry, tokens: ChartTokens, colour: (span: string) => string, summary: ChartSummary | undefined): void {
   const top = geometry.top + LANE_PAD;
   const height = geometry.height - 2 * LANE_PAD;
   const bottom = top + height;
   const end = geometry.playhead == null ? Infinity : geometry.playhead;
+  const toY = (value: number) => bottom - Math.max(0, Math.min(1, value)) * height;
+  const frame = plotFrame(geometry.right, geometry.top + geometry.height, { left: geometry.left, right: 0, top, bottom: LANE_PAD }, geometry.hours, [0, 1], false);
+  drawApproximateSpans(ctx, frame, summary?.approximate, end === Infinity ? null : end, () => {
   // Each level's colour, held for the whole span it applied.
   for (const span of lane.spans) {
     const to = Math.min(span.lastHour + 1, end);
@@ -66,11 +73,14 @@ function paintLane(ctx: CanvasRenderingContext2D, lane: SubjectLane, geometry: L
   }
   ctx.restore();
   // Progress between them; a score past either threshold is drawn at that edge (the tooltip gives it exactly).
-  const toY = (value: number) => bottom - Math.max(0, Math.min(1, value)) * height;
   const last = Math.min(geometry.hours[1], end);
   ctx.save();
   ctx.strokeStyle = tokens.text; ctx.lineWidth = tokens.lineWidth.series; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-  for (const { points, path } of curveSegments(lane.progress, geometry.hours[0], last, geometry.toX, toY)) {
+  if (summary && !summary.runs) drawLineSummary(ctx,
+    { ...frame, toY: value => toY(value / 1e9) }, tokens, { ...summary, approximate: undefined }, tokens.text, false, end === Infinity ? null : end, { endDot: false });
+  const fine = summary?.runs && summary.from === geometry.hours[0] && summary.to === last
+    && summary.width === Math.ceil(geometry.right - geometry.left);
+  for (const { points, path } of curveSegments(fine ? lane.progress : [], geometry.hours[0], last, geometry.toX, toY)) {
     ctx.beginPath(); tracePath(ctx, path);
     if (points.length === 1) ctx.arc(points[0].x, points[0].y, tokens.lineWidth.series / 2, 0, Math.PI * 2);
     ctx.stroke();
@@ -83,6 +93,7 @@ function paintLane(ctx: CanvasRenderingContext2D, lane: SubjectLane, geometry: L
     ctx.lineWidth = 1.5; ctx.strokeStyle = tokens.surface; ctx.stroke();
   }
   ctx.restore();
+  });
 }
 
 /** Each subject's autonomy over time: one lane per subject with
@@ -98,28 +109,29 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const lastHour = track?.branch.lastHour ?? 0;
   const groups = useCountryGroups(runtime, track, active);
   const fallback = defaultCountryTag(track);
-  const identities = useMemo(() => groups.data ? countryIdentityIndex(groups.data.countryIdentities) : null, [groups.data]);
-  const identityHistories = useMemo(() => new Map(groups.data?.countryIdentities.map(country => [country.tag, country.identities]) ?? []), [groups.data]);
   const bySubject = options.countriesAre === 'subjects';
-  // Read the branch once; country identities and group membership are resolved locally.
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'autonomy',
-    params: { branchId: track.branch.id, overlords: [], subjects: [] } } : null;
-  const { data, error, retry } = useProduct<AutonomyReply>(runtime.client, request, active, validateAutonomyReply);
-  const missingNativeSubjects = useMemo(() => data?.subjects.filter(subject => !spansCovered(subject.runs, identityHistories.get(subject.tag) ?? [])).length ?? 0,
-    [data, identityHistories]);
-
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
   const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 0;
   const head = Math.floor(playhead ?? last);
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
-  const filter = useMemo(() => worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, head, lastHour),
-    [widget.countries, fallback, groups.data, head, lastHour]);
+  const [hoverHour, setHoverHour] = useState<number | null>(null);
+  const prepared = usePreparedWindow(runtime.client, track?.source, 'autonomy', { branchId: track?.branch.id, overlords: [], subjects: [] },
+    extent, [head, ...(hoverHour === null ? [] : [hoverHour])], active, validatePreparedAutonomy,mergePreparedAutonomy);
+  const { data, error, retry } = prepared;
+  const identityRows = data?.identities ?? groups.data?.countryIdentities;
+  const identities = useMemo(() => identityRows ? countryIdentityIndex(identityRows) : null, [identityRows]);
+  const identityHistories = useMemo(() => new Map(identityRows?.map(country => [country.tag, country.identities]) ?? []), [identityRows]);
+  const root = useRef<HTMLDivElement>(null);
+  const missingNativeSubjects = useMemo(() => data?.metadata.subjects.filter(subject => !spansCovered(subject.runs, identityHistories.get(subject.tag) ?? [])).length ?? 0,
+    [data, identityHistories]);
+  const filter = useMemo(() => worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, head, lastHour, identities),
+    [widget.countries, fallback, groups.data, head, lastHour, identities]);
   // Hourly groups choose every member's history, then clip it at membership hours.
   const selection = useMemo(() => worldFilter(widget.countries.kind === 'group' && widget.countries.membership === 'hour'
-    ? { ...widget.countries, membership: 'ever' } : widget.countries, fallback ? [fallback] : [], groups.data, head, lastHour),
-  [widget.countries, fallback, groups.data, head, lastHour]);
+    ? { ...widget.countries, membership: 'ever' } : widget.countries, fallback ? [fallback] : [], groups.data, head, lastHour, identities),
+  [widget.countries, fallback, groups.data, head, lastHour, identities]);
   const hourlyGroup = widget.countries.kind === 'group' && widget.countries.membership === 'hour';
   const membership = useMemo(() => {
     if (!hourlyGroup || widget.countries.kind !== 'group' || !groups.data || !identities) return null;
@@ -138,14 +150,26 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   // chose its countries there: its unrecorded hours elsewhere hide nothing.
   const unobserved = useMemo(() => hourlyGroup && widget.countries.kind === 'group' && groups.data
     ? groupUnobserved(groups.data, widget.countries.group) : NO_SPANS, [hourlyGroup, widget.countries, groups.data]);
-  const views = useMemo(() => data && identities ? autonomyViews(data, identities) : [], [data, identities]);
+  const views = useMemo(() => data && identities ? autonomyViews(data.metadata, identities) : [], [data, identities]);
   const missingNativeOverlords = useMemo(() => !bySubject && selection.countryIds != null && identities
     ? views.filter(subject => overlordIdentityUnknownFor(subject, identities)).length : 0, [views, bySubject, selection.countryIds, identities]);
   const chosen = useMemo(() => selection.countryIds && identities ? chosenViews(views, selection.countryIds, bySubject, identities) : views,
     [views, selection.countryIds, bySubject, identities]);
   const subjects = useMemo(() => chosen.map(subject => clipSubject(subject, bySubject, membership, unobserved, identities ?? undefined)).filter(subject => subject.runs.length),
     [chosen, bySubject, membership, unobserved, identities]);
-  const lanesData = useMemo(() => data ? subjects.map(subject => subjectLane(subject, data.levels)) : [], [data, subjects]);
+  const exactLanes = useMemo(() => new Map(data && identities ? autonomyViews(data, identities).map(subject => {
+    const lane = subjectLane(clipSubject(subject, bySubject, membership, unobserved, identities), data.levels); return [lane.id, lane] as const;
+  }) : []), [data, identities, bySubject, membership, unobserved]);
+  const lanesData = useMemo(() => data ? subjects.map(subject => ({ ...subjectLane(subject, data.levels), progress: exactLanes.get(subject.countryId)?.progress ?? [] })) : [], [data, subjects, exactLanes]);
+  const numericLaneAt = useCallback((id: string, hour: number) => {
+    const lane = exactLanes.get(id);
+    return lane && data && !data.exactHours.includes(Math.floor(hour)) && inSpans(data.summaries[id]?.approximate ?? NO_SPANS, hour)
+      ? { ...lane, runs: [] } : lane;
+  }, [data, exactLanes]);
+  useParityRows(root, () => ({ kind: 'chart', label: 'Autonomy scores and thresholds', scope: 'displayed-hour',
+    complete: !!data?.exactHours.includes(head) && !!identities, total: lanesData.length,
+    rows: lanesData.map(lane => ({ countryId: lane.id, run: numericLaneAt(lane.id, head) ? runOf(numericLaneAt(lane.id, head)!, head) : null })),
+    levels: data?.levels, recorded: data?.recorded, unidentified: data?.unidentified, hour: head }));
   // Level colours in level order (the palette's fixed order), never by a level's name.
   const palette = useMemo(() => categoricalPalette(tokens.surface), [tokens.surface]);
   const levelColour = (level: number) => palette[level % palette.length];
@@ -172,9 +196,11 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   }, [data, groups.data, groups.error, missingNativeSubjects, missingNativeOverlords, subjects.length, lanesData.length, onDiagnostics]);
 
   const lanes = useMemo<TimelineLane[]>(() => !data ? [] : lanesData.map((lane, index) => {
-    const run = runOf(lane, head);
+    const exact = numericLaneAt(lane.id, head) ?? { ...lane, runs: [] };
+    const run = runOf(exact, head);
     const tag = laneTags[index];
-    const labels = laneLabels(data, lane, head, unobserved, tag !== null);
+    const labels = !data.exactHours.includes(head) && !run ? { label: 'Loading autonomy…', pill: 'Loading…', description: 'Loading autonomy…' }
+      : laneLabels(data, exact, head, unobserved, tag !== null);
     const colourOf = (span: string) => levelColour(lane.spanLevels.get(span) ?? 0);
     return {
       id: lane.id, label: labels.label, spans: lane.spans,
@@ -184,15 +210,18 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
       pill: { text: labels.pill, color: run ? levelColour(run.level) : mix(tokens.surface, tokens.text, 0.25) },
       // Not a subject at the moment shown (released, not yet a subject, or not recorded): faded.
       muted: !run || run.overlord == null,
-      paint: (ctx, geometry, chartTokens) => paintLane(ctx, lane, geometry, chartTokens, colourOf),
+      paint: (ctx, geometry, chartTokens) => paintLane(ctx, lane, geometry, chartTokens, colourOf,
+        prepared.geometryReady ? data.summaries[lane.id] : undefined),
     };
-  }), [data, lanesData, laneTags, head, looks, palette, tokens.surface, tokens.text, unobserved]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [data, prepared.geometryReady, lanesData, numericLaneAt, laneTags, head, looks, palette, tokens.surface, tokens.text, unobserved]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const content = (() => {
   if (!track) return <WidgetState kind="empty" icon="link" message="Load a campaign to see its subjects’ autonomy." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+  if (groups.error && (widget.countries.kind === 'group' || !identityRows)) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   const reason = hourlyGroup ? selection.reason : filter.reason;
+  if (widget.countries.kind === 'group' && !groups.data) return <WidgetState kind="loading" label="Loading country membership…" />;
   if (reason) return <WidgetState kind="empty" message={reason} />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data || !identities) return <WidgetState kind="loading" label="Loading autonomy…" />;
@@ -206,17 +235,21 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
       membershipUnknownFor(chosen, bySubject, unobserved))} />;
   }
 
-  const byId = new Map(lanesData.map(lane => [lane.id, lane]));
   const description = `${dayLabel(head)}: ${lanesData.map((lane, index) => {
     const tag = laneTags[index];
-    return `${tag === null ? lane.tag : looks.name(tag)}: ${laneLabels(data, lane, head, unobserved, tag !== null).description}`;
+    return `${tag === null ? lane.tag : looks.name(tag)}: ${!data.exactHours.includes(head) && !runOf(numericLaneAt(lane.id, head) ?? { ...lane, runs: [] }, head) ? 'Loading autonomy?' : laneLabels(data, numericLaneAt(lane.id, head) ?? { ...lane, runs: [] }, head, unobserved, tag !== null).description}`;
   }).join('; ')}.`;
+  const binding = (id: string) => ({ id,spans: subjects.find(subject => subject.countryId === id)?.runs.flatMap(run => identities.aliasesAt(new Set([id]),run.firstHour)
+    .map(tag => ({tag,firstHour:run.firstHour,lastHour:run.lastHour,startsSegment:run.startsSegment}))) ?? [] });
   return <div className="autonomy">
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label={`Autonomy of ${laneTags.map((tag, index) => tag === null ? lanesData[index].tag : looks.name(tag)).join(', ')}`} extent={extent} playhead={playhead} labelHour={head} preserveZoomOnExtentChange={options.grow === true} lanes={lanes}
       rowHeight={LANE_HEIGHT} showIcons={false} showNames={false} description={description} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
       active={active} revision={`${head}:${data.branchId}:${looks.revision}:${hover.revision}`}
+      onHover={setHoverHour}
+      onSummaryView={(view, visible) => prepared.onSummaryView(view,visible.map(lane => binding(lane.id)))}
+      onNavigateHour={(lane, from, forward) => prepared.navigate(lane.id,from,forward,binding(lane.id))}
       tooltip={(lane, _span, hour) => {
-        const subject = byId.get(lane.id);
+        const subject = numericLaneAt(lane.id, hour);
         const run = subject ? runOf(subject, hour) : null;
         // The subject and its overlord are named as recorded at the hour hovered.
         const tag = identities.aliasesAt(new Set([lane.id]), hour)[0] ?? null;
@@ -225,6 +258,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
         const named = hover.labelAt(hour);
         const label = tag === null ? { name: 'Country name unavailable', flagReason: 'Country unavailable at this time.' } : named(tag);
         const name = label.name;
+        if (!data.exactHours.includes(Math.floor(hour)) && !run) return { title: `${name} · ${dayLabel(hour)}`, countryFlag: label, rows: [{ label: 'Autonomy', value: 'Loading…', tone: 'muted' }] };
         if (!subject || !run) {
           return { title: `${name} · ${dayLabel(hour)}`, countryFlag: label, rows: [{ label: 'Autonomy', value: tag === null ? 'Country unavailable at this time.' : absentAt(data, hour, unobserved).text, tone: 'muted' }] };
         }
@@ -243,6 +277,9 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
           note: contentTitleHint(data.levels[run.level]?.id) };
       }}
       onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
+    {Object.values(data.summaries).some(summary => summary.approximate?.length) && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Approximate</p>}
     {menu.menu}
   </div>;
+  })();
+  return <div ref={root} style={{ display: 'contents' }}>{content}</div>;
 }

@@ -13,7 +13,7 @@ export function powerCountryLedger(replies: readonly PoliticsLedgerReply[], span
     return { ...reply,
       daily: reply.daily?.filter(row => row.country === countryId && at(row.dayHour)),
       balanceChanges: reply.balanceChanges?.filter(row => row.countryId === countryId && at(row.hour)),
-      spending: reply.spending.filter(row => row.countryId === countryId && at(row.hour)).map(row => ({ ...row, id: id(row.id), itemId: id(row.itemId) })),
+      spending: [...reply.spending, ...(reply.recurring ?? []).map(row => row.spend)].filter(row => row.countryId === countryId && at(row.hour)).map(row => ({ ...row, id: id(row.id), itemId: id(row.itemId) })),
       spendItems: reply.spendItems.map(row => ({ ...row, id: id(row.id) })),
       spendingCoverage: clipToSpans(reply.spendingCoverage.map(row => ({ ...row,
         firstHour: row.sinceHour ?? row.readHour, lastHour: row.throughHour ?? row.readHour })), known)
@@ -36,7 +36,7 @@ export function powerCountryLedger(replies: readonly PoliticsLedgerReply[], span
     spending: selected.flatMap(reply => reply.spending).sort((a, b) => a.hour - b.hour),
     spendItems: selected.flatMap(reply => reply.spendItems),
     spendCategories: [...new Map(selected.flatMap(reply => reply.spendCategories).map(row => [row.id, row])).values()],
-    spendingCoverage,
+    spendingCoverage, recurring: undefined,
     commandHolds: selected.flatMap(reply => reply.commandHolds).sort((a, b) => a.readHour - b.readHour),
     warnings: selected.flatMap(reply => reply.warnings) };
 }

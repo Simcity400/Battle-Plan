@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { HTMLAttributes } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { CountryFlagUrl } from '../../components/CountryFlag';
@@ -20,6 +20,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
+import { useParityRows } from '../../dashboard/parityRows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import type { DecryptionReply } from '../../generated/dashboard';
@@ -38,8 +39,11 @@ export default function DecryptionWidget({ widget, runtime, active, onDiagnostic
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window?.lastHour ?? 0;
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'decryption', params: { branchId: track.branch.id } } : null;
-  const { data, error, retry } = useProduct<DecryptionReply>(runtime.client, request, active, validateDecryptionReply);
+  const first = track ? track.branch.firstHour + Math.floor((hour - track.branch.firstHour) / 24) * 24 : hour;
+  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'decryption', params: runtime.client.preparedQuery
+    ? { branchId: track.branch.id, firstHour: first, lastHour: Math.min(first + 23, track.branch.lastHour) }
+    : { branchId: track.branch.id } } : null;
+  const { data, error, retry } = useProduct<DecryptionReply>(runtime.client, request, active, validateDecryptionReply, track?.source);
   const groups = useCountryGroups(runtime, track, active && widget.countries.kind !== 'all');
   const selection = useMemo(() => {
     return countryMatch(widget.countries, selectedTags(widget.countries, track), groups.data, track?.branch.lastHour ?? hour);
@@ -48,6 +52,12 @@ export default function DecryptionWidget({ widget, runtime, active, onDiagnostic
     widget.countries.kind === 'all' ? undefined : selection.matches) : [],
     [data, hour, options.order, options.countrySide, selection, widget.countries.kind]);
   const items = useMemo(() => rows.map(item => ({ key: item.key, item })), [rows]);
+  const root = useRef<HTMLDivElement>(null);
+  useParityRows(root, () => ({ kind: 'table', label: 'Decryption values',
+    complete: Boolean(data && selection.ready), total: rows.length,
+    rows: rows.map(row => ({ key: row.key, hour: row.hour, ownerId: row.pair.ownerId, targetId: row.pair.targetId,
+      run: row.run, tags: row.tags, broken: row.broken })),
+  }));
   const [visibleRows, setVisibleRows] = useState<readonly MovingRow<RaceRow>[]>([]);
   const countries = useDecryptionCountries(runtime.client, track, rows, visibleRows, active);
   const menu = useContextMenu('Cipher actions');
@@ -81,7 +91,7 @@ export default function DecryptionWidget({ widget, runtime, active, onDiagnostic
   if (!coverage || (!coverage.complete && !rows.length)) return <WidgetState kind="unavailable"
     message="Decryption data is unavailable at this time." />;
   if (selection.reason) return <WidgetState kind="unavailable" message={selection.reason} />;
-  return <div className="decryption" key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])}>
+  return <div ref={root} className="decryption" key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])}>
     <WindowedRows items={items} rowHeight={52} padding={8} label="Decryption races" className="decryption-race"
       onVisibleRows={setVisibleRows} empty={<WidgetState kind="empty" message={widget.countries.kind === 'all' ? 'No ciphers being decrypted yet.' : 'No matching decryption pairs at this time.'} />}>
       {row => <RaceCell row={row.item} labels={countries.pair(row.item)} active={active && row.phase !== 'leaving'} leaving={row.phase === 'leaving'}

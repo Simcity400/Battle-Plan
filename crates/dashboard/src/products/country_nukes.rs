@@ -15,15 +15,13 @@ use super::{
 use crate::{
     Source,
     catalogue::{self, Catalogue},
-    metadata::{
-        IdentityTrack, TaggedCountry, link_slot, slot_read, tagged_countries, validate_campaign,
-    },
+    metadata::{IdentityTrack, link_slot, slot_read, tagged_countries, validate_campaign},
 };
 use engine::raid_tooltip_operands::{NUCLEAR_BOMB_TOKEN, THERMONUCLEAR_BOMB_TOKEN};
 use replay::{
     container::Replay,
-    frame::FrameDecoder,
-    rows::{TableId, tables},
+    frame::{DecodedFrame, FrameDecoder},
+    rows::{CountryLinkRow, CountryRow, NukeRow, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -49,7 +47,7 @@ pub struct NukesParams {
     pub origin_hour: Option<i32>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct NukeTypeInfo {
     pub ordinal: u32,
@@ -58,14 +56,14 @@ pub struct NukeTypeInfo {
     pub supported: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct NukeCount {
     pub ordinal: u32,
     pub value: i32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct NukeRun {
     pub first_hour: i32,
@@ -109,6 +107,97 @@ pub fn displayed_amount(raw: i64) -> i32 {
     }
 }
 
+#[allow(clippy::type_complexity)]
+fn counts_by_slot(
+    rows: &[NukeRow],
+    links: &[CountryLinkRow],
+) -> (HashMap<u32, BTreeMap<u32, Option<i32>>>, usize, bool) {
+    let mut result = HashMap::<u32, BTreeMap<u32, Option<i32>>>::new();
+    let mut unreadable = 0;
+    let mut resolved = true;
+    for row in rows {
+        let Some(slot) = link_slot(links, row.country) else {
+            resolved = false;
+            unreadable += 1;
+            continue;
+        };
+        match result.entry(slot).or_default().entry(row.nuke_type) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(Some(displayed_amount(row.amount_raw)));
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                entry.insert(None);
+                unreadable += 1;
+            }
+        }
+    }
+    (result, unreadable, resolved)
+}
+
+fn stockpile(values: &BTreeMap<u32, Option<i32>>) -> Option<(Vec<NukeCount>, Option<i32>)> {
+    let counts: Vec<_> = values
+        .iter()
+        .map(|(&ordinal, value)| value.map(|value| NukeCount { ordinal, value }))
+        .collect::<Option<_>>()?;
+    // Only a hole inside this country's recorded array prefix makes its total unknown.
+    let total = values
+        .keys()
+        .enumerate()
+        .all(|(index, ordinal)| usize::try_from(*ordinal) == Ok(index))
+        .then(|| {
+            counts
+                .iter()
+                .fold(0i32, |total, count| total.wrapping_add(count.value))
+        });
+    Some((counts, total))
+}
+
+fn empty_stockpiles(
+    countries: &[CountryRow],
+    links: &[CountryLinkRow],
+    by_slot: &HashMap<u32, BTreeMap<u32, Option<i32>>>,
+    resolved: bool,
+) -> bool {
+    let tagged = tagged_countries(countries, links);
+    let valid = tagged
+        .iter()
+        .all(|(tag, lookup)| lookup.found().is_some() && std::str::from_utf8(tag).is_ok());
+    let slots = tagged
+        .values()
+        .filter_map(|lookup| lookup.found().map(|(_, slot)| slot))
+        .collect::<BTreeSet<_>>();
+    empty_resolved(by_slot, |slot| slots.contains(&slot), valid, resolved)
+}
+fn empty_resolved(
+    by_slot: &HashMap<u32, BTreeMap<u32, Option<i32>>>,
+    selected: impl Fn(u32) -> bool,
+    valid: bool,
+    resolved: bool,
+) -> bool {
+    resolved
+        && valid
+        && by_slot
+            .iter()
+            .filter(|(slot, _)| selected(**slot))
+            .all(|(_, values)| stockpile(values).is_some_and(|(_, total)| total == Some(0)))
+}
+
+/// A fresh complete supplying read, with the native empty-census decision.
+fn supplying_read(decoded: &DecodedFrame, format: replay::format::FormatVersion) -> Option<bool> {
+    if !slot_read(format, &decoded.metrics, TableId::Nukes, decoded.hour) {
+        return None;
+    }
+    let rows = decoded.complete::<tables::Nukes>().ok()?;
+    let (Ok(countries), Ok(links)) = (
+        decoded.complete::<tables::Countries>(),
+        decoded.complete::<tables::CountryLinks>(),
+    ) else {
+        return Some(false);
+    };
+    let (by_slot, _, resolved) = counts_by_slot(rows, links);
+    Some(empty_stockpiles(countries, links, &by_slot, resolved))
+}
+
 /// Maps recorded nuclear ordinals to their name tokens. The token spelling
 /// and displayed name come from recorded content.
 fn name_token(ordinal: u32) -> Option<u32> {
@@ -119,7 +208,7 @@ fn name_token(ordinal: u32) -> Option<u32> {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ScannedNukes {
     pub read_hours: Vec<i32>,
     pub empty_read_hours: Vec<i32>,
@@ -129,14 +218,322 @@ pub struct ScannedNukes {
     pub tokens: BTreeMap<u32, String>,
     pub refused: BTreeMap<u32, usize>,
     pub unreadable: usize,
+    pub unknown_hours: u64,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Track {
     runs: Vec<NukeRun>,
     segments: Vec<HourSpan>,
     last: Option<((u32, u32), i32)>,
     last_identity: IdentityTrack,
+}
+
+pub(crate) mod prepared;
+#[derive(Clone, PartialEq, Eq)]
+struct Current {
+    identity: (u32, u32),
+    values: Option<(Vec<NukeCount>, Option<i32>)>,
+}
+#[derive(Default)]
+struct Rates {
+    unreadable: usize,
+    refused: BTreeMap<u32, usize>,
+    unknown: u64,
+}
+impl Track {
+    fn advance(&mut self, hour: i32) {
+        let Some(segment) = self.segments.last_mut() else {
+            return;
+        };
+        let before = segment.last_hour;
+        segment.last_hour = hour;
+        self.last_identity.advance(hour);
+        if let Some((_, at)) = &mut self.last
+            && *at == before
+        {
+            *at = hour;
+            if let Some(run) = self.runs.last_mut() {
+                run.last_hour = hour;
+            }
+        }
+    }
+}
+#[derive(Default, Serialize, Deserialize)]
+pub(crate) struct Scan {
+    scanned: ScannedNukes,
+    tracks: BTreeMap<String, Track>,
+    frontier: Option<i32>,
+    live: BTreeSet<String>,
+    #[serde(skip)]
+    countries: super::force_census::Countries,
+    #[serde(skip)]
+    current: BTreeMap<String, Current>,
+    #[serde(skip)]
+    supplied_slots: BTreeSet<u32>,
+    #[serde(skip)]
+    rates: Rates,
+    #[serde(skip)]
+    read: Option<bool>,
+    #[serde(skip)]
+    empty: bool,
+    #[serde(skip)]
+    observed: Vec<String>,
+    #[cfg(test)]
+    #[serde(skip)]
+    work: crate::prepared::observer_tests::Work,
+}
+impl Scan {
+    pub(crate) fn observe(
+        &mut self,
+        decoded: &DecodedFrame,
+        format: replay::format::FormatVersion,
+    ) {
+        self.observe_changes(decoded, format, None);
+        self.seal();
+    }
+    fn seal(&mut self) {
+        if let Some(hour) = self.frontier {
+            for tag in &self.live {
+                self.tracks
+                    .get_mut(tag)
+                    .expect("live nuclear holder")
+                    .advance(hour);
+            }
+        }
+    }
+    fn observe_changes(
+        &mut self,
+        decoded: &DecodedFrame,
+        format: replay::format::FormatVersion,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+    ) {
+        self.observed.clear();
+        let hour = decoded.hour;
+        if self.scanned.tokens.len() < 2
+            && changes.is_none_or(|changes| changes.rows_changed[TableId::LexicalTokens.index()])
+            && let Ok(lexical) = decoded.complete::<tables::LexicalTokens>()
+        {
+            for ordinal in 0..=1 {
+                if self.scanned.tokens.contains_key(&ordinal) {
+                    continue;
+                }
+                let token = name_token(ordinal).expect("native mapping");
+                if let Ok(index) = lexical.binary_search_by_key(&token, |row| row.token)
+                    && let Ok(text) = std::str::from_utf8(&lexical[index].literal)
+                {
+                    self.scanned.tokens.insert(ordinal, text.to_owned());
+                }
+            }
+        }
+        let continuous = self
+            .frontier
+            .is_some_and(|at| at.checked_add(1) == Some(hour));
+        let read = slot_read(format, &decoded.metrics, TableId::Nukes, hour);
+        let rows = decoded.complete::<tables::Nukes>().ok();
+        if read && rows.is_some() {
+            self.scanned.read_hours.push(hour);
+        }
+        let joined = self.countries.update(decoded);
+        let changed = !continuous
+            || self.read != Some(read)
+            || !matches!(joined, Ok(false))
+            || changes.is_none_or(|changes| changes.rows_changed[TableId::Nukes.index()]);
+        if !changed {
+            self.scanned.unreadable += self.rates.unreadable;
+            self.scanned.unknown_hours += self.rates.unknown;
+            for (&ordinal, &count) in &self.rates.refused {
+                *self.scanned.refused.entry(ordinal).or_default() += count;
+            }
+            if read && rows.is_some() && self.empty {
+                self.scanned.empty_read_hours.push(hour);
+            }
+            self.frontier = Some(hour);
+            return;
+        }
+        if !continuous {
+            self.seal();
+        }
+        let partial = continuous && matches!(joined, Ok(false)) && !self.current.is_empty();
+        self.read = Some(read);
+        let mut rates = Rates::default();
+        let mut current = BTreeMap::new();
+        self.empty = false;
+        if joined.is_ok()
+            && let (Ok(_countries), Ok(links)) = (
+                decoded.complete::<tables::Countries>(),
+                decoded.complete::<tables::CountryLinks>(),
+            )
+        {
+            let (by_slot, unreadable, resolved) =
+                counts_by_slot(rows.filter(|_| read).unwrap_or_default(), links);
+            rates.unreadable += unreadable;
+            #[cfg(test)]
+            {
+                self.work.row_visits += rows.filter(|_| read).map_or(0, |rows| rows.len());
+            }
+            if read {
+                for row in rows.into_iter().flatten() {
+                    self.scanned.types.insert(row.nuke_type);
+                    if name_token(row.nuke_type).is_none() {
+                        *rates.refused.entry(row.nuke_type).or_default() += 1;
+                    }
+                }
+            }
+            self.empty = read
+                && rows.is_some()
+                && empty_resolved(
+                    &by_slot,
+                    |slot| self.countries.contains_slot(slot),
+                    self.countries.tags_valid(),
+                    resolved,
+                );
+            let mut slots = self.supplied_slots.clone();
+            if read {
+                slots.extend(by_slot.keys().copied());
+            }
+            let candidates = if partial {
+                self.countries.in_slots(&slots)
+            } else {
+                self.countries.tags.clone()
+            };
+            rates.unreadable += self.countries.unreadable_tags;
+            for (tag, identity) in &candidates {
+                let Some(identity) = *identity else {
+                    continue;
+                };
+                let Ok(tag) = std::str::from_utf8(tag) else {
+                    continue;
+                };
+                let values = if rows.is_none() {
+                    None
+                } else if read {
+                    by_slot.get(&identity.0).and_then(stockpile)
+                } else {
+                    self.current
+                        .get(tag)
+                        .filter(|before| continuous && before.identity == identity)
+                        .and_then(|before| before.values.clone())
+                        .or_else(|| {
+                            self.tracks
+                                .get(tag)
+                                .filter(|_| continuous && self.live.contains(tag))
+                                .and_then(|track| {
+                                    track
+                                        .last
+                                        .filter(|(seen, at)| {
+                                            *seen == identity && Some(*at) == self.frontier
+                                        })
+                                        .and_then(|_| {
+                                            track
+                                                .runs
+                                                .last()
+                                                .map(|run| (run.counts.clone(), run.total))
+                                        })
+                                })
+                        })
+                };
+                rates.unknown +=
+                    u64::from(values.as_ref().is_some_and(|(_, total)| total.is_none()));
+                current.insert(tag.to_owned(), Current { identity, values });
+            }
+            if read || rows.is_none() {
+                self.supplied_slots = by_slot.keys().copied().collect();
+            }
+        }
+        for (tag, after) in &current {
+            if continuous && self.current.get(tag) == Some(after) {
+                continue;
+            }
+            let track = self.tracks.entry(tag.clone()).or_default();
+            if self.live.contains(tag)
+                && let Some(before) = self.frontier
+            {
+                track.advance(before);
+            }
+            observe_identity(
+                &mut track.segments,
+                &mut track.last_identity,
+                after.identity,
+                hour,
+            );
+            if let Some((counts, total)) = &after.values {
+                let continues = track.last.is_some_and(|(seen, at)| {
+                    seen == after.identity && at.checked_add(1) == Some(hour)
+                });
+                match track.runs.last_mut() {
+                    Some(run) if continues && run.counts == *counts && run.total == *total => {
+                        run.last_hour = hour
+                    }
+                    _ => track.runs.push(NukeRun {
+                        first_hour: hour,
+                        last_hour: hour,
+                        starts_segment: !continues,
+                        counts: counts.clone(),
+                        total: *total,
+                    }),
+                }
+                track.last = Some((after.identity, hour));
+            }
+            self.observed.push(tag.clone());
+            #[cfg(test)]
+            {
+                self.work.history_visits += 1;
+            }
+        }
+        for tag in self
+            .live
+            .iter()
+            .filter(|tag| !partial && !current.contains_key(*tag))
+        {
+            if let Some(before) = self.frontier {
+                self.tracks
+                    .get_mut(tag)
+                    .expect("departed nuclear holder")
+                    .advance(before);
+            }
+            self.observed.push(tag.clone());
+        }
+        if partial {
+            self.current.extend(current);
+        } else {
+            self.live = current.keys().cloned().collect();
+            self.current = current;
+        }
+        self.scanned.unreadable += rates.unreadable;
+        self.scanned.unknown_hours += rates.unknown;
+        for (&ordinal, &count) in &rates.refused {
+            *self.scanned.refused.entry(ordinal).or_default() += count;
+        }
+        self.rates = rates;
+        if self.empty {
+            self.scanned.empty_read_hours.push(hour);
+        }
+        self.frontier = Some(hour);
+    }
+    fn finish(mut self) -> ScannedNukes {
+        self.seal();
+        // Stockpile totals use this country's own array count; independent countries
+        // can have different counts. A complete contiguous prefix proves that array,
+        // even when another country records more types.
+        let Self {
+            mut scanned,
+            tracks,
+            ..
+        } = self;
+        for (tag, track) in tracks {
+            if track.runs.is_empty() {
+                continue;
+            }
+            scanned.segments.insert(tag.clone(), track.segments);
+            scanned.series.insert(tag, track.runs);
+        }
+        scanned.read_hours.sort_unstable();
+        scanned.read_hours.dedup();
+        scanned.empty_read_hours.sort_unstable();
+        scanned.empty_read_hours.dedup();
+        scanned
+    }
 }
 
 pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<ScannedNukes> {
@@ -147,8 +544,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
         TableId::Nukes,
         TableId::LexicalTokens,
     ];
-    let mut scanned = ScannedNukes::default();
-    let mut tracks = BTreeMap::<String, Track>::new();
+    let mut observer = Scan::default();
     crate::blocks::scan_blocks(
         replay,
         replay.index.iter().filter(|block| block.branch == branch),
@@ -173,165 +569,13 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                     if validate_campaign(decoded, replay).is_err() {
                         break;
                     }
-                    if scanned.tokens.len() < 2
-                        && let Ok(lexical) = decoded.complete::<tables::LexicalTokens>()
-                    {
-                        for ordinal in 0..=1 {
-                            if scanned.tokens.contains_key(&ordinal) {
-                                continue;
-                            }
-                            let token = name_token(ordinal).expect("native mapping");
-                            if let Ok(index) = lexical.binary_search_by_key(&token, |row| row.token)
-                                && let Ok(text) = std::str::from_utf8(&lexical[index].literal)
-                            {
-                                scanned.tokens.insert(ordinal, text.to_owned());
-                            }
-                        }
-                    }
-                    let rows = decoded.complete::<tables::Nukes>().ok();
-                    let read = slot_read(
-                        replay.format,
-                        &decoded.metrics,
-                        TableId::Nukes,
-                        decoded.hour,
-                    );
-                    if read && rows.is_some() {
-                        scanned.read_hours.push(frame.hour);
-                    }
-                    let (Ok(countries), Ok(links)) = (
-                        decoded.complete::<tables::Countries>(),
-                        decoded.complete::<tables::CountryLinks>(),
-                    ) else {
-                        continue;
-                    };
-                    let mut by_slot = HashMap::<u32, BTreeMap<u32, Option<i32>>>::new();
-                    let mut resolved_read = true;
-                    if read {
-                        for row in rows.into_iter().flatten() {
-                            scanned.types.insert(row.nuke_type);
-                            if name_token(row.nuke_type).is_none() {
-                                *scanned.refused.entry(row.nuke_type).or_default() += 1;
-                            }
-                            let Some(slot) = link_slot(links, row.country) else {
-                                resolved_read = false;
-                                scanned.unreadable += 1;
-                                continue;
-                            };
-                            let values = by_slot.entry(slot).or_default();
-                            match values.entry(row.nuke_type) {
-                                std::collections::btree_map::Entry::Vacant(entry) => {
-                                    entry.insert(Some(displayed_amount(row.amount_raw)));
-                                }
-                                std::collections::btree_map::Entry::Occupied(mut entry) => {
-                                    entry.insert(None);
-                                    scanned.unreadable += 1;
-                                }
-                            }
-                        }
-                    }
-                    let mut empty_read = read && rows.is_some() && resolved_read;
-                    for (tag, lookup) in tagged_countries(countries, links) {
-                        let TaggedCountry::Found(country, slot) = lookup else {
-                            empty_read = false;
-                            continue;
-                        };
-                        let Ok(tag) = std::str::from_utf8(tag) else {
-                            empty_read = false;
-                            scanned.unreadable += 1;
-                            continue;
-                        };
-                        if !tracks.contains_key(tag) {
-                            tracks.insert(tag.to_owned(), Track::default());
-                        }
-                        let track = tracks.get_mut(tag).expect("inserted above");
-                        let identity = (slot, country.id);
-                        observe_identity(
-                            &mut track.segments,
-                            &mut track.last_identity,
-                            identity,
-                            frame.hour,
-                        );
-                        if rows.is_none() {
-                            continue;
-                        }
-                        let continues = track.last.is_some_and(|(seen, hour)| {
-                            seen == identity && hour.checked_add(1) == Some(frame.hour)
-                        });
-                        if !read {
-                            if continues && let Some(run) = track.runs.last_mut() {
-                                run.last_hour = frame.hour;
-                                track.last = Some((identity, frame.hour));
-                            }
-                            continue;
-                        }
-                        let Some(values) = by_slot.get(&slot) else {
-                            continue;
-                        };
-                        if values.values().any(Option::is_none) {
-                            empty_read = false;
-                            continue;
-                        }
-                        let counts: Vec<_> = values
-                            .iter()
-                            .map(|(&ordinal, value)| NukeCount {
-                                ordinal,
-                                value: value.expect("unique row"),
-                            })
-                            .collect();
-                        // The stockpile sums every array entry without testing its type.
-                        // The recorded type equals its ordinal: only a missing entry inside
-                        // this recorded prefix makes the total unknown.
-                        let total = values
-                            .keys()
-                            .enumerate()
-                            .all(|(index, ordinal)| usize::try_from(*ordinal) == Ok(index))
-                            .then(|| {
-                                counts
-                                    .iter()
-                                    .fold(0i32, |total, count| total.wrapping_add(count.value))
-                            });
-                        empty_read &= total == Some(0);
-                        track.last = Some((identity, frame.hour));
-                        match track.runs.last_mut() {
-                            Some(run)
-                                if continues && run.counts == counts && run.total == total =>
-                            {
-                                run.last_hour = frame.hour;
-                            }
-                            _ => {
-                                track.runs.push(NukeRun {
-                                    first_hour: frame.hour,
-                                    last_hour: frame.hour,
-                                    starts_segment: !continues,
-                                    counts,
-                                    total,
-                                });
-                            }
-                        }
-                    }
-                    if empty_read {
-                        scanned.empty_read_hours.push(frame.hour);
-                    }
+                    observer.observe(decoded, replay.format);
                 }
             }
             Ok(())
         },
     )?;
-    // Stockpile totals use this country's own array count; independent countries
-    // can have different counts. A complete contiguous prefix proves that array,
-    // even when another country records more types.
-    for (tag, track) in tracks {
-        if track.runs.is_empty() {
-            continue;
-        }
-        scanned.segments.insert(tag.clone(), track.segments);
-        scanned.series.insert(tag, track.runs);
-    }
-    scanned.read_hours.sort_unstable();
-    scanned.read_hours.dedup();
-    scanned.empty_read_hours.sort_unstable();
-    scanned.empty_read_hours.dedup();
-    Ok(scanned)
+    Ok(observer.finish())
 }
 
 fn cancelled_error() -> io::Error {
@@ -384,6 +628,15 @@ pub(crate) fn requested_series(
     history: Option<&RecordedHistories>,
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<NukeSeries>> {
+    let membership = membership(scanned, params, history, cancelled)?;
+    requested_selected(scanned, params, history, cancelled, membership)
+}
+fn membership(
+    scanned: &ScannedNukes,
+    params: &NukesParams,
+    history: Option<&RecordedHistories>,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<BTreeMap<String, Vec<HourSpan>>>> {
     if params.origin_hour.is_some() && history.is_none() {
         return Err(io::Error::other(
             "Nuclear drill identity history is unavailable",
@@ -450,6 +703,15 @@ pub(crate) fn requested_series(
             })
             .transpose()?
     };
+    Ok(membership)
+}
+fn requested_selected(
+    scanned: &ScannedNukes,
+    params: &NukesParams,
+    history: Option<&RecordedHistories>,
+    cancelled: &AtomicBool,
+    membership: Option<BTreeMap<String, Vec<HourSpan>>>,
+) -> io::Result<Vec<NukeSeries>> {
     let tags: BTreeSet<&str> = match &membership {
         Some(top) => top.keys().map(String::as_str).collect(),
         None => params.tags.iter().map(String::as_str).collect(),
@@ -654,50 +916,6 @@ impl Product for CountryNukes {
             params.branch_id.parse().expect("validated branch"),
             cancelled,
         )?;
-        let mut warnings = Vec::new();
-        let types = match context
-            .content()
-            .and_then(|content| catalogue::catalogue(source, content))
-        {
-            Ok(catalogue) => {
-                let types = names(&catalogue, &scanned);
-                warnings.extend(catalogue.verification.iter().cloned());
-                warnings.extend(catalogue.warnings.iter().cloned());
-                warnings.extend(catalogue.refusal_lines());
-                types
-            }
-            Err(error) => {
-                warnings.push(format!("Nuclear type names are unavailable: {error}"));
-                type_info(&scanned, |_| None)
-            }
-        };
-        for (ordinal, count) in &scanned.refused {
-            warnings.push(format!("Unknown type {ordinal}: {count} recorded nuclear rows have no proven native name mapping; their recorded amounts still count in complete country totals."));
-        }
-        for kind in &types {
-            if kind.supported && kind.name.is_none() {
-                warnings.push(format!(
-                    "Nuclear type {}: no name in the recorded content; shown as unknown.",
-                    kind.token.as_deref().unwrap_or("unknown token")
-                ));
-            }
-        }
-        if scanned.unreadable > 0 {
-            warnings.push(format!(
-                "{} nuclear rows or country tags could not be resolved uniquely and are left out.",
-                scanned.unreadable
-            ));
-        }
-        let unknown_hours: u64 = scanned
-            .series
-            .values()
-            .flatten()
-            .filter(|run| run.total.is_none())
-            .map(|run| (i64::from(run.last_hour) - i64::from(run.first_hour) + 1) as u64)
-            .sum();
-        if unknown_hours > 0 {
-            warnings.push(format!("{unknown_hours} country-hours have a hole in their native nuclear array; totals stay unknown."));
-        }
         let history = (params.origin_hour.is_some() || !params.tags.is_empty())
             .then(|| {
                 branch_histories(
@@ -709,24 +927,86 @@ impl Product for CountryNukes {
                 )
             })
             .transpose()?;
-        let series = requested_series(&scanned, params, history.as_deref(), cancelled)?;
-        if params.origin_hour.is_some() && series.is_empty() {
-            warnings.push("No nuclear stockpile or native country identity was recorded for the selected country at its origin hour.".into());
-        }
-        let reply = CountryNukesReply {
-            branch_id: params.branch_id.clone(),
-            read_hours: scanned.read_hours.clone(),
-            empty_read_hours: scanned.empty_read_hours.clone(),
-            types,
-            series,
-            warnings,
-        };
-        if crate::transport::json_len(&reply, MAX_PRODUCT_REPLY_BYTES).is_none() {
-            return Err(reply_too_large());
-        }
-        Ok(reply)
+        present(
+            source,
+            params,
+            context,
+            cancelled,
+            &scanned,
+            history.as_deref(),
+            None,
+        )
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+fn present(
+    source: &Source,
+    params: &NukesParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+    scanned: &ScannedNukes,
+    history: Option<&RecordedHistories>,
+    prepared_membership: Option<BTreeMap<String, Vec<HourSpan>>>,
+) -> io::Result<CountryNukesReply> {
+    let mut warnings = Vec::new();
+    let types = match context
+        .content()
+        .and_then(|content| catalogue::catalogue(source, content))
+    {
+        Ok(catalogue) => {
+            let types = names(&catalogue, scanned);
+            warnings.extend(catalogue.verification.iter().cloned());
+            warnings.extend(catalogue.warnings.iter().cloned());
+            warnings.extend(catalogue.refusal_lines());
+            types
+        }
+        Err(error) => {
+            warnings.push(format!("Nuclear type names are unavailable: {error}"));
+            type_info(scanned, |_| None)
+        }
+    };
+    for (ordinal, count) in &scanned.refused {
+        warnings.push(format!("Unknown type {ordinal}: {count} recorded nuclear rows have no proven native name mapping; their recorded amounts still count in complete country totals."));
+    }
+    for kind in &types {
+        if kind.supported && kind.name.is_none() {
+            warnings.push(format!(
+                "Nuclear type {}: no name in the recorded content; shown as unknown.",
+                kind.token.as_deref().unwrap_or("unknown token")
+            ));
+        }
+    }
+    if scanned.unreadable > 0 {
+        warnings.push(format!(
+            "{} nuclear rows or country tags could not be resolved uniquely and are left out.",
+            scanned.unreadable
+        ));
+    }
+    let unknown_hours = scanned.unknown_hours;
+    if unknown_hours > 0 {
+        warnings.push(format!("{unknown_hours} country-hours have a hole in their native nuclear array; totals stay unknown."));
+    }
+    let series = if let Some(membership) = prepared_membership {
+        requested_selected(scanned, params, history, cancelled, Some(membership))?
+    } else {
+        requested_series(scanned, params, history, cancelled)?
+    };
+    if params.origin_hour.is_some() && series.is_empty() {
+        warnings.push("No nuclear stockpile or native country identity was recorded for the selected country at its origin hour.".into());
+    }
+    let reply = CountryNukesReply {
+        branch_id: params.branch_id.clone(),
+        read_hours: scanned.read_hours.clone(),
+        empty_read_hours: scanned.empty_read_hours.clone(),
+        types,
+        series,
+        warnings,
+    };
+    if crate::transport::json_len(&reply, MAX_PRODUCT_REPLY_BYTES).is_none() {
+        return Err(reply_too_large());
+    }
+    Ok(reply)
+}

@@ -32,6 +32,9 @@ import type { CountryStyle, ExperienceReply } from '../../generated/dashboard';
 import { definition, OPTIONS } from './definition';
 import { BRANCHES, BRANCH_LABELS, experienceHolderAt, experienceHolderCount, experienceHolderEnd, experienceHolders, experienceMembership, experienceName, experienceRaw, experienceRuns, experienceSelection, experienceTooltip, formatExperience, validateExperienceReply } from './experienceData';
 import type { ExperienceMeasure } from './experienceData';
+import { usePreparedExperience } from './preparedExperience';
+import { drawLineSummary, extentOfSummary } from '../../charts/chartSummary';
+import { usePreparedScalarParity } from '../country-measure/usePreparedScalarParity';
 import './experience.css';
 
 const NO_WARNINGS: string[] = [];
@@ -58,22 +61,25 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   const lastHour = track?.branch.lastHour ?? 0;
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, definition.countries.max),
     [widget.countries, fallback, groups.data, lastHour]);
-  const request = track && resolved.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-experience',
-    params: { branchId: track.branch.id, tags: resolved.tags } } : null;
-  const { data, error, retry } = useProduct<ExperienceReply>(runtime.client, request, active, validateExperienceReply);
-  const selectedSeries = useMemo(() => experienceSelection(data, resolved.tags, widget.countries.kind === 'group'),
-    [data, resolved.tags, widget.countries.kind]);
-  const tags = useMemo(() => data ? selectedSeries.map(series => series.tag) : resolved.tags, [data, selectedSeries, resolved.tags]);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const head = Math.floor(playhead ?? extent[1]);
-  const identities = useMemo(() => new Map(selectedSeries.map(series => [series.tag,
-    { reads: series.reads, starts: stretchStarts(series.reads) }])), [selectedSeries]);
+  const [preparedHover, setPreparedHover] = useState<number | null>(null);
+  const preparedReads = usePreparedExperience(runtime.client, track?.source, track?.branch.id, resolved.tags, groups.data,
+    widget.countries.kind === 'group', resolved.membership, measure, head, preparedHover, active);
+  const prepared = { ...preparedReads, enabled: preparedReads.enabled && !groups.error };
+  const request = track && resolved.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-experience',
+    params: { branchId: track.branch.id, tags: resolved.tags } } : null;
+  const legacy = useProduct<ExperienceReply>(runtime.client, request, active && !prepared.enabled, validateExperienceReply);
+  const { data, error, retry } = prepared.enabled ? prepared : legacy;
+  const selectedSeries = useMemo(() => experienceSelection(data, resolved.tags, widget.countries.kind === 'group'), [data, resolved.tags, widget.countries.kind]);
+  const tags = useMemo(() => data ? selectedSeries.map(series => series.tag) : resolved.tags, [data, selectedSeries, resolved.tags]);
   const segmentAt = useCallback((tag: string, hour: number) => {
-    const identity = identities.get(tag);
-    return identity ? stretchAt(identity.reads, identity.starts, hour) : null;
-  }, [identities]);
+    if (prepared.enabled) return prepared.segmentAt(tag, hour);
+    const reads = selectedSeries.find(series => series.tag === tag)?.reads;
+    return reads ? stretchAt(reads, stretchStarts(reads), hour) : null;
+  }, [selectedSeries, prepared.states, prepared.enabled]);
   const namePlan = useMemo(() => lookPlan(track?.branch, tags, head, segmentAt), [track?.branch, tags, head, segmentAt]);
   const names = useCountryNamesRead(runtime.client, track, namePlan.wanted, active, namePlan.maxHours);
   const namePlanKey = JSON.stringify(namePlan.wanted);
@@ -135,12 +141,12 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
       const membership = experienceMembership(resolved.membership, item.tag);
       const inRange = clipToSpans(item.reads, [{ firstHour: extent[0], lastHour: extent[1] }]);
       return { tag: item.tag, reads: membership ? clipToSpans(inRange, membership) : inRange,
-        identities: item.identities, readHours: item.reads.map(read => read.firstHour), recorded: item.reads.length > 0, membership,
+        identities: item.identities, readHours: item.reads.map(read => read.firstHour), recorded: prepared.enabled ? prepared.recorded(item.tag) : item.reads.length > 0, membership,
         name: experienceName(item.tag, nameHours.has(item.tag) ? names.get(nameKey(nameHours.get(item.tag)!, item.tag)) : null),
         color: colours.get(item.tag)!,
         colours: Object.fromEntries(BRANCHES.map(branch => [branch, single ? branchStyles.get(branch)!.color : colours.get(item.tag)!])) as Record<typeof BRANCHES[number], string> };
     });
-  }, [data, selectedSeries, colours, branchStyles, names, nameHours, resolved.membership, extent[0], extent[1], single]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [data, selectedSeries, colours, branchStyles, names, nameHours, resolved.membership, extent[0], extent[1], single, prepared.states]); // eslint-disable-line react-hooks/exhaustive-deps
   const holders = useMemo(() => experienceHolders(countries), [countries]);
   const headCountries = useMemo(() => holders.map(holder => experienceHolderAt(holder, head)), [holders, head]);
   const wanted = useMemo(() => {
@@ -168,11 +174,19 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
         const hour = lineEndHour(part.runs, frame.x[0], at);
         if (hour !== null && (endHour === null || hour > endHour)) { endHour = hour; endPart = part; }
       }
-      for (const part of line.parts) drawLine(ctx, frame, chartTokens, part.runs, part.country.colours[line.branch],
-        { dash: line.dash, until: state.playhead ?? undefined, endDot: part === endPart });
+      for (const part of line.parts) {
+        const summary = prepared.summary(part.country.tag, part.country.identities?.[0], line.branch);
+        if (prepared.enabled) { if (summary) drawLineSummary(ctx, frame, chartTokens, summary, part.country.colours[line.branch], false, state.playhead, { dash: line.dash, endDot: part === endPart }); }
+        else drawLine(ctx, frame, chartTokens, part.runs, part.country.colours[line.branch], { dash: line.dash, until: state.playhead ?? undefined, endDot: part === endPart });
+      }
     },
-    extent: x => extentOf(line.runs, x[0], Math.min(x[1], until ?? x[1])),
-  })), [lines, until]);
+    extent: x => {
+      if (!prepared.enabled) return extentOf(line.runs, x[0], Math.min(x[1], until ?? x[1]));
+      const ranges = line.parts.flatMap(part => { const summary = prepared.summary(part.country.tag, part.country.identities?.[0], line.branch);
+        const range = summary && summary.from === x[0] && summary.to === Math.min(x[1], until ?? x[1]) ? extentOfSummary(summary) : null; return range ? [range] : []; });
+      return ranges.length ? [Math.min(...ranges.map(range => range[0])), Math.max(...ranges.map(range => range[1]))] : null;
+    },
+  })), [lines, until, prepared.summary]);
   const keyHours = useMemo(() => [...new Set(countries.flatMap(country => country.readHours))].sort((a, b) => a - b), [countries]);
   const badges = useMemo<EventBadge[]>(() => {
     const capitulations = countryCapitulationBadges(groups.data, countries.map(country => ({
@@ -184,6 +198,9 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
     ...(capitulations.get(country.tag) ?? []).map(badge => ({ ...badge, color: country.color }))]);
   }, [countries, groups.data, extent[0], extent[1], resolved.unobserved]);
 
+  const parity = import.meta.env.MODE === 'parity' ? usePreparedScalarParity(runtime.client, track?.source, track?.branch.id, prepared.keys, extent, prepared.within,
+    { family: 'country-experience', measures: BRANCHES.map(branch => `${branch}-${measure}`), label: 'Experience chart values' }) : undefined;
+
   if (!track) return <WidgetState kind="empty" icon="sparkle" message="Load a campaign to see experience." />;
   if ((widget.time.mode === 'pin' || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (widget.countries.kind === 'group' && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
@@ -192,10 +209,10 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   if (!data || (widget.countries.kind === 'group' && !groups.data)) return <WidgetState kind="loading" label="Loading experience…" />;
   if (!countries.some(country => country.recorded)) return <WidgetState kind="unavailable" message="Not in this recording" />;
   if (!branches.length) return <WidgetState kind="empty" message="Turn on an experience branch in the widget settings." />;
-  if (measure === 'gain' && !countries.some(country => country.reads.some(read => read.gain !== null)))
+  if (measure === 'gain' && (prepared.enabled ? !prepared.gainKnown : !countries.some(country => country.reads.some(read => read.gain !== null))))
     return <WidgetState kind="unavailable" message="Daily gain needs a full day of data." />;
 
-  return <div className="experience">
+  return <div className="experience" ref={parity}>
     <Legend label={single ? 'Branches' : 'Countries'} items={single ? branches.map(branch => {
       const country = headCountries.find(country => runAt(country.reads, head) !== null);
       const read = country ? runAt(country.reads, head) : null;
@@ -213,11 +230,14 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
         hoursPerSecond={hoursPerSecond} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }} fitValues={shown => shown}
         padding={{ right: options.endLabels ? (single ? END_LABEL_ROOM : COMPARE_LABEL_ROOM) : 14 }} layers={layers} keyHours={keyHours} badges={badges}
+        onSummaryView={prepared.enabled ? prepared.onSummaryView : undefined} onNavigateHour={prepared.enabled ? prepared.onNavigateHour : undefined}
+        keyboardHour={prepared.keyboardHour} keyboardRevision={prepared.keyboardRevision}
         active={active} revision={{ head, data, lines, viewport, labels: labels.revision, endNames }}
         onHover={hour => { if (hour === null) showTip(null); }}
         tooltip={(hour, _frame, hovered) => {
           if (hour < extent[0] || hour > extent[1]) { showTip(null); return null; }
           showTip(hour, hovered);
+          if (prepared.enabled && preparedHover !== Math.floor(hour)) queueMicrotask(() => setPreparedHover(Math.floor(hour)));
           const shown = holders.map(holder => experienceHolderAt(holder, hour));
           return experienceTooltip(data, shown, branches, measure, hour, labels.labelAt(hour), viewport,
             countryCapitulationRows(hovered, labels.labelAt));

@@ -1,0 +1,343 @@
+//! The role census domain: a quiet token over every native writer of the
+//! fields the roster job gathers into its role census (each rostered
+//! character's country and role span, [`crate::extended::characters::census`]).
+//! The domain registers no receiver: the roster job compares the token it
+//! took before its latest complete gather with the hour's, and equal tokens
+//! prove that no observed writer ran in between ([`WatchRegistry::quiet`]).
+//!
+//! This family patches the writers no other family does
+//! ([`engine::census_mutations`]); the advisor family forwards its map,
+//! parser, merge and destructor sites and the country-leader map insert, and
+//! the roster family its scientist attach and clear ([`forwarded`]). The
+//! roster array writers move the roster domain's token, which a census carry
+//! also requires. The domain observes only while this family's patches and
+//! both forwarders are enabled; anything unobserved (disabled, poisoned, an
+//! epoch change, a running writer) yields no token, and the census is
+//! gathered.
+use crate::{
+    hook::Hook,
+    watch_registry::{Notification, WatchRegistry},
+};
+use engine::{Memory, census_mutations::MUTATIONS};
+use std::{
+    ops::Range,
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+};
+
+const SITES: usize = MUTATIONS.len();
+static CENSUS: WatchRegistry = WatchRegistry::new();
+static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
+/// This family's patches, then each forwarding family's, are enabled.
+static ENABLED: [AtomicBool; 1 + Forwarder::ALL.len()] =
+    [const { AtomicBool::new(false) }; 1 + Forwarder::ALL.len()];
+static CALLS: [AtomicU64; SITES] = [const { AtomicU64::new(0) }; SITES];
+static FORWARDED: [AtomicU64; Site::ALL.len()] = [const { AtomicU64::new(0) }; Site::ALL.len()];
+/// Carried and gathered censuses, and compared rows.
+static READS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
+    "a carried role census row differs from a fresh gather",
+]);
+
+/// The families whose patches forward here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Forwarder {
+    /// [`crate::advisor_changes`].
+    Advisors,
+    /// [`crate::roster_changes`].
+    Roster,
+}
+
+impl Forwarder {
+    const ALL: [Self; 2] = [Self::Advisors, Self::Roster];
+}
+
+/// The forwarded writers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Site {
+    LeaderMapInsert,
+    AdvisorMapInsert,
+    AdvisorMapMove,
+    AdvisorMapErase,
+    Merge,
+    Parse,
+    Destroy,
+    ScientistAttach,
+    ScientistClear,
+}
+
+impl Site {
+    const ALL: [Self; 9] = [
+        Self::LeaderMapInsert,
+        Self::AdvisorMapInsert,
+        Self::AdvisorMapMove,
+        Self::AdvisorMapErase,
+        Self::Merge,
+        Self::Parse,
+        Self::Destroy,
+        Self::ScientistAttach,
+        Self::ScientistClear,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::LeaderMapInsert => "leader_map_insert",
+            Self::AdvisorMapInsert => "advisor_map_insert",
+            Self::AdvisorMapMove => "advisor_map_move",
+            Self::AdvisorMapErase => "advisor_map_erase",
+            Self::Merge => "merge_character",
+            Self::Parse => "read_character",
+            Self::Destroy => "destroy_character",
+            Self::ScientistAttach => "scientist_attach",
+            Self::ScientistClear => "scientist_clear",
+        }
+    }
+}
+
+/// Whether the roster job gathers the whole census every hour and compares
+/// it with what it would carry, rather than the hour's slice.
+pub const VERIFY: bool = cfg!(feature = "census_verify");
+
+/// What the roster job sees of the domain.
+pub trait Changes: Sync {
+    /// The domain's token: `(epoch, revision)` while observed and no writer
+    /// runs.
+    fn quiet(&self) -> Option<(u64, u64)>;
+    /// A carried census row differed from a fresh gather: nothing is carried
+    /// for the rest of the attachment.
+    fn mismatch(&self);
+}
+
+/// The hooks' domain.
+pub struct Observer;
+impl Changes for Observer {
+    fn quiet(&self) -> Option<(u64, u64)> {
+        CENSUS.quiet()
+    }
+    fn mismatch(&self) {
+        CENSUS.poison();
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Changes for WatchRegistry {
+    fn quiet(&self) -> Option<(u64, u64)> {
+        WatchRegistry::quiet(self)
+    }
+    fn mismatch(&self) {
+        self.poison();
+    }
+}
+
+/// Hook path, allocation-free: a forwarded writer is about to run. Hold the
+/// result over the native call.
+pub fn forwarded(site: Site) -> Option<Notification<'static>> {
+    if !cfg!(feature = "census_changes") {
+        return None;
+    }
+    FORWARDED[site as usize].fetch_add(1, Ordering::Relaxed);
+    Some(CENSUS.notify(0))
+}
+
+/// A forwarding family's patches were enabled or disabled; outside attach
+/// and detach only. It disables before its patches go and enables after
+/// they are in place.
+pub fn forwarder(family: Forwarder, enabled: bool) {
+    ENABLED[1 + family as usize].store(enabled, Ordering::SeqCst);
+    observe();
+}
+
+/// Observe while this family's patches and every forwarder's are enabled.
+/// Enabling starts a new epoch, so nothing held from before a gap certifies.
+fn observe() {
+    CENSUS.set_enabled(
+        cfg!(feature = "census_changes")
+            && ENABLED.iter().all(|enabled| enabled.load(Ordering::SeqCst)),
+    );
+}
+
+/// Notifications running now.
+pub fn active() -> usize {
+    CENSUS.active()
+}
+
+/// Game thread, in the hourly callback before any capture. `invalidate`
+/// after a load, gap or recovery: nothing observed before it certifies
+/// anything.
+pub fn boundary(invalidate: bool) {
+    CENSUS.boundary(invalidate);
+}
+
+/// One role census acquisition.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counts {
+    /// The held census was kept, gathering only the slice.
+    pub carried: bool,
+    /// The whole census was gathered.
+    pub gathered: bool,
+    /// Held rows compared with fresh ones, and those that differed.
+    pub compared: u64,
+    pub mismatches: u64,
+}
+
+/// The roster job already called [`Changes::mismatch`] at a difference.
+pub fn record(counts: &Counts) {
+    for (target, value) in READS.iter().zip([
+        u64::from(counts.carried),
+        u64::from(counts.gathered),
+        counts.compared,
+    ]) {
+        target.fetch_add(value, Ordering::Relaxed);
+    }
+    SAMPLED.record(counts.compared, counts.mismatches, 0);
+}
+
+pub fn status() -> impl serde::Serialize {
+    let events = crate::status::map(
+        MUTATIONS
+            .iter()
+            .map(|site| site.name)
+            .zip(&CALLS)
+            .chain(Site::ALL.iter().map(|site| site.name()).zip(&FORWARDED))
+            .map(|(name, calls)| (name, calls.load(Ordering::Relaxed))),
+    );
+    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
+    crate::status::status!({
+        "configured": cfg!(feature = "census_changes"),
+        "verify": VERIFY,
+        "observed": CENSUS.quiet().is_some() || CENSUS.active() != 0,
+        "poisoned": CENSUS.poisoned(),
+        "sampled_verified": SAMPLED.verified(),
+        "sampled_mismatches": SAMPLED.mismatches(),
+        "last_mismatch": SAMPLED.last_mismatch(),
+        "slice": SAMPLED.slice(),
+        "carried_hours": reads[0],
+        "gathered_hours": reads[1],
+        "compared_rows": reads[2],
+        "events": events,
+        "scope": "cumulative since attach; the roster job keeps its role census (country and role span of every rostered character) without gathering it when the census domain's token (this family's writers and the forwarded advisor-family map, parser, merge and destructor sites and roster-family scientist sites; events counts each one's calls) equals the one taken before the latest complete gather and the hour's occurrences, ids, scope and historical length are the held census's (carried_hours); it then gathers only its slice (one in rotation_hours by character id; every row in verify mode) and compares it with the held rows (compared_rows), gathering the whole census and disabling the carry at the first difference (sampled_*); other hours gather the whole census (gathered_hours)"
+    })
+}
+
+pub struct Hooks {
+    hooks: Vec<Hook>,
+}
+impl Hooks {
+    /// The enclosing runtime verified the executable hash before construction.
+    /// A differing sentinel leaves the family uninstalled; the census is then
+    /// gathered every hour.
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
+    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+        let mut hooks = Vec::new();
+        if cfg!(feature = "census_changes")
+            && MUTATIONS.iter().all(|site| {
+                engine::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+            })
+        {
+            let callbacks: [usize; SITES] = [
+                set_country as *const () as usize,
+                create_army_role as *const () as usize,
+                create_navy_role as *const () as usize,
+                clear_unit_role as *const () as usize,
+                add_country_leader_role as *const () as usize,
+                erase_leader_roles as *const () as usize,
+                add_scientist_role as *const () as usize,
+                set_operative_reference as *const () as usize,
+            ];
+            for (index, site) in MUTATIONS.iter().enumerate() {
+                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+                    .map_err(|_| "native hook construction failed")?;
+                ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
+                hooks.push(hook);
+            }
+        }
+        Ok(Self { hooks })
+    }
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+        if !enabled {
+            ENABLED[0].store(false, Ordering::SeqCst);
+            observe();
+        }
+        // One census and suspension for the whole family, shared with the
+        // other families in a runtime round (`hook::shared`): a thread at any
+        // of its sites, or in a tap, holds every site back until the next
+        // attempt.
+        if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
+            .map_err(|_| "native hook state change failed")?
+        {
+            return Ok(false);
+        }
+        ENABLED[0].store(enabled && !self.hooks.is_empty(), Ordering::SeqCst);
+        observe();
+        Ok(true)
+    }
+    pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
+        self.hooks.iter().flat_map(Hook::executable_ranges)
+    }
+}
+impl Drop for Hooks {
+    fn drop(&mut self) {
+        // SAFETY: the domain holds no table; release only starts an epoch
+        // once these hooks and the forwarding ones were removed and drained.
+        unsafe { CENSUS.release() };
+    }
+}
+
+// Every site takes at most three integer or pointer arguments; the detour
+// forwards RCX..R9 and returns RAX. The notification covers the original in
+// flight.
+macro_rules! callback {
+    ($name:ident, $site:expr) => {
+        unsafe extern "system" fn $name(
+            first: usize,
+            second: usize,
+            third: usize,
+            fourth: usize,
+        ) -> usize {
+            let timing = crate::hook_timing::enter(crate::hook_timing::Family::CensusChanges);
+            CALLS[$site].fetch_add(1, Ordering::Relaxed);
+            let _notification = CENSUS.notify(0);
+            let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
+                unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };
+            timing.original(|| unsafe { original(first, second, third, fourth) })
+        }
+    };
+}
+callback!(set_country, 0);
+callback!(create_army_role, 1);
+callback!(create_navy_role, 2);
+callback!(clear_unit_role, 3);
+callback!(add_country_leader_role, 4);
+callback!(erase_leader_roles, 5);
+callback!(add_scientist_role, 6);
+callback!(set_operative_reference, 7);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The domain needs this family and every forwarder, and each forwarded
+    /// writer moves the token at its entry and refuses it until its return.
+    #[cfg(feature = "census_changes")]
+    #[test]
+    fn every_forwarder_enables_and_each_writer_moves_the_token() {
+        ENABLED[0].store(true, Ordering::SeqCst);
+        for family in Forwarder::ALL {
+            forwarder(family, false);
+        }
+        assert_eq!(Observer.quiet(), None);
+        forwarder(Forwarder::Advisors, true);
+        assert_eq!(Observer.quiet(), None);
+        forwarder(Forwarder::Roster, true);
+        let before = Observer.quiet().expect("observed");
+        let call = forwarded(Site::ScientistAttach);
+        assert_eq!(Observer.quiet(), None, "a running writer certifies nothing");
+        drop(call);
+        assert_ne!(Observer.quiet(), Some(before));
+        forwarder(Forwarder::Roster, false);
+        assert_eq!(Observer.quiet(), None);
+    }
+}

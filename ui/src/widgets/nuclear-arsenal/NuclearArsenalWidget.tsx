@@ -3,6 +3,9 @@ import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
 import CountryPicker from '../../components/CountryPicker';
 import CountryRaceView from '../../charts/race/CountryRaceView';
+import { usePreparedRace } from '../../charts/race/PartsRaceView';
+import { mergeNukes, nukesGeometry } from './preparedNukes';
+import { useParityRows } from '../../dashboard/parityRows';
 import DrillHost from '../../charts/drill/DrillHost';
 import DrillParts from '../../charts/drill/DrillParts';
 import { CLOSED, drillHour } from '../../charts/drill/drillState';
@@ -23,12 +26,12 @@ import { countryMatchFilter, isMember, projectResolvedCountries, rankedCandidate
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
 import { NumericReply } from '../../dashboard/numericReply';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useCountryLooks } from '../../dashboard/countryLooks';
 import { useHoverLabels } from '../../dashboard/useHoverLabels';
 import { readAt } from '../../dashboard/reads';
+import { clipToSpans } from '../../charts/series';
 import type { CountryNukesReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
 import { nuclearCountrySelection } from './NuclearCountryChip';
@@ -61,7 +64,7 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
     [resolved, widget.countries, fallback, groups.data, track?.branch.lastHour, track?.branch.firstHour]);
   const request = track && (resolved.top != null || resolved.tags.length) ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'country-nukes', params: nukesRequest(track.branch.id, resolved) } : null;
-  const product = useProduct<CountryNukesReply>(runtime.client, request, active, validateNukesReply);
+  const product = usePreparedRace(runtime.client, track, request, moment, active, validateNukesReply, mergeNukes, nukesGeometry, view !== 'race', counted.membership ?? undefined);
   const { error, retry } = product;
   const retained = useMemo(() => new NumericReply<CountryNukesReply>(), [runtime.client]);
   const numbers = retained.update(JSON.stringify(request), product.data, nuclearNumbers);
@@ -70,14 +73,15 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
   [runtime.client, track?.source.id, track?.source.revision, track?.branch.id, view, widget.countries, counted.membership, numbers]);
   const data = product.data ?? numbers;
   const model = useMemo(() => data ? nuclearModel(data) : null, [data]);
+  const geometry = useMemo(() => product.geometry ? nuclearModel(product.geometry) : model, [product.geometry, model]);
   const slots = resolved.top ?? Math.max(1, counted.tags.length);
   const ranked = useMemo(() => model ? rankNukes(model, rankedCandidates(counted, moment, model.tags), moment, slots, resolved.top != null) : [],
     [model, counted, moment, slots, resolved.top]);
   const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   const lines = useMemo(() => !model ? [] : (resolved.top != null ? model.tags : counted.tags).flatMap(tag => {
     const runs = nuclearRuns(model, tag, counted.membership?.get(tag) ?? null, range);
-    return runs.length ? [{ tag, runs }] : [];
-  }), [model, counted, resolved.top, range]);
+    return runs.length || product.summaries.has(tag) ? [{ tag, runs }] : [];
+  }), [model, counted, resolved.top, range, product.summaries]);
   const mixTag = mixCountry(widget.countries, fallback, ranked);
   const mixAlias = useMemo(() => {
     if (!mixTag || (widget.countries.kind !== 'tags' && widget.countries.kind !== 'selected')) return mixTag;
@@ -93,7 +97,7 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
   useEffect(() => { if (drillTag && origin == null) setOrigin({ key: resetKey, tag: drillTag, hour: originHour }); }, [resetKey, drillTag, origin, originHour]);
   const drillRequest = track && drillTag ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'country-nukes', params: nukesRequest(track.branch.id, { tags: [drillTag] }, originHour) } : null;
-  const drillReply = useProduct<CountryNukesReply>(runtime.client, drillRequest, active, validateNuclearDrillReply);
+  const drillReply = usePreparedRace(runtime.client, track, drillRequest, drillAt, active, validateNuclearDrillReply, mergeNukes, nukesGeometry);
   const retainedDrill = useMemo(() => new NumericReply<CountryNukesReply>(), [runtime.client]);
   const drillNumbers = retainedDrill.update(JSON.stringify(drillRequest), drillReply.data, nuclearNumbers);
   const drillPickOwner = useMemo(() => ({ client: runtime.client, source: [track?.source.id, track?.source.revision, track?.branch.id],
@@ -125,20 +129,27 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
   };
   const drillParts = useMemo(() => [...(drillModel?.parts ?? []), UNATTRIBUTED_PART], [drillModel]);
   const colours = useMemo(() => partColours(drillParts, tokens.categories), [drillParts, tokens.categories]);
-  const drillBands = useMemo(() => drillModel && drillTag ? nuclearDrillBands(drillModel, drillTag,
-    null, range) : null, [drillModel, drillTag, range]);
+  const drillGeometry = useMemo(() => drillReply.geometry && drillTag ? nuclearIdentityModel(drillReply.geometry, drillTag) : drillModel, [drillReply.geometry, drillTag, drillModel]);
+  const drillBands = useMemo(() => drillGeometry && drillTag ? nuclearDrillBands(drillGeometry, drillTag,
+    null, range) : null, [drillGeometry, drillTag, range]);
   const drillValue = drillModel && drillTag
     ? nuclearDrillAt(drillModel, drillTag, drillAt) : null;
   useEffect(() => { dispatchDrill({ type: 'close' }); setChoice(null); }, [dispatchDrill]);
-  const mix = useMemo(() => model && mixAlias ? { tag: mixAlias, bands: model.reply.types
-    .map(type => nuclearRuns(model, mixAlias, counted.membership?.get(mixAlias) ?? null, range, type.ordinal)) } : null,
-  [model, mixAlias, counted.membership, range]);
+  const mix = useMemo(() => geometry && mixAlias ? { tag: mixAlias, bands: geometry.reply.types
+    .map(type => nuclearRuns(geometry, mixAlias, counted.membership?.get(mixAlias) ?? null, range, type.ordinal)) } : null,
+  [geometry, mixAlias, counted.membership, range]);
   const segmentAt = useCallback((tag: string, hour: number) => nuclearSegmentAt(model, tag, hour), [model]);
   useEffect(() => {
     const warnings = [...(data?.warnings ?? []), ...(groups.data?.warnings ?? []), ...(drillReply.data?.warnings ?? [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, groups.data, drillReply.data, onDiagnostics]);
+  useParityRows(anchor, () => {
+    const page = product.parity?.data;
+    const rows = page?.series.flatMap(series => series.runs.map(run => ({ tag: series.tag, run, membership: series.membership }))) ?? [];
+    return { kind: 'chart', label: 'Nuclear arsenal exact values', complete: !!product.parity?.complete, total: rows.length, rows,
+      readHours: page?.readHours, emptyReadHours: page?.emptyReadHours, types: page?.types, warnings: page?.warnings };
+  }, { prepare: product.parity?.prepare, ready: () => !!product.parity?.complete, error: () => product.error ?? null });
   if (!track) return <>{header}<WidgetState kind="empty" icon="target" message="Load a campaign to see its nuclear arsenal." /></>;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{header}<WidgetState kind="unavailable" message="The chosen moment is not in this campaign." /></>;
   const open = (hour: number, tag?: string, choices?: readonly string[]) => {
@@ -150,11 +161,14 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
   };
   const breakdown = <CountryRaceView runtime={runtime} track={track} active={active} options={options} view="mix"
     extent={extent} playhead={drill.breakdown != null && drill.follow ? followHour : playhead} moment={drillAt} slots={1} ranked={[]} lines={[]} parts={drillParts}
-    mix={drillTag && drillBands ? { tag: drillTag, bands: drillBands, parts: drillParts.map((part, index) => ({ ...part,
+    mix={drillTag && drillBands ? { tag: drillTag, bands: drillBands,
+      approximate: [...drillReply.summaries].flatMap(([alias,summary]) => clipToSpans(summary.approximate ?? [],
+        drillData?.series.find(series=>series.tag===alias)?.membership ?? [])), parts: drillParts.map((part, index) => ({ ...part,
       value: part.id === '' ? drillValue?.remainder == null ? 'Not known' : formatNukes(drillValue.remainder)
         : drillValue?.values[index] == null ? 'Not known' : formatNukes(drillValue.values[index]!) })) } : null}
     label="Nuclear stockpile" empty="No nuclear stockpile was recorded at this time." formatValue={formatNukes}
     presentation={{ exact: false, held: false, countryLooks: false }} entityLooks={entityLooks} selectedHour={drillAt}
+    onSummaryView={drillReply.onSummaryView} onReachHour={drillReply.onReachHour} navigation={drillReply.navigation}
     pickOwner={drillPickOwner}
     segmentAt={(tag, hour) => nuclearSegmentAt(drillModel, tag, hour)}
     state={drillReply.error ? <WidgetState kind="error" detail={drillReply.error} onRetry={drillReply.retry} />
@@ -193,7 +207,9 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
           : !model.tags.length && resolved.top == null ? <WidgetState kind="unavailable" message="No nuclear stockpiles were recorded for these countries." /> : undefined;
   const main = <CountryRaceView runtime={runtime} track={track} active={active && (drill.breakdown == null || options.drill === 'popout')}
     options={options} view={view} extent={extent} playhead={playhead} onPick={open} pickOwner={pickOwner}
-    moment={moment} slots={slots} ranked={ranked} lines={lines} parts={model?.parts} mix={mix} segmentAt={segmentAt} state={overviewState}
+    lineSummaries={product.summaries} onSummaryView={product.onSummaryView}
+    onReachHour={product.onReachHour} navigation={product.navigation} exactLineTags={product.exactLineTags}
+    moment={moment} slots={slots} ranked={ranked} lines={lines} parts={model?.parts} mix={mix && {...mix,approximate:product.summaries.get(mix.tag)?.approximate}} segmentAt={segmentAt} state={overviewState}
     presentation={{ exact: false, held: false }}
     label="Nuclear stockpile" empty={resolved.top != null && readAt(data?.emptyReadHours ?? [], moment) === moment
       ? 'No nuclear weapons yet.' : 'No nuclear stockpile was recorded at this time.'} formatValue={formatNukes}

@@ -43,18 +43,24 @@ export async function browserStage<T>(child: ChildProcess, label: string, run: (
   }
 }
 
-function cdp(endpoint: string, method: string, params: Record<string, unknown> = {}) {
+function cdp(endpoint: string, method: string, params: Record<string, unknown> = {}, signal?: AbortSignal) {
   return new Promise<Record<string, unknown>>((done, reject) => {
+    signal?.throwIfAborted();
     const socket = new WebSocket(endpoint);
-    const timeout = setTimeout(() => { socket.close(); reject(new Error(`${method} timeout`)); }, 30_000);
+    const finish = (error?: Error, result?: Record<string, unknown>) => {
+      clearTimeout(timeout); signal?.removeEventListener('abort', aborted); socket.close();
+      if (error) reject(error); else done(result!);
+    };
+    const aborted = () => finish(signal!.reason);
+    const timeout = setTimeout(() => finish(new Error(`${method} timeout`)), 30_000);
+    signal?.addEventListener('abort', aborted, { once: true });
     socket.addEventListener('open', () => socket.send(JSON.stringify({ id: 1, method, params })));
     socket.addEventListener('message', event => {
       const message = JSON.parse(String(event.data));
       if (message.id !== 1) return;
-      clearTimeout(timeout); socket.close();
-      if (message.error) reject(new Error(JSON.stringify(message.error))); else done(message.result);
+      if (message.error) finish(new Error(JSON.stringify(message.error))); else finish(undefined, message.result);
     });
-    socket.addEventListener('error', () => { clearTimeout(timeout); reject(new Error(`${method} connection failed`)); });
+    socket.addEventListener('error', () => finish(new Error(`${method} connection failed`)));
   });
 }
 
@@ -62,31 +68,34 @@ function exited(child: ChildProcess) {
   return child.exitCode != null || child.signalCode != null;
 }
 
-async function stopTreePid(pid: number) {
+async function stopTreePid(pid: number, signal?: AbortSignal) {
   await new Promise<void>((done, reject) => {
+    signal?.throwIfAborted();
     const stop = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+    const abort = () => { clearTimeout(timer); stop.kill(); reject(signal!.reason); };
+    signal?.addEventListener('abort', abort, { once: true });
     let output = '';
     stop.stdout?.on('data', chunk => { output += String(chunk); });
     stop.stderr?.on('data', chunk => { output += String(chunk); });
     const timer = setTimeout(() => { stop.kill(); reject(new Error('Stopping owned Headless Edge tree timed out')); }, 5_000);
-    stop.once('error', error => { clearTimeout(timer); reject(error); });
+    stop.once('error', error => { clearTimeout(timer); signal?.removeEventListener('abort', abort); reject(error); });
     stop.once('close', code => {
-      clearTimeout(timer);
+      clearTimeout(timer); signal?.removeEventListener('abort', abort);
       if (code === 0) done();
       else reject(new Error(`Stopping owned Headless Edge tree ${pid} failed (${code}): ${output.trim()}`));
     });
   });
 }
 
-async function stopOwnedTree(child: ChildProcess) {
+async function stopOwnedTree(child: ChildProcess, signal?: AbortSignal) {
   if (exited(child) || child.pid == null) return;
   if (process.platform !== 'win32') { child.kill('SIGKILL'); return; }
-  await stopTreePid(child.pid);
+  await stopTreePid(child.pid, signal);
 }
 
 type OwnedEdgeProcess = { pid: number; parentId: number };
 
-async function ownedEdgeProcesses(profile: string, launcherPid: number | undefined, stop = false, browserPid: number | undefined = undefined): Promise<OwnedEdgeProcess[]> {
+export async function ownedEdgeProcesses(profile: string, launcherPid: number | undefined, stop = false, browserPid: number | undefined = undefined, signal?: AbortSignal): Promise<OwnedEdgeProcess[]> {
   // A vanished launcher PID is insufficient: compatibility relaunches and
   // descendants can keep this exact profile alive. Match whole arguments.
   const script = `
@@ -137,21 +146,36 @@ if ($env:BATTLE_PLAN_CANVAS_STOP -eq '1') {
       throw ('Stopping owned Edge tree ' + $root.pid + ' failed (' + $stopper.ExitCode + '), launcher ' + $env:BATTLE_PLAN_CANVAS_LAUNCHER + ', browser ' + $env:BATTLE_PLAN_CANVAS_BROWSER + ': ' + $message.Trim())
     }
   }
+  # A compatibility relaunch can leave a new exact-profile root outside the
+  # observed tree. Stop those roots too; never match another profile by prefix.
+  foreach ($entry in @(Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'")) {
+    if ($entry.CommandLine -notmatch $pattern) { continue }
+    $nativeProcess = Get-Process -Id $entry.ProcessId -ErrorAction SilentlyContinue
+    if (-not $nativeProcess -or $nativeProcess.HasExited) { continue }
+    $null = $nativeProcess.Handle
+    $fresh = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $entry.ProcessId)
+    if ($nativeProcess.HasExited) { continue }
+    if (-not $fresh -or $fresh.CommandLine -notmatch $pattern) { throw 'Cannot verify an owned Edge profile process before stopping it' }
+    Stop-Process -InputObject $nativeProcess -Force -ErrorAction Stop
+  }
 }
 ConvertTo-Json -InputObject $live -Compress
 `;
   return new Promise((done, reject) => {
+    signal?.throwIfAborted();
     const query = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
       windowsHide: true,
       env: { ...process.env, BATTLE_PLAN_CANVAS_PROFILE: profile, BATTLE_PLAN_CANVAS_LAUNCHER: String(launcherPid ?? 0), BATTLE_PLAN_CANVAS_STOP: stop ? '1' : '0', BATTLE_PLAN_CANVAS_BROWSER: String(browserPid ?? 0) },
     });
+    const abort = () => { clearTimeout(timer); query.kill(); reject(signal!.reason); };
+    signal?.addEventListener('abort', abort, { once: true });
     let output = '', errors = '';
     query.stdout?.on('data', chunk => { output += String(chunk); });
     query.stderr?.on('data', chunk => { errors += String(chunk); });
     const timer = setTimeout(() => { query.kill(); reject(new Error('Observing owned Headless Edge processes timed out')); }, 10_000);
-    query.once('error', error => { clearTimeout(timer); reject(error); });
+    query.once('error', error => { clearTimeout(timer); signal?.removeEventListener('abort', abort); reject(error); });
     query.once('close', code => {
-      clearTimeout(timer);
+      clearTimeout(timer); signal?.removeEventListener('abort', abort);
       if (code !== 0) { reject(new Error(`Observing owned Headless Edge processes failed (${code}): ${errors.trim()}`)); return; }
       try {
         const processes: unknown = JSON.parse(output.trim());
@@ -162,36 +186,129 @@ ConvertTo-Json -InputObject $live -Compress
   });
 }
 
-async function stopOwnedProfile(profile: string, launcherPid: number | undefined, browserPid: number | undefined) {
-  await ownedEdgeProcesses(profile, launcherPid, true, browserPid);
+function observationTimedOut(error: unknown) {
+  return error instanceof Error && error.message === 'Observing owned Headless Edge processes timed out';
 }
 
-/** Observe shutdown before requesting it, and confirm exit before deleting a profile. */
-export async function stopBrowser(child: ChildProcess, requestClose: () => Promise<unknown>, forceStop: () => Promise<void> = () => stopOwnedTree(child), timeout = 5_000, verifyStopped: () => Promise<boolean> = async () => exited(child)) {
+type CleanupOptions = { profile?: string; timeoutMs?: number; maxAttempts?: number; finalAttemptMs?: number };
+
+class CleanupLimitError extends Error {}
+
+/** Termination and verification spend one deadline and attempt allowance. */
+export class BrowserCleanupBudget {
+  profile: string | undefined;
+  final = false;
+  private readonly deadline: number;
+  private readonly retryDeadline: number;
+  private readonly maxAttempts: number;
+  private attempts = 0;
+
+  constructor(options: CleanupOptions = {}) {
+    const timeout = options.timeoutMs ?? 30_000;
+    const finalAttempt = options.finalAttemptMs ?? Math.min(5_000, timeout / 3);
+    this.maxAttempts = options.maxAttempts ?? 24;
+    assert.ok(timeout > 0 && finalAttempt > 0 && finalAttempt < timeout && this.maxAttempts >= 8);
+    this.profile = options.profile;
+    this.deadline = Date.now() + timeout;
+    this.retryDeadline = this.deadline - finalAttempt;
+  }
+
+  get remaining() { return Math.max(0, (this.final ? this.deadline : this.retryDeadline) - Date.now()); }
+  get canRetry() { return this.remaining > 0 && this.attempts < this.maxAttempts - (this.final ? 0 : 4); }
+
+  async run<T>(work: (signal: AbortSignal) => Promise<T>, timeout = this.remaining): Promise<T> {
+    if (!this.canRetry) throw new CleanupLimitError('Browser cleanup budget exhausted');
+    this.attempts++;
+    const controller = new AbortController();
+    const failure = new Promise<never>((_, reject) => {
+      controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true });
+    });
+    const timer = setTimeout(() => controller.abort(new CleanupLimitError('Browser cleanup deadline reached')), Math.min(timeout, this.remaining));
+    try { return await Promise.race([failure, work(controller.signal)]); }
+    finally { clearTimeout(timer); controller.abort(new CleanupLimitError('Browser cleanup step ended')); }
+  }
+}
+
+function cleanupFailure(profile: string | undefined, cause: unknown) {
+  return new Error(`Headless Edge did not stop; its profile is retained${profile ? `: ${profile}` : ''}`, { cause });
+}
+
+/** Retry observation within the caller's budget and sweep exact-profile survivors. */
+export async function stopOwnedProfile(profile: string, launcherPid: number | undefined, browserPid: number | undefined,
+  observe: typeof ownedEdgeProcesses = ownedEdgeProcesses, sharedBudget?: BrowserCleanupBudget) {
+  const budget = sharedBudget ?? new BrowserCleanupBudget({ profile });
+  budget.profile ??= profile;
+  assert.equal(budget.profile, profile, 'Browser cleanup must retain its exact owned profile');
+  const sweep = async () => {
+    await budget.run(signal => observe(profile, launcherPid, true, browserPid, signal));
+    // Retain the ownership check through a timed-out stop, but omit the old
+    // numeric launcher after a completed request can let its PID be reused.
+    launcherPid = undefined;
+    return (await budget.run(signal => observe(profile, undefined, false, undefined, signal))).length === 0;
+  };
+  let failure: unknown;
+  do {
+    try { if (await sweep()) return; }
+    catch (error) {
+      failure = error;
+      if (!observationTimedOut(error) && !(error instanceof CleanupLimitError)) break;
+    }
+  } while (!budget.final && budget.canRetry);
+  if (!sharedBudget && !budget.final) {
+    budget.final = true;
+    try { if (await sweep()) return; } catch (error) { failure = error; }
+  }
+  if (sharedBudget) throw failure ?? new CleanupLimitError('Owned profile still has live processes');
+  throw cleanupFailure(profile, failure);
+}
+
+type CleanupWork<T> = (budget: BrowserCleanupBudget, signal: AbortSignal) => Promise<T>;
+
+/** Confirm absence before deleting a profile; all shutdown work has one budget. */
+export async function stopBrowser(child: ChildProcess, requestClose: CleanupWork<unknown>, forceStop: CleanupWork<void> = (_budget, signal) => stopOwnedTree(child, signal), timeout = 5_000, verifyStopped: CleanupWork<boolean> = async () => exited(child), options: CleanupOptions = {}) {
+  const budget = new BrowserCleanupBudget(options);
   let closed!: () => void;
   const stopped = new Promise<void>(done => { closed = done; child.once('close', closed); });
   let timer: ReturnType<typeof setTimeout> | undefined;
   const wait = async () => {
     try {
-      await Promise.race([stopped, new Promise<void>(done => { timer = setTimeout(done, timeout); })]);
+      await Promise.race([stopped, new Promise<void>(done => { timer = setTimeout(done, Math.min(timeout, budget.remaining)); })]);
     } finally { clearTimeout(timer); }
   };
   let confirmed = false;
+  let observationFailure: unknown;
+  const verify = async () => {
+    observationFailure = undefined;
+    try { return await budget.run(signal => verifyStopped(budget, signal)); }
+    catch (error) { observationFailure = error; return false; }
+  };
   try {
-    if (exited(child) && await verifyStopped()) { confirmed = true; return; }
-    await requestClose().catch(() => {});
-    confirmed = await verifyStopped();
-    if (!confirmed) { await wait(); confirmed = await verifyStopped(); }
-    if (!confirmed) {
-      let failure: unknown;
-      try { await forceStop(); } catch (error) { failure = error; }
-      await wait();
+    if (exited(child) && await verify()) { confirmed = true; return; }
+    await budget.run(signal => requestClose(budget, signal), timeout).catch(() => {});
+    confirmed = await verify();
+    if (!confirmed && !observationFailure) { await wait(); confirmed = await verify(); }
+    let failure: unknown;
+    while (!confirmed && budget.canRetry) {
+      failure = undefined;
+      try { await budget.run(signal => forceStop(budget, signal)); } catch (error) { failure = error; }
       // A graceful exit can race the PID-scoped force request. Its observed
       // exit settles shutdown even if the force utility found no live process.
-      confirmed = await verifyStopped();
-      if (!confirmed && failure) throw failure;
+      confirmed = await verify();
+      if (!confirmed && !observationFailure) { await wait(); confirmed = await verify(); }
+      if (confirmed) break;
+      if (observationTimedOut(observationFailure) || observationTimedOut(failure)) continue;
+      break;
     }
-    assert.ok(confirmed, 'Headless Edge did not stop; its profile is retained');
+    if (!confirmed) {
+      budget.final = true;
+      // Keep Node's owned native process handle until absence is confirmed.
+      // It can terminate the launcher even when CIM cannot answer; never use
+      // a retained numeric PID to bypass the profile/native-handle checks.
+      try { if (child.pid != null && !exited(child)) child.kill('SIGKILL'); } catch (error) { failure = error; }
+      try { await budget.run(signal => forceStop(budget, signal)); } catch (error) { failure = error; }
+      confirmed = await verify();
+      if (!confirmed) throw cleanupFailure(budget.profile, observationFailure ?? failure);
+    }
   } finally {
     // The close promise can remain pending after a refused shutdown.
     child.removeListener('close', closed);
@@ -262,10 +379,10 @@ addEventListener('unhandledrejection',event=>finish({error:String(event.reason)}
     return { graphics, result };
   } finally {
     try {
-      if (child) await stopBrowser(child, async () => {
-        if (endpoint) await cdp(endpoint, 'Browser.close');
-      }, () => stopOwnedProfile(profile, exited(child!) ? undefined : child!.pid, browserPid), 5_000,
-      async () => (await ownedEdgeProcesses(profile, exited(child!) ? undefined : child!.pid)).length === 0);
+      if (child) await stopBrowser(child, async (_budget, signal) => {
+        if (endpoint) await cdp(endpoint, 'Browser.close', {}, signal);
+      }, budget => stopOwnedProfile(profile, exited(child!) ? undefined : child!.pid, browserPid, ownedEdgeProcesses, budget), 5_000,
+      async (_budget, signal) => (await ownedEdgeProcesses(profile, exited(child!) ? undefined : child!.pid, false, undefined, signal)).length === 0, { profile });
     } finally {
       await new Promise<void>(done => { server.close(() => done()); server.closeAllConnections(); });
     }

@@ -4,9 +4,7 @@
 #[cfg(not(all(windows, target_arch = "x86_64", target_env = "msvc")))]
 compile_error!("this oracle requires Windows x64 MSVC");
 
-#[path = "../src/hook.rs"]
-#[allow(dead_code)]
-mod hook;
+use collector_hooks::hook;
 
 use hook::{Registers, Tap};
 use std::{

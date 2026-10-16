@@ -13,10 +13,16 @@
 //! Applying the latest pass's cutoff to a row is exact however old the row is: the pass
 //! removes the same leading run again, records the updater appended since are dated at or
 //! after the pass's hour, which no cutoff of that pass reaches, and a pass that already
-//! ran before the read left a first record its own cutoff keeps. The pass visits the
-//! countries the game simulates (`game state+0x9A0`); a country without an owned state
-//! keeps its records unpruned, which [`retained`] cannot know, so consumers refuse such a
-//! container by name ([`UNPRUNED_CONTAINER`]).
+//! ran before the read left a first record its own cutoff keeps. The pass visits only the
+//! countries in the game's daily simulation roster (those owning a state); a country
+//! outside it keeps its records unpruned, which [`retained`] cannot know, so a caller that
+//! has not established the country was in the roster refuses such a container by name
+//! ([`UNPRUNED_CONTAINER`]).
+//!
+//! The hourly AirDailyRoster records that roster. [`visiting_pass`] finds the latest pass
+//! that visited a container country and [`retained_through`] applies it alone: passes
+//! before it are subsumed by its later cutoff, and passes after it did not touch the
+//! country, so the result is exact for any country, with or without an owned state.
 
 use crate::Hour;
 use crate::rows::{AirCombatRecord, AirRegionCombatRow};
@@ -67,6 +73,60 @@ pub fn retained(row: &AirRegionCombatRow, hour: Hour, timeout: i32) -> Retained<
     Retained {
         own: pruned(&row.own, cutoff),
         foreign: pruned(&row.foreign, cutoff),
+    }
+}
+
+/// The latest daily pass at or before `hour` that visited a container country, searching
+/// back over the branch's passes after its first sample `first` (a row read at or after
+/// that sample already holds any earlier pass). `visited` answers one pass's roster from
+/// the samples on either side of its tick; its refusal is the result's. None when no pass
+/// of the branch visited the country.
+pub fn visiting_pass(
+    hour: Hour,
+    first: Hour,
+    mut visited: impl FnMut(Hour) -> Result<bool, String>,
+) -> Result<Option<Hour>, String> {
+    let mut pass = last_pass(hour);
+    while pass > first {
+        if visited(pass)? {
+            return Ok(Some(pass));
+        }
+        pass -= DAY;
+    }
+    Ok(None)
+}
+
+/// Whether the pass in the tick before sample `pass` visited a country, from its roster
+/// eligibility at the samples before and after that tick: the pass reads the roster inside
+/// the tick, so samples that disagree leave it unknown.
+pub fn pass_visited(pass: Hour, before: bool, after: bool) -> Result<bool, String> {
+    if before != after {
+        return Err(format!(
+            "the daily air roster changed in the tick of the daily pass at hour {pass}"
+        ));
+    }
+    Ok(after)
+}
+
+/// What the game holds in a holder whose container country the pass at `pass` visited
+/// last ([`visiting_pass`]); with no visiting pass, the row as read.
+pub fn retained_through(
+    row: &AirRegionCombatRow,
+    pass: Option<Hour>,
+    timeout: i32,
+) -> Retained<'_> {
+    match pass {
+        Some(pass) => {
+            let cutoff = cutoff(pass, timeout);
+            Retained {
+                own: pruned(&row.own, cutoff),
+                foreign: pruned(&row.foreign, cutoff),
+            }
+        }
+        None => Retained {
+            own: &row.own,
+            foreign: &row.foreign,
+        },
     }
 }
 
@@ -321,6 +381,59 @@ mod tests {
         // A mod's longer timeout keeps more; the cutoff wraps as native i32.
         assert_eq!(retained(&row, HOUR, 48).own.len(), 5);
         assert_eq!(cutoff(i32::MIN, 1), i32::MAX);
+    }
+
+    #[test]
+    fn the_latest_visiting_pass_alone_prunes_and_no_visit_keeps_the_row() {
+        let pass = last_pass(HOUR);
+        let first = pass - 24 * 5;
+        let mut asked = Vec::new();
+        // Only the pass two days back visited the country.
+        let found = visiting_pass(HOUR, first, |at| {
+            asked.push(at);
+            Ok(at == pass - 48)
+        });
+        assert_eq!(found, Ok(Some(pass - 48)));
+        assert_eq!(asked, [pass, pass - 24, pass - 48]);
+        // No visit since the branch's first sample: the pass at that sample is not asked.
+        let mut asked = Vec::new();
+        assert_eq!(
+            visiting_pass(HOUR, first, |at| {
+                asked.push(at);
+                Ok(false)
+            }),
+            Ok(None)
+        );
+        assert_eq!(asked.last(), Some(&(first + 24)));
+        // An unknown roster before any visit is the refusal.
+        assert_eq!(
+            visiting_pass(HOUR, first, |at| if at == pass {
+                Ok(false)
+            } else {
+                Err("gap".to_owned())
+            }),
+            Err("gap".to_owned())
+        );
+        assert_eq!(pass_visited(pass, true, true), Ok(true));
+        assert_eq!(pass_visited(pass, false, false), Ok(false));
+        assert!(pass_visited(pass, false, true).is_err());
+
+        let older = cutoff(pass - 48, 24);
+        let row = AirRegionCombatRow {
+            own: vec![record(older - 1, 1, 0, 1), record(older, 1, 0, 1)],
+            foreign: vec![record(older - 5, 1, 0, 1)],
+            ..Default::default()
+        };
+        let state = retained_through(&row, Some(pass - 48), 24);
+        assert_eq!(
+            state.own.iter().map(|r| r.date).collect::<Vec<_>>(),
+            [older]
+        );
+        assert!(state.foreign.is_empty());
+        // The latest pass's cutoff would have removed both.
+        assert!(retained(&row, HOUR, 24).own.is_empty());
+        let whole = retained_through(&row, None, 24);
+        assert_eq!((whole.own.len(), whole.foreign.len()), (2, 1));
     }
 
     #[test]

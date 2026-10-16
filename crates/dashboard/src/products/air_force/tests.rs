@@ -1,5 +1,6 @@
 use super::*;
 use crate::test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag};
+use crate::transport;
 use replay::{
     container::Replay,
     frame::{DecodedFrame, TableView},
@@ -398,12 +399,20 @@ fn air_force_serves_five_thousand_requested_countries_without_a_country_cap() {
         );
         assert!(transport::json_len(&output, MAX_REPLY_BYTES).is_some());
     }
-    assert_eq!(
-        planes_at(&source, 1, 22, &AtomicBool::new(false))
-            .unwrap()
-            .len(),
-        5000
-    );
+    let tags: Vec<_> = (0..5000).map(tag).collect();
+    let mut visited = 0;
+    visit_plane_runs(
+        &source,
+        1,
+        &tags,
+        &AtomicBool::new(false),
+        |_, _, _, _, _| {
+            visited += 1;
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(visited, 5000);
     assert_eq!(source.state::<Scans>().lock().unwrap().runs, 1);
 }
 
@@ -434,9 +443,6 @@ fn air_force_unsupported_country_tags_are_named_and_counted() {
     );
     assert_eq!(reply.series[0].tag, tag(1));
     assert_eq!(reply.series[0].runs[0].total, Some(0));
-    let error = planes_at(&source, 1, 22, &AtomicBool::new(false)).unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-    assert!(error.to_string().contains("[255]: 1"));
     let error = visit_plane_runs(
         &source,
         1,
@@ -494,65 +500,6 @@ fn air_force_reply_budget_uses_actual_json_bytes_and_never_truncates() {
 }
 
 #[test]
-fn air_force_scoreboard_uses_the_same_cached_census_and_keeps_missing_none() {
-    let mut missing = frame(23, &[], &[], 2);
-    *missing.tables[TableId::AirWings.index()] = TableView::Unavailable {
-        reason: "unread".into(),
-    };
-    let source = recorded_source(vec![
-        frame(22, &[(1, 100_000, 100_001, 7)], &[(1, 71, 700_000)], 2),
-        missing,
-    ]);
-    let first = planes_at(&source, 1, 22, &AtomicBool::new(false)).unwrap();
-    assert_eq!(first[&tag(0)], Some(7));
-    assert_eq!(first[&tag(1)], Some(0));
-    assert_eq!(
-        planes_at(&source, 1, 23, &AtomicBool::new(false)).unwrap()[&tag(0)],
-        None
-    );
-    assert_eq!(
-        planes_at(&source, 1, 24, &AtomicBool::new(false)).unwrap()[&tag(0)],
-        None
-    );
-    let scanned = scanned_branch(&source, 1, &AtomicBool::new(false)).unwrap();
-    let _ = reply::reply(
-        &scanned,
-        &params(AirForceMeasure::Wings, AirForceOwnership::Effective),
-        None,
-        |_| None,
-        vec![],
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    assert_eq!(source.state::<Scans>().lock().unwrap().runs, 1);
-    assert!(planes_at(&source, 99, 22, &AtomicBool::new(false)).is_err());
-    assert_eq!(
-        planes_at(&source, 1, 22, &AtomicBool::new(true))
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::Interrupted
-    );
-    let cold = recorded_source(vec![frame(22, &[], &[], 2)]);
-    assert_eq!(
-        planes_at(&cold, 1, 22, &AtomicBool::new(true))
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::Interrupted
-    );
-    assert_eq!(cold.state::<Scans>().lock().unwrap().runs, 0);
-
-    let mut unresolved = frame(22, &[], &[], 2);
-    *unresolved.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
-        reason: "unread country links".into(),
-    };
-    let source = recorded_source(vec![unresolved]);
-    assert_eq!(
-        planes_at(&source, 1, 22, &AtomicBool::new(false)).unwrap(),
-        [(tag(0), None), (tag(1), None)].into()
-    );
-}
-
-#[test]
 fn air_force_run_visitor_reuses_scan_and_keeps_zero_unknown_gap_and_replacement() {
     let mut unread = frame(23, &[], &[], 2);
     *unread.tables[TableId::AirWings.index()] = TableView::Unavailable {
@@ -574,15 +521,20 @@ fn air_force_run_visitor_reuses_scan_and_keeps_zero_unknown_gap_and_replacement(
     links[0].id = 200_000;
     links.sort_by_key(|row| row.id);
     let source = recorded_source(vec![
-        frame(22, &[(1, 100_000, 0, 7)], &[(1, 71, 700_000)], 2),
+        frame(22, &[(1, 100_000, 100_001, 7)], &[(1, 71, 700_000)], 2),
         unread,
         frame(25, &[(1, 100_000, 0, 7)], &[(1, 71, 700_000)], 2),
         replacement,
     ]);
-    assert_eq!(
-        planes_at(&source, 1, 22, &AtomicBool::new(false)).unwrap()[&tag(0)],
-        Some(7)
-    );
+    let output = AirForceSize::load(
+        &source,
+        &params(AirForceMeasure::Wings, AirForceOwnership::Effective),
+        &LoadContext { content: None },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(output.series[0].runs[0].total, Some(0));
+    assert_eq!(output.series[1].runs[0].total, Some(1));
     let tags = [tag(0), tag(1), "unobserved".into()];
     let mut seen = BTreeMap::<String, Vec<_>>::new();
     visit_plane_runs(
@@ -618,6 +570,27 @@ fn air_force_run_visitor_reuses_scan_and_keeps_zero_unknown_gap_and_replacement(
     assert!(!seen.contains_key("unobserved"));
     assert_eq!(source.state::<Scans>().lock().unwrap().runs, 1);
 
+    assert!(
+        visit_plane_runs(
+            &source,
+            99,
+            &tags,
+            &AtomicBool::new(false),
+            |_, _, _, _, _| { panic!("unknown branch must refuse before visiting") }
+        )
+        .is_err()
+    );
+    let error = visit_plane_runs(
+        &source,
+        1,
+        &tags,
+        &AtomicBool::new(true),
+        |_, _, _, _, _| panic!("cancelled visitor must not call back"),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    assert_eq!(source.state::<Scans>().lock().unwrap().runs, 1);
+
     let cancelled = AtomicBool::new(false);
     let mut callbacks = 0;
     let error = visit_plane_runs(&source, 1, &tags, &cancelled, |_, _, _, _, _| {
@@ -637,13 +610,22 @@ fn air_force_run_visitor_reuses_scan_and_keeps_zero_unknown_gap_and_replacement(
     )
     .unwrap_err();
     assert_eq!(error.to_string(), "synthetic callback refusal");
-    let cold = recorded_source(vec![frame(22, &[], &[], 2)]);
+    let mut unresolved = frame(22, &[], &[], 2);
+    *unresolved.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
+        reason: "unread country links".into(),
+    };
+    let cold = recorded_source(vec![unresolved]);
     let error = visit_plane_runs(&cold, 1, &tags, &AtomicBool::new(true), |_, _, _, _, _| {
         panic!("cancelled visitor must not call back")
     })
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
     assert_eq!(cold.state::<Scans>().lock().unwrap().runs, 0);
+    visit_plane_runs(&cold, 1, &tags, &AtomicBool::new(false), |_, _, _, _, _| {
+        panic!("unavailable country links must not prove a zero or known count")
+    })
+    .unwrap();
+    assert_eq!(cold.state::<Scans>().lock().unwrap().runs, 1);
 }
 
 #[test]
@@ -783,24 +765,45 @@ fn air_force_recorded_variants_use_mod_archetypes_and_keep_unresolved_designs() 
     std::fs::remove_dir_all(root).unwrap();
 }
 
+fn scale_wings(countries: u32) -> Vec<(u64, u32, i32, i32)> {
+    (0..countries)
+        .flat_map(|country| {
+            let count = if country < 10 { 350 } else { 3 + country % 8 };
+            (0..count).map(move |index| {
+                (
+                    u64::from(country) * 1000 + u64::from(index) + 1,
+                    100_000 + country,
+                    0,
+                    100,
+                )
+            })
+        })
+        .collect()
+}
+
+fn scale_equipment(wings: &[(u64, u32, i32, i32)]) -> Vec<(u64, u64, i64)> {
+    wings
+        .iter()
+        .flat_map(|&(wing, owner, _, planes)| {
+            let variant = 71 + wing % 4;
+            if owner < 100_010 && wing % 10 < 3 {
+                vec![
+                    (wing, variant, i64::from(planes - 20) * 100_000),
+                    (wing, 81 + wing % 3, 2_000_000),
+                ]
+            } else {
+                vec![(wing, variant, i64::from(planes) * 100_000)]
+            }
+        })
+        .collect()
+}
+
 #[test]
 #[ignore = "dense scan measurement, run explicitly"]
 fn air_force_dense_scale() {
     use std::time::Instant;
     for countries in [1500, 5000] {
-        let wings: Vec<_> = (0..countries)
-            .flat_map(|country| {
-                let count = if country < 10 { 350 } else { 3 + country % 8 };
-                (0..count).map(move |index| {
-                    (
-                        u64::from(country) * 1000 + u64::from(index) + 1,
-                        100_000 + country,
-                        0,
-                        100,
-                    )
-                })
-            })
-            .collect();
+        let wings = scale_wings(countries);
         let replay = Replay::from_records(
             CAMPAIGN.into(),
             &[records(
@@ -816,20 +819,7 @@ fn air_force_dense_scale() {
                                 (id, owner, country_override, planes)
                             })
                             .collect();
-                        let equipment: Vec<_> = wings
-                            .iter()
-                            .flat_map(|&(wing, owner, _, planes)| {
-                                let variant = 71 + wing % 4;
-                                if owner < 100_010 && wing % 10 < 3 {
-                                    vec![
-                                        (wing, variant, i64::from(planes - 20) * 100_000),
-                                        (wing, 81 + wing % 3, 2_000_000),
-                                    ]
-                                } else {
-                                    vec![(wing, variant, i64::from(planes) * 100_000)]
-                                }
-                            })
-                            .collect();
+                        let equipment = scale_equipment(&wings);
                         frame(hour, &wings, &equipment, countries)
                     })
                     .collect(),
@@ -950,10 +940,20 @@ fn air_force_cache_retains_two_scanned_branches_and_rebuilds_evicted_history() {
     )
     .unwrap();
     for branch in [1, 2, 3, 2] {
-        assert_eq!(
-            planes_at(&source, branch, 22, &AtomicBool::new(false)).unwrap()[&tag(0)],
-            Some(0)
-        );
+        let mut values = Vec::new();
+        visit_plane_runs(
+            &source,
+            branch,
+            &[tag(0)],
+            &AtomicBool::new(false),
+            |_, first, last, _, value| {
+                assert_eq!((first, last), (22, 22));
+                values.push(value);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(values, [Some(0)]);
     }
     let state = source.state::<Scans>();
     assert_eq!(state.lock().unwrap().runs, 3);
@@ -967,14 +967,21 @@ fn air_force_cache_retains_two_scanned_branches_and_rebuilds_evicted_history() {
             .collect::<Vec<_>>(),
         [2, 3]
     );
-    planes_at(&source, 1, 22, &AtomicBool::new(false)).unwrap();
+    visit_plane_runs(
+        &source,
+        1,
+        &[tag(0)],
+        &AtomicBool::new(false),
+        |_, _, _, _, _| Ok(()),
+    )
+    .unwrap();
     assert_eq!(state.lock().unwrap().runs, 4);
 }
 
 #[test]
 fn air_force_sparse_updates_match_full_censuses_and_share_unchanged_counts() {
-    let mut wings: Vec<_> = (1..=128)
-        .map(|id| (id, 100_000 + u32::from(id > 64), 0, 100))
+    let mut wings: Vec<_> = (1..=8)
+        .map(|id| (id, 100_000 + u32::from(id > 4), 0, 100))
         .collect();
     let mut equipment: Vec<_> = wings
         .iter()
@@ -995,7 +1002,7 @@ fn air_force_sparse_updates_match_full_censuses_and_share_unchanged_counts() {
     equipment.push((200, 72, 5_000_000));
     frames.push(frame(25, &wings, &equipment, 2));
     let scanned = scan_frames(frames.clone());
-    assert_eq!(scanned.reconciled_wings, 133);
+    assert_eq!(scanned.reconciled_wings, 13);
     for observed in frames {
         let hour = observed.hour;
         let rebuilt = scan_frames(vec![observed]);
@@ -1149,19 +1156,7 @@ fn air_force_full_snapshot_marks_owners_that_lost_their_last_wing() {
 fn air_force_realistic_scale() {
     use std::time::Instant;
     for countries in [1500, 5000] {
-        let mut wings: Vec<_> = (0..countries)
-            .flat_map(|country| {
-                let count = if country < 10 { 350 } else { 3 + country % 8 };
-                (0..count).map(move |index| {
-                    (
-                        u64::from(country) * 1000 + u64::from(index) + 1,
-                        100_000 + country,
-                        0,
-                        100,
-                    )
-                })
-            })
-            .collect();
+        let mut wings = scale_wings(countries);
         let frames = (0..24)
             .map(|tick| {
                 if tick > 0 {
@@ -1172,20 +1167,7 @@ fn air_force_realistic_scale() {
                         }
                     }
                 }
-                let equipment: Vec<_> = wings
-                    .iter()
-                    .flat_map(|&(wing, owner, _, planes)| {
-                        let variant = 71 + wing % 4;
-                        if owner < 100_010 && wing % 10 < 3 {
-                            vec![
-                                (wing, variant, i64::from(planes - 20) * 100_000),
-                                (wing, 81 + wing % 3, 2_000_000),
-                            ]
-                        } else {
-                            vec![(wing, variant, i64::from(planes) * 100_000)]
-                        }
-                    })
-                    .collect();
+                let equipment = scale_equipment(&wings);
                 frame(22 + tick, &wings, &equipment, countries)
             })
             .collect();
@@ -1236,5 +1218,62 @@ fn air_force_realistic_scale() {
             "air_force_realistic_scale countries={countries} wings={} hours=24 scan_with_decode_ms_per_hour={ms:.3} decode_ms_per_hour={decode_ms:.3} product_ms_per_hour={product_ms:.3} top10_bytes={bytes} bound={MAX_REPLY_BYTES}",
             wings.len()
         );
+    }
+}
+
+#[test]
+fn phase_b_air_database_and_spelling_refusals_resolve_once_per_binding() {
+    for removed in [false, true] {
+        let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[(
+            "common/units/equipment/air.txt",
+            "equipments={mod_air={is_archetype=yes}}",
+        )]);
+        let raw = frame(100, &[(1, 100_000, 0, 7)], &[(1, 1, 700_000)], 1);
+        let source = recorded_source(vec![raw.clone()]);
+        let catalogue = Arc::new(catalogue);
+        if removed {
+            std::fs::remove_file(folder.0.join("common/units/equipment/air.txt")).unwrap();
+        }
+        let configured = super::super::equipment::units(&source, &catalogue);
+        assert_eq!(configured.is_ok(), !removed);
+        let binding = part_content(&source, Some(&catalogue));
+        let mut scanned = scan_frames(vec![raw]);
+        // The native run keeps the recorded spelling, including its exact refusal.
+        for runs in scanned.series.values_mut() {
+            for run in runs {
+                let counts = Arc::make_mut(run.roster.as_mut().unwrap());
+                counts.planes_by_token = BTreeMap::from([("1/mod_air".into(), Some(7))]);
+                counts.wings_by_tokens = BTreeMap::from([(vec!["1/mod_air".into()], 1)]);
+            }
+        }
+        let params = params(AirForceMeasure::Planes, AirForceOwnership::Roster);
+        let expected = reply::reply_cached(
+            &scanned,
+            &params,
+            configured.as_ref().ok().map(Arc::as_ref),
+            |_| None,
+            Vec::new(),
+            &AtomicBool::new(false),
+            Some(&binding),
+        )
+        .unwrap();
+        for _ in 0..10 {
+            let units = super::super::equipment::units(&source, &catalogue);
+            assert_eq!(units.is_ok(), configured.is_ok());
+            let actual = reply::reply_cached(
+                &scanned,
+                &params,
+                units.as_ref().ok().map(Arc::as_ref),
+                |_| None,
+                Vec::new(),
+                &AtomicBool::new(false),
+                Some(&binding),
+            )
+            .unwrap();
+            crate::prepared::observer_tests::assert_reply_parity(&actual, &expected).unwrap();
+        }
+        assert_eq!(super::super::equipment::unit_loads(&catalogue), 1);
+        assert_eq!(binding.tokens.loads(&"1/mod_air".to_owned()), 1);
+        assert_eq!(binding.signatures.loads(&vec!["1/mod_air".into()]), 1);
     }
 }

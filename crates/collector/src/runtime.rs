@@ -90,6 +90,9 @@ struct Config {
     worker_sampler: Option<String>,
     #[serde(default = "game_score_enabled")]
     game_score: bool,
+    /// The map event families to install; all of them when absent.
+    #[serde(default)]
+    map_events: Option<Vec<String>>,
 }
 fn game_score_enabled() -> bool {
     true
@@ -457,7 +460,7 @@ struct CpuWorkStatus {
 }
 
 impl crate::status::Fields for CpuWorkStatus {
-    fn len(&self) -> usize {
+    fn field_count(&self) -> usize {
         if self.cpu_ns.is_ok() { 2 } else { 1 }
     }
 
@@ -697,6 +700,8 @@ fn run(
     .map_err(|error| error_reason(error, "collector bootstrap preparation failed"))?;
     crate::politics_changes::restore_epoch(history.politics_epoch())?;
     crate::operation_outcomes::restore_sequence(history.completion_sequence())?;
+    let (map_event_epoch, map_event_sequence) = history.map_events();
+    crate::map_events::interval::begin(map_event_epoch, map_event_sequence)?;
     crate::naval_result_sources::restore_sequence(history.naval_result_sequence())?;
     progress.step("history_loaded", None);
     let event_feed_sequence = history.event_feed_sequence();
@@ -752,6 +757,14 @@ fn run(
     let mut air_loss_hooks = unsafe { crate::air_losses::Hooks::new(&memory, base) };
     let mut bombing_hooks = unsafe { crate::building_bombing::Hooks::new(&memory, base) };
     let mut nuclear_hooks = unsafe { crate::nuclear_strikes::Hooks::new(&memory, base) };
+    let mut map_event_hooks = unsafe {
+        crate::map_events::hooks::Hooks::new(&memory, base, |family| {
+            config
+                .map_events
+                .as_ref()
+                .is_none_or(|selected| selected.iter().any(|name| name == family.name()))
+        })
+    };
     let events = crate::country_scale::observe_production_output(&memory, base).unwrap_or(0);
     let mut line_hooks = unsafe { crate::line_output::Hooks::new(&memory, base, events) };
     let mut world_hooks =
@@ -837,6 +850,7 @@ fn run(
     crate::air_losses::prepare(&memory, base, slots);
     crate::building_bombing::prepare(&memory, base, slots);
     crate::nuclear_strikes::presize(crate::building_bombing::buildings().saturating_add(slots));
+    crate::map_events::presize(slots)?;
     sizing.extended.air_losses.events = crate::air_losses::capacity();
     sizing.extended.building_bombing = crate::building_bombing::capacity();
     sizing.extended.nuclear_strikes = crate::nuclear_strikes::capacity();
@@ -1022,6 +1036,7 @@ fn run(
     ranges.extend(air_loss_hooks.executable_ranges());
     ranges.extend(bombing_hooks.executable_ranges());
     ranges.extend(nuclear_hooks.executable_ranges());
+    ranges.extend(map_event_hooks.executable_ranges());
     ranges.extend(line_hooks.executable_ranges());
     ranges.extend(event_feed_hooks.executable_ranges());
     ranges.extend(world_hooks.executable_ranges());
@@ -1291,6 +1306,7 @@ fn run(
                     ("air_losses", &mut || air_loss_hooks.set_enabled(true)),
                     ("building_bombing", &mut || bombing_hooks.set_enabled(true)),
                     ("nuclear_strikes", &mut || nuclear_hooks.set_enabled(true)),
+                    ("map_events", &mut || map_event_hooks.set_enabled(true)),
                 ],
             )? {
                 return Ok(false);
@@ -1399,7 +1415,7 @@ fn run(
                 std::mem::forget((
                     $workers, hook, portrait_hooks, advisor_hooks, relation_hooks,
                     history_hooks, flag_hooks, building_hooks, advisor_pool_hooks, party_leader_hooks, variable_hooks, party_hooks, wing_hooks, roster_hooks, political_status_hooks, mission_hooks, rail_hooks, territory_hooks, army_stat_hooks, country_input_hooks, raid_hooks, naval_tree_hooks, air_record_hooks, world_input_hooks, opinion_hooks, destruction_hooks, naval_result_hooks, local_subunit_hooks, template_hooks, ship_model_hooks, province_unit_hooks, air_base_carry_hooks, unit_leader_hooks, census_hooks,
-                    air_loss_hooks, bombing_hooks, nuclear_hooks, line_hooks, land_hooks, prune_hooks,
+                    air_loss_hooks, bombing_hooks, nuclear_hooks, map_event_hooks, line_hooks, land_hooks, prune_hooks,
                     construction_hooks, experience_hooks, event_feed_hooks, world_hooks,
                     fuel_hooks, operation_hooks, politics_hooks, logistics_hooks,
                     peace_hooks, shared, output_lock, _payload_pools,
@@ -1506,6 +1522,7 @@ fn run(
             RestoreFamily::AirLosses => air_loss_hooks.set_enabled(false),
             RestoreFamily::BuildingBombing => bombing_hooks.set_enabled(false),
             RestoreFamily::NuclearStrikes => nuclear_hooks.set_enabled(false),
+            RestoreFamily::MapEvents => map_event_hooks.set_enabled(false),
             RestoreFamily::WorldLifetime => world_hooks.set_enabled(false),
         };
         // Every unrestored family that takes part publishes under one census
@@ -1706,6 +1723,7 @@ fn run(
             crate::logistics_balance::release();
             crate::operation_outcomes::release();
             crate::politics_changes::release();
+            crate::map_events::lanes::release();
         }
         if let Err(reason) = crate::land_events::release()
             .and_then(|()| crate::equipment_destruction::release())
@@ -1753,6 +1771,7 @@ fn run(
             air_loss_hooks,
             bombing_hooks,
             nuclear_hooks,
+            map_event_hooks,
             line_hooks,
             land_hooks,
             prune_hooks,
@@ -1890,6 +1909,7 @@ enum RestoreFamily {
     AirLosses,
     BuildingBombing,
     NuclearStrikes,
+    MapEvents,
     EventFeed,
     WorldLifetime,
 }
@@ -2086,6 +2106,10 @@ impl RestoreFamily {
                 crate::nuclear_strikes::active() != 0,
                 "nuclear strike callbacks did not quiesce; collector retained",
             ),
+            Self::MapEvents => (
+                crate::map_events::hooks::active() != 0,
+                "map event callbacks did not quiesce; collector retained",
+            ),
             Self::EventFeed => (
                 crate::event_feed_observer::active() != 0,
                 "Event feed callbacks did not quiesce; collector retained",
@@ -2140,7 +2164,7 @@ impl RestoreFamily {
         )
     }
 
-    const ALL: [Self; 48] = [
+    const ALL: [Self; 49] = [
         Self::Hourly,
         Self::EquipmentDestruction,
         Self::Land,
@@ -2187,6 +2211,7 @@ impl RestoreFamily {
         Self::AirLosses,
         Self::BuildingBombing,
         Self::NuclearStrikes,
+        Self::MapEvents,
         Self::EventFeed,
         Self::WorldLifetime,
     ];
@@ -2471,9 +2496,15 @@ impl<T: crate::status::Fields, U: crate::status::Fields, V: crate::status::Field
 {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        let fields = self.base.0.len()
-            + self.shared.as_ref().map_or(0, |status| status.0.len())
-            + self.acquisition.as_ref().map_or(0, |status| status.0.len());
+        let fields = self.base.0.field_count()
+            + self
+                .shared
+                .as_ref()
+                .map_or(0, |status| status.0.field_count())
+            + self
+                .acquisition
+                .as_ref()
+                .map_or(0, |status| status.0.field_count());
         let mut map = serializer.serialize_map(Some(fields))?;
         self.base.0.serialize(&mut map)?;
         if let Some(status) = &self.shared {
@@ -2555,6 +2586,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "air_losses": crate::air_losses::status(),
         "building_bombing": crate::building_bombing::status(),
         "nuclear_strikes": crate::nuclear_strikes::status(),
+        "map_events": crate::map_events::hooks::status(),
         "line_output": crate::line_output::status(),
         "fuel_awards": crate::fuel_awards::status(),
         "politics_capture": crate::politics_changes::status(),
@@ -2778,7 +2810,7 @@ fn add_decode_status(status: &mut serde_json::Value) {
 
 #[cfg(test)]
 pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
-    use crate::allocation_failure_tests::with_allocations_denied;
+    use crate::test_support::with_allocations_denied;
     use std::io::Write;
     struct Count(usize);
     impl Write for Count {
@@ -4051,6 +4083,7 @@ fn spool_loop(
                         crate::air_losses::lost_drain();
                         crate::building_bombing::lost_drain();
                         crate::nuclear_strikes::lost_drain();
+                        crate::map_events::interval::lost_output();
                         last_warning = Some(error_reason(error, "collector spool I/O failed"));
                     }
                     None
@@ -4069,6 +4102,7 @@ fn spool_loop(
                     crate::air_losses::lost_drain();
                     crate::building_bombing::lost_drain();
                     crate::nuclear_strikes::lost_drain();
+                    crate::map_events::interval::lost_output();
                     last_warning = Some(error_reason(error, "collector spool I/O failed"));
                     None
                 }
@@ -4111,6 +4145,7 @@ fn spool_loop(
                 crate::air_losses::lost_drain();
                 crate::building_bombing::lost_drain();
                 crate::nuclear_strikes::lost_drain();
+                crate::map_events::interval::lost_output();
                 last_warning = Some(error_reason(error, "collector spool I/O failed"));
             }
             sizing.retire(processor.take_retired());
@@ -4136,6 +4171,7 @@ fn spool_loop(
             crate::air_losses::lost_drain();
             crate::building_bombing::lost_drain();
             crate::nuclear_strikes::lost_drain();
+            crate::map_events::interval::lost_output();
             last_warning = Some(error_reason(error, "collector spool I/O failed"));
         }
         let flush_ns = shared.ns(sampling::qpc() - flush_started);
@@ -4705,6 +4741,12 @@ fn sizing_pass(
     crate::air_losses::presize(0);
     crate::building_bombing::presize(0);
     crate::nuclear_strikes::presize(0);
+    // Growth from refused demand and the live country population.
+    if let Err(reason) =
+        crate::map_events::presize(collector_primitives::country_slots::census_rows(0))
+    {
+        sizing.error(reason);
+    }
     crate::land_events::prepare();
     let air_loss_capacity = crate::air_losses::capacity();
     let bombing_capacity = crate::building_bombing::capacity();

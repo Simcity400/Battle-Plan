@@ -1,79 +1,79 @@
-// The widget registry: every kind in definitions.ts must have a renderer here,
-// and TypeScript rejects a missing or extra one.
 import { registerWidgets } from '../dashboard/definitions';
 import type { WidgetRenderer } from '../dashboard/definitions';
 import { widgetMetas } from './definitions';
-import airRegion from './air-superiority-region';
-import airTimeline from './air-superiority-timeline';
-import airKillsLosses from './air-kills-losses';
-import agencyComparison from './agency-comparison';
-import aces from './aces';
-import airForceSize from './air-force-size';
-import armySize from './army-size';
-import autonomy from './autonomy';
-import bombingDamage from './bombing-damage';
-import bombingDamageBreakdown from './bombing-damage-breakdown';
-import commandPower from './command-power';
-import commandPowerSpending from './command-power-spending';
-import casualties from './casualties';
-import casualtiesBetween from './casualties-between';
-import casualtiesBreakdown from './casualties-breakdown';
-import constructionLog from './construction-log';
-import constructionSpending from './construction-spending';
-import decryption from './decryption';
-import divisionLog from './division-log';
-import equipmentLosses from './equipment-losses';
-import equipmentProduced from './equipment-produced';
-import espionageLog from './espionage-log';
-import factories from './factories';
-import equipmentStockpile from './equipment-stockpile';
-import factions from './factions';
-import factionStrength from './faction-strength';
-import fuel from './fuel';
-import experience from './experience';
-import eventFeed from './event-feed';
-import generals from './generals';
-import generalCareer from './general-career';
-import gameScore from './game-score';
-import stability from './stability';
-import ideaTimeline from './idea-timeline';
-import landBattles from './land-battles';
-import navalBattles from './naval-battles';
-import map from './map';
-import nationalFocus from './national-focus';
-import nationalSpirits from './national-spirits';
-import navySize from './navy-size';
-import nuclearArsenal from './nuclear-arsenal';
-import navalLosses from './naval-losses';
-import occupiedStates from './occupied-states';
-import occupationTrend from './occupation-trend';
-import peaceDeals from './peace-deals';
-import politicalPower from './political-power';
-import politicalPowerSpending from './political-power-spending';
-import politicalPowerSpendingBreakdown from './political-power-spending-breakdown';
-import productionLines from './production-lines';
-import productionSpending from './production-spending';
-import research from './research';
-import activeResearch from './active-research';
-import scoreboard from './scoreboard';
-import raidLog from './raid-log';
-import raidTally from './raid-tally';
-import resourceBalance from './resource-balance';
-import rulingParty from './ruling-party';
-import spiritHistory from './spirit-history';
-import specialProjects from './special-projects';
-import shipsSunk from './ships-sunk';
-import subjects from './subjects';
-import supplyHealth from './supply-health';
-import territory from './territory';
-import territoryBreakdown from './territory-breakdown';
-import territoryTransfers from './territory-transfers';
-import tradeFlows from './trade-flows';
-import wars from './wars';
-import worldTension from './world-tension';
-import operativesRoster from './operatives-roster';
-import whoSpiesOnWhom from './who-spies-on-whom';
-
-const renderers: Record<(typeof widgetMetas)[number]['kind'], WidgetRenderer> = { map, 'national-focus': nationalFocus, 'active-research': activeResearch, research, 'political-power': politicalPower, 'political-power-spending': politicalPowerSpending, 'political-power-spending-breakdown': politicalPowerSpendingBreakdown, 'command-power': commandPower, 'command-power-spending': commandPowerSpending, stability, 'idea-timeline': ideaTimeline, 'national-spirits': nationalSpirits, 'spirit-history': spiritHistory, 'ruling-party': rulingParty, 'resource-balance': resourceBalance, 'equipment-stockpile': equipmentStockpile, fuel, 'production-lines': productionLines, factories, territory, 'territory-breakdown': territoryBreakdown, 'equipment-losses': equipmentLosses, 'equipment-produced': equipmentProduced, 'production-spending': productionSpending, 'occupied-states': occupiedStates, 'occupation-trend': occupationTrend, 'air-force-size': airForceSize, 'navy-size': navySize, 'air-superiority-region': airRegion, 'air-superiority-timeline': airTimeline, 'air-kills-losses': airKillsLosses, 'bombing-damage': bombingDamage, 'bombing-damage-breakdown': bombingDamageBreakdown, experience, factions, 'faction-strength': factionStrength, subjects, 'trade-flows': tradeFlows, 'peace-deals': peaceDeals, 'territory-transfers': territoryTransfers, wars, 'world-tension': worldTension, autonomy, 'construction-log': constructionLog, 'construction-spending': constructionSpending, 'special-projects': specialProjects, 'nuclear-arsenal': nuclearArsenal, 'naval-losses': navalLosses, 'ships-sunk': shipsSunk, 'raid-log': raidLog, 'raid-tally': raidTally, decryption, 'espionage-log': espionageLog, 'agency-comparison': agencyComparison, 'operatives-roster': operativesRoster, 'who-spies-on-whom': whoSpiesOnWhom, scoreboard, 'game-score': gameScore, casualties, 'casualties-between': casualtiesBetween, 'casualties-breakdown': casualtiesBreakdown, generals, 'general-career': generalCareer, aces, 'army-size': armySize, 'supply-health': supplyHealth, 'division-log': divisionLog, 'land-battles': landBattles, 'naval-battles': navalBattles, 'event-feed': eventFeed };
-
+import { lazyWidget } from './lazyWidget';
+import { useIdeaTimelinePresets } from './idea-timeline/ideaTimelinePresets';
+const renderers = {
+  'map': lazyWidget('map', ['render', 'headerControls']),
+  'national-focus': lazyWidget('national-focus', ['render']),
+  'research': lazyWidget('research', ['render']),
+  'active-research': lazyWidget('active-research', ['render']),
+  'political-power': lazyWidget('political-power', ['render', 'countryChip']),
+  'political-power-spending': lazyWidget('political-power-spending', ['render']),
+  'political-power-spending-breakdown': lazyWidget('political-power-spending-breakdown', ['render']),
+  'command-power': lazyWidget('command-power', ['render', 'countryChip']),
+  'command-power-spending': lazyWidget('command-power-spending', ['render']),
+  'stability': lazyWidget('stability', ['render', 'countryChip']),
+  'idea-timeline': lazyWidget('idea-timeline', ['render']),
+  'national-spirits': lazyWidget('national-spirits', ['render']),
+  'spirit-history': lazyWidget('spirit-history', ['render']),
+  'ruling-party': lazyWidget('ruling-party', ['render']),
+  'resource-balance': lazyWidget('resource-balance', ['render', 'countryChip']),
+  'equipment-stockpile': lazyWidget('equipment-stockpile', ['render', 'countryChip']),
+  'fuel': lazyWidget('fuel', ['render', 'countryChip']),
+  'production-lines': lazyWidget('production-lines', ['render', 'countryChip']),
+  'factories': lazyWidget('factories', ['render', 'countryChip']),
+  'territory': lazyWidget('territory', ['render']),
+  'territory-breakdown': lazyWidget('territory-breakdown', ['render']),
+  'equipment-losses': lazyWidget('equipment-losses', ['render', 'countryChip']),
+  'equipment-produced': lazyWidget('equipment-produced', ['render', 'countryChip']),
+  'production-spending': lazyWidget('production-spending', ['render']),
+  'occupied-states': lazyWidget('occupied-states', ['render']),
+  'occupation-trend': lazyWidget('occupation-trend', ['render']),
+  'air-force-size': lazyWidget('air-force-size', ['render', 'countryChip']),
+  'navy-size': lazyWidget('navy-size', ['render', 'countryChip']),
+  'air-superiority-region': lazyWidget('air-superiority-region', ['render']),
+  'air-superiority-timeline': lazyWidget('air-superiority-timeline', ['render']),
+  'air-kills-losses': lazyWidget('air-kills-losses', ['render', 'countryChip']),
+  'bombing-damage': lazyWidget('bombing-damage', ['render']),
+  'bombing-damage-breakdown': lazyWidget('bombing-damage-breakdown', ['render', 'countryChip']),
+  'experience': lazyWidget('experience', ['render']),
+  'factions': lazyWidget('factions', ['render']),
+  'faction-strength': lazyWidget('faction-strength', ['render']),
+  'subjects': lazyWidget('subjects', ['render']),
+  'trade-flows': lazyWidget('trade-flows', ['render', 'countryChip']),
+  'peace-deals': lazyWidget('peace-deals', ['render']),
+  'territory-transfers': lazyWidget('territory-transfers', ['render']),
+  'wars': lazyWidget('wars', ['render']),
+  'world-tension': lazyWidget('world-tension', ['render']),
+  'autonomy': lazyWidget('autonomy', ['render']),
+  'construction-log': lazyWidget('construction-log', ['render']),
+  'construction-spending': lazyWidget('construction-spending', ['render']),
+  'special-projects': lazyWidget('special-projects', ['render']),
+  'nuclear-arsenal': lazyWidget('nuclear-arsenal', ['render', 'countryChip']),
+  'naval-losses': lazyWidget('naval-losses', ['render', 'countryChip']),
+  'ships-sunk': lazyWidget('ships-sunk', ['render']),
+  'raid-log': lazyWidget('raid-log', ['render']),
+  'raid-tally': lazyWidget('raid-tally', ['render']),
+  'decryption': lazyWidget('decryption', ['render']),
+  'espionage-log': lazyWidget('espionage-log', ['render']),
+  'agency-comparison': lazyWidget('agency-comparison', ['render']),
+  'operatives-roster': lazyWidget('operatives-roster', ['render']),
+  'who-spies-on-whom': lazyWidget('who-spies-on-whom', ['render']),
+  'scoreboard': lazyWidget('scoreboard', ['render']),
+  'game-score': lazyWidget('game-score', ['render']),
+  'casualties': lazyWidget('casualties', ['render']),
+  'casualties-between': lazyWidget('casualties-between', ['render']),
+  'casualties-breakdown': lazyWidget('casualties-breakdown', ['render']),
+  'generals': lazyWidget('generals', ['render']),
+  'general-career': lazyWidget('general-career', ['render']),
+  'aces': lazyWidget('aces', ['render']),
+  'army-size': lazyWidget('army-size', ['render', 'countryChip']),
+  'supply-health': lazyWidget('supply-health', ['render', 'countryChip']),
+  'division-log': lazyWidget('division-log', ['render']),
+  'land-battles': lazyWidget('land-battles', ['render']),
+  'naval-battles': lazyWidget('naval-battles', ['render']),
+  'event-feed': lazyWidget('event-feed', ['render']),
+} satisfies Record<(typeof widgetMetas)[number]['kind'], WidgetRenderer>;
+renderers['idea-timeline'].usePresets = useIdeaTimelinePresets;
 registerWidgets(widgetMetas.map(meta => ({ ...meta, ...renderers[meta.kind] })));

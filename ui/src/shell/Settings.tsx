@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { Icon } from '../components/Icons';
-import type { IconName } from '../components/Icons';
 import ReplayFolderSetting from './ReplayFolderSetting';
 import type { DashboardClient } from '../dashboard/client';
 import type { ReplayLibraryState } from '../dashboard/replayLibrary';
@@ -9,6 +8,7 @@ import MapDiagnostics from './MapDiagnostics';
 import MapAppearance, { MAP_OPTION_LABELS } from '../components/MapAppearance';
 import { VIDEO_OPTION_LABELS } from './VideoSettings';
 import GameFolderSettings from './GameFolderSettings';
+import PreparationSetting from './PreparationSetting';
 import HistoryCacheSetting from './HistoryCacheSetting';
 import type { ContentFolders, DesktopState, ReplayMetadata } from './api';
 import AppearanceSettings, { newThemeId, SettingsBlock } from './appearance/AppearanceSettings';
@@ -20,19 +20,13 @@ import type { Appearance } from './appearance/useAppearance';
 import type { BranchChoice } from '../dashboard/Dashboard';
 import './settings.css';
 
-export type SettingsSection = 'folders' | 'appearance' | 'graphics' | 'diagnostics';
-
-export const settingsSections: { id: SettingsSection; label: string; icon: IconName; description: string }[] = [
-  { id: 'folders', label: 'Folders', icon: 'folder', description: 'Where the game, your Paradox user files and your recordings live.' },
-  { id: 'appearance', label: 'Appearance', icon: 'palette', description: 'Themes, backdrop, glass and typography. Saved on this device.' },
-  { id: 'graphics', label: 'Map graphics', icon: 'map', description: 'Defaults for every campaign map. Campaigns and individual map widgets can override them.' },
-  { id: 'diagnostics', label: 'Diagnostics', icon: 'info', description: 'How complete the open recording is, and tools for when the map misbehaves.' },
-];
-
-/** A search result: a section, and the row to reveal by element id or by its visible label. */
-export interface SettingsTarget { section: SettingsSection; title: string; id?: string; keywords?: string }
+export { settingsSections } from './settingsMetadata';
+export type { SettingsSection, SettingsTarget } from './settingsMetadata';
+import { settingsSections } from './settingsMetadata';
+import type { SettingsSection, SettingsTarget } from './settingsMetadata';
 
 const searchItems: SettingsTarget[] = [
+  { section: 'preparation', title: 'Prepare recordings in the background', id: 'preparation-background', keywords: 'automatic cache background preparation enable disable stop' },
   { section: 'folders', title: 'Game installation', keywords: 'game folder install steam path' },
   { section: 'folders', title: 'Paradox user folder', keywords: 'documents mods user path' },
   { section: 'folders', title: 'Replay folder', keywords: 'recordings library replays path' },
@@ -78,7 +72,9 @@ function search(query: string): SettingsTarget[] {
 function findTarget(root: HTMLElement, target: SettingsTarget): HTMLElement | null {
   if (target.id) return root.querySelector<HTMLElement>(`#${CSS.escape(target.id)}`);
   const labels = root.querySelectorAll<HTMLElement>('.folder-field-title, .map-option-row > span:first-child, .map-visual-mods > summary, .settings-row-text > strong');
-  const label = [...labels].find(element => element.textContent?.trim().toLowerCase().startsWith(target.title.toLowerCase()));
+  const title = target.title.toLowerCase();
+  const text = (element: HTMLElement) => element.textContent?.trim().toLowerCase() ?? '';
+  const label = [...labels].find(element => text(element) === title) ?? [...labels].find(element => text(element).startsWith(title));
   return label?.closest<HTMLElement>('.folder-setting-row, .compact-folder-form, .map-option-row, .map-visual-mods, .settings-row') ?? null;
 }
 
@@ -157,6 +153,9 @@ export default function Settings({ section, target, onTargetShown, appearance, l
     const reveal = () => {
       const element = page.current && findTarget(page.current, target);
       if (!element) { if (++attempts < 20) timer = setTimeout(reveal, 80); else onTargetShown(); return; }
+      // Advanced map parts sit in folded sections; open the one holding the target.
+      const folded = element.closest('details');
+      if (folded) folded.open = true;
       element.scrollIntoView({ block: 'center', behavior: appearance.resolved.reducedMotion ? 'auto' : 'smooth' });
       element.classList.remove('is-search-target');
       void element.offsetWidth;
@@ -185,7 +184,7 @@ export default function Settings({ section, target, onTargetShown, appearance, l
         {section === 'folders' && <>
           {folders && !folders.contentReady && <div className="notice" role="status"><Icon name="sparkle" /><span>Welcome to Battle Plan. Choose your game installation and Paradox user folders to load the game’s original assets and mods.</span></div>}
           <SettingsBlock id="folders-game" title="Game">
-            <GameFolderSettings folders={folders} native={native} client={client} onFoldersChange={onFoldersChange} />
+            <GameFolderSettings folders={folders} client={client} onFoldersChange={onFoldersChange} />
           </SettingsBlock>
           <SettingsBlock id="folders-recordings" title="Recordings">
             <ReplayFolderSetting compact library={library} client={client} />
@@ -201,6 +200,7 @@ export default function Settings({ section, target, onTargetShown, appearance, l
             <MapAppearance key={`${folders?.game ?? ''}:${folders?.user ?? ''}`} global source={null} client={client} userFolder={folders?.user} />
           </div>
         </SettingsBlock>}
+        {section === 'preparation' && client.preparationPreferences && <SettingsBlock id="preparation-background" title="Background preparation"><PreparationSetting client={client} /></SettingsBlock>}
         {section === 'diagnostics' && <MapDiagnostics native={native} metadata={metadata} branch={branch} />}
       </div>
     </div>

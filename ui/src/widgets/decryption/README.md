@@ -6,7 +6,7 @@ Recorded decryptor → target attempts, progress/status and active bonus countdo
 
 ## Products it reads
 
-[`decryption`](../../../../crates/dashboard/src/products/decryption.rs) supplies pair histories; [cryptology.rs](../../../../crates/dashboard/src/cryptology.rs) owns native threshold/progress arithmetic. Shared country facts supply dated endpoint looks.
+[`decryption`](../../../../crates/dashboard/src/products/decryption.rs) supplies pair histories; [cryptology.rs](../../../../crates/dashboard-text/src/cryptology.rs) owns native threshold/progress arithmetic. Shared country facts supply dated endpoint looks.
 
 ## Settings
 
@@ -19,6 +19,7 @@ All/manual/group countries, campaign/follow/pin/range; order by progress/decrypt
 - Daily linear runs reproduce recorded integer hours with native arithmetic and split at mismatches/state changes/gaps; never interpolate an invented observation.
 - Manual choices follow native holder aliases at endpoint identity hours. Unrepresentable tag bytes retain IDs/data with diagnostics and request no artwork.
 - Window only drawn rows. Pending endpoint looks can hold only within the same pair/tag stretch; backward seeks and completed missing reads clear them. Known empty data differs from missing capture.
+- Parity builds expose the exact row model through the "Decryption values" hook.
 
 ## Files
 

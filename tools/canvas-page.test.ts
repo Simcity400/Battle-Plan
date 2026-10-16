@@ -3,7 +3,8 @@ import test from 'node:test';
 import { EventEmitter } from 'node:events';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { ChildProcess } from 'node:child_process';
-import { browserStage, stopBrowser } from './canvas-page.ts';
+import { browserStage, stopBrowser, stopOwnedProfile } from './canvas-page.ts';
+import type { BrowserCleanupBudget } from './canvas-page.ts';
 
 test('Canvas stages stop on browser exit, spawn failure and a missing page result', async () => {
   const child = Object.assign(new EventEmitter(), { exitCode: null as number | null, signalCode: null }) as unknown as ChildProcess;
@@ -112,4 +113,114 @@ test('Canvas shutdown never accepts a vanished launcher while an owned family re
   await stopped;
   assert.equal(forced, true);
   assert.equal(child.listenerCount('close'), 0);
+});
+
+test('Canvas shutdown cleans the owned family after its process observation times out', async () => {
+  const child = browser();
+  const profile = 'C:\\Temp\\share-canvas-synthetic';
+  const processes = new Map([[11, profile], [12, profile], [21, `${profile}-another`], [22, 'C:\\Temp\\other-profile']]);
+  let observations = 0, forced = false;
+  await stopBrowser(child, async () => { throw new Error('unavailable endpoint'); }, async () => {
+    forced = true;
+    // A detached browser outlives the launcher tree. Cleanup must sweep the
+    // exact owned profile while retaining other runs and similar prefixes.
+    processes.delete(11);
+    for (const [pid, owner] of processes) if (owner === profile) processes.delete(pid);
+    child.exitCode = 0; child.emit('close', 0, null);
+  }, 1, async () => {
+    if (++observations === 1) throw new Error('Observing owned Headless Edge processes timed out');
+    return ![...processes.values()].includes(profile);
+  });
+  assert.equal(forced, true, 'an observation failure must still terminate the owned browser');
+  assert.deepEqual([...processes.keys()], [21, 22], 'no owned Edge survives; unrelated profiles stay alive');
+  assert.equal(child.listenerCount('close'), 0);
+});
+
+test('Canvas profile cleanup retries observer timeouts and sweeps relaunched survivors until none remain', async () => {
+  const profile = 'C:\\Temp\\share-canvas-synthetic';
+  const processes = new Map([[11, profile], [12, profile], [21, `${profile}-another`], [22, 'C:\\Temp\\other-profile']]);
+  let stops = 0, verifications = 0;
+  await stopOwnedProfile(profile, 11, 12, async (owner, launcherPid, stop, browserPid) => {
+    assert.equal(owner, profile, 'every sweep is scoped to the exact run profile');
+    if (stop) {
+      assert.equal(launcherPid, stops < 2 ? 11 : undefined, 'retain the launcher check through a timed-out stop, then rely on exact-profile ownership');
+      assert.equal(browserPid, 12);
+      if (++stops === 1) throw new Error('Observing owned Headless Edge processes timed out');
+      if (stops === 2) processes.delete(11); // The tree kill misses a detached browser.
+      if (stops === 3) { processes.delete(12); processes.set(13, profile); } // A relaunch races the first sweep.
+      if (stops === 4) processes.delete(13);
+    } else if (++verifications === 1) throw new Error('Observing owned Headless Edge processes timed out');
+    return [...processes].filter(([, path]) => path === owner).map(([pid]) => ({ pid, parentId: 0 }));
+  });
+  assert.equal(stops, 4, 'a timeout or surviving root cannot end cleanup');
+  assert.equal(verifications, 3);
+  assert.deepEqual([...processes.keys()], [21, 22], 'every owned browser stopped without terminating other profiles');
+});
+
+test('Canvas shutdown has one deadline through permanently timed-out observations and its final owned-handle stop', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const child = browser();
+  const profile = 'C:\\Temp\\share-canvas-permanent-timeout';
+  let nativeStops = 0, finalSweeps = 0, calls = 0, settled = false, failure: unknown;
+  child.pid = 11;
+  child.kill = signal => { assert.equal(signal, 'SIGKILL'); nativeStops++; return true; };
+  const observe = async (owner: string, launcher: number | undefined, stop = false, _browserPid?: number, signal?: AbortSignal) => {
+    assert.equal(owner, profile);
+    if (stop) assert.equal(launcher, 11, 'a timed-out sweep retains its ownership check');
+    calls++;
+    return new Promise<never>((_, reject) => {
+      const timer = setTimeout(() => reject(new Error('Observing owned Headless Edge processes timed out')), 10);
+      signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+    });
+  };
+  const stopped = stopBrowser(child, async () => {}, async budget => {
+    if (budget?.final) finalSweeps++;
+    await stopOwnedProfile(profile, 11, 12, observe, budget);
+  }, 5, async (_budget, signal) => (await observe(profile, undefined, false, undefined, signal)).length === 0,
+  { profile, timeoutMs: 40, finalAttemptMs: 10 });
+  void stopped.then(() => { settled = true; }, error => { settled = true; failure = error; });
+  await nextTurn();
+  for (let elapsed = 0; elapsed < 40; elapsed += 5) { context.mock.timers.tick(5); await nextTurn(); }
+  assert.equal(settled, true, 'permanent CIM timeouts cannot extend the shared cleanup deadline');
+  assert.ok(failure instanceof Error);
+  assert.ok(failure.message.includes(profile), 'failure names the profile retained for inspection');
+  assert.equal(nativeStops, 1, 'a final stop uses the retained native child handle when observation remains unavailable');
+  assert.equal(finalSweeps, 1, 'one final exact-profile attempt shares the remaining deadline');
+  assert.ok(calls <= 5, 'nested cleanup cannot restart the retry deadline');
+  assert.equal(child.listenerCount('close'), 0);
+});
+
+test('Canvas shutdown bounds hanging close, force and verification callbacks', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const child = browser();
+  const profile = 'C:\\Temp\\share-canvas-hanging-callbacks';
+  const signals: AbortSignal[] = [];
+  let finalStops = 0, settled = false, failure: unknown;
+  const hanging = async (_budget: BrowserCleanupBudget, signal: AbortSignal) => {
+    signals.push(signal);
+    return new Promise<never>(() => {});
+  };
+  const stopped = stopBrowser(child, hanging, async (budget, signal) => {
+    if (budget?.final) finalStops++;
+    await hanging(budget, signal);
+  }, 5, hanging, { profile, timeoutMs: 40, finalAttemptMs: 10 });
+  void stopped.then(() => { settled = true; }, error => { settled = true; failure = error; });
+  await nextTurn();
+  for (let elapsed = 0; elapsed < 40; elapsed += 5) { context.mock.timers.tick(5); await nextTurn(); }
+  assert.equal(settled, true, 'even callbacks that ignore cancellation settle within the overall deadline');
+  assert.ok(failure instanceof Error && failure.message.includes(profile));
+  assert.equal(finalStops, 1, 'hanging verification still leaves a bounded final stop attempt');
+  assert.equal(signals.length, 3);
+  assert.ok(signals.every(signal => signal.aborted), 'started resources receive cancellation when their step ends');
+  assert.equal(child.listenerCount('close'), 0);
+});
+
+test('Canvas standalone profile cleanup has a finite shared attempt allowance', async () => {
+  const profile = 'C:\\Temp\\share-canvas-retry-limit';
+  let observations = 0;
+  await assert.rejects(stopOwnedProfile(profile, 11, 12, async () => {
+    if (++observations > 100) throw new Error('Synthetic safeguard after unbounded retries');
+    throw new Error('Observing owned Headless Edge processes timed out');
+  }), error => error instanceof Error && error.message.includes(profile));
+  assert.equal(observations, 21, 'immediate timeout rejections cannot starve the event loop forever');
 });

@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn recording_a_span_allocates_nothing() {
         let totals = Totals::new();
-        crate::allocation_failure_tests::with_allocations_denied(|| {
+        crate::test_support::with_allocations_denied(|| {
             totals.span(Phase::Sizing).finish();
             totals.record_pack(0, 1);
         });

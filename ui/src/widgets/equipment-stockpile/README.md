@@ -13,6 +13,15 @@ One country's equipment, type by type, led by the game's surplus or shortage. Ea
   - the logistics record (balance, its stock and the available operand).
 - `stockpile-artwork` in [artwork.rs](../../../../crates/dashboard/src/products/equipment_stockpile/artwork.rs) supplies dated best-variant pictures.
 
+The prepared stockpile adapter supplies one reached date, the visible chart
+summary, independent naming pages and next-change navigation. Native holder and
+cohort spans constrain the query. Type/domain summaries use correlated group
+operands, including corrections for late names and changed tokens. Explicit type
+filters merge selected type changes. Exact views use the same plotted runs as the
+recorded product, including supplying bounds at the viewport edges. Dense ratios
+divide exact numerator/denominator samples in the same float order; hover amounts
+come from dated canonical runs. The recorded product remains the parity oracle.
+
 ## Settings
 
 - Countries, and campaign/follow/pin/range.
@@ -67,4 +76,6 @@ One country's equipment, type by type, led by the game's surplus or shortage. Ea
 | [EquipmentStockpileWidget.tsx](EquipmentStockpileWidget.tsx), [StockpileTable.tsx](StockpileTable.tsx), [useEquipmentStockpile.ts](useEquipmentStockpile.ts) | Panels, the table, Over time, products and options. |
 | [stockpileView.ts](stockpileView.ts), [stockpileData.ts](stockpileData.ts), [StockpileDrill.tsx](StockpileDrill.tsx), [stockpileDrill.ts](stockpileDrill.ts) | Table rows, exact grouping, design witnesses and the breakdown; adjacent tests. |
 | [useStockpileArtwork.ts](useStockpileArtwork.ts) | Dated artwork. |
+| [preparedStockpileChart.ts](preparedStockpileChart.ts), [usePreparedStockpileChart.ts](usePreparedStockpileChart.ts) | Integer summaries, exact supplying edges, owner-scoped display and hover queries. |
+| [stockpileParityModel.ts](stockpileParityModel.ts) | Complete exact displayed stockpile and breakdown facts for the parity build. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [equipmentStockpile.css](equipmentStockpile.css) | Options, registration and layout. |

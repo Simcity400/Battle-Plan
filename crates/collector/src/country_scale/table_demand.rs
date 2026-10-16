@@ -2,7 +2,8 @@
 //! A failed census preserves previous storage; hints never supply recorded data.
 use super::DemandFailures;
 use crate::{extended, map_capture::MapCapacities};
-use engine::{Memory, walk::Outcome};
+pub(crate) use collector_extended_support::demand::rows;
+use engine::Memory;
 
 const NAMES: &[&str] = &[
     "world",
@@ -65,16 +66,6 @@ pub(crate) fn diagnostics() -> impl serde::Serialize {
             .copied()
             .zip(FAILURES.iter().map(DemandFailures::diagnostics)),
     )
-}
-
-pub(crate) fn rows(outcome: Outcome) -> Result<usize, &'static str> {
-    match outcome {
-        Outcome::Rows { len } => Ok(len),
-        Outcome::Truncated { len, unread_rows } => len
-            .checked_add(unread_rows as usize)
-            .ok_or("table storage demand overflow"),
-        Outcome::Unavailable { reason } => Err(reason),
-    }
 }
 
 pub(crate) fn presize(
@@ -206,7 +197,7 @@ pub(crate) fn presize(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{cgame_state as gs, cprovince, csupply_system};
+    use engine::{cgame_state as gs, cprovince, csupply_system, walk::Outcome};
 
     struct LargeMap {
         slots: u32,

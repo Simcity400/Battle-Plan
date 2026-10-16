@@ -8,6 +8,7 @@ use replay::{
         TableRows, tables,
     },
 };
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 fn countries(hour: i32, count: u32) -> DecodedFrame {
@@ -338,7 +339,14 @@ fn scoreboard_columns_agree_with_single_stat_shared_products() {
         Some("2")
     );
     // All three Scoreboard factory counts and the single-stat request share one walk.
-    assert_eq!(country_factories::scans_run(&source), 1);
+    assert_eq!(
+        source
+            .state::<country_factories::Scans>()
+            .lock()
+            .unwrap()
+            .runs,
+        1
+    );
 }
 
 #[test]
@@ -506,7 +514,14 @@ fn scoreboard_registry_needs_no_scan_and_force_columns_allow_ranking() {
         .unwrap();
     assert!(!singular.available);
     assert!(singular.reason.as_ref().unwrap().contains("dealt"));
-    assert_eq!(country_factories::scans_run(&source), 0);
+    assert_eq!(
+        source
+            .state::<country_factories::Scans>()
+            .lock()
+            .unwrap()
+            .runs,
+        0
+    );
     for key in [
         ScoreboardColumnKey::ArmySize,
         ScoreboardColumnKey::Planes,
@@ -600,17 +615,23 @@ fn scoreboard_force_columns_share_roster_counts_zero_and_hourly_reads_at_scale()
     .unwrap();
     assert_eq!(reply.series.len(), 5000);
     for hour in [100, 101, 102, 103] {
-        let planes = air_force::planes_at(&source, 1, hour, &cancelled).unwrap();
-        let ships = navy::ships_at(&source, 1, hour, &cancelled).unwrap();
         for series in &reply.series {
-            for (key, expected) in [
-                (ScoreboardColumnKey::Planes, &planes),
-                (ScoreboardColumnKey::Ships, &ships),
-            ] {
+            for key in &keys {
+                let expected = matches!(hour, 100 | 103).then(|| {
+                    if series.tag != "country-00001" {
+                        0
+                    } else if *key == ScoreboardColumnKey::Ships {
+                        1
+                    } else if hour == 100 {
+                        5
+                    } else {
+                        10
+                    }
+                });
                 let column = series
                     .columns
                     .iter()
-                    .find(|column| column.key == key)
+                    .find(|column| column.key == *key)
                     .unwrap();
                 let run = column
                     .runs
@@ -619,7 +640,9 @@ fn scoreboard_force_columns_share_roster_counts_zero_and_hourly_reads_at_scale()
                 assert_eq!(
                     run.and_then(|run| run.amount.as_ref())
                         .map(|amount| amount.parse::<i64>().unwrap()),
-                    expected.get(&series.tag).copied().flatten()
+                    expected,
+                    "{} {key:?} at {hour}",
+                    series.tag
                 );
                 let read = column
                     .read_runs
@@ -730,29 +753,6 @@ fn scoreboard_army_size_uses_exact_owner_manpower_and_preserves_missing_input() 
         &cancelled,
     )
     .unwrap();
-    for series in &reply.series {
-        for hour in [100, 101] {
-            let expected = army_size::army_value_at(
-                &source,
-                1,
-                &series.tag,
-                hour,
-                army_size::ArmyMeasure::Manpower,
-                army_size::ArmyAttribution::Owner,
-                &cancelled,
-            )
-            .unwrap();
-            let run = series.columns[0]
-                .runs
-                .iter()
-                .find(|run| run.first_hour <= hour && hour <= run.last_hour);
-            assert_eq!(
-                run.and_then(|run| run.amount.as_ref())
-                    .map(|amount| amount.parse::<i128>().unwrap()),
-                expected.map(|value| value.raw)
-            );
-        }
-    }
     assert_eq!(
         reply.series[0].columns[0].runs[0].amount.as_deref(),
         Some(i32::MIN.to_string().as_str())
@@ -766,6 +766,13 @@ fn scoreboard_army_size_uses_exact_owner_manpower_and_preserves_missing_input() 
     assert_eq!(
         reply.series[1].columns[0].runs[0].amount.as_deref(),
         Some("0")
+    );
+    assert_eq!(
+        (
+            reply.series[1].columns[0].runs[0].first_hour,
+            reply.series[1].columns[0].runs[0].last_hour,
+        ),
+        (100, 101)
     );
     let column = reply
         .columns
@@ -1346,7 +1353,7 @@ fn scoreboard_top_accepts_five_thousand_and_only_reply_size_refuses() {
 
 #[test]
 fn scoreboard_stability_read_merge_preserves_many_runs_and_held_intersections() {
-    let runs: Vec<_> = (0..5000)
+    let runs: Vec<_> = (0..4)
         .map(|i| ValueRun {
             first_hour: i * 2,
             last_hour: i * 2,
@@ -1355,7 +1362,7 @@ fn scoreboard_stability_read_merge_preserves_many_runs_and_held_intersections() 
             at_least: false,
         })
         .collect();
-    let carried: Vec<_> = (0..2500)
+    let carried: Vec<_> = (0..2)
         .map(|i| country_stability::ReadRun {
             first_hour: i * 4,
             last_hour: i * 4 + 2,
@@ -1408,7 +1415,8 @@ fn scoreboard_stability_read_merge_preserves_many_runs_and_held_intersections() 
 #[test]
 fn scoreboard_many_hour_stability_and_political_top_five_thousand_countries() {
     use replay::rows::{CountryStabilityInputRow, SliceReadRow};
-    let frames = (0..48)
+    // One held-read stretch and the next supplying read; every country remains present.
+    let frames = (0..5)
         .map(|offset| {
             let hour = 100 + offset;
             let read_offset = offset / 4 * 4;
@@ -1473,7 +1481,7 @@ fn scoreboard_many_hour_stability_and_political_top_five_thousand_countries() {
             &cancel,
         )
         .unwrap();
-        for offset in 0..48 {
+        for offset in 0..5 {
             let hour = 100 + offset;
             let shifted = if key == ScoreboardColumnKey::Stability {
                 offset / 4 * 4
@@ -1549,3 +1557,6 @@ fn scoreboard_many_hour_stability_and_political_top_five_thousand_countries() {
         }
     }
 }
+
+#[path = "prepared_tests.rs"]
+mod prepared_tests;

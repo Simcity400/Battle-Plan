@@ -339,6 +339,6 @@ export function keyedEntry(key: 'ArrowUp' | 'ArrowDown' | 'Home' | 'End', curren
 }
 
 /** The ranking as one line for assistive technology: "1. Germany 45; 2. …". */
-export function raceText(items: readonly RaceItem[], name: (key: string, item?: RaceItem) => string): string {
-  return items.map((item, index) => `${index + 1}. ${name(item.key, item)} ${item.label}`).join('; ');
+export function raceText(items: readonly RaceItem[], name: (key: string, item?: RaceItem) => string, offset = 0): string {
+  return items.map((item, index) => `${offset + index + 1}. ${name(item.key, item)} ${item.label}`).join('; ');
 }

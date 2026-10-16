@@ -20,10 +20,10 @@ import type { BoundTrack } from '../../dashboard/model';
 import type { OptionValue } from '../../dashboard/options';
 import { usePlaybackSpeed } from '../../dashboard/playback';
 import { NumericReply } from '../../dashboard/numericReply';
-import { useProduct } from '../../dashboard/products';
+import { usePreparedSupply } from './preparedSupply';
 import type { SupplyHealthReply } from '../../generated/dashboard';
 import { STATES, STATE_LABELS, formatShare, supplyDrillHistories, supplyDrillNumbers, supplyDrillRuns, supplyShareRuns,
-  supplyTooltip, totalDivisions, validateSupplyHealthReply } from './supplyHealthData';
+  supplyTooltip, totalDivisions } from './supplyHealthData';
 import type { supplyCountrySelection } from './SupplyCountryChip';
 
 export default function SupplyBreakdown({ runtime, track, active, options, countrySlot, headerSelection, extent, playhead, tag, hour, originHour,
@@ -38,9 +38,8 @@ export default function SupplyBreakdown({ runtime, track, active, options, count
   const menu = useContextMenu('Supply classification actions');
   const viewport = useViewportHeight();
   const hoursPerSecond = usePlaybackSpeed(runtime.clock);
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'supply-health',
-    params: { branchId: track.branch.id, tags: [tag] } } : null;
-  const incoming = useProduct<SupplyHealthReply>(runtime.client, request, active, validateSupplyHealthReply);
+  const [tipHour, setTipHour] = useState<number | null>(null);
+  const incoming = usePreparedSupply(runtime.client, track, tag ? [tag] : [], hour, tipHour, active, originHour);
   const stores = useMemo(() => ({ numbers: new NumericReply<SupplyHealthReply>(), warnings: new NumericReply<string[]>() }), [runtime.client]);
   const sourceScope = JSON.stringify([track?.source.id, track?.branch.id, tag, originHour]);
   const data = stores.numbers.update(sourceScope, incoming.data, supplyDrillNumbers);
@@ -56,7 +55,6 @@ export default function SupplyBreakdown({ runtime, track, active, options, count
   const pickOwner = useMemo(() => ({ client: runtime.client, scope: sourceScope, extent: extentKey, model: data }),
     [runtime.client, sourceScope, extentKey, data]);
   const shares = useMemo(() => supplyShareRuns(runs), [runs]);
-  const [tipHour, setTipHour] = useState<number | null>(null);
   const tipActor = tipHour === null ? null : countryDrillTagAt(identitySpans, tipHour);
   const wanted = useMemo(() => [...(actor ? [{ tag: actor, hour }] : []),
     ...(tipActor && tipHour !== null ? [{ tag: tipActor, hour: tipHour }] : [])], [actor, hour, tipActor, tipHour]);
@@ -86,9 +84,10 @@ export default function SupplyBreakdown({ runtime, track, active, options, count
       format={value => usNumber.format(value)} total={total ?? undefined}
       totalRow={{ label: 'Divisions', value: total === null ? 'Not known' : usNumber.format(total) }} />
     {(!at || total === 0) && <p className="drill-empty">{at ? 'No divisions.' : 'Supply was not recorded at this time.'}</p>}
-    <StackedShareChart label="Supply classification history" runs={shares} bands={bands} extent={extent} playhead={playhead}
+    <StackedShareChart label="Supply classification history" runs={shares} summaries={actor ? incoming.summaries.get(actor) : undefined} bands={bands} extent={extent} playhead={playhead}
       playback={options.playback as PlaybackMode} afterPlayhead={options.afterPlayhead === true}
       windowHours={Number(options.windowDays) * 24} hoursPerSecond={hoursPerSecond} branchStart={track.branch.firstHour}
+      onSummaryView={incoming.onSummaryView} onNavigateHour={incoming.onNavigateHour} keyboardHour={incoming.keyboardHour} keyboardRevision={incoming.keyboardRevision}
       active={active} keyHours={keyHours} revision={[data, hour, labels.revision]}
       overlay={(ctx, frame, chartTokens) => drawPlayhead(ctx, frame, chartTokens, hour)} onPick={onPick} pickOwner={pickOwner}
       onContextMenu={(atHour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, atHour)])}

@@ -1,0 +1,496 @@
+use super::*;
+use engine::{research_inputs, research_modifiers};
+#[path = "../../../engine/src/governance_batch/test_kit.rs"]
+mod kit;
+#[allow(dead_code)]
+#[path = "drift_serial.rs"]
+mod serial;
+use kit::{GAME, SLOT, TECH, Trace, World};
+
+struct Full {
+    inputs: Vec<research_inputs::Row>,
+    bonuses: Vec<research_inputs::BonusRow>,
+    modifiers: Vec<research_modifiers::Row>,
+    technologies: Vec<ctechnology::Row>,
+    pointers: Vec<usize>,
+    slots: Vec<cresearch_slot::Row>,
+}
+fn full(world: &World, id: u32) -> Full {
+    let mut rows = Full {
+        inputs: Vec::new(),
+        bonuses: Vec::new(),
+        modifiers: Vec::new(),
+        technologies: Vec::new(),
+        pointers: Vec::new(),
+        slots: Vec::new(),
+    };
+    let country = World::country(id);
+    let inputs = research_inputs::walk_country_growing(
+        world,
+        0,
+        country,
+        id,
+        research_inputs::Context::read(world, 0),
+        &mut rows.inputs,
+        &mut rows.bonuses,
+    );
+    assert_eq!(inputs, (Outcome::Rows { len: 3 }, Outcome::Rows { len: 2 }));
+    let countries = ccountry::Reader::new(world, 0, GAME).unwrap();
+    let modifiers = research_modifiers::walk_country_growing(
+        world,
+        0,
+        &countries,
+        ccountry::Country {
+            pointer: country,
+            id,
+            canonical_slot: id,
+        },
+        research_modifiers::Context::read(world, 0),
+        &rows.inputs,
+        &mut rows.modifiers,
+    );
+    assert!(matches!(modifiers, Outcome::Rows { .. }));
+    rows.modifiers.truncate(modifiers.len());
+    let mut entries = Vec::new();
+    let mut names = Vec::new();
+    let mut definitions = ctechnology_template::Dictionary::new(&mut entries, &mut names);
+    let technology = ctechnology_status::walk_technologies(
+        world,
+        0,
+        country,
+        id,
+        (&mut rows.technologies, &mut rows.pointers),
+        0,
+        &mut definitions,
+    );
+    assert_eq!(technology, Outcome::Rows { len: 2 });
+    assert_eq!(
+        ctechnology_status::walk_slots_growing(world, 0, country, id, &mut rows.slots),
+        Outcome::Rows { len: 3 }
+    );
+    rows
+}
+fn hold(store: &mut drift::Store, serial: &mut serial::Store, world: &World, id: u32, rows: &Full) {
+    let country = World::country(id);
+    store.hold_research(
+        world,
+        0,
+        id,
+        country,
+        (&rows.inputs, &rows.bonuses, &rows.modifiers),
+    );
+    serial.hold_research(
+        world,
+        0,
+        id,
+        country,
+        (&rows.inputs, &rows.bonuses, &rows.modifiers),
+    );
+    store.hold_technologies(
+        world,
+        0,
+        id,
+        country,
+        &rows.technologies,
+        &rows.pointers,
+        Some(&rows.slots),
+    );
+    serial.hold_technologies(
+        world,
+        0,
+        id,
+        country,
+        &rows.technologies,
+        &rows.pointers,
+        Some(&rows.slots),
+    );
+}
+#[derive(Debug, PartialEq, Eq)]
+struct ResearchResult {
+    outcomes: [Outcome; 3],
+    inputs: Vec<research_inputs::Row>,
+    bonuses: Vec<research_inputs::BonusRow>,
+    modifiers: Vec<research_modifiers::Row>,
+}
+fn research(store: &drift::Store, memory: &Trace<'_, World>, id: u32) -> ResearchResult {
+    let mut inputs = Vec::new();
+    let mut bonuses = Vec::new();
+    let mut modifiers = Vec::new();
+    let outcome = store.carry_research(
+        memory,
+        0,
+        id,
+        World::country(id),
+        engine::walk::Buffer::Growing(&mut inputs),
+        engine::walk::Buffer::Growing(&mut bonuses),
+        engine::walk::Buffer::Growing(&mut modifiers),
+    );
+    let outcomes = match outcome {
+        drift::Carried::Rows(lens) => lens.map(|len| Outcome::Rows { len }),
+        drift::Carried::Failed(reason) => [Outcome::Unavailable { reason }; 3],
+        drift::Carried::Miss => panic!("expected held country"),
+    };
+    inputs.truncate(outcomes[0].len());
+    bonuses.truncate(outcomes[1].len());
+    modifiers.truncate(outcomes[2].len());
+    ResearchResult {
+        outcomes,
+        inputs,
+        bonuses,
+        modifiers,
+    }
+}
+fn serial_research(store: &serial::Store, memory: &Trace<'_, World>, id: u32) -> ResearchResult {
+    let mut inputs = Vec::new();
+    let mut bonuses = Vec::new();
+    let mut modifiers = Vec::new();
+    let outcome = store.carry_research(
+        memory,
+        0,
+        id,
+        World::country(id),
+        engine::walk::Buffer::Growing(&mut inputs),
+        engine::walk::Buffer::Growing(&mut bonuses),
+        engine::walk::Buffer::Growing(&mut modifiers),
+    );
+    let outcomes = match outcome {
+        serial::Carried::Rows(lens) => lens.map(|len| Outcome::Rows { len }),
+        serial::Carried::Failed(reason) => [Outcome::Unavailable { reason }; 3],
+        serial::Carried::Miss => panic!("expected held country"),
+    };
+    inputs.truncate(outcomes[0].len());
+    bonuses.truncate(outcomes[1].len());
+    modifiers.truncate(outcomes[2].len());
+    ResearchResult {
+        outcomes,
+        inputs,
+        bonuses,
+        modifiers,
+    }
+}
+fn technologies(
+    store: &drift::Store,
+    memory: &Trace<'_, World>,
+    id: u32,
+) -> (Outcome, Vec<ctechnology::Row>, Vec<usize>) {
+    let mut rows = Vec::new();
+    let mut pointers = Vec::new();
+    let outcome = match store.carry_technologies(
+        memory,
+        0,
+        id,
+        World::country(id),
+        &mut rows,
+        &mut pointers,
+        0,
+    ) {
+        drift::Carried::Rows(len) => Outcome::Rows { len },
+        drift::Carried::Failed(reason) => Outcome::Unavailable { reason },
+        drift::Carried::Miss => panic!("expected held country"),
+    };
+    rows.truncate(outcome.len());
+    pointers.truncate(outcome.len());
+    (outcome, rows, pointers)
+}
+fn serial_technologies(
+    store: &serial::Store,
+    memory: &Trace<'_, World>,
+    id: u32,
+) -> (Outcome, Vec<ctechnology::Row>, Vec<usize>) {
+    let mut rows = Vec::new();
+    let mut pointers = Vec::new();
+    let outcome = match store.carry_technologies(
+        memory,
+        0,
+        id,
+        World::country(id),
+        &mut rows,
+        &mut pointers,
+        0,
+    ) {
+        serial::Carried::Rows(len) => Outcome::Rows { len },
+        serial::Carried::Failed(reason) => Outcome::Unavailable { reason },
+        serial::Carried::Miss => panic!("expected held country"),
+    };
+    rows.truncate(outcome.len());
+    pointers.truncate(outcome.len());
+    (outcome, rows, pointers)
+}
+
+#[test]
+fn governance_batch_carried_serial_census_and_5000_country_equality() {
+    let mut world = World::new(5_000);
+    let mut store = drift::Store::default();
+    let mut serial = serial::Store::default();
+    for id in 1..=5_000 {
+        let rows = full(&world, id);
+        hold(&mut store, &mut serial, &world, id, &rows);
+        let country = World::country(id);
+        for position in 0..3 {
+            world.put(
+                country + SLOT + position * 0x80 + cresearch_slot::BANKED_DAYS,
+                (200_000_i64 + position as i64).to_le_bytes(),
+            );
+        }
+        for position in 0..2 {
+            world.put(
+                country + TECH + position * 0x400 + ctechnology::LIVE_PROGRESS,
+                (600_000_i64 + position as i64).to_le_bytes(),
+            );
+        }
+        let before = Trace::new(&world, "Research drift serial");
+        let after = Trace::new(&world, "Research drift batch");
+        let old = serial_research(&serial, &before, id);
+        let new = research(&store, &after, id);
+        assert_eq!(new, old);
+        assert_eq!((before.count(), after.count()), (8, 5));
+        assert!(after.fallbacks.witnesses().is_empty());
+        let allowed = kit::addresses(&before);
+        assert!(
+            kit::addresses(&after)
+                .iter()
+                .all(|at| allowed.binary_search(at).is_ok()),
+            "carry read an omitted operand"
+        );
+        before.clear();
+        after.clear();
+        let old_tech = serial_technologies(&serial, &before, id);
+        let new_tech = technologies(&store, &after, id);
+        assert_eq!(new_tech, old_tech);
+        assert_eq!((before.count(), after.count()), (5, 4));
+        assert!(after.fallbacks.witnesses().is_empty());
+        let allowed = kit::addresses(&before);
+        assert!(
+            kit::addresses(&after)
+                .iter()
+                .all(|at| allowed.binary_search(at).is_ok())
+        );
+        let fresh = full(&world, id);
+        assert_eq!(new.inputs, fresh.inputs);
+        assert_eq!(new.bonuses, fresh.bonuses);
+        assert_eq!(new.modifiers, fresh.modifiers);
+        assert_eq!(new_tech.1, fresh.technologies);
+        assert_eq!(new_tech.2, fresh.pointers);
+    }
+    println!(
+        "Carried ResearchInputs/Bonuses/Modifiers: 8 -> 5; ResearchTechnologies: 5 -> 4 guarded calls/country; 5000 countries"
+    );
+}
+#[test]
+fn governance_batch_carried_persistent_and_one_shot_every_serial_operand() {
+    let world = World::new(1);
+    let mut store = drift::Store::default();
+    let mut serial = serial::Store::default();
+    hold(&mut store, &mut serial, &world, 1, &full(&world, 1));
+    let before = Trace::new(&world, "Research drift serial census");
+    serial_research(&serial, &before, 1);
+    let research_addresses = kit::addresses(&before);
+    before.clear();
+    serial_technologies(&serial, &before, 1);
+    let technology_addresses = kit::addresses(&before);
+    for address in research_addresses {
+        for once in [false, true] {
+            let before = Trace::fault(&world, "Research drift serial", address, once);
+            let after = Trace::fault(&world, "Research drift batch", address, once);
+            let old = serial_research(&serial, &before, 1);
+            let new = research(&store, &after, 1);
+            if once {
+                for (old, new) in old.outcomes.into_iter().zip(new.outcomes) {
+                    kit::never_harsher(old, new);
+                }
+            } else {
+                assert_eq!(new, old, "persistent {address:#x}");
+            }
+            if !once {
+                assert!(matches!(new.outcomes[0], Outcome::Unavailable { .. }));
+            }
+            assert!(after.fallbacks.witnesses().len() <= 1);
+            let is_drift = address >= World::country(1) + SLOT
+                && address < World::country(1) + TECH + 0x400 + ctechnology::LIVE_PROGRESS + 8;
+            assert_eq!(after.fallbacks.witnesses().len(), usize::from(is_drift));
+        }
+    }
+    for address in technology_addresses {
+        for once in [false, true] {
+            let before = Trace::fault(&world, "Technology drift serial", address, once);
+            let after = Trace::fault(&world, "Technology drift batch", address, once);
+            let old = serial_technologies(&serial, &before, 1);
+            let new = technologies(&store, &after, 1);
+            if once {
+                kit::never_harsher(old.0, new.0);
+            } else {
+                assert_eq!(new, old, "persistent {address:#x}");
+            }
+            if !once {
+                assert!(matches!(new.0, Outcome::Unavailable { .. }));
+            }
+            assert!(after.fallbacks.witnesses().len() <= 1);
+        }
+    }
+}
+#[test]
+fn governance_batch_carried_gather_only_fault_publishes_serial_fallback() {
+    let mut world = World::new(1);
+    let country = World::country(1);
+    let mut store = drift::Store::default();
+    let mut serial = serial::Store::default();
+    hold(&mut store, &mut serial, &world, 1, &full(&world, 1));
+    // Fresh drift differs from the held values, so publishing stale held rows
+    // instead of the fallback's live reads cannot satisfy the comparison.
+    for position in 0..3 {
+        world.put(
+            country + SLOT + position * 0x80 + cresearch_slot::BANKED_DAYS,
+            (200_011_i64 + position as i64).to_le_bytes(),
+        );
+    }
+    for position in 0..2 {
+        world.put(
+            country + TECH + position * 0x400 + ctechnology::LIVE_PROGRESS,
+            (600_013_i64 + position as i64).to_le_bytes(),
+        );
+    }
+    // Daily research slot progress banks +0x20; the technology progress adder
+    // technology research progress adder stores progress +0x198. Exercise both research gathers and
+    // the roster gather, with faults on later records to discard partial bytes.
+    for (address, calls) in [
+        (country + SLOT + 0x80 + cresearch_slot::BANKED_DAYS, 9),
+        (country + TECH + 0x400 + ctechnology::LIVE_PROGRESS, 10),
+    ] {
+        let before = Trace::gather_fault(&world, "Research serial", address);
+        let after = Trace::gather_fault(&world, "Research batch", address);
+        let old = serial_research(&serial, &before, 1);
+        assert!(
+            old.outcomes
+                .iter()
+                .all(|o| matches!(o, Outcome::Rows { .. }))
+        );
+        // The relaxed rule permits the optional gather to consume a one-shot
+        // fault; withholding successful fallback rows would be harsher.
+        assert_eq!(research(&store, &after, 1), old);
+        assert_eq!(before.remaining.get(), Some(1));
+        assert_eq!(after.remaining.get(), Some(0));
+        assert_eq!(&*after.fallbacks.witnesses(), &["research_drift"]);
+        assert_eq!(after.count(), calls); // Exactly one serial drift pass.
+    }
+    let address = country + TECH + 0x400 + ctechnology::LIVE_PROGRESS;
+    let before = Trace::gather_fault(&world, "Technology serial", address);
+    let after = Trace::gather_fault(&world, "Technology batch", address);
+    let old = serial_technologies(&serial, &before, 1);
+    assert_eq!(old.0, Outcome::Rows { len: 2 });
+    assert_eq!(technologies(&store, &after, 1), old);
+    assert_eq!(before.remaining.get(), Some(1));
+    assert_eq!(after.remaining.get(), Some(0));
+    assert_eq!(&*after.fallbacks.witnesses(), &["technology_drift"]);
+    assert_eq!(after.count(), 6); // Three identity reads, one gather, two scalars.
+}
+#[test]
+fn governance_batch_carried_persistent_drift_fault_keeps_serial_failure() {
+    let world = World::new(1);
+    let country = World::country(1);
+    let mut store = drift::Store::default();
+    let mut serial = serial::Store::default();
+    hold(&mut store, &mut serial, &world, 1, &full(&world, 1));
+    for address in [
+        country + SLOT + 0x80 + cresearch_slot::BANKED_DAYS,
+        country + TECH + 0x400 + ctechnology::LIVE_PROGRESS,
+    ] {
+        let before = Trace::fault(&world, "Research serial", address, false);
+        let after = Trace::fault(&world, "Research batch", address, false);
+        let old = serial_research(&serial, &before, 1);
+        assert!(
+            old.outcomes
+                .iter()
+                .all(|o| matches!(o, Outcome::Unavailable { .. }))
+        );
+        assert_eq!(research(&store, &after, 1), old);
+        assert_eq!(&*after.fallbacks.witnesses(), &["research_drift"]);
+    }
+    let address = country + TECH + 0x400 + ctechnology::LIVE_PROGRESS;
+    let before = Trace::fault(&world, "Technology serial", address, false);
+    let after = Trace::fault(&world, "Technology batch", address, false);
+    let old = serial_technologies(&serial, &before, 1);
+    assert!(matches!(old.0, Outcome::Unavailable { .. }));
+    assert_eq!(technologies(&store, &after, 1), old);
+    assert_eq!(&*after.fallbacks.witnesses(), &["technology_drift"]);
+}
+#[test]
+fn governance_batch_carried_assigned_aliases_keep_one_technology_progress_read() {
+    let mut world = World::new(1);
+    let country = World::country(1);
+    world.pointer(
+        country + SLOT + 2 * 0x80 + cresearch_slot::TECHNOLOGY,
+        country + TECH,
+    );
+    world.put(
+        country + SLOT + 2 * 0x80 + cresearch_slot::TECHNOLOGY_HANDLE,
+        7_u32.to_le_bytes(),
+    );
+    let mut store = drift::Store::default();
+    let mut serial = serial::Store::default();
+    hold(&mut store, &mut serial, &world, 1, &full(&world, 1));
+    let trace = Trace::new(&world, "Technology drift alias");
+    assert_eq!(technologies(&store, &trace, 1).0, Outcome::Rows { len: 2 });
+    assert_eq!(
+        trace
+            .operands
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == country + TECH + ctechnology::LIVE_PROGRESS)
+            .count(),
+        1
+    );
+    assert_eq!(trace.count(), 4);
+}
+#[test]
+fn governance_batch_carried_multiple_persistent_faults_keep_serial_first_reason() {
+    // Persistent slot and technology faults coexist. The serial pass finds
+    // the first in slot order rather than blaming the earlier banked gather.
+    let world = World::new(1);
+    let country = World::country(1);
+    let mut store = drift::Store::default();
+    let mut serial = serial::Store::default();
+    hold(&mut store, &mut serial, &world, 1, &full(&world, 1));
+    // A nested persistent overlay is a second independent unreadable span.
+    let inner = Trace::fault(
+        &world,
+        "second banked fault",
+        country + SLOT + 0x80 + cresearch_slot::BANKED_DAYS,
+        false,
+    );
+    let outer = Trace::fault(
+        &inner,
+        "first assigned fault",
+        country + TECH + ctechnology::LIVE_PROGRESS,
+        false,
+    );
+    let mut inputs = Vec::new();
+    let mut bonuses = Vec::new();
+    let mut modifiers = Vec::new();
+    let outcome = store.carry_research(
+        &outer,
+        0,
+        1,
+        country,
+        engine::walk::Buffer::Growing(&mut inputs),
+        engine::walk::Buffer::Growing(&mut bonuses),
+        engine::walk::Buffer::Growing(&mut modifiers),
+    );
+    assert!(matches!(
+        outcome,
+        drift::Carried::Failed("assigned technology unreadable")
+    ));
+    assert_eq!(&*outer.fallbacks.witnesses(), &["research_drift"]);
+    let original = serial.carry_research(
+        &outer,
+        0,
+        1,
+        country,
+        engine::walk::Buffer::Growing(&mut inputs),
+        engine::walk::Buffer::Growing(&mut bonuses),
+        engine::walk::Buffer::Growing(&mut modifiers),
+    );
+    assert!(matches!(
+        original,
+        serial::Carried::Failed("assigned technology unreadable")
+    ));
+}

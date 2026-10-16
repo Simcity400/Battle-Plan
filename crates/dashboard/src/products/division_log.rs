@@ -4,24 +4,23 @@
 //! and combat lifecycle supply killer context, joined only within the same drain.
 //! First appearance has no creation date: its date is an upper bound.
 use super::{
-    BranchParams, LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
+    BranchParams, LoadContext, Product,
     battles::{BattleWarning, BattleWindow},
     land_battles::LandBattleCountryFilter,
 };
 use crate::{
     Source,
     catalogue::{self, Catalogue},
-    metadata::{LinkTags, check_cancel, slot_read, validate_campaign},
+    metadata::{LinkTags, check_cancel, slot_read},
     scripted_text::stored_text,
-    transport::json_len,
 };
 use replay::{
     container::Replay,
-    frame::{DecodedFrame, FrameDecoder, SharedView, TableView},
+    frame::DecodedFrame,
     rows::{
         DivisionDeletionDisposition as Disposition, DivisionEquipmentDeletionRow, DivisionRow,
         DivisionStatusRow, DivisionTemplateRow, EquipmentDestructionCause as Cause, NameOperands,
-        Recorded, TableId, TableSchema, tables,
+        Recorded, TableId, tables,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -31,10 +30,15 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
+#[cfg(test)]
+use {crate::metadata::validate_campaign, replay::frame::FrameDecoder};
+
+pub(crate) mod prepared;
 
 pub struct DivisionLog;
 pub struct DivisionLogManifest;
 pub struct DivisionLogTotals;
+#[cfg(test)]
 const TABLES: [TableId; 10] = [
     TableId::Campaign,
     TableId::Countries,
@@ -63,7 +67,7 @@ pub enum DivisionLogKind {
     Transfer,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionLogEntry {
     pub id: String,
@@ -96,7 +100,7 @@ pub struct DivisionLogEntry {
     pub killer_division: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionLogReply {
     pub window: usize,
@@ -110,13 +114,13 @@ impl super::ReplyWarnings for DivisionLogReply {
         &mut self.content_warnings
     }
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionLogTemplate {
     pub id: String,
     pub name: Option<String>,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionLogManifestReply {
     pub windows: Vec<BattleWindow>,
@@ -139,7 +143,7 @@ pub struct DivisionLogTotalsParams {
     pub countries: LandBattleCountryFilter,
     pub templates: Option<Vec<String>>,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionLogTotalsReply {
     pub created: usize,
@@ -153,15 +157,102 @@ impl super::ReplyWarnings for DivisionLogTotalsReply {
     }
 }
 
-#[derive(Clone)]
+/// The recorded naming operands of one division name.
+type NamingOperands = (i32, i32, u8, u8, Vec<u8>, Vec<u8>);
+
+// Only the operands consumed by the production presentation builders survive.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ArmyName {
+    division: u64,
+    name: Result<Option<Vec<u8>>, ()>,
+    naming: Result<Option<NamingOperands>, ()>,
+}
+impl ArmyName {
+    fn new(row: &DivisionStatusRow) -> Self {
+        Self {
+            division: row.division,
+            name: match &row.name {
+                Recorded::Value(value) => Ok(value.clone()),
+                Recorded::NotRecorded => Err(()),
+            },
+            naming: match &row.naming {
+                Recorded::Value(value) => Ok(value.as_ref().map(|v| {
+                    (
+                        v.kind,
+                        v.order,
+                        v.ordered,
+                        v.programmatic,
+                        v.custom.clone(),
+                        v.group.clone(),
+                    )
+                })),
+                Recorded::NotRecorded => Err(()),
+            },
+        }
+    }
+    fn matches(&self, row: &DivisionStatusRow) -> bool {
+        let name = match (&self.name, &row.name) {
+            (Ok(old), Recorded::Value(new)) => old == new,
+            (Err(()), Recorded::NotRecorded) => true,
+            _ => false,
+        };
+        name && match (&self.naming, &row.naming) {
+            (
+                Ok(Some((kind, order, ordered, programmatic, custom, group))),
+                Recorded::Value(Some(new)),
+            ) => {
+                *kind == new.kind
+                    && *order == new.order
+                    && *ordered == new.ordered
+                    && *programmatic == new.programmatic
+                    && custom == &new.custom
+                    && group == &new.group
+            }
+            (Ok(None), Recorded::Value(None)) | (Err(()), Recorded::NotRecorded) => true,
+            _ => false,
+        }
+    }
+    fn status(&self) -> DivisionStatusRow {
+        DivisionStatusRow {
+            division: self.division,
+            name: match &self.name {
+                Ok(value) => Recorded::Value(value.clone()),
+                Err(()) => Recorded::NotRecorded,
+            },
+            naming: match &self.naming {
+                Ok(value) => Recorded::Value(value.as_ref().map(
+                    |(kind, order, ordered, programmatic, custom, group)| NameOperands {
+                        kind: *kind,
+                        order: *order,
+                        ordered: *ordered,
+                        programmatic: *programmatic,
+                        custom: custom.clone(),
+                        group: group.clone(),
+                    },
+                )),
+                Err(()) => Recorded::NotRecorded,
+            },
+            ..Default::default()
+        }
+    }
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct TemplateName {
+    literal: Vec<u8>,
+    key: Result<Vec<u8>, ()>,
+}
+#[derive(Clone, Serialize, Deserialize)]
 struct Presentation {
     hour: i32,
-    division: DivisionRow,
-    status: Option<DivisionStatusRow>,
-    template: Option<DivisionTemplateRow>,
+    division: u64,
+    province: u32,
+    template_id: u64,
+    status: Option<ArmyName>,
+    template: Option<TemplateName>,
     template_hour: Option<i32>,
     icon: Option<(u32, i32, Vec<u8>)>,
 }
+#[derive(Clone, Serialize, Deserialize)]
 struct Event {
     row: DivisionLogEntry,
     presentation: Option<Presentation>,
@@ -171,7 +262,7 @@ struct Event {
 struct Presentations<'a> {
     hour: i32,
     divisions: &'a [DivisionRow],
-    names: Names<'a>,
+    names: &'a [DivisionStatusRow],
     templates: &'a [DivisionTemplateRow],
     icons: &'a [replay::rows::DivisionTemplateIconRow],
     template_hour: Option<i32>,
@@ -185,11 +276,9 @@ impl<'a> Presentations<'a> {
             hour: frame.hour,
             template_hour,
             divisions: frame.complete::<tables::Divisions>().unwrap_or_default(),
-            names: Names::Rows(
-                frame
-                    .complete::<tables::DivisionStatus>()
-                    .unwrap_or_default(),
-            ),
+            names: frame
+                .complete::<tables::DivisionStatus>()
+                .unwrap_or_default(),
             templates: frame
                 .complete::<tables::DivisionTemplates>()
                 .unwrap_or_default(),
@@ -198,15 +287,20 @@ impl<'a> Presentations<'a> {
                 .unwrap_or_default(),
         }
     }
-    fn get(&self, id: u64) -> Option<Presentation> {
-        let division = keyed(self.divisions, id, |row| row.id)?.clone();
-        let status = match self.names {
-            Names::Rows(rows) => keyed(rows, id, |row| row.division)
-                .map(|row| status(row.division, &row.name, &row.naming)),
-            Names::Held(names) => keyed(names, id, |held| held.division)
-                .map(|held| status(held.division, &held.name, &held.naming)),
-        };
-        let template = keyed(self.templates, division.template, |row| row.template).cloned();
+    fn get(&self, id: u64, held: Option<ArmyName>) -> Option<Presentation> {
+        let division = keyed(self.divisions, id, |row| row.id)?;
+        let status = keyed(self.names, id, |row| row.division).map(|row| {
+            held.filter(|name| name.matches(row))
+                .unwrap_or_else(|| ArmyName::new(row))
+        });
+        let template =
+            keyed(self.templates, division.template, |row| row.template).map(|row| TemplateName {
+                literal: row.name.clone(),
+                key: match &row.name_key {
+                    Recorded::Value(value) => Ok(value.clone()),
+                    Recorded::NotRecorded => Err(()),
+                },
+            });
         let icon = keyed(self.icons, division.template, |row| row.template).map(|row| {
             (
                 row.priority_unit,
@@ -216,7 +310,9 @@ impl<'a> Presentations<'a> {
         });
         Some(Presentation {
             hour: self.hour,
-            division,
+            division: division.id,
+            province: division.province,
+            template_id: division.template,
             status,
             template,
             template_hour: self.template_hour,
@@ -224,100 +320,71 @@ impl<'a> Presentations<'a> {
         })
     }
 }
-/// A status row as a presentation keeps it: its division and name operands.
-fn status(
-    division: u64,
-    name: &Recorded<Option<Vec<u8>>>,
-    naming: &Recorded<Option<NameOperands>>,
-) -> DivisionStatusRow {
-    DivisionStatusRow {
-        division,
-        name: name.clone(),
-        naming: naming.clone(),
-        ..Default::default()
-    }
-}
-enum Names<'a> {
-    Rows(&'a [DivisionStatusRow]),
-    Held(&'a [HeldName]),
-}
-struct HeldName {
-    division: u64,
-    name: Recorded<Option<Vec<u8>>>,
-    naming: Recorded<Option<NameOperands>>,
-}
-/// The last census's presentation inputs. DivisionStatus changes every hour, so
-/// only its names are kept, reused where unchanged: holding its rows would copy
-/// them at every later hour.
+/// Last complete census, retained through unavailable reads and branch switches.
+/// It contains presentation operands, never raw table rows.
+#[derive(Serialize, Deserialize)]
 struct Census {
+    rows: Vec<Presentation>,
+    // All operands share the last complete census's supplying dates. Advancing
+    // those dates does not require copying the unchanged naming operands.
     hour: i32,
     template_hour: Option<i32>,
-    divisions: SharedView,
-    templates: SharedView,
-    icons: SharedView,
-    names: Vec<HeldName>,
 }
 impl Census {
     fn new(frame: &DecodedFrame, template_hour: Option<i32>, held: Option<Census>) -> Self {
+        let current = Presentations::new(frame, template_hour);
         let mut held = held
-            .map_or_else(Vec::new, |census| census.names)
+            .map_or_else(Vec::new, |census| census.rows)
             .into_iter()
             .peekable();
-        let names = frame
-            .complete::<tables::DivisionStatus>()
-            .unwrap_or_default()
+        let rows = current
+            .divisions
             .iter()
-            .map(|row| {
-                while held.next_if(|name| name.division < row.division).is_some() {}
-                held.next_if(|name| {
-                    name.division == row.division
-                        && name.name == row.name
-                        && name.naming == row.naming
-                })
-                .unwrap_or_else(|| HeldName {
-                    division: row.division,
-                    name: row.name.clone(),
-                    naming: row.naming.clone(),
-                })
+            .map(|division| {
+                while held.next_if(|old| old.division < division.id).is_some() {}
+                let name = held
+                    .next_if(|old| old.division == division.id)
+                    .and_then(|old| old.status);
+                current
+                    .get(division.id, name)
+                    .expect("complete division census")
             })
             .collect();
-        let view = |table: TableId| frame.tables[table.index()].clone();
         Self {
+            rows,
             hour: frame.hour,
             template_hour,
-            divisions: view(TableId::Divisions),
-            templates: view(TableId::DivisionTemplates),
-            icons: view(TableId::DivisionTemplateIcons),
-            names,
         }
     }
-    fn presentations(&self) -> Presentations<'_> {
-        fn rows<T: TableSchema>(view: &SharedView) -> &[T::Row] {
-            match &**view {
-                TableView::Complete(rows) => rows.rows::<T>().unwrap_or_default(),
-                _ => &[],
-            }
-        }
-        Presentations {
+    fn get(&self, id: u64) -> Option<Presentation> {
+        keyed(&self.rows, id, |row| row.division).map(|row| Presentation {
             hour: self.hour,
-            divisions: rows::<tables::Divisions>(&self.divisions),
-            names: Names::Held(&self.names),
-            templates: rows::<tables::DivisionTemplates>(&self.templates),
-            icons: rows::<tables::DivisionTemplateIcons>(&self.icons),
             template_hour: self.template_hour,
-        }
+            ..row.clone()
+        })
     }
 }
-#[derive(Default)]
-struct Scan {
+fn deletion_signature(row: &DivisionEquipmentDeletionRow) -> (u32, u32, u8, Option<u8>) {
+    (
+        row.country,
+        row.expeditionary_owner,
+        row.disposition as u8,
+        row.cause.map(|cause| cause as u8),
+    )
+}
+#[derive(Default, Serialize, Deserialize)]
+pub(crate) struct Scan {
     /// The recording's format, which dates its daily tables
     /// ([`crate::metadata::slot_read`]).
+    #[serde(skip)]
     format: replay::format::FormatVersion,
     events: Vec<Event>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_set")]
     seen: HashSet<u64>,
     /// The last census's divisions, ascending.
     live: Vec<u64>,
-    deletions: HashMap<u64, DivisionEquipmentDeletionRow>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
+    deletions: HashMap<u64, (u32, u32, u8, Option<u8>)>,
     links: LinkTags,
     previous_hour: Option<i32>,
     previous_census: Option<i32>,
@@ -325,7 +392,12 @@ struct Scan {
     template_hour: Option<i32>,
     available: bool,
     losses_available: bool,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     warnings: BTreeMap<(i32, String), usize>,
+    counts: prepared::Counts,
+    #[cfg(test)]
+    #[serde(skip)]
+    work: crate::prepared::observer_tests::Work,
 }
 impl Scan {
     fn warn(&mut self, hour: i32, reason: impl Into<String>) {
@@ -361,11 +433,11 @@ impl Scan {
             icon: None,
             icon_missing: Some("Division template artwork not recorded at this observation".into()),
             presentation_hour: presentation.map(|value| value.hour),
-            template: presentation.map(|value| value.division.template.to_string()),
+            template: presentation.map(|value| value.template_id.to_string()),
             template_name: None,
             template_missing: Some("Template name not recorded at this observation".into()),
             template_hour: presentation.and_then(|value| value.template_hour),
-            province: presentation.map(|value| value.division.province),
+            province: presentation.map(|value| value.province),
             place_hour: presentation.map(|value| value.hour),
             place_at_event: kind == DivisionLogKind::Created,
             killer_tag: None,
@@ -373,7 +445,28 @@ impl Scan {
             killer_division: None,
         }
     }
+    #[cfg(test)]
     fn observe(&mut self, frame: &DecodedFrame) {
+        self.observe_with_changes(frame, None);
+    }
+    fn observe_with_changes(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+    ) {
+        let changed =
+            |table: TableId| changes.is_none_or(|changes| changes.rows_changed[table.index()]);
+        let divisions_changed = changed(TableId::Divisions);
+        let presentation_changed = [
+            TableId::Divisions,
+            TableId::DivisionStatus,
+            TableId::DivisionTemplates,
+            TableId::DivisionTemplateIcons,
+        ]
+        .into_iter()
+        .any(changed);
+        #[cfg(test)]
+        let first_event = self.events.len();
         let hour = frame.hour;
         if self
             .previous_hour
@@ -388,11 +481,16 @@ impl Scan {
                 "Country identity unavailable; division events retain unknown countries",
             );
         }
-        if slot_read(
-            self.format,
-            &frame.metrics,
-            TableId::DivisionTemplates,
-            hour,
+        if changes.map_or_else(
+            || {
+                slot_read(
+                    self.format,
+                    &frame.metrics,
+                    TableId::DivisionTemplates,
+                    hour,
+                )
+            },
+            |changes| changes.slot_read[TableId::DivisionTemplates.index()],
         ) {
             self.template_hour = frame
                 .complete::<tables::DivisionTemplates>()
@@ -401,47 +499,56 @@ impl Scan {
         }
         let current_presentation = Presentations::new(frame, self.template_hour);
         let census = self.presentation.take();
-        let previous_presentation = census.as_ref().map(Census::presentations);
-        let live = std::mem::take(&mut self.live);
+        let live = if divisions_changed {
+            std::mem::take(&mut self.live)
+        } else {
+            Vec::new()
+        };
         let divisions = frame.complete::<tables::Divisions>().ok();
         if let Some(divisions) = divisions {
             let baseline = !self.available;
             self.available = true;
-            let mut held = live.iter().peekable();
-            for division in divisions {
-                // Native reveal-skip copies are intel presentations, not divisions.
-                if division.reveal_skip != 0 {
-                    continue;
-                }
-                // Every division of the last census was seen then.
-                while held.next_if(|id| **id < division.id).is_some() {}
-                if held.next_if(|id| **id == division.id).is_none()
-                    && self.seen.insert(division.id)
-                    && !baseline
+            if divisions_changed {
+                #[cfg(test)]
                 {
-                    let presentation = current_presentation.get(division.id);
-                    // Division owner is the positive expeditionary owner, otherwise
-                    // the recorded roster owner.
-                    let raw = if (division.expeditionary_owner as i32) > 0 {
-                        division.expeditionary_owner
-                    } else {
-                        division.roster_owner
-                    };
-                    let mut row = self.row(
-                        division.id,
-                        hour,
-                        DivisionLogKind::Created,
-                        "first_observed",
-                        raw,
-                        presentation.as_ref(),
-                    );
-                    if !labels {
-                        row.tag = None;
+                    self.work.row_visits += divisions.len();
+                }
+                let mut held = live.iter().peekable();
+                for division in divisions {
+                    // Native reveal-skip copies are intel presentations, not divisions.
+                    if division.reveal_skip != 0 {
+                        continue;
                     }
-                    row.after_hour = self
-                        .previous_census
-                        .filter(|last| last.checked_add(1) == Some(hour));
-                    self.events.push(Event { row, presentation });
+                    // Every division of the last census was seen then.
+                    while held.next_if(|id| **id < division.id).is_some() {}
+                    if held.next_if(|id| **id == division.id).is_none()
+                        && self.seen.insert(division.id)
+                        && !baseline
+                    {
+                        let presentation = current_presentation.get(division.id, None);
+                        // Division owner is the positive expeditionary owner, otherwise
+                        // the recorded roster owner.
+                        let raw = if (division.expeditionary_owner as i32) > 0 {
+                            division.expeditionary_owner
+                        } else {
+                            division.roster_owner
+                        };
+                        let mut row = self.row(
+                            division.id,
+                            hour,
+                            DivisionLogKind::Created,
+                            "first_observed",
+                            raw,
+                            presentation.as_ref(),
+                        );
+                        if !labels {
+                            row.tag = None;
+                        }
+                        row.after_hour = self
+                            .previous_census
+                            .filter(|last| last.checked_add(1) == Some(hour));
+                        self.events.push(Event { row, presentation });
+                    }
                 }
             }
         } else {
@@ -452,96 +559,114 @@ impl Scan {
             self.previous_census = None;
         }
         let deletion_rows = frame.complete::<tables::DivisionEquipmentDeletions>().ok();
-        let mut deaths = HashMap::<u64, Vec<_>>::new();
-        for death in frame
-            .complete::<tables::DestroyedDivisions>()
-            .unwrap_or_default()
-        {
-            if death.hour <= hour
-                && self.previous_hour.is_some_and(|last| death.hour >= last)
-                && frame
-                    .complete::<tables::LandEventCoverage>()
-                    .is_ok_and(|coverage| {
-                        coverage.iter().any(|span| {
-                            span.complete
-                                && span.from_hour < death.hour
-                                && span.to_hour >= death.hour
-                        })
-                    })
+        if changed(TableId::DivisionEquipmentDeletions) {
+            let mut deaths = HashMap::<u64, Vec<_>>::new();
+            for death in frame
+                .complete::<tables::DestroyedDivisions>()
+                .unwrap_or_default()
             {
-                deaths.entry(death.division).or_default().push(death);
+                #[cfg(test)]
+                {
+                    self.work.row_visits += 1;
+                }
+                if death.hour <= hour
+                    && self.previous_hour.is_some_and(|last| death.hour >= last)
+                    && frame
+                        .complete::<tables::LandEventCoverage>()
+                        .is_ok_and(|coverage| {
+                            coverage.iter().any(|span| {
+                                span.complete
+                                    && span.from_hour < death.hour
+                                    && span.to_hour >= death.hour
+                            })
+                        })
+                {
+                    deaths.entry(death.division).or_default().push(death);
+                }
+            }
+            if let Some(deletions) = deletion_rows {
+                self.losses_available = true;
+                for deletion in deletions {
+                    #[cfg(test)]
+                    {
+                        self.work.row_visits += 1;
+                    }
+                    if self.deletions.get(&deletion.division_handle)
+                        == Some(&deletion_signature(deletion))
+                    {
+                        continue;
+                    }
+                    let presentation = census
+                        .as_ref()
+                        .and_then(|previous| previous.get(deletion.division_handle))
+                        .or_else(|| current_presentation.get(deletion.division_handle, None));
+                    let (kind, status) = disposition(deletion);
+                    let raw = if (deletion.expeditionary_owner as i32) > 0 {
+                        deletion.expeditionary_owner
+                    } else {
+                        deletion.country
+                    };
+                    let mut row = self.row(
+                        deletion.division_handle,
+                        hour,
+                        kind,
+                        status,
+                        raw,
+                        presentation.as_ref(),
+                    );
+                    if !labels {
+                        row.tag = None;
+                    }
+                    if matches!(
+                        deletion.cause,
+                        Some(Cause::DivisionDestroyed | Cause::DivisionOverrun)
+                    ) {
+                        let matched = deaths
+                            .get(&deletion.division_handle)
+                            .map(Vec::as_slice)
+                            .unwrap_or_default();
+                        if let [death] = matched {
+                            row.hour = death.hour;
+                            row.by = false;
+                            row.province = Some(death.province);
+                            row.place_hour = Some(death.hour);
+                            row.place_at_event = true;
+                            // The victim/country snapshot names are still dated by their supplying read.
+                            row.killer_tag = labels
+                                .then(|| self.links.get(death.killer_country).cloned())
+                                .flatten();
+                            row.killer_hour = row.killer_tag.as_ref().map(|_| hour);
+                            row.killer_division = death
+                                .killer_division
+                                .filter(|id| *id != 0)
+                                .map(|id| id.to_string());
+                        } else if matched.len() > 1 {
+                            self.warn(
+                                hour,
+                                "Ambiguous DestroyedDivisions interval; killer not attributed",
+                            );
+                        }
+                    }
+                    self.events.push(Event { row, presentation });
+                }
+                self.deletions = deletions
+                    .iter()
+                    .map(|row| (row.division_handle, deletion_signature(row)))
+                    .collect();
             }
         }
-        if let Some(deletions) = deletion_rows {
-            self.losses_available = true;
-            for deletion in deletions {
-                if self.deletions.get(&deletion.division_handle) == Some(deletion) {
-                    continue;
-                }
-                let presentation = previous_presentation
-                    .as_ref()
-                    .and_then(|previous| previous.get(deletion.division_handle))
-                    .or_else(|| current_presentation.get(deletion.division_handle));
-                let (kind, status) = disposition(deletion);
-                let raw = if (deletion.expeditionary_owner as i32) > 0 {
-                    deletion.expeditionary_owner
-                } else {
-                    deletion.country
-                };
-                let mut row = self.row(
-                    deletion.division_handle,
-                    hour,
-                    kind,
-                    status,
-                    raw,
-                    presentation.as_ref(),
-                );
-                if !labels {
-                    row.tag = None;
-                }
-                if matches!(
-                    deletion.cause,
-                    Some(Cause::DivisionDestroyed | Cause::DivisionOverrun)
-                ) {
-                    let matched = deaths
-                        .get(&deletion.division_handle)
-                        .map(Vec::as_slice)
-                        .unwrap_or_default();
-                    if let [death] = matched {
-                        row.hour = death.hour;
-                        row.by = false;
-                        row.province = Some(death.province);
-                        row.place_hour = Some(death.hour);
-                        row.place_at_event = true;
-                        // The victim/country snapshot names are still dated by their supplying read.
-                        row.killer_tag = labels
-                            .then(|| self.links.get(death.killer_country).cloned())
-                            .flatten();
-                        row.killer_hour = row.killer_tag.as_ref().map(|_| hour);
-                        row.killer_division = death
-                            .killer_division
-                            .filter(|id| *id != 0)
-                            .map(|id| id.to_string());
-                    } else if matched.len() > 1 {
-                        self.warn(
-                            hour,
-                            "Ambiguous DestroyedDivisions interval; killer not attributed",
-                        );
-                    }
-                }
-                self.events.push(Event { row, presentation });
-            }
-            self.deletions = deletions
-                .iter()
-                .map(|row| (row.division_handle, row.clone()))
-                .collect();
-        } else {
+        if deletion_rows.is_none() {
             self.warn(
                 hour,
                 "DivisionEquipmentDeletions unavailable; removal causes and totals incomplete",
             );
         }
-        if let Some(divisions) = divisions {
+        if let Some(divisions) = divisions.filter(|_| divisions_changed) {
+            #[cfg(test)]
+            {
+                self.work.row_visits +=
+                    divisions.len() + live.len() + deletion_rows.map_or(0, <[_]>::len);
+            }
             let current: Vec<_> = divisions
                 .iter()
                 .filter(|row| row.reveal_skip == 0)
@@ -571,13 +696,32 @@ impl Scan {
                     .or_default() += missing;
             }
             self.live = current;
-            self.previous_census = Some(hour);
-            self.presentation = Some(Census::new(frame, self.template_hour, census));
-        } else {
+        } else if divisions_changed {
             self.live = live;
+        }
+        if divisions.is_some() {
+            self.previous_census = Some(hour);
+            self.presentation = if presentation_changed || census.is_none() {
+                #[cfg(test)]
+                {
+                    self.work.row_visits += current_presentation.divisions.len();
+                }
+                Some(Census::new(frame, self.template_hour, census))
+            } else {
+                census.map(|mut census| {
+                    census.hour = hour;
+                    census.template_hour = self.template_hour;
+                    census
+                })
+            };
+        } else {
             self.presentation = census;
         }
         self.previous_hour = Some(hour);
+        #[cfg(test)]
+        {
+            self.work.emitted += self.events.len() - first_event;
+        }
     }
 }
 fn disposition(row: &DivisionEquipmentDeletionRow) -> (DivisionLogKind, &'static str) {
@@ -587,6 +731,7 @@ fn disposition(row: &DivisionEquipmentDeletionRow) -> (DivisionLogKind, &'static
     };
     (kind, row.event_name())
 }
+#[cfg(test)]
 fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan> {
     let mut scan = Scan {
         format: replay.format,
@@ -636,11 +781,13 @@ type CachedLegacyNames = (
 
 #[derive(Default)]
 struct Cache {
+    #[cfg(test)]
     branch: Option<(u64, Arc<Scan>)>,
     catalogue: Option<Arc<Catalogue>>,
     names: Option<CachedLegacyNames>,
     icons: HashMap<String, Result<String, String>>,
     icon_bytes: usize,
+    #[cfg(test)]
     totals: Option<Totals>,
 }
 impl Cache {
@@ -657,33 +804,92 @@ impl Cache {
         }
     }
 }
+#[cfg(test)]
 struct Totals {
     key: String,
     reads: Vec<i32>,
     counts: Vec<[usize; 3]>,
 }
+fn kind_index(kind: DivisionLogKind) -> usize {
+    match kind {
+        DivisionLogKind::Created => 0,
+        DivisionLogKind::Lost => 1,
+        DivisionLogKind::Transfer => 2,
+    }
+}
+struct Selection<'a> {
+    params: &'a DivisionLogTotalsParams,
+    tags: Option<HashSet<&'a str>>,
+    templates: Option<HashSet<&'a str>>,
+    membership: HashMap<&'a str, Vec<(i32, i32)>>,
+}
+impl<'a> Selection<'a> {
+    fn new(params: &'a DivisionLogTotalsParams) -> Self {
+        let tags: Option<HashSet<_>> = params
+            .countries
+            .tags
+            .as_ref()
+            .map(|tags| tags.iter().map(String::as_str).collect());
+        let templates: Option<HashSet<_>> = params
+            .templates
+            .as_ref()
+            .map(|templates| templates.iter().map(String::as_str).collect());
+        let mut membership: HashMap<&str, Vec<(i32, i32)>> = HashMap::new();
+        for run in params.countries.membership.iter().flatten() {
+            membership
+                .entry(&run.tag)
+                .or_default()
+                .push((run.first_hour, run.last_hour));
+        }
+        Self {
+            params,
+            tags,
+            templates,
+            membership,
+        }
+    }
+    fn country_matches(&self, tag: Option<&str>, hour: i32) -> bool {
+        match tag {
+            Some(tag) => {
+                self.tags.as_ref().is_none_or(|tags| tags.contains(tag))
+                    && (self.params.countries.membership.is_none()
+                        || self.membership.get(tag).is_some_and(|runs| {
+                            runs.iter()
+                                .any(|(first, last)| *first <= hour && *last >= hour)
+                        }))
+                    && !self
+                        .params
+                        .countries
+                        .unobserved
+                        .iter()
+                        .any(|span| span.first_hour <= hour && span.last_hour >= hour)
+            }
+            None => self.tags.is_none() && self.params.countries.membership.is_none(),
+        }
+    }
+    #[cfg(test)]
+    fn matches(&self, row: &DivisionLogEntry) -> bool {
+        row.hour >= self.params.first_hour
+            && self.templates.as_ref().is_none_or(|templates| {
+                row.template
+                    .as_deref()
+                    .is_some_and(|id| templates.contains(id))
+            })
+            && self.country_matches(row.tag.as_deref(), row.country_hour)
+    }
+}
+fn totals_reply([created, lost, transferred]: [usize; 3]) -> io::Result<DivisionLogTotalsReply> {
+    bounded(DivisionLogTotalsReply { created, lost, transferred,
+        warnings: vec!["Totals count observed appearances and witnessed removals in the selected time; missed events are not zero.".into()] })
+}
+#[cfg(test)]
 fn totals_index(
     scan: &Scan,
     params: &DivisionLogTotalsParams,
     key: String,
     cancelled: &AtomicBool,
 ) -> io::Result<Totals> {
-    let tags: Option<HashSet<_>> = params
-        .countries
-        .tags
-        .as_ref()
-        .map(|tags| tags.iter().map(String::as_str).collect());
-    let templates: Option<HashSet<_>> = params
-        .templates
-        .as_ref()
-        .map(|templates| templates.iter().map(String::as_str).collect());
-    let mut membership: HashMap<&str, Vec<(i32, i32)>> = HashMap::new();
-    for run in params.countries.membership.iter().flatten() {
-        membership
-            .entry(&run.tag)
-            .or_default()
-            .push((run.first_hour, run.last_hour));
-    }
+    let selection = Selection::new(params);
     let mut index = Totals {
         key,
         reads: Vec::new(),
@@ -692,44 +898,17 @@ fn totals_index(
     for event in &scan.events {
         check_cancel(cancelled)?;
         let row = &event.row;
-        if row.hour < params.first_hour
-            || templates.as_ref().is_some_and(|templates| {
-                !row.template
-                    .as_deref()
-                    .is_some_and(|id| templates.contains(id))
-            })
-        {
-            continue;
-        }
-        let selected = match row.tag.as_deref() {
-            Some(tag) => {
-                tags.as_ref().is_none_or(|tags| tags.contains(tag))
-                    && (params.countries.membership.is_none()
-                        || membership.get(tag).is_some_and(|runs| {
-                            runs.iter().any(|(first, last)| {
-                                *first <= row.country_hour && *last >= row.country_hour
-                            })
-                        }))
-                    && !params.countries.unobserved.iter().any(|span| {
-                        span.first_hour <= row.country_hour && span.last_hour >= row.country_hour
-                    })
-            }
-            None => tags.is_none() && params.countries.membership.is_none(),
-        };
-        if !selected {
+        if !selection.matches(row) {
             continue;
         }
         let mut counts = *index.counts.last().expect("initial totals");
-        counts[match row.kind {
-            DivisionLogKind::Created => 0,
-            DivisionLogKind::Lost => 1,
-            DivisionLogKind::Transfer => 2,
-        }] += 1;
+        counts[kind_index(row.kind)] += 1;
         index.reads.push(row.read_hour);
         index.counts.push(counts);
     }
     Ok(index)
 }
+#[cfg(test)]
 fn cached_scan(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Result<Arc<Scan>> {
     let state = source.state::<Cache>();
     let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
@@ -766,7 +945,7 @@ fn windows(replay: &Replay, branch: u64) -> Vec<BattleWindow> {
         .collect()
 }
 fn bounded<T: Serialize>(reply: T) -> io::Result<T> {
-    json_len(&reply, MAX_PRODUCT_REPLY_BYTES).ok_or_else(|| {
+    super::check_reply_budget(&reply).map_err(|_| {
         crate::invalid("Division log reply exceeds its transport budget; no events were omitted")
     })?;
     Ok(reply)
@@ -914,12 +1093,16 @@ fn named(
         && division_name
     {
         let legacy = std::cell::OnceCell::new();
-        let name =
-            crate::unit_names::army_name(status, &cat.localisation, &cat.recorded_language, || {
+        let name = crate::unit_names::army_name(
+            &status.status(),
+            &cat.localisation,
+            &cat.recorded_language,
+            || {
                 let (database, _) = legacy.get_or_init(|| legacy_names(source, cat));
                 database.as_ref().map(Arc::as_ref).map_err(Clone::clone)
-            })
-            .and_then(|name| catalogue::plain_text(&name));
+            },
+        )
+        .and_then(|name| catalogue::plain_text(&name));
         if let Some((_, notes)) = legacy.get() {
             for note in notes {
                 warnings.entry(note.clone()).or_insert(1);
@@ -938,17 +1121,18 @@ fn named(
     }
     if let Some(template) = &presentation.template {
         // An explicit display name precedes the localisation key.
-        let name = if !template.name.is_empty() {
+        let name = if !template.literal.is_empty() {
             stored_text(
                 &cat.localisation,
                 &cat.recorded_language,
-                &template.name,
+                &template.literal,
                 "Division template name",
             )
         } else {
             template
-                .name_key
-                .require("Division template fallback key")
+                .key
+                .as_ref()
+                .map_err(|()| "Division template fallback key not recorded".to_owned())
                 .and_then(|key| {
                     std::str::from_utf8(key)
                         .map_err(|_| "Division template key is not UTF-8".into())
@@ -972,42 +1156,30 @@ fn named(
     }
     row
 }
-impl Product for DivisionLog {
-    const KEY: &'static str = "division-log";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = DivisionLogParams;
-    type Reply = DivisionLogReply;
-    fn types() -> Vec<String> {
-        vec![
-            DivisionLogParams::decl(),
-            DivisionLogKind::decl(),
-            DivisionLogEntry::decl(),
-            DivisionLogReply::decl(),
-        ]
-    }
-    fn load(
+impl Scan {
+    fn reply(
+        &self,
         source: &Source,
-        params: &Self::Params,
+        params: &DivisionLogParams,
         context: &LoadContext,
         cancelled: &AtomicBool,
-    ) -> io::Result<Self::Reply> {
+    ) -> io::Result<DivisionLogReply> {
         let branch = branch(source, &params.branch_id)?;
         let interval = windows(source.replay_ref(), branch)
             .get(params.window)
             .cloned()
             .ok_or_else(|| crate::invalid("Division log window not in recording"))?;
-        let scan = cached_scan(source, branch, cancelled)?;
         let mut content_warnings = Vec::new();
         let content = names(source, context, &mut content_warnings);
         let mut refused = BTreeMap::new();
-        let first = scan
+        let first = self
             .events
             .partition_point(|event| event.row.read_hour < interval.first_hour);
-        let last = scan
+        let last = self
             .events
             .partition_point(|event| event.row.read_hour <= interval.last_hour);
         let mut rows = Vec::new();
-        for event in &scan.events[first..last] {
+        for event in &self.events[first..last] {
             check_cancel(cancelled)?;
             rows.push(named(source, event, content.as_ref(), &mut refused, true));
         }
@@ -1016,7 +1188,7 @@ impl Product for DivisionLog {
                 .into_iter()
                 .map(|(reason, count)| format!("{reason} ({count})")),
         );
-        let warnings = scan
+        let warnings = self
             .warnings
             .iter()
             .filter(|((hour, _), _)| *hour >= interval.first_hour && *hour <= interval.last_hour)
@@ -1034,32 +1206,20 @@ impl Product for DivisionLog {
             content_warnings,
         })
     }
-}
-impl Product for DivisionLogManifest {
-    const KEY: &'static str = "division-log-manifest";
-    const CONTENT_DEPENDENT: bool = true;
-    type Params = BranchParams;
-    type Reply = DivisionLogManifestReply;
-    fn types() -> Vec<String> {
-        vec![
-            DivisionLogTemplate::decl(),
-            DivisionLogManifestReply::decl(),
-        ]
-    }
-    fn load(
+    fn manifest(
+        &self,
         source: &Source,
-        params: &Self::Params,
+        params: &BranchParams,
         context: &LoadContext,
         cancelled: &AtomicBool,
-    ) -> io::Result<Self::Reply> {
+    ) -> io::Result<DivisionLogManifestReply> {
         let branch = branch(source, &params.branch_id)?;
-        let scan = cached_scan(source, branch, cancelled)?;
         let mut content_warnings = Vec::new();
         let content = names(source, context, &mut content_warnings);
         let mut templates = BTreeMap::new();
         let mut refused = BTreeMap::new();
         let mut latest = BTreeMap::new();
-        for event in &scan.events {
+        for event in &self.events {
             check_cancel(cancelled)?;
             if let Some(id) = &event.row.template {
                 latest.insert(id, event);
@@ -1081,11 +1241,59 @@ impl Product for DivisionLogManifest {
         );
         bounded(DivisionLogManifestReply {
             windows: windows(source.replay_ref(), branch),
-            available: scan.available,
-            losses_available: scan.losses_available,
+            available: self.available,
+            losses_available: self.losses_available,
             templates: templates.into_values().collect(),
             content_warnings,
         })
+    }
+}
+impl Product for DivisionLog {
+    const KEY: &'static str = "division-log";
+    const CONTENT_DEPENDENT: bool = true;
+    type Params = DivisionLogParams;
+    type Reply = DivisionLogReply;
+    fn types() -> Vec<String> {
+        vec![
+            DivisionLogParams::decl(),
+            DivisionLogKind::decl(),
+            DivisionLogEntry::decl(),
+            DivisionLogReply::decl(),
+        ]
+    }
+    #[cfg(test)]
+    fn load(
+        source: &Source,
+        params: &Self::Params,
+        context: &LoadContext,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self::Reply> {
+        let branch = branch(source, &params.branch_id)?;
+        let scan = cached_scan(source, branch, cancelled)?;
+        scan.reply(source, params, context, cancelled)
+    }
+}
+impl Product for DivisionLogManifest {
+    const KEY: &'static str = "division-log-manifest";
+    const CONTENT_DEPENDENT: bool = true;
+    type Params = BranchParams;
+    type Reply = DivisionLogManifestReply;
+    fn types() -> Vec<String> {
+        vec![
+            DivisionLogTemplate::decl(),
+            DivisionLogManifestReply::decl(),
+        ]
+    }
+    #[cfg(test)]
+    fn load(
+        source: &Source,
+        params: &Self::Params,
+        context: &LoadContext,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self::Reply> {
+        let branch = branch(source, &params.branch_id)?;
+        let scan = cached_scan(source, branch, cancelled)?;
+        scan.manifest(source, params, context, cancelled)
     }
 }
 impl Product for DivisionLogTotals {
@@ -1105,6 +1313,7 @@ impl Product for DivisionLogTotals {
             DivisionLogTotalsReply::decl(),
         ]
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -1128,8 +1337,7 @@ impl Product for DivisionLogTotals {
         let [created, lost, transferred] = index.counts[index
             .reads
             .partition_point(|hour| *hour <= params.last_hour)];
-        bounded(DivisionLogTotalsReply { created, lost, transferred,
-            warnings: vec!["Totals count observed appearances and witnessed removals in the selected time; missed events are not zero.".into()] })
+        totals_reply([created, lost, transferred])
     }
 }
 

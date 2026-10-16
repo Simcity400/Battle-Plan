@@ -76,3 +76,6 @@
   .focus-art.is-large { width: 44px; height: 42px; flex-basis: 44px; }
   .focus-description { padding-left: 12px; }
 }
+
+.focus-page-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px; }
+.focus-page-controls > span { flex: 1; color: var(--muted); font-size: .75rem; text-align: center; }

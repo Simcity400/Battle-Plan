@@ -60,6 +60,29 @@ function clockedReads(duration: number, limit = Infinity) {
 
 const at = (tags: readonly string[]): NameAt[] => tags.map(tag => ({ hour: 100, tag }));
 
+test('a retained exact dated queue visits demand once instead of rebuilding it after each reply', async () => {
+  let answeredChecks = 0;
+  class CountedStore extends HourStore<string> {
+    answered(hour: number, tag: string) { answeredChecks++; return super.answered(hour, tag); }
+  }
+  const { read, stats, advance, clock } = clockedReads(1);
+  const store = new CountedStore(64);
+  const requests = new FactRequests(store, read, () => {}, clock);
+  const wanted = Array.from({ length: 5000 }, (_, hour) => ['A', 'B', 'NONE'].map(tag => ({ hour, tag }))).flat();
+  requests.want(wanted, Infinity, 2);
+  await advance(5000);
+  assert.equal(stats.completed, 10000); assert.equal(stats.most, MAX_READING);
+  assert.equal(requests.running, 0); assert.equal(store.size, 5000);
+  assert.deepEqual(stats.hours, Array.from({ length: 5000 }, (_, hour) => [hour, hour]).flat());
+  assert.ok(stats.asked.every((tags, index) => JSON.stringify(tags) === JSON.stringify(index % 2 ? ['NONE'] : ['A', 'B'])));
+  // Count actual store lookups rather than machine-dependent wall time. One
+  // admission scan and one queue-drain check per pair suffice for unchanged demand.
+  assert.ok(answeredChecks <= wanted.length * 2, `Unchanged demand was rechecked ${answeredChecks} times`);
+  const result = requests.pickRead(wanted);
+  assert.equal(result.size, wanted.length);
+  assert.equal(result.get(nameKey(4999, 'A')), 'name of A'); assert.equal(result.get(nameKey(4999, 'NONE')), null);
+});
+
 test('artwork queue fills visible batches first and still completes every dated row', async () => {
   const { read, stats, advance, clock } = clockedReads(50);
   const store = new HourStore<string>(8);
@@ -98,6 +121,49 @@ test('configuration failures are kept while wanted and pruned when playback leav
   assert.equal(calls, past.length + 1);
   assert.equal(requests.pickRead([{ hour: 90, tag: 'old line' }]).get(nameKey(90, 'old line')), FAILED_FACT);
   assert.equal(requests.retry(), 2);
+  requests.cancel();
+});
+
+test('same-hour demand drops departed failures and refetches returning countries', async () => {
+  const calls: string[][] = [];
+  const store = new HourStore<string>(4);
+  store.record(0, ['keeper'], new Map([['keeper', 'kept']]));
+  const requests = new FactRequests(store, async (plan, _signal, chunk) => {
+    const [hour, tags] = plan[0]; calls.push([...tags]); await Promise.resolve(); chunk(hour, tags, null, false);
+  }, () => {}, { now: () => 0, after: () => () => {} });
+  const retained = [{ hour: 0, tag: 'keeper' }, { hour: 0, tag: 'still failed' }];
+  requests.want(retained, Infinity, 64);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  for (let turn = 0; turn < 3; turn++) {
+    const failed = Array.from({ length: 5000 }, (_, index) => ({ hour: 0, tag: `failed ${turn} ${index}` }));
+    requests.want([...retained, ...failed], Infinity, 64);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(requests.pickRead(failed).size, 5000);
+    requests.want(retained, Infinity, 64);
+    assert.equal(requests.pickRead(failed).size, 0, 'another country at the same hour cannot retain departed failures');
+    assert.equal(requests.pickRead(retained).get(nameKey(0, 'still failed')), FAILED_FACT);
+    assert.equal(store.get(0, 'keeper'), 'kept');
+    const before = calls.length;
+    requests.want([...retained, failed[0]], Infinity, 64);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(calls.length, before + 1, 'returning demand refetches the discarded failure');
+    requests.want(retained, Infinity, 64);
+  }
+  requests.cancel();
+});
+
+test('a late failure is discarded when its country leaves but its hour stays demanded', async () => {
+  const reads: { done: () => void }[] = [];
+  const store = new HourStore<string>(4);
+  store.record(0, ['keeper'], new Map([['keeper', 'kept']]));
+  const requests = new FactRequests(store, (plan, _signal, chunk) => new Promise(resolve => {
+    const [hour, tags] = plan[0]; reads.push({ done: () => { chunk(hour, tags, null, false); resolve(); } });
+  }), () => {}, { now: () => 0, after: () => () => {} });
+  const retained = [{ hour: 0, tag: 'keeper' }], departed = [{ hour: 0, tag: 'departed' }];
+  requests.want([...retained, ...departed], Infinity, 64); requests.want(retained, Infinity, 64);
+  reads[0].done(); await Promise.resolve();
+  assert.equal(requests.pickRead(departed).size, 0);
+  requests.want([...retained, ...departed], Infinity, 64); assert.equal(reads.length, 2);
   requests.cancel();
 });
 

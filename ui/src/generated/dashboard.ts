@@ -145,52 +145,266 @@ baseDaysRaw: string | null, progressRaw: string, };
 export type ResearchHistory = { coverage: Array<ResearchCoverage>, slots: Array<ResearchSlotHistory>, };
 export type ResearchFolder = { key: string, name: string | null, };
 export type ResearchTechnologyFolder = { token: string, folder: string | null, };
-export type MapGraphics = {
+export type MapGraphics = { samples: number, textureQuality: number,
 /**
- * Viewer-local allied battle plans; no recorded client selection or toggle.
+ * The world target size; `draw_map_full_res`.
+ */
+fullResolution: boolean, highGfxShaders: boolean, waterReflections: boolean,
+/**
+ * Cast shadows; `draw_shadows`.
+ */
+shadows: boolean,
+/**
+ * The day/night cycle; the inverse of `hide_daynight_cycle`, on in a fresh campaign.
+ * Off fixes the virtual lights while simulation time and province clocks stay
+ * authoritative.
+ */
+dayNight: boolean, water: boolean,
+/**
+ * Main switch of the four border parts.
+ */
+borders: boolean, landBorders: boolean, seaBorders: boolean, demilitarizedZones: boolean, straitCrossings: boolean, rivers: boolean, trees: boolean,
+/**
+ * Main switch of rails, bridges and supply trains.
+ */
+railways: boolean, rails: boolean, railwayBridges: boolean, supplyTrains: boolean, citySprawl: boolean,
+/**
+ * Buildings, facilities and floating harbours.
+ */
+buildings: boolean,
+/**
+ * The map table frame and its ambient actors.
+ */
+mapTable: boolean,
+/**
+ * Nuclear and thermonuclear impact effects.
+ */
+nuclearStrikes: boolean,
+/**
+ * Critical shore bombardment explosions.
+ */
+bombardmentExplosions: boolean,
+/**
+ * The explosions where missiles land.
+ */
+missileExplosions: boolean,
+/**
+ * Main switch of the floating map text kinds.
+ */
+mapText: boolean, textFakeDivisions: boolean, textRailwayGuns: boolean, textBombardments: boolean, textGenerals: boolean, textParadrops: boolean, textResistance: boolean, textBuildings: boolean, weather: boolean, sky: boolean,
+/**
+ * World country names.
+ */
+countryNames: boolean,
+/**
+ * Main switch of the 3-D unit figures and aircraft; `draw_units`.
+ */
+units: boolean,
+/**
+ * Land, railway-gun, ship and raid figures.
+ */
+unitFigures: boolean,
+/**
+ * Main switch of the aircraft mission parts.
+ */
+aircraft: boolean,
+/**
+ * Patrol and training flights.
+ */
+airPatrols: boolean, airReconnaissance: boolean,
+/**
+ * Close air support.
+ */
+airSupport: boolean,
+/**
+ * Strategic, carpet and fire bombing.
+ */
+airBombing: boolean,
+/**
+ * Dogfights and interceptions.
+ */
+airCombat: boolean, airKamikaze: boolean, airSupply: boolean,
+/**
+ * Missiles in flight.
+ */
+airMissiles: boolean,
+/**
+ * Main switch of every battle-plan part, raid paths included.
+ */
+battlePlans: boolean, frontLines: boolean,
+/**
+ * Offensive, fallback and withdrawal lines.
+ */
+offensiveLines: boolean, plannedMovement: boolean, navalInvasions: boolean, paradrops: boolean, raidPaths: boolean, planLabels: boolean,
+/**
+ * Allied battle plans; `show_allied_plans`. A fresh campaign shows them off, and the
+ * game stores the key only once its map-mode button is used.
  */
 showAlliedPlans: boolean,
 /**
- * Viewer-local world target size; defaults true.
+ * The selected units' movement arrows.
  */
-fullResolution: boolean,
+movementArrows: boolean,
 /**
- * Viewer-local day/night display; never copied from the recording's UI state.
+ * Main switch of every counter and map icon part.
  */
-dayNight: boolean,
+counters: boolean, landCounters: boolean, railwayGunCounters: boolean, navalCounters: boolean,
 /**
- * Embedded viewer-local NATO icons; missing legacy choices inherit their parent.
+ * Ships in port on naval bases.
  */
-natoCounters: boolean | null,
+portCounters: boolean,
 /**
- * High-quality map shaders; defaults true.
+ * Air-base, naval-base, naval HQ and facility icons.
  */
-highGfxShaders: boolean,
+baseIcons: boolean,
 /**
- * Water reflections; defaults true.
+ * Faction-theatre pins.
  */
-waterReflections: boolean,
+theatrePins: boolean, landCombatMarkers: boolean,
 /**
- * Sky rendering; defaults true.
+ * Naval combat, result and mission icons.
  */
-sky: boolean, textureQuality: number, samples: number, trees: boolean, shadows: boolean, rivers: boolean, buildings: boolean, units: boolean, citySprawl: boolean, weather: boolean, };
-export type CampaignMapSettings = {
+navalMarkers: boolean, raidIcons: boolean,
 /**
- * Inherit graphics from the parent scope (the game -> global -> campaign -> widget).
- * The wire name is retained for existing saved preferences. Missing legacy markers are overrides.
+ * Capital and victory-point names and symbols.
  */
-useGameGraphics: boolean, graphics: MapGraphics,
+cityNames: boolean,
 /**
- * None inherits parent artwork; the root preserves the recording's original layers.
+ * Map hover tooltips; the hover itself keeps working.
  */
-visualMods: Array<string> | null, };
-export type MapSettingsReply = { sourceId: string, revision: string, settings: CampaignMapSettings, inheritedSettings: CampaignMapSettings, mods: { id: string, name: string, recordedId: string, reason: string | null }[], recordedMods: Array<string>, sampleCounts: Array<number>, gameGraphics: MapGraphics | null, gameGraphicsError: string | null, };
+tooltips: boolean,
+/**
+ * NATO counter frames (`template_counter`); none, when the game's settings could not
+ * be read, uses the recording's game choice.
+ */
+natoCounters: boolean | null, };
+export type MapGraphicsOverrides = { samples: number | null, textureQuality: number | null, fullResolution: boolean | null, highGfxShaders: boolean | null, waterReflections: boolean | null, shadows: boolean | null, dayNight: boolean | null, water: boolean | null, borders: boolean | null, landBorders: boolean | null, seaBorders: boolean | null, demilitarizedZones: boolean | null, straitCrossings: boolean | null, rivers: boolean | null, trees: boolean | null, railways: boolean | null, rails: boolean | null, railwayBridges: boolean | null, supplyTrains: boolean | null, citySprawl: boolean | null, buildings: boolean | null, mapTable: boolean | null, nuclearStrikes: boolean | null, bombardmentExplosions: boolean | null, missileExplosions: boolean | null, mapText: boolean | null, textFakeDivisions: boolean | null, textRailwayGuns: boolean | null, textBombardments: boolean | null, textGenerals: boolean | null, textParadrops: boolean | null, textResistance: boolean | null, textBuildings: boolean | null, weather: boolean | null, sky: boolean | null, countryNames: boolean | null, units: boolean | null, unitFigures: boolean | null, aircraft: boolean | null, airPatrols: boolean | null, airReconnaissance: boolean | null, airSupport: boolean | null, airBombing: boolean | null, airCombat: boolean | null, airKamikaze: boolean | null, airSupply: boolean | null, airMissiles: boolean | null, battlePlans: boolean | null, frontLines: boolean | null, offensiveLines: boolean | null, plannedMovement: boolean | null, navalInvasions: boolean | null, paradrops: boolean | null, raidPaths: boolean | null, planLabels: boolean | null, showAlliedPlans: boolean | null, movementArrows: boolean | null, counters: boolean | null, landCounters: boolean | null, railwayGunCounters: boolean | null, navalCounters: boolean | null, portCounters: boolean | null, baseIcons: boolean | null, theatrePins: boolean | null, landCombatMarkers: boolean | null, navalMarkers: boolean | null, raidIcons: boolean | null, cityNames: boolean | null, tooltips: boolean | null, natoCounters: boolean | null, };
+export type MapAudio = {
+/**
+ * `master_volume`.
+ */
+master: number,
+/**
+ * `ambient_volume`; a fresh install stores 50.
+ */
+ambient: number,
+/**
+ * Unit, vehicle, train and aircraft sounds; `sound_fx_volume`.
+ */
+units: number,
+/**
+ * Combat and strike sounds; `sound_fx_volume`.
+ */
+combat: number,
+/**
+ * `voice_volume`.
+ */
+voice: number, };
+export type MapAudioOverrides = { master: number | null, ambient: number | null, units: number | null, combat: number | null, voice: number | null, };
+export type CounterFilter = { "kind": "all" } | { "kind": "players" } | { "kind": "countries", tags: Array<string>, };
+export type CampaignMapSettings = { graphics: MapGraphicsOverrides, audio: MapAudioOverrides,
+/**
+ * None inherits the parent's counter filter.
+ */
+counters: CounterFilter | null,
+/**
+ * Installed mods shown over the recording's artwork. None inherits the parent scope's
+ * choice; at the root it shows none. Ids are matched against the installed catalogue,
+ * never joined to a path; a mod no longer installed keeps its name.
+ */
+visualMods: Array<{ id: string, name: string }> | null, };
+export type RecordedMod = { recordedId: string, name: string, };
+export type ResolvedMapSettings = { graphics: MapGraphics, audio: MapAudio, counters: CounterFilter,
+/**
+ * The chosen visual mods as a set: sorted by id, without repeats, and empty when none.
+ */
+visualMods: Array<{ id: string, name: string }> | null, };
+export type MapSettingsReply = { sourceId: string, revision: string,
+/**
+ * The choices this scope stores; everything else inherits.
+ */
+settings: CampaignMapSettings,
+/**
+ * What this scope's unset choices take.
+ */
+inheritedSettings: ResolvedMapSettings,
+/**
+ * Every installed mod; any can be shown. `problem` says why one cannot be mounted.
+ */
+mods: { id: string, name: string, recordedId: string, source: string, problem: string | null }[],
+/**
+ * The mods the recording was made with, which every scope shows beneath visual mods.
+ */
+recordedMods: Array<RecordedMod>,
+/**
+ * The resolved selection's mods in the engine's mount order, lowest precedence first.
+ */
+appliedMods: { id: string, name: string }[],
+/**
+ * Selected mods that are not shown, and why.
+ */
+appliedNotes: Array<string>, sampleCounts: Array<number>,
+/**
+ * The game's own graphics choices, which a scope's "use the game's settings" reverts to.
+ */
+gameGraphics: MapGraphics | null,
+/**
+ * Why the game's settings (graphics and volumes) could not be read.
+ */
+gameSettingsError: string | null, };
 export type HistoryCacheReply = { bytes: number, limit: number, };
 export type SourceReply = {
 /**
  * A client lease. Several leases may share one underlying source and cache.
  */
 id: string, path: string, revision: string, metadata: ReplayMetadata, };
+export type PreparationState = "idle" | "queued" | "preparing" | "ready" | "cancelled" | "failed";
+export type PreparationAction = "status" | "start" | "cancel" | "clear";
+export type PreparationSection = { id: string, label: string, state: PreparationState, done: string, total: string | null, error: string | null, };
+export type PreparationReply = { sourceId: string, revision: string, requestId: string, backgroundEnabled: boolean, state: PreparationState, sections: Array<PreparationSection>, coverage: { [key in string]?: PreparedCoverage }, bytes: string, error: string | null, };
+export type PreparedCoverage = { schema: number, firstHour: number, lastHour: number, complete: boolean, };
+export type PreparationPreferences = { backgroundEnabled: boolean, };
+export type PreparedFocusArt = { artwork: Artwork, reason: string | null, };
+export type PreparedFocusPages = { first: string, count: string, rows: string, };
+export type PreparedFocusHour = { schema: number, slot: number, countryId: number, hour: number, orderFirstHour: number, lastHour: number, current: string | null, continuous: string | null, paused: boolean, progressRaw: string, dailyGainRaw: string | null, completed: PreparedFocusPages, presentation: PreparedFocusPages, details: PreparedFocusPages | null, warnings: Array<string>, };
+export type PreparedFocusTableRefusal = { table: string, reason: string | null, missingRows: string | null, };
+export type PreparedFocusUnavailableHour = { schema: number, firstHour: number, lastHour: number, reasons: Array<PreparedFocusTableRefusal>, };
+export type ChartBucket = {
+/**
+ * Sum of absolute raw value times covered hours, at the series decimal scale.
+ */
+absoluteTotal: string, firstHour: number, lastHour: number, firstValue: number, lastValue: number, lastValueHour: number, minHour: number, minValue: number, maxHour: number, maxValue: number, firstBreak: boolean, hasBreak: boolean, };
+export type ChartRun = { firstHour: number, lastHour: number, value: number, breakBefore: boolean, };
+export type ChartSummary = { from: number, to: number, width: number, buckets: Array<ChartBucket | null>,
+/**
+ * Original supplying runs for hourly bins, including their unclipped bounds.
+ */
+runs?: Array<ChartRun>,
+/**
+ * Display-only keyframe estimates; these hours are not exact values.
+ */
+approximate: Array<HourSpan>, };
+export type MarkCluster = { firstHour: number, lastHour: number, firstOrdinal: string, count: string, };
+export type MarkSummary = { from: number, to: number, width: number, clusters: Array<MarkCluster>, };
+export type MeasureRun = { firstHour: number, lastHour: number, valueRaw: string, slot: number, countryId: number, startsSegment: boolean, segmentFirstHour: number, readHour?: number, };
+export type MeasureActor = { actor: string, tag: string, measure: string, firstHour: number, lastHour: number, runCount: string, dropCount: string, };
+export type MeasureKey = "ArrowLeft" | "ArrowRight" | "Home" | "End";
+export type MeasureRead = { tag: string, hour: number, };
+export type MeasureState = { tag: string, hour: number, approximate: boolean, sampleHour: number | null, run: MeasureRun | null, drop: BalanceDrop | null, recorded: boolean | null, readHour: number | null, experience: ExperienceRead | null, available: boolean | null, segmentFirstHour: number | null, };
+export type MeasureStateReply = { coverage: PreparedCoverage | null, branchId: string, measure: string, decimals: number, states: Array<MeasureState>, scale: number | null, dayHours: number | null, warnings: Array<string>, };
+export type MeasureSummaryLine = { tag: string, summary: ChartSummary, marks: MarkSummary | null, };
+export type MeasureSummaryReply = { coverage: PreparedCoverage | null, branchId: string, measure: string, decimals: number, series: Array<MeasureSummaryLine>, warnings: Array<string>, };
+export type MeasureKeyReply = { coverage: PreparedCoverage | null, hour: number | null, approximate: boolean, };
+export type MeasureDropReply = { coverage: PreparedCoverage | null, firstOrdinal: string, total: string, rows: Array<MeasureEvent>, warnings: Array<string>, cursor: string | null, };
+export type MeasureEvent = { tag: string, hour: number, ordinal: string, row: unknown, };
+export type MeasureMarkReply = { coverage: PreparedCoverage | null, branchId: string, measure: string, tag: string, summary: MarkSummary, warnings: Array<string>, };
+export type PreparedProductionValue = { key: string, amount: string | null, equipmentAmount: string | null, };
+export type PreparedProductionCountry = { tag: string, slot: number, countryId: number, segment: string, total: string | null, equipmentTotal: string | null, readHour: number, observation: number | null, values: Array<PreparedProductionValue>, };
+export type PreparedProductionSelection = { schema: number, branchId: string, firstHour: number, lastHour: number, known: boolean, keys: Array<ProducedKey>, types: Array<ProducedType>, totalCountries: number,
+/**
+ * Logical first rank in this page; quantities remain exact until geometry.
+ */
+offset: string, valueMin: string, valueMax: string, countries: Array<PreparedProductionCountry>, warnings: Array<string>, };
 export type CountryParams = { branchId: string, tag: string, };
 export type FocusReply = { history: FocusHistory, artwork: Array<Artwork>,
 /**
@@ -235,7 +449,8 @@ export type SupplyHealthRun = { firstHour: number, lastHour: number, startsSegme
  */
 noSupply: number, strained: number, inSupply: number, };
 export type SupplyHealthSeries = { tag: string, identities?: Array<CountryIdentityRun>, runs: Array<SupplyHealthRun>, };
-export type SupplyHealthReply = { branchId: string, available: boolean, reason: string | null, missingInputs: Array<string>, series: Array<SupplyHealthSeries>, warnings: Array<string>, };
+export type SupplyHealthReply = { branchId: string, available: boolean, reason: string | null, missingInputs: Array<string>, series: Array<SupplyHealthSeries>, warnings: Array<string>, summaries?: Array<SupplyHealthDisplay>, };
+export type SupplyHealthDisplay = { tag: string, values: Array<ChartSummary>, };
 export type DivisionLogParams = { branchId: string, window: number, };
 export type DivisionLogKind = "created" | "lost" | "transfer";
 export type DivisionLogEntry = { id: string, division: string,
@@ -810,6 +1025,10 @@ transferLabels: [FuelLabel, FuelLabel, FuelLabel], detailHours: number,
  * In hour order.
  */
 reads: Array<FuelRead>, warnings: Array<string>, };
+export type FuelSeriesPoint = { tag: string, hour: number, approximate: boolean, recorded: boolean, fuel: FuelRead | null, consumption: FuelConsumptionRead | null, consumptionSegment: HourSpan | null, fuelRaw?: string, capacityRaw?: string, };
+export type FuelSeriesStateReply = { branchId: string, states: Array<FuelSeriesPoint>, replies: Array<FuelReply>, };
+export type FuelSeriesLine = { tag: string, measure: string, summary: ChartSummary, };
+export type FuelSeriesSummaryReply = { branchId: string, series: Array<FuelSeriesLine>, replies: Array<FuelReply>, };
 export type FuelAwardsParams = { branchId: string, tag: string, hour: number, country: string, countryInstance: number, };
 export type FuelAwardsReply = { branchId: string, tag: string, hour: number, awards: FuelAwards, warnings: Array<string>, };
 export type FuelAwardHistoryParams = { branchId: string, tag: string, hour: number, country: string, countryInstance: number, window: number, recipientKey: string, };
@@ -1176,6 +1395,15 @@ labels: { [key in string]?: string },
  * Localised native sort-button tooltips, absent when content cannot supply them.
  */
 hints: { [key in string]?: string }, warnings: Array<string>, scoreWarnings: Array<GameScoreWarning>, };
+export type GameScoreStateReply = { reply: GameScoreReply,
+/**
+ * Native-holder continuity, including aliases, for the table/race row builder.
+ */
+stretches: { [key in string]?: string },
+/**
+ * Direct frame values beyond accepted preparation have no proven race continuity.
+ */
+approximate: boolean, };
 export type ScoreboardColumnKey = "factories" | "armySize" | "territory" | "casualties" | "casualtiesDealt" | "casualtiesTaken" | "planes" | "ships" | "factoriesBuilt" | "factoriesTopbar" | "equipmentProduced" | "politicalPower" | "commandPower" | "stability" | "warSupport" | "nukes";
 export type ScoreboardTop = { count: number, sort: ScoreboardColumnKey, descending: boolean, };
 export type ScoreboardParams = { branchId: string, columns: Array<ScoreboardColumnKey>, tags: Array<string>, top: ScoreboardTop | null, };
@@ -1201,6 +1429,16 @@ export type ScoreboardReply = { branchId: string, defaultColumns: Array<Scoreboa
  * The one complete column registry, also returned for settings-only reads.
  */
 columns: Array<ScoreboardColumn>, series: Array<ScoreboardSeries>, warnings: Array<string>, };
+export type ScoreboardPreparedParams = { selection: ScoreboardParams, hour: number, sort: ScoreboardColumnKey, descending: boolean,
+/**
+ * The index contains identities and the sorting column. Other cells are paged by tag.
+ */
+index: boolean, bars: boolean, };
+export type ScoreboardPreparedReply = { hour: number, data: ScoreboardReply,
+/**
+ * Exact positive maxima over the selected table, independent of its mounted rows.
+ */
+maxima: { [key in ScoreboardColumnKey]?: string }, };
 export type NukesParams = { branchId: string, tags: Array<string>, top: number | null,
 /**
  * A drill selects the native country holding its tag at this recorded hour.
@@ -1709,7 +1947,11 @@ export type LedgerCommandHolder = { id: string,
  * Recorded object domain, cause or writer site; never a guessed holder.
  */
 kind: string, name: string | null, amountRaw: string | null, };
-export type PoliticsLedgerReply = { branchId: string, tag: string, decimals: number, mutations?: Array<LedgerMutation>, governments?: Array<LedgerGovernment>, daily?: Array<LedgerDaily>, dailyCosts?: Array<LedgerDailyCost>, coverage?: Array<LedgerCoverage>, warnings: Array<string>, spending: Array<LedgerSpend>, spendItems: Array<LedgerSpendItem>, spendCategories: Array<LedgerSpendCategory>, spendingCoverage: Array<LedgerSpendCoverage>, ideaTooltips: LedgerIdeaTooltips | null, commandHolds: Array<LedgerCommandHold>, balanceChanges?: Array<LedgerBalanceChange>, };
+export type PoliticsLedgerReply = { branchId: string, tag: string, decimals: number, mutations?: Array<LedgerMutation>, governments?: Array<LedgerGovernment>, daily?: Array<LedgerDaily>, dailyCosts?: Array<LedgerDailyCost>, coverage?: Array<LedgerCoverage>, warnings: Array<string>, spending: Array<LedgerSpend>, spendItems: Array<LedgerSpendItem>, spendCategories: Array<LedgerSpendCategory>, spendingCoverage: Array<LedgerSpendCoverage>, ideaTooltips: LedgerIdeaTooltips | null, commandHolds: Array<LedgerCommandHold>, balanceChanges?: Array<LedgerBalanceChange>, recurring?: Array<LedgerRecurringSpend>, gains?: Array<LedgerGain>, recurringDays?: Array<LedgerMonthDays>, partSummaries?: Array<LedgerPartSummary>, governmentMarks?: MarkSummary, };
+export type LedgerRecurringSpend = { spend: LedgerSpend, firstHour: number, lastHour: number, days: number, count: number, knownRaw: string, knownCount: number, };
+export type LedgerGain = { currency: string, gainedRaw: string, lostRaw: string, complete: boolean, };
+export type LedgerMonthDays = { currency: string, category: string, month: number | null, days: number, };
+export type LedgerPartSummary = { id: string, label: string, summary: ChartSummary, };
 export type PeaceDealsParams = { branchId: string, };
 export type PeaceDealsReply = { branchId: string, derived: boolean,
 /**
@@ -2243,6 +2485,11 @@ key: string, balance: Array<AmountRun>, stock: Array<AmountRun>,
  * or unrecorded observations. It is independent of the stock series.
  */
 available: Array<AmountRun>, };
+export type StockpileChoicePeak = { raw: string, stockDrawable: boolean, shareDrawable: boolean, };
+export type StockpileOperandSummary = { field: string, id: string, key: string, values: ChartSummary, presence: ChartSummary, samples: Array<[string | null, string | null, string | null, string | null]>, rowSamples: Array<[number | null, number | null, number | null, number | null]>, };
+export type StockpileGroupSummary = { key: string, operands: Array<StockpileOperandSummary>, };
+export type StockpileNamesPage = { first: string, total: string, rows: Array<StockVariantName>, incoming: StockVariantName | null, cursor: string | null, };
+export type StockpileDisplay = { from: number, to: number, stockRecorded: boolean, linesRecorded: boolean, balanceRecorded: boolean, aiRecorded: boolean, operands: Array<StockpileOperandSummary>, groups: Array<StockpileGroupSummary>, coverage: Array<ChartSummary>, nonzeroLogistics: Array<string>, choices: { [key in string]?: StockpileChoicePeak }, designs: { [key in string]?: Array<string> }, };
 export type EquipmentStockpileReply = { branchId: string, tag: string,
 /**
  * The recorded campaign identity (`ReplayMetadata::campaign_key`). A variant's
@@ -3180,6 +3427,25 @@ destructionCountedFrom: number | null,
  * bounds the history a branch's first read can hold.
  */
 retainedMonths: number | null, warnings: Array<string>, };
+export type PreparedLossesReply = { preparedReads: Array<number>, preparedHeadHour: number, preparedDetailHour: number, preparedFrom: number, preparedTo: number, preparedWidth: number, branchId: string, tag: string, landSource: LandSource,
+/**
+ * Optional persistent content/capture exclusion; no exclusion with the full writer group.
+ */
+landLowerBound: string | null, amountScale: number, causes: Array<LossCause>, designs: Array<LossDesign>,
+/**
+ * Combat Log land coverage; empty when destruction land is selected.
+ */
+coverage: Array<CoverageSpan>, destructionCoverage: Array<DestructionCoverageSpan>,
+/**
+ * The first complete drain on this branch. Startup hours before it
+ * make no claim about hooked removals and are not unknown spans.
+ */
+destructionCountedFrom: number | null,
+/**
+ * Months the game keeps a Combat Log entry (the content's define), which
+ * bounds the history a branch's first read can hold.
+ */
+retainedMonths: number | null, warnings: Array<string>, };
 export type MilitaryAirParams = { branchId: string, family: MilitaryAirFamily, regions: Array<number>, causes: Array<number>,
 /**
  * A range starts at native application time; publication still gates visibility.
@@ -3250,6 +3516,12 @@ available: boolean, firstHour: number, lastHour: number, firstRead: number | nul
  * Native read order; the log kit orders by event hour and numeric row index.
  */
 rows: Array<ShipsSunkRow>, warnings: Array<string>, };
+export type ShipsSunkWindowReply = { window: number, indices: Array<number>, reply: ShipsSunkReply, };
+export type ShipsSunkManifestReply = { windows: Array<HourSpan>,
+/**
+ * One first occurrence per class supplies choices without reading log pages.
+ */
+classes: ShipsSunkReply, contentWarnings: Array<string>, };
 export type ShipsSunkBattleTitlesParams = { branchId: string,
 /**
  * Numeric indices of the immutable ShipsSunk reply, only the drawn rows.

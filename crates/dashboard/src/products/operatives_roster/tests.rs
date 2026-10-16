@@ -5,7 +5,7 @@ use replay::{
     rows::TableRows,
 };
 
-fn base() -> i32 {
+pub(super) fn base() -> i32 {
     let replay::cadence::Cadence::Daily(slot) =
         replay::cadence::cadence(TableId::OperativeMemberships)
     else {
@@ -14,7 +14,7 @@ fn base() -> i32 {
     24_000 + i32::try_from(slot).unwrap()
 }
 
-fn row(id: u64) -> OperativeMembershipRow {
+pub(super) fn row(id: u64) -> OperativeMembershipRow {
     OperativeMembershipRow {
         id,
         roster_country: 17,
@@ -28,7 +28,7 @@ fn row(id: u64) -> OperativeMembershipRow {
     }
 }
 
-fn frame(hour: i32, read: bool, rows: Vec<OperativeMembershipRow>) -> DecodedFrame {
+pub(super) fn frame(hour: i32, read: bool, rows: Vec<OperativeMembershipRow>) -> DecodedFrame {
     let mut frame = source(1, base() + hour, Some(1));
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
         CountryRow {
@@ -1141,7 +1141,11 @@ fn operatives_roster_five_thousand_countries_have_sparse_complete_histories_and_
 }
 
 #[test]
-fn operatives_roster_multi_year_content_artwork_is_interned_and_equal_daily_reads_merge() {
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn operatives_roster_cross_block_content_artwork_is_interned_and_equal_daily_reads_merge() {
     engine::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay::rows::{
@@ -1244,7 +1248,8 @@ fn operatives_roster_multi_year_content_artwork_is_interned_and_equal_daily_read
             token: 18,
             literal: b"synthetic_operation".to_vec(),
         }]));
-    let days = 3 * 365;
+    // Cross the next encoded keyframe/block while retaining daily held reads.
+    let days = i32::try_from(replay::KEYFRAME_INTERVAL / 24 + 1).unwrap();
     // Stream the frames to the real encoder, retaining shared table storage.
     let frames = (0..days * 24)
         .map(|hour| {
@@ -1284,7 +1289,7 @@ fn operatives_roster_multi_year_content_artwork_is_interned_and_equal_daily_read
     assert!(reply.artwork.len() <= 2);
     assert!(reply.reasons.len() < 4);
     let bytes =
-        json_len(&reply, REPLY_BUDGET).expect("multi-year reply below complete-response budget");
+        json_len(&reply, REPLY_BUDGET).expect("cross-block reply below complete-response budget");
     assert!(bytes < 1 << 20, "compressed reply has {bytes} bytes");
 }
 

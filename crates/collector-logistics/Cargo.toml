@@ -1,0 +1,21 @@
+[package]
+name = "collector-logistics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+engine.workspace = true
+serde = { workspace = true, features = ["derive"] }
+collector-primitives.workspace = true
+collector-status.workspace = true
+collector-hooks.workspace = true
+collector-timing.workspace = true
+
+[dev-dependencies]
+collector-test-support.workspace = true

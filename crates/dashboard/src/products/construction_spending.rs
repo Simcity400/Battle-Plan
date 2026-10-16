@@ -10,19 +10,21 @@
 
 pub use super::construction_log::SpendingGap;
 use super::{
-    CountryParams, LoadContext, Product,
+    CountryParams, Product,
     construction_log::{
         self, BuildingInfo, COST_SCALE, ConstructionProject, ProjectKind, ProjectRun, ScannedLog,
         StateName,
     },
 };
-use crate::Source;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io,
-    sync::atomic::AtomicBool,
-};
+use std::collections::{BTreeMap, BTreeSet};
+
+#[cfg(test)]
+use super::LoadContext;
+#[cfg(test)]
+use crate::Source;
+#[cfg(test)]
+use std::{io, sync::atomic::AtomicBool};
 use ts_rs::TS;
 
 pub struct ConstructionSpending;
@@ -92,7 +94,7 @@ pub struct SpendingLeaf {
     pub projects: Vec<LeafProject>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ConstructionSpendingReply {
     pub branch_id: String,
@@ -186,7 +188,12 @@ fn kind_spans(
 /// shows as repair work (damaged and repaired between two reads): from the read
 /// before the one the log dates the repair to (`reads`, the queue's successful
 /// reads), up to that read, unless an interval already covers it.
-fn dated_repairs(project: &ConstructionProject, reads: &[i32], spans: &mut Vec<LeafProject>) {
+fn dated_repairs(
+    project: &ConstructionProject,
+    reads: &[i32],
+    predecessors: &BTreeMap<i32, i32>,
+    spans: &mut Vec<LeafProject>,
+) {
     let mut dated: Vec<i32> = project
         .built
         .iter()
@@ -196,8 +203,9 @@ fn dated_repairs(project: &ConstructionProject, reads: &[i32], spans: &mut Vec<L
     dated.sort_unstable();
     dated.dedup();
     for known_at in dated {
-        let from = reads[..reads.partition_point(|&read| read < known_at)]
-            .last()
+        let from = predecessors
+            .get(&known_at)
+            .or_else(|| reads[..reads.partition_point(|&read| read < known_at)].last())
             .map_or(project.first_read, |&read| read.max(project.first_read));
         let covered = spans.iter().any(|span| {
             span.first_read <= from && span.until.is_none_or(|until| until >= known_at)
@@ -219,16 +227,35 @@ fn dated_repairs(project: &ConstructionProject, reads: &[i32], spans: &mut Vec<L
 /// Group the two factory channels, retaining exact signed differences and every
 /// deleted line's last publication. Missing observations resolve when the same
 /// line's later cumulative read establishes its total again.
+#[cfg(test)]
 pub(crate) fn leaves(log: &ScannedLog, tag: &str) -> (Vec<SpendingLeaf>, u32) {
-    let mut grouped: BTreeMap<LeafKey, LeafParts> = BTreeMap::new();
-    let mut before = 0;
-    for (project, output) in log
-        .projects
-        .iter()
-        .zip(&log.outputs)
-        .filter(|(project, _)| project.tag == tag)
-    {
-        before += u32::from(
+    all_leaves(log).remove(tag).unwrap_or_default()
+}
+
+#[cfg(test)]
+pub(crate) fn all_leaves(log: &ScannedLog) -> BTreeMap<String, (Vec<SpendingLeaf>, u32)> {
+    all_leaves_for(
+        log,
+        log.projects
+            .iter()
+            .zip(log.outputs.iter().map(Vec::as_slice)),
+    )
+}
+
+pub(crate) fn all_leaves_for<'a>(
+    log: &ScannedLog,
+    projects: impl IntoIterator<
+        Item = (
+            &'a ConstructionProject,
+            &'a [construction_log::ConstructionOutputRead],
+        ),
+    >,
+) -> BTreeMap<String, (Vec<SpendingLeaf>, u32)> {
+    let mut countries: BTreeMap<String, BTreeMap<LeafKey, LeafParts>> = BTreeMap::new();
+    let mut before: BTreeMap<String, u32> = BTreeMap::new();
+    for (project, output) in projects {
+        let grouped = countries.entry(project.tag.clone()).or_default();
+        *before.entry(project.tag.clone()).or_default() += u32::from(
             output
                 .first()
                 .is_some_and(|read| read.since_hour.is_some() && !read.observed_since_creation),
@@ -237,7 +264,7 @@ pub(crate) fn leaves(log: &ScannedLog, tag: &str) -> (Vec<SpendingLeaf>, u32) {
         for repair in [false, true] {
             let mut projects = kind_spans(project, repair, log.last_hour);
             if repair && !railway {
-                dated_repairs(project, &log.reads, &mut projects);
+                dated_repairs(project, &log.reads, &log.repair_predecessors, &mut projects);
             }
             let mut spent = Vec::new();
             let mut unknown: Vec<SpendingUnknown> = Vec::new();
@@ -326,48 +353,62 @@ pub(crate) fn leaves(log: &ScannedLog, tag: &str) -> (Vec<SpendingLeaf>, u32) {
             leaf.2.extend(projects);
         }
     }
-    let leaves = grouped
+    countries
         .into_iter()
-        .map(
-            |(
-                (repair, railway, building, state, to_state),
-                (mut spent, mut unknown, mut projects),
-            )| {
-                spent.sort_unstable();
-                let mut steps: Vec<SpentStep> = Vec::new();
-                let mut total = 0_i128;
-                for (hour, amount) in spent {
-                    total += amount;
-                    match steps.last_mut() {
-                        Some(step) if step.known_at == hour => step.total_raw = total.to_string(),
-                        _ => steps.push(SpentStep {
-                            known_at: hour,
-                            total_raw: total.to_string(),
-                        }),
-                    }
-                }
-                unknown.sort_by(|a, b| (a.known_at, &a.project).cmp(&(b.known_at, &b.project)));
-                projects.sort_by(|a, b| {
-                    (a.first_read, a.until, &a.project).cmp(&(b.first_read, b.until, &b.project))
-                });
-                SpendingLeaf {
-                    repair,
-                    kind: if railway {
-                        ProjectKind::Railway
-                    } else {
-                        ProjectKind::Building
+        .map(|(tag, grouped)| {
+            let leaves = grouped
+                .into_iter()
+                .map(
+                    |(
+                        (repair, railway, building, state, to_state),
+                        (mut spent, mut unknown, mut projects),
+                    )| {
+                        spent.sort_unstable();
+                        let mut steps: Vec<SpentStep> = Vec::new();
+                        let mut total = 0_i128;
+                        for (hour, amount) in spent {
+                            total += amount;
+                            match steps.last_mut() {
+                                Some(step) if step.known_at == hour => {
+                                    step.total_raw = total.to_string()
+                                }
+                                _ => steps.push(SpentStep {
+                                    known_at: hour,
+                                    total_raw: total.to_string(),
+                                }),
+                            }
+                        }
+                        unknown.sort_by(|a, b| {
+                            (a.known_at, &a.project).cmp(&(b.known_at, &b.project))
+                        });
+                        projects.sort_by(|a, b| {
+                            (a.first_read, a.until, &a.project).cmp(&(
+                                b.first_read,
+                                b.until,
+                                &b.project,
+                            ))
+                        });
+                        SpendingLeaf {
+                            repair,
+                            kind: if railway {
+                                ProjectKind::Railway
+                            } else {
+                                ProjectKind::Building
+                            },
+                            building,
+                            state,
+                            to_state,
+                            spent: steps,
+                            unknown,
+                            projects,
+                        }
                     },
-                    building,
-                    state,
-                    to_state,
-                    spent: steps,
-                    unknown,
-                    projects,
-                }
-            },
-        )
-        .collect();
-    (leaves, before)
+                )
+                .collect();
+            let count = before.get(&tag).copied().unwrap_or(0);
+            (tag, (leaves, count))
+        })
+        .collect()
 }
 
 impl Product for ConstructionSpending {
@@ -390,6 +431,7 @@ impl Product for ConstructionSpending {
         params.validate()
     }
 
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -402,7 +444,8 @@ impl Product for ConstructionSpending {
 }
 
 impl ConstructionSpending {
-    fn from_scanned(
+    #[cfg(test)]
+    pub(crate) fn from_scanned(
         source: &Source,
         params: &CountryParams,
         context: &LoadContext,
@@ -421,6 +464,24 @@ impl ConstructionSpending {
         )?;
         construction_log::scan_warnings(log, &mut warnings);
         let (leaves, before_first_read) = leaves(log, &params.tag);
+        Ok(Self::reply_from_parts(
+            params,
+            log,
+            &names,
+            leaves,
+            before_first_read,
+            warnings,
+        ))
+    }
+
+    pub(crate) fn reply_from_parts(
+        params: &CountryParams,
+        log: &ScannedLog,
+        names: &construction_log::ContentNames,
+        leaves: Vec<SpendingLeaf>,
+        before_first_read: u32,
+        mut warnings: Vec<String>,
+    ) -> ConstructionSpendingReply {
         if leaves.is_empty() && !(log.reads.is_empty() && log.railway_reads.is_empty()) {
             warnings.push(format!(
                 "{}: no recorded construction in this branch",
@@ -432,15 +493,15 @@ impl ConstructionSpending {
             .flat_map(|leaf| [leaf.state, leaf.to_state])
             .flatten()
             .collect();
-        Ok(ConstructionSpendingReply {
+        ConstructionSpendingReply {
             branch_id: params.branch_id.clone(),
             tag: params.tag.clone(),
             cost_scale: COST_SCALE,
             reads: log.reads.clone(),
             railway_reads: log.railway_reads.clone(),
             states: names.states(&states),
-            types: names.types,
-            repair_icon: names.repair_icon,
+            types: names.types.clone(),
+            repair_icon: names.repair_icon.clone(),
             leaves,
             before_first_read,
             unattributed: log
@@ -454,7 +515,7 @@ impl ConstructionSpending {
                 })
                 .collect(),
             warnings,
-        })
+        }
     }
 }
 

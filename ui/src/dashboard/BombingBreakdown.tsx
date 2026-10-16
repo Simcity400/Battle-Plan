@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../components/WidgetState';
 import { useContextMenu } from '../components/ContextMenu';
@@ -10,6 +10,7 @@ import type { WidgetRuntime } from './definitions';
 import type { BoundTrack } from './model';
 import type { OptionValue } from './options';
 import { useProduct } from './products';
+import { useParityRows } from './parityRows';
 import { jumpItem } from '../charts/jump';
 import { usePlaybackSpeed } from './playback';
 import { runAt } from '../charts/series';
@@ -61,12 +62,19 @@ export default function BombingBreakdown({ data, runtime, track, tag, identity, 
         counted: [JSON.stringify([leaf.buildingToken ?? leaf.buildingId, leaf.state])], note: contentTitleHint(leaf.buildingToken) };
     });
   }, [data, row, dealt, from, hour, end, states.data, states.error]);
+  const root = useRef<HTMLDivElement>(null);
+  useParityRows(root, () => ({ kind: 'chart', label: 'Bombing damage parts', complete: !!row,
+    total: items.length, tag: row?.tag ?? tag, identity: row?.identity ?? identity, from, hour, dealt,
+    rows: items.map(item => ({ path: item.path.map(part => part.id), exact: item.exact?.toString(),
+      unknown: item.unknownValue, finalUnknown: item.finalUnknown })),
+    totalRaw: row ? (dealt ? row.dealt : row.taken).toString() : null,
+  }));
   if (!row) return <>{header}<WidgetState kind="unavailable" message="Bombing damage or this country was not recorded at this moment." /></>;
   const complete = ledgerComplete(data.observed, from, hour, data.incomplete);
   const exact = dealt ? row.dealt : row.taken;
   const finalRow = ledgerCountryAt(index, tag, from, end, identity);
   const final = finalRow ? dealt ? finalRow.dealt : finalRow.taken : null;
-  return <div className="military-air-ledger" onContextMenu={event => { event.preventDefault(); menu.open(event.clientX, event.clientY, [jumpItem(runtime, track.id, hour)]); }}
+  return <div ref={root} className="military-air-ledger" onContextMenu={event => { event.preventDefault(); menu.open(event.clientX, event.clientY, [jumpItem(runtime, track.id, hour)]); }}
     onKeyDown={event => { if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) { event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); menu.open(box.left, box.bottom, [jumpItem(runtime, track.id, hour)]); } }}>
     {header}
     <Sunburst label="Bombing damage breakdown" items={items} root={{ id: 'all', label: dealt ? 'Damage inflicted' : 'Damage suffered' }}

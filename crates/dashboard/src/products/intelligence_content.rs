@@ -13,7 +13,7 @@ use std::{
 
 pub struct IntelligenceContent {
     pub catalogue: Arc<Catalogue>,
-    pub definitions: installed_content::intelligence::Intelligence,
+    pub definitions: Arc<installed_content::intelligence::Intelligence>,
     pub upgrades: installed_content::intelligence::AgencyUpgrades,
     upgrade_content_error: Option<String>,
     pub warnings: Vec<String>,
@@ -97,8 +97,9 @@ enum ContentScope {
 
 #[derive(Default)]
 struct Cached {
-    agency: Option<Arc<IntelligenceContent>>,
-    operations: Option<Arc<IntelligenceContent>>,
+    catalogue: Option<Arc<Catalogue>>,
+    agency: Arc<catalogue::CachedResult<IntelligenceContent>>,
+    operations: Arc<catalogue::CachedResult<IntelligenceContent>>,
 }
 
 fn prepared_content(
@@ -109,21 +110,38 @@ fn prepared_content(
     let catalogue = catalogue::catalogue(source, options)?;
     let state = source.state::<Cached>();
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-    let cached = match scope {
-        ContentScope::Agency => &mut state.agency,
-        ContentScope::Operations => &mut state.operations,
-    };
-    if let Some(cached) = cached.as_ref()
-        && Arc::ptr_eq(&cached.catalogue, &catalogue)
+    if !state
+        .catalogue
+        .as_ref()
+        .is_some_and(|cached| Arc::ptr_eq(cached, &catalogue))
     {
-        return Ok(Arc::clone(cached));
+        *state = Cached {
+            catalogue: Some(Arc::clone(&catalogue)),
+            ..Default::default()
+        };
     }
-    let loaded = Arc::new(match scope {
-        ContentScope::Agency => IntelligenceContent::load_acquired_agency(catalogue),
-        ContentScope::Operations => IntelligenceContent::load(catalogue)?,
+    let cached = Arc::clone(match scope {
+        ContentScope::Agency => &state.agency,
+        ContentScope::Operations => &state.operations,
     });
-    *cached = Some(Arc::clone(&loaded));
-    Ok(loaded)
+    drop(state);
+    cached.get_or_init(|| match scope {
+        ContentScope::Agency => Ok(IntelligenceContent::load_acquired_agency(catalogue)),
+        ContentScope::Operations => IntelligenceContent::load(catalogue),
+    })
+}
+
+/// Roster assignments and operation pages use the same database and its refusal.
+pub(super) fn operations(
+    layers: &installed_content::ResolvedLayers,
+) -> io::Result<Arc<installed_content::intelligence::Intelligence>> {
+    layers
+        .derived::<catalogue::CachedResult<installed_content::intelligence::Intelligence>>()
+        .get_or_init(|| {
+            #[cfg(test)]
+            super::intelligence_prepared::work(|work| work.content_loads += 1);
+            installed_content::intelligence::read(layers)
+        })
 }
 
 impl IntelligenceContent {
@@ -181,7 +199,7 @@ impl IntelligenceContent {
     }
 
     pub(crate) fn load(catalogue: Arc<Catalogue>) -> io::Result<Self> {
-        let definitions = installed_content::intelligence::read(&catalogue.content.layers)?;
+        let definitions = operations(&catalogue.content.layers)?;
         let mut content = Self::load_agency(catalogue);
         content
             .warnings
@@ -238,7 +256,7 @@ impl IntelligenceContent {
         warnings.extend(catalogue.warnings.iter().cloned());
         Self {
             catalogue,
-            definitions: installed_content::intelligence::Intelligence::default(),
+            definitions: Arc::default(),
             upgrades: installed_content::intelligence::AgencyUpgrades::default(),
             upgrade_content_error: None,
             warnings,

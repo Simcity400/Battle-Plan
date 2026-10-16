@@ -9,7 +9,7 @@ use replay::{
     frame::{DecodedFrame, FrameDecoder, ViewIdentity},
     rows::{TableId, tables},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -538,7 +538,7 @@ pub(crate) const FOCUS_COMPLETION_TABLES: &[TableId] = &[
     TableId::CompletedFocuses,
 ];
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct FocusCompletion {
     pub tag: String,
     pub token: String,
@@ -548,23 +548,26 @@ pub(crate) struct FocusCompletion {
 /// One latest ordered completion list per recorded identity; no historical full
 /// lists, progress, active focus or UI segments are retained. Completed entries
 /// append only ordinal/token, so emitted hours are observation bounds.
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub(crate) struct FocusCompletionProjection {
+    #[serde(with = "crate::prepared_production::map_pairs")]
     previous: BTreeMap<(u32, u32), FocusOrder>,
+    #[serde(skip)]
     views: Option<[ViewIdentity; 4]>,
     /// The last read's country keys, and the refusals a read of the same tables repeats.
+    #[serde(skip)]
     last_read: Option<(CountryKeys, BTreeMap<&'static str, usize>)>,
     /// The last frame's hour, so a break in the recording is noticed.
     last_hour: Option<i32>,
     #[cfg(test)]
     changed_frames: usize,
     pub observed: bool,
-    pub unavailable: BTreeMap<&'static str, usize>,
+    pub unavailable: BTreeMap<String, usize>,
 }
 
 impl FocusCompletionProjection {
     fn refuse(&mut self, reason: &'static str, count: usize) {
-        *self.unavailable.entry(reason).or_default() += count;
+        *self.unavailable.entry(reason.to_owned()).or_default() += count;
         if let Some((_, repeated)) = &mut self.last_read {
             *repeated.entry(reason).or_default() += count;
         }
@@ -582,7 +585,7 @@ impl FocusCompletionProjection {
             if !self.previous.is_empty() {
                 *self
                     .unavailable
-                    .entry("Focus completion observation: completions inside a break in the recording are not dated")
+                    .entry("Focus completion observation: completions inside a break in the recording are not dated".to_owned())
                     .or_default() += 1;
             }
             self.previous.clear();
@@ -613,7 +616,7 @@ impl FocusCompletionProjection {
             {
                 *country_view = view.identity();
                 for (reason, count) in repeated {
-                    *self.unavailable.entry(*reason).or_default() += count;
+                    *self.unavailable.entry((*reason).to_owned()).or_default() += count;
                 }
                 return Vec::new();
             }
@@ -755,8 +758,7 @@ impl FocusCompletionProjection {
                     *self
                         .unavailable
                         .entry(
-                            "Focus completion observation: reset or reordered completion list has no event dates",
-                        )
+                            "Focus completion observation: reset or reordered completion list has no event dates".to_owned())
                         .or_default() += 1;
                 }
             }
@@ -768,7 +770,7 @@ impl FocusCompletionProjection {
 
 /// Whether a country's completed focuses are whole and in order. Any number is
 /// valid: a modded tree may complete more focuses than any base game tree has.
-fn valid_order<'a>(
+pub(crate) fn valid_order<'a>(
     rows: impl ExactSizeIterator<Item = &'a replay::rows::CompletedFocusRow>,
     count: i32,
 ) -> bool {
@@ -780,7 +782,7 @@ fn valid_order<'a>(
 }
 
 /// Borrow one raw owner's range from a complete, key-validated decoded table.
-fn completed_for_owner(
+pub(crate) fn completed_for_owner(
     rows: &[replay::rows::CompletedFocusRow],
     owner: u32,
 ) -> &[replay::rows::CompletedFocusRow] {

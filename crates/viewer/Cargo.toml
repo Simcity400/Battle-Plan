@@ -7,17 +7,26 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[features]
+# Tests that take more than about two seconds; see AGENTS.md.
+slow-tests = ["viewer-foundation/slow-tests", "viewer-combat/slow-tests", "viewer-raids/slow-tests", "viewer-counters/slow-tests"]
+
 [dependencies]
+viewer-counter-products = { path = "../viewer-counter-products" }
+viewer-world = { path = "../viewer-world" }
+viewer-counters = { path = "../viewer-counters" }
+viewer-raids = { path = "../viewer-raids" }
+viewer-combat = { path = "../viewer-combat" }
+viewer-foundation = { path = "../viewer-foundation" }
 replay.workspace = true
+store = { path = "../store" }
 engine.workspace = true
 installed-content.workspace = true
-installed-content-save.workspace = true
 shader-pipeline = { path = "../shader-pipeline" }
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts"] }
 bytemuck = { workspace = true, features = ["derive"] }
 pollster.workspace = true
 png.workspace = true
-rfd.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
@@ -27,5 +36,13 @@ raw-window-handle = "0.6"
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
+viewer-counter-products = { path = "../viewer-counter-products", features = ["test-support"] }
+viewer-world = { path = "../viewer-world", features = ["test-support"] }
+viewer-counters = { path = "../viewer-counters", features = ["test-support"] }
+viewer-raids = { path = "../viewer-raids", features = ["test-support"] }
+viewer-combat = { path = "../viewer-combat", features = ["test-support"] }
+viewer-foundation = { path = "../viewer-foundation", features = ["test-support"] }
+uuid = { workspace = true, features = ["v4"] }
+zstd = "0.13"
 # Hand-built movement maps for the unit tests.
 installed-content = { workspace = true, features = ["test-support"] }

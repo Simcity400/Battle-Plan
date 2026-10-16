@@ -1,5 +1,5 @@
 //! A map view's raid offers, cycled off the frame path as the game's player
-//! cache cycles them ([`crate::map::raids::cycle`]).
+//! cache cycles them ([`viewer_raids::map::raids::cycle`]).
 //!
 //! The window hands the lane the frame of every hour the builders deliver
 //! and tells it, every frame, which hour it shows and whether it plays. The
@@ -26,16 +26,15 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, Condvar, Mutex, MutexGuard},
 };
+use viewer_foundation::parallel::Workers;
 
 use replay::{BranchId, Hour, frame::DecodedFrame};
 
-use crate::{
-    document::Content,
-    map::{
-        perspective,
-        raids::{HourLayer, IconCache, RaidIcons, cycle::Cycle, paths::HourPaths, script::World},
-    },
-    playback::Current,
+use {
+    crate::document::Content, crate::playback::Current, dashboard::triggers::World,
+    viewer_foundation::map::perspective, viewer_raids::map::raids::HourLayer,
+    viewer_raids::map::raids::IconCache, viewer_raids::map::raids::RaidIcons,
+    viewer_raids::map::raids::cycle::Cycle, viewer_raids::map::raids::paths::HourPaths,
 };
 
 /// What the window shows and what the lane has built for it.
@@ -57,7 +56,7 @@ struct State {
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
     /// The threads a batch may use besides the lane's
     /// ([`crate::parallel::Workers`]): the hour builders'.
-    workers: crate::parallel::Workers,
+    workers: Workers,
     stop: bool,
 }
 
@@ -408,7 +407,7 @@ impl RaidLane {
     }
 
     /// Lends the lane's batches the hour builders' threads.
-    pub(crate) fn use_workers(&self, workers: crate::parallel::Workers) {
+    pub(crate) fn use_workers(&self, workers: Workers) {
         lock(&self.shared).workers = workers;
     }
 
@@ -475,7 +474,7 @@ fn serve(shared: &Shared) {
             Ok(cycle) => settle(&mut chain, &lock(shared), &stamp, hour, cycle),
             Err(_) => {
                 let failed = RaidIcons {
-                    report: crate::map::raids::RaidReport {
+                    report: viewer_raids::map::raids::RaidReport {
                         worker_failed: true,
                         ..Default::default()
                     },
@@ -562,7 +561,7 @@ fn build(shared: &Shared, job: Job, icons: &mut IconCache) -> Cycle {
         }
     };
     let assets = &content.icons.raids;
-    let world = match World::new(&frame, assets.facts()) {
+    let world = match World::new(&frame, assets.trigger_content.facts()) {
         Ok(world) => world,
         Err(reason) => {
             publish(hour, RaidIcons::unavailable(&frame, ours, reason));

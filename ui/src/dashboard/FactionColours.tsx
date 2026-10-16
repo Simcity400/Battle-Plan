@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { loadProduct } from './products';
+import { loadCountryGroups } from './products';
+import { useContentRevision } from './contentRevision';
 import { FactRequests, HourStore, nameKey, readFacts } from './countryFacts';
 import { factionFounders, founderReads, leaderColours } from './factionLeaders';
 import { STYLES } from './useCountriesAt';
 import type { Rgb } from '../shell/appearance/color';
-import { validateCountryGroupReply } from './groupsReply';
 import { Icon } from '../components/Icons';
 import { factionColours } from '../charts/factionColours';
 import { readTokens, subscribeTokens } from '../charts/tokens';
@@ -12,7 +12,7 @@ import type { DashboardClient, DashboardSource } from './client';
 import { chosenColour, factionIdentity, saveCampaignSettings, setFactionColour, setFactionStyle, useCampaignSettings } from './campaignSettings';
 import type { ColourScope } from './campaignSettings';
 import { Segmented } from '../components/Segmented';
-import type { CountryGroupReply, CountryStyle, FactionGroup } from '../generated/dashboard';
+import type { CountryStyle, FactionGroup } from '../generated/dashboard';
 import { MAX_FACTIONS } from './campaignSettings';
 import { factionNameAt, latestFactionSummaries } from './factionNames';
 import './factionColours.css';
@@ -33,14 +33,14 @@ interface CampaignFactions {
  * the recording's warnings about group history it could not read. A leader colour
  * that cannot be read leaves that faction on the palette, with a warning. */
 function useCampaignFactions(client: DashboardClient, source: DashboardSource | undefined): CampaignFactions {
-  const key = source ? `${source.id}:${source.revision}` : '';
+  const content = useContentRevision(client);
+  const key = source ? `${source.id}:${source.revision}:${content}` : '';
   const [state, setState] = useState<CampaignFactions>({ key: '', warnings: [] });
   useEffect(() => {
     if (!source) return;
     const controller = new AbortController();
     const ids = { sourceId: source.id, revision: source.revision };
-    Promise.all(source.metadata.branches.map(branch => loadProduct<CountryGroupReply>(client,
-      { ...ids, product: 'country-groups', params: { branchId: branch.id } }, controller.signal, validateCountryGroupReply)))
+    Promise.all(source.metadata.branches.map(branch => loadCountryGroups(client, source, branch.id, controller.signal)))
       .then(async replies => {
         if (controller.signal.aborted) return;
         const factions = latestFactionSummaries(replies);

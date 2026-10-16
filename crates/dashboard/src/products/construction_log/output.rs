@@ -22,7 +22,7 @@ pub enum SpendingGap {
     OwnerUnknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConstructionOutputRead {
     pub known_at: i32,
     pub since_hour: Option<i32>,
@@ -35,7 +35,7 @@ pub struct ConstructionOutputRead {
     pub repair_ticks: i32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct OutputUnknown {
     pub known_at: i32,
     pub reason: SpendingGap,
@@ -43,9 +43,9 @@ pub(crate) struct OutputUnknown {
     pub until: Option<i32>,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub(super) struct OutputScan {
-    projects: BTreeMap<u64, usize>,
+    projects: BTreeMap<u64, Option<usize>>,
     active: BTreeSet<u64>,
     indexed: usize,
     previous: BTreeMap<u64, i32>,
@@ -56,6 +56,20 @@ pub(super) struct OutputScan {
 }
 
 impl OutputScan {
+    pub(super) fn indexed(&self) -> usize {
+        self.indexed
+    }
+    pub(super) fn retained(&self) -> impl Iterator<Item = usize> + '_ {
+        self.active.iter().filter_map(|id| self.projects[id])
+    }
+
+    pub(super) fn compact(&mut self, kept: &BTreeMap<usize, usize>) {
+        for index in self.projects.values_mut() {
+            *index = index.and_then(|index| kept.get(&index).copied());
+        }
+        self.indexed = kept.len();
+    }
+
     pub(super) fn gap(&mut self, log: &mut ScannedLog, hour: i32) {
         // A line's final publication can have been wholly inside the lost frames.
         log.output_unknown.push(OutputUnknown {
@@ -69,7 +83,7 @@ impl OutputScan {
     pub(super) fn observe(&mut self, log: &mut ScannedLog, frame: &DecodedFrame) {
         for (index, project) in log.projects.iter().enumerate().skip(self.indexed) {
             let id = project.id.parse().expect("native construction handle");
-            self.projects.insert(id, index);
+            self.projects.insert(id, Some(index));
             self.active.insert(id);
         }
         self.indexed = log.projects.len();
@@ -104,7 +118,7 @@ impl OutputScan {
             .map(|row| (row.line, row))
             .collect();
         for &id in &self.active {
-            let index = self.projects[&id];
+            let index = self.projects[&id].expect("active construction output project");
             let project = &mut log.projects[index];
             let row = present.get(&id).copied();
             if row.is_some_and(|row| {
@@ -126,6 +140,9 @@ impl OutputScan {
             };
             if project.end.is_some() {
                 apply_ending(project, row, frame.hour, self.restarted.contains(&id));
+            }
+            if let Some(reason) = reason {
+                log.output_reasons.insert((reason, project.id.clone()));
             }
             let repair_ticks = row.map_or(0, |row| row.repair_ticks);
             if repair_ticks > 0 && project.first_repair_tick.is_none() {
@@ -320,6 +337,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: runs in the full suite (--features slow-tests)"
+    )]
     fn native_outcomes_decide_ending_independently_of_focus_rises_and_output_exactness() {
         for (railway, linked, completion, since, expected) in [
             (

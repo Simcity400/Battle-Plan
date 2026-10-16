@@ -34,14 +34,16 @@ import { contentSet, resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { readAt } from '../../dashboard/reads';
 import { mix, toHex } from '../../shell/appearance/color';
-import { buildDiagram, campaignScale, coverageNote, sideRanks, decodeTrade, exactSums, formatDays, knownHours, emptyMessage, knownSpanAt, unrecordedMessage, measureAmount, measureNote, OTHER, resourceColours, selectionMessage, identityCountryAt,
+import { mergePreparedTrade, buildDiagram, campaignScale, coverageNote, sideRanks, decodeTrade, exactSums, formatDays, knownHours, emptyMessage, knownSpanAt, unrecordedMessage, measureAmount, measureNote, OTHER, resourceColours, selectionMessage, identityCountryAt,
   resourceName, selectFlows, validateTradeFlowsReply } from './tradeData';
 import type { Flow, Measure, SideNode, SideLink } from './tradeData';
 import TradeDrill from './TradeDrillView';
 import TradeCountryView, { resourceLegendItems } from './TradeCountryView';
 import { countryTradeTags } from './tradeCountry';
+import { useParityRows } from '../../dashboard/parityRows';
 import { useProduct } from '../../dashboard/products';
-import type { TradeFlowsReply } from '../../generated/dashboard';
+import { NumericReply } from '../../dashboard/numericReply';
+import type { PreparedTradeReply } from './tradeData';
 import { contributionCountryTag, contributionExtent, contributionHour, linkSelection, nodeSelections, observedTradeSpans, openContributions, pinContributions, readSelection, selectedContributors, tradeContext } from './tradeDrill';
 import type { TradeSelection } from './tradeDrill';
 import { heldTradeColours, tradeColourPlan, tradeCountryColours, tradeFixedColourKey } from './tradeColours';
@@ -77,7 +79,8 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   // one slot kept for the rest summed.
   const [capacity, setCapacity] = useState<number | null>(null);
   const perSide = capacity == null ? asked : Math.max(1, Math.min(asked, capacity - 1));
-  const { track, all, resolved, groups, data, scope, error, retry } = useTradeFlows(widget, runtime, active);
+  const incoming = useTradeFlows(widget, runtime, active);
+  const { track, all, resolved, groups, data, scope, error, retry } = incoming;
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
@@ -85,6 +88,10 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const extent: [number, number] = savedExtent ?? (track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1]);
   const moment = Math.floor(playhead ?? extent[1]);
   const from = extent[0];
+  useParityRows(anchor, () => ({ kind: 'chart', label: 'Trade flow values', complete: incoming.parityComplete,
+    total: data?.flows.length ?? 0, rows: data ? [{ branchId: data.branchId, decimals: data.decimals, resources: data.resources, countries: data.countries,
+      countryIdentities: data.countryIdentities, reads: data.reads, known: data.known, partial: data.partial, flows: data.flows, warnings: data.warnings }] : [] }),
+    { prepare: incoming.parityPrepare, ready: () => incoming.parityComplete, error: () => error ?? null });
   const menu = useContextMenu('Trade actions');
 
   const trade = useMemo(() => data && decodeTrade(data), [data]);
@@ -97,8 +104,9 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   }, [trade, chosenKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const flows = useMemo(() => trade && scope ? selectFlows(trade, scope, resourceIds) : [], [trade, scope, resourceIds]);
   const diagram = useMemo(() => buildDiagram(flows, measure, from, moment, perSide), [flows, measure, from, moment, perSide]);
-  const scale = useMemo(() => options.scale === 'moment' || !data ? null : campaignScale(flows, measure, from, extent[1]),
-    [flows, measure, from, extent[1], options.scale, data]); // eslint-disable-line react-hooks/exhaustive-deps
+  const scale = useMemo(() => options.scale === 'moment' || !incoming.scaleData || !scope ? null
+    : campaignScale(selectFlows(decodeTrade(incoming.scaleData), scope, resourceIds), measure, from, extent[1]),
+  [incoming.scaleData, scope, resourceIds, measure, from, extent[1], options.scale]); // eslint-disable-line react-hooks/exhaustive-deps
   // Each country's fixed place for ribbons inside the other side's nodes.
   const ranks = useMemo(() => sideRanks(flows, extent[0], extent[1]), [flows, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -271,7 +279,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
       if (holder) items.unshift({ label: `Imports and exports of ${hit.node.label}`, icon: 'flows', run: () => openCountry(holder, drawn.hour) });
     }
     const link = hit?.kind === 'link' ? (hit.link as TradeLink).trade?.link : null;
-    if (link) {
+    if (link && !link.flows.some(flow => flow.prepared?.cumulativePending)) {
       const sums = exactSums(link.flows, extent[0], extent[1]);
       if (sums.first != null) items.push({ ...jumpItem(runtime, track.id, sums.first), hint: 'First recorded in the time shown' });
       if (sums.last != null && sums.last !== sums.first) items.push({ ...jumpItem(runtime, track.id, sums.last), hint: 'Last recorded in the time shown' });
@@ -287,6 +295,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const effectiveDrill = drill.breakdown ? drill : pinnedView
     ? { breakdown: 'contributions', follow: widget.time.mode === 'follow', hour: moment } : CLOSED;
   const drillAt = track ? contributionHour(effectiveDrill, track, runtime.clock.getHour()) : null;
+  useEffect(() => { incoming.onReachedHour?.(effectiveDrill.breakdown !== null ? drillAt : null); }, [drillAt, effectiveDrill.breakdown, incoming.onReachedHour]);
   const headerTag = pinnedView && widget.countries.kind === 'tags' && widget.countries.tags.length === 1
     ? contributionCountryTag(identities, widget.countries.tags[0], chosenSelection, drillAt) : null;
   const header = useCountryLabelsAt(runtime.client, track, countrySlot && headerTag && drillAt !== null ? [{ tag: headerTag, hour: drillAt }] : [], active);
@@ -311,12 +320,25 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   // when one of its tags was asked for; otherwise that country's own reply is read.
   const countryHolder = chosenSelection?.kind === 'country' ? chosenSelection.holder : null;
   const requested = all ? null : resolved ? [...resolved.tags] : [];
-  const countryTags = trade && countryHolder ? countryTradeTags(trade, requested, countryHolder) : null;
+  const countryTags = trade && countryHolder ? runtime.client.preparedQuery
+    ? [...new Set((trade.countryFacts.get(countryHolder) ?? []).map(fact => fact.tag))] : countryTradeTags(trade, requested, countryHolder) : null;
   const countryKey = countryTags ? JSON.stringify(countryTags) : null;
-  const countryReply = useProduct<TradeFlowsReply>(runtime.client, track && countryTags && effectiveDrill.breakdown != null ? tradeFlowsRequest(track, countryTags) : null,
-    active && effectiveDrill.breakdown != null, validateTradeFlowsReply);
-  const countryData = useMemo(() => !countryHolder ? null : countryKey ? countryReply.data ? decodeTrade(countryReply.data) : null : trade,
-    [countryHolder, countryKey, countryReply.data, trade]);
+  const countryPage = incoming.page ? { ...incoming.page, identities: undefined, membership: undefined, unobserved: [], between: false,
+    hours: [extent[1], ...(drillAt === null ? [] : [drillAt])] } : undefined;
+  const countryReply = useProduct<PreparedTradeReply>(runtime.client, track && countryTags && effectiveDrill.breakdown != null ? tradeFlowsRequest(track, countryTags, countryPage) : null,
+    active && effectiveDrill.breakdown != null, value => validateTradeFlowsReply(value) as PreparedTradeReply, track?.source);
+  const countryPoint = useProduct<PreparedTradeReply>(runtime.client, runtime.client.preparedQuery && track && countryTags && incoming.pointHour !== null && incoming.pointHour !== undefined
+    ? tradeFlowsRequest(track, countryTags, { ...countryPage, from: incoming.pointHour, to: incoming.pointHour, width: 1, hours: [incoming.pointHour] }) : null,
+    active && effectiveDrill.breakdown != null, value => validateTradeFlowsReply(value) as PreparedTradeReply, track?.source);
+  const countryRetained = useMemo(() => new NumericReply<PreparedTradeReply>(), [runtime.client]);
+  const countryNumbers = countryRetained.update(JSON.stringify([track?.source.id, track?.source.revision, countryHolder, from, extent[1], measure]), countryReply.data,
+    data => ({ ...data, resources: data.resources.map(resource => ({ ...resource, name: null, icon: null })), warnings: [] }));
+  const countryData = useMemo(() => {
+    const base = countryReply.data ?? countryNumbers;
+    return !countryHolder ? null : countryKey ? base ? decodeTrade(countryPoint.data ? mergePreparedTrade(base, countryPoint.data) : base) : null : trade;
+  }, [countryHolder, countryKey, countryReply.data, countryNumbers, countryPoint.data, trade]);
+  const countryPrepared = { ...incoming, hasExactHour: (hour: number) => !runtime.client.preparedQuery ||
+    ((countryData?.reply as PreparedTradeReply | undefined)?.exactHours ?? []).includes(Math.floor(hour)) };
   const countrySource = countryData ?? trade;
   const countryFact = countryHolder && drillAt != null && countrySource ? identityCountryAt(countrySource, countryHolder, drillAt) : null;
   const countryTitle = useCountryLabelsAt(runtime.client, track, countryFact ? [{ tag: countryFact.tag, hour: countryFact.hour }] : [], active);
@@ -344,7 +366,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
 
   const caption = measure === 'current' ? 'Per day'
     : `${measure === 'total' ? 'Delivered' : 'Average per trading day'} · ${dayLabel(from)} – ${dayLabel(moment)}`;
-  const main = <div className="trade-main">
+  const main = incoming.hasExactHour && !incoming.hasExactHour(moment) ? <WidgetState kind="loading" label="Loading trade amounts…" /> : <div className="trade-main">
     <p className="trade-caption">{caption}
       {coverage ? <span> · {coverage}</span> : null}</p>
     <Legend always label="Resources" items={resourceLegend} windowed={shownResources.length > tokens.categories.length} />
@@ -373,14 +395,14 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
         pinContributions(widget, track, chosenSelection, drillAt, effectiveDrill.follow, extent, countryFact?.tag ?? null)) : undefined} main={main}>
       {countryHolder ? countryReply.error && countryKey ? <WidgetState kind="error" detail={countryReply.error} onRetry={countryReply.retry} />
         : !countryData ? <WidgetState kind="loading" label="Loading this country's trade…" />
-        : <TradeCountryView holder={countryHolder} trade={countryData} resources={resourceIds} track={track} runtime={runtime} measure={measure} from={from}
+        : <TradeCountryView holder={countryHolder} trade={countryData} prepared={countryPrepared} resources={resourceIds} track={track} runtime={runtime} measure={measure} from={from}
           hour={drillAt} extent={extent} playhead={effectiveDrill.follow ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null}
           colours={resourceColour} tokens={tokens} active={active && effectiveDrill.breakdown != null}
           onPick={hour => dispatchDrill(drill.breakdown ? { type: 'pick', hour } : { type: 'open', breakdown: 'contributions', hour, playing: false, playhead: null })}
           onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
       : chosenSelection && <TradeDrill flows={contributors} trade={trade} track={track} runtime={runtime} measure={measure} from={from}
         hour={drillAt} extent={extent} playhead={effectiveDrill.follow ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null}
-        known={known} colours={resourceColour} tokens={tokens} identityNote={scope?.kind === 'countries' ? scope.identityNote : undefined} active={active && effectiveDrill.breakdown != null}
+        prepared={incoming} known={known} colours={resourceColour} tokens={tokens} identityNote={scope?.kind === 'countries' ? scope.identityNote : undefined} active={active && effectiveDrill.breakdown != null}
         onPick={hour => dispatchDrill(drill.breakdown ? { type: 'pick', hour } : { type: 'open', breakdown: 'contributions', hour, playing: false, playhead: null })}
         onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />}
     </DrillHost>

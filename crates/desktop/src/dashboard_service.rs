@@ -1,6 +1,5 @@
-//! Async proxy for native data requests. No replay bytes or decoder live here.
-//! Replies are reassembled from bounded fragments and handed to the frontend
-//! as raw JSON bytes; the host never parses them.
+//! Host-direct dashboard queries through the shared data library.
+//! The native viewer owns map rendering; dashboard reads do not start it.
 
 use dashboard::{
     protocol::replay_revision,
@@ -8,7 +7,7 @@ use dashboard::{
 };
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 use tauri::{AppHandle, Manager, State, WebviewWindow, ipc::Response};
 use tokio::sync::oneshot;
@@ -79,29 +78,73 @@ impl Requests {
 #[derive(Default)]
 pub struct DashboardService {
     requests: Mutex<Requests>,
+    runtime: Mutex<Option<Arc<dashboard::Service>>>,
+    configured: Mutex<Option<(std::path::PathBuf, std::path::PathBuf, bool)>>,
 }
 
 impl DashboardService {
     fn submit(
         &self,
         window: &WebviewWindow,
-        host: &NativeHost,
         id: &str,
         command: DataCommand,
     ) -> Result<oneshot::Receiver<Result<String, String>>, String> {
-        host.ensure_started(window)?;
-        // Admission and native enqueue are atomic with cancellation. The native
-        // receiver releases its own lock before calling receive_data below.
+        let runtime = self.runtime(window.app_handle())?;
         let mut requests = self.requests.lock().map_err(|error| error.to_string())?;
         let receive = requests.begin(id)?;
-        if let Err(error) = host.enqueue_data(command) {
-            requests.pending.remove(id);
-            return Err(error);
-        }
+        runtime.dispatch(command);
         Ok(receive)
     }
 
-    fn cancel(&self, host: &NativeHost, id: String) -> Result<(), String> {
+    pub(crate) fn runtime(&self, app: &AppHandle) -> Result<Arc<dashboard::Service>, String> {
+        let runtime = {
+            let mut saved = self.runtime.lock().map_err(|error| error.to_string())?;
+            if self.requests.lock().map_err(|e| e.to_string())?.closed {
+                return Err("The dashboard is closing".into());
+            }
+            if saved.is_none() {
+                let app = app.clone();
+                let runtime = dashboard::Service::new(Arc::new(move |event| {
+                    receive_data(&app, event);
+                    true
+                }))
+                .map_err(|error| error.to_string())?;
+                runtime
+                    .set_preparation_suspended(crate::game_process::game_running().unwrap_or(true));
+                *saved = Some(runtime);
+            }
+            Arc::clone(saved.as_ref().expect("runtime initialized"))
+        };
+        let (config, allow_unverified) = host_config()?;
+        runtime.set_background_preparation(config.background_preparation_enabled());
+        let key = (
+            config.game_dir.clone(),
+            config.user_dir.clone(),
+            allow_unverified,
+        );
+        let mut configured = self.configured.lock().map_err(|error| error.to_string())?;
+        if configured.as_ref() != Some(&key) {
+            // Recording-only products remain available when content refuses.
+            if let Err(error) = runtime.configure_content(&config, allow_unverified) {
+                eprintln!("Dashboard content unavailable: {error}");
+            }
+            *configured = Some(key);
+        }
+        Ok(runtime)
+    }
+
+    pub(crate) fn suspend_preparation(&self, suspended: bool) {
+        if let Some(runtime) = self
+            .runtime
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            runtime.set_preparation_suspended(suspended);
+        }
+    }
+
+    fn cancel(&self, _host: &NativeHost, id: String) -> Result<(), String> {
         if id.is_empty() || id.len() > 128 {
             return Err("Invalid dashboard request identifier".into());
         }
@@ -110,7 +153,16 @@ impl DashboardService {
         if let Some(entry) = requests.pending.remove(&id) {
             let _ = entry.reply.send(Err(CANCELLED.into()));
         }
-        host.enqueue_data(DataCommand::Cancel { id })
+        drop(requests);
+        if let Some(runtime) = self
+            .runtime
+            .lock()
+            .map_err(|error| error.to_string())?
+            .as_ref()
+        {
+            runtime.dispatch(DataCommand::Cancel { id });
+        }
+        Ok(())
     }
 
     fn fail_all(&self, message: &str, closing: bool) {
@@ -128,7 +180,90 @@ impl DashboardService {
 
     pub fn shutdown(&self) {
         self.fail_all("The dashboard data connection closed", true);
+        let runtime = self
+            .runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let Some(runtime) = runtime {
+            runtime.shutdown();
+        }
     }
+}
+
+/// The host's saved content preferences with this run's command-line folder
+/// overrides, and whether unverified content is allowed.
+pub(crate) fn host_config() -> Result<(dashboard::Config, bool), String> {
+    let mut config = dashboard::Config::load().map_err(|error| error.to_string())?;
+    let mut allow_unverified = false;
+    let mut args = std::env::args_os().skip(1);
+    while let Some(argument) = args.next() {
+        if argument == "--game-dir" {
+            config.game_dir = args.next().ok_or("--game-dir requires a folder")?.into();
+        } else if argument == "--user-dir" {
+            config.user_dir = args.next().ok_or("--user-dir requires a folder")?.into();
+        } else if argument == "--allow-unverified-content" {
+            allow_unverified = true;
+        }
+    }
+    Ok((config, allow_unverified))
+}
+
+/// The effective game and user folders, as the folder settings show them.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentFolders {
+    game: String,
+    user: String,
+    content_ready: bool,
+}
+
+impl ContentFolders {
+    fn of(config: &dashboard::Config) -> Self {
+        Self {
+            game: config.game_dir.to_string_lossy().into_owned(),
+            user: config.user_dir.to_string_lossy().into_owned(),
+            content_ready: config.resolve_options().is_ok(),
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn content_folders() -> Result<ContentFolders, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        host_config().map(|(config, _)| ContentFolders::of(&config))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Saves folders that name a usable installation, then reconfigures the host's
+/// data runtime and sends them to a running native viewer.
+#[tauri::command]
+pub async fn set_content_folders(
+    window: WebviewWindow,
+    host: State<'_, NativeHost>,
+    service: State<'_, DashboardService>,
+    game: String,
+    user: String,
+) -> Result<ContentFolders, String> {
+    for folder in [&game, &user] {
+        if folder.trim().is_empty() || folder.len() > 32_000 || folder.contains(' ') {
+            return Err("Choose the game and user folders.".into());
+        }
+    }
+    let config = tauri::async_runtime::spawn_blocking(move || {
+        let mut config = dashboard::Config::load().map_err(|error| error.to_string())?;
+        config.game_dir = game.trim().into();
+        config.user_dir = user.trim().into();
+        config.save().map_err(|error| error.to_string())?;
+        host_config().map(|(config, _)| config)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    service.runtime(window.app_handle())?;
+    host.set_folders(&config);
+    Ok(ContentFolders::of(&config))
 }
 
 /// Only bounded fragment assembly runs on the native reader. Completed replies
@@ -188,25 +323,37 @@ pub fn receive_data(app: &AppHandle, event: DataEvent) {
 }
 
 fn cancel_native(app: &AppHandle, id: String) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = app
-            .state::<NativeHost>()
-            .send_data(&window, DataCommand::Cancel { id });
+    if let Some(runtime) = app
+        .state::<DashboardService>()
+        .runtime
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+    {
+        runtime.dispatch(DataCommand::Cancel { id });
     }
 }
 
-pub fn disconnected(app: &AppHandle, message: &str) {
-    app.state::<DashboardService>().fail_all(message, false);
+pub fn disconnected(_app: &AppHandle, _message: &str) {
+    // A viewer disconnect does not close the independent host data runtime.
 }
 
 async fn request(
     window: &WebviewWindow,
-    host: &NativeHost,
+    _host: &NativeHost,
     service: &DashboardService,
     id: String,
     command: DataCommand,
 ) -> Result<Response, String> {
-    let receive = service.submit(window, host, &id, command)?;
+    let submit_window = window.clone();
+    let submit_id = id.clone();
+    let receive = tauri::async_runtime::spawn_blocking(move || {
+        submit_window
+            .state::<DashboardService>()
+            .submit(&submit_window, &submit_id, command)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
     let json = receive
         .await
         .map_err(|_| "Dashboard response channel closed".to_owned())??;
@@ -269,6 +416,157 @@ pub async fn dashboard_product(
 }
 
 #[tauri::command]
+pub async fn dashboard_prepared_query(
+    window: WebviewWindow,
+    host: State<'_, NativeHost>,
+    service: State<'_, DashboardService>,
+    query: ProductRequest,
+    request_id: String,
+) -> Result<Response, String> {
+    query.validate()?;
+    request(
+        &window,
+        &host,
+        &service,
+        request_id.clone(),
+        DataCommand::PreparedQuery {
+            id: request_id,
+            request: query,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn dashboard_preparation_preferences(
+    window: WebviewWindow,
+    host: State<'_, NativeHost>,
+    service: State<'_, DashboardService>,
+    enabled: Option<bool>,
+    request_id: String,
+) -> Result<Response, String> {
+    request(
+        &window,
+        &host,
+        &service,
+        request_id.clone(),
+        DataCommand::PreparationPreferences {
+            id: request_id,
+            enabled,
+        },
+    )
+    .await
+}
+
+async fn preparation_command(
+    window: &WebviewWindow,
+    host: &NativeHost,
+    service: &DashboardService,
+    source_id: String,
+    revision: String,
+    request_id: String,
+    action: dashboard::prepared::Action,
+) -> Result<Response, String> {
+    request(
+        window,
+        host,
+        service,
+        request_id.clone(),
+        DataCommand::Preparation {
+            id: request_id,
+            source_id,
+            revision,
+            action,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn dashboard_preparation_status(
+    window: WebviewWindow,
+    host: State<'_, NativeHost>,
+    service: State<'_, DashboardService>,
+    source_id: String,
+    revision: String,
+    request_id: String,
+) -> Result<Response, String> {
+    preparation_command(
+        &window,
+        &host,
+        &service,
+        source_id,
+        revision,
+        request_id,
+        dashboard::prepared::Action::Status,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn dashboard_prepare_source(
+    window: WebviewWindow,
+    host: State<'_, NativeHost>,
+    service: State<'_, DashboardService>,
+    source_id: String,
+    revision: String,
+    request_id: String,
+) -> Result<Response, String> {
+    preparation_command(
+        &window,
+        &host,
+        &service,
+        source_id,
+        revision,
+        request_id,
+        dashboard::prepared::Action::Start,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn dashboard_cancel_preparation(
+    window: WebviewWindow,
+    host: State<'_, NativeHost>,
+    service: State<'_, DashboardService>,
+    source_id: String,
+    revision: String,
+    request_id: String,
+) -> Result<Response, String> {
+    preparation_command(
+        &window,
+        &host,
+        &service,
+        source_id,
+        revision,
+        request_id,
+        dashboard::prepared::Action::Cancel,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn dashboard_clear_preparation(
+    window: WebviewWindow,
+    host: State<'_, NativeHost>,
+    service: State<'_, DashboardService>,
+    source_id: String,
+    revision: String,
+    request_id: String,
+) -> Result<Response, String> {
+    preparation_command(
+        &window,
+        &host,
+        &service,
+        source_id,
+        revision,
+        request_id,
+        dashboard::prepared::Action::Clear,
+    )
+    .await
+}
+
+#[tauri::command]
 // Tauri injects window/state separately from the command's wire arguments.
 #[allow(clippy::too_many_arguments)]
 pub async fn dashboard_map_settings(
@@ -281,7 +579,8 @@ pub async fn dashboard_map_settings(
     settings: Option<dashboard::protocol::CampaignMapSettings>,
     request_id: String,
 ) -> Result<Response, String> {
-    request(
+    let saving = settings.is_some();
+    let response = request(
         &window,
         &host,
         &service,
@@ -294,7 +593,14 @@ pub async fn dashboard_map_settings(
             settings,
         },
     )
-    .await
+    .await;
+    // The viewer process keeps its own copy of the preferences this host saves. A reply that
+    // fails after the save (or a save that failed) still has the viewer read the file again,
+    // which costs nothing when it did not change.
+    if saving {
+        host.map_settings_saved();
+    }
+    response
 }
 
 #[tauri::command]
@@ -330,10 +636,13 @@ pub fn dashboard_cancel(
 #[tauri::command]
 pub fn dashboard_release_source(
     window: WebviewWindow,
-    host: State<'_, NativeHost>,
+    service: State<'_, DashboardService>,
     source_id: String,
 ) -> Result<(), String> {
-    host.send_data(&window, DataCommand::Release { source_id })
+    service
+        .runtime(window.app_handle())?
+        .dispatch(DataCommand::Release { source_id });
+    Ok(())
 }
 
 #[cfg(test)]

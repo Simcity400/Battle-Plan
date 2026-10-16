@@ -7,10 +7,33 @@ import type { Breakable } from './series';
 import type { PlotFrame } from './frame';
 import { plotFrame } from './frame.ts';
 import type { ChartLayer } from './TimeChart';
+import type { ChartSummary } from './chartSummary';
 
 export type ShareRun = Breakable & { counts: readonly number[] };
 export const SHARE_TICKS = [0, 25, 50, 75, 100] as const;
 export interface ShareBand { id: string; label: string; color: string; alpha?: number }
+
+/** Dense display samples use complete bucket coverage; broken buckets keep gaps. */
+export function summaryShareRuns(runs: readonly ShareRun[], summaries?: readonly ChartSummary[]): readonly ShareRun[] {
+  if (!summaries?.length || summaries[0].runs !== undefined) return runs;
+  const result: ShareRun[] = [];
+  let start = 0;
+  for (const bucket of summaries[0].buckets) {
+    if (!bucket) continue;
+    while (start < runs.length && runs[start].lastHour < bucket.firstHour) start++;
+    for (let index = start; index < runs.length && runs[index].firstHour <= bucket.lastHour; index++) {
+      const run = runs[index], next = runs[index + 1];
+      const firstHour = Math.max(run.firstHour, bucket.firstHour);
+      const lastHour = bucket.hasBreak ? Math.min(run.lastHour, bucket.lastHour)
+        : Math.min(bucket.lastHour, next ? next.firstHour - 1 : bucket.lastHour);
+      if (firstHour > lastHour) continue;
+      const previous = result.at(-1);
+      if (previous && previous.lastHour + 1 === firstHour && !run.startsSegment && previous.counts.every((count, index) => count === run.counts[index])) previous.lastHour = lastHour;
+      else result.push({ ...run, firstHour, lastHour, startsSegment: run.startsSegment && firstHour === run.firstHour, breakBefore: run.breakBefore && firstHour === run.firstHour });
+    }
+  }
+  return result;
+}
 
 export function shareStack(runs: readonly ShareRun[], bands: number): StackModel {
   const values: StackRun[][] = Array.from({ length: bands }, () => []);

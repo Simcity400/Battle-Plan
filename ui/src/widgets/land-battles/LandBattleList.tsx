@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import { Segmented } from '../../components/Segmented';
 import LogList from '../../charts/log/LogList';
+import type { LogListProps } from '../../charts/log/LogList';
 import type { LogRow } from '../../charts/log/logData';
 import DrillHost from '../../charts/drill/DrillHost';
 import { HeaderActionsSlot } from '../../charts/ZoomReset';
@@ -29,6 +30,12 @@ type Props = BattleLogProps<LandBattleRow> & { context: BattleViewContext };
 const SIDES = ['Attackers', 'Defenders'] as const;
 /** Flags drawn per side before "+N"; every country stays in the hint and tooltip. */
 const FLAGS = 3;
+
+function listRows(rows: readonly LandBattleRow[], view: Props['view'], live: boolean): LogRow<LandBattleRow>[] {
+  return view === 'log' ? battleLogRows(rows, live)
+    // Ranked rows keep the server's order and show each battle's start.
+    : rows.map(item => ({ key: item.id, id: item.id, hour: item.start?.hour ?? item.place.hour, by: item.start?.bound === 'by', item }));
+}
 
 export function Flags({ look, max = FLAGS }: { look: SideLook; max?: number }) {
   const shown = look.countries.length > max ? look.countries.slice(0, max - 1) : look.countries;
@@ -106,9 +113,7 @@ export default function LandBattleList(props: Props) {
   for (const entry of terrainReply.data?.provinces ?? []) terrains.names.set(entry.provinceId, entry);
   const terrainOf = (province: number) => terrains.names.get(province)?.name ?? null;
   const ranks = useMemo(() => new Map(rows.map((row, index) => [row.id, index + 1])), [rows]);
-  const logRows = useMemo<LogRow<LandBattleRow>[]>(() => view === 'log' ? battleLogRows(rows, live)
-    // Ranked rows keep the server's order and show each battle's start.
-    : rows.map(item => ({ key: item.id, id: item.id, hour: item.start?.hour ?? item.place.hour, by: item.start?.bound === 'by', item })), [rows, live, view]);
+  const logRows = useMemo(() => listRows(rows, view, live), [rows, live, view]);
   const looks = useCallback((row: LandBattleRow) => row.sides.map(side => sideLook(side, country as BattleCountryLabel)), [country]);
   const tooltip = useCallback((row: LandBattleRow): TooltipContent => battleTooltip(row, looks(row), terrainOf(row.provinceId), colours, context.placePending(row)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -133,9 +138,16 @@ export default function LandBattleList(props: Props) {
   };
   const columns = view === 'log' ? 'minmax(96px, 1.5fr) minmax(56px, 190px) minmax(128px, 168px) minmax(56px, 190px) minmax(68px, 1fr)'
     : 'minmax(96px, 1.5fr) minmax(56px, 190px) minmax(128px, 168px) minmax(56px, 190px) max-content minmax(68px, 1fr)';
+  let paritySemantic: LogListProps<LandBattleRow>['paritySemantic'];
+  if (import.meta.env.MODE === 'parity' && props.paritySemantic) {
+    const semantic = props.paritySemantic;
+    paritySemantic = { complete: semantic.complete, preparation: semantic.preparation,
+      rows: listRows(semantic.rows, view, live), reads: semantic.reads };
+  }
   const header = actions && createPortal(<Segmented value={view} options={VIEWS} onChange={value => context.setOption?.('view', value)} label="Land battles view" />, actions);
   const list = <div className="lb-view" ref={anchor}>
     <LogList anchorRows rows={logRows} label={label} density={log.density} months={view === 'log' && log.months}
+      {...(import.meta.env.MODE === 'parity' ? { parityHistoryComplete: props.paritySemantic?.historyComplete, paritySemantic } : {})}
       animate={view === 'log' && live && log.animate} columns={columns} onVisible={visible}
       menu={row => [{ label: 'Open battle', icon: 'chevron-right', run: () => open(row.item) }, ...menu(row.item)]} empty={empty}
       describe={row => tooltipText(tooltip(row.item))} tooltip={row => [tooltip(row.item)]}
@@ -164,4 +176,3 @@ export default function LandBattleList(props: Props) {
     {current && <LandBattleDrill row={current} context={context} colours={colours} looks={looks(current)} terrain={terrainOf(current.provinceId)} />}
   </DrillHost></>;
 }
-

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import Table, { CellBar, CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
@@ -16,6 +16,7 @@ import { worldFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
+import { useParityRows } from '../../dashboard/parityRows';
 import { usePlaybackSpeed } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { AgencyComparisonReply, AgencyRankField } from '../../generated/dashboard';
@@ -46,13 +47,19 @@ export default function AgencyComparisonWidget({ widget, runtime, active, onDiag
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const fallback = useMemo(() => selected, [selectedKey]);
   const params = track && agencyRequestParams(track.branch.id, widget.countries, fallback, groups.data, track.branch.lastHour, options.includeUncreated === true, topField);
-  const request = track && params ? { sourceId: track.source.id, revision: track.source.revision, product: 'agency-comparison', params } : null;
-  const { data, error, retry } = useProduct<AgencyComparisonReply>(runtime.client, request, active, validateAgencyComparisonReply);
+  const first = track ? track.branch.firstHour + Math.floor((hour - track.branch.firstHour) / 24) * 24 : hour;
+  const request = track && params ? { sourceId: track.source.id, revision: track.source.revision, product: 'agency-comparison', params: runtime.client.preparedQuery
+    ? { selection: params, firstHour: first, lastHour: Math.min(first + 23, track.branch.lastHour) } : params } : null;
+  const { data, error, retry } = useProduct<AgencyComparisonReply>(runtime.client, request, active, validateAgencyComparisonReply, track?.source);
   const filter = useMemo(() => top !== null ? { tags: null, reason: null }
     : worldFilter(widget.countries, fallback, groups.data, hour, track?.branch.lastHour ?? hour),
   [top, widget.countries, fallback, groups.data, hour, track?.branch.lastHour]);
   const rows = useMemo(() => data && (!needsGroups || groups.data) && !filter.reason ? agencyRows(data, hour, filter.tags) : NO_ROWS,
     [data, needsGroups, groups.data, filter, hour]);
+  const root = useRef<HTMLDivElement>(null);
+  useParityRows(root, () => ({ kind: 'table', label: 'Agency comparison values',
+    complete: Boolean(data && (!needsGroups || groups.data) && !filter.reason), total: rows.length, rows: [...rows],
+  }));
   const [visible, setVisible] = useState<readonly AgencyRow[]>(NO_ROWS);
   const onVisible = useCallback((rows: readonly AgencyRow[]) => setVisible(rows), []);
   const wanted = useMemo(() => visible.map(row => ({ hour: row.hour, tag: row.tag })), [visible]);
@@ -90,7 +97,7 @@ export default function AgencyComparisonWidget({ widget, runtime, active, onDiag
   if (!data.available) return <WidgetState kind="unavailable" message="Intelligence agencies are not in this recording." />;
   if (!runAt(data.observed, hour)) return <WidgetState kind="unavailable" message="Agency values were not recorded at this time." />;
   if (!rows.length) return <WidgetState kind="empty" icon="shield" message="No recorded agencies match these countries and settings at this hour." />;
-  return <div className="agency-comparison">
+  return <div ref={root} className="agency-comparison">
     <Table key={`${track.source.id}:${track.branch.id}`} label="Intelligence agencies" rows={rows} rowKey={rowKey} columns={columns} sort={sort} setOption={setOption}
       cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
       density={options.density === 'compact' ? 'compact' : 'comfortable'} muted={row => !row.value.created}

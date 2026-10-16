@@ -11,7 +11,7 @@ import type { ProjectAt } from './constructionData';
 /** The branch's construction log manifest: its windows and the building types its projects name. */
 function useManifest(runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean) {
   return useProduct<ConstructionLogManifestReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'construction-log-manifest', params: { branchId: track.branch.id } } : null, active, validateConstructionLogManifest);
+    product: 'construction-log-manifest', params: { branchId: track.branch.id } } : null, active, validateConstructionLogManifest, runtime.client.preparedQuery ? track?.source : undefined);
 }
 
 /** The construction log at `hour` (null outside the branch): the windows of the
@@ -28,7 +28,7 @@ export function useConstructionLog(runtime: WidgetRuntime, track: BoundTrack | u
   const windows = useProductWindows<ConstructionLogReply>(runtime.client, identity, window => ({ sourceId: track!.source.id,
     revision: track!.source.revision, product: 'construction-log', params: { branchId: track!.branch.id, window } }),
   constructionWindows(data?.windows.length ?? 0, current, live, reach?.identity === identity ? reach : null),
-  active && data?.recorded === true, reply => validateConstructionLogWindow(reply, types));
+  active && data?.recorded === true, reply => validateConstructionLogWindow(reply, types), runtime.client.preparedQuery ? track?.source : undefined);
   const display = useWindowDisplay(identity, windows.data.has(current) ? windows.data : undefined, hour ?? 0, runtime.client);
   const shown = data && display ? windowAt(data.windows, display.hour) : -1;
   const shownWindows = display?.data;

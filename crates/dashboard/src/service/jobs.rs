@@ -10,25 +10,35 @@ use crate::{
     },
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
-        mpsc::Receiver,
+        mpsc::{Receiver, TrySendError},
     },
 };
 
 #[derive(Default)]
 pub(super) struct Sources {
     next: u64,
-    entries: BTreeMap<(PathBuf, String), Weak<Source>>,
+    // Only jobs that may need resuming hold a library source. Completed revisions
+    // retain a cheap stamp; explicit Cancel/Clear suppress ticks across revisions.
+    pub(super) library: BTreeMap<PathBuf, Arc<Source>>,
+    pub(super) completed: BTreeMap<PathBuf, String>,
+    suppressed: BTreeSet<PathBuf>,
+    pub(super) entries: BTreeMap<(PathBuf, String), Weak<Source>>,
     // Failed openers leave their waiters' gate discoverable; idle gates expire.
     opening: BTreeMap<(PathBuf, String), Weak<Mutex<()>>>,
 }
 
 impl Sources {
+    #[cfg(test)]
+    pub(super) fn open_attempts(&self) -> u64 {
+        self.next
+    }
+
     pub(super) fn open_gate(&mut self, key: (PathBuf, String)) -> Arc<Mutex<()>> {
         self.opening.retain(|_, gate| gate.strong_count() > 0);
         if let Some(gate) = self.opening.get(&key).and_then(Weak::upgrade) {
@@ -59,6 +69,308 @@ fn recording_open_error(error: std::io::Error) -> String {
 }
 
 impl Inner {
+    pub(super) fn preparation_preferences(&self) -> crate::prepared::Preferences {
+        crate::prepared::Preferences {
+            background_enabled: self.background_preparation.load(Ordering::Acquire),
+        }
+    }
+
+    pub(super) fn set_background_preparation(&self, enabled: bool) {
+        if self.background_preparation.swap(enabled, Ordering::AcqRel) == enabled {
+            return;
+        }
+        self.preparation.notify_change();
+        let _admission = self
+            .preparation_actions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let sources: Vec<_> = self
+            .sources
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entries
+            .values()
+            .filter_map(Weak::upgrade)
+            .collect();
+        if !enabled {
+            for source in sources {
+                let progress = source.state::<crate::prepared::Progress>();
+                let progress = progress.lock().unwrap_or_else(|error| error.into_inner());
+                let cancel = progress.running && progress.automatic;
+                drop(progress);
+                if cancel {
+                    crate::prepared::cancel(&source);
+                }
+            }
+            return;
+        }
+        let mut latest = BTreeMap::new();
+        for source in sources {
+            if replay_revision(source.path()).ok().as_deref()
+                == Some(source.key().revision.as_str())
+            {
+                latest.insert(source.path().to_owned(), source);
+            }
+        }
+        for source in latest.into_values() {
+            if let Err(error) = self.refresh_preparation(source, false) {
+                eprintln!("Preparation refresh: {error}");
+            }
+        }
+    }
+
+    /// Refreshes share history capacity and one queued item per source. A later
+    /// restart request upgrades that item rather than retaining another source.
+    pub(super) fn refresh_preparation(
+        &self,
+        source: Arc<Source>,
+        restart: bool,
+    ) -> std::io::Result<()> {
+        let mut loader = self.loader.lock().unwrap_or_else(|e| e.into_inner());
+        let lanes = loader
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("Dashboard data service is closing"))?;
+        let key = source.key().clone();
+        if let Some(pending) = lanes.refreshes.get(&key) {
+            if restart {
+                pending.store(true, Ordering::Release);
+            }
+            return Ok(());
+        }
+        let restart = Arc::new(AtomicBool::new(restart));
+        let job = LoadJob::PreparationRefresh {
+            source,
+            restart: Arc::clone(&restart),
+        };
+        match lanes.history.try_send(job) {
+            Ok(()) => {
+                lanes.refreshes.insert(key, restart);
+                Ok(())
+            }
+            Err(TrySendError::Full(_)) => Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                crate::transport::CAPACITY_REACHED,
+            )),
+            Err(TrySendError::Disconnected(_)) => {
+                Err(std::io::Error::other("Dashboard data service is closing"))
+            }
+        }
+    }
+
+    pub(super) fn start_preparation(
+        &self,
+        source: Arc<Source>,
+        automatic: bool,
+        cancelled: &AtomicBool,
+    ) -> std::io::Result<()> {
+        let progress = source.state::<crate::prepared::Progress>();
+        let mut progress = progress.lock().unwrap_or_else(|error| error.into_inner());
+        if automatic
+            && self.preparation_suspended.load(Ordering::Acquire)
+            && !progress.cleared
+            && !self
+                .sources
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .suppressed
+                .contains(source.path())
+        {
+            // An opened file outside the configured library also resumes after exit.
+            self.sources
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .library
+                .insert(source.path().to_owned(), Arc::clone(&source));
+            self.preparation.notify_change();
+        }
+        if automatic
+            && (self.preparation_suspended.load(Ordering::Acquire)
+                || !self.background_preparation.load(Ordering::Acquire)
+                || progress.cleared
+                || progress.running)
+        {
+            return Ok(());
+        }
+        if automatic
+            && self
+                .sources
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .suppressed
+                .contains(source.path())
+        {
+            return Ok(());
+        }
+        progress.automatic = automatic;
+        drop(progress);
+        crate::prepared::start(&self.preparation, source, self.content(), cancelled)
+    }
+
+    pub(super) fn set_preparation_suspended(&self, suspended: bool) {
+        if self.preparation_suspended.swap(suspended, Ordering::AcqRel) == suspended {
+            return;
+        }
+        self.preparation.notify_change();
+        if !suspended {
+            // The library monitor retries the unaccepted tail, including sources
+            // opened outside the library which were interrupted by game presence.
+            return;
+        }
+        let _admission = self
+            .preparation_actions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let sources: Vec<_> = self
+            .sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entries
+            .values()
+            .filter_map(Weak::upgrade)
+            .collect();
+        for source in sources {
+            let progress = source.state::<crate::prepared::Progress>();
+            let progress = progress.lock().unwrap_or_else(|e| e.into_inner());
+            if progress.running && progress.automatic {
+                drop(progress);
+                crate::prepared::cancel(&source);
+                self.sources
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .library
+                    .insert(source.path().to_owned(), source);
+            }
+        }
+    }
+
+    pub(super) fn prepare_recording(&self, path: &Path) -> std::io::Result<()> {
+        if self.preparation_suspended.load(Ordering::Acquire)
+            || !self.background_preparation.load(Ordering::Acquire)
+        {
+            return Ok(());
+        }
+        self.check_open(&self.preparation_suspended)
+            .map_err(std::io::Error::other)?;
+        let path = path.canonicalize()?;
+        let revision = replay_revision(&path)?;
+        let result = self.prepare_recording_inner(path.clone(), revision.clone());
+        if let Err(error) = &result
+            && !matches!(
+                error.kind(),
+                std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
+            )
+            && !self.closed.load(Ordering::Acquire)
+            && !self.preparation_suspended.load(Ordering::Acquire)
+        {
+            // An unchanged failed input cannot make progress on a later worker
+            // completion. Only a new revision, binding or manual Start retries it.
+            let mut sources = self.sources.lock().unwrap_or_else(|e| e.into_inner());
+            sources.library.remove(&path);
+            sources.completed.insert(path, revision);
+        }
+        result
+    }
+
+    fn prepare_recording_inner(&self, path: PathBuf, revision: String) -> std::io::Result<()> {
+        use crate::prepared::{Progress, State};
+        let previous = {
+            let sources = self.sources.lock().unwrap_or_else(|e| e.into_inner());
+            if sources.suppressed.contains(&path) || sources.completed.get(&path) == Some(&revision)
+            {
+                return Ok(());
+            }
+            sources.library.get(&path).cloned()
+        };
+        if let Some(previous) = &previous {
+            let progress = previous.state::<Progress>();
+            let progress = progress.lock().unwrap_or_else(|e| e.into_inner());
+            if progress.running {
+                if previous.key().revision != revision && progress.automatic {
+                    drop(progress);
+                    crate::prepared::cancel(previous);
+                }
+                return Ok(());
+            }
+        }
+        // Opening may read an initial catalogue. Game polling stays independent
+        // and interrupts opening before it can admit any preparation work.
+        let source = self
+            .open(&path, Some(&revision), &self.preparation_suspended)
+            .map_err(|error| {
+                if matches!(
+                    error.as_str(),
+                    "Dashboard request cancelled" | "Dashboard source request was cancelled"
+                ) {
+                    std::io::Error::new(std::io::ErrorKind::Interrupted, error)
+                } else {
+                    std::io::Error::other(error)
+                }
+            })?;
+        let _admission = self
+            .preparation_actions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if self.preparation_suspended.load(Ordering::Acquire)
+            || !self.background_preparation.load(Ordering::Acquire)
+        {
+            return Ok(());
+        }
+        {
+            let sources = self.sources.lock().unwrap_or_else(|e| e.into_inner());
+            if sources.suppressed.contains(&path) {
+                return Ok(());
+            }
+        }
+        let progress = source.state::<Progress>();
+        let state = progress.lock().unwrap_or_else(|e| e.into_inner());
+        if state.cleared {
+            return Ok(());
+        }
+        if state.running {
+            drop(state);
+            self.sources
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .library
+                .insert(path, source);
+            return Ok(());
+        }
+        let finished = matches!(state.state, State::Ready | State::Failed);
+        drop(state);
+        if finished
+            || crate::prepared::unprepared_blocks(&source, self.content().as_ref())? == Some(0)
+        {
+            let mut sources = self.sources.lock().unwrap_or_else(|e| e.into_inner());
+            sources.library.remove(&path);
+            sources.completed.insert(path, revision);
+            return Ok(());
+        }
+        if let Err(error) =
+            self.start_preparation(Arc::clone(&source), true, &self.preparation_suspended)
+        {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                let mut state = progress.lock().unwrap_or_else(|e| e.into_inner());
+                state.state = State::Idle;
+                state.sections.clear();
+                state.error = None;
+                drop(state);
+                // Retry a full queue without reopening the initial catalogue.
+                self.sources
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .library
+                    .insert(path, source);
+            }
+            return Err(error);
+        }
+        self.sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .library
+            .insert(path, source);
+        Ok(())
+    }
+
     pub(super) fn content(&self) -> Option<ContentOptions> {
         self.content
             .lock()
@@ -152,25 +464,38 @@ impl Inner {
                 products::find(&body.product).is_some_and(|product| product.interactive)
             }
             LoadJob::HistoryCache { .. } => true,
+            LoadJob::PreparedQuery { .. } | LoadJob::Preparation { .. } => true,
+            LoadJob::PreparationRefresh { .. } => false,
+            LoadJob::PreparationPreferences { .. } => true,
             LoadJob::MapSettings(_) | LoadJob::Open(_) => false,
             #[cfg(test)]
-            LoadJob::Fixture { .. } => false,
+            LoadJob::Fixture { interactive, .. } => *interactive,
         };
-        let accepted = self
-            .loader
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .as_ref()
-            .is_some_and(|lanes| {
-                let lane = if interactive {
-                    &lanes.interactive
-                } else {
-                    &lanes.history
-                };
-                lane.send(job).is_ok()
-            });
-        if !accepted {
-            self.error(request, "Dashboard data service is closing".into());
+        let result = {
+            let loader = self
+                .loader
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            match loader.as_ref() {
+                Some(lanes) => {
+                    let lane = if interactive {
+                        &lanes.interactive
+                    } else {
+                        &lanes.history
+                    };
+                    match lane.try_send(job) {
+                        Ok(()) => Ok(()),
+                        Err(TrySendError::Full(_)) => Err(crate::transport::CAPACITY_REACHED),
+                        Err(TrySendError::Disconnected(_)) => {
+                            Err("Dashboard data service is closing")
+                        }
+                    }
+                }
+                None => Err("Dashboard data service is closing"),
+            }
+        };
+        if let Err(message) = result {
+            self.error(request, message.into());
         }
     }
 
@@ -191,21 +516,10 @@ impl Inner {
             .map(|source| source.campaign_key())
             .unwrap_or_default();
         let key = target.key(campaign).map_err(str::to_owned)?;
-        let mut settings = settings;
-        {
-            let mut store = self.map_settings.lock().map_err(|e| e.to_string())?;
-            store.configure_game(&options.user_dir);
-            if let Some(settings) = &mut settings
-                && settings.use_game_graphics
-            {
-                if matches!(target, MapSettingsTarget::Global) && store.game_graphics().is_none() {
-                    return Err(store
-                        .game_graphics_error()
-                        .unwrap_or_else(|| "the game graphics settings unavailable".into()));
-                }
-                settings.graphics = store.inherited(&key).graphics;
-            }
-        }
+        self.map_settings
+            .lock()
+            .map_err(|e| e.to_string())?
+            .configure_game(&options.user_dir);
         let mods = {
             let mut catalogue = self
                 .visual_catalogue
@@ -222,23 +536,18 @@ impl Inner {
             }
             catalogue.as_ref().expect("catalogue loaded").2.clone()
         };
+        // Any installed mod can be chosen, and a chosen mod that is no longer installed keeps
+        // its place by name; what cannot be shown is named when it is mounted.
         if let Some(settings) = &settings {
             settings.validate().map_err(str::to_owned)?;
-            if !map_settings::sample_counts().contains(&settings.graphics.samples) {
+            if settings
+                .graphics
+                .samples
+                .is_some_and(|samples| !map_settings::sample_counts().contains(&samples))
+            {
                 return Err(
                     "This anti-aliasing setting is unavailable on the current renderer".into(),
                 );
-            }
-            if let Some(selected) = &settings.visual_mods {
-                for id in selected {
-                    let item = mods
-                        .iter()
-                        .find(|item| &item.id == id)
-                        .ok_or("Selected mod is no longer installed")?;
-                    if let Some(reason) = &item.reason {
-                        return Err(format!("{}: {reason}", item.name));
-                    }
-                }
             }
         }
         if request.cancelled() {
@@ -252,17 +561,24 @@ impl Inner {
                 .map_err(|e| e.to_string())?;
         }
         let replay = source.as_ref().map(|source| source.replay_ref());
-        let recorded_mods = replay
+        let recorded_mods: Vec<_> = replay
             .as_ref()
             .into_iter()
             .flat_map(|replay| replay.identity.mods.iter())
-            .filter_map(|recorded| {
-                mods.iter()
-                    .find(|item| item.recorded_id == recorded.id && item.reason.is_none())
-                    .map(|item| item.id.clone())
+            .map(|recorded| map_settings::RecordedMod {
+                recorded_id: recorded.id.clone(),
+                name: recorded.display_name.clone(),
             })
             .collect();
-        let reply = map_settings::Reply {
+        let recorded: Vec<_> = recorded_mods
+            .iter()
+            .map(|recorded| installed_content::content::visual::RecordedMod {
+                id: recorded.recorded_id.clone(),
+                name: recorded.name.clone(),
+            })
+            .collect();
+        let selected = store.get(&key).visual_mods.unwrap_or_default();
+        let mut reply = map_settings::Reply {
             source_id,
             revision: source
                 .as_ref()
@@ -272,10 +588,27 @@ impl Inner {
             inherited_settings: store.inherited(&key),
             mods,
             recorded_mods,
+            applied_mods: Vec::new(),
+            applied_notes: Vec::new(),
             sample_counts: map_settings::sample_counts(),
-            game_graphics: store.game_graphics(),
-            game_graphics_error: store.game_graphics_error(),
+            game_graphics: store.game().map(|game| game.graphics),
+            game_settings_error: store.game_error(),
         };
+        drop(store);
+        // The order the resolved selection mounts in, read from the descriptors alone. The
+        // settings are saved by now, so a failure to read the mods is a note, not an error.
+        match installed_content::content::visual::plan(&options, &selected, &recorded, &request.cancelled) {
+            Ok(applied) => {
+                reply.applied_mods = applied.order;
+                reply.applied_notes = applied.warnings;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                return Err("Cancelled".into());
+            }
+            Err(error) => reply
+                .applied_notes
+                .push(format!("Installed mods could not be read: {error}.")),
+        }
         bounded_json(&reply, &request.cancelled)
     }
 
@@ -288,15 +621,24 @@ impl Inner {
             let Ok(job) = job else {
                 return;
             };
+            if let LoadJob::PreparationRefresh { source, .. } = &job
+                && let Some(lanes) = self
+                    .loader
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_mut()
+            {
+                lanes.refreshes.remove(source.key());
+            }
             if self.closed.load(Ordering::Acquire) {
                 return;
             }
-            let request = Arc::clone(job.request());
+            let request = job.request().cloned();
             let result = request_result(|| {
                 self.run_job(job);
                 Ok(())
             });
-            if let Err(error) = result {
+            if let (Err(error), Some(request)) = (result, request) {
                 self.error(request, error);
             }
         }
@@ -304,6 +646,45 @@ impl Inner {
 
     fn run_job(&self, job: LoadJob) {
         match job {
+            LoadJob::PreparationRefresh { source, restart } => {
+                let restart = restart.load(Ordering::Acquire);
+                let _admission = self
+                    .preparation_actions
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let progress = source.state::<crate::prepared::Progress>();
+                let (state, automatic) = {
+                    let progress = progress.lock().unwrap_or_else(|error| error.into_inner());
+                    (progress.state, progress.automatic || !progress.running)
+                };
+                if restart
+                    && matches!(
+                        state,
+                        crate::prepared::State::Idle | crate::prepared::State::Cancelled
+                    )
+                {
+                    return;
+                }
+                if !restart || crate::prepared::wait_cancelled(&source, &self.closed).is_ok() {
+                    // Read the latest options after waiting: several Apply
+                    // requests may have replaced the content while work stopped.
+                    let _ = self.start_preparation(source, automatic, &self.closed);
+                }
+            }
+            LoadJob::PreparationPreferences { request, enabled } => {
+                if request.cancelled() {
+                    return;
+                }
+                let result = request_result(|| {
+                    if let Some(enabled) = enabled {
+                        crate::Config::save_background_preparation(enabled)
+                            .map_err(|error| error.to_string())?;
+                        self.set_background_preparation(enabled);
+                    }
+                    bounded_json(&self.preparation_preferences(), &request.cancelled)
+                });
+                self.complete(request, result);
+            }
             LoadJob::MapSettings(job) => {
                 let request = Arc::clone(&job.request);
                 let result = self.map_settings_job(job);
@@ -345,6 +726,99 @@ impl Inner {
                 let result = history_cache(&options, clear, &request.cancelled);
                 self.complete(request, result);
             }
+            LoadJob::PreparedQuery {
+                request,
+                source,
+                body,
+            } => {
+                if request.cancelled() {
+                    return;
+                }
+                let result = crate::prepared::query::query(
+                    &source,
+                    &body,
+                    self.content().as_ref(),
+                    &request.cancelled,
+                )
+                .map_err(|error| error.to_string());
+                self.complete(request, result);
+            }
+            LoadJob::Preparation {
+                request,
+                source,
+                source_id,
+                action,
+            } => {
+                if request.cancelled() {
+                    return;
+                }
+                let result = request_result(|| {
+                    let content = self.content();
+                    match action {
+                        crate::prepared::Action::Status => {}
+                        crate::prepared::Action::Start => {
+                            self.preparation.notify_change();
+                            let _admission = self
+                                .preparation_actions
+                                .lock()
+                                .map_err(|error| error.to_string())?;
+                            {
+                                let mut sources = self.sources.lock().map_err(|e| e.to_string())?;
+                                sources.suppressed.remove(source.path());
+                                sources.completed.remove(source.path());
+                            }
+                            self.start_preparation(Arc::clone(&source), false, &request.cancelled)
+                                .map_err(|error| error.to_string())?;
+                        }
+                        crate::prepared::Action::Cancel => {
+                            self.preparation.notify_change();
+                            let _admission = self
+                                .preparation_actions
+                                .lock()
+                                .map_err(|error| error.to_string())?;
+                            {
+                                let mut sources = self.sources.lock().map_err(|e| e.to_string())?;
+                                sources.suppressed.insert(source.path().to_owned());
+                                sources.library.remove(source.path());
+                            }
+                            crate::prepared::cancel(&source);
+                        }
+                        crate::prepared::Action::Clear => {
+                            self.preparation.notify_change();
+                            let _admission = self
+                                .preparation_actions
+                                .lock()
+                                .map_err(|error| error.to_string())?;
+                            let revisions: Vec<_> = self
+                                .sources
+                                .lock()
+                                .map_err(|error| error.to_string())?
+                                .entries
+                                .iter()
+                                .filter(|((path, _), _)| path == source.path())
+                                .filter_map(|(_, entry)| entry.upgrade())
+                                .collect();
+                            for revision in &revisions {
+                                crate::prepared::cancel(revision);
+                            }
+                            for revision in &revisions {
+                                crate::prepared::wait_cancelled(revision, &request.cancelled)
+                                    .map_err(|error| error.to_string())?;
+                            }
+                            crate::prepared::clear(&source, content.as_ref(), &request.cancelled)
+                                .map_err(|error| error.to_string())?;
+                            let mut sources = self.sources.lock().map_err(|e| e.to_string())?;
+                            sources.suppressed.insert(source.path().to_owned());
+                            sources.completed.remove(source.path());
+                            sources.library.remove(source.path());
+                        }
+                    }
+                    let mut reply = crate::prepared::status(&source, &source_id, &request.id);
+                    reply.background_enabled = self.background_preparation.load(Ordering::Acquire);
+                    bounded_json(&reply, &request.cancelled)
+                });
+                self.complete(request, result);
+            }
             LoadJob::Open(job) => {
                 if let Some(content) = self.content() {
                     self.map_settings
@@ -370,6 +844,15 @@ impl Inner {
                 &job.request.cancelled,
             )
             .inspect(|source| source.name_countries(self.content().as_ref()));
+        if let Ok(source) = &result {
+            let _admission = self
+                .preparation_actions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            // Metadata and independent products remain available when a
+            // background worker cannot be admitted; Start exposes its status.
+            let _ = self.start_preparation(Arc::clone(source), true, &job.request.cancelled);
+        }
         let mut pending = self
             .pending
             .lock()
@@ -461,9 +944,29 @@ pub(super) struct OpenJob {
 }
 
 pub(super) enum LoadJob {
+    PreparationRefresh {
+        source: Arc<Source>,
+        restart: Arc<AtomicBool>,
+    },
+    PreparationPreferences {
+        request: Arc<Request>,
+        enabled: Option<bool>,
+    },
+    PreparedQuery {
+        request: Arc<Request>,
+        source: Arc<Source>,
+        body: ProductRequest,
+    },
+    Preparation {
+        request: Arc<Request>,
+        source: Arc<Source>,
+        source_id: String,
+        action: crate::prepared::Action,
+    },
     #[cfg(test)]
     Fixture {
         request: Arc<Request>,
+        interactive: bool,
         run: Box<dyn FnOnce() + Send>,
     },
     MapSettings(MapSettingsJob),
@@ -482,14 +985,17 @@ pub(super) enum LoadJob {
 }
 
 impl LoadJob {
-    fn request(&self) -> &Arc<Request> {
-        match self {
+    fn request(&self) -> Option<&Arc<Request>> {
+        Some(match self {
+            Self::PreparationRefresh { .. } => return None,
             Self::MapSettings(job) => &job.request,
             Self::Open(job) => &job.request,
             Self::HistoryCache { request, .. } | Self::Product { request, .. } => request,
+            Self::PreparedQuery { request, .. } | Self::Preparation { request, .. } => request,
+            Self::PreparationPreferences { request, .. } => request,
             #[cfg(test)]
             Self::Fixture { request, .. } => request,
-        }
+        })
     }
 }
 

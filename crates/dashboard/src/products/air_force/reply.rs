@@ -94,14 +94,33 @@ fn wing_part(keys: &[String], parts: &BTreeMap<String, AirForcePart>) -> AirForc
     }
 }
 
-/// Project a cached census, preserving unknown variants and whole mixed wings.
+#[derive(Default)]
+pub(super) struct Parts {
+    pub(super) tokens: crate::catalogue::KeyedResults<String, (AirForcePart, BTreeSet<String>)>,
+    pub(super) signatures: crate::catalogue::KeyedResults<Vec<String>, AirForcePart>,
+}
+
+#[cfg(test)]
 pub(super) fn reply(
     scanned: &ScannedAir,
     params: &AirForceParams,
     units: Option<&installed_content::equipment::Database>,
     localise: impl Fn(&str) -> Option<String>,
-    mut warnings: Vec<String>,
+    warnings: Vec<String>,
     cancelled: &AtomicBool,
+) -> io::Result<AirForceReply> {
+    reply_cached(scanned, params, units, localise, warnings, cancelled, None)
+}
+
+/// Project a cached census, preserving unknown variants and whole mixed wings.
+pub(super) fn reply_cached(
+    scanned: &ScannedAir,
+    params: &AirForceParams,
+    units: Option<&installed_content::equipment::Database>,
+    localise: impl Fn(&str) -> Option<String>,
+    warnings: Vec<String>,
+    cancelled: &AtomicBool,
+    cache: Option<&Parts>,
 ) -> io::Result<AirForceReply> {
     cancel(cancelled)?;
     let membership = params
@@ -116,6 +135,22 @@ pub(super) fn reply(
             )
         })
         .transpose()?;
+    selected(
+        scanned, params, units, localise, warnings, cancelled, membership, cache,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn selected(
+    scanned: &ScannedAir,
+    params: &AirForceParams,
+    units: Option<&installed_content::equipment::Database>,
+    localise: impl Fn(&str) -> Option<String>,
+    mut warnings: Vec<String>,
+    cancelled: &AtomicBool,
+    membership: Option<BTreeMap<String, Vec<HourSpan>>>,
+    cache: Option<&Parts>,
+) -> io::Result<AirForceReply> {
     let tags: BTreeSet<&str> = match &membership {
         Some(membership) => membership.keys().map(String::as_str).collect(),
         None => params.tags.iter().map(String::as_str).collect(),
@@ -134,20 +169,31 @@ pub(super) fn reply(
         }
     }
     let mut refusals = BTreeSet::new();
-    let token_parts: BTreeMap<_, _> = tokens
-        .iter()
-        .map(|raw| {
-            (
-                raw.clone(),
-                equipment_part(raw, units, &localise, &mut refusals),
-            )
-        })
-        .collect();
+    let mut token_parts = BTreeMap::new();
+    for raw in &tokens {
+        let resolve = || {
+            let mut notes = BTreeSet::new();
+            let part = equipment_part(raw, units, &localise, &mut notes);
+            Ok((part, notes))
+        };
+        let resolved = match cache {
+            Some(cache) => cache.tokens.get_or_init(raw, |_| resolve())?,
+            None => Arc::new(resolve()?),
+        };
+        token_parts.insert(raw.clone(), resolved.0.clone());
+        refusals.extend(resolved.1.iter().cloned());
+    }
     warnings.extend(refusals);
-    let signature_parts: BTreeMap<_, _> = signatures
-        .iter()
-        .map(|keys| (keys.clone(), wing_part(keys, &token_parts)))
-        .collect();
+    let mut signature_parts = BTreeMap::new();
+    for keys in signatures {
+        let part = match cache {
+            Some(cache) => cache
+                .signatures
+                .get_or_init(&keys, |keys| Ok(wing_part(keys, &token_parts)))?,
+            None => Arc::new(wing_part(&keys, &token_parts)),
+        };
+        signature_parts.insert(keys, part.as_ref().clone());
+    }
     let mut catalogue = BTreeMap::new();
     match params.measure {
         AirForceMeasure::Planes => {

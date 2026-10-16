@@ -28,7 +28,7 @@ use replay::{
 const FIRST_HOUR: i32 = 100;
 const HOURS: i32 = 30;
 /// FNV-1a 64 over every spool segment's bytes in segment order.
-const EXPECTED_DIGEST: u64 = 0x95e2_c479_7aba_d89d;
+const EXPECTED_DIGEST: u64 = 0xf437_af3f_39ad_9963;
 
 fn text<const N: usize>(value: &[u8]) -> Text<N> {
     let mut result = Text {
@@ -287,7 +287,7 @@ fn a_fixed_synthetic_campaign_writes_the_same_spool_bytes() {
 /// must cover helper packs converted after the spool thread's share.
 #[test]
 fn the_conversion_helper_reproduces_single_thread_conversion() {
-    use crate::extended::naval_details::fixtures::capture_live_shape;
+    use crate::extended::capture_live_shape;
     use crate::projection::{Projection, ProjectionScratch};
     let first = crate::spool_helper::SpoolHelper::start().unwrap();
     let second = crate::spool_helper::SpoolHelper::start().unwrap();

@@ -43,10 +43,14 @@ use crate::{
     codec::{Decoder, invalid_static as invalid, put_varint},
     rows::{Change, Kind, TableId, Token},
 };
-use std::io;
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    io,
+    sync::Arc,
+};
 
 /// How a field moved in the previous frame's continuous delta.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub(super) enum Motion {
     /// A numeric field's plain change (its difference, or an inserted row's
     /// value), in a keyed block its change in the frame before when it
@@ -62,11 +66,59 @@ pub(super) enum Motion {
     Bytes { delta: Vec<u8>, predicted: bool },
     /// A ramped block's numeric field ([`Rated`]).
     Rated(Rated),
+    /// A reader's interned exact numeric state; the writer keeps `Rated` inline.
+    SharedRated(Arc<Rated>),
 }
+
+impl Motion {
+    fn rated(&self) -> Option<&Rated> {
+        match self {
+            Self::Rated(rated) => Some(rated),
+            Self::SharedRated(rated) => Some(rated),
+            _ => None,
+        }
+    }
+}
+
+// Sharing is storage only: writer and reader states compare by the complete
+// predictor state, including the rate window, never allocation identity.
+impl PartialEq for Motion {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Number {
+                    delta: a,
+                    earlier: b,
+                    prediction: c,
+                },
+                Self::Number {
+                    delta: x,
+                    earlier: y,
+                    prediction: z,
+                },
+            ) => (a, b, c) == (x, y, z),
+            (
+                Self::Bytes {
+                    delta: a,
+                    predicted: b,
+                },
+                Self::Bytes {
+                    delta: x,
+                    predicted: y,
+                },
+            ) => (a, b) == (x, y),
+            _ => match (self.rated(), other.rated()) {
+                (Some(a), Some(b)) => a == b,
+                _ => false,
+            },
+        }
+    }
+}
+impl Eq for Motion {}
 
 /// A numeric field's last change, in an accelerating layout its change in
 /// the frame before when it changed then too, and the change predicted next.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Repeat {
     delta: i128,
     earlier: Option<i128>,
@@ -108,7 +160,7 @@ impl Repeat {
 /// [`Ramp`], and in which of the last eight hours each was right (bit 0 the
 /// latest). The ramp is boxed: few fields have one, and every motion of the
 /// table is as large as its largest.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Rated {
     repeat: Option<Repeat>,
     ramp: Option<Box<Ramp>>,
@@ -185,6 +237,7 @@ impl Moving {
             Motion::Number { prediction, .. } => prediction.is_some(),
             Motion::Bytes { predicted, .. } => *predicted,
             Motion::Rated(rated) => rated.prediction().is_some(),
+            Motion::SharedRated(rated) => rated.prediction().is_some(),
         }
     }
 }
@@ -193,11 +246,15 @@ impl Moving {
 #[derive(Default)]
 pub(super) struct Predictor {
     moving: Vec<Moving>,
+    spare: Vec<Moving>,
+    transitions: Transitions,
 }
 
 impl Predictor {
     pub(super) fn clear(&mut self) {
         self.moving.clear();
+        self.spare.clear();
+        self.transitions.clear();
     }
     /// Whether any field is predicted to change in the next frame.
     pub(super) fn predicts(&self) -> bool {
@@ -210,7 +267,7 @@ impl Predictor {
 }
 
 /// A numeric field's change in one plain delta row.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Step {
     /// Not in the row's mask.
     Same,
@@ -300,6 +357,7 @@ fn number_prediction(before: Option<&Moving>) -> Option<i128> {
     match before.map(|before| &before.motion) {
         Some(Motion::Number { prediction, .. }) => *prediction,
         Some(Motion::Rated(rated)) => rated.prediction(),
+        Some(Motion::SharedRated(rated)) => rated.prediction(),
         _ => None,
     }
 }
@@ -312,6 +370,7 @@ fn number_motion(step: Step, before: Option<&Moving>, layout: Layout) -> Option<
     if layout.ramped() {
         let before = match before {
             Some(Motion::Rated(rated)) => Some(rated.clone()),
+            Some(Motion::SharedRated(rated)) => Some((**rated).clone()),
             _ => None,
         };
         return Rated::after(step, before).map(Motion::Rated);
@@ -333,6 +392,61 @@ fn number_motion(step: Step, before: Option<&Moving>, layout: Layout) -> Option<
         earlier: repeat.earlier,
         prediction: repeat.prediction,
     })
+}
+
+/// Exact reader transitions for one live frame. Prior states remain alive in
+/// `moving` until the frame ends, so their allocation identities cannot be reused.
+/// Both maps retain capacity, but no historical frame's states stay cached.
+#[derive(Default)]
+struct Transitions {
+    steps: HashMap<(usize, Step), Option<Arc<Rated>>>,
+    states: HashMap<Arc<Rated>, ()>,
+}
+
+impl Transitions {
+    fn clear(&mut self) {
+        self.steps.clear();
+        self.states.clear();
+    }
+
+    fn after(&mut self, step: Step, before: Option<&Moving>, layout: Layout) -> Option<Motion> {
+        if !layout.ramped() {
+            return number_motion(step, before, layout);
+        }
+        let rated = match before.map(|moving| &moving.motion) {
+            Some(Motion::SharedRated(rated)) => Some(rated),
+            // An inline state supplied by a writer retains its ordinary path.
+            Some(Motion::Rated(_)) => return number_motion(step, before, layout),
+            _ => None,
+        };
+        // These steps cannot leave any state to learn or share.
+        if step == Step::Null || (rated.is_none() && matches!(step, Step::Same | Step::Number(0))) {
+            return None;
+        }
+        let key = (rated.map_or(0, |rated| Arc::as_ptr(rated) as usize), step);
+        match self.steps.entry(key) {
+            Entry::Occupied(entry) => entry
+                .get()
+                .as_ref()
+                .map(|rated| Motion::SharedRated(Arc::clone(rated))),
+            Entry::Vacant(entry) => {
+                let next =
+                    Rated::after(step, rated.map(|rated| (**rated).clone())).map(|next| match self
+                        .states
+                        .entry(Arc::new(next))
+                    {
+                        Entry::Occupied(entry) => Arc::clone(entry.key()),
+                        Entry::Vacant(entry) => {
+                            let next = Arc::clone(entry.key());
+                            entry.insert(());
+                            next
+                        }
+                    });
+                entry.insert(next.clone());
+                next.map(Motion::SharedRated)
+            }
+        }
+    }
 }
 
 /// `a - b` as little-endian integers of one length, wrapping.
@@ -417,7 +531,10 @@ fn predicted_keys<'a>(
         .iter()
         .filter(|moving| {
             moving.predicts()
-                || matches!(&moving.motion, Motion::Rated(rated) if rated.ramp.is_some())
+                || moving
+                    .motion
+                    .rated()
+                    .is_some_and(|rated| rated.ramp.is_some())
         })
         .filter_map(move |moving| {
             if last == Some(moving.key) {
@@ -606,6 +723,7 @@ pub(super) fn take_residual(
     layout: Layout,
     mut coding: Option<RowCoding<'_>>,
 ) -> io::Result<()> {
+    predictor.transitions.clear();
     let start = plain.len();
     plain.push(DELTA);
     plain.extend_from_slice(&previous.to_le_bytes());
@@ -654,7 +772,8 @@ pub(super) fn take_residual(
     let mut cursor = Cursor {
         moving: &predictor.moving,
     };
-    let mut next = Vec::with_capacity(predictor.moving.len());
+    let mut next = std::mem::take(&mut predictor.spare);
+    next.clear();
     let mut predicted = predicted_keys(&predictor.moving, &deleted).peekable();
     let mut residual_key = 0_u128;
     let mut read = 0_usize;
@@ -756,7 +875,7 @@ pub(super) fn take_residual(
                     plain_mask |= 1 << field;
                     put_step(kind, step, &mut values);
                 }
-                number_motion(step, before, layout)
+                predictor.transitions.after(step, before, layout)
             };
             if let Some(motion) = motion {
                 next.push(Moving { key, field, motion });
@@ -784,11 +903,101 @@ pub(super) fn take_residual(
         put_varint(plain, key - previous_key);
         previous_key = key;
     }
-    predictor.moving = next;
+    std::mem::swap(&mut predictor.moving, &mut next);
+    next.clear();
+    predictor.spare = next;
     budget.spend(plain.len() - start)
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shared_transitions_keep_the_complete_rate_window() {
+        let rated = |count| {
+            let mut ramp = Ramp::start(1).unwrap();
+            for _ in 1..count {
+                ramp = ramp.push(1).unwrap();
+            }
+            Arc::new(Rated {
+                repeat: Some(Repeat {
+                    delta: 1,
+                    earlier: Some(1),
+                    prediction: Some(1),
+                }),
+                ramp: Some(Box::new(ramp)),
+                repeat_hits: 255,
+                ramp_hits: 255,
+            })
+        };
+        let a = Moving {
+            key: 3,
+            field: FIELD,
+            motion: Motion::SharedRated(rated(2)),
+        };
+        let b = Moving {
+            key: 5,
+            field: FIELD,
+            motion: Motion::SharedRated(rated(3)),
+        };
+        assert_eq!(number_prediction(Some(&a)), number_prediction(Some(&b)));
+        let mut cache = Transitions::default();
+        let first = cache
+            .after(Step::Number(1), Some(&a), Layout::Ramped)
+            .unwrap();
+        let again = cache
+            .after(Step::Number(1), Some(&a), Layout::Ramped)
+            .unwrap();
+        let other = cache
+            .after(Step::Number(1), Some(&b), Layout::Ramped)
+            .unwrap();
+        assert_eq!(
+            first,
+            number_motion(Step::Number(1), Some(&a), Layout::Ramped).unwrap()
+        );
+        assert_eq!(
+            other,
+            number_motion(Step::Number(1), Some(&b), Layout::Ramped).unwrap()
+        );
+        let (Motion::SharedRated(first), Motion::SharedRated(again), Motion::SharedRated(other)) =
+            (first, again, other)
+        else {
+            unreachable!()
+        };
+        assert!(Arc::ptr_eq(&first, &again));
+        assert!(!Arc::ptr_eq(&first, &other));
+        assert_eq!(cache.steps.len(), 2);
+        cache.clear();
+        assert!(cache.steps.is_empty() && cache.states.is_empty());
+    }
+
+    #[test]
+    fn equal_reader_states_share_their_next_transition() {
+        let mut cache = Transitions::default();
+        let motion =
+            |cache: &mut Transitions| cache.after(Step::Number(-1), None, Layout::Ramped).unwrap();
+        let a = Moving {
+            key: 3,
+            field: FIELD,
+            motion: motion(&mut cache),
+        };
+        let b = Moving {
+            key: 5,
+            field: FIELD,
+            motion: motion(&mut cache),
+        };
+        cache.clear();
+        let first = cache
+            .after(Step::Number(-1), Some(&a), Layout::Ramped)
+            .unwrap();
+        let next = cache
+            .after(Step::Number(-1), Some(&b), Layout::Ramped)
+            .unwrap();
+        let (Motion::SharedRated(first), Motion::SharedRated(next)) = (first, next) else {
+            unreachable!()
+        };
+        assert!(Arc::ptr_eq(&first, &next));
+        assert_eq!(cache.steps.len(), 1);
+    }
+
     use super::*;
     use crate::{
         format::FormatVersion,
@@ -913,6 +1122,7 @@ mod tests {
         // A frame with no entry is the predicted change.
         let mut predicted = Predictor {
             moving: writer.moving().to_vec(),
+            ..Default::default()
         };
         let rebuilt = take(None, &mut predicted).unwrap();
         assert_eq!(rebuilt, plain(-1));
@@ -1059,6 +1269,7 @@ mod tests {
                     prediction: Some(5),
                 },
             }],
+            ..Default::default()
         };
         let entry = |code: u128| {
             let mut columns = Columns::new(fields());

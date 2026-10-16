@@ -4,12 +4,13 @@ import type { ReactNode } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useFactionColours } from '../../dashboard/FactionColours';
 import { factionLabelAt, factionLines, factionMemberLabelLimit, factionNameAt, factionTooltipForms, factionTotalsModel,
-  factionVisibleMemberTags, validateFactionTotalsReply } from '../../dashboard/factionTotals';
+  factionVisibleMemberTags } from '../../dashboard/factionTotals';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import type { OptionValue } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
+import { usePreparedFactionTotals } from '../../dashboard/preparedFactionTotals';
+import { useParityRows } from '../../dashboard/parityRows';
 import { NumericReply } from '../../dashboard/numericReply';
 import type { FactionTotalsParams, FactionTotalsReply } from '../../generated/dashboard';
 import { dayLabel } from '../draw';
@@ -75,15 +76,22 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
     requests.params = pinned && params ? { ...params, inventory: true } : params;
   }
   const params = requests.params;
-  const request = track && params ? { sourceId: track.source.id, revision: track.source.revision, product: 'faction-totals', params } : null;
-  const { data, error, retry } = useProduct<FactionTotalsReply>(runtime.client, request, active, validateFactionTotalsReply);
+  const prepared = usePreparedFactionTotals(runtime.client, track, params, moment, active, extent, undefined, !renderMain);
+  const { data, error, retry } = prepared;
   const numeric = useMemo(() => new NumericReply<FactionTotalsReply>(), [runtime.client]);
   const numbers = numeric.update(JSON.stringify([scope, params]), data, factionNumbers);
   const model = useMemo(() => numbers ? factionTotalsModel(numbers) : null, [numbers]);
   const namedModel = useMemo(() => data ? factionTotalsModel(data) : model, [data, model]);
   const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  const lines = useMemo(() => factionLines(model, range), [model, range]);
+  const drawn = useMemo(() => view === 'lines' && prepared.geometryData ? factionTotalsModel(prepared.geometryData) : model, [view, prepared.geometryData, model]);
+  const lines = useMemo(() => {
+    const lines = factionLines(drawn, range);
+    const keys = new Set(lines.map(line => line.tag));
+    for (const [tag, summary] of prepared.lineSummaries) if (!keys.has(tag) && summary.buckets.some(Boolean)) lines.push({ tag, runs: [] });
+    return lines;
+  }, [drawn, range, prepared.lineSummaries]);
   const series = useMemo(() => raceSeriesIndex(lines), [lines]);
+  const reachedSeries = useMemo(() => raceSeriesIndex(factionLines(model, range)), [model, range]);
   const slots = Math.max(1, Math.min(params?.top ?? 1, lines.length));
   const entries = useMemo(() => view === 'race' ? seriesRaceEntries(series, moment, slots, formatValue) : [],
     [view, series, moment, slots, formatValue]);
@@ -98,7 +106,7 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
     name: (id: string, hour = moment) => factionLabelAt(namedModel, id, hour, names),
     color: (id: string) => colours.get(id)!,
   }), [namedModel, moment, names, colours]);
-  const owner = useMemo(() => ({ scope, numbers }), [scope, numbers]);
+  const owner = prepared.owner;
   const currentOwner = useRef(owner);
   currentOwner.current = owner;
   const open = useCallback((hour: number, id?: string, choices?: readonly string[]) => {
@@ -115,13 +123,13 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
   const drillHour = follow && track ? Math.floor(runtime.clock.getHour() + track.axisOffset) : current?.hour ?? moment;
   const selectionValid = !pinned || !options[FACTION_SELECTION] || saved !== null;
   const selectedParams = params && selected && selectionValid ? { ...params, top: 1, factionId: selected, parts: true } : null;
-  const partsRequest = track && selectedParams ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'faction-totals', params: selectedParams } : null;
-  const partsProduct = useProduct<FactionTotalsReply>(runtime.client, partsRequest, active && (pinned || current !== null), validateFactionTotalsReply);
+  const partsProduct = usePreparedFactionTotals(runtime.client, track, selectedParams, drillHour, active && (pinned || current !== null), extent, origin);
   const partsNumeric = useMemo(() => new NumericReply<FactionTotalsReply>(), [runtime.client]);
   const partNumbers = partsNumeric.update(JSON.stringify([scope, selectedParams]), partsProduct.data, factionNumbers);
   const partsModel = useMemo(() => partNumbers && selected ? factionParts(partNumbers, selected, range) : null, [partNumbers, selected, range]);
-  const partsOwner = useMemo(() => ({ scope, selected, partNumbers }), [scope, selected, partNumbers]);
+  const partsOwner = partsProduct.owner;
+  useParityRows(anchor, () => ({ kind: 'chart', label: 'Faction totals', complete: !!data, hour: moment, total: data?.series.length ?? 0,
+    rows: data?.series.map(series => ({ id: series.id, value: runAt(series.runs, moment)?.value ?? null })) ?? [] }));
   const controls = useRef({ active, selectionKey, partsOwner });
   controls.current = { active, selectionKey, partsOwner };
   useEffect(() => () => { controls.current.active = false; }, []);
@@ -169,12 +177,13 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
     label={label} empty={`Not recorded on ${dayLabel(moment)}.`} formatValue={formatValue}
     labels={{ race: `${label}, ${countName}, ${dayLabel(moment)}`, lines: `${label} over time, ${countName}`, actions: `${label} actions` }}
     presentation={{ ...SMOOTH_TOTALS_PRESENTATION, countryLooks: false, linePadding: CHART_LAYOUT.countryEndLabels }}
-    onPick={open} pickOwner={owner}
+    onPick={open} pickOwner={owner} lineSummaries={prepared.lineSummaries} onSummaryView={prepared.onSummaryView}
+    onReachHour={prepared.onReachHour} exactLineTags={prepared.exactLineTags} navigation={prepared.navigation}
     tooltipTags={(hour, ids) => factionVisibleMemberTags(model, hour, ids)}
     tooltip={(id, hour, _name, _colours, labelAt) => factionTooltipForms(model, [id], hour, labelAt(hour), colourOf, formatValue,
       nameOf(id, hour), `${dayLabel(hour)} · ${countName}`, note, factionMemberLabelLimit(viewport, 1, nameOf(id, hour)), names)}
     lineTooltip={(hour, _tags, labelAt) => {
-      const ids = seriesAt(series, hour);
+      const ids = seriesAt(reachedSeries, hour);
       return factionTooltipForms(model, ids, hour, labelAt(hour), colourOf, formatValue,
         dayLabel(hour), countName, note, factionMemberLabelLimit(viewport, ids.length, dayLabel(hour)), names);
     }} />;
@@ -194,11 +203,13 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
             : !partsModel ? <WidgetState kind="unavailable" message="Member details are unavailable." />
               : <FactionPartsView model={partsModel} runtime={runtime} track={track} hour={drillHour} following={follow}
                 extent={extent} active={active} pickOwner={partsOwner} label={`${nameOf(selected, drillHour)} · ${countName}`} formatValue={formatValue}
+                summaries={partsProduct.data?.memberSummaries} totalSummary={selected ? partsProduct.lineSummaries.get(selected) : undefined}
+                onSummaryView={partsProduct.onSummaryView} onReachHour={partsProduct.onReachHour} navigation={partsProduct.navigation}
                 onPick={hour => setPick(before => {
                   const current = before?.key === selectionKey ? before : factionPick(selectionKey, origin, selected);
                   return { ...current, ...reduceDrill(current, { type: 'pick', hour }) };
                 })} />;
-  if (pinned) return <div className="faction-race-drill"><div className="drill-header"><span className="drill-day">{dayLabel(drillHour)}</span>
+  if (pinned) return <div ref={anchor} className="faction-race-drill"><div className="drill-header"><span className="drill-day">{dayLabel(drillHour)}</span>
     {selected && proven && <FollowControl following={follow} onPause={() => setFollowing(false)} onFollow={() => setFollowing(true)} />}</div>
     {breakdown}</div>;
   return <div ref={anchor} className="faction-race-drill"><DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={current !== null}

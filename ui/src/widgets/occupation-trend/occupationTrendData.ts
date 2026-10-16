@@ -1,3 +1,4 @@
+import type { ChartSummary } from '../../charts/chartSummary';
 import { SECONDARY_DASH } from '../../charts/palette.ts';
 import type { CountryRaceEntry, CountryRaceLine } from '../../charts/race/countryRace';
 import type { LabelAt } from '../../charts/race/lines';
@@ -75,17 +76,18 @@ export function occupationEntries(model: OccupationModel, candidates: readonly s
   }).slice(0, count).map(entry => ({ tag: entry.tag, value: fixedNumber(entry.raw, 5), label: occupationPercent(entry.raw, digits), stretch: entry.stretch }));
 }
 export function occupationLines(model: OccupationModel, tags: readonly string[], measure: ShownMeasure, range: Span,
-  membership: ReadonlyMap<string, readonly Span[]> | null, digits = 2): CountryRaceLine[] {
+  membership: ReadonlyMap<string, readonly Span[]> | null, digits = 2, summaries?: ReadonlyMap<string, ChartSummary>): CountryRaceLine[] {
   const measures: OccupationMeasure[] = measure === 'both' ? ['resistance', 'compliance'] : [measure];
   return tags.flatMap(tag => measures.flatMap(key => {
     const series = model.series.get(tag);
-    const measured = series?.runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour,
+    const summary = summaries?.get(JSON.stringify([tag, key]));
+    const measured = summary?.runs ?? series?.runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour,
       value: fixedNumber(measureRaw(run, key), 5), ...(run.startsSegment ? { breakBefore: true } : {}) })) ?? [];
     const spans = series?.identities ?? series?.segments ?? [];
     const starts = new Set(spans.map(span => span.firstHour));
     const identityRuns = clipToSpans(measured, spans).map(run => ({ ...run, breakBefore: run.breakBefore || starts.has(run.firstHour) }));
     const runs = shownRuns(identityRuns, membership ? membership.get(tag) ?? [] : series?.membership ?? null, range);
-    return runs.length ? [{ tag, id: JSON.stringify([tag, key]), runs, ...(measure === 'both' && key === 'compliance' ? { dash: SECONDARY_DASH } : {}),
+    return runs.length || summary?.buckets.some(Boolean) ? [{ tag, id: JSON.stringify([tag, key]), runs, ...(measure === 'both' && key === 'compliance' ? { dash: SECONDARY_DASH } : {}),
       endLabel: (hour: number, name: string) => {
         const at = occupationAt(model, tag, hour);
         const shown = measure === 'both' ? `${name} ${measureName(key)}` : name;
@@ -95,12 +97,12 @@ export function occupationLines(model: OccupationModel, tags: readonly string[],
   }));
 }
 export function occupationHolderMix(model: OccupationModel, tag: string, originHour: number, hour: number,
-  measure: ShownMeasure, range: Span, membership: ReadonlyMap<string, readonly Span[]> | null, digits = 2) {
+  measure: ShownMeasure, range: Span, membership: ReadonlyMap<string, readonly Span[]> | null, digits = 2, summaries?: ReadonlyMap<string, ChartSummary>) {
   const holder = countryDrillSpans(model.reply.series, tag, originHour);
   const counted = membership ? new Map([...holder].map(([alias, spans]) => [alias, clipToSpans(spans, membership.get(alias) ?? [])])) : holder;
   const alias = countryDrillTagAt(counted, hour);
   return { tag: alias ?? tag, available: alias !== null, membership: counted,
-    lines: occupationLines(model, [...holder.keys()], measure, range, counted, digits) };
+    lines: occupationLines(model, [...holder.keys()], measure, range, counted, digits, summaries) };
 }
 
 export function heldCoverage(run: OccupationTrendRun): string {

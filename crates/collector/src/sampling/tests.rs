@@ -48,7 +48,7 @@ fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inpu
     });
     let rejected = park(&mut batch, request);
     let reads = crate::read_accounting::Capture::new();
-    let completed = crate::allocation_failure_tests::with_allocations_denied(|| {
+    let completed = crate::test_support::with_allocations_denied(|| {
         // SAFETY: rejection must return the owned packet without executing it.
         unsafe { finish_acquisition(&shared, &mut batch, rejected) }
     });
@@ -107,7 +107,7 @@ fn a_rejected_submission_parks_in_the_pool_and_its_join_returns_it() {
     let calibration = pool.calibration();
     assert_eq!(calibration.executor.uncollected, 0);
     assert_eq!(calibration.executor.queued, 0);
-    let completed = crate::allocation_failure_tests::with_allocations_denied(|| {
+    let completed = crate::test_support::with_allocations_denied(|| {
         // SAFETY: as above.
         unsafe { finish_acquisition(&shared, &mut batch, pending) }
     });
@@ -784,7 +784,7 @@ fn rejected_allocating_worker_preserves_payload_without_callback_reads() {
     });
     let rejected = park(&mut batch, request);
     let reads = crate::read_accounting::Capture::new();
-    let completed = crate::allocation_failure_tests::with_allocations_denied(|| {
+    let completed = crate::test_support::with_allocations_denied(|| {
         // SAFETY: the rejected request acquired no native state; it must only
         // return its owned storage for the caller's named unavailable outcome.
         unsafe { finish_acquisition(&shared, &mut batch, rejected) }
@@ -2803,7 +2803,7 @@ fn campaign_clock_callback_keeps_long_identity_and_loss_bytes_under_allocator_de
     let mut capture = shared.wait_clock_preparation(&memory);
     let cadence = unsafe { &mut *shared.cadence.get() };
     let pending = unsafe { &mut *shared.pending.get() };
-    crate::allocation_failure_tests::with_allocations_denied(|| {
+    crate::test_support::with_allocations_denied(|| {
         let (entry, epoch) = capture.read(&memory, 0).unwrap();
         assert_eq!(epoch, 1);
         assert_eq!(entry.campaign_id.len(), 5_001);
@@ -2826,7 +2826,7 @@ fn campaign_clock_callback_keeps_long_identity_and_loss_bytes_under_allocator_de
     memory.bytes[0x2000 + 5_000] = b'b';
     memory.bytes[cgame_state::CURRENT_HOUR..cgame_state::CURRENT_HOUR + 4]
         .copy_from_slice(&43_i32.to_le_bytes());
-    crate::allocation_failure_tests::with_allocations_denied(|| {
+    crate::test_support::with_allocations_denied(|| {
         let (entry, epoch) = capture.read(&memory, 0).unwrap();
         assert_eq!(epoch, 2);
         assert!(!cadence.continuous(&entry));
@@ -2867,7 +2867,7 @@ fn campaign_clock_growth_waits_for_spool_preparation_without_callback_allocation
                 std::thread::yield_now();
             }
         });
-        crate::allocation_failure_tests::with_allocations_denied(|| {
+        crate::test_support::with_allocations_denied(|| {
             let mut capture = shared.wait_clock_preparation(&long);
             let (entry, _) = capture.read(&long, 0).unwrap();
             let index = shared.take_frame(&mut 0).unwrap();
@@ -2912,7 +2912,7 @@ fn campaign_clock_in_service_frames_prepare_before_republication() {
     for index in held {
         shared.recycle_frame_prepared(index);
     }
-    crate::allocation_failure_tests::with_allocations_denied(|| {
+    crate::test_support::with_allocations_denied(|| {
         let mut capture = shared.wait_clock_preparation(&long);
         let (entry, _) = capture.read(&long, 0).unwrap();
         for _ in 0..BUFFERS {
@@ -2932,7 +2932,7 @@ fn campaign_clock_in_service_frames_prepare_before_republication() {
 fn campaign_clock_optional_preparation_denial_is_named_and_nonterminal() {
     let memory = campaign_clock_memory(5_001);
     let shared = campaign_shared();
-    crate::allocation_failure_tests::with_allocations_denied(|| {
+    crate::test_support::with_allocations_denied(|| {
         shared.prepare_clock_capture(&memory).unwrap();
     });
     assert!(!crate::allocation::failed());

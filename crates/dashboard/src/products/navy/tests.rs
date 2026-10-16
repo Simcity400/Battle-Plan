@@ -14,52 +14,26 @@ use replay::{
 
 fn fleet_frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1));
+    let country = |id, canonical_slot, tag: &[u8]| CountryRow {
+        id,
+        canonical_slot,
+        tag: tag.to_vec(),
+        ..Default::default()
+    };
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
-        CountryRow {
-            id: 101,
-            canonical_slot: 7,
-            tag: b"MOD_A".to_vec(),
-            ..Default::default()
-        },
-        CountryRow {
-            id: 102,
-            canonical_slot: 8,
-            tag: b"MOD_B".to_vec(),
-            ..Default::default()
-        },
-        CountryRow {
-            id: 103,
-            canonical_slot: 9,
-            tag: b"MOD_EMPTY".to_vec(),
-            ..Default::default()
-        },
+        country(101, 7, b"MOD_A"),
+        country(102, 8, b"MOD_B"),
+        country(103, 9, b"MOD_EMPTY"),
     ]));
+    let link = |id, canonical_slot| CountryLinkRow { id, canonical_slot };
     *frame.tables[TableId::CountryLinks.index()] =
         TableView::Complete(TableRows::CountryLinks(vec![
-            CountryLinkRow {
-                id: 11,
-                canonical_slot: 7,
-            },
-            CountryLinkRow {
-                id: 12,
-                canonical_slot: 8,
-            },
-            CountryLinkRow {
-                id: 13,
-                canonical_slot: 9,
-            },
-            CountryLinkRow {
-                id: 101,
-                canonical_slot: 7,
-            },
-            CountryLinkRow {
-                id: 102,
-                canonical_slot: 8,
-            },
-            CountryLinkRow {
-                id: 103,
-                canonical_slot: 9,
-            },
+            link(11, 7),
+            link(12, 8),
+            link(13, 9),
+            link(101, 7),
+            link(102, 8),
+            link(103, 9),
         ]));
     *frame.tables[TableId::TaskForces.index()] = TableView::Complete(TableRows::TaskForces(vec![
         TaskForceRow {
@@ -225,80 +199,6 @@ fn navy_scan_proves_roster_and_logical_and_preserves_zero_unknown_gaps_and_ident
 }
 
 #[test]
-fn navy_scoreboard_ships_at_reuses_widget_scan_and_never_fills_missing() {
-    let mut unknown = fleet_frame(2);
-    *unknown.tables[TableId::Ships.index()] = TableView::Unavailable {
-        reason: "missing ships".into(),
-    };
-    let mut absent = fleet_frame(3);
-    let TableView::Complete(TableRows::Countries(rows)) =
-        &mut *absent.tables[TableId::Countries.index()]
-    else {
-        unreachable!()
-    };
-    rows.retain(|row| row.id != 102);
-    *absent.tables[TableId::Ships.index()] = TableView::Complete(TableRows::Ships(vec![]));
-    let source = recorded_source(vec![fleet_frame(0), unknown, absent]);
-    assert_eq!(
-        ships_at(&source, 1, 0, &AtomicBool::new(false)).unwrap(),
-        [
-            ("MOD_A".into(), Some(2)),
-            ("MOD_B".into(), Some(1)),
-            ("MOD_EMPTY".into(), Some(0))
-        ]
-        .into_iter()
-        .collect()
-    );
-    assert!(
-        ships_at(&source, 1, 1, &AtomicBool::new(false))
-            .unwrap()
-            .values()
-            .all(Option::is_none)
-    );
-    assert!(
-        ships_at(&source, 1, 2, &AtomicBool::new(false))
-            .unwrap()
-            .values()
-            .all(Option::is_none)
-    );
-    let values = ships_at(&source, 1, 3, &AtomicBool::new(false)).unwrap();
-    assert_eq!(values["MOD_A"], Some(0));
-    assert_eq!(values["MOD_B"], None);
-    assert!(
-        ships_at(&source, 1, 4, &AtomicBool::new(false))
-            .unwrap()
-            .values()
-            .all(Option::is_none)
-    );
-    assert_eq!(scans_run(&source), 1);
-    let widget_scan = scanned_branch(&source, 1, &AtomicBool::new(false)).unwrap();
-    assert_eq!(widget_scan.series[0]["MOD_A"][0].total, Some(2));
-    assert_eq!(scans_run(&source), 1);
-    assert_eq!(
-        ships_at(&source, 999, 0, &AtomicBool::new(false))
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::InvalidInput
-    );
-    assert_eq!(scans_run(&source), 1);
-
-    assert_eq!(
-        ships_at(&source, 1, 0, &AtomicBool::new(true))
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::Interrupted
-    );
-    let mut unresolved = fleet_frame(0);
-    *unresolved.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
-        reason: "unread country links".into(),
-    };
-    let source = recorded_source(vec![unresolved]);
-    let values = ships_at(&source, 1, 0, &AtomicBool::new(false)).unwrap();
-    assert_eq!(values.len(), 3);
-    assert!(values.values().all(Option::is_none));
-}
-
-#[test]
 fn navy_run_visitor_reuses_scan_and_keeps_zero_unknown_gap_and_replacement() {
     let mut unread = fleet_frame(1);
     *unread.tables[TableId::Ships.index()] = TableView::Unavailable {
@@ -323,11 +223,30 @@ fn navy_run_visitor_reuses_scan_and_keeps_zero_unknown_gap_and_replacement() {
         canonical_slot: 7,
     });
     links.sort_by_key(|row| row.id);
-    let source = recorded_source(vec![fleet_frame(0), unread, fleet_frame(3), replacement]);
-    assert_eq!(
-        ships_at(&source, 1, 0, &AtomicBool::new(false)).unwrap()["MOD_A"],
-        Some(2)
-    );
+    let mut absent = replacement.clone();
+    absent.hour = 5;
+    let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *absent.tables[TableId::Countries.index()]
+    else {
+        unreachable!()
+    };
+    rows.retain(|row| row.id != 102);
+    *absent.tables[TableId::Ships.index()] = TableView::Complete(TableRows::Ships(vec![]));
+    let source = recorded_source(vec![
+        fleet_frame(0),
+        unread,
+        fleet_frame(3),
+        replacement,
+        absent,
+    ]);
+    let output = NavySize::load(
+        &source,
+        &params(),
+        &LoadContext { content: None },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(output.series[0].runs[0].total, Some(2));
     let tags = ["MOD_A".into(), "MOD_EMPTY".into(), "unobserved".into()];
     let mut seen = BTreeMap::<String, Vec<_>>::new();
     visit_ship_runs(
@@ -350,6 +269,7 @@ fn navy_run_visitor_reuses_scan_and_keeps_zero_unknown_gap_and_replacement() {
             (1, 1, true, None),
             (3, 3, true, Some(2)),
             (4, 4, true, Some(2)),
+            (5, 5, false, Some(0)),
         ]
     );
     assert_eq!(
@@ -357,11 +277,47 @@ fn navy_run_visitor_reuses_scan_and_keeps_zero_unknown_gap_and_replacement() {
         [
             (0, 0, true, Some(0)),
             (1, 1, true, None),
-            (3, 4, true, Some(0)),
+            (3, 5, true, Some(0)),
         ]
     );
     assert!(!seen.contains_key("MOD_B"));
     assert!(!seen.contains_key("unobserved"));
+    assert_eq!(scans_run(&source), 1);
+
+    let mut absent_runs = Vec::new();
+    visit_ship_runs(
+        &source,
+        1,
+        &["MOD_B".into()],
+        &AtomicBool::new(false),
+        |_, first, last, _, value| {
+            absent_runs.push((first, last, value));
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        absent_runs,
+        [(0, 0, Some(1)), (1, 1, None), (3, 4, Some(1))]
+    );
+    let error = visit_ship_runs(
+        &source,
+        999,
+        &tags,
+        &AtomicBool::new(false),
+        |_, _, _, _, _| panic!("unknown branch must refuse before visiting"),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    let error = visit_ship_runs(
+        &source,
+        1,
+        &tags,
+        &AtomicBool::new(true),
+        |_, _, _, _, _| panic!("cancelled visitor must not call back"),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
     assert_eq!(scans_run(&source), 1);
 
     let cancelled = AtomicBool::new(false);
@@ -383,26 +339,35 @@ fn navy_run_visitor_reuses_scan_and_keeps_zero_unknown_gap_and_replacement() {
     )
     .unwrap_err();
     assert_eq!(error.to_string(), "synthetic callback refusal");
-    let cold = recorded_source(vec![fleet_frame(0)]);
+    let mut unresolved = fleet_frame(0);
+    *unresolved.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
+        reason: "unread country links".into(),
+    };
+    let cold = recorded_source(vec![unresolved]);
     let error = visit_ship_runs(&cold, 1, &tags, &AtomicBool::new(true), |_, _, _, _, _| {
         panic!("cancelled visitor must not call back")
     })
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
     assert_eq!(scans_run(&cold), 0);
+    visit_ship_runs(&cold, 1, &tags, &AtomicBool::new(false), |_, _, _, _, _| {
+        panic!("unavailable country links must not prove a zero or known count")
+    })
+    .unwrap();
+    assert_eq!(scans_run(&cold), 1);
 }
 
 #[test]
 fn navy_unknown_runs_merge_for_both_measures_and_owners_but_keep_gaps() {
-    let frames = (0..16)
-        .filter(|hour| *hour != 7)
+    let frames = (0..8)
+        .filter(|hour| *hour != 3)
         .map(|hour| {
             let mut frame = fleet_frame(hour);
-            if hour < 6 || (8..10).contains(&hour) {
+            if hour < 2 || (4..6).contains(&hour) {
                 *frame.tables[TableId::Ships.index()] = TableView::Unavailable {
                     reason: "unread ships".into(),
                 };
-            } else if hour >= 10
+            } else if hour >= 6
                 && let TableView::Complete(TableRows::Ships(ships)) =
                     &mut *frame.tables[TableId::Ships.index()]
             {
@@ -418,12 +383,12 @@ fn navy_unknown_runs_merge_for_both_measures_and_owners_but_keep_gaps() {
             assert_eq!(runs.len(), 3);
             assert_eq!(
                 (runs[0].first_hour, runs[0].last_hour, runs[0].total),
-                (0, 5, None)
+                (0, 1, None)
             );
             assert!(runs[1].total.is_some());
             assert_eq!(
                 (runs[2].first_hour, runs[2].last_hour, runs[2].total),
-                (8, 15, None)
+                (4, 7, None)
             );
             assert!(runs.iter().all(|run| run.starts_segment));
         }
@@ -440,14 +405,6 @@ fn navy_scan_cancel_and_unknown_branch_are_refused() {
             .kind(),
         io::ErrorKind::InvalidInput
     );
-    let source = recorded_source(vec![fleet_frame(0)]);
-    assert_eq!(
-        ships_at(&source, 1, 0, &AtomicBool::new(true))
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::Interrupted
-    );
-    assert_eq!(scans_run(&source), 0);
     assert_eq!(
         scan(&replay, 1, &AtomicBool::new(true)).unwrap_err().kind(),
         io::ErrorKind::Interrupted
@@ -743,7 +700,7 @@ fn navy_strength_is_exact_fixed5_hp_with_independently_known_maximum() {
         Some(500_000)
     );
     assert_eq!(
-        ships_at(&source, 1, 0, &AtomicBool::new(false)).unwrap()["MOD_A"],
+        project(&scanned, &params()).series[0].runs[0].total,
         Some(2)
     );
     assert_eq!(scans_run(&source), 1);
@@ -804,9 +761,14 @@ fn navy_hp_refusals_are_local_and_never_refuse_ship_counts() {
         .collect();
     let source = recorded_source(frames);
     let scanned = scanned_branch(&source, 1, &AtomicBool::new(false)).unwrap();
+    let counts = project(&scanned, &params());
     for hour in 0..4 {
         assert_eq!(
-            ships_at(&source, 1, hour, &AtomicBool::new(false)).unwrap()["MOD_A"],
+            counts.series[0]
+                .runs
+                .iter()
+                .find(|run| run.first_hour <= hour && hour <= run.last_hour)
+                .and_then(|run| run.total),
             Some(2)
         );
     }
@@ -890,10 +852,6 @@ fn navy_large_native_hp_only_refuses_the_json_strength_projection() {
         rows[0].strength = MAX_EXACT + 1;
     }
     let source = recorded_source(vec![frame]);
-    assert_eq!(
-        ships_at(&source, 1, 0, &AtomicBool::new(false)).unwrap()["MOD_A"],
-        Some(2)
-    );
     let scanned = scanned_branch(&source, 1, &AtomicBool::new(false)).unwrap();
     assert_eq!(
         project(&scanned, &params()).series[0].runs[0].total,
@@ -1005,12 +963,22 @@ fn navy_serves_five_thousand_countries_and_reuses_scoreboard_scan() {
         );
         assert!(crate::transport::json_len(&output, MAX_REPLY_BYTES).is_some());
     }
-    assert_eq!(
-        ships_at(&source, 1, 0, &AtomicBool::new(false))
-            .unwrap()
-            .len(),
-        5000
-    );
+    let tags: Vec<_> = (0..5000)
+        .map(|index| String::from_utf8(scale_tag(index)).unwrap())
+        .collect();
+    let mut visited = 0;
+    visit_ship_runs(
+        &source,
+        1,
+        &tags,
+        &AtomicBool::new(false),
+        |_, _, _, _, _| {
+            visited += 1;
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(visited, 5000);
     assert_eq!(scans_run(&source), 1);
 }
 
@@ -1030,9 +998,6 @@ fn navy_unsupported_country_tags_are_named_and_counted() {
             .iter()
             .any(|warning| warning.contains("Country tag bytes [255]: 1 observations"))
     );
-    let error = ships_at(&source, 1, 0, &AtomicBool::new(false)).unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-    assert!(error.to_string().contains("[255]: 1"));
     let error = visit_ship_runs(
         &source,
         1,
@@ -1065,10 +1030,20 @@ fn navy_cache_retains_two_scanned_branches_and_rebuilds_evicted_history() {
     )
     .unwrap();
     for branch in [1, 2, 3, 2] {
-        assert_eq!(
-            ships_at(&source, branch, 0, &AtomicBool::new(false)).unwrap()["MOD_A"],
-            Some(2)
-        );
+        let mut values = Vec::new();
+        visit_ship_runs(
+            &source,
+            branch,
+            &["MOD_A".into()],
+            &AtomicBool::new(false),
+            |_, first, last, _, value| {
+                assert_eq!((first, last), (0, 0));
+                values.push(value);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(values, [Some(2)]);
     }
     let state = source.state::<Scans>();
     assert_eq!(state.lock().unwrap().runs, 3);
@@ -1082,7 +1057,14 @@ fn navy_cache_retains_two_scanned_branches_and_rebuilds_evicted_history() {
             .collect::<Vec<_>>(),
         [2, 3]
     );
-    ships_at(&source, 1, 0, &AtomicBool::new(false)).unwrap();
+    visit_ship_runs(
+        &source,
+        1,
+        &["MOD_A".into()],
+        &AtomicBool::new(false),
+        |_, _, _, _, _| Ok(()),
+    )
+    .unwrap();
     assert_eq!(state.lock().unwrap().runs, 4);
 }
 
@@ -1304,5 +1286,55 @@ fn navy_realistic_scale_including_decode() {
         println!(
             "navy_realistic countries={countries} ships={ships} hours=24 scan_with_decode_ms_per_hour={ms:.3} decode_ms_per_hour={decode_ms:.3} product_ms_per_hour={product_ms:.3} top10_ship_bytes={bytes} top10_hp_bytes={hp_bytes} bound={MAX_REPLY_BYTES}"
         );
+    }
+}
+
+#[test]
+fn phase_b_navy_database_success_and_failure_are_bound_before_observation() {
+    for removed in [false, true] {
+        let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[(
+            "common/units/fleet.txt",
+            "sub_units={mod_hull={}}",
+        )]);
+        let source = recorded_source(vec![fleet_frame(100)]);
+        let catalogue = Arc::new(catalogue);
+        if removed {
+            std::fs::remove_file(folder.0.join("common/units/fleet.txt")).unwrap();
+        }
+        let configured = content_units(&catalogue, &mut Vec::new());
+        assert_eq!(configured.is_some(), !removed);
+        let database = catalogue
+            .content
+            .layers
+            .derived::<catalogue::CachedResult<installed_content::unit_leader::SubUnits>>();
+        let binding = part_content(&source, Some(&catalogue));
+        let key = (41, Some("mod_hull".into()));
+        let classes = BTreeSet::from([0]);
+        let expected = parts(
+            &classes,
+            std::slice::from_ref(&key),
+            configured.as_deref(),
+            NavyGrouping::Class,
+            |_| None,
+            Some(&binding),
+        );
+        for _ in 0..10 {
+            let mut warnings = Vec::new();
+            let units = content_units(&catalogue, &mut warnings);
+            assert_eq!(units.is_some(), !removed);
+            assert_eq!(
+                parts(
+                    &classes,
+                    std::slice::from_ref(&key),
+                    units.as_deref(),
+                    NavyGrouping::Class,
+                    |_| None,
+                    Some(&binding)
+                ),
+                expected
+            );
+        }
+        assert_eq!(database.loads(), 1);
+        assert_eq!(binding.loads(&(key, 0)), 1);
     }
 }

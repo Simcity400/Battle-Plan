@@ -69,6 +69,8 @@ export interface SunburstItem {
    * `SunburstText.countLabel`: a node counts each id once, however many of its
    * items hold it (a project that repaired and then built, with the kind level off). */
   counted?: readonly string[];
+  /** Count of disjoint contributors already aggregated by the producer. */
+  count?: number;
 }
 
 /** An independently established whole, when it does not depend on how its parts
@@ -113,8 +115,9 @@ export interface SunburstNode {
   notes: string[];
   /** Parts not counted by the moment shown, by reason. */
   unknown: Record<string, number>;
-  /** The things its items hold, by id; `count` is how many. */
+  /** The things its items hold by id, plus disjoint aggregate contributors. */
   counted: Set<string>;
+  aggregateCount: number;
   count: number;
   /** The slice that holds the smallest of more siblings than there are colours. */
   other?: boolean;
@@ -156,7 +159,7 @@ function order(a: SunburstNode, b: SunburstNode): number {
  * add together). Amounts and unknown counts add up the tree; a node is unmeasured
  * only when every item in it is. */
 export function groupTree(items: readonly SunburstItem[], root: { id: string; label: string }, shown: readonly boolean[] = [], authoritativeTotal?: SunburstTotal): SunburstNode {
-  const top: SunburstNode = { id: root.id, key: root.id, label: root.label, depth: 0, parent: null, children: [], value: 0, exact: 0n, valueUnknown: false, final: 0, finalUnknown: false, corrections: false, present: false, unmeasured: true, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), count: 0 };
+  const top: SunburstNode = { id: root.id, key: root.id, label: root.label, depth: 0, parent: null, children: [], value: 0, exact: 0n, valueUnknown: false, final: 0, finalUnknown: false, corrections: false, present: false, unmeasured: true, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), aggregateCount: 0, count: 0 };
   const byId = new Map<string, SunburstNode>([[top.id, top]]);
   const measured = new Set<SunburstNode>();
   const notes = new Map<SunburstNode, Set<string>>();
@@ -172,7 +175,7 @@ export function groupTree(items: readonly SunburstItem[], root: { id: string; la
       if (!child) {
         child = { id, key: key.id, label: key.label, icon: key.icon ?? undefined, countryFlag: key.countryFlag, colour: key.colour, last: key.last, keepZero: key.keepZero,
           stretch: key.stretch,
-          depth: node.depth + 1, parent: node, children: [], value: 0, exact: 0n, valueUnknown: false, final: 0, finalUnknown: false, corrections: false, present: false, unmeasured: true, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), count: 0 };
+          depth: node.depth + 1, parent: node, children: [], value: 0, exact: 0n, valueUnknown: false, final: 0, finalUnknown: false, corrections: false, present: false, unmeasured: true, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), aggregateCount: 0, count: 0 };
         byId.set(id, child);
         node.children.push(child);
       }
@@ -204,7 +207,8 @@ export function groupTree(items: readonly SunburstItem[], root: { id: string; la
       }
       add(link.unknown, item.unknown);
       for (const id of item.counted ?? []) link.counted.add(id);
-      link.count = link.counted.size;
+      link.aggregateCount += item.count ?? 0;
+      link.count = link.counted.size + link.aggregateCount;
       if (value == null) link.partlyUnmeasured = true;
       if (item.note) {
         let seen = notes.get(link);
@@ -261,7 +265,7 @@ function foldChildren(node: SunburstNode, limit: number, label: string): void {
     const folded = shown.slice(limit - 1);
     const surplus = new Set(folded);
     const other: SunburstNode = { id: `${node.id}${SEPARATOR}\u0001other`, key: '\u0001other', label, depth: node.depth + 1, parent: node,
-      children: folded, value: 0, exact: 0n, valueUnknown: false, final: 0, finalUnknown: false, corrections: false, present: false, unmeasured: false, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), count: 0, other: true };
+      children: folded, value: 0, exact: 0n, valueUnknown: false, final: 0, finalUnknown: false, corrections: false, present: false, unmeasured: false, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), aggregateCount: 0, count: 0, other: true };
     const notes = new Set<string>();
     for (const child of folded) {
       if (child.weight !== undefined || other.weight !== undefined)
@@ -271,7 +275,8 @@ function foldChildren(node: SunburstNode, limit: number, label: string): void {
       other.finalUnknown ||= child.finalUnknown;
       other.corrections ||= child.corrections;
       for (const id of child.counted) other.counted.add(id);
-      other.count = other.counted.size;
+      other.aggregateCount += child.aggregateCount;
+      other.count = other.counted.size + other.aggregateCount;
       other.present ||= child.present;
       other.partlyUnmeasured ||= child.partlyUnmeasured;
       for (const note of child.notes) if (!notes.has(note)) { notes.add(note); other.notes.push(note); }

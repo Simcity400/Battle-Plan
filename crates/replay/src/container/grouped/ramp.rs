@@ -39,7 +39,7 @@ pub(super) const EVIDENCE: usize = 2;
 /// An exact fraction with a positive denominator. A window's positions stay
 /// within 32 * 2^31 units and its rates' denominators within 64, so every
 /// product below fits 64 bits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Ratio {
     num: i64,
     den: i64,
@@ -125,6 +125,27 @@ pub(super) struct Ramp {
     /// The last hour's change when no rate allowed it, which the window
     /// holds as predicted instead.
     broken: Option<i32>,
+}
+
+impl std::hash::Hash for Ramp {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Reuse the maintained bounds, phase and endpoint rather than hashing
+        // every position again. Equality still checks the complete window,
+        // including positions outside the held prefix, on a matching hash.
+        (
+            self.len,
+            self.unit,
+            self.idle,
+            self.nonzero,
+            self.low,
+            self.high,
+            self.next,
+            self.rated,
+            self.broken,
+            self.positions[usize::from(self.len)],
+        )
+            .hash(state);
+    }
 }
 
 /// A window after one more hour.

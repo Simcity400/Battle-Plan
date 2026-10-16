@@ -1,19 +1,18 @@
 //! Disposable synthetic processes isolate terminal state and allocator refusal.
 
 use crate::allocation::{self, Code, Context, Phase};
+use crate::test_support::with_allocations_denied;
+use crate::test_support::{ATTEMPTS, DENIALS, NullGuard, REACHED, TARGET_PHASE};
 use replay::rows::RowCodec;
 use std::{
-    alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
     fs::{self, File, OpenOptions},
     io,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
-    ptr,
-    sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
-use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 
 const CHILD: &str = "allocation_failure_tests::allocation_safety_child";
 const CAMPAIGN: &[u8; 36] = b"01234567-89ab-cdef-0123-456789abcdef";
@@ -32,18 +31,6 @@ const PHASES: [(Phase, &str); 11] = [
     (Phase::Teardown, "teardown"),
 ];
 
-struct FailingAllocator;
-#[global_allocator]
-static ALLOCATOR: FailingAllocator = FailingAllocator;
-
-// Only the prepared-buffer child interval denies allocations. Fixed controls,
-// paths, thread creation and recovery run outside that accepted boundary.
-static OWNER: AtomicU32 = AtomicU32::new(0);
-static ORDINAL: AtomicUsize = AtomicUsize::new(usize::MAX);
-static ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
-static DENIALS: AtomicUsize = AtomicUsize::new(0);
-static TARGET_PHASE: AtomicU8 = AtomicU8::new(0);
-static REACHED: AtomicBool = AtomicBool::new(false);
 thread_local! {
     static FAIL_PUBLICATION: Cell<bool> = const { Cell::new(false) };
 }
@@ -53,70 +40,6 @@ pub(crate) fn before_spool_publication() {
         allocation::fail(Phase::Spool, Code::Reserve);
     }
 }
-pub(crate) fn phase_enter(phase: Phase) {
-    if TARGET_PHASE.load(Ordering::Relaxed) == phase as u8 {
-        REACHED.store(true, Ordering::Relaxed);
-    }
-}
-pub(crate) fn with_allocations_denied<T>(run: impl FnOnce() -> T) -> T {
-    let guard = NullGuard::new(1);
-    let output = run();
-    drop(guard);
-    output
-}
-fn deny() -> bool {
-    if OWNER.load(Ordering::Relaxed) != unsafe { GetCurrentThreadId() } {
-        return false;
-    }
-    let attempt = ATTEMPTS.fetch_add(1, Ordering::Relaxed) + 1;
-    if attempt >= ORDINAL.load(Ordering::Relaxed) {
-        DENIALS.fetch_add(1, Ordering::Relaxed);
-        return true;
-    }
-    false
-}
-unsafe impl GlobalAlloc for FailingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if deny() {
-            ptr::null_mut()
-        } else {
-            unsafe { System.alloc(layout) }
-        }
-    }
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        if deny() {
-            ptr::null_mut()
-        } else {
-            unsafe { System.alloc_zeroed(layout) }
-        }
-    }
-    unsafe fn realloc(&self, old: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-        if deny() {
-            ptr::null_mut()
-        } else {
-            unsafe { System.realloc(old, layout, size) }
-        }
-    }
-    unsafe fn dealloc(&self, allocation: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(allocation, layout) };
-    }
-}
-struct NullGuard;
-impl NullGuard {
-    fn new(ordinal: usize) -> Self {
-        ORDINAL.store(ordinal, Ordering::Relaxed);
-        ATTEMPTS.store(0, Ordering::Relaxed);
-        DENIALS.store(0, Ordering::Relaxed);
-        OWNER.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
-        Self
-    }
-}
-impl Drop for NullGuard {
-    fn drop(&mut self) {
-        OWNER.store(0, Ordering::Relaxed);
-    }
-}
-
 fn child(mode: &str, phase: &str, ordinal: usize) -> Output {
     static CALLS: AtomicUsize = AtomicUsize::new(0);
     let run = std::env::temp_dir().join(format!(
@@ -441,12 +364,14 @@ fn prepared_buffers_null(phase: Phase, ordinal: usize) -> io::Result<()> {
                     .map(|state| StateCoreRow {
                         state,
                         cores: vec![1, 2, 3, 4],
+                        ..Default::default()
                     })
                     .collect(),
             );
             let fresh = TableRows::StateCores(vec![StateCoreRow {
                 state: 129,
                 cores: vec![5, 6],
+                ..Default::default()
             }]);
             prepared_null(phase, ordinal, || {
                 let merged =
@@ -460,7 +385,7 @@ fn prepared_buffers_null(phase: Phase, ordinal: usize) -> io::Result<()> {
         }
         Phase::Encode => prepared_encoder_null(ordinal),
         Phase::Status => {
-            crate::status::allocation_failure_exercise()?;
+            crate::status_tests::allocation_failure_exercise()?;
             let rows: Vec<_> = (0..128).map(|row| (row, "borrowed \"status\"\n")).collect();
             let mut bytes = Vec::new();
             prepared_null(phase, ordinal, || {
@@ -839,7 +764,7 @@ fn exercise_pipeline(
                             let _scope = allocation::enter(Phase::Raw);
                             crate::raw::allocation_exercise();
                             if !allocation::failed() {
-                                crate::snapshot_plan::allocation_failure_exercise();
+                                crate::snapshot_integration_tests::allocation_failure_exercise();
                             }
                         }
                         Phase::Decode => {

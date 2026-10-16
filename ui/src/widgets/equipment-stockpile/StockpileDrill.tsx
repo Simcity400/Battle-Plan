@@ -3,6 +3,7 @@ import DrillParts from '../../charts/drill/DrillParts';
 import BreakdownChart from '../../charts/drill/BreakdownChart';
 import type { BreakdownSeries } from '../../charts/drill/BreakdownChart';
 import { dayLabel, drawLine } from '../../charts/draw';
+import { drawLineSummary } from '../../charts/chartSummary';
 import { exactPartShare } from '../../charts/race/countryPartsDrillData';
 import { runAt } from '../../charts/series';
 import { fixedNumber, formatAmount, formatRate, formatSigned } from '../../charts/valueAxis';
@@ -11,6 +12,11 @@ import type { EquipmentStockpileReply } from '../../generated/dashboard';
 import type { StockGroup } from './stockpileData';
 import { balanceMode, balanceOperandsAt, dailyAt, dailyIcAt, stockAt, stockRuns, variantName } from './stockpileData';
 import { stockpilePartHistory } from './stockpileDrill';
+import { groupIn } from './preparedStockpileChart';
+import { usePreparedStockpileChart } from './usePreparedStockpileChart';
+import type { DashboardClient } from '../../dashboard/client';
+import type { BoundTrack } from '../../dashboard/model';
+import type { Span } from '../../charts/series';
 
 /** The dash Needed is drawn with, as the Fuel widget draws capacity. */
 const NEED_DASH = [5, 4];
@@ -21,8 +27,9 @@ const NEED_DASH = [5, 4];
  * IC they put in and their cost per unit, and the stock over time by model with what
  * is needed dashed. A cost per unit is a production line's; a model held but not in
  * production has none recorded. */
-export default function StockpileDrill({ data, group, hour, ...chart }: {
+export default function StockpileDrill({ data, group, hour, client, track, aliases, ...chart }: {
   data: EquipmentStockpileReply; group: StockGroup; hour: number;
+  client: DashboardClient; track: BoundTrack; aliases?: ReadonlyMap<string, readonly Span[]> | null;
 } & Omit<Parameters<typeof BreakdownChart>[0], 'series' | 'axes' | 'label'>) {
   const tokens = useChartTokens(), viewport = useViewportHeight();
   const amount = (raw: bigint) => formatAmount(raw, data.decimals, 0);
@@ -35,6 +42,12 @@ export default function StockpileDrill({ data, group, hour, ...chart }: {
     text: model.stock == null ? 'Not recorded' : amount(model.stock), shareText: exactPartShare(model.stock, total == null ? null : Number(total)),
     color: colours.get(model.variant.id) }));
   const player = balanceMode(data, hour) === 'player';
+  const chartGroups = useMemo<StockGroup[]>(() => [...group.variants.map(variant => ({ ...group, kind: 'variant' as const,
+    key: variant.id, variants: [variant], types: [], scope: [] })), { ...group, scope: group.scope }], [group]);
+  const incoming = usePreparedStockpileChart(client, track, data.tag, chartGroups, 'variant', hour, chart.active,
+    group.variants.map(variant => 'stock:' + variant.id), undefined, aliases, player ? group : undefined);
+  const display = incoming.prepared ? incoming.displayData ?? data : data;
+  const displayedGroup = groupIn(display, group);
   const logistics = player ? balanceOperandsAt(data, group, hour) : null;
   // Models in the order the bars list them: most held first, unrecorded last.
   const byStock = [...models].sort((a, b) => (a.stock == null ? 1 : 0) - (b.stock == null ? 1 : 0)
@@ -52,13 +65,25 @@ export default function StockpileDrill({ data, group, hour, ...chart }: {
     return [{ id: model.variant.id, label: model.label, output: output == null ? 'Not recorded' : formatRate(output, data.decimals),
       ic: ic == null ? 'Not recorded' : formatRate(ic, data.decimals), cost }];
   });
-  const series = useMemo<BreakdownSeries[]>(() => models.map(model => ({ id: model.variant.id, label: model.label,
-    color: colours.get(model.variant.id)!, runs: stockRuns(data, { variants: [model.variant] }),
-    labelAt: at => variantName(model.variant, at),
-    amount: at => { const value = stockAt(data, { variants: [model.variant] }, at); return value == null ? 'Not recorded' : formatAmount(value, data.decimals, 0); } })),
-  [models, data, colours]);
-  const needRuns = useMemo(() => player ? stockpilePartHistory(data, group, 'balance').series.find(part => part.id === 'need')?.runs
-    .map(run => ({ ...run, value: -run.value })) ?? [] : [], [data, group, player]);
+  const series = useMemo<BreakdownSeries[]>(() => models.map(model => {
+    const amountAt = (at: number) => {
+      const reached = incoming.prepared ? incoming.data?.prepared?.from === at ? incoming.data : undefined : data;
+      const variant = reached?.variants.find(row => row.id === model.variant.id);
+      const value = reached && variant ? stockAt(reached, { variants: [variant] }, at) : null;
+      return value == null ? 'Not recorded' : formatAmount(value, data.decimals, 0);
+    };
+    return { id: model.variant.id, label: model.label, color: colours.get(model.variant.id)!,
+      runs: incoming.prepared ? incoming.summaries.get(model.variant.id)?.runs ?? [] : stockRuns(display, { variants: [model.variant] }),
+      labelAt: at => variantName((incoming.data?.variants ?? display.variants).find(row => row.id === model.variant.id) ?? model.variant, at),
+      amount: amountAt, missingAt: amountAt };
+  }), [models, data, display, colours, incoming.prepared, incoming.data, incoming.summaries]);
+  const needRuns = useMemo(() => player ? stockpilePartHistory(display, displayedGroup, 'balance').series.find(part => part.id === 'need')?.runs
+    .map(run => ({ ...run, value: -run.value })) ?? [] : [], [display, displayedGroup, player]);
+  const totalSummary = incoming.summaries.get(group.key);
+  // A type can be incomplete because of an unresolved model outside its known
+  // members. Their stack still shows those members, as the legacy chart does.
+  const summaries = incoming.prepared ? { parts: series.map(part => incoming.summaries.get(part.id) ?? { from: hour, to: hour, width: 1, buckets: [], runs: [] }),
+    total: totalSummary?.runs || totalSummary?.buckets.every(bucket => bucket !== null && !bucket.hasBreak) ? totalSummary : undefined } : undefined;
   return <div className="stockpile-models">
     {logistics && <p className="stockpile-facts">Available <b>{logistics.available == null ? 'not known' : amount(logistics.available)}</b>
       {' − '}needed <b>{logistics.need == null ? 'not known' : amount(logistics.need)}</b>
@@ -77,11 +102,14 @@ export default function StockpileDrill({ data, group, hour, ...chart }: {
       </div>)}
     </div>}
     <p className="drill-empty">Stock over time by model{player ? ' · dashed: needed' : ''}</p>
-    <BreakdownChart {...chart} series={series} selectedHour={hour} tooltipHeight={viewport}
+    <BreakdownChart {...chart} {...{ summaries }} series={series} selectedHour={hour} tooltipHeight={viewport}
+      onSummaryView={incoming.onSummaryView} onHover={incoming.onHover} onNavigateHour={incoming.onNavigateHour}
+      keyboardHour={incoming.keyboardHour} keyboardRevision={incoming.keyboardRevision}
       label={`${group.label} in stock over time, by model`} axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }}
       overlay={(ctx, frame, chartTokens) => {
         chart.overlay?.(ctx, frame, chartTokens);
-        if (needRuns.length) drawLine(ctx, frame, chartTokens, needRuns, chartTokens.text, { dash: NEED_DASH, held: true });
+        if (incoming.prepared) { if (incoming.needed) drawLineSummary(ctx, frame, chartTokens, incoming.needed, chartTokens.text, true, null, { dash: NEED_DASH }); }
+        else if (needRuns.length) drawLine(ctx, frame, chartTokens, needRuns, chartTokens.text, { dash: NEED_DASH, held: true });
       }} />
   </div>;
 }

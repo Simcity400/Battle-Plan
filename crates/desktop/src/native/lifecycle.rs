@@ -10,6 +10,28 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, WebviewWindow};
 
+/// The folders a new viewer starts with: the last ones Apply sent, which may be
+/// newer than the preferences read before taking the host lock.
+fn launch_folders(
+    applied: Option<&dashboard::Config>,
+    saved: Option<&dashboard::Config>,
+) -> Vec<std::ffi::OsString> {
+    applied.or(saved).map(folder_arguments).unwrap_or_default()
+}
+
+/// The effective folders as the viewer's folder options; the last occurrence
+/// of an option wins over one forwarded from the host's own command line.
+fn folder_arguments(config: &dashboard::Config) -> Vec<std::ffi::OsString> {
+    [
+        ("--game-dir", &config.game_dir),
+        ("--user-dir", &config.user_dir),
+    ]
+    .into_iter()
+    .filter(|(_, folder)| !folder.as_os_str().is_empty())
+    .flat_map(|(option, folder)| [std::ffi::OsString::from(option), folder.into()])
+    .collect()
+}
+
 pub(super) struct Process {
     child: Child,
     _job: Job,
@@ -34,11 +56,18 @@ impl NativeHost {
             return Ok(());
         }
         let display = crate::video::launch_actions(window)?;
+        // The host owns the content folders; the viewer reads none of its own.
+        // Unreadable preferences start it without folders, and Settings shows why.
+        let saved_folders = crate::dashboard_service::host_config()
+            .ok()
+            .map(|(config, _)| config);
         let saved_diagnostics =
             crate::video::current_map_diagnostics(&window.state::<crate::video::VideoState>());
         let mut inner = self.shared.0.lock().map_err(|e| e.to_string())?;
-        // A change saved after the read above has already reached `set_diagnostics`.
+        // A change saved after the reads above has already reached
+        // `set_diagnostics` or `set_folders`, which keep it under this lock.
         let diagnostics = inner.diagnostics.unwrap_or(saved_diagnostics);
+        let folders = launch_folders(inner.folders.as_ref(), saved_folders.as_ref());
         if inner.process.is_some() {
             return Ok(());
         }
@@ -57,6 +86,7 @@ impl NativeHost {
         let parent = window.hwnd().map_err(|e| e.to_string())?.0 as usize;
         let mut child = Command::new(&executable)
             .args(std::env::args_os().skip(1))
+            .args(folders)
             .env("BATTLE_PLAN_VIEWER_PARENT", parent.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -360,5 +390,46 @@ impl NativeHost {
             thread::sleep(Duration::from_millis(20));
         }
         self.shared.1.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{folder_arguments, launch_folders};
+
+    #[test]
+    fn the_viewer_receives_only_the_folders_the_host_has() {
+        let config = |game: &str, user: &str| dashboard::Config {
+            game_dir: game.into(),
+            user_dir: user.into(),
+            background_preparation: Some(false),
+        };
+        assert_eq!(
+            folder_arguments(&config(r"C:\Game", r"C:\User")),
+            ["--game-dir", r"C:\Game", "--user-dir", r"C:\User"]
+        );
+        assert_eq!(
+            folder_arguments(&config("", r"C:\User")),
+            ["--user-dir", r"C:\User"]
+        );
+        assert!(folder_arguments(&config("", "")).is_empty());
+    }
+
+    /// Apply can save between the launch's preference read and the host lock;
+    /// the folders it sent win over that older read.
+    #[test]
+    fn a_new_viewer_starts_with_the_folders_apply_last_sent() {
+        let config = |game: &str| dashboard::Config {
+            game_dir: game.into(),
+            user_dir: r"C:\User".into(),
+            background_preparation: None,
+        };
+        let (applied, saved) = (config(r"C:\New"), config(r"C:\Old"));
+        assert_eq!(
+            launch_folders(Some(&applied), Some(&saved)),
+            folder_arguments(&applied)
+        );
+        assert_eq!(launch_folders(None, Some(&saved)), folder_arguments(&saved));
+        assert!(launch_folders(None, None).is_empty());
     }
 }

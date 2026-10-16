@@ -1,0 +1,21 @@
+[package]
+name = "engine-stability"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+# Tests that take more than about two seconds; see AGENTS.md.
+slow-tests = []
+alloc-fault-injection = ["engine-native/alloc-fault-injection"]
+
+[dependencies]
+engine-native.workspace = true
+
+[dev-dependencies]
+engine-native = { workspace = true, features = ["test-support"] }

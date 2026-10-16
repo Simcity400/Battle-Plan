@@ -20,11 +20,10 @@ use super::recorded_rows;
 use super::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product};
 use crate::{
     Source, catalogue, content, invalid,
-    metadata::{check_cancel, link_slots, tagged_countries_indexed, validate_campaign},
+    metadata::{check_cancel, link_slots, tagged_countries_indexed},
 };
 use replay::{
     container::Replay,
-    frame::FrameDecoder,
     rows::{TableId, tables},
 };
 use std::{
@@ -35,27 +34,33 @@ use std::{
 
 mod assignment;
 mod model;
+pub(crate) mod prepared;
 mod scan;
 mod scores;
 pub use model::*;
-use scan::{DayCache, Snapshot, extend_days_anchored, partial_day, span};
+use scan::{DayCache, Snapshot, span};
 #[cfg(test)]
-use scan::{extend_days, extend_days_shared, scan_days};
-use std::sync::{Arc, Mutex};
+use scan::{extend_days, extend_days_anchored, extend_days_shared, partial_day, scan_days};
+use std::sync::Arc;
+#[cfg(test)]
+use {crate::metadata::validate_campaign, replay::frame::FrameDecoder, std::sync::Mutex};
 
 pub struct AirSuperiority;
 const DAY_HOURS: i32 = 24;
 
+#[cfg(test)]
 type AnchorEntry = (
     Arc<super::country_groups::Scan>,
     Arc<assignment::SideAnchors>,
 );
+#[cfg(test)]
 #[derive(Default)]
 struct AirBranch {
     gate: Mutex<()>,
     data: Mutex<Arc<DayCache>>,
     anchors: Mutex<Option<AnchorEntry>>,
 }
+#[cfg(test)]
 impl AirBranch {
     fn fork(&self) -> Self {
         Self {
@@ -72,13 +77,16 @@ impl AirBranch {
         }
     }
 }
+#[cfg(test)]
 type ViewpointEntry = (u64, String, bool, Arc<AirBranch>);
 
+#[cfg(test)]
 #[derive(Default)]
 struct AirCache {
     branches: Vec<(u64, Arc<AirBranch>)>,
     viewpoints: Vec<ViewpointEntry>,
 }
+#[cfg(test)]
 impl Clone for AirCache {
     fn clone(&self) -> Self {
         Self {
@@ -97,6 +105,7 @@ impl Clone for AirCache {
         }
     }
 }
+#[cfg(test)]
 fn cached_branch(source: &Source, branch: u64, view: Option<(&str, bool)>) -> Arc<AirBranch> {
     let registry = source.append_state::<AirCache>();
     let mut registry = registry.lock().unwrap_or_else(|e| e.into_inner());
@@ -133,6 +142,7 @@ fn cached_branch(source: &Source, branch: u64, view: Option<(&str, bool)>) -> Ar
         result
     }
 }
+#[cfg(test)]
 fn branch_anchors(
     entry: &AirBranch,
     groups: &Arc<super::country_groups::Scan>,
@@ -154,6 +164,7 @@ fn branch_anchors(
     anchors
 }
 
+#[cfg(test)]
 fn extend_branch(
     entry: &AirBranch,
     replay: &Replay,
@@ -475,6 +486,7 @@ fn timeline(cache: &DayCache, params: &AirParams) -> io::Result<AirTimelineReply
             }
         }
     }
+    #[cfg(test)]
     if let Some((_, sample)) = cache.partial.as_ref().filter(|(at, _)| *at == last) {
         samples[count - 1] = Some(sample);
     }
@@ -616,6 +628,7 @@ pub(super) fn scan_moment(
     )
 }
 
+#[cfg(test)]
 fn scan_moment_anchored(
     replay: &Replay,
     branch: u64,
@@ -627,6 +640,7 @@ fn scan_moment_anchored(
     scan_moment_measured(replay, branch, groups, params, anchors, cancelled, None)
 }
 
+#[cfg(test)]
 fn scan_moment_measured(
     replay: &Replay,
     branch: u64,
@@ -636,7 +650,7 @@ fn scan_moment_measured(
     cancelled: &AtomicBool,
     measurements: Option<&mut scan::ScanMeasurements>,
 ) -> io::Result<AirMomentReply> {
-    let (first, last) = hours(params)?;
+    hours(params)?;
     let (samples, sides) = scan::scan_window_measured(
         replay,
         branch,
@@ -646,6 +660,17 @@ fn scan_moment_measured(
         cancelled,
         measurements,
     )?;
+    moment_reply(samples, sides, groups, params, anchors)
+}
+
+fn moment_reply(
+    samples: Vec<Snapshot>,
+    sides: Vec<AirSide>,
+    groups: &super::country_groups::Scan,
+    params: &AirParams,
+    anchors: &assignment::SideAnchors,
+) -> io::Result<AirMomentReply> {
+    let (first, last) = hours(params)?;
     let theatres = TheatreFilter::new(samples.iter(), params);
     let keys = side_filter(params);
     let selected_regions: Option<HashSet<_>> = params
@@ -872,6 +897,7 @@ impl Product for AirSuperiority {
         }
         Ok(())
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &AirParams,
@@ -958,124 +984,139 @@ impl Product for AirSuperiority {
         } else {
             base
         };
-        let mut reply = match params.view {
-            AirView::Timeline => AirReply::Timeline(timeline(&cache, params)?),
-            AirView::Choices => AirReply::Choices(AirChoicesReply {
-                view: AirView::Choices,
-                branch_id: params.branch_id.clone(),
-                regions: cache
-                    .regions
-                    .iter()
-                    .map(|id| AirRegionChoice {
-                        id: *id,
-                        name: format!("Region {id}"),
-                    })
-                    .collect(),
-                sides: cache
-                    .sides
-                    .iter()
-                    .map(|side| {
-                        let mut side = side.clone();
-                        if let Some((
-                            _,
-                            name,
-                            leader,
-                            tag,
-                            co_belligerents,
-                            factions,
-                            colour_faction,
-                        )) = side.reads.last()
-                        {
-                            side.name = name.clone();
-                            side.leader = leader.clone();
-                            side.tag = tag.clone();
-                            side.co_belligerents = *co_belligerents;
-                            side.factions = factions.clone();
-                            side.colour_faction = colour_faction.clone();
-                        }
-                        side.reads.clear();
-                        side
-                    })
-                    .collect(),
-                theatres: cache
-                    .theatres
-                    .keys()
-                    .map(|id| AirTheatreChoice {
-                        id: id.clone(),
-                        name: format!("Air theatre {id} (name not recorded)"),
-                    })
-                    .collect(),
-                countries: cache.countries.iter().cloned().collect(),
-                windows: moment_windows(replay, branch),
-                warnings: cache.warnings.clone(),
-            }),
-            AirView::Moment => unreachable!(),
-        };
-        if let AirReply::Timeline(reply) = &mut reply {
-            reply.anchor_reads =
-                anchor_reads(&reply.sides, &groups, &cache.anchors, reply.last_hour);
-            reply.segments = country_segments(
-                &groups,
-                reply.first_hour,
-                reply.last_hour,
-                &reply.anchor_reads,
-            );
-        }
-        resolve_names(
+        cache_reply(
             source,
+            replay,
             &groups,
+            &cache,
+            params,
             context,
             naming_hour,
-            Some(&cache.theatres),
-            &mut reply,
-        );
-        if let AirReply::Choices(choices) = &mut reply {
-            if let Some(regions) = &params.regions {
-                let regions: HashSet<_> = regions.iter().copied().collect();
-                choices
-                    .regions
-                    .retain(|region| regions.contains(&region.id));
-            }
-            if let Some(theatres) = params
-                .theatres
-                .as_ref()
-                .filter(|theatres| !theatres.is_empty())
-            {
-                let first = params.first_hour.unwrap_or(i32::MIN);
-                let last = params.last_hour.unwrap_or(i32::MAX);
-                {
-                    let relevant: Vec<_> = cache
-                        .auxiliary()
-                        .filter(|(start, end, _)| *start <= last && first <= *end)
-                        .collect();
-                    if relevant.is_empty() || relevant.iter().any(|(_, _, aux)| !aux.theatres_known)
+            cancelled,
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cache_reply(
+    source: &Source,
+    replay: &Replay,
+    groups: &super::country_groups::Scan,
+    cache: &DayCache,
+    params: &AirParams,
+    context: &LoadContext,
+    naming_hour: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<AirReply> {
+    let branch = params.branch_id.parse().expect("validated branch");
+    let mut reply = match params.view {
+        AirView::Timeline => AirReply::Timeline(timeline(cache, params)?),
+        AirView::Choices => AirReply::Choices(AirChoicesReply {
+            view: AirView::Choices,
+            branch_id: params.branch_id.clone(),
+            regions: cache
+                .regions
+                .iter()
+                .map(|id| AirRegionChoice {
+                    id: *id,
+                    name: format!("Region {id}"),
+                })
+                .collect(),
+            sides: cache
+                .sides
+                .iter()
+                .map(|side| {
+                    let mut side = side.clone();
+                    if let Some((_, name, leader, tag, co_belligerents, factions, colour_faction)) =
+                        side.reads.last()
                     {
-                        choices.regions.clear();
-                        choices
-                            .warnings
-                            .push("Air theatre membership is not recorded in this window".into());
-                    } else {
-                        let regions: BTreeSet<_> = relevant
-                            .iter()
-                            .flat_map(|(_, _, aux)| {
-                                theatres
-                                    .iter()
-                                    .filter_map(|id| aux.theatres.get(id))
-                                    .flatten()
-                                    .copied()
-                            })
-                            .collect();
-                        choices
-                            .regions
-                            .retain(|region| regions.contains(&region.id));
+                        side.name = name.clone();
+                        side.leader = leader.clone();
+                        side.tag = tag.clone();
+                        side.co_belligerents = *co_belligerents;
+                        side.factions = factions.clone();
+                        side.colour_faction = colour_faction.clone();
                     }
+                    side.reads.clear();
+                    side
+                })
+                .collect(),
+            theatres: cache
+                .theatres
+                .keys()
+                .map(|id| AirTheatreChoice {
+                    id: id.clone(),
+                    name: format!("Air theatre {id} (name not recorded)"),
+                })
+                .collect(),
+            countries: cache.countries.iter().cloned().collect(),
+            windows: moment_windows(replay, branch),
+            warnings: cache.warnings.clone(),
+        }),
+        AirView::Moment => unreachable!(),
+    };
+    if let AirReply::Timeline(reply) = &mut reply {
+        reply.anchor_reads = anchor_reads(&reply.sides, groups, &cache.anchors, reply.last_hour);
+        reply.segments = country_segments(
+            groups,
+            reply.first_hour,
+            reply.last_hour,
+            &reply.anchor_reads,
+        );
+    }
+    resolve_names(
+        source,
+        groups,
+        context,
+        naming_hour,
+        Some(&cache.theatres),
+        &mut reply,
+    );
+    if let AirReply::Choices(choices) = &mut reply {
+        if let Some(regions) = &params.regions {
+            let regions: HashSet<_> = regions.iter().copied().collect();
+            choices
+                .regions
+                .retain(|region| regions.contains(&region.id));
+        }
+        if let Some(theatres) = params
+            .theatres
+            .as_ref()
+            .filter(|theatres| !theatres.is_empty())
+        {
+            let first = params.first_hour.unwrap_or(i32::MIN);
+            let last = params.last_hour.unwrap_or(i32::MAX);
+            {
+                let relevant: Vec<_> = cache
+                    .auxiliary()
+                    .filter(|(start, end, _)| *start <= last && first <= *end)
+                    .collect();
+                if relevant.is_empty() || relevant.iter().any(|(_, _, aux)| !aux.theatres_known) {
+                    choices.regions.clear();
+                    choices
+                        .warnings
+                        .push("Air theatre membership is not recorded in this window".into());
+                } else {
+                    let regions: BTreeSet<_> = relevant
+                        .iter()
+                        .flat_map(|(_, _, aux)| {
+                            theatres
+                                .iter()
+                                .filter_map(|id| aux.theatres.get(id))
+                                .flatten()
+                                .copied()
+                        })
+                        .collect();
+                    choices
+                        .regions
+                        .retain(|region| regions.contains(&region.id));
                 }
             }
         }
-        check_cancel(cancelled)?;
-        check_reply_size(&reply)?;
-        Ok(reply)
     }
+    check_cancel(cancelled)?;
+    check_reply_size(&reply)?;
+    Ok(reply)
 }
 
 fn check_reply_size(reply: &AirReply) -> io::Result<usize> {

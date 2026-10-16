@@ -77,12 +77,14 @@ test('leaderboard settles mounted artwork demand for every sort and preserves ro
   };
   const host = globalThis as typeof globalThis & { __leaderMotionHooks?: typeof fixture };
   host.__leaderMotionHooks = fixture;
-  const globals = ['window', 'ResizeObserver', 'performance'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
+  const globals = ['window', 'ResizeObserver', 'performance', 'requestAnimationFrame', 'cancelAnimationFrame'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
   Object.defineProperty(globalThis, 'window', { configurable: true, value: {
     setTimeout(run: () => void, delay: number) { const id = ++nextTimer; timers.set(id, { run, due: now + delay }); return id; },
     clearTimeout(id: number) { timers.delete(id); },
   } });
   Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: class { observe() {} unobserve() {} disconnect() {} } });
+  Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: (run: FrameRequestCallback) => window.setTimeout(() => run(now), 16) });
+  Object.defineProperty(globalThis, 'cancelAnimationFrame', { configurable: true, value: (id: number) => window.clearTimeout(id) });
   Object.defineProperty(globalThis, 'performance', { configurable: true, value: { now: () => now } });
   // The widget, portrait hook, Table and row-motion effects run together. Only
   // React's dispatcher, data transport and unmounted browser measurements are synthetic.

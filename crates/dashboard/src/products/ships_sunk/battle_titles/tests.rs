@@ -312,3 +312,97 @@ fn selected_title_names_keep_current_original_reserved_and_rename_operands() {
         ]
     );
 }
+
+#[test]
+fn prepared_sinking_titles_match_oracle_after_two_commits_resume_append_and_5000_countries() {
+    use crate::prepared::series::{self, tests::Fixture};
+    use replay::rows::{SunkShipEntry, SunkShipsRow};
+    let flag = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let mut inputs = Vec::new();
+    for hour in 100..103 {
+        let mut frame = crate::test_fixtures::scale_frame(1, hour, 5000);
+        frame.metrics.table_ns[TableId::SunkShips.index()] = 1;
+        let entries = (0..(hour - 99) * 4000)
+            .map(|index| SunkShipEntry {
+                ship_name: format!("recorded mod ship {index}").into_bytes(),
+                sink_hour: 100,
+                victim_country: 1,
+                attacker_country: 2,
+                class_token: 77,
+                battle: if index % 3 == 0 {
+                    0
+                } else {
+                    (1_u64 << 63) + 42
+                },
+                province: 1,
+                province_present: u8::from(index % 3 != 2),
+                ..Default::default()
+            })
+            .collect();
+        frame.tables[TableId::SunkShips.index()] =
+            TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow { entries }])).into();
+        inputs.push(frame);
+    }
+    let source = Source::from_replay(
+        crate::SourceKey {
+            source_id: "prepared sinking titles".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        Arc::new(
+            replay::container::Replay::from_records(
+                crate::test_fixtures::CAMPAIGN.into(),
+                &[crate::test_fixtures::records(1, inputs.clone())],
+            )
+            .unwrap(),
+        ),
+        &flag,
+    )
+    .unwrap();
+    let mut fixture = Fixture::new();
+    let mut history = sinkings::ShipHistory::default();
+    let mut titles = Prepared::default();
+    for (ordinal, frame) in inputs.iter().enumerate() {
+        history.observe(source.replay_ref().format, frame);
+        titles
+            .observe(
+                &source,
+                &context,
+                frame,
+                &history.scan.ships,
+                &history.ship_indices,
+                &flag,
+            )
+            .unwrap();
+        let mut writer = if ordinal == 2 {
+            fixture.append_writer()
+        } else {
+            fixture.writer()
+        };
+        titles.flush(&mut writer, 1, &flag).unwrap();
+        series::write_reply(&mut writer, "titles-continuation", 0, &titles).unwrap();
+        writer.commit().unwrap();
+        titles = series::read_reply(&fixture.store, &fixture.key, "titles-continuation", 0)
+            .unwrap()
+            .unwrap();
+        // The production commit consumes all newly supplied rows, then keeps
+        // only unresolved occurrences before serializing its continuation.
+        history.compact();
+        history = serde_json::from_slice(&serde_json::to_vec(&history).unwrap()).unwrap();
+        history.resume(frame);
+        if ordinal >= 1 {
+            let params = ShipsSunkBattleTitlesParams {
+                branch_id: "1".into(),
+                rows: vec![0, 1, 2, (ordinal as u32 + 1) * 4000 - 1],
+            };
+            let actual = prepared_query(&params, &fixture.store, &fixture.key, &flag).unwrap();
+            let oracle = ShipsSunkBattleTitles::load(&source, &params, &context, &flag).unwrap();
+            assert_eq!(
+                serde_json::to_value(actual).unwrap(),
+                serde_json::to_value(oracle).unwrap()
+            );
+        }
+    }
+    assert!(serde_json::to_vec(&titles).unwrap().len() < 4096);
+}

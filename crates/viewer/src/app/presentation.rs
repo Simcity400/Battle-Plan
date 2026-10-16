@@ -2,15 +2,49 @@ use super::{
     Laps, OverlayKey, Playhead, ShownHour, Viewer, feed_raids, latest_built_key, present_raids,
     skipped_hours, wait_for_hour,
 };
-use crate::{
-    document::Document,
-    hours,
-    map::{
-        self,
-        camera::{Camera, MapSize},
-    },
-};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use viewer_foundation::map::presentation::Continuity;
+use viewer_foundation::map::presentation::UnitRestart;
+use viewer_foundation::map::presentation::continuity as presentation_continuity;
+use viewer_foundation::map::presentation::crosses_gap;
+use viewer_foundation::map::presentation::unit_restart as presentation_unit_restart;
+use viewer_foundation::profile_writer::profile_print;
+use viewer_foundation::profile_writer::profiling;
+use viewer_foundation::retirement::Dropper;
+use viewer_foundation::retirement::Retired;
+use {
+    crate::{document::Document, hours},
+    viewer_foundation::map::camera::{Camera, MapSize},
+};
+
+/// One built hour's events: its nuclear impacts and its map events for the
+/// viewing country.
+type HourEvents = (
+    Arc<viewer_world::map::strike_effects::Impacts>,
+    Arc<viewer_world::map::animated_map_text::events::Prepared>,
+);
+
+/// What a forward skip carries from a built hour it passed: its buildings,
+/// whose history continues, and its events, whose effects and text start.
+type SkippedHour = (
+    Arc<hours::Shared<viewer_world::map::map_buildings::PreparedBuildings>>,
+    HourEvents,
+);
+
+/// The hours whose events a presented hour starts, oldest first: continuing
+/// playback also starts those of the built hours a forward skip passed; a
+/// reset (a seek, branch, gap or viewing-country change) starts only the
+/// presented hour's own.
+fn presented_events<'a, T>(
+    skipped: impl Iterator<Item = &'a T>,
+    presented: &'a T,
+    continuity: Continuity,
+) -> Vec<&'a T> {
+    skipped
+        .filter(|_| continuity == Continuity::Continue)
+        .chain([presented])
+        .collect()
+}
 
 impl Viewer {
     // hours
@@ -56,7 +90,11 @@ impl Viewer {
                 Some(resources) => {
                     hours::Pipeline::shared(Arc::clone(&document.content), replay, resources)?
                 }
-                None => hours::Pipeline::new(Arc::clone(&document.content), replay)?,
+                None => hours::Pipeline::with_checkpoint_source(
+                    Arc::clone(&document.content),
+                    replay,
+                    document.playback.checkpoint_source(),
+                )?,
             });
             if let (Some(hours), Some(index)) = (&self.hours, self.engaged_carry.take()) {
                 hours.adopt_engaged(index);
@@ -143,10 +181,10 @@ impl Viewer {
             self.ready.clear();
         }
         if self.dropper.is_none() {
-            self.dropper = Some(Arc::new(hours::Dropper::new()?));
+            self.dropper = Some(Arc::new(Dropper::new()?));
         }
         // Everything this frame lets go of, freed off the frame path at its end.
-        let mut retired = hours::Retired::default();
+        let mut retired = Retired::default();
         for built in pipeline.take()? {
             feed_raids(&self.raid_lane, &built);
             if built.epoch == epoch {
@@ -191,7 +229,7 @@ impl Viewer {
             let wait = self
                 .capture
                 .as_ref()
-                .is_some_and(|capture| !map::counter_move::profiling() || capture.remaining == 0);
+                .is_some_and(|capture| !profiling() || capture.remaining == 0);
             if next.is_none() && wait {
                 let pipeline = self.hours.as_ref().expect("started above");
                 next = Some(wait_for_hour(
@@ -224,7 +262,7 @@ impl Viewer {
                 // seek or a gap in the recording does not.
                 let passes_unbuilt = !self.animation_seek
                     && on_screen.is_some_and(|(_, from)| {
-                        !map::presentation::crosses_gap(
+                        !crosses_gap(
                             &document.playback.replay().gaps,
                             built.branch,
                             from,
@@ -239,7 +277,12 @@ impl Viewer {
                         let key = (built.branch, hour);
                         let passed_hour = self.ready.get(&key).or_else(|| passed.get(&key))?;
                         let layers = passed_hour.layers.as_ref().ok();
-                        Some(layers.map(|layers| Arc::clone(&layers.buildings)))
+                        Some(layers.map(|layers| {
+                            (
+                                Arc::clone(&layers.buildings),
+                                (Arc::clone(&layers.impacts), Arc::clone(&layers.map_text)),
+                            )
+                        }))
                     },
                 );
                 self.apply_hour(state, document, built, skipped, &mut retired, laps)
@@ -280,8 +323,8 @@ impl Viewer {
         state: &eframe::egui_wgpu::RenderState,
         document: &mut Document,
         built: hours::Built,
-        skipped: Option<Vec<Arc<hours::Shared<map::map_buildings::PreparedBuildings>>>>,
-        retired: &mut hours::Retired,
+        skipped: Option<Vec<SkippedHour>>,
+        retired: &mut Retired,
         laps: &mut Laps,
     ) -> Result<(), std::io::Error> {
         let hours::Built {
@@ -295,9 +338,9 @@ impl Viewer {
             wall,
         } = built;
         if let Some(opened) = self.opened.take()
-            && map::counter_move::profiling()
+            && profiling()
         {
-            map::counter_move::profile_print(format!(
+            profile_print(format!(
                 "PROFILE open first_hour {:.1} ms",
                 opened.elapsed().as_secs_f64() * 1000.0
             ));
@@ -307,8 +350,8 @@ impl Viewer {
         let raid_frame = current.clone();
         retired.push(document.playback.present(branch, hour, current));
         laps.lap("present");
-        if map::counter_move::profiling() {
-            map::counter_move::profile_print(format!(
+        if profiling() {
+            profile_print(format!(
                 "PROFILE built frame {} hour {hour} wall {wall:.3} parts {}",
                 self.profile_frame,
                 built_laps
@@ -319,13 +362,23 @@ impl Viewer {
             ));
         }
         laps.lap("built_print");
+        // The map events' consumption follows the hour last presented, built
+        // or failed, and whether this is an explicit seek.
+        let seek = self.animation_seek;
         let layers = match layers {
             Ok(layers) => layers,
             Err(error) => {
+                if let Some(scene) = self.scene.as_mut() {
+                    scene.missing_map_text_events(
+                        (branch, hour),
+                        seek,
+                        format!("map text presented hour failed: {error}"),
+                    );
+                }
                 self.animation_seek = false;
                 present_raids(
                     &self.raid_lane,
-                    map::presentation::Continuity::Continue,
+                    Continuity::Continue,
                     crate::raid_lane::Presented {
                         content: Some(&document.content),
                         perspective: &self.perspective,
@@ -359,13 +412,13 @@ impl Viewer {
             .filter(|shown| shown.error.is_none())
             .map(|shown| (shown.branch, shown.hour, shown.header.viewing.as_deref()));
         let next = (branch, hour, layers.header.viewing.as_deref());
-        let continuity = map::presentation::continuity(
+        let continuity = presentation_continuity(
             previous,
             next,
             self.animation_seek,
             &document.playback.replay().gaps,
         );
-        let unit_restart = map::presentation::unit_restart(previous, next, self.animation_seek);
+        let unit_restart = presentation_unit_restart(previous, next, self.animation_seek);
         let hours::Layers {
             political,
             borders,
@@ -377,6 +430,8 @@ impl Viewer {
             units,
             orders,
             effects,
+            impacts,
+            map_text,
             intel,
             snow_mud,
             limitations,
@@ -404,9 +459,12 @@ impl Viewer {
         }
         laps.lap("rails_upload");
         if uploaded.buildings != Some(buildings.id) {
-            let skipped = skipped
-                .as_ref()
-                .map(|hours| hours.iter().map(|hour| &hour.value).collect::<Vec<_>>());
+            let skipped = skipped.as_ref().map(|hours| {
+                hours
+                    .iter()
+                    .map(|(hour, _)| &hour.value)
+                    .collect::<Vec<_>>()
+            });
             scene.set_map_buildings(
                 &state.device,
                 &state.queue,
@@ -437,11 +495,9 @@ impl Viewer {
         retired.push(replaced);
         laps.lap("aircraft_upload");
         match unit_restart {
-            map::presentation::UnitRestart::Keep => {}
-            map::presentation::UnitRestart::ViewingCountry => {
-                scene.restart_unit_models(Some(units.owned()))
-            }
-            map::presentation::UnitRestart::All => scene.restart_unit_models(None),
+            UnitRestart::Keep => {}
+            UnitRestart::ViewingCountry => scene.restart_unit_models(Some(units.owned())),
+            UnitRestart::All => scene.restart_unit_models(None),
         }
         let model_warnings = units.report.warnings();
         retired.push(self.unit_models.replace(units));
@@ -486,7 +542,7 @@ impl Viewer {
                     && had.province_snow == snow_mud.province_snow
                     && had.refresh == snow_mud.refresh
         });
-        if !same_snow || continuity == map::presentation::Continuity::Reset {
+        if !same_snow || continuity == Continuity::Reset {
             scene.set_snow_mud(&state.device, &state.queue, &snow_mud, continuity)?;
             uploaded.snow_mud = Some(Arc::clone(&snow_mud));
         }
@@ -505,6 +561,39 @@ impl Viewer {
         self.placements_at = Some((branch, hour));
         let counter_view = overlay.counter_view().clone();
         retired.push(self.prepared_overlay.replace(overlay));
+        // The hours' nuclear impacts start their effects and their map events,
+        // interpreted on the hour builders, become floating text and
+        // explosions for the viewing country.
+        let heights = viewer_foundation::map::province_map::HeightField {
+            width: document.assets.heightmap.width,
+            height: document.assets.heightmap.height,
+            values: document.assets.heightmap_texels(),
+        };
+        match &raid_frame {
+            crate::playback::Current::Frame(_) => {
+                let presented = (impacts, map_text);
+                scene.present_hours(
+                    (branch, hour),
+                    seek,
+                    presented_events(
+                        skipped.iter().flatten().map(|(_, events)| events),
+                        &presented,
+                        continuity,
+                    )
+                    .into_iter()
+                    .map(|(impacts, map_text)| (&**impacts, &**map_text)),
+                    continuity,
+                    |province| document.content.counters.anchor(province, 0),
+                    heights,
+                    &document.content.icons.counters.gui,
+                );
+            }
+            crate::playback::Current::Gap { reason, .. } => scene.missing_map_text_events(
+                (branch, hour),
+                seek,
+                format!("map text presented hour is unavailable: {reason}"),
+            ),
+        }
         retired.push(self.overlay_tables.replace((
             branch,
             hour,
@@ -557,5 +646,43 @@ impl Viewer {
         retired.push((political, borders, rails, buildings, snow_mud, intel));
         laps.lap("apply_end");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use viewer_world::map::strike_effects::{Impact, Impacts};
+
+    fn hour(id: u64) -> Impacts {
+        Impacts {
+            impacts: vec![Impact {
+                id,
+                province: 1,
+                effect: viewer_world::map::strike_effects::Effect::Nuclear,
+                position: [0.0; 3],
+                bounds: [0.0; 4],
+            }],
+            refused: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn only_continuing_playback_starts_the_events_of_skipped_hours() {
+        let skipped = [hour(11)];
+        let presented = hour(12);
+        let ids = |continuity| {
+            presented_events(skipped.iter(), &presented, continuity)
+                .into_iter()
+                .map(|impacts| impacts.impacts[0].id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(Continuity::Continue), [11, 12]);
+        // A forward seek from 10 to 12 does not replay the strike at 11.
+        assert_eq!(ids(Continuity::Reset), [12]);
+        assert_eq!(
+            presented_events(std::iter::empty(), &presented, Continuity::Continue).len(),
+            1
+        );
     }
 }

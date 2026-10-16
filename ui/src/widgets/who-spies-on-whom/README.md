@@ -6,7 +6,7 @@ Directed operative-placement counts between acting and target countries, with na
 
 ## Products it reads
 
-[`operative-placements`](../../../../crates/dashboard/src/products/operative_placements.rs) supplies sparse pair/roster histories; [`country-styles`](../../../../crates/dashboard/src/products/country_styles.rs) and shared country flags/names supply dated looks.
+[`operative-placements`](../../../../crates/dashboard/src/products/operative_placements.rs) supplies sparse pair/roster histories; [`country-styles`](../../../../crates/dashboard-base/src/products/country_styles.rs) and shared country flags/names supply dated looks.
 
 ## Settings
 
@@ -18,6 +18,7 @@ All/manual/group countries, campaign/follow/pin; Most countries shown ranks sent
 - Count each operative identity once. Complete membership reads can hold through consecutive unread hours with the original date; gaps, failed/truncated/untimed walks and identity changes end the hold. Known empty is distinct from missing capture.
 - Manual picks touch either endpoint and follow native aliases, excluding unrelated reuse. Fixed colours use the full ordered holder catalogue, independent of visible pairs.
 - Other folds losslessly, including self flows; exact arc totals and full operative inventories remain available. Unknown looks retain diagnostic reasons. Jump uses the supplying membership read.
+- Prepared day windows retain the actual left-edge membership read. Parity builds expose counts and inventories as "Operative placement values".
 
 ## Files
 

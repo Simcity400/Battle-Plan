@@ -5,9 +5,12 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { CountryRaceViewProps } from './CountryRaceView';
 import type { TimeChartProps } from '../TimeChart';
+import type { RemoteRaceRows } from './RaceChart';
 import type { PlotFrame } from '../frame';
+import { plotFrame } from '../frame.ts';
 import { tooltipHeight, tooltipRoom, tooltipText } from '../tooltip.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
+import * as summaryHelpers from '../chartSummary.ts';
 
 test('actual country time views forward dated badges, keyboard stops and full event tooltips without changing picks', async () => {
   type Slot = { value?: unknown; deps?: readonly unknown[] };
@@ -37,14 +40,16 @@ test('actual country time views forward dated badges, keyboard stops and full ev
     '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => globalThis.__countryMarkerHeight ?? 1000; export const useChartTokens = () => ({ categories: ["green"], muted: "gray", fontSize: { body: 14 } });',
+    '/charts/chartSummary.ts': 'export const drawApproximateSpans = (...args) => globalThis.__countrySummaryHelpers.drawApproximateSpans(...args); export const extentOfSummary = (...args) => globalThis.__countrySummaryHelpers.extentOfSummary(...args); export const pickSummaryLines = (...args) => globalThis.__countrySummaryHelpers.pickSummaryLines(...args); export const drawLineSummary = (_ctx, _frame, _tokens, summary) => globalThis.__countrySummaries.push(summary);',
     '/charts/race/countryColours.ts': 'export const useCountryColours = () => () => "blue";',
     '/charts/Legend.tsx': 'export default () => null;',
     '/charts/TimeChart.tsx': 'export default props => { globalThis.__countryMarkerTime = props; return null; };',
     '/charts/race/RaceChart.tsx': 'export default props => { globalThis.__countryMarkerRace = props; return null; };',
   };
-  const host = globalThis as typeof globalThis & { __countryMarkerTime?: TimeChartProps; __countryMarkerRace?: { badges?: unknown }; __countryMarkerHeight?: number;
-    __countryMarkerHook?: typeof hook; __countryMarkerFacts?: typeof state };
+  const host = globalThis as typeof globalThis & { __countryMarkerTime?: TimeChartProps; __countryMarkerRace?: { badges?: unknown; nameSamples?: readonly string[]; remoteRows?: RemoteRaceRows }; __countryMarkerHeight?: number;
+    __countrySummaries?: unknown[]; __countrySummaryHelpers?: typeof summaryHelpers; __countryMarkerHook?: typeof hook; __countryMarkerFacts?: typeof state };
   host.__countryMarkerHook = hook; host.__countryMarkerFacts = state;
+  host.__countrySummaryHelpers = summaryHelpers;
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'country-marker-forwarding', enforce: 'pre',
       transform: (source, id) => {
@@ -65,7 +70,7 @@ test('actual country time views forward dated badges, keyboard stops and full ev
       label: 'Army', empty: 'No army reads', formatValue: String, tooltip: () => null,
       lineTooltip: () => [{ title: 'Exact numeric read', rows: [{ label: 'Native count', value: '3' }], spoken: 'Exact native count 3' }],
     } as unknown as CountryRaceViewProps;
-    const render = () => { state.cursor = 0; renderToStaticMarkup(createElement(View, props)); };
+    const render = () => { state.cursor = 0; return renderToStaticMarkup(createElement(View, props)); };
     render();
     assert.deepEqual(state.wanted, [], 'drawn markers do not preload any dated country names or flags');
     let chart = host.__countryMarkerTime!;
@@ -138,12 +143,66 @@ test('actual country time views forward dated badges, keyboard stops and full ev
     host.__countryMarkerTime!.onHover!(null); render();
     assert.deepEqual(state.wanted, [], 'clearing the actual TimeChart hover releases reached names and flags');
 
+    const resistance = { from: 10, to: 20, width: 1, buckets: [null], runs: undefined };
+    const compliance = { ...resistance, buckets: [null, null] };
+    props.view = 'lines'; props.lines = ['resistance', 'compliance'].map(measure => ({ tag: 'native alias', id: JSON.stringify(['native alias', measure]), runs: [run] }));
+    props.lineSummaries = new Map([[props.lines[0].id!, resistance], [props.lines[1].id!, compliance]]);
+    host.__countrySummaries = [];
+    render();
+    host.__countryMarkerTime!.layers[0].draw({} as never, { x: [10, 20] } as never, {} as never, {} as never);
+    assert.deepEqual(host.__countrySummaries, [resistance, compliance], 'two measures of one country draw their distinct prepared summaries');
+    props.lineSummaries = undefined;
+
     delete host.__countryMarkerTime; props.view = 'race';
     render();
     assert.equal(host.__countryMarkerTime, undefined);
     assert.equal(host.__countryMarkerRace?.badges, undefined, 'race bars do not acquire a marker strip');
+    props.presentation = {}; render();
+    assert.deepEqual(host.__countryMarkerRace?.nameSamples, ['Country name unavailable'], 'native-country names reserve the same room before or after their reads');
+    props.entityLooks = { name: () => 'Authored aggregate', color: () => 'blue' }; render();
+    props.ranked = []; props.remoteRows = { total: 5000, offset: 0, min: -10, max: 100, owner: {}, onRange() {} };
+    render();
+    assert.equal(host.__countryMarkerRace?.remoteRows, props.remoteRows, 'pending real rows forward the global contract rather than becoming an empty race');
+    assert.equal(host.__countryMarkerRace?.nameSamples, undefined, 'custom aggregate names retain their own sizing');
+
+    const frame = plotFrame(400, 200, { left: 0, right: 0, top: 0, bottom: 0 }, [10, 20], [0, 10], false);
+    const summary = (value: number) => ({ from: 10, to: 20, width: Math.ceil(frame.plotWidth), buckets: [],
+      runs: [{ firstHour: 10, lastHour: 20, value, breakBefore: true }] });
+    props.view = 'lines'; props.playhead = null; props.badges = []; props.entityLooks = undefined;
+    props.lines = [{ tag: 'native alias', id: 'fuel', runs: [] }, { tag: 'native alias', id: 'capacity', runs: [] },
+      { tag: 'nearby actor', runs: [] }];
+    props.lineSummaries = new Map([['fuel', summary(3)], ['capacity', summary(8)], ['nearby actor', summary(7)]]);
+    const picks: { hour: number; tag?: string; choices?: readonly string[] }[] = [];
+    props.exactLineTags = async () => ['native alias', 'nearby actor'];
+    props.onPick = (hour, tag, choices) => picks.push({ hour, tag, choices });
+    render(); chart = host.__countryMarkerTime!;
+    assert.deepEqual(chart.layers[0].extent!([10, 20]), [3, 8], 'fuel and capacity use their separate prepared summary extents');
+    const context = { frame, until: null, point: { x: frame.toX(15), y: frame.toY(8) } };
+    await chart.onPick!(15, context);
+    assert.deepEqual(picks, [{ hour: 15, tag: 'native alias', choices: ['native alias'] }],
+      'a capacity pick resolves its country without a second measure overwriting the closest geometry');
+    let resolveKnown!: (tags: readonly string[]) => void;
+    props.exactLineTags = () => new Promise(resolve => { resolveKnown = resolve; });
+    render(); chart = host.__countryMarkerTime!;
+    const pendingPick = chart.onPick!(15, context);
+    props.pickOwner = {}; render(); resolveKnown(['native alias', 'nearby actor']);
+    await pendingPick;
+    assert.equal(picks.length, 1, 'a changed numeric owner revokes a pending prepared pick');
+    props.lineSummaries=new Map();props.exactLineTags=undefined;props.lines=[{tag:'native alias',runs:[run]}];
+    render();await host.__countryMarkerTime!.onPick!(15,{frame,until:null,point:{x:frame.toX(15),y:frame.toY(3)}});
+    assert.equal(picks.length,2,'an empty prepared map retains ordinary drawn-line picks');
+    assert.equal(picks[1].tag,'native alias');
+    props.view='mix';props.lineSummaries=undefined;props.mix={tag:'native alias',bands:[[run]],parts:[{id:'test',label:'Test'}],approximate:[{firstHour:12,lastHour:15}]};
+    assert.match(render(),/Approximate/);
+    const alpha:number[]=[];
+    const canvas=new Proxy({globalAlpha:1,fill(){alpha.push(this.globalAlpha);}}, {get(target,key){return key in target ? target[key as keyof typeof target] : ()=>{};}}) as unknown as CanvasRenderingContext2D;
+    host.__countryMarkerTime!.layers[0].draw(canvas,frame,{} as never,{playhead:null} as never);
+    assert.ok(alpha.includes(0.55),'mix bands use the real shared approximate clipping and faded drawing');
+    assert.ok(alpha.includes(1),'settled bands retain the original opacity');
   } finally {
     delete host.__countryMarkerTime; delete host.__countryMarkerRace; delete host.__countryMarkerHeight;
+    delete host.__countrySummaries;
+    delete host.__countrySummaryHelpers;
     delete host.__countryMarkerHook; delete host.__countryMarkerFacts;
     await vite.close();
   }

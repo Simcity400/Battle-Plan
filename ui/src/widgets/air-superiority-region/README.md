@@ -19,3 +19,5 @@
 **Files:** [AirSuperiorityRegionWidget.tsx](AirSuperiorityRegionWidget.tsx) renders rows; `airSuperiorityRegion.css` styles them. [Shared air settings](../../dashboard/airOptions.ts) and [projection](../../dashboard/airSuperiority.ts) serve both air-superiority widgets. `definition.ts` and `index.ts` declare settings and registration.
 
 Shared framework conventions: [widgets](../README.md).
+
+The widget reads prepared air-superiority windows and exposes the "Air superiority region values" parity model.

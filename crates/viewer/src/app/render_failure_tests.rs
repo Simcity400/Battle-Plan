@@ -1,6 +1,10 @@
 //! Actual viewer draw/capture failure presentation, using a synthetic Scene fixture.
 use super::*;
-use crate::map::scene::failure_tests::{Fixture, Point};
+use crate::map::scene_failure_tests::Fixture;
+use viewer_foundation::map::camera::Placement;
+#[cfg(test)]
+use viewer_foundation::map::test_support::TEST_HANG_GUARD;
+use viewer_world::map::scene_faults::Point;
 
 fn target(fixture: &Fixture) -> dashboard::protocol::DashboardMapView {
     let bounds = dashboard::protocol::ViewBounds {
@@ -53,7 +57,7 @@ fn until(
     target: &dashboard::protocol::DashboardMapView,
     done: impl Fn(&Viewer) -> bool,
 ) {
-    let deadline = Instant::now() + crate::TEST_HANG_GUARD;
+    let deadline = Instant::now() + TEST_HANG_GUARD;
     loop {
         draw(viewer, ctx, frame, target);
         if done(viewer) {
@@ -74,7 +78,7 @@ fn arm(viewer: &mut Viewer, path: PathBuf, camera: Camera) {
         remaining: 0,
         pinned: Some((
             [257, 145],
-            Some(map::camera::Placement {
+            Some(Placement {
                 center: camera.center,
                 height: camera.height,
             }),
@@ -113,7 +117,7 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
     viewer.diagnostics = false;
     viewer.graphics.samples = 1;
     viewer.camera_manual = true;
-    viewer.camera = Some(map::camera::Placement {
+    viewer.camera = Some(Placement {
         center: request.camera.center,
         height: request.camera.height,
     });

@@ -30,7 +30,7 @@ function useAdded(): [boolean, () => void] {
 
 /** Why a gated widget cannot be added to this recording, or null. */
 function useUnavailable(definition: WidgetDefinition, { runtime, track, active }: Shared) {
-  const { data, error } = useProduct(runtime.client, availabilityRequest(definition, track), active, validateWidgetAvailability);
+  const { data, error } = useProduct(runtime.client, availabilityRequest(definition, track), active, validateWidgetAvailability, track?.source);
   return availabilityReason(!!definition.availability, !!track, data, error);
 }
 

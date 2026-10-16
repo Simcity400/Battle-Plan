@@ -323,6 +323,9 @@ const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len() - RETIRE
     TableId::LandCombatModifiers,
     TableId::LandCombatDivisionModifiers,
     TableId::FuelDemandParts,
+    TableId::MapEvents,
+    TableId::OwnerTransportSpeeds,
+    TableId::ReserveModifierTrees,
     TableId::NavalCombatDetails,
     TableId::NavalCombatShips,
     TableId::NavalModifierTrees,
@@ -805,6 +808,7 @@ fn source_with_faults(
                 [(index + id as usize) % 4]
                 .into(),
             manpower_available: [i32::MIN, 0, i32::MAX][(index + id as usize) % 3],
+            population: [i32::MAX, i32::MIN, 0][(index + id as usize) % 3].into(),
             continent: crate::rows::Recorded::Value(Some((index + id as usize) as u32)),
             // Empty, ASCII and non-UTF-8 names, changing on their own cadence.
             custom_name: match (index / 11 + id as usize) % 3 {
@@ -1573,6 +1577,10 @@ fn assert_relations(frame: &DecodedFrame) {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
     let campaign = synthesize();
     assert_eq!(campaign.expected.len() + campaign.missing.len(), HOURS);
@@ -1829,53 +1837,38 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
     });
 }
 
-/// Every layout's recording of the campaign, and its appended sessions,
+/// The written layout's recording of the campaign, and its appended sessions,
 /// packed on 1, 2 and many threads: blocks follow sessions, branches, spool
 /// keyframes and the file's earlier keyframes, and every table changes in
 /// every form, so a block whose bytes depended on another's packing differs.
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn the_campaign_packs_to_the_sequential_bytes_on_any_worker_count() {
-    use crate::container::{Layout, PACK_WORKERS, WRITTEN_LAYOUT};
+    use crate::container::PACK_WORKERS;
     let campaign = synthesize();
-    let many = parallel_budget().max(3);
-    let layouts = [
-        Layout::Chosen,
-        Layout::Advanced,
-        Layout::Trimmed,
-        Layout::Modelled,
-        Layout::Ramped,
-        Layout::Keyed,
-        Layout::Anchored,
-        Layout::Predicted,
-        Layout::Unpredicted,
-        Layout::Timed,
-    ];
-    for_each_parallel(&layouts, |&layout| {
-        WRITTEN_LAYOUT.set(layout);
-        let workers: &[usize] = if layout == Layout::Chosen {
-            &[1, 2, many]
-        } else {
-            &[1, many]
-        };
-        let written: Vec<_> = workers
-            .iter()
-            .map(|&workers| {
-                PACK_WORKERS.set(Some(workers));
-                let failed = |error: io::Error| panic!("{layout:?} on {workers} workers: {error}");
-                let first = Replay::from_recovered(CAMPAIGN.to_vec(), &campaign.segments[..2])
-                    .unwrap_or_else(failed);
-                let appended = first
-                    .append_recovered(&campaign.segments[2..])
-                    .unwrap_or_else(failed);
-                (first.bytes().to_vec(), appended.bytes().to_vec())
-            })
-            .collect();
-        PACK_WORKERS.set(None);
-        WRITTEN_LAYOUT.set(Layout::Chosen);
-        for (count, packed) in workers.iter().zip(&written).skip(1) {
-            assert!(packed == &written[0], "{layout:?} on {count} workers");
-        }
-    });
+    let written: Vec<_> = [1, 2, parallel_budget().max(3)]
+        .into_iter()
+        .map(|workers| {
+            PACK_WORKERS.set(Some(workers));
+            let failed = |error: io::Error| panic!("{workers} workers: {error}");
+            let first = Replay::from_recovered(CAMPAIGN.to_vec(), &campaign.segments[..2])
+                .unwrap_or_else(failed);
+            let appended = first
+                .append_recovered(&campaign.segments[2..])
+                .unwrap_or_else(failed);
+            (workers, first.bytes().to_vec(), appended.bytes().to_vec())
+        })
+        .collect();
+    PACK_WORKERS.set(None);
+    for (workers, first, appended) in &written[1..] {
+        assert!(
+            (first, appended) == (&written[0].1, &written[0].2),
+            "{workers} workers"
+        );
+    }
 }
 
 /// Each cold seek decodes its block independently, so the checks share no state

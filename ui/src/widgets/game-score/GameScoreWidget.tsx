@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
@@ -19,12 +19,12 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, resolveOptions } from '../../dashboard/options';
 import { usePlaybackSpeed } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
+import { useParityRows } from '../../dashboard/parityRows';
+import { usePreparedScore } from './usePreparedScore';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { DEFAULT_SORT, OPTIONS } from './definition';
-import { BAR_PARTS, SCORE_PARTS, formatScore, gameScoreCountryCell, gameScoreCountryKnown, gameScoreFaction, gameScoreLabel, gameScoreLooks, gameScoreModel, gameScoreRace, gameScoreRow, gameScoreRows, gameScoreTooltips, scoreValue, validateGameScoreReply } from './gameScoreData';
+import { BAR_PARTS, SCORE_PARTS, formatScore, gameScoreCountryCell, gameScoreCountryKnown, gameScoreFaction, gameScoreLabel, gameScoreLooks, gameScoreModel, gameScoreRace, gameScoreRow, gameScoreRows, gameScoreTooltips, scoreValue } from './gameScoreData';
 import type { ScoreRow } from './gameScoreData';
-import type { GameScoreReply } from '../../generated/dashboard';
 
 const NO_WARNINGS: string[] = [];
 const NO_ROWS: readonly ScoreRow[] = [];
@@ -42,11 +42,12 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
   const view = options.view === 'race' ? 'race' : 'table';
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'game_score', params: { branchId: track.branch.id } } : null;
-  const { data, error, retry } = useProduct<GameScoreReply>(runtime.client, request, active, validateGameScoreReply);
+  const requestedHour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
+  const prepared = usePreparedScore(runtime, track, requestedHour, active);
+  const { error, retry, hour } = prepared;
+  const data = prepared.data?.reply;
   const model = useMemo(() => data ? gameScoreModel(data) : null, [data]);
-  const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
+  const grouped = widget.countries.kind !== 'all' && !(widget.countries.kind === 'group' && widget.countries.group.type === 'top');
   const groups = useCountryGroups(runtime, track, active && grouped);
   const fallback = widget.countries.kind === 'all' ? model?.tags ?? NO_TAGS : selectedTags(widget.countries, track);
   const fallbackKey = JSON.stringify(fallback);
@@ -57,9 +58,10 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
   const rows = useMemo(() => {
     if (!model || (grouped && !groups.data)) return NO_ROWS;
     const candidates = widget.countries.kind === 'all' ? model.tags : resolved.top == null && resolved.membership === null
-      ? countryAliasesAt(model.identities, resolved.tags, hour) : rankedCandidates(resolved, hour, model.tags);
-    return gameScoreRows(model, candidates, hour, ranking, resolved.top);
-  }, [model, grouped, groups.data, widget.countries.kind, resolved, hour, ranking]);
+      ? countryAliasesAt(groups.data?.countryIdentities ?? model.identities, resolved.tags, hour) : rankedCandidates(resolved, hour, model.tags);
+    return gameScoreRows(model, candidates, hour, ranking, resolved.top).map(row => ({ ...row,
+      stretch: prepared.data?.stretches[row.tag] ?? row.stretch }));
+  }, [model, grouped, groups.data, widget.countries.kind, resolved, hour, ranking, prepared.data]);
   const raceRows = view === 'race' ? rows : NO_ROWS;
   const [visible, setVisible] = useState<readonly ScoreRow[]>(NO_ROWS);
   const onVisible = useCallback((rows: readonly ScoreRow[]) => setVisible(rows), []);
@@ -92,27 +94,30 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, groups.data, onDiagnostics]);
+  const parityRoot = useRef<HTMLDivElement>(null);
+  useParityRows(parityRoot, () => ({ kind: 'table', label: 'Game score values', complete: !!data && !prepared.pending && !prepared.data?.approximate,
+    total: rows.length, hour, rows: [...rows] }), { ready: () => !!data && !prepared.pending && !prepared.data?.approximate, error: () => error ?? null });
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="grid" message="Load a campaign to see its game scores." />;
     if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-    if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+    if (error && !data) return <WidgetState kind="error" detail={error} onRetry={retry} />;
     if (grouped && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
     if (!data || (grouped && !groups.data)) return <WidgetState kind="loading" label="Loading game scores…" />;
     if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
     if (!rows.length) return <WidgetState kind="unavailable" message="No country data at this time." />;
     return undefined;
   })();
-  if (view === 'race') return <CountryRaceView runtime={runtime} track={track} active={active} state={state} options={options} view="race"
+  if (view === 'race') return <div ref={parityRoot} style={{ display: 'contents' }}><CountryRaceView runtime={runtime} track={track} active={active} state={state} options={options} view="race"
     extent={[track?.branch.firstHour ?? 0, track?.branch.lastHour ?? 1]} playhead={hour} moment={hour} slots={entries.length}
     ranked={entries} lines={[]} parts={parts} raceLegendParts={split ? parts : []} partsLabel="Score parts" entityLooks={entityLooks}
     presentation={{ exact: false, held: false, countryLooks: false, tooltipKeep: SCORE_PARTS.length }}
     label="Game score" empty="Total scores unavailable at this time."
     formatValue={formatAxisValue}
-    tooltip={(tag, atHour) => { const row = model && gameScoreRow(model, tag, Math.floor(atHour)); return row && data ? gameScoreTooltips(data, row) : null; }} />;
-  if (state) return state;
-  return <Table key={JSON.stringify([track!.source.id, track!.source.revision, track!.branch.id])} label="Game score" rows={rows} columns={columns}
+    tooltip={(tag, atHour) => { const row = model && gameScoreRow(model, tag, Math.floor(atHour)); return row && data ? gameScoreTooltips(data, row) : null; }} /></div>;
+  if (state) return <div ref={parityRoot} style={{ display: 'contents' }}>{state}</div>;
+  return <div ref={parityRoot} style={{ display: 'contents' }}><Table key={JSON.stringify([track!.source.id, track!.source.revision, track!.branch.id])} label="Game score" rows={rows} columns={columns}
     rowKey={rowKey} tieKey={tieKey} sort={sort} setOption={setOption} sortOptionValue={tableSortToken} groupBy={options.factions === true ? gameScoreFaction : undefined}
     cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
     density={options.density === 'compact' ? 'compact' : 'comfortable'} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={hoursPerSecond}
-    menu={row => [jumpItem(runtime, track!.id, row.hour)]} />;
+    menu={row => [jumpItem(runtime, track!.id, row.hour)]} /></div>;
 }

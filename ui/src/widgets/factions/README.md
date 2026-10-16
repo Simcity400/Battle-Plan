@@ -2,7 +2,7 @@
 
 **What it shows:** Recorded factions and members on a lane timeline, with member-count bands and marked leader spans.
 
-**Product(s) it reads:** [`country-groups`](../../../../crates/dashboard/src/products/country_groups.rs) supplies faction rosters, leaders, names, identity runs and unknown coverage.
+**Product(s) it reads:** [`country-groups`](../../../../crates/dashboard-base/src/products/country_groups.rs) supplies faction rosters, leaders, names, identity runs and unknown coverage.
 
 **Settings:** All countries by default; manual/smart-group choices retain factions those native holders joined. Faction/member ordering, dissolved/former entries, colour legend and global/campaign swatch scope; Grow with playback; Campaign, Follow, Pin and Range.
 

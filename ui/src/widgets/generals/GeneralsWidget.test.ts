@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { LeaderRow, UnitLeadersData } from './generalsData';
+import type { TableProps } from '../../charts/table/Table';
 
 test('leaderboard keeps the dated country selection when an alias is reused', async () => {
   const data: UnitLeadersData = { branchId: '1', firstHour: 100,
@@ -28,11 +29,11 @@ test('leaderboard keeps the dated country selection when an alias is reused', as
     '/charts/drill/DrillHost.tsx': 'export default props => props.main;',
     '/charts/table/Table.tsx': `import { createElement } from 'react';
       export const CountryCell = () => null;
-      export default props => { globalThis.__selectedLeaders = props.rows;
+      export default props => { globalThis.__selectedLeaders = props.rows; globalThis.__leaderParity = props.parity;
         return createElement('div', null, props.rows.map(row => createElement('div', { key: row.key }, props.columns.find(column => column.key === 'traits').render(row)))); };`,
   };
-  const host = globalThis as typeof globalThis & { __selectedLeaders?: readonly LeaderRow[] };
-  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+  const host = globalThis as typeof globalThis & { __selectedLeaders?: readonly LeaderRow[]; __leaderParity?: TableProps<LeaderRow>['parity'] };
+  const vite = await createServer({ configFile: false, mode: 'parity', optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'leader-selection-fixture', enforce: 'pre',
       transform: (_source, id) => { const key = Object.keys(replacements).find(key => id.endsWith(key)); return key ? replacements[key] : undefined; },
     }] });
@@ -44,6 +45,12 @@ test('leaderboard keeps the dated country selection when an alias is reused', as
         clock: { getHour: () => 102 }, client: {} }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
     const html = renderToStaticMarkup(createElement(Widget, props));
     assert.deepEqual(host.__selectedLeaders?.map(row => row.key), ['5']);
+    const original = host.__selectedLeaders![0];
+    assert.deepEqual(host.__leaderParity?.reads, { traitCatalogue: data.traits });
+    const projected = host.__leaderParity!.item!(original) as LeaderRow;
+    assert.equal(projected.traitCatalogue, undefined);
+    assert.deepEqual(projected.value.traits, [0]);
+    assert.equal(JSON.stringify({ catalogue: host.__leaderParity?.reads, rows: [projected, projected] }).split('synthetic_trait').length - 1, 1);
     assert.match(html, /class="leader-trait-chip">Synthetic trait/);
     assert.doesNotMatch(html, /icon unavailable|>\?</);
     const { LeaderPortrait, SkillStars } = await vite.ssrLoadModule('/ui/src/widgets/generals/LeaderIdentity.tsx');
@@ -55,6 +62,7 @@ test('leaderboard keeps the dated country selection when an alias is reused', as
     assert.doesNotMatch(skill, /maximum unknown/);
   } finally {
     delete host.__selectedLeaders;
+    delete host.__leaderParity;
     await vite.close();
   }
 });

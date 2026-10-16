@@ -1,39 +1,70 @@
-use crate::{
-    Config,
-    Options,
-    document::{Document, InitialHour},
-    hours,
-    map::{
+use crate::map_views::CounterView;
+use std::path::Path;
+use std::sync::OnceLock;
+use viewer_combat as combat;
+#[cfg(test)]
+use viewer_foundation::combat_selection::Hit as CombatHit;
+use viewer_foundation::combat_selection::Selection;
+use viewer_foundation::map::camera::Placement;
+use viewer_foundation::map::camera::motion::{Input as MotionInput, Motion, Pan};
+use viewer_foundation::map::gpu_contract::SOFTWARE_RENDERER_NOTICE;
+use viewer_foundation::map::gpu_contract::device_requirements;
+use viewer_foundation::map::gpu_contract::is_software;
+use viewer_foundation::map::perspective::Choice;
+use viewer_foundation::map::perspective::Country;
+use viewer_foundation::map::presentation::Continuity;
+use viewer_foundation::map::presentation::Target;
+use viewer_foundation::map::province_pick::{motion_ground_point, pick, terrain_height};
+use viewer_foundation::map::tables::Limitations;
+use viewer_foundation::map::textures::IntelMap;
+use viewer_foundation::map::ui_scale::PRESENTATION_FILTER;
+use viewer_foundation::map::ui_scale::Raster;
+use viewer_foundation::map::ui_scale::Setting;
+use viewer_foundation::map::ui_scale::extent as ui_scale_extent;
+use viewer_foundation::map::ui_scale::monitors as ui_scale_monitors;
+use viewer_foundation::map::ui_scale::monitors_generation;
+use viewer_foundation::map::ui_scale::points as ui_scale_points;
+use viewer_foundation::map::ui_scale::refresh_monitors;
+use viewer_foundation::map::ui_scale::to_interface;
+use viewer_foundation::profile_writer::profile_print;
+use viewer_foundation::profile_writer::profiling;
+use viewer_foundation::profiling::hz;
+use viewer_foundation::profiling::laps_line;
+use viewer_foundation::profiling::sweep as profiling_sweep;
+use viewer_foundation::retirement::Dropper;
+use viewer_foundation::tooltip_text::Tooltip;
+use viewer_foundation::unit_handle::Unit;
+use viewer_world::map::scene::Scene;
+use {
+    crate::{
+        Config, Options,
+        document::{Document, InitialHour},
+        hours, render,
+    },
+    viewer_foundation::map::{
         camera::{Camera, MapSize},
         frame::DayNight,
-        scene::Scene,
     },
-    // capture
-    render,
 };
 // names
-use crate::map;
-use crate::map::{
-    // counters
-    counters::CounterReport,
-    labels::LabelReport,
-    name_pass::{LayerFade, Placements},
-    scene::{Overlay, Request},
-    sprites::Batch,
-};
 use eframe::{egui, wgpu};
-use replay::{frame::TableView, rows::TableId};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
+use viewer_foundation::diagnostics_panel::tooltip_warning_lines;
+use {
+    viewer_counters::map::counters::CounterReport, viewer_foundation::map::name_draw::Placements,
+    viewer_foundation::map::sprites::Batch, viewer_world::map::labels::LabelReport,
+    viewer_world::map::name_pass::LayerFade, viewer_world::map::scene::Overlay,
+    viewer_world::map::scene::Request,
+};
 
 mod embedded;
 mod faction_highlight;
 mod presentation;
-mod timeline;
 
 /// Guard the README's frame-budget boundary at both production entry points.
 #[cfg(test)]
@@ -53,7 +84,7 @@ fn faction_hover_frame_path_uses_only_prepared_border_inputs() {
             "faction hover reaches {rebuild} on the frame path"
         );
     }
-    let source = include_str!("map/scene.rs");
+    let source = include_str!("../../viewer-world/src/map/scene.rs");
     let body = source
         .split("\n    pub fn set_faction_highlight(")
         .nth(1)
@@ -116,7 +147,7 @@ impl Laps {
                 (now.saturating_duration_since(end).saturating_sub(waited)).as_secs_f64() * 1000.0
             });
         Self {
-            enabled: map::counter_move::profiling(),
+            enabled: profiling(),
             start: now,
             last: now,
             outside,
@@ -139,7 +170,7 @@ impl Laps {
     }
 
     fn line(&self) -> String {
-        crate::profiling::laps_line(&self.laps, 0.05)
+        laps_line(&self.laps, 0.05)
     }
 }
 
@@ -150,7 +181,7 @@ impl Laps {
 /// timestamp queries, and it costs the frame that wait, so an ordinary run and
 /// a profiled run without the variable never call it and report 0.
 fn gpu_wait(device: &wgpu::Device) -> f64 {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static ENABLED: OnceLock<bool> = OnceLock::new();
     if !ENABLED.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_GPU_WAIT").or_else(|| std::env::var_os("HOI4_VIEWER_GPU_WAIT")).is_some()) {
         return 0.0;
     }
@@ -170,7 +201,7 @@ fn gpu_wait(device: &wgpu::Device) -> f64 {
 /// `speed / hz` hours a frame outruns the builders, which work in wall time.
 /// The wait falls before the frame's laps start, so it is not a frame's cost.
 fn pace_profiled_frame() -> Duration {
-    let period = Duration::from_secs_f64(1.0 / crate::profiling::hz());
+    let period = Duration::from_secs_f64(1.0 / hz());
     static LAST: Mutex<Option<Instant>> = Mutex::new(None);
     let started = Instant::now();
     let Ok(mut last) = LAST.lock() else {
@@ -190,7 +221,7 @@ fn pace_profiled_frame() -> Duration {
     started.elapsed()
 }
 
-/// Where the timeline is: the recorded hour the clock is in and how far past it.
+/// Where the host's clock is: the recorded hour it is in and how far past it.
 ///
 /// The map draws the last hour the builders finished (`crate::hours`), which
 /// is this one unless a seek or fast playback outran them; the playhead never
@@ -210,21 +241,21 @@ struct ShownHour {
     /// Why the hour draws nothing: a recorded gap or a failed builder part.
     error: Option<String>,
     political_warnings: Vec<String>,
-    /// The battle plan's refusals and missing inputs ([`map::orders::OrderReport::warnings`]).
+    /// The battle plan's refusals and missing inputs ([`viewer_foundation::map::ribbon_content::OrderReport::warnings`]).
     plan_warnings: Vec<String>,
     /// The map buildings' refused type tokens
-    /// ([`map::map_buildings::MapBuildingSummary::warnings`]).
+    /// ([`viewer_world::map::map_buildings::MapBuildingSummary::warnings`]).
     building_warnings: Vec<String>,
     /// The unit models' omitted stacks by reason
-    /// ([`map::unit_models::ModelReport::warnings`]).
+    /// ([`viewer_world::map::unit_models::ModelReport::warnings`]).
     model_warnings: Vec<String>,
     political_summary: (usize, usize),
     political_build: Duration,
-    limitations: map::tables::Limitations,
+    limitations: Limitations,
     /// What the weather table held, the snow and mud grid's size and how long
     /// it took to rasterise. Kept raw so ordinary viewing formats nothing.
-    snow: (map::weather::Summary, [u32; 2], Duration),
-    /// The header's country list and viewing tag, built with the hour.
+    snow: (viewer_world::map::weather::Summary, [u32; 2], Duration),
+    /// The viewing country's tag, built with the hour.
     header: Arc<hours::Header>,
     /// Worker-built regions, zone and ordinary plans for pointer highlights.
     borders: Option<(Arc<hours::Political>, Arc<hours::Borders>)>,
@@ -290,7 +321,7 @@ fn scale_style(style: &mut egui::Style, points: f32) {
 /// its loading status and diagnostics. `add` gets the height its lists may use.
 ///
 /// The box is part of the map's screen-space interface, so like the map's
-/// tooltip (`map::ui_scale`) it is laid out in interface pixels: `points` is
+/// tooltip (`viewer_foundation::map::ui_scale`) it is laid out in interface pixels: `points` is
 /// egui points per interface pixel, the UI scale over the pixels per point.
 pub(crate) fn map_overlay(
     ui: &mut egui::Ui,
@@ -335,87 +366,16 @@ struct Uploaded {
     buildings: Option<u64>,
     /// Last snow/mud snapshot handed to the scene. Its graphics refresh/fade
     /// continues locally after application; equal snapshots retain that history.
-    snow_mud: Option<Arc<map::weather::SnowMud>>,
+    snow_mud: Option<Arc<viewer_world::map::weather::SnowMud>>,
     /// The intel map on the GPU; hours with the same fog share one.
-    intel: Option<Arc<map::textures::IntelMap>>,
+    intel: Option<Arc<IntelMap>>,
     /// The battle plan on the GPU; hours with the same plan tables share one
-    /// (`map::orders::TABLES`).
-    orders: Option<Arc<map::orders::OrderField>>,
+    /// (`viewer_counter_products::map::orders::TABLES`).
+    orders: Option<Arc<viewer_foundation::map::ribbon_content::OrderField>>,
 }
 
-/// Cap the warning area's previous-frame content height at this share of the
-/// central panel; taller content scrolls instead of growing.
-///
-/// It lists what the hour could not draw, which `--dump` prints too, so all of
-/// it stays reachable; but unbounded it took the map's place entirely. At
-/// 1200x800 the persistent content limitations alone wrapped past the bottom of
-/// the panel and left the map one pixel tall.
-const WARNING_SHARE: f32 = 0.4;
-
-/// Reserve last frame's measured warning content before sizing the map.
-fn reserve_warnings(ui: &mut egui::Ui, measured: f32) -> egui::Rect {
-    let height = measured.min(ui.available_height() * WARNING_SHARE).max(0.0);
-    let size = egui::vec2(ui.available_width(), height);
-    if height > 0.0 {
-        ui.allocate_space(size).1
-    } else {
-        egui::Rect::from_min_size(ui.available_rect_before_wrap().min, size)
-    }
-}
-
-/// Collect and draw after the overlay; the measured content sizes the next frame's reservation.
-fn finish_warnings(
-    ui: &mut egui::Ui,
-    rect: Option<egui::Rect>,
-    measured: &mut f32,
-    enabled: bool,
-    collect: impl FnOnce() -> Vec<String>,
-) -> Vec<String> {
-    let warnings = if enabled { collect() } else { Vec::new() };
-    if let Some(rect) = rect {
-        let height = if warnings.is_empty() {
-            0.0
-        } else {
-            let mut panel = ui.new_child(
-                egui::UiBuilder::new()
-                    .id_salt("warnings_panel")
-                    .max_rect(rect),
-            );
-            egui::ScrollArea::vertical()
-                .id_salt("warnings")
-                .max_height(rect.height())
-                .min_scrolled_height(0.0)
-                .auto_shrink([false, true])
-                .show(&mut panel, |ui| {
-                    for warning in &warnings {
-                        ui.colored_label(egui::Color32::YELLOW, warning);
-                    }
-                })
-                .content_size
-                .y
-        };
-        if *measured != height {
-            *measured = height;
-            ui.ctx().request_repaint();
-        }
-    }
-    warnings
-}
-
-pub(crate) fn tooltip_warning_lines(
-    refused: &BTreeMap<String, usize>,
-) -> impl Iterator<Item = String> + '_ {
-    refused
-        .iter()
-        .map(|(reason, count)| format!("Tooltip: {count} × {reason}"))
-}
-
-/// The height the recorded-table list scrolls within, for the same reason: 148
-/// tables wrap to twenty lines, and the bottom panel grew to hold every one.
-const TABLE_LIST_HEIGHT: f32 = 96.0;
-
-/// Shows or hides diagnostics in the standalone and embedded viewer; the
-/// desktop's web interface uses the same key.
+/// Asks the desktop host to show or hide diagnostics; the desktop's web
+/// interface uses the same key.
 const DIAGNOSTICS_KEY: egui::Key = egui::Key::F3;
 
 /// Whether `event` is the diagnostics shortcut: a first press of the key with
@@ -433,20 +393,13 @@ fn is_diagnostics_shortcut(event: &egui::Event) -> bool {
     )
 }
 
-/// Whether diagnostics start shown: `--diagnostics` for this run, otherwise
-/// the standalone viewer's saved choice. An embedded viewer waits for the
-/// desktop host's choice instead of reading `viewer.json`.
-fn initial_diagnostics(requested: bool, saved: bool, embedded: bool) -> bool {
-    requested || (!embedded && saved)
-}
-
 // capture
 /// A readback of the window's map target, pending until a frame has been drawn.
 ///
 /// The window does not draw the map into the swap chain: it renders it through
 /// [`Scene`] into the same offscreen `OUTPUT_FORMAT` texture a `--dump` renders
 /// into, and only hands egui the finished texture. That is the 8-bit graded
-/// output and never the float scene behind it (`map::scene::Targets`), so egui
+/// output and never the float scene behind it (`viewer_foundation::map::gpu_contract::Targets`), so egui
 /// is handed exactly the bytes the readback writes. The surface format, the
 /// MSAA resolve and egui's own colour handling sit downstream of every map pixel
 /// and cannot change one, and reading that texture back with
@@ -463,7 +416,7 @@ struct Capture {
     /// `--window-dump`: the pixel size and camera the frame is pinned to, so
     /// neither the panel layout nor the display's scale factor decides them. A
     /// `None` camera is the fit to that size, which is the dump's default too.
-    pinned: Option<([u32; 2], Option<map::camera::Placement>)>,
+    pinned: Option<([u32; 2], Option<Placement>)>,
     /// `--window-dump` closes the window once it has written its frame.
     exit: bool,
     time: Option<f32>,
@@ -483,8 +436,8 @@ struct LoadedReplay {
 
 fn seek_open_target(
     seek: &crate::embedded::Seek,
-    accepted: Option<(&std::path::Path, Option<&str>)>,
-    pending_load: Option<(&std::path::Path, Option<&str>)>,
+    accepted: Option<(&Path, Option<&str>)>,
+    pending_load: Option<(&Path, Option<&str>)>,
 ) -> Option<crate::embedded::OpenRequest> {
     // An in-flight load or folder retry takes precedence over the old map.
     // An unknown native-picker revision cannot satisfy a host's exact target.
@@ -496,7 +449,7 @@ fn seek_open_target(
 
 /// The Match game scale and its note, keyed by the monitors' generation and
 /// the document's content.
-type MatchGame = ((u64, usize), (map::ui_scale::Raster, Option<String>));
+type MatchGame = ((u64, usize), (Raster, Option<String>));
 
 /// What an overlay was laid out for: the hour, the camera and frame, the perspective and the
 /// counter options.
@@ -507,10 +460,10 @@ struct OverlayKey {
     camera: Camera,
     pixels: [u32; 2],
     ui_scale: f32,
-    perspective: map::perspective::Choice,
-    counter_settings: map::counters::CounterSettings,
-    selected: Arc<BTreeSet<map::unit_selection::Unit>>,
-    hovered: Option<map::unit_selection::Unit>,
+    perspective: Choice,
+    counter_settings: viewer_counters::map::counters::CounterSettings,
+    selected: Arc<BTreeSet<Unit>>,
+    hovered: Option<Unit>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -526,13 +479,13 @@ enum MapHit {
 }
 
 fn land_hover_matches_unit(
-    hover: &map::counters::CounterHover,
-    unit: &map::unit_selection::Hit,
+    hover: &viewer_foundation::map::counter_hovers::land::CounterHover,
+    unit: &viewer_foundation::map::counter_hovers::unit_hits::Hit,
 ) -> bool {
     let kind = if hover.railway_gun {
-        map::unit_selection::Kind::RailwayGun
+        viewer_foundation::map::counter_hovers::unit_hits::Kind::RailwayGun
     } else {
-        map::unit_selection::Kind::Division
+        viewer_foundation::map::counter_hovers::unit_hits::Kind::Division
     };
     unit.kind == kind && unit.members == hover.members
 }
@@ -541,8 +494,8 @@ fn land_hover_matches_unit(
 /// a combat window, the actual Part attachment order decides which observer wins.
 fn top_map_hit(
     point: [f32; 2],
-    report: &map::counters::CounterReport,
-    raid: Option<&map::raids::tooltips::Hit>,
+    report: &viewer_counters::map::counters::CounterReport,
+    raid: Option<&viewer_raids::map::raids::tooltips::Hit>,
 ) -> Option<MapHit> {
     let mut top = None;
     let mut offer = |layer, pass, order, target| {
@@ -629,7 +582,9 @@ fn top_map_hit(
         {
             let target = if !hover.supported || !hover.has_tooltip() {
                 MapHit::Blocked
-            } else if hover.control == map::counter_tooltips::task_force_port::Control::Unbound {
+            } else if hover.control
+                == viewer_foundation::map::counter_hovers::task_force_port::Control::Unbound
+            {
                 MapHit::PortTooltip(index)
             } else {
                 MapHit::Unit(hover.unit_hit)
@@ -662,7 +617,7 @@ fn top_map_hit(
         .enumerate()
         .filter(|(_, hit)| hit.contains(point))
     {
-        let pass = if matches!(hit.selection, crate::combat::Selection::Land(_)) {
+        let pass = if matches!(hit.selection, Selection::Land(_)) {
             5
         } else {
             6
@@ -694,11 +649,8 @@ pub struct Viewer {
     /// The last frame's data limitations, built only while they are shown or
     /// a capture will print them.
     map_warnings: Vec<String>,
-    /// Last standalone warning ScrollArea content height, capped before the next map layout.
-    warnings_height: f32,
     /// Whether technical stats and data limitations are shown with the map.
-    /// Off by default: the standalone viewer saves the choice in
-    /// `viewer.json`, the desktop host sends its own, and `--diagnostics`
+    /// Off by default: the desktop host sends its choice, and `--diagnostics`
     /// turns it on for one run.
     pub(crate) diagnostics: bool,
     /// Whether an embedded map's diagnostics box lists its data limitations.
@@ -712,12 +664,12 @@ pub struct Viewer {
     revision: Option<String>,
     expected_revision: Option<String>,
     hidden_since: Option<Instant>,
-    combat: crate::combat::Window,
+    combat: combat::Window,
     config: Config,
     options: Options,
-    game_text: String,
-    user_text: String,
-    settings: bool,
+    /// Whether the map waits for usable folders from the host before it can
+    /// load; an embedded viewer keeps its requested recording meanwhile.
+    awaiting_folders: bool,
     document: Option<Document>,
     loading: Option<mpsc::Receiver<Result<LoadedReplay, String>>>,
     error: Option<String>,
@@ -725,8 +677,10 @@ pub struct Viewer {
     texture: Option<egui::TextureId>,
     generation: u64,
     map_error: Option<String>,
-    camera: Option<map::camera::Placement>,
+    camera: Option<Placement>,
     camera_manual: bool,
+    /// The game's zoom: its target camera and the wheel's part notch.
+    zoom: Motion,
     playing: bool,
     speed: u32,
     last_step: Instant,
@@ -738,25 +692,39 @@ pub struct Viewer {
     /// Whether the map is graded through the engine's post chain.
     postfx: bool,
     pub(crate) graphics: dashboard::protocol::MapGraphics,
-    /// The screen-space map interface's scale setting; see [`map::ui_scale`].
-    /// The desktop host sets it with `MapAction::UiScale`; the standalone
-    /// window keeps it in `viewer.json`.
-    pub(crate) ui_scale: map::ui_scale::Setting,
+    /// Whose counters this view draws.
+    pub(crate) counter_filter: dashboard::protocol::CounterFilter,
+    /// This view's sound volumes. Only the focused map plays sound.
+    pub(crate) audio: dashboard::protocol::MapAudio,
+    /// The overlay parts the last overlay draw used, with the counter filter resolved.
+    overlay_layers: crate::document::OverlayLayers,
+    /// The counter filter's countries at the shown hour.
+    counter_owners: crate::map_views::CounterOwners,
+    /// The host's settings for this view's scope.
+    resolved_settings: crate::map_views::ResolvedSettings,
+    /// The screen-space map interface's scale setting; see [`viewer_foundation::map::ui_scale`].
+    /// The desktop host sets it with `MapAction::UiScale`.
+    pub(crate) ui_scale: Setting,
     /// The Match game scale and its note, keyed by the monitors' generation
     /// and the document's content, so a frame only re-resolves on a change.
     match_game: Option<MatchGame>,
     /// The monitor size and display scale the window last saw; a change asks
     /// for the monitors to be read again.
     monitor_seen: Option<(Option<egui::Vec2>, Option<f32>)>,
-    map_preferences_seen: Option<(String, Option<Vec<String>>, u32, u8)>,
+    map_preferences_seen: Option<(
+        String,
+        Option<Vec<installed_content::content::visual::Choice>>,
+        u32,
+        u8,
+    )>,
     // hours
-    /// The timeline's position; the map follows it as hours are built.
+    /// The host clock's position; the map follows it as hours are built.
     playhead: Option<Playhead>,
     /// A seek waiting for the next built hour to start a fresh animation
-    /// history (`map::presentation`).
+    /// history (`viewer_foundation::map::presentation`).
     animation_seek: bool,
     /// The last host clock target, to tell its seeks from playback.
-    map_animation_target: Option<map::presentation::Target>,
+    map_animation_target: Option<Target>,
     /// The worker threads that build every hour's layers off the frame path.
     hours: Option<hours::Pipeline>,
     /// The engaged-flag index of the recording last closed, for a newer
@@ -773,9 +741,9 @@ pub struct Viewer {
     /// Which shared layers the scene holds.
     uploaded: Uploaded,
     /// Frees the hours the window let go of off the frame path.
-    dropper: Option<Arc<hours::Dropper>>,
+    dropper: Option<Arc<Dropper>>,
     // close zoom
-    unit_models: Option<map::unit_models::PreparedModels>,
+    unit_models: Option<viewer_world::map::unit_models::PreparedModels>,
     /// Whether the scene holds `unit_models`' field. It does not move within
     /// the hour, so each installed hour uploads it once.
     unit_field_uploaded: bool,
@@ -792,11 +760,11 @@ pub struct Viewer {
     /// The raid offer cycle, advanced off the frame path.
     raid_lane: crate::raid_lane::RaidLane,
     faction_highlight: faction_highlight::Lane,
-    raid_tooltips: map::raids::tooltips::lane::Lane,
-    land_marker_tooltips: crate::combat::land_marker_tooltips::Cache,
-    naval_marker_tooltips: crate::combat::naval_marker_tooltips::Cache,
-    province_tooltips: map::province_tooltips::Cache,
-    counter_tooltips: map::counter_tooltips::Cache,
+    raid_tooltips: viewer_raids::map::raids::tooltips::lane::Lane,
+    land_marker_tooltips: combat::land_marker_tooltips::Cache,
+    naval_marker_tooltips: combat::naval_marker_tooltips::Cache,
+    province_tooltips: viewer_counter_products::map::province_tooltips::Cache,
+    counter_tooltips: viewer_counter_products::map::counter_tooltips::Cache,
     tooltip_refused: BTreeMap<String, usize>,
     // counters
     counter_report: CounterReport,
@@ -814,11 +782,11 @@ pub struct Viewer {
     prepared_overlay: Option<crate::document::PreparedOverlay>,
     overlay_fraction: Option<f32>,
     overlay_at: Option<OverlayKey>,
-    /// This view's counter options (the user's `settings.txt`, switchable in the header as the
-    /// game's options are) and its counters' memory from one update to the next; a new
-    /// document starts it afresh.
-    counter_view: map::counters::CounterView,
-    unit_selection: map::unit_selection::Selection,
+    /// This view's counter options (the user's `settings.txt`, with the host's graphics
+    /// overrides) and its counters' memory from one update to the next; a new document
+    /// starts it afresh.
+    counter_view: CounterView,
+    unit_selection: viewer_counters::map::unit_selection::Selection,
     /// The hour's camera-independent icon tables, parsed once per (branch,
     /// hour, perspective) and reused by every frame's icon rebuild while the
     /// camera moves. A still camera never rebuilds at all (`overlay_at`), so
@@ -827,24 +795,20 @@ pub struct Viewer {
     overlay_tables: Option<(
         replay::BranchId,
         i32,
-        map::perspective::Choice,
+        Choice,
         crate::document::OverlayTables,
     )>,
-    /// Which country the counters are drawn for; the header's own control sets
+    /// Which country the counters are drawn for; the host's map options set
     /// it and `Document::perspective` is kept in step with it.
-    perspective: map::perspective::Choice,
-    /// The viewing-country chooser's tag filter.
-    country_filter: String,
+    perspective: Choice,
     // capture
-    /// The readback to run once the next frame is drawn; F12 and
+    /// The readback to run once the next frame is drawn; a host export and
     /// `--window-dump` both arm it.
     capture: Option<Capture>,
-    /// What the last capture wrote, or why it failed, for the header.
+    /// What the last capture wrote, or why it failed, for the map details.
     capture_note: Option<String>,
     /// How a `--window-dump` failure leaves the process; see `main::run`.
     failure: Arc<Mutex<Option<String>>>,
-    /// Names the F12 captures of one session apart when `--out` did not.
-    captures: u32,
     /// Device and queue clones for the loading thread's GPU init. The loader
     /// builds the whole scene (static passes, textures and per-hour pass
     /// creation) while the builders build the first hour, so no frame ever
@@ -867,7 +831,15 @@ pub(crate) fn load_scene(
     document: &Document,
     graphics: dashboard::protocol::MapGraphics,
 ) -> std::io::Result<Scene> {
-    let mut scene = Scene::new(device, queue, &document.assets, &document.icons, graphics)?;
+    let mut scene = Scene::new(
+        device,
+        queue,
+        &document.assets,
+        &document.icons.images,
+        &document.icons.lazy,
+        graphics,
+    )?;
+    scene.install_animated_text(&document.icons.animated_text, &document.icons.counters.gui);
     scene.set_borders(
         device,
         queue,
@@ -892,7 +864,14 @@ pub(crate) fn load_scene(
     scene.warm_railways(device, queue, &document.rail_assets)?;
     scene.warm_orders(device, queue, &document.orders)?;
     scene.warm_weather(device, queue, document.weather_effects.clone())?;
-    scene.warm_political(device, queue, &document.content)?;
+    scene.warm_political(
+        device,
+        queue,
+        &document.content.map,
+        &document.content.strategic_regions,
+        &document.content.map_defines.gradient_field,
+        &document.content.political_gpu,
+    )?;
     Ok(scene)
 }
 
@@ -927,7 +906,7 @@ impl Viewer {
             camera,
             pixels,
             ui_scale,
-            Default::default(),
+            &self.overlay_layers,
             time,
             &mut batch,
             &mut report,
@@ -937,7 +916,7 @@ impl Viewer {
             && full.raid_report() == prepared.raid_report()
             && full.label_report() == prepared.label_report()
             && report == self.counter_report;
-        crate::map::counter_move::profile_print(format!(
+        profile_print(format!(
             "CHECK overlay raids in place {} quads {}",
             if same { "equal" } else { "DIFFER" },
             drawn.quads.len()
@@ -987,13 +966,13 @@ impl Viewer {
                 }
                 Err(error) => {
                     viewer.error = Some(format!("Native map workers: {error}"));
-                    viewer.settings = true;
+                    return viewer;
                 }
             }
         }
-        if (!viewer.settings || viewer.options.window_dump)
-            && let Some(path) = viewer.options.replay.clone()
-        {
+        // Without usable folders the load fails at once and says so; an
+        // embedded viewer keeps the path until the host sends its folders.
+        if let Some(path) = viewer.options.replay.clone() {
             viewer.open(path, &cc.egui_ctx, None);
         }
         viewer
@@ -1019,13 +998,13 @@ impl Viewer {
         // starts.
         let capture = options.window_dump.then(|| Capture {
             path: options.out.clone().unwrap_or_default(),
-            remaining: if map::counter_move::profiling() {
+            remaining: if profiling() {
                 // A cold seek is followed for thirty seconds past it: a seek
                 // across a 1,400-hour branch walks its snow history for ~10 s.
                 if std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).is_ok_and(|mode| mode == "seek_end") {
                     1921
                 } else {
-                    crate::profiling::sweep().end
+                    profiling_sweep().end
                 }
             } else {
                 1
@@ -1037,21 +1016,15 @@ impl Viewer {
             frames: options.window_frames.max(1),
             index: 0,
         });
-        // counters: the header's control starts where the command line put it.
+        // counters: the perspective starts where the command line put it.
         let perspective = options.perspective.clone();
         // Replaced with the document's `settings.txt` options when one loads.
-        let counter_view = map::counters::CounterView::new(
-            options.counter_settings(map::counters::CounterSettings::default()),
+        let counter_view = CounterView::new(
+            options.counter_settings(viewer_counters::map::counters::CounterSettings::default()),
         );
         let hidden_since = embedded.as_ref().map(|_| Instant::now());
         // The monitors are read off the UI thread; start before the first map.
-        map::ui_scale::refresh_monitors(|| ());
-        // Embedded, the host owns the setting and sends it before the map.
-        let ui_scale = if embedded.is_some() {
-            map::ui_scale::Setting::MatchGame
-        } else {
-            map::ui_scale::Setting::from_stored(config.ui_scale)
-        };
+        refresh_monitors(|| ());
         Self {
             dashboard: None,
             dashboard_active: false,
@@ -1063,12 +1036,7 @@ impl Viewer {
             rendered: None,
             rendered_sequence: 0,
             map_warnings: Vec::new(),
-            warnings_height: 0.0,
-            diagnostics: initial_diagnostics(
-                options.diagnostics,
-                config.diagnostics,
-                embedded.is_some(),
-            ),
+            diagnostics: options.diagnostics,
             diagnostics_open: false,
             interface_points: 1.0,
             embedded,
@@ -1077,24 +1045,28 @@ impl Viewer {
             revision: None,
             expected_revision: None,
             hidden_since,
-            combat: crate::combat::Window::default(),
-            game_text: config.game_dir.to_string_lossy().into_owned(),
-            user_text: config.user_dir.to_string_lossy().into_owned(),
-            settings: config.resolve_options().is_err(),
+            combat: combat::Window::default(),
+            awaiting_folders: config.resolve_options().is_err(),
             camera: options.camera,
             camera_manual: options.camera.is_some(),
+            zoom: Motion::default(),
             // colour: `--postfx off` reaches the window too, so a window and a
-            // dump of the same state can be the same frame; the checkbox starts
-            // where the command line put it.
+            // dump of the same state can be the same frame.
             postfx: options.postfx,
+            // A host's maps take its graphics preferences when their recording
+            // opens; a `--window-dump` keeps the dump's options.
             graphics: dashboard::protocol::MapGraphics {
-                day_night: config.day_night.unwrap_or(true),
-                show_allied_plans: options
-                    .allied_plans
-                    .unwrap_or(config.show_allied_plans.unwrap_or(false)),
+                day_night: options.day_night.unwrap_or(true),
+                show_allied_plans: options.allied_plans.unwrap_or(false),
                 ..Default::default()
             },
-            ui_scale,
+            counter_filter: Default::default(),
+            audio: Default::default(),
+            overlay_layers: Default::default(),
+            counter_owners: Default::default(),
+            resolved_settings: Default::default(),
+            // The host sends its setting before the map; a capture pins its own.
+            ui_scale: Setting::MatchGame,
             match_game: None,
             monitor_seen: None,
             map_preferences_seen: None,
@@ -1152,12 +1124,10 @@ impl Viewer {
             counter_view,
             unit_selection: Default::default(),
             perspective,
-            country_filter: String::new(),
             // capture
             capture,
             capture_note: None,
             failure,
-            captures: 0,
             gpu,
             profile_frame: 0,
             laps: None,
@@ -1176,17 +1146,15 @@ impl Viewer {
         options.combat = None;
         let mut viewer = Self::create(config, options, None, Arc::new(Mutex::new(None)), None, gpu);
         viewer.dashboard_map = true;
-        // The dashboard passes on the host's choice, not the standalone one.
+        // The dashboard passes on the host's choice.
         viewer.diagnostics = false;
         viewer.dropper = Some(Arc::clone(&resources.dropper));
         viewer.shared_resources = Some(resources);
-        viewer.settings = false;
         viewer
     }
 
     pub(crate) fn install_map(&mut self, document: Document, scene: Scene, revision: String) {
-        self.counter_view =
-            map::counters::CounterView::new(self.options.counter_settings(document.game_counters));
+        self.counter_view = CounterView::new(self.options.counter_settings(document.game_counters));
         self.unit_selection = Default::default();
         self.document = Some(document);
         self.scene = Some(scene);
@@ -1201,9 +1169,32 @@ impl Viewer {
         self.document.is_some() && self.scene.is_some()
     }
 
-    /// Embedded scopes feed the same counter setting the standalone header owns.
-    pub(crate) fn set_embedded_graphics(&mut self, graphics: dashboard::protocol::MapGraphics) {
+    /// Follow the host's settings for `scope`, resolving them only when they may have changed.
+    pub(crate) fn follow_map_settings(
+        &mut self,
+        service: &dashboard::Service,
+        scope: String,
+    ) -> std::sync::Arc<dashboard::protocol::ResolvedMapSettings> {
+        let settings =
+            self.resolved_settings
+                .get(service.map_settings_generation(), scope, |scope| {
+                    service.scoped_map_settings(scope)
+                });
+        self.set_embedded_graphics(&settings);
+        settings
+    }
+
+    /// The host's campaign or widget settings, including the counter setting.
+    pub(crate) fn set_embedded_graphics(
+        &mut self,
+        settings: &dashboard::protocol::ResolvedMapSettings,
+    ) {
+        let graphics = settings.graphics;
         self.graphics = graphics;
+        if self.counter_filter != settings.counters {
+            self.counter_filter = settings.counters.clone();
+        }
+        self.audio = settings.audio;
         if let Some(document) = &self.document {
             self.counter_view.settings.nato = graphics
                 .nato_counters
@@ -1241,7 +1232,7 @@ impl Viewer {
         self.map_error = None;
     }
 
-    fn unload_recording(&mut self, path: &std::path::Path) -> bool {
+    fn unload_recording(&mut self, path: &Path) -> bool {
         if self
             .embedded_open
             .as_ref()
@@ -1288,10 +1279,11 @@ impl Viewer {
         frame: &eframe::Frame,
         target: &dashboard::protocol::DashboardMapView,
     ) {
-        self.perspective.country = target.options.country.clone().map_or(
-            map::perspective::Country::Recorded,
-            map::perspective::Country::Tag,
-        );
+        self.perspective.country = target
+            .options
+            .country
+            .clone()
+            .map_or(Country::Recorded, Country::Tag);
         self.perspective.fog = target.options.fog;
         let branch = target
             .branch_id
@@ -1302,7 +1294,7 @@ impl Viewer {
             hour: target.hour,
             fraction: target.fraction,
         };
-        let animation_target = map::presentation::Target {
+        let animation_target = Target {
             branch,
             hour: target.hour,
             seek_sequence: target.seek_sequence,
@@ -1410,7 +1402,7 @@ impl Viewer {
         warnings.extend(shown.limitations.lines());
         // The viewer's device, when it lacks a feature some content needs to draw exactly.
         if let Some((device, _)) = &self.gpu {
-            warnings.extend(render::device_requirements(device.features()));
+            warnings.extend(device_requirements(device.features()));
         }
         warnings.extend(document.warnings.iter().cloned());
         warnings.extend(shown.political_warnings.iter().cloned());
@@ -1443,14 +1435,14 @@ impl Viewer {
             .as_ref()
             .map(|hours| hours.engaged(&self.perspective.country))
         {
-            warnings.extend(index.byte_check().lines());
+            warnings.extend(index.shared.byte_check().lines());
         }
         // A capture renders at the dump's scale, not Match game's.
         let pinned = self
             .capture
             .as_ref()
             .is_some_and(|capture| capture.pinned.is_some());
-        if self.ui_scale == map::ui_scale::Setting::MatchGame
+        if self.ui_scale == Setting::MatchGame
             && !pinned
             && let Some((_, (_, Some(note)))) = &self.match_game
         {
@@ -1478,31 +1470,15 @@ impl Viewer {
             self.diagnostics_open = !self.diagnostics_open;
         }
         if self.diagnostics_open {
-            egui::ScrollArea::vertical()
-                .max_height(max_height)
-                .show(ui, |ui| {
-                    for warning in &self.map_warnings {
-                        ui.colored_label(egui::Color32::YELLOW, warning);
-                    }
-                });
+            viewer_foundation::diagnostics_panel::warning_list(ui, &self.map_warnings, max_height);
         }
     }
 
-    /// Flips diagnostics mode from the viewer's own control or shortcut. The
-    /// standalone viewer saves the choice in `viewer.json`; an embedded viewer
-    /// asks the desktop host, which owns the choice and sends it back.
-    fn toggle_diagnostics(&mut self) {
+    /// The diagnostics shortcut asks the desktop host, which owns the choice
+    /// and sends it back.
+    fn toggle_diagnostics(&self) {
         if let Some(embedded) = &self.embedded {
             embedded.toggle_diagnostics();
-            return;
-        }
-        self.diagnostics = !self.diagnostics;
-        self.save_diagnostics();
-    }
-
-    fn save_diagnostics(&mut self) {
-        if let Err(error) = Config::save_diagnostics(self.diagnostics) {
-            self.error = Some(format!("Could not save the diagnostics setting: {error}"));
         }
     }
 
@@ -1539,7 +1515,7 @@ impl Viewer {
             Ok(resolve) => resolve,
             Err(error) => {
                 self.failed_load(error.to_string(), ctx);
-                self.settings = true;
+                self.awaiting_folders = true;
                 return;
             }
         };
@@ -1628,6 +1604,13 @@ impl Viewer {
                     }
                 }
                 .map_err(|error| error.to_string())?;
+                if let Some(source) = &source {
+                    document.bind_source(
+                        Arc::clone(source),
+                        resolve.clone(),
+                        options.allow_unverified,
+                    );
+                }
                 let decoder = resources
                     .as_ref()
                     .map(|resources| {
@@ -1637,6 +1620,9 @@ impl Viewer {
                             .map_err(|error| error.to_string())?;
                         let mut presented = crate::playback::Playback::unloaded(replay)
                             .map_err(|error| error.to_string())?;
+                        if let Some(source) = document.playback.checkpoint_source() {
+                            presented.bind_checkpoint_source(source);
+                        }
                         presented.present(
                             document.playback.branch(),
                             document.playback.hour(),
@@ -1707,6 +1693,7 @@ impl Viewer {
         self.playing = false;
         self.camera = self.options.camera;
         self.camera_manual = self.options.camera.is_some();
+        self.zoom.reset();
         // names
         self.placements = None;
         self.placements_at = None;
@@ -1780,7 +1767,7 @@ impl Viewer {
                     self.error = None;
                 }
                 if let Some(selector) = self.options.combat {
-                    match selector.resolve(&document) {
+                    match document.frame().and_then(|frame| selector.resolve(frame)) {
                         Ok(selection) => self.combat.open(selection),
                         Err(error) => self.error = Some(error.to_string()),
                     }
@@ -1790,9 +1777,8 @@ impl Viewer {
                     hour: document.playback.hour(),
                     fraction: document.hour_fraction,
                 });
-                self.counter_view = map::counters::CounterView::new(
-                    self.options.counter_settings(document.game_counters),
-                );
+                self.counter_view =
+                    CounterView::new(self.options.counter_settings(document.game_counters));
                 if self.embedded.is_none() {
                     self.graphics.full_resolution = document.game_full_resolution;
                 }
@@ -1803,13 +1789,13 @@ impl Viewer {
                 self.uploaded = Uploaded::default();
                 self.loading = None;
                 if let (Some(embedded), Some(source)) = (&self.embedded, &self.source) {
-                    let graphics = embedded.service().map_settings(&source.replay()).graphics;
-                    self.set_embedded_graphics(graphics);
+                    let settings = embedded.service().map_settings(&source.replay());
+                    self.set_embedded_graphics(&settings);
                 }
                 if let Some(opened) = self.opened
-                    && map::counter_move::profiling()
+                    && profiling()
                 {
-                    map::counter_move::profile_print(format!(
+                    profile_print(format!(
                         "PROFILE open document_and_scene {:.1} ms",
                         opened.elapsed().as_secs_f64() * 1000.0
                     ));
@@ -1843,7 +1829,7 @@ impl Viewer {
         if *monitor_seen != Some(seen) {
             *monitor_seen = Some(seen);
             let ctx = ctx.clone();
-            map::ui_scale::refresh_monitors(move || ctx.request_repaint());
+            refresh_monitors(move || ctx.request_repaint());
         }
     }
 
@@ -1852,14 +1838,14 @@ impl Viewer {
     fn match_game<'a>(
         match_game: &'a mut Option<MatchGame>,
         document: &Document,
-    ) -> &'a (map::ui_scale::Raster, Option<String>) {
+    ) -> &'a (Raster, Option<String>) {
         let key = (
-            map::ui_scale::monitors_generation(),
+            monitors_generation(),
             Arc::as_ptr(&document.content) as usize,
         );
         if match_game.as_ref().is_none_or(|(cached, _)| *cached != key) {
-            let monitors = map::ui_scale::monitors();
-            let resolved = map::ui_scale::Setting::MatchGame.resolve_raster(
+            let monitors = ui_scale_monitors();
+            let resolved = Setting::MatchGame.resolve_raster(
                 document.game_display.as_ref().map_err(String::as_str),
                 monitors
                     .as_ref()
@@ -1995,7 +1981,10 @@ impl Viewer {
     }
 
     /// A pin owns hover only when its presented GUI object is the top hit.
-    fn faction_pin_at(&self, point: [f32; 2]) -> Option<&map::counters::faction_pings::PinHover> {
+    fn faction_pin_at(
+        &self,
+        point: [f32; 2],
+    ) -> Option<&viewer_counters::map::counters::faction_pings::PinHover> {
         let MapHit::Pin(index) = self.map_hit(point)? else {
             return None;
         };
@@ -2058,7 +2047,7 @@ impl Viewer {
                             .flat_map(|region| region.provinces.iter().copied())
                     })
                     .collect();
-                map::scene::FactionHighlight::new(
+                viewer_world::map::scene::FactionHighlight::new(
                     &content.border_meshes,
                     &political.layers.regions,
                     &borders.zone,
@@ -2090,7 +2079,7 @@ impl Viewer {
         point: Option<[f32; 2]>,
         extent: [f32; 2],
         ctx: &egui::Context,
-    ) -> Option<(Arc<map::raids::tooltips::Tooltip>, [f32; 4], Option<u32>)> {
+    ) -> Option<(Arc<Tooltip>, [f32; 4], Option<u32>)> {
         let point = point?;
         let target = self.map_hit(point);
         if matches!(target, Some(MapHit::Raid))
@@ -2104,7 +2093,7 @@ impl Viewer {
             };
             let ours = self.overlay_tables.as_ref()?.3.ours();
             let text = self.raid_tooltips.request(
-                Arc::clone(&document.content),
+                Arc::clone(&document.raid_hover),
                 Arc::clone(frame),
                 ours,
                 self.counter_view.settings.nato,
@@ -2121,7 +2110,7 @@ impl Viewer {
             Some(MapHit::Combat(index)) => {
                 let hit = &self.counter_report.combat_hits[index];
                 match hit.selection {
-                    crate::combat::Selection::Land(id) => Some((id, hit.rect)),
+                    Selection::Land(id) => Some((id, hit.rect)),
                     _ => None,
                 }
             }
@@ -2139,18 +2128,18 @@ impl Viewer {
             {
                 Ok(index) => index,
                 Err(why) => {
-                    let mut text = map::raids::tooltips::Tooltip::default();
+                    let mut text = Tooltip::default();
                     text.refused
                         .insert(format!("land marker {id} engaged index: {why}"), 1);
                     return Some((Arc::new(text), rect, None));
                 }
             };
             let text = self.land_marker_tooltips.request(
-                document,
+                &document.combat,
                 frame,
                 viewer,
                 id,
-                index.as_deref(),
+                index.as_ref().map(|index| index.shared.as_ref()),
                 self.counter_view.settings.nato,
             );
             return Some((text, rect, None));
@@ -2163,7 +2152,7 @@ impl Viewer {
             _ => None,
         }
         .and_then(|hit| match hit.selection {
-            crate::combat::Selection::Naval(id) => Some((id, hit.rect)),
+            Selection::Naval(id) => Some((id, hit.rect)),
             _ => None,
         });
         if let Some((id, rect)) = naval_hit
@@ -2178,15 +2167,19 @@ impl Viewer {
             {
                 Ok(index) => index,
                 Err(why) => {
-                    let mut text = map::raids::tooltips::Tooltip::default();
+                    let mut text = Tooltip::default();
                     text.refused
                         .insert(format!("naval marker {id} engaged index: {why}"), 1);
                     return Some((Arc::new(text), rect, None));
                 }
             };
-            let text =
-                self.naval_marker_tooltips
-                    .request(document, frame, viewer, id, index.as_deref());
+            let text = self.naval_marker_tooltips.request(
+                &document.combat,
+                frame,
+                viewer,
+                id,
+                index.as_ref().map(|index| index.shared.as_ref()),
+            );
             return Some((text, rect, None));
         }
         if let Some(hit) = self.counter_report.land_hovers.iter().rev().find(|hit| {
@@ -2197,7 +2190,8 @@ impl Viewer {
         {
             let vision = self.overlay_tables.as_ref()?.3.vision();
             let text = self.counter_tooltips.request(
-                &document.content,
+                &document.counter_content,
+                document.icons.raids.movement_reads(),
                 frame,
                 hit,
                 vision,
@@ -2222,7 +2216,8 @@ impl Viewer {
             }
             let vision = self.overlay_tables.as_ref()?.3.vision();
             let text = self.counter_tooltips.request_task_force(
-                &document.content,
+                &document.counter_content,
+                document.icons.raids.movement_reads(),
                 frame,
                 hit,
                 vision,
@@ -2239,7 +2234,7 @@ impl Viewer {
         {
             if !hit.supported { return None; }
             let vision = self.overlay_tables.as_ref()?.3.vision();
-            let text = self.counter_tooltips.request_task_force_port(&document.content, frame, hit, vision, self.counter_view.settings.nato);
+            let text = self.counter_tooltips.request_task_force_port(&document.counter_content, document.icons.raids.movement_reads(), frame, hit, vision, self.counter_view.settings.nato);
             return Some((text, hit.rect, None));
         }
         if target.is_some() {
@@ -2249,7 +2244,7 @@ impl Viewer {
             return None;
         };
         let view = self.last_view.as_ref()?;
-        let province = match map::province_pick::pick(
+        let province = match pick(
             &view.camera,
             point.map(|v| v * view.ui_scale),
             view.viewport,
@@ -2258,19 +2253,25 @@ impl Viewer {
         ) {
             Ok(province) => province?,
             Err(reason) => {
-                let mut text = map::raids::tooltips::Tooltip::default();
+                let mut text = Tooltip::default();
                 text.refused.insert(reason, 1);
                 return Some((Arc::new(text), [0.0, 0.0, extent[0], extent[1]], None));
             }
         };
         let vision = self.overlay_tables.as_ref()?.3.vision();
         let text = self.province_tooltips.request(
-            &document.content,
+            &document.counter_content,
+            document.icons.raids.movement_reads(),
             frame,
             province,
             vision,
             self.counter_view.settings.nato,
             self.unit_selection.ordered_units(),
+            &document.playback.replay_handle(),
+            {
+                let ctx = ctx.clone();
+                move || ctx.request_repaint()
+            },
         );
         Some((text, [0.0, 0.0, extent[0], extent[1]], Some(province)))
     }
@@ -2287,18 +2288,15 @@ impl Viewer {
             .take()
             .unwrap_or_else(|| Laps::new(Duration::ZERO));
         laps.lap("before_map");
-        map::counter_move::take_profile();
+        viewer_foundation::map::counter_move::take_profile();
         let state = frame
             .wgpu_render_state()
             .ok_or("WGPU renderer is unavailable")?;
-        if map::counter_move::profiling() {
+        if profiling() {
             static ADAPTER_ONCE: std::sync::Once = std::sync::Once::new();
             let info = state.adapter.get_info();
             ADAPTER_ONCE.call_once(|| {
-                map::counter_move::profile_print(format!(
-                    "PROFILE adapter {} {:?}",
-                    info.name, info.backend
-                ));
+                profile_print(format!("PROFILE adapter {} {:?}", info.name, info.backend));
             });
         }
         // The scene arrives with the document from the loading thread
@@ -2322,11 +2320,11 @@ impl Viewer {
             });
             return Ok(());
         }
-        let Some(shown) = self
+        if self
             .shown
             .as_ref()
-            .filter(|shown| shown.epoch == self.epoch)
-        else {
+            .is_none_or(|shown| shown.epoch != self.epoch)
+        {
             // The first hour is still being built; keep polling for it.
             self.rendered = None;
             ui.ctx().request_repaint();
@@ -2334,21 +2332,21 @@ impl Viewer {
                 ui.spinner();
             });
             return Ok(());
-        };
+        }
         laps.lap("hour_misc");
         // The screen-space interface's scale. A capture keeps the dump's, 1.0
         // unless `--ui-scale` names one, so a `--window-dump` and a `--dump` of
         // the same state stay the same frame.
         let pinned = self.capture.as_ref().and_then(|capture| capture.pinned);
         let raster = match pinned {
-            Some(_) => map::ui_scale::Raster::direct(self.options.ui_scale.unwrap_or(1.0)),
+            Some(_) => Raster::direct(self.options.ui_scale.unwrap_or(1.0)),
             None => {
                 Self::watch_monitors(&mut self.monitor_seen, ui.ctx());
                 let setting = self.ui_scale;
                 let (matched, _) = Self::match_game(&mut self.match_game, document);
                 match setting {
-                    map::ui_scale::Setting::Manual(scale) => map::ui_scale::Raster::direct(scale),
-                    map::ui_scale::Setting::MatchGame => *matched,
+                    Setting::Manual(scale) => Raster::direct(scale),
+                    Setting::MatchGame => *matched,
                 }
             }
         };
@@ -2358,17 +2356,7 @@ impl Viewer {
         // report rebuilds it in `report_map_details`).
         let build_warnings = self.diagnostics || self.capture.is_some();
         self.interface_points =
-            map::ui_scale::points(1.0, raster.screen_scale(), ui.ctx().pixels_per_point());
-        // Reserve the previous content height; late collection measures the next frame's panel.
-        let warnings_rect = if self.diagnostics && !self.dashboard_map && self.embedded.is_none() {
-            let rect = reserve_warnings(ui, self.warnings_height);
-            for line in shown.stats() {
-                ui.weak(line);
-            }
-            Some(rect)
-        } else {
-            None
-        };
+            ui_scale_points(1.0, raster.screen_scale(), ui.ctx().pixels_per_point());
         let size = ui.available_size().max(egui::vec2(1.0, 1.0));
         // capture: `--window-dump` renders at the size it was asked for rather
         // than at the size the panels left over, so the frame it writes does not
@@ -2403,7 +2391,7 @@ impl Viewer {
         };
         // The interface is laid out in interface pixels, so its hit tests are
         // too: counters, combat bubbles, the combat window and its lists.
-        let extent = map::ui_scale::extent(pixels, ui_scale);
+        let extent = ui_scale_extent(pixels, ui_scale);
         if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
             // Escape closes the tactics popup before the battle window.
             if self.combat.tactics_open {
@@ -2428,10 +2416,13 @@ impl Viewer {
         let combat_geometry = self
             .combat
             .draw(
-                document,
+                &document.combat,
+                document.playback.branch(),
+                document.playback.hour(),
+                document.frame(),
                 extent,
                 &self.perspective,
-                engaged.as_deref(),
+                engaged.as_ref().map(|index| index.shared.as_ref()),
                 self.counter_view.settings.nato,
                 false,
                 animation_time,
@@ -2441,7 +2432,7 @@ impl Viewer {
         let point = response
             .hover_pos()
             .or_else(|| response.interact_pointer_pos())
-            .map(|position| map::ui_scale::to_interface(frame_point(position), ui_scale));
+            .map(|position| to_interface(frame_point(position), ui_scale));
         if response.drag_started() {
             self.combat.start_drag(combat_geometry.as_ref(), point);
         }
@@ -2506,26 +2497,115 @@ impl Viewer {
                 }
             }
         }
-        if response.dragged()
+        // The frame time the camera law and the name fade integrate.
+        let frame_delta = self.last_frame.elapsed().as_secs_f32();
+        self.last_frame = Instant::now();
+        // The game's keys and edge scrolling go to the map that owns camera input: the window must
+        // have the system's focus, and a dashboard map must also be the one last pressed with a
+        // mouse button. Ownership is kept in the window's own record, apart from egui's keyboard
+        // focus, so Escape or Tab never moves or drops it. The wheel goes to the map under the
+        // pointer.
+        let owner = egui::Id::new("map camera input owner");
+        if response.is_pointer_button_down_on() {
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(owner, response.id));
+        }
+        let owns = ui.ctx().data(|data| data.get_temp::<egui::Id>(owner)) == Some(response.id);
+        let window_focused = ui.input(|input| input.focused);
+        let focused = window_focused && (!self.dashboard_map || owns);
+        let pointed = response.hovered() && !over_combat;
+        // Drag panning is the viewer's own addition (the game has none): the middle button moves
+        // the shown camera directly, and the target with it.
+        if response.dragged_by(egui::PointerButton::Middle)
             && !over_combat
             && let Some(pointer) = response.interact_pointer_pos()
         {
             self.camera_manual = true;
             let delta = response.drag_delta();
             let to = frame_point(pointer);
+            let before = camera.center;
             camera.pan(
                 [to[0] - delta.x * scale, to[1] - delta.y * scale],
                 to,
                 pixels,
             );
+            self.zoom
+                .shift([camera.center[0] - before[0], camera.center[1] - before[1]]);
         }
-        if response.hovered() && !over_combat {
-            let scroll = ui.input(|input| input.smooth_scroll_delta.y);
-            if scroll != 0.0 {
-                self.camera_manual = true;
-                let pointer = response.hover_pos().unwrap_or(rect.center());
-                camera.zoom((scroll * 0.002).exp(), frame_point(pointer), pixels);
+        let texels = document.assets.heightmap_texels();
+        let raster_fits =
+            texels.len() as u64 == u64::from(document.map.width) * u64::from(document.map.height);
+        let floor = |x: f32, z: f32| {
+            if raster_fits {
+                terrain_height(&document.map, texels, [x, z])
+            } else {
+                0.0
             }
+        };
+        let law = &document.camera_law;
+        // Wheel reports (in lines, as the window system gives them) and zoom-key presses, repeats
+        // included, in order; the held arrow keys.
+        let (lines, zoom_keys, keys) = ui.input(|input| {
+            let mut lines = Vec::new();
+            let mut zoom_keys = Vec::new();
+            for event in &input.raw.events {
+                match event {
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Line,
+                        delta,
+                        ..
+                    } => lines.push(delta.y),
+                    egui::Event::Key {
+                        key: key @ (egui::Key::PageUp | egui::Key::PageDown),
+                        pressed: true,
+                        ..
+                    } => zoom_keys.push(*key == egui::Key::PageUp),
+                    _ => {}
+                }
+            }
+            let keys = Pan {
+                up: input.key_down(egui::Key::ArrowUp),
+                down: input.key_down(egui::Key::ArrowDown),
+                left: input.key_down(egui::Key::ArrowLeft),
+                right: input.key_down(egui::Key::ArrowRight),
+            };
+            (lines, zoom_keys, keys)
+        });
+        if focused {
+            for zoom_in in zoom_keys {
+                self.camera_manual = true;
+                self.zoom.key(camera, law, zoom_in, &floor);
+            }
+        }
+        let notches = if pointed {
+            self.zoom.wheel_events(lines)
+        } else {
+            Vec::new()
+        };
+        let pointer = response.hover_pos().map(frame_point);
+        let ground = match pointer {
+            Some(point) if !notches.is_empty() => {
+                motion_ground_point(camera, point, pixels, &document.map, texels)
+                    .ok()
+                    .flatten()
+            }
+            _ => None,
+        };
+        let keys = if focused { keys } else { Pan::default() };
+        let input = MotionInput {
+            cursor: pointer.filter(|_| focused && pointed),
+            notches: &notches,
+            ground,
+            keys,
+        };
+        let stepped = self
+            .zoom
+            .step(camera, law, frame_delta, pixels, &input, &floor);
+        let moved = self.zoom.ease(camera, law, frame_delta, pixels, &floor);
+        // Only a real camera move leaves the fitted camera; hovering or pressing does not.
+        if stepped || moved {
+            self.camera_manual = true;
+            ui.ctx().request_repaint();
         }
         self.camera = Some(camera.placement());
         let camera = match pinned {
@@ -2537,7 +2617,7 @@ impl Viewer {
         };
         let scene = self.scene.as_mut().expect("created above");
         // A `--window-dump` settles unit models for its camera, as `--dump`
-        // does; an F12 or Export capture keeps the live history.
+        // does; a host export keeps the live history.
         if !self.unit_field_uploaded {
             let timer = Instant::now();
             let units = self
@@ -2558,8 +2638,8 @@ impl Viewer {
             self.unit_field_uploaded = true;
             // The field placed the raid units at the hour's start.
             self.raid_tick = Some(0.0);
-            if map::counter_move::profiling() {
-                map::counter_move::profile_print(format!(
+            if profiling() {
+                profile_print(format!(
                     "PROFILE models {:.6}",
                     timer.elapsed().as_secs_f64() * 1000.0
                 ));
@@ -2589,12 +2669,10 @@ impl Viewer {
         // a window given no `--camera` fits the map to a viewport that does not
         // exist until there is one, and a replay opened after a zoom starts at a
         // camera the last one left behind.
-        let delta = self.last_frame.elapsed().as_secs_f32();
-        self.last_frame = Instant::now();
         let fade = self
             .fade
             .get_or_insert_with(|| LayerFade::instant(camera))
-            .step(camera, delta);
+            .step(camera, frame_delta);
         self.fade = Some(fade);
         laps.lap("panel_camera_units");
         let now = document.hour().map_err(|error| error.to_string())?;
@@ -2676,7 +2754,7 @@ impl Viewer {
                 |branch, hour| {
                     engaged
                         .as_ref()
-                        .is_some_and(|index| index.covers(branch, hour))
+                        .is_some_and(|index| index.shared.covers(branch, hour))
                 },
             );
             // The raid lane's icons for the hour on screen replace the hour's
@@ -2764,12 +2842,22 @@ impl Viewer {
                 self.overlay_fraction = None;
             }
             laps.lap("overlay_prepare");
+            // Display choices only change what the next overlay draw keeps.
+            let layers = crate::document::OverlayLayers::shown(
+                &self.graphics,
+                self.counter_owners.get(now.frame, &self.counter_filter),
+            );
+            if layers != self.overlay_layers {
+                self.overlay_layers = layers;
+                self.overlay_fraction = None;
+            }
             // The frame's province schedule, advanced before its map icons read the dirty bits
             // (province updates precede map-icon updates); the scene's
             // render takes it.
             if let Some(scene) = self.scene.as_mut() {
                 scene.share_province_schedule(self.counter_view.presentation.schedule());
-                scene.set_movement_selection(
+                crate::document::select_movement(
+                    scene,
                     &document.content,
                     now.frame,
                     self.overlay_tables.as_ref().expect("parsed above").3.ours(),
@@ -2786,7 +2874,7 @@ impl Viewer {
                         camera,
                         pixels,
                         ui_scale,
-                        Default::default(),
+                        &self.overlay_layers,
                         animation_time,
                         self.overlay.get_or_insert_with(Batch::default),
                         &mut self.counter_report,
@@ -2844,10 +2932,13 @@ impl Viewer {
             let drawn = self
                 .combat
                 .draw(
-                    document,
+                    &document.combat,
+                    document.playback.branch(),
+                    document.playback.hour(),
+                    document.frame(),
                     extent,
                     &self.perspective,
-                    engaged.as_deref(),
+                    engaged.as_ref().map(|index| index.shared.as_ref()),
                     self.counter_view.settings.nato,
                     true,
                     animation_time,
@@ -2865,6 +2956,7 @@ impl Viewer {
                 .unwrap_or_default();
             let mut additions = Batch::default();
             let tooltip_time = Instant::now();
+            // Hidden tooltips still follow the pointer; only their painting stops.
             if let Some((text, anchor)) = self.combat.tooltip(
                 drawn.as_ref(),
                 document.icons.combat.tooltip_defines.as_ref().ok(),
@@ -2878,7 +2970,8 @@ impl Viewer {
                     )
                 }),
                 tooltip_time,
-            ) {
+            ) && self.graphics.tooltips
+            {
                 let refused = self
                     .prepared_overlay
                     .as_ref()
@@ -2893,8 +2986,9 @@ impl Viewer {
             if self.capture.is_some()
                 && let crate::playback::Current::Frame(frame) = document.playback.current()
             {
-                let batch = map::counter_tooltips::Batch::new(
-                    &document.content,
+                let batch = viewer_counter_products::map::counter_tooltips::Batch::new(
+                    &document.counter_content,
+                    document.icons.raids.movement_reads(),
                     frame,
                     &self.counter_report.perspective,
                     self.counter_view.settings.nato,
@@ -2918,7 +3012,8 @@ impl Viewer {
                         .filter(|hover| hover.supported && hover.has_tooltip())
                         .map(|hover| batch.build_task_force_port(hover)),
                 );
-                let refused = map::counter_tooltips::count_refusals(tooltips);
+                let refused =
+                    viewer_counter_products::map::counter_tooltips::count_refusals(tooltips);
                 for (reason, count) in refused {
                     let current = tooltip_refused.entry(reason).or_default();
                     *current = (*current).max(count);
@@ -2943,13 +3038,6 @@ impl Viewer {
         } else {
             Vec::new()
         };
-        let warnings = finish_warnings(
-            ui,
-            warnings_rect,
-            &mut self.warnings_height,
-            build_warnings,
-            || warnings,
-        );
         laps.lap("diagnostics");
         self.update_faction_highlight(document, &state.device, point.filter(|_| !over_combat))?;
         let overlay = self.overlay.as_ref().expect("built above");
@@ -2966,7 +3054,8 @@ impl Viewer {
         // is what a dump's own pair of frames does.
         let scene = self.scene.as_mut().unwrap();
         scene.set_graphics(self.graphics);
-        scene.set_movement_selection(
+        crate::document::select_movement(
+            scene,
             &document.content,
             document.frame().map_err(|error| error.to_string())?,
             self.overlay_tables.as_ref().expect("parsed above").3.ours(),
@@ -3011,14 +3100,14 @@ impl Viewer {
                 egui_renderer.update_egui_texture_from_wgpu_texture(
                     &state.device,
                     view,
-                    map::ui_scale::PRESENTATION_FILTER,
+                    PRESENTATION_FILTER,
                     texture,
                 );
             } else {
                 self.texture = Some(egui_renderer.register_native_texture(
                     &state.device,
                     view,
-                    map::ui_scale::PRESENTATION_FILTER,
+                    PRESENTATION_FILTER,
                 ));
             }
             self.generation = scene.generation();
@@ -3026,15 +3115,15 @@ impl Viewer {
         // capture: the frame is drawn and the scene still holds it, so the
         // readback is the dump's own.
         laps.lap("render");
-        if map::counter_move::profiling() {
-            map::counter_move::profile_print(format!(
+        if profiling() {
+            profile_print(format!(
                 "PROFILE frame {} fraction {} height {} total {:.6} overlay {:.6} spline {:.6} hour {} frame_total {:.3} outside {:.3} scene {:.3}/{:.3}/{:.3}/{:.3} gpu {:.3} laps {} detail {}",
                 self.profile_frame,
                 document.hour_fraction,
                 camera.height,
                 map_timer.elapsed().as_secs_f64() * 1000.0,
                 overlay_ms,
-                map::counter_move::take_profile(),
+                viewer_foundation::map::counter_move::take_profile(),
                 document.playback.hour(),
                 laps.total(),
                 laps.outside,
@@ -3084,7 +3173,7 @@ impl Viewer {
         // The desktop's campaign map has no panels, so its diagnostics sit
         // over the map; dashboard maps draw theirs beside their loading status.
         // Every map on the software adapter, windowed or on a dashboard, says so.
-        let software = render::is_software(&state.adapter);
+        let software = is_software(&state.adapter);
         let diagnostics = self.diagnostics && self.embedded.is_some() && !self.dashboard_map;
         let partial = document.playback.replay().is_partial()
             && self.embedded.is_some()
@@ -3100,7 +3189,7 @@ impl Viewer {
                         partial_notice(ui, document.playback.replay());
                     }
                     if software {
-                        ui.colored_label(egui::Color32::YELLOW, render::SOFTWARE_RENDERER_NOTICE);
+                        ui.colored_label(egui::Color32::YELLOW, SOFTWARE_RENDERER_NOTICE);
                     }
                     if diagnostics {
                         self.diagnostics_ui(ui, height);
@@ -3147,7 +3236,7 @@ impl eframe::App for Viewer {
             }
             return;
         }
-        let waited = if map::counter_move::profiling() && self.capture.is_some() {
+        let waited = if profiling() && self.capture.is_some() {
             pace_profiled_frame()
         } else {
             Duration::ZERO
@@ -3155,222 +3244,13 @@ impl eframe::App for Viewer {
         self.laps = Some(Laps::new(waited));
         self.poll(ui.ctx());
         self.lap("poll");
-        // capture: F12 writes the map target as it stands, at its own pixel
-        // size, through the readback `--dump` uses. It is the only way to score
-        // a window frame against a dump without a screenshot tool, which would
-        // measure the swap chain and the desktop compositor instead of the map.
-        if self.capture.is_none() && ui.input(|input| input.key_pressed(egui::Key::F12)) {
-            self.captures += 1;
-            let path =
-                self.options.out.clone().unwrap_or_else(|| {
-                    PathBuf::from(format!("window-capture-{}.png", self.captures))
-                });
-            self.capture = Some(Capture {
-                path,
-                remaining: 0,
-                pinned: None,
-                exit: false,
-                time: None,
-                step: 0.0,
-                frames: 1,
-                index: 0,
-            });
-        }
-        // counters: what the header's viewing-country chooser offers and shows,
-        // read from the hour on screen before the header borrows `self`.
-        let header = self
-            .shown
-            .as_ref()
-            .filter(|_| self.document.is_some())
-            .map(|shown| Arc::clone(&shown.header))
-            .unwrap_or_default();
-        let (country_tags, viewing) = (&header.countries, &header.viewing);
-        self.lap("header_tags");
-        if self.embedded.is_none() {
-            egui::Panel::top("header").show(ui, |ui| {
-            ui.add_space(5.0);
-            ui.horizontal(|ui| {
-                ui.heading("Battle Plan");
-                ui.separator();
-                if ui.button("Open replay...").clicked()
-                    && let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Battle Plan", &["battleplan", "hoi4replay"])
-                        .pick_file()
-                {
-                    self.options.hour = None;
-                    self.options.branch = None;
-                    self.open(path, ui.ctx(), None);
-                }
-                if ui.button("Folders").clicked() {
-                    self.settings = true;
-                }
-                self.ui_scale_control(ui);
-                self.counter_controls(ui);
-                let mut diagnostics = self.diagnostics;
-                if ui
-                    .checkbox(&mut diagnostics, "Diagnostics")
-                    .on_hover_text(
-                        "Show technical stats and data limitations with the map (F3). \
-                         Captures and dumps report them either way",
-                    )
-                    .changed()
-                {
-                    self.toggle_diagnostics();
-                }
-                ui.separator();
-                // counters: the game's two map controls, a viewing country and
-                // the fog-of-war switch. The chooser lists every country the
-                // hour on screen holds; the recorded player is the default.
-                ui.separator();
-                let selected = match &self.perspective.country {
-                    map::perspective::Country::Recorded => format!(
-                        "Recorded player{}",
-                        viewing
-                            .as_deref()
-                            .map(|tag| format!(" ({tag})"))
-                            .unwrap_or_default()
-                    ),
-                    map::perspective::Country::Tag(tag) => tag.clone(),
-                };
-                egui::ComboBox::from_id_salt("viewing_country")
-                    .selected_text(selected)
-                    .show_ui(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.country_filter)
-                                .hint_text("Filter tags"),
-                        );
-                        ui.selectable_value(
-                            &mut self.perspective.country,
-                            map::perspective::Country::Recorded,
-                            "Recorded player",
-                        );
-                        // Only the rows in view are laid out, and a tag is
-                        // cloned only when it is picked, so the list costs the
-                        // same at thousands of countries as at a few.
-                        let shown = filter_tags(country_tags, &self.country_filter);
-                        let row = ui.spacing().interact_size.y;
-                        egui::ScrollArea::vertical()
-                            .max_height(row * 16.0)
-                            .show_rows(ui, row, shown.len(), |ui, range| {
-                                for tag in &shown[range] {
-                                    let picked = matches!(
-                                        &self.perspective.country,
-                                        map::perspective::Country::Tag(current) if current == tag
-                                    );
-                                    if ui.selectable_label(picked, *tag).clicked() && !picked {
-                                        self.perspective.country =
-                                            map::perspective::Country::Tag((*tag).to_owned());
-                                    }
-                                }
-                            });
-                    })
-                    .response
-                    .on_hover_text(
-                        "View the map as this country, as the game's console tag does: allegiance \
-                         colours, the battle plan, aircraft and what its intelligence shows are \
-                         that country's, whoever controls it",
-                    );
-                ui.checkbox(&mut self.perspective.fog, "Fog of war")
-                    .on_hover_text(
-                        "The game's fow console switch. On, a stack the viewing country has no \
-                         intelligence on carries the question mark and uncovered land is fogged; \
-                         off, every stack is drawn in full and no fog is drawn, still as the \
-                         viewing country",
-                    );
-                // names: the header names every layer that reaches a pixel.
-                if self.diagnostics {
-                    ui.weak(format!(
-                        "Viewed as {}, fog of war {} · Terrain, water, political fill, borders, names and labels",
-                        viewing.as_deref().unwrap_or("no country"),
-                        if self.perspective.fog { "on" } else { "off" },
-                    ));
-                }
-            });
-            ui.add_space(5.0);
-            if let Some(error) = &self.error {
-                ui.colored_label(egui::Color32::LIGHT_RED, error);
-            }
-            // capture
-            if let Some(note) = &self.capture_note {
-                ui.weak(note);
-            }
-        });
-        }
-        self.lap("header_panel");
-        if self.embedded.is_none() {
-            self.paths(ui.ctx());
-        }
-        let central_panel = if self.embedded.is_some() {
-            egui::CentralPanel::default().frame(egui::Frame::NONE)
-        } else {
-            egui::CentralPanel::default()
-        };
+        let central_panel = egui::CentralPanel::default().frame(egui::Frame::NONE);
         if let Some(mut document) = self.document.take() {
-            if self.embedded.is_none() {
-                egui::Panel::bottom("timeline").show(ui, |ui| {
-                    partial_notice(ui, document.playback.replay());
-                    ui.horizontal(|ui| {
-                        ui.weak(
-                            document
-                                .source_path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy(),
-                        );
-                        if document.playback.frame().is_none() {
-                            ui.colored_label(egui::Color32::LIGHT_RED, "No recorded frame");
-                        }
-                    });
-                    self.timeline(ui, &mut document);
-                    ui.add_space(4.0);
-                    match document.playback.current() {
-                        crate::playback::Current::Gap { reason, .. } => {
-                            ui.colored_label(egui::Color32::LIGHT_RED, format!("Gap: {reason}"));
-                        }
-                        crate::playback::Current::Frame(_) if !self.diagnostics => {}
-                        crate::playback::Current::Frame(frame) => {
-                            egui::ScrollArea::vertical()
-                                .id_salt("tables")
-                                .max_height(TABLE_LIST_HEIGHT)
-                                .auto_shrink([false, true])
-                                .show(ui, |ui| {
-                                    ui.horizontal_wrapped(|ui| {
-                                        for table in TableId::ALL {
-                                            match &*frame.tables[table.index()] {
-                                                TableView::Complete(rows) => {
-                                                    ui.weak(format!("{table:?}: {}", rows.len()));
-                                                }
-                                                TableView::Truncated { missing, .. } => {
-                                                    ui.colored_label(
-                                                    egui::Color32::YELLOW,
-                                                    format!(
-                                                        "{table:?}: truncated, {missing} missing"
-                                                    ),
-                                                );
-                                                }
-                                                TableView::Unavailable { reason } => {
-                                                    ui.colored_label(
-                                                        egui::Color32::LIGHT_RED,
-                                                        format!("{table:?}: {reason}"),
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        ui.weak(format!(
-                                            "Capture {:.3} ms",
-                                            frame.metrics.total_ns as f64 / 1_000_000.0
-                                        ));
-                                    });
-                                });
-                        }
-                    }
-                });
-            }
-            if map::counter_move::profiling() && self.capture.is_some() {
+            if profiling() && self.capture.is_some() {
                 // Deterministic diagnostic sweep, including at a replay's final
-                // hour. Ordinary playback continues to use the timeline clock.
+                // hour. Ordinary playback follows the host's clock.
                 let mode = std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).unwrap_or_default();
-                let sweep_frames = crate::profiling::sweep();
+                let sweep_frames = profiling_sweep();
                 // `hours`: one hour forward at the sweep's start, back at its middle.
                 let middle = sweep_frames.start + sweep_frames.len() as u32 / 2;
                 if let Some(playhead) = &mut self.playhead {
@@ -3398,26 +3278,24 @@ impl eframe::App for Viewer {
                     }
                 }
                 // Steady playback at `play:<hours per second>`, sampled as a
-                // clock at the profiled pace over the sweep, as the timeline would run.
+                // clock at the profiled pace over the sweep, as the host's clock would run.
                 let playing = std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE"))
                     .ok()
                     .and_then(|mode| mode.strip_prefix("play:")?.parse::<f32>().ok());
-                self.playing =
-                    playing.is_some() && crate::profiling::sweep().contains(&self.profile_frame);
+                self.playing = playing.is_some() && profiling_sweep().contains(&self.profile_frame);
                 if let Some(speed) = playing {
-                    // The builders reach as far ahead as the timeline at this speed.
+                    // The builders reach as far ahead as the host's clock at this speed.
                     self.speed = speed as u32;
                 }
                 if let Some(speed) = playing
-                    && crate::profiling::sweep().contains(&self.profile_frame)
+                    && profiling_sweep().contains(&self.profile_frame)
                     && let Some(mut moved) = self.playhead
                 {
                     let last = document
                         .playback
                         .range(moved.branch)
                         .map_or(moved.hour, |(_, last)| last);
-                    let fraction =
-                        f64::from(moved.fraction) + f64::from(speed) / crate::profiling::hz();
+                    let fraction = f64::from(moved.fraction) + f64::from(speed) / hz();
                     advance_clock(&mut moved, fraction, last);
                     self.playhead = Some(moved);
                 }
@@ -3426,8 +3304,7 @@ impl eframe::App for Viewer {
                     && !mode.starts_with("zoom:")
                     && let Some(playhead) = &mut self.playhead
                 {
-                    playhead.fraction = if !crate::profiling::sweep().contains(&self.profile_frame)
-                    {
+                    playhead.fraction = if !profiling_sweep().contains(&self.profile_frame) {
                         self.options.hour_fraction
                     } else {
                         ((self.profile_frame - sweep_frames.start) % 120) as f32 / 120.0
@@ -3445,7 +3322,7 @@ impl eframe::App for Viewer {
                     .and_then(|rate| {
                         rate.parse::<f32>()
                             .ok()
-                            .map(|rate| (rate / crate::profiling::hz() as f32, 1.0))
+                            .map(|rate| (rate / hz() as f32, 1.0))
                     })
                     .or_else(|| {
                         mode.strip_prefix("zoom:").and_then(|factor| {
@@ -3453,13 +3330,11 @@ impl eframe::App for Viewer {
                                 .parse::<f32>()
                                 .ok()
                                 .filter(|factor| *factor > 0.0)
-                                .map(|factor| {
-                                    (0.0, factor.powf(1.0 / crate::profiling::hz() as f32))
-                                })
+                                .map(|factor| (0.0, factor.powf(1.0 / hz() as f32)))
                         })
                     });
                 if let Some((dx, zoom)) = sweep
-                    && crate::profiling::sweep().contains(&self.profile_frame)
+                    && profiling_sweep().contains(&self.profile_frame)
                     && let Some(capture) = self.capture.as_mut()
                     && let Some((_, camera)) = capture.pinned.as_mut()
                     && let Some(camera) = camera.as_mut()
@@ -3468,7 +3343,7 @@ impl eframe::App for Viewer {
                     camera.height = (camera.height * zoom).clamp(40.0, 900.0);
                 }
             }
-            self.lap("timeline_panel");
+            self.lap("profile_sweep");
             central_panel.show(ui, |ui| {
                 if let Err(error) = self.map(ui, frame, &mut document) {
                     self.error = Some(error);
@@ -3476,21 +3351,17 @@ impl eframe::App for Viewer {
             });
             self.document = Some(document);
         } else {
+            // The host shows its own status and errors; the map only says it is loading.
             central_panel.show(ui, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(100.0);
-                    if self.loading.is_some() {
+                if self.loading.is_some() {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(100.0);
                         ui.spinner();
                         ui.heading("Opening replay");
                         ui.label("Verifying content and loading the map...");
-                        ui.ctx().request_repaint_after(Duration::from_millis(100));
-                    } else {
-                        ui.heading("Replay a campaign");
-                        ui.label("Open a .battleplan file to explore its recorded hours.");
-                        ui.add_space(10.0);
-                        ui.label("Game content is loaded from your installed files.");
-                    }
-                });
+                    });
+                    ui.ctx().request_repaint_after(Duration::from_millis(100));
+                }
             });
         }
         self.report_embedded(ui.ctx());
@@ -3521,31 +3392,19 @@ pub(crate) fn date(hour: i32) -> String {
     )
 }
 
-/// The chooser's tags that contain `filter`, ignoring ASCII case, in order.
-fn filter_tags<'a>(tags: &'a [String], filter: &str) -> Vec<&'a str> {
-    let filter = filter.trim().to_ascii_uppercase();
-    tags.iter()
-        .map(String::as_str)
-        .filter(|tag| filter.is_empty() || tag.to_ascii_uppercase().contains(&filter))
-        .collect()
-}
-
 /// Hands the raid lane the hour put on screen, with its frame, and starts
 /// its offer cycle again there when the presentation history resets:
 /// exactly when the trains and the weather do (a seek, same-hour ones too, a
 /// step back, a branch change, a new recording, a recorded gap or a new
 /// resolved viewing country); playback, one hour forward and a playback skip
-/// carry it ([`map::presentation::continuity`]). The view and the reset are
+/// carry it ([`viewer_foundation::map::presentation::continuity`]). The view and the reset are
 /// installed together, before the lane wakes.
 fn present_raids(
     lane: &crate::raid_lane::RaidLane,
-    continuity: map::presentation::Continuity,
+    continuity: Continuity,
     presented: crate::raid_lane::Presented<'_>,
 ) {
-    lane.present(
-        presented,
-        continuity == map::presentation::Continuity::Reset,
-    );
+    lane.present(presented, continuity == Continuity::Reset);
 }
 
 /// A built hour as the builders deliver it to the window.
@@ -3578,7 +3437,7 @@ impl Delivered for hours::Built {
 /// lay the whole overlay out again and require the same quads and report
 /// ([`Viewer::check_overlay`]).
 fn check_overlay() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_CHECK_OVERLAY").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_OVERLAY")).is_some())
 }
 
@@ -3692,12 +3551,15 @@ pub(crate) mod tests {
     fn task_force_children_outside_the_plate_keep_its_priority_and_block_unknown_hit_forms() {
         engine::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use map::{
-            counter_tooltips::task_force::{Control, Hover},
-            sprites::layer,
-            unit_selection::{Blocker, Hit, Kind},
+        use {
+            viewer_foundation::map::counter_hovers::task_force::Control,
+            viewer_foundation::map::counter_hovers::task_force::Hover,
+            viewer_foundation::map::counter_hovers::unit_hits::Blocker,
+            viewer_foundation::map::counter_hovers::unit_hits::Hit,
+            viewer_foundation::map::counter_hovers::unit_hits::Kind,
+            viewer_foundation::map::sprites::layer,
         };
-        let mut report = map::counters::CounterReport::default();
+        let mut report = viewer_counters::map::counters::CounterReport::default();
         report.unit_hits.push(Hit {
             ours: true,
             port: false,
@@ -3735,7 +3597,7 @@ pub(crate) mod tests {
 
         // An opaque unbound port child stops the native walk; its authored
         // tooltip can still be shown without selecting the plate underneath.
-        use map::counter_tooltips::task_force_port as port;
+        use viewer_foundation::map::counter_hovers::task_force_port as port;
         report.unit_hits[0].kind = Kind::TaskForce;
         report.unit_hits[0].port = true;
         report.task_force_port_hovers.push(port::Hover {
@@ -3763,7 +3625,10 @@ pub(crate) mod tests {
         } }"#,
         );
         report.task_force_port_hovers[0].authored =
-            port::Authored::read(gui.template("unbound").unwrap(), false);
+            viewer_foundation::map::counter_hovers::gui_authored::Authored::read(
+                gui.template("unbound").unwrap(),
+                false,
+            );
         assert_eq!(
             top_map_hit(point, &report, None),
             Some(MapHit::PortTooltip(0))
@@ -3772,13 +3637,15 @@ pub(crate) mod tests {
 
     #[test]
     fn map_hits_follow_signed_layers_compose_order_and_actual_combat_attachment() {
-        use map::{
-            sprites::layer,
-            unit_selection::{Blocker, Hit, Kind},
+        use {
+            viewer_foundation::map::counter_hovers::unit_hits::Blocker,
+            viewer_foundation::map::counter_hovers::unit_hits::Hit,
+            viewer_foundation::map::counter_hovers::unit_hits::Kind,
+            viewer_foundation::map::sprites::layer,
         };
         let rect = [0.0, 0.0, 20.0, 20.0];
         let point = [5.0, 5.0];
-        let mut report = map::counters::CounterReport::default();
+        let mut report = viewer_counters::map::counters::CounterReport::default();
         report.unit_hits.push(Hit {
             ours: true,
             port: false,
@@ -3793,7 +3660,7 @@ pub(crate) mod tests {
         });
         report
             .faction_pin_hovers
-            .push(map::counters::faction_pings::PinHover {
+            .push(viewer_counters::map::counters::faction_pings::PinHover {
                 rect,
                 regions: Arc::from([1]),
                 layer: layer(-3, 0, 0),
@@ -3804,10 +3671,10 @@ pub(crate) mod tests {
         report.faction_pin_hovers[0].layer = layer(5, 0, 0);
         assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Pin(0)));
         report.faction_pin_hovers.clear();
-        let raid = map::raids::tooltips::Hit {
+        let raid = viewer_raids::map::raids::tooltips::Hit {
             origin: [0.0, 0.0],
             size: [20.0, 20.0],
-            key: map::raids::tooltips::Key::Raid {
+            key: viewer_raids::map::raids::tooltips::Key::Raid {
                 id: 1,
                 reference_type: 4,
                 incoming: false,
@@ -3830,8 +3697,8 @@ pub(crate) mod tests {
             Some(MapHit::Raid)
         );
         report.unit_hits[0].port = false;
-        report.combat_hits.push(crate::combat::Hit {
-            selection: crate::combat::Selection::Land(1),
+        report.combat_hits.push(CombatHit {
+            selection: Selection::Land(1),
             rect,
             layer: layer(-1, 0, 0),
             order: 0,
@@ -3843,8 +3710,8 @@ pub(crate) mod tests {
         );
         report.combat_hits[0].layer = layer(-4, 0, 0);
         assert_eq!(top_map_hit(point, &report, Some(&raid)), Some(MapHit::Raid));
-        report.combat_hits[0] = crate::combat::Hit {
-            selection: crate::combat::Selection::Naval(1),
+        report.combat_hits[0] = CombatHit {
+            selection: Selection::Naval(1),
             rect,
             layer: layer(5, 0, 0),
             order: 1,
@@ -3863,7 +3730,7 @@ pub(crate) mod tests {
         report.naval_marker_hovers[0].supported = false;
         report
             .faction_pin_hovers
-            .push(map::counters::faction_pings::PinHover {
+            .push(viewer_counters::map::counters::faction_pings::PinHover {
                 rect,
                 regions: Arc::from([1]),
                 layer: layer(4, 0, 0),
@@ -3886,9 +3753,11 @@ pub(crate) mod tests {
 
     #[test]
     fn overlapping_land_and_naval_units_keep_separate_tooltip_namespaces() {
-        use map::{
-            counters::{CounterControl, CounterHover},
-            unit_selection::{Hit, Kind},
+        use {
+            viewer_foundation::map::counter_hovers::land::CounterControl,
+            viewer_foundation::map::counter_hovers::land::CounterHover,
+            viewer_foundation::map::counter_hovers::unit_hits::Hit,
+            viewer_foundation::map::counter_hovers::unit_hits::Kind,
         };
         let members = Arc::from([7]);
         let hover = CounterHover {
@@ -3921,114 +3790,6 @@ pub(crate) mod tests {
             ..hover
         };
         assert!(land_hover_matches_unit(&gun_hover, &unit));
-    }
-
-    /// Uses the runtime's measured reservation and late collector after the first repaint.
-    pub(crate) fn assert_diagnostics(
-        mut collect: impl FnMut() -> Vec<String>,
-        expected: &[String],
-    ) {
-        let ctx = egui::Context::default();
-        let mut warnings = Vec::new();
-        let mut measured = 0.0;
-        let mut frame = || {
-            let mut output = ctx.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(1400.0, 800.0),
-                    )),
-                    ..Default::default()
-                },
-                |ui| {
-                    let rect = reserve_warnings(ui, measured);
-                    warnings = finish_warnings(ui, Some(rect), &mut measured, true, &mut collect);
-                },
-            );
-            // These frames inspect text and shapes without uploading their textures.
-            output.textures_delta.clear();
-            output
-        };
-        let _ = frame();
-        let output = frame();
-        let labels: Vec<_> = output
-            .shapes
-            .iter()
-            .filter_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
-                _ => None,
-            })
-            .collect();
-        for line in expected {
-            assert!(warnings.contains(line), "missing reported warning: {line}");
-            assert!(
-                labels.contains(&line.as_str()),
-                "missing painted warning: {line}"
-            );
-        }
-    }
-
-    #[test]
-    fn warning_reservation_follows_measured_content_and_caps_at_the_share() {
-        let ctx = egui::Context::default();
-        let mut measured = 0.0;
-        for count in [0, 2, 2, 100, 100, 0, 0] {
-            let previous = measured;
-            let mut output = ctx.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(400.0, 300.0),
-                    )),
-                    ..Default::default()
-                },
-                |ui| {
-                    let available = ui.available_height();
-                    let cap = available * WARNING_SHARE;
-                    let rect = reserve_warnings(ui, measured);
-                    assert!((rect.height() - previous.min(cap)).abs() < 0.001);
-                    if previous == 0.0 {
-                        assert_eq!(ui.available_height(), available);
-                    }
-                    let warnings = vec!["limitation".to_owned(); count];
-                    let reported =
-                        finish_warnings(ui, Some(rect), &mut measured, true, || warnings.clone());
-                    assert_eq!(reported, warnings);
-                    match count {
-                        0 => assert_eq!(measured, 0.0),
-                        2 => assert!(measured > 0.0 && measured < cap),
-                        100 => assert!(measured > cap),
-                        _ => unreachable!(),
-                    }
-                },
-            );
-            output.textures_delta.clear();
-        }
-    }
-
-    #[test]
-    fn hidden_diagnostics_do_not_collect_and_exports_do_not_draw_a_panel() {
-        let ctx = egui::Context::default();
-        let mut warnings = Vec::new();
-        let mut measured = 0.0;
-        let mut output = ctx.run_ui(Default::default(), |ui| {
-            let hidden = finish_warnings(ui, None, &mut measured, false, || {
-                panic!("hidden collector")
-            });
-            assert!(hidden.is_empty());
-            warnings = finish_warnings(ui, None, &mut measured, true, || {
-                vec!["export limitation".into()]
-            });
-        });
-        output.textures_delta.clear();
-        assert_eq!(warnings, ["export limitation"]);
-        assert_eq!(measured, 0.0);
-        assert!(
-            !output
-                .shapes
-                .iter()
-                .any(|shape| matches!(&shape.shape, egui::Shape::Text(_)))
-        );
     }
 
     /// A prebuilt or window overlay without the index is laid out again once
@@ -4135,7 +3896,7 @@ pub(crate) mod tests {
     /// forward and a playback skip carry them.
     #[test]
     fn the_raid_cycle_resets_exactly_with_the_trains_and_weather() {
-        use map::presentation::{Continuity, Target, continuity};
+        use viewer_foundation::map::presentation::{Continuity, Target, continuity};
         let gap = replay::branches::Gap {
             branch: 1,
             first_hour: 45,
@@ -4144,9 +3905,9 @@ pub(crate) mod tests {
         };
         let gaps = std::slice::from_ref(&gap);
         let on_screen = Some((1, 20, Some("GER")));
-        // The timeline's seek controls (|<, <, >|, the scrub, the branch
-        // chooser) raise the seek flag; > and the playback clock do not.
-        // Dashboard targets tell seeks by their clock's seek counter.
+        // Host seeks (a new seek counter, or none) raise the seek flag; the
+        // playback clock does not. Dashboard targets tell seeks by their
+        // clock's seek counter.
         let clock = Target {
             branch: 1,
             hour: 20,
@@ -4254,7 +4015,7 @@ pub(crate) mod tests {
             ),
         ];
         for (name, previous, next, viewing, sought, expected) in cases {
-            let perspective = map::perspective::Choice::default();
+            let perspective = Choice::default();
             let shown = |at: (replay::BranchId, i32)| crate::playback::Current::Gap {
                 branch: at.0,
                 hour: at.1,
@@ -4382,27 +4143,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_chooser_filters_thousands_of_tags_without_cloning_them() {
-        let tags: Vec<String> = (0..15_000).map(|index| format!("T{index:04}")).collect();
-        assert_eq!(filter_tags(&tags, "").len(), 15_000);
-        // Case and surrounding space are ignored; the order is the tag order.
-        let found = filter_tags(&tags, " t1234 ");
-        assert_eq!(found.first(), Some(&"T1234"));
-        assert_eq!(found.len(), 1 + 10);
-        let found = filter_tags(&tags, "999");
-        assert!(found.iter().all(|tag| tag.contains("999")));
-        assert!(std::ptr::eq(
-            found[0],
-            tags.iter()
-                .find(|tag| tag.contains("999"))
-                .unwrap()
-                .as_str()
-        ));
-        assert!(filter_tags(&tags, "ZZZ").is_empty());
-    }
-
-    #[test]
-    fn unload_releases_standalone_admission_and_discards_a_late_loader() {
+    fn unload_releases_campaign_map_admission_and_discards_a_late_loader() {
         use replay::{
             container::Replay,
             identity::{Identity, Roster, SampleBoundary, SessionStart, Verification},
@@ -4464,7 +4205,7 @@ pub(crate) mod tests {
             None,
         );
         viewer.source = Some(source);
-        assert!(!viewer.unload_recording(std::path::Path::new("another.battleplan")));
+        assert!(!viewer.unload_recording(Path::new("another.battleplan")));
         assert_eq!(witness.strong_count(), 1);
         assert!(viewer.unload_recording(&path));
         assert_eq!(witness.strong_count(), 0);
@@ -4478,7 +4219,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn failed_replay_load_ends_a_window_dump_and_keeps_an_interactive_capture() {
+    fn failed_replay_load_ends_a_window_dump_and_keeps_a_host_export() {
         for disconnected in [false, true] {
             for window_dump in [false, true] {
                 let failure = Arc::new(Mutex::new(None));
@@ -4497,7 +4238,7 @@ pub(crate) mod tests {
                 );
                 if !window_dump {
                     viewer.capture = Some(Capture {
-                        path: "window-capture-1.png".into(),
+                        path: "campaign-map.png".into(),
                         remaining: 0,
                         pinned: None,
                         exit: false,
@@ -4552,8 +4293,8 @@ pub(crate) mod tests {
             playback: None,
         };
         let target = seek.open_request();
-        let a = std::path::Path::new("A.battleplan");
-        let b = std::path::Path::new("B.battleplan");
+        let a = Path::new("A.battleplan");
+        let b = Path::new("B.battleplan");
 
         // Both recordings may contain branch 1/hour 12. A throttled host
         // state for A must not route its seek to a newly accepted native B.
@@ -4673,20 +4414,6 @@ pub(crate) mod tests {
         assert_eq!(style.spacing.item_spacing, spacing * 1.5);
         assert_eq!(style.spacing.indent, indent * 1.5);
         assert_eq!(style.spacing.scroll.bar_width, bar * 1.5);
-    }
-
-    #[test]
-    fn the_diagnostics_flag_shows_them_for_a_run_over_the_saved_choice() {
-        use super::initial_diagnostics;
-        // Standalone: the flag shows them whatever is saved; otherwise the
-        // saved choice decides.
-        assert!(initial_diagnostics(true, false, false));
-        assert!(initial_diagnostics(false, true, false));
-        assert!(!initial_diagnostics(false, false, false));
-        // Embedded: `viewer.json` is the standalone viewer's, so only the flag
-        // counts until the host sends its choice.
-        assert!(!initial_diagnostics(false, true, true));
-        assert!(initial_diagnostics(true, false, true));
     }
 
     #[test]

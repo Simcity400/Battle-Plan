@@ -1,0 +1,20 @@
+[package]
+name = "collector-projection"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+engine.workspace = true
+replay.workspace = true
+serde = { workspace = true, features = ["derive"] }
+collector-status.workspace = true
+collector-memory.workspace = true
+
+[dev-dependencies]
+collector-test-support.workspace = true

@@ -157,7 +157,11 @@ test('actual Autonomy refuses false overlord absence while keeping known subject
   const host = globalThis as typeof globalThis & { __autonomyR2?: typeof fixture };
   host.__autonomyR2 = fixture;
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__autonomyR2.data });',
+    '/dashboard/preparedSeries.ts': `export const usePreparedWindow = (_client, _source, product, params) => {
+      globalThis.__autonomyR2.request = { product, params };
+      const data = globalThis.__autonomyR2.data;
+      return { data: { ...data, metadata: data, exactHours: [30], summaries: {} }, geometryReady: true, onSummaryView() {}, navigate: async () => null };
+    };`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__autonomyR2.groups });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => 25;',
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ surface: '#111111', text: '#ffffff', accent: '#aaaaaa' });",

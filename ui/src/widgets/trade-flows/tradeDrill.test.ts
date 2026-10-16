@@ -10,7 +10,7 @@ import type { TradeFlowsReply } from '../../generated/dashboard';
 import { definition, OPTIONS } from './definition.ts';
 import { buildDiagram, decodeTrade, flowCountryAt, flowValue } from './tradeData.ts';
 import { contributionAmounts, contributionCountryTag, contributionExtent, contributionHistory, contributionHour, linkSelection, nodeSelections,
-  contributionMeasureExtent, contributionMeasureModel, forEachContributionMeasureSegment,
+  contributionMeasureExtent, contributionMeasureModel, forEachContributionMeasureSegment, preparedContributionStack,
   observedTradeSpans, openContributions, pinContributions, readSelection, selectedContributors, selectionToken, tradeContext } from './tradeDrill.ts';
 import { createElement } from 'react';
 import type { ComponentProps } from 'react';
@@ -75,6 +75,9 @@ test('trade drill hovers show a positive more count and keep the trading-day uni
       const tip = state.chart!.tooltip!(5, undefined as never, [])!;
       assert.equal(tip.note, count > TOOLTIP_LIMIT ? '2 more trades' : undefined);
       assert.equal(tip.rows.at(-1)?.label, 'Average per trading day');
+      const pending = renderToStaticMarkup(createElement(Component, { ...props, prepared: { hasExactHour: () => false } }));
+      assert.match(pending, /Loading trade amounts/);
+      assert.ok(state.chart?.layers?.length, 'pending exact amounts keep the accepted history chart mounted');
     }
   } finally { delete host.__tradeDrillPresentation; await vite.close(); }
 });
@@ -345,4 +348,33 @@ test('a country view saves one native holder, selects both its sides and pins fo
   const index = countryIdentityIndex([{ tag: 'X', identities: [{ firstHour: 0, lastHour: 50, slot: 1, countryId: 2 }, { firstHour: 51, lastHour: 99, slot: 5, countryId: 6 }] }]);
   assert.equal(contributionCountryTag(index, 'X', { kind: 'country', holder: identity(1) }, 20), 'X');
   assert.equal(contributionCountryTag(index, 'X', { kind: 'country', holder: identity(1) }, 70), null, 'a later holder of the tag is not this country');
+});
+
+test('prepared trade stack keeps dense contributor extrema without inventing an Other band', async () => {
+  const { preparedContributionStack } = await import('./tradeDrill.ts');
+  const { compactStackExtent } = await import('../../charts/stack.ts');
+  const bucket = { firstHour: 0, lastHour: 31, firstValue: 2, lastValue: 3, lastValueHour: 30,
+    minHour: 9, minValue: -7, maxHour: 21, maxValue: 11, firstBreak: false, hasBreak: false };
+  const summary = { from: 0, to: 31, width: 1, buckets: [bucket] };
+  const flows = Array.from({ length: 5000 }, () => ({ prepared: { summary, prefixes: {}, scoped: false } }));
+  const stack = preparedContributionStack(flows as unknown as Parameters<typeof preparedContributionStack>[0])!;
+  assert.ok(stack.model.hours.length < 20);
+  const values = stack.model.hours.filter((_hour, index) => stack.model.bounds[index] !== null).map(hour => stack.sample(hour));
+  assert.ok(values.every(edges => edges.length === 5000));
+  assert.ok(values.some(edges => edges[0].high === 11));
+  assert.ok(values.every(edges => edges.every(edge => edge.low >= 0)), 'negative amounts remain outside positive chart geometry');
+  assert.equal(compactStackExtent(stack.model, 0, 31)![1], 55_000);
+});
+
+test('rough trade runs activate the shared stack with all approximate spans', () => {
+  const summary = { from: 0, to: 19, width: 20, buckets: [{ firstHour: 0, lastHour: 19,
+    firstValue: 2, lastValue: 2, minValue: 2, maxValue: 2, minHour: 0, maxHour: 0, lastValueHour: 0, firstBreak: true, hasBreak: false }],
+    runs: [{ firstHour: 0, lastHour: 19, value: 2, breakBefore: true }], approximate: [{ firstHour: 10, lastHour: 19 }] };
+  const flows = [{ prepared: { summary, prefixes: {}, scoped: false } }];
+  const stack = preparedContributionStack(flows as unknown as Parameters<typeof preparedContributionStack>[0]);
+  assert.ok(stack, 'width-sized rough runs must draw through shared approximate geometry');
+  assert.deepEqual(stack.approximate, summary.approximate);
+  const expanded = preparedContributionStack([...flows, { prepared: { prefixes: {}, scoped: false } }] as unknown as Parameters<typeof preparedContributionStack>[0]);
+  assert.ok(expanded, 'a flow discovered only by the exact hover page cannot remove accepted rough geometry');
+  assert.deepEqual(expanded.approximate, summary.approximate);
 });

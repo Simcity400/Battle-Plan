@@ -1,0 +1,29 @@
+[package]
+name = "dashboard-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+# The recording builders in `test_fixtures` and the scanned-block log, for the
+# tests of crates above this one.
+test-support = ["installed-content-core/test-support"]
+
+[dependencies]
+engine.workspace = true
+installed-content-core.workspace = true
+installed-content-settings.workspace = true
+replay.workspace = true
+serde = { workspace = true, features = ["derive", "rc"] }
+serde_json.workspace = true
+ts-rs = "11.1"
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+# The equipment fixture reader the recording builders use.
+installed-content-core = { workspace = true, features = ["test-support"] }

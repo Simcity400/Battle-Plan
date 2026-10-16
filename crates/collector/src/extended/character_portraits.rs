@@ -512,6 +512,7 @@ mod owned_tests {
     use super::*;
     use crate::extended::characters::characters_test_kit as kit;
     use engine::ccharacter_manager::{PortraitCensus, PortraitIdentity, Roster};
+    #[cfg(all(feature = "portrait_changes", not(feature = "portrait_verify")))]
     use std::cell::{Cell, RefCell};
 
     /// The fixture roster's census with one portrait entry for its first

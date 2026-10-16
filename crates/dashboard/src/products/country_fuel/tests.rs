@@ -6,6 +6,19 @@ use replay::{
 };
 use std::sync::{Arc, atomic::AtomicBool};
 
+pub(super) fn replay_source(frames: Vec<DecodedFrame>, id: &str) -> crate::Source {
+    crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: id.into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap()),
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+}
+
 /// A read as its reply shows it.
 pub(super) fn reply_read(
     row: &replay::rows::CountryFuelRow,
@@ -463,6 +476,10 @@ fn fuel_replies_with_the_engine_scales_and_answers_again_from_the_cache() {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn five_thousand_country_requests_share_one_decode_and_ownership_walk() {
     use crate::products::{
         CountryParams, LoadContext, Product,
@@ -781,10 +798,6 @@ fn attribution_requires_the_supplying_hour_and_native_country_identity() {
     // Observation began after the day's first update.
     day.continuity_start_hour = Some(978);
     assert!(super::awards_of(&row, 1000).is_err());
-    row.award_day = Recorded::NotRecorded;
-    let legacy = reply_read(&row, 1000, None);
-    assert_eq!(legacy.day.unwrap().gained_raw, "999");
-    assert!(legacy.awards_reason.unwrap().contains("not recorded"));
 }
 
 #[test]
@@ -889,4 +902,124 @@ fn award_product_refuses_carried_dates_replacements_and_cancellation() {
     params.hour = slot;
     params.country_instance += 1;
     assert!(load(&params, false).is_err());
+}
+
+#[test]
+fn shared_observer_resumes_twice_and_append_revises_only_overlapping_days() {
+    let slot = fuel_slot(1000);
+    // The earlier daily slot lacks its preceding day, while the refresh one
+    // hour before the next slot has a complete governing day.
+    let frames: Vec<_> = (slot - 25..=slot)
+        .map(|hour| fuel_frame(hour, hour == slot - 1, 9001, (11, 19, 23, 29)))
+        .collect();
+    let cancelled = AtomicBool::new(false);
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+    let mut scan = super::Scan::default();
+    for (index, frame) in frames.iter().enumerate().take(frames.len() - 1) {
+        scan.observe(frame, replay.format, &cancelled).unwrap();
+        if index == 9 || index == 19 {
+            scan = serde_json::from_slice(&serde_json::to_vec(&scan).unwrap()).unwrap();
+        }
+    }
+    let checkpoint = serde_json::to_vec(&scan).unwrap();
+    let prefix = scan.finish(replay.format);
+    assert_eq!(
+        prefix.countries["GER"].reads.last().unwrap().first_hour,
+        slot - 1
+    );
+    assert!(prefix.countries["GER"].reads.last().unwrap().day.is_some());
+    let mut resumed: super::Scan = serde_json::from_slice(&checkpoint).unwrap();
+    resumed
+        .observe(frames.last().unwrap(), replay.format, &cancelled)
+        .unwrap();
+    let appended = resumed.finish(replay.format);
+    let expected = super::scan_branch(&replay, 1, &cancelled).unwrap();
+    for tag in expected.countries.keys() {
+        let actual = &appended.countries[tag];
+        let expected = &expected.countries[tag];
+        assert_eq!(
+            actual
+                .reads
+                .iter()
+                .map(super::FuelRead::from)
+                .collect::<Vec<_>>(),
+            expected
+                .reads
+                .iter()
+                .map(super::FuelRead::from)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            serde_json::to_value(
+                actual
+                    .consumption
+                    .iter()
+                    .map(super::demand::FuelConsumptionRead::from)
+                    .collect::<Vec<_>>()
+            )
+            .unwrap(),
+            serde_json::to_value(
+                expected
+                    .consumption
+                    .iter()
+                    .map(super::demand::FuelConsumptionRead::from)
+                    .collect::<Vec<_>>()
+            )
+            .unwrap()
+        );
+    }
+    let refresh = appended.countries["GER"]
+        .reads
+        .iter()
+        .find(|read| read.first_hour == slot - 1)
+        .unwrap();
+    assert_eq!(refresh.left_out, Some(super::DayLeftOut::Overlaps));
+    assert!(refresh.day.is_none());
+    assert_eq!(appended.decoded_frames, frames.len());
+    assert_eq!(appended.ownership_rows, frames.len() * 2);
+
+    let frames: Vec<_> = (slot..=slot + 72)
+        .filter(|hour| *hour != slot + 37)
+        .map(|hour| {
+            let mut frame = fuel_frame(
+                hour,
+                hour == slot + 27,
+                if hour < slot + 49 { 9001 } else { 9002 },
+                (31, 37, 41, 43),
+            );
+            if hour >= slot + 11
+                && hour < slot + 49
+                && let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *frame.tables[TableId::Countries.index()]
+            {
+                rows.iter_mut().find(|row| row.tag == b"GER").unwrap().tag = b"RENAMED".to_vec();
+            }
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+    let mut scan = super::Scan::default();
+    for (index, frame) in frames.iter().enumerate() {
+        scan.observe(frame, replay.format, &cancelled).unwrap();
+        if index == 24 || index == 48 {
+            scan = serde_json::from_slice(&serde_json::to_vec(&scan).unwrap()).unwrap();
+        }
+    }
+    let actual = scan.finish(replay.format);
+    let expected = super::scan_branch(&replay, 1, &cancelled).unwrap();
+    assert_eq!(actual.actor_aliases, expected.actor_aliases);
+    for tag in expected.countries.keys() {
+        assert_eq!(
+            actual.countries[tag]
+                .reads
+                .iter()
+                .map(super::FuelRead::from)
+                .collect::<Vec<_>>(),
+            expected.countries[tag]
+                .reads
+                .iter()
+                .map(super::FuelRead::from)
+                .collect::<Vec<_>>()
+        );
+    }
 }

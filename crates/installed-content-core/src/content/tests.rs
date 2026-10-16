@@ -1,0 +1,3058 @@
+use super::*;
+
+#[test]
+fn prepared_metadata_inputs_keep_mount_order_and_archive_files_as_single_inputs() {
+    let root = std::env::temp_dir().join(format!("prepared-inputs-{}", std::process::id()));
+    let base = root.join("base");
+    let mod_folder = root.join("mod");
+    fs::create_dir_all(base.join("common")).unwrap();
+    fs::create_dir_all(mod_folder.join("common")).unwrap();
+    fs::write(base.join("common/a.txt"), b"synthetic base").unwrap();
+    fs::write(mod_folder.join("common/b.txt"), b"synthetic mod").unwrap();
+    let mut layers = ResolvedLayers::from_folders(&[(&base, &[]), (&mod_folder, &[])]).unwrap();
+    let expected = vec![
+        fs::canonicalize(base.join("common/a.txt")).unwrap(),
+        fs::canonicalize(mod_folder.join("common/b.txt")).unwrap(),
+    ];
+    assert_eq!(layers.recorded_source_files().unwrap(), expected);
+    let descriptor = root.join("synthetic.mod");
+    let archive = root.join("synthetic.zip");
+    // The roster operation uses already-resolved layer inventories, including
+    // member names that have no physical path outside their archive.
+    layers.layers[1].source = LayerSource::Archive(archive.clone());
+    layers.layers[1].descriptor = Some(descriptor.clone());
+    assert_eq!(
+        layers.recorded_source_files().unwrap(),
+        vec![
+            fs::canonicalize(base.join("common/a.txt")).unwrap(),
+            descriptor,
+            archive
+        ]
+    );
+    assert_eq!(root.parent(), Some(std::env::temp_dir().as_path()));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn verified_prefix_retains_only_the_header_and_checks_the_remaining_payload() {
+    let root = std::env::temp_dir().join(format!("verified-prefix-{}", std::process::id()));
+    fs::create_dir_all(root.join("map")).unwrap();
+    let mut bytes = vec![5; 2 * 1024 * 1024];
+    bytes[..6].copy_from_slice(b"header");
+    let path = root.join("map/synthetic.bin");
+    fs::write(&path, &bytes).unwrap();
+    let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    assert_eq!(
+        layers.read_prefix("map/synthetic.bin", 6).unwrap(),
+        (b"header".to_vec(), bytes.len() as u64)
+    );
+    *bytes.last_mut().unwrap() = 7;
+    fs::write(path, bytes).unwrap();
+    assert!(
+        layers
+            .read_prefix("map/synthetic.bin", 6)
+            .unwrap_err()
+            .to_string()
+            .contains("changed since verification")
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn explicit_uncovered_reads_report_hits_and_missing_candidates() {
+    let root = std::env::temp_dir().join(format!("explicit-uncovered-{}", std::process::id()));
+    fs::create_dir_all(root.join("gfx/custom")).unwrap();
+    fs::write(root.join("gfx/custom/mod-icon.dds"), b"synthetic").unwrap();
+    let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let reads = layers.report_uncovered_reads();
+    for _ in 0..2 {
+        assert_eq!(
+            layers
+                .read_uncovered_path(b"gfx/custom/mod-icon.dds")
+                .unwrap(),
+            b"synthetic"
+        );
+        assert_eq!(
+            layers
+                .read_uncovered_path(b"gfx/custom/missing.dds")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+    let warning = reads.warning().unwrap();
+    assert!(warning.contains("2 file(s)"), "{warning}");
+    assert!(warning.contains("gfx/custom/mod-icon.dds"));
+    assert!(warning.contains("gfx/custom/missing.dds"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(windows)]
+pub(super) fn file_timestamps(file: &File) -> (i64, i64) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandleEx,
+    };
+    let mut info: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
+    assert_ne!(
+        unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileBasicInfo,
+                (&mut info as *mut FILE_BASIC_INFO).cast(),
+                std::mem::size_of_val(&info) as u32,
+            )
+        },
+        0
+    );
+    (info.LastWriteTime, info.ChangeTime)
+}
+
+#[cfg(windows)]
+pub(super) fn file_usn(file: &File) -> i64 {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::{
+        IO::DeviceIoControl,
+        Ioctl::{FSCTL_READ_FILE_USN_DATA, USN_RECORD_V2},
+    };
+    let versions = [2_u16, 2_u16];
+    let mut buffer = [0_u64; 512];
+    let mut returned = 0;
+    assert_ne!(
+        unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                FSCTL_READ_FILE_USN_DATA,
+                versions.as_ptr().cast(),
+                std::mem::size_of_val(&versions) as u32,
+                buffer.as_mut_ptr().cast(),
+                std::mem::size_of_val(&buffer) as u32,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        },
+        0,
+        "synthetic fixture requires NTFS file change records"
+    );
+    assert!(returned >= std::mem::size_of::<USN_RECORD_V2>() as u32);
+    let record = unsafe { &*buffer.as_ptr().cast::<USN_RECORD_V2>() };
+    assert_eq!(record.MajorVersion, 2);
+    assert!(record.RecordLength <= returned);
+    record.Usn
+}
+
+#[cfg(windows)]
+pub(super) fn overwrite_preserving_timestamps(path: &Path, offset: u64, bytes: &[u8]) {
+    use std::{
+        io::{Seek, SeekFrom, Write},
+        os::windows::io::AsRawHandle,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_BASIC_INFO, FileBasicInfo, SetFileInformationByHandle,
+    };
+    let mut writer = File::options().write(true).open(path).unwrap();
+    let suppressed = FILE_BASIC_INFO {
+        LastWriteTime: -1,
+        ChangeTime: -1,
+        ..unsafe { std::mem::zeroed() }
+    };
+    assert_ne!(
+        unsafe {
+            SetFileInformationByHandle(
+                writer.as_raw_handle(),
+                FileBasicInfo,
+                (&suppressed as *const FILE_BASIC_INFO).cast(),
+                std::mem::size_of_val(&suppressed) as u32,
+            )
+        },
+        0
+    );
+    writer.seek(SeekFrom::Start(offset)).unwrap();
+    writer.write_all(bytes).unwrap();
+    writer.sync_all().unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn held_reader_central_directory_edit_is_detected_on_the_next_open() {
+    let root = std::env::temp_dir().join(format!("mount-central-edit-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("synthetic.zip");
+    let bytes = raw_zip(&[(b"common/one.txt", 0, b"unchanged payload")]);
+    let central = bytes
+        .windows(4)
+        .position(|bytes| bytes == 0x0201_4B50_u32.to_le_bytes())
+        .unwrap();
+    fs::write(&path, &bytes).unwrap();
+    // Keep a reader across both writes and admissions. The first identical-byte
+    // overwrite seeds a change reason that NTFS can coalesce for the second write.
+    let reader = File::open(&path).unwrap();
+    let stamp = Stamp::read(&path).unwrap();
+    let timestamps = file_timestamps(&reader);
+    overwrite_preserving_timestamps(&path, (central + 46) as u64, b"common/one.txt");
+    let layer = archive_layer("synthetic", &path, &[]);
+    assert_eq!(
+        layer.archive_open(b"common/one.txt").unwrap().unwrap(),
+        b"unchanged payload"
+    );
+    let usn = file_usn(&reader);
+    // Change only the central name; local headers and payload stay byte-identical.
+    overwrite_preserving_timestamps(&path, (central + 46) as u64, b"common/two.txt");
+    assert_eq!(Stamp::read(&path).unwrap(), stamp);
+    assert_eq!(file_timestamps(&reader), timestamps);
+    assert_eq!(file_usn(&reader), usn);
+    let edited = fs::read(&path).unwrap();
+    assert_eq!(&edited[..central], &bytes[..central]);
+    for result in [
+        layer.archive_open(b"common/one.txt").map(|_| ()),
+        layer.archive_exists(b"common/two.txt").map(|_| ()),
+        layer.archive_open(b"outside/absent").map(|_| ()),
+    ] {
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("changed since verification") && error.contains("common/two.txt"),
+            "{error}"
+        );
+    }
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn derived_caches_share_a_resolved_stack_and_reset_for_another_roster() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let mut layers = ResolvedLayers::default();
+    let first = layers.derived::<AtomicUsize>();
+    first.store(7, Ordering::Relaxed);
+    assert!(Arc::ptr_eq(
+        &first,
+        &layers.clone().derived::<AtomicUsize>()
+    ));
+    assert_eq!(
+        layers
+            .clone()
+            .derived::<AtomicUsize>()
+            .load(Ordering::Relaxed),
+        7
+    );
+    assert!(!Arc::ptr_eq(
+        &first,
+        &ResolvedLayers::default().derived::<AtomicUsize>()
+    ));
+    let root = std::env::temp_dir().join(format!("derived-roster-{}", std::process::id()));
+    layers
+        .layers
+        .push(folder_layer("additional-mod", &root, Vec::new()));
+    let changed = layers.derived::<AtomicUsize>();
+    assert!(!Arc::ptr_eq(&first, &changed));
+    assert_eq!(changed.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn a_database_directory_lists_its_own_files_by_byte_name_without_recursion() {
+    let listed = [
+        "gfx/train_gfx_database/zz_mod.txt",
+        "gfx/train_gfx_database/sub/a.txt",
+        "gfx/train_gfx_database/B.txt",
+        "gfx/train_gfx_database/a.txt",
+        "gfx/train_gfx_database/upper.TXT",
+        "gfx/train_gfx_database_other/a.txt",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    assert_eq!(
+        directory_order("gfx/train_gfx_database", ".txt", listed),
+        [
+            "gfx/train_gfx_database/B.txt",
+            "gfx/train_gfx_database/a.txt",
+            "gfx/train_gfx_database/zz_mod.txt",
+        ]
+    );
+}
+
+#[test]
+fn coverage_is_closed_and_paths_cannot_escape_the_layer() {
+    for path in [
+        "map/provinces.bmp",
+        "common/countries/colors.txt",
+        "events/nested/outcomes.txt",
+        "gfx/interface/x.dds",
+        "gfx/flags/GER.tga",
+        "GFX/Texticons/nested/x.dds",
+        "gfx/leaders/nested/x.tga",
+        "gfx/fonts/x.fnt",
+        "gfx/FX/x.shader",
+        "GFX/fx/nested/x.fxh",
+        "gfx/posteffect_volumes.txt",
+        "gfx/entities/buildings.asset",
+        "GFX/Models/Buildings/supply_station.GFX",
+        "localisation/english/x.yml",
+    ] {
+        assert!(covered(path));
+    }
+    for path in [
+        "music/x.ogg",
+        "gfx/models/x.mesh",
+        "gfx/models/x.dds",
+        "gfx/posteffect/x.shader",
+        "gfx/posteffect_volumes.txt.bak",
+        "gfx/fonts_backup/x.fnt",
+        "gfx/fx_backup/x.shader",
+        "events_backup/x.txt",
+        "gfx/texticons_backup/x.dds",
+        "gfx/leaders_backup/x.tga",
+        "gfx/sound/x.asset",
+        "gfx/loadingscreens/x.dds",
+        "map_backup/x.bmp",
+        "launcher/logs/x.txt",
+    ] {
+        assert!(!covered(path));
+    }
+    assert_eq!(normalize_relative("map\\x.bmp").unwrap(), "map/x.bmp");
+    for path in [
+        "",
+        "../x",
+        "map/../x",
+        "map//x",
+        "/x",
+        "C:/x",
+        "map/x:stream",
+        "map/./x",
+        "map/x\0",
+    ] {
+        assert!(normalize_relative(path).is_err(), "{path}");
+    }
+}
+
+#[test]
+fn coverage_policy_four_hashes_and_verifies_event_tooltip_font_effect_and_volume_roots() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_coverage_four_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let (game, user, cache) = (root.join("game"), root.join("user"), root.join("cache"));
+    fs::create_dir_all(&user).unwrap();
+    fs::create_dir_all(game.join("dlc")).unwrap();
+    fs::write(game.join("hoi4.exe"), b"synthetic executable").unwrap();
+    fs::write(user.join("settings.txt"), b"language=l_english").unwrap();
+    fs::write(
+        user.join("dlc_load.json"),
+        br#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
+    )
+    .unwrap();
+    let paths = [
+        "events/nested/outcomes.txt",
+        "gfx/texticons/nested/icon.dds",
+        "gfx/leaders/nested/portrait.tga",
+        "gfx/fonts/nested/font.fnt",
+        "gfx/FX/nested/effect.shader",
+        "gfx/posteffect_volumes.txt",
+    ];
+    for path in paths {
+        let file = game.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, b"original").unwrap();
+    }
+    let gathered = gather(&GatherOptions {
+        game_dir: game.clone(),
+        user_dir: user.clone(),
+        cache_dir: cache.clone(),
+        dlc_order: None,
+    })
+    .unwrap();
+    let identity = gathered
+        .identity(
+            "synthetic build".into(),
+            Sha256::digest(b"synthetic executable").into(),
+            20,
+            "test".into(),
+            [0; 32],
+        )
+        .unwrap();
+    assert_eq!(identity.coverage_policy, 4);
+    let options = ResolveOptions {
+        game_dir: game.clone(),
+        user_dir: user,
+        cache_dir: cache,
+    };
+    let resolved = resolve(&identity, &options).unwrap();
+    for path in paths {
+        assert_eq!(
+            gathered.layers.layers[0].hashes[path.as_bytes()],
+            <[u8; 32]>::from(Sha256::digest(b"original")),
+            "{path}"
+        );
+        assert_eq!(resolved.layers.read(path).unwrap(), b"original");
+        assert_eq!(resolved.layers.read_uncovered(path).unwrap(), b"original");
+        fs::write(game.join(path), b"changed content").unwrap();
+        assert_eq!(
+            resolved.layers.read(path).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            resolved.layers.read_uncovered(path).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        let error = resolve(&identity, &options).unwrap_err().to_string();
+        assert!(
+            error.contains("Game vanilla: content hash mismatch"),
+            "{path}: {error}"
+        );
+        fs::write(game.join(path), b"original").unwrap();
+    }
+    for policy in [1, COVERAGE_POLICY_VERSION + 1] {
+        let mut old = identity.clone();
+        old.coverage_policy = policy;
+        assert_eq!(
+            resolve(&old, &options).unwrap_err().to_string(),
+            format!(
+                "unsupported recorded content coverage policy {policy} (supported 2 through {COVERAGE_POLICY_VERSION})"
+            )
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn older_coverage_policies_verify_their_own_roots_and_leave_newer_roots_uncovered() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_older_coverage_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let (game, user, cache) = (root.join("game"), root.join("user"), root.join("cache"));
+    fs::create_dir_all(&user).unwrap();
+    fs::create_dir_all(&game).unwrap();
+    fs::write(game.join("hoi4.exe"), b"synthetic executable").unwrap();
+    let policy_two = ["map/root.txt", "gfx/entities/root.asset"];
+    let policy_three = [
+        "events/nested/outcomes.txt",
+        "gfx/texticons/nested/icon.dds",
+        "gfx/leaders/nested/portrait.tga",
+    ];
+    let policy_four = [
+        "gfx/fonts/nested/font.fnt",
+        "gfx/FX/nested/effect.shader",
+        "gfx/posteffect_volumes.txt",
+    ];
+    for path in policy_two
+        .into_iter()
+        .chain(policy_three)
+        .chain(policy_four)
+    {
+        let file = game.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, b"original").unwrap();
+    }
+    let options = ResolveOptions {
+        game_dir: game.clone(),
+        user_dir: user,
+        cache_dir: cache,
+    };
+    for policy in [2, 3] {
+        // Independently reproduce each historical inventory, without today's root selector.
+        let kept: Vec<_> = policy_two
+            .into_iter()
+            .chain(policy_three.into_iter().filter(|_| policy == 3))
+            .collect();
+        let hashes = kept
+            .iter()
+            .map(|path| {
+                (
+                    path.as_bytes().to_vec(),
+                    <[u8; 32]>::from(Sha256::digest(b"original")),
+                )
+            })
+            .collect();
+        let identity = Identity {
+            game_version: "synthetic build".into(),
+            exe_hash: Sha256::digest(b"synthetic executable").into(),
+            exe_size: 20,
+            vanilla_hash: layer_hash(&hashes).unwrap(),
+            dlc: Vec::new(),
+            mods: Vec::new(),
+            coverage_policy: policy,
+            language: "l_english".into(),
+            recorder_version: "test".into(),
+            collector_hash: [0; 32],
+            verification: Verification::Unchecked,
+        };
+        let resolved = resolve(&identity, &options).unwrap();
+        assert_eq!(resolved.layers.paths().count(), kept.len());
+        for path in &kept {
+            assert!(resolved.layers.covered(path), "policy {policy}: {path}");
+            assert_eq!(resolved.layers.read(path).unwrap(), b"original");
+            fs::write(game.join(path), b"changed covered bytes").unwrap();
+            assert_eq!(
+                resolved.layers.read_uncovered(path).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+            let error = resolve(&identity, &options).unwrap_err().to_string();
+            assert!(
+                error.contains("Game vanilla: content hash mismatch"),
+                "{error}"
+            );
+            fs::write(game.join(path), b"original").unwrap();
+        }
+        let uncovered = policy_three
+            .into_iter()
+            .filter(|_| policy == 2)
+            .chain(policy_four);
+        for path in uncovered {
+            assert!(!resolved.layers.covered(path), "policy {policy}: {path}");
+            assert!(covered(path), "current policy: {path}");
+            assert_eq!(resolved.layers.read_uncovered(path).unwrap(), b"original");
+            fs::write(game.join(path), b"changed uncovered bytes").unwrap();
+            // A memoized read and a fresh resolve both retain the older policy's contract.
+            assert_eq!(
+                resolved.layers.read_uncovered(path).unwrap(),
+                b"changed uncovered bytes"
+            );
+            let fresh = resolve(&identity, &options).unwrap();
+            assert!(!fresh.layers.covered(path));
+            assert_eq!(
+                fresh.layers.read_uncovered(path).unwrap(),
+                b"changed uncovered bytes"
+            );
+            fs::write(game.join(path), b"original").unwrap();
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn historical_coverage_reads_newer_folder_and_archive_files_with_counted_notes() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_coverage_reads_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let folder = root.join("folder");
+    let archive = root.join("content.zip");
+    let files: [(&str, &[u8]); 8] = [
+        ("common/check.txt", b"covered"),
+        ("gfx/models/check.txt", b"model"),
+        ("events/check.txt", b"event"),
+        ("gfx/leaders/check.tga", b"portrait"),
+        ("gfx/texticons/check.dds", b"icon"),
+        ("gfx/fonts/check.fnt", b"font"),
+        ("gfx/FX/check.shader", b"effect"),
+        ("gfx/posteffect_volumes.txt", b"posteffect_volumes = {}"),
+    ];
+    for (path, bytes) in files {
+        let path = folder.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+    let members: Vec<_> = files
+        .iter()
+        .map(|(path, bytes)| (path.as_bytes(), 0, *bytes))
+        .collect();
+    fs::write(&archive, raw_zip(&members)).unwrap();
+    for source in [&folder, &archive] {
+        for policy in [2, 3, COVERAGE_POLICY_VERSION] {
+            let layers =
+                ResolvedLayers::from_folders_with_coverage_policy(&[(source, &[])], policy)
+                    .unwrap();
+            // Unadapted consumers stay strict, including under the current policy.
+            let error = layers.read("gfx/models/check.txt").unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("this reader does not report uncovered reads")
+            );
+            let reads = layers.report_uncovered_reads();
+            // Probes and failed reads do not count as unverified bytes read.
+            assert!(layers.has_file("gfx/posteffect_volumes.txt").unwrap());
+            assert!(layers.read("gfx/fonts/missing.fnt").is_err());
+            assert_eq!(layers.read("common/check.txt").unwrap(), b"covered");
+            assert_eq!(reads.warning(), None);
+            for (path, bytes) in files {
+                assert_eq!(layers.read(path).unwrap(), bytes);
+                assert_eq!(layers.clone().read_path(path.as_bytes()).unwrap(), bytes);
+            }
+            let mut uncovered: Vec<_> = files
+                .iter()
+                .filter_map(|(path, _)| (!layers.covered(path)).then_some(*path))
+                .collect();
+            uncovered.sort();
+            let expected = (!uncovered.is_empty()).then(|| {
+                format!(
+                    "Content: {} file(s) read outside the recorded content coverage policy {policy}; these bytes are not hash-verified: {}.",
+                    uncovered.len(),
+                    uncovered.join(", ")
+                )
+            });
+            assert_eq!(reads.warning(), expected);
+            if source == &folder {
+                fs::write(folder.join("common/check.txt"), b"changed").unwrap();
+                assert_eq!(
+                    layers.read("common/check.txt").unwrap_err().kind(),
+                    io::ErrorKind::InvalidData
+                );
+                assert_eq!(reads.warning(), expected);
+                fs::write(folder.join("common/check.txt"), b"covered").unwrap();
+            }
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn reported_uncovered_reads_refresh_diagnostics_after_lazy_reads() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_lazy_coverage_reads_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    fs::create_dir_all(root.join("gfx/models")).unwrap();
+    fs::write(root.join("gfx/models/first.txt"), b"first").unwrap();
+    fs::write(root.join("gfx/models/late.txt"), b"late").unwrap();
+    let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let reads = layers.report_uncovered_reads();
+    let mut warnings = vec!["Another diagnostic".into()];
+    reads.append_to(&mut warnings);
+    assert_eq!(warnings.len(), 1);
+    layers.read("gfx/models/first.txt").unwrap();
+    reads.append_to(&mut warnings);
+    assert!(warnings[1].starts_with("Content: 1 file(s)"));
+    layers.clone().read("gfx/models/late.txt").unwrap();
+    reads.append_to(&mut warnings);
+    reads.append_to(&mut warnings);
+    assert_eq!(warnings.len(), 2);
+    assert_eq!(warnings[0], "Another diagnostic");
+    assert!(warnings[1].starts_with("Content: 2 file(s)"));
+    assert!(warnings[1].contains("gfx/models/first.txt, gfx/models/late.txt"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn older_coverage_policy_roots_apply_to_builtin_dlc_and_mod_layers() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_layer_older_coverage_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let (game, user) = (root.join("game"), root.join("user"));
+    let write = |path: &Path, bytes: &[u8]| {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    };
+    let integrated = b"name=Integrated";
+    let dlc = b"name=Synthetic path=dlc/synthetic";
+    let mod_descriptor = b"name=Synthetic archive=layers/synthetic.zip";
+    write(&game.join("hoi4.exe"), b"synthetic executable");
+    write(
+        &game.join("integrated_dlc/synthetic/content.dlc"),
+        integrated,
+    );
+    write(&game.join("dlc/synthetic/content.dlc"), dlc);
+    write(&user.join("mod/synthetic.mod"), mod_descriptor);
+    let folder_pairs = [
+        ("", "base"),
+        ("integrated_dlc/synthetic/", "integrated"),
+        ("dlc/synthetic/", "dlc"),
+        ("tweakergui_assets/", "tweaker"),
+    ];
+    for (prefix, name) in folder_pairs {
+        write(
+            &game.join(format!("{prefix}events/{name}.txt")),
+            b"original",
+        );
+        write(
+            &game.join(format!("{prefix}gfx/fonts/{name}.fnt")),
+            b"original",
+        );
+    }
+    let archive = user.join("layers/synthetic.zip");
+    write(
+        &archive,
+        &raw_zip(&[
+            (b"events/mod.txt", 0, b"original"),
+            (b"gfx/fonts/mod.fnt", 0, b"original"),
+        ]),
+    );
+    let hash = |files: &[(&str, &[u8])]| {
+        layer_hash(
+            &files
+                .iter()
+                .map(|(path, bytes)| {
+                    (
+                        path.as_bytes().to_vec(),
+                        <[u8; 32]>::from(Sha256::digest(bytes)),
+                    )
+                })
+                .collect(),
+        )
+        .unwrap()
+    };
+    // These are the policy-3 inventories, including each layer's descriptor.
+    let identity = Identity {
+        game_version: "synthetic build".into(),
+        exe_hash: Sha256::digest(b"synthetic executable").into(),
+        exe_size: 20,
+        vanilla_hash: hash(&[
+            ("events/base.txt", b"original"),
+            ("integrated_dlc/synthetic/content.dlc", integrated),
+            (
+                "integrated_dlc/synthetic/events/integrated.txt",
+                b"original",
+            ),
+            ("tweakergui_assets/events/tweaker.txt", b"original"),
+        ]),
+        dlc: vec![Dlc {
+            id: "synthetic".into(),
+            hash: hash(&[("content.dlc", dlc), ("events/dlc.txt", b"original")]),
+            declared_checksum: None,
+        }],
+        mods: vec![Mod {
+            id: "synthetic.mod".into(),
+            display_name: "Synthetic".into(),
+            declared_version: String::new(),
+            hash: hash(&[
+                ("synthetic.mod", mod_descriptor),
+                ("events/mod.txt", b"original"),
+            ]),
+        }],
+        coverage_policy: 3,
+        language: "l_english".into(),
+        recorder_version: "test".into(),
+        collector_hash: [0; 32],
+        verification: Verification::Unchecked,
+    };
+    let options = ResolveOptions {
+        game_dir: game.clone(),
+        user_dir: user,
+        cache_dir: root.join("cache"),
+    };
+    let layers = resolve(&identity, &options).unwrap().layers;
+    assert_eq!(layers.layers.len(), 5);
+    assert!(!layers.base_only().unwrap().covered("gfx/fonts/base.fnt"));
+    for name in ["base", "integrated", "dlc", "tweaker", "mod"] {
+        assert_eq!(
+            layers.read(&format!("events/{name}.txt")).unwrap(),
+            b"original"
+        );
+        assert!(!layers.covered(&format!("gfx/fonts/{name}.fnt")));
+        assert_eq!(
+            layers
+                .read_uncovered(&format!("gfx/fonts/{name}.fnt"))
+                .unwrap(),
+            b"original"
+        );
+    }
+    for (prefix, name) in folder_pairs {
+        write(
+            &game.join(format!("{prefix}gfx/fonts/{name}.fnt")),
+            b"newer uncovered bytes",
+        );
+    }
+    write(
+        &archive,
+        &raw_zip(&[
+            (b"events/mod.txt", 0, b"original"),
+            (b"gfx/fonts/mod.fnt", 0, b"newer uncovered bytes"),
+        ]),
+    );
+    let fresh = resolve(&identity, &options).unwrap().layers;
+    for name in ["base", "integrated", "dlc", "tweaker", "mod"] {
+        assert_eq!(
+            fresh
+                .read_uncovered(&format!("gfx/fonts/{name}.fnt"))
+                .unwrap(),
+            b"newer uncovered bytes"
+        );
+    }
+    for (relative, named) in [
+        ("events/base.txt", "Game vanilla"),
+        (
+            "integrated_dlc/synthetic/events/integrated.txt",
+            "Game vanilla",
+        ),
+        ("tweakergui_assets/events/tweaker.txt", "Game vanilla"),
+        ("dlc/synthetic/events/dlc.txt", "DLC synthetic"),
+    ] {
+        write(&game.join(relative), b"changed covered bytes");
+        let error = resolve(&identity, &options).unwrap_err().to_string();
+        assert!(
+            error.contains(&format!("{named}: content hash mismatch")),
+            "{error}"
+        );
+        write(&game.join(relative), b"original");
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn older_coverage_policies_inventory_and_verify_archive_roots() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_archive_older_coverage_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let archive = root.join("synthetic.zip");
+    let paths: &[&[u8]] = &[
+        b"map/root.txt",
+        b"events/root.txt",
+        b"gfx/fonts/root.fnt",
+        b"gfx/FX/root.shader",
+        b"gfx/posteffect_volumes.txt",
+    ];
+    fs::write(
+        &archive,
+        raw_zip(
+            &paths
+                .iter()
+                .map(|path| (*path, 0, &b"original"[..]))
+                .collect::<Vec<_>>(),
+        ),
+    )
+    .unwrap();
+    for policy in [2, 3] {
+        let layers =
+            ResolvedLayers::from_folders_with_coverage_policy(&[(&archive, &[])], policy).unwrap();
+        let expected = if policy == 2 {
+            &paths[..1]
+        } else {
+            &paths[..2]
+        };
+        assert_eq!(
+            layers.layers[0]
+                .hashes
+                .keys()
+                .map(Vec::as_slice)
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
+        for path in expected {
+            assert_eq!(layers.read_path(path).unwrap(), b"original");
+        }
+        for path in &paths[expected.len()..] {
+            assert!(!layers.covered_path(path));
+            assert_eq!(layers.read_uncovered_path(path).unwrap(), b"original");
+        }
+        let members: Vec<_> = paths
+            .iter()
+            .map(|path| {
+                (
+                    *path,
+                    0,
+                    if *path == b"map/root.txt" {
+                        &b"changed"[..]
+                    } else {
+                        &b"original"[..]
+                    },
+                )
+            })
+            .collect();
+        fs::write(&archive, raw_zip(&members)).unwrap();
+        assert_eq!(
+            layers
+                .read_uncovered_path(b"gfx/fonts/root.fnt")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        fs::write(
+            &archive,
+            raw_zip(
+                &paths
+                    .iter()
+                    .map(|path| (*path, 0, &b"original"[..]))
+                    .collect::<Vec<_>>(),
+            ),
+        )
+        .unwrap();
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn coverage_policy_four_verifies_archive_event_tooltip_font_effect_and_volume_roots() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_archive_coverage_four_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let archive = root.join("synthetic.zip");
+    for path in [
+        "events/nested/outcomes.txt",
+        "gfx/texticons/nested/icon.dds",
+        "gfx/leaders/nested/portrait.tga",
+        "gfx/fonts/nested/font.fnt",
+        "gfx/FX/nested/effect.shader",
+        "gfx/posteffect_volumes.txt",
+    ] {
+        fs::write(&archive, raw_zip(&[(path.as_bytes(), 0, b"original")])).unwrap();
+        let layer = archive_layer("synthetic", &archive, &[]);
+        assert_eq!(
+            layer.hashes[path.as_bytes()],
+            <[u8; 32]>::from(Sha256::digest(b"original"))
+        );
+        let original_hash = layer_hash(&layer.hashes).unwrap();
+        let mut layers = ResolvedLayers {
+            layers: vec![layer],
+            ..Default::default()
+        };
+        layers.finish().unwrap();
+        assert_eq!(layers.read(path).unwrap(), b"original");
+        assert_eq!(layers.read_uncovered(path).unwrap(), b"original");
+        fs::write(
+            &archive,
+            raw_zip(&[(path.as_bytes(), 0, b"changed content")]),
+        )
+        .unwrap();
+        assert_eq!(
+            layers.read(path).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            layers.read_uncovered(path).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        let changed = archive_layer("synthetic", &archive, &[]);
+        assert_ne!(
+            original_hash,
+            layer_hash(&changed.hashes).unwrap(),
+            "{path}"
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn layer_hash_uses_paths_content_and_an_unambiguous_sorted_list() {
+    let first: [u8; 32] = Sha256::digest(b"first").into();
+    let second: [u8; 32] = Sha256::digest(b"second").into();
+    let files: BTreeMap<LayerPath, _> =
+        BTreeMap::from([(b"map/b".to_vec(), second), (b"map/a".to_vec(), first)]);
+    let mut expected = Sha256::new();
+    for (path, hash) in [("map/a", first), ("map/b", second)] {
+        expected.update((path.len() as u32).to_le_bytes());
+        expected.update(path.as_bytes());
+        expected.update(hash);
+    }
+    assert_eq!(
+        layer_hash(&files).unwrap(),
+        <[u8; 32]>::from(expected.finalize())
+    );
+    let mut renamed = files.clone();
+    let moved = renamed.remove(b"map/a".as_slice()).unwrap();
+    renamed.insert(b"map/c".to_vec(), moved);
+    assert_ne!(layer_hash(&files).unwrap(), layer_hash(&renamed).unwrap());
+    assert_ne!(
+        layer_hash(&BTreeMap::new()).unwrap(),
+        layer_hash(&files).unwrap()
+    );
+}
+
+#[test]
+fn overlay_replacement_removes_subdirectories_without_prefix_collisions() {
+    let mut effective = BTreeMap::new();
+    let base = ["map/a", "map/sub/b", "maps/c", "common/a"].map(|path| path.as_bytes().to_vec());
+    apply_overlay(&mut effective, 0, false, base.iter(), &[], false).unwrap();
+    let additions = [b"map/new".to_vec(), b"common/a".to_vec()];
+    apply_overlay(
+        &mut effective,
+        1,
+        false,
+        additions.iter(),
+        &[b"MAP".to_vec()],
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        effective
+            .into_iter()
+            .map(|(path, file)| (path, file.layer))
+            .collect::<BTreeMap<_, _>>(),
+        BTreeMap::from([
+            (b"map/new".to_vec(), 1),
+            (b"maps/c".to_vec(), 0),
+            (b"common/a".to_vec(), 1)
+        ])
+    );
+}
+
+#[test]
+fn overlay_refuses_to_guess_folder_and_archive_case_precedence() {
+    let mut effective = BTreeMap::new();
+    apply_overlay(
+        &mut effective,
+        0,
+        false,
+        [b"map/file.txt".to_vec()].iter(),
+        &[],
+        false,
+    )
+    .unwrap();
+    apply_overlay(
+        &mut effective,
+        1,
+        false,
+        [b"map/FILE.txt".to_vec()].iter(),
+        &[],
+        false,
+    )
+    .unwrap();
+    assert_eq!(effective.len(), 1);
+    assert_eq!(effective[b"map/file.txt".as_slice()].layer, 1);
+    assert_eq!(effective[b"map/file.txt".as_slice()].path, b"map/FILE.txt");
+    assert!(
+        apply_overlay(
+            &mut effective,
+            2,
+            true,
+            [b"map/file.txt".to_vec()].iter(),
+            &[],
+            false,
+        )
+        .is_err()
+    );
+    // A visual mod mounts as the game does: the index lists its spelling, lookups stay native.
+    apply_overlay(
+        &mut effective,
+        2,
+        true,
+        [b"map/file.txt".to_vec()].iter(),
+        &[],
+        true,
+    )
+    .unwrap();
+    assert_eq!(effective[b"map/file.txt".as_slice()].layer, 2);
+}
+
+#[test]
+fn cache_key_requires_path_size_and_full_timestamp() {
+    let stamp = Stamp {
+        size: 42,
+        modified_seconds: 5,
+        modified_nanos: 99,
+    };
+    let mut cache = HashCache::default();
+    cache.insert("a".into(), stamp.clone(), [7; 32]);
+    assert_eq!(cache.get("a", &stamp), Some([7; 32]));
+    assert_eq!(cache.get("b", &stamp), None);
+    assert_eq!(
+        cache.get(
+            "a",
+            &Stamp {
+                size: 43,
+                ..stamp.clone()
+            }
+        ),
+        None
+    );
+    assert_eq!(
+        cache.get(
+            "a",
+            &Stamp {
+                modified_nanos: 98,
+                ..stamp
+            }
+        ),
+        None
+    );
+}
+
+#[test]
+fn recorded_selection_preserves_order_and_ignores_unrequested_layers() {
+    let selected = select_recorded_paths(
+        "DLC",
+        ["b", "a"].into_iter(),
+        vec![
+            ("a".into(), PathBuf::from("dlc/a/a.dlc")),
+            ("extra".into(), PathBuf::from("dlc/extra/first.dlc")),
+            ("b".into(), PathBuf::from("dlc/b/b.dlc")),
+            ("extra".into(), PathBuf::from("dlc/extra/second.dlc")),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        selected,
+        [PathBuf::from("dlc/b/b.dlc"), PathBuf::from("dlc/a/a.dlc")]
+    );
+    let missing = select_recorded_paths("DLC", ["missing"].into_iter(), Vec::new()).unwrap_err();
+    assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+    assert!(missing.to_string().contains("DLC missing"));
+    let ambiguous = select_recorded_paths(
+        "Mod",
+        ["123"].into_iter(),
+        vec![
+            ("123".into(), PathBuf::from("mod/one.mod")),
+            ("123".into(), PathBuf::from("mod/two.mod")),
+        ],
+    )
+    .unwrap_err();
+    assert!(ambiguous.to_string().contains("Mod 123"));
+    assert!(ambiguous.to_string().contains("multiple"));
+}
+
+#[test]
+fn remote_mod_ids_take_precedence_over_local_descriptor_names() {
+    let remote = parser::parse(b"remote_file_id=123 name=Example").unwrap();
+    let empty = parser::parse(b"remote_file_id=\"\" name=Example").unwrap();
+    let local = parser::parse(b"name=Example").unwrap();
+    let descriptor = Path::new("mod/example.mod");
+    assert_eq!(mod_id(&remote, descriptor).unwrap(), "123");
+    assert_eq!(mod_id(&empty, descriptor).unwrap(), "example.mod");
+    assert_eq!(mod_id(&local, descriptor).unwrap(), "example.mod");
+    assert!(
+        select_recorded_paths(
+            "Mod",
+            ["example.mod"].into_iter(),
+            vec![(mod_id(&remote, descriptor).unwrap(), descriptor.to_owned())],
+        )
+        .is_err()
+    );
+}
+
+/// Builds a folder layer without inventorying it; `read_uncovered` never
+/// consults the covered inventory.
+fn folder_layer(id: &str, root: &Path, replace_paths: Vec<String>) -> ResolvedLayer {
+    ResolvedLayer {
+        coverage: CoveragePolicy::default(),
+        id: id.into(),
+        source: LayerSource::Folder(fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())),
+        descriptor: None,
+        replace_paths: replace_paths.into_iter().map(String::into_bytes).collect(),
+        files: Default::default(),
+        lookup: Default::default(),
+        hashes: Default::default(),
+        archive_stamp: None,
+        descriptor_hash: None,
+        overlay: None,
+    }
+}
+
+#[test]
+fn listed_paths_keep_case_variants_and_honour_replace_path() {
+    let layer = |id: &str, replace: &[&str], files: &[&str]| {
+        let mut layer = folder_layer(
+            id,
+            Path::new(id),
+            replace.iter().map(|p| p.to_string()).collect(),
+        );
+        for path in files {
+            std::sync::Arc::make_mut(&mut layer.files).insert(
+                path.as_bytes().to_vec(),
+                Member {
+                    archive_entry: None,
+                    size: 0,
+                },
+            );
+        }
+        layer
+    };
+    let layers = ResolvedLayers {
+        layers: vec![
+            layer(
+                "base",
+                &[],
+                &["common/defines/00_defines.lua", "common/defines/sub/a.lua"],
+            ),
+            layer(
+                "mod",
+                &["common/defines/sub"],
+                &[
+                    "common/defines/00_Defines.lua",
+                    "common/defines/00_defines.lua",
+                ],
+            ),
+        ],
+        ..ResolvedLayers::default()
+    };
+    assert_eq!(
+        layers
+            .listed_paths("common/defines/")
+            .into_iter()
+            .collect::<Vec<_>>(),
+        [
+            "common/defines/00_Defines.lua",
+            "common/defines/00_defines.lua"
+        ]
+    );
+}
+
+#[test]
+fn uncovered_reads_follow_load_order_replacement_and_folder_case() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_uncovered_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let (base, over) = (root.join("base"), root.join("over"));
+    fs::create_dir_all(base.join("gfx/World")).unwrap();
+    fs::create_dir_all(over.join("gfx/world")).unwrap();
+    fs::write(base.join("gfx/World/Hoi.fnt"), b"base").unwrap();
+    fs::write(over.join("gfx/world/hoi.fnt"), b"over").unwrap();
+
+    // A path outside the coverage roots resolves whatever case it carries.
+    assert_eq!(
+        folded_path(&base, "gfx/world/hoi.fnt").unwrap(),
+        Some(base.join("gfx").join("World").join("Hoi.fnt"))
+    );
+    assert_eq!(folded_path(&base, "gfx/world/absent.fnt").unwrap(), None);
+    assert_eq!(folded_path(&base, "no/such/dir.fnt").unwrap(), None);
+
+    let mut layers = ResolvedLayers {
+        layers: vec![
+            folder_layer("base", &base, Vec::new()),
+            folder_layer("over", &over, Vec::new()),
+        ],
+        coverage: CoveragePolicy::default(),
+        effective: BTreeMap::new(),
+        uncovered_memo: Default::default(),
+        uncovered_reads: Default::default(),
+        shader_warnings: Default::default(),
+        texture_index: Default::default(),
+        descriptor_roster: Default::default(),
+        key_names: Default::default(),
+        faction_templates: Default::default(),
+        derived: Default::default(),
+        above_mods: 0,
+        presentation: None,
+        overlay_reads: Default::default(),
+    };
+    assert_eq!(layers.read_uncovered("gfx/world/hoi.fnt").unwrap(), b"over");
+    assert!(!layers.uncovered_from_base("gfx/world/hoi.fnt").unwrap());
+    layers.layers.pop();
+    assert_eq!(layers.read_uncovered("gfx/world/hoi.fnt").unwrap(), b"base");
+    assert!(layers.uncovered_from_base("gfx/world/hoi.fnt").unwrap());
+
+    // A replacing layer hides the layers below it even when it has no file.
+    let replacing = ResolvedLayers {
+        layers: vec![
+            folder_layer("base", &base, Vec::new()),
+            folder_layer("over", &root.join("empty"), vec!["gfx/world".into()]),
+        ],
+        coverage: CoveragePolicy::default(),
+        effective: BTreeMap::new(),
+        uncovered_memo: Default::default(),
+        uncovered_reads: Default::default(),
+        shader_warnings: Default::default(),
+        texture_index: Default::default(),
+        descriptor_roster: Default::default(),
+        key_names: Default::default(),
+        faction_templates: Default::default(),
+        derived: Default::default(),
+        above_mods: 0,
+        presentation: None,
+        overlay_reads: Default::default(),
+    };
+    assert_eq!(
+        replacing
+            .read_uncovered("gfx/world/hoi.fnt")
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::NotFound
+    );
+    assert!(!replacing.uncovered_from_base("gfx/world/hoi.fnt").unwrap());
+
+    // Covered paths go through the verifying reader, and unsafe paths fail.
+    assert_eq!(
+        layers
+            .read_uncovered("map/provinces.bmp")
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::NotFound
+    );
+    assert!(layers.read_uncovered("../escape").is_err());
+    assert!(layers.read_uncovered("gfx/world/absent.fnt").is_err());
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn descriptor_paths_list_nested_files_in_layer_order_and_honour_replace_path() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_descriptors_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let (base, over, replacing) = (root.join("base"), root.join("over"), root.join("rep"));
+    for (dir, files) in [
+        (
+            &base,
+            &[
+                "gfx/Particles/a.asset",
+                "gfx/particles/deep/b.ASSET",
+                "gfx/particles/c.txt",
+            ][..],
+        ),
+        (
+            &over,
+            &["gfx/particles/A.asset", "gfx/particles/z.asset"][..],
+        ),
+        (
+            &replacing,
+            &["gfx/particles/new/n.asset", "interface/w.gfx"][..],
+        ),
+    ] {
+        for file in files {
+            let path = dir.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"x").unwrap();
+        }
+    }
+    let mut layers = ResolvedLayers {
+        layers: vec![
+            folder_layer("base", &base, Vec::new()),
+            folder_layer("over", &over, Vec::new()),
+        ],
+        ..Default::default()
+    };
+    // The base file keeps its layer until the override takes the name.
+    assert_eq!(
+        layers
+            .descriptor_paths("gfx/particles", &[".asset"])
+            .unwrap(),
+        [
+            "gfx/Particles/deep/b.ASSET",
+            "gfx/particles/A.asset",
+            "gfx/particles/z.asset"
+        ]
+    );
+    layers.layers.push(folder_layer(
+        "rep",
+        &replacing,
+        vec!["gfx/particles".into()],
+    ));
+    assert_eq!(
+        layers
+            .descriptor_paths("gfx/particles", &[".asset", ".txt"])
+            .unwrap(),
+        ["gfx/particles/new/n.asset"]
+    );
+    // Covered roots list too, so a coverage policy change cannot hide
+    // descriptors.
+    assert!(covered("interface/w.gfx"));
+    assert_eq!(
+        layers.descriptor_paths("interface", &[".gfx"]).unwrap(),
+        ["interface/w.gfx"]
+    );
+    assert!(layers.descriptor_paths("gfx", &["asset"]).is_err());
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// The test fixture's replace paths replace a whole directory the way a
+/// descriptor's do, whatever trailing or Windows separators they carry.
+#[cfg(feature = "test-support")]
+#[test]
+fn folder_fixtures_replace_directories_as_descriptors_do() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_from_folders_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let (base, over) = (root.join("base"), root.join("over"));
+    for (dir, file) in [
+        (&base, "common/units/a.txt"),
+        (&base, "common/units/deep/b.txt"),
+        (&base, "common/other.txt"),
+        (&over, "common/units/c.txt"),
+    ] {
+        let path = dir.join(file);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, file).unwrap();
+    }
+    for replace in ["common/units", "common/units/", "common\\units\\"] {
+        let layers =
+            ResolvedLayers::from_folders(&[(&base, &[][..]), (&over, &[replace][..])]).unwrap();
+        assert_eq!(
+            layers.paths().collect::<BTreeSet<_>>(),
+            BTreeSet::from(["common/other.txt", "common/units/c.txt"]),
+            "{replace}"
+        );
+        assert_eq!(
+            layers.read("common/units/c.txt").unwrap(),
+            b"common/units/c.txt"
+        );
+        assert_eq!(
+            layers.layers[1].replace_paths,
+            [b"common/units"],
+            "{replace}"
+        );
+    }
+    // A path that could escape its layer is refused, as in a descriptor.
+    assert!(ResolvedLayers::from_folders(&[(&base, &["../common"][..])]).is_err());
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// One record of [`zip_records`].
+pub(super) struct Record<'a> {
+    pub(super) name: &'a [u8],
+    /// The high byte of its version-made-by.
+    pub(super) host: u8,
+    /// Its general-purpose flags (`0x800`: the name is UTF-8).
+    pub(super) flags: u16,
+    /// Raw deflate (method 8) rather than stored.
+    pub(super) deflate: bool,
+    pub(super) data: &'a [u8],
+}
+
+/// A ZIP written byte by byte after `prefix` (a self-extractor's stub, which every offset in
+/// the archive leaves out).
+pub(super) fn zip_records(prefix: &[u8], records: &[Record]) -> Vec<u8> {
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = !0_u32;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+    let (mut file, mut central) = (Vec::new(), Vec::new());
+    for record in records {
+        let offset = file.len() as u32;
+        let stored = if record.deflate {
+            miniz_oxide::deflate::compress_to_vec(record.data, 6)
+        } else {
+            record.data.to_vec()
+        };
+        let method: u16 = if record.deflate { 8 } else { 0 };
+        let (crc, length) = (crc32(record.data), record.name.len() as u16);
+        let (compressed, size) = (stored.len() as u32, record.data.len() as u32);
+        let mut fields = vec![20, 0];
+        fields.extend(record.flags.to_le_bytes());
+        fields.extend(method.to_le_bytes());
+        fields.extend([0; 4]);
+        fields.extend(crc.to_le_bytes());
+        fields.extend(compressed.to_le_bytes());
+        fields.extend(size.to_le_bytes());
+        fields.extend(length.to_le_bytes());
+        file.extend(0x0403_4B50_u32.to_le_bytes());
+        file.extend(&fields);
+        file.extend([0, 0]);
+        file.extend(record.name);
+        file.extend(&stored);
+        central.extend(0x0201_4B50_u32.to_le_bytes());
+        central.extend([20, record.host]);
+        central.extend(&fields);
+        central.extend([0; 12]);
+        central.extend(offset.to_le_bytes());
+        central.extend(record.name);
+    }
+    let start = file.len() as u32;
+    let count = (records.len() as u16).to_le_bytes();
+    file.extend(&central);
+    file.extend(0x0605_4B50_u32.to_le_bytes());
+    file.extend([0, 0, 0, 0, count[0], count[1], count[0], count[1]]);
+    file.extend((central.len() as u32).to_le_bytes());
+    file.extend(start.to_le_bytes());
+    file.extend([0, 0]);
+    [prefix.to_vec(), file].concat()
+}
+
+/// A stored ZIP written byte by byte: each member's raw name (no UTF-8 flag), the high byte
+/// of its version-made-by (the host), and its contents.
+fn raw_zip(members: &[(&[u8], u8, &[u8])]) -> Vec<u8> {
+    let records: Vec<Record> = members
+        .iter()
+        .map(|(name, host, data)| Record {
+            name,
+            host: *host,
+            flags: 0,
+            deflate: false,
+            data,
+        })
+        .collect();
+    zip_records(&[], &records)
+}
+
+/// An archive layer as `gather` resolves one: inventoried and hashed.
+fn archive_layer(id: &str, path: &Path, replace_paths: &[&[u8]]) -> ResolvedLayer {
+    let mut layer = ResolvedLayer {
+        coverage: CoveragePolicy::default(),
+        id: id.into(),
+        source: LayerSource::Archive(path.to_path_buf()),
+        descriptor: None,
+        replace_paths: replace_paths
+            .iter()
+            .map(|path| replace_path(path).unwrap())
+            .collect(),
+        files: Default::default(),
+        lookup: Default::default(),
+        hashes: Default::default(),
+        archive_stamp: None,
+        descriptor_hash: None,
+        overlay: None,
+    };
+    layer.inventory().unwrap();
+    layer
+        .hash(&mut HashCache::default(), &mut HashStats::default())
+        .unwrap();
+    layer
+}
+
+/// PhysFS keys and finds a ZIP member by its raw name bytes (see [`LayerPath`]): a member named `gfx/\x80.dds` opens by
+/// exactly those bytes, in load order and under `replace_path`, covered or not; the `zip`
+/// crate's code-page spelling of the name opens nothing; a FAT-made member's `\` is `/`; a
+/// non-UTF-8 request never opens a folder file.
+#[test]
+fn archive_members_keep_their_raw_name_bytes() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_raw_zip_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("base/gfx/interface")).unwrap();
+    fs::write(root.join("base/gfx/interface/kept.dds"), b"base kept").unwrap();
+    fs::write(root.join("base/gfx/interface/hidden.dds"), b"base hidden").unwrap();
+    let low = root.join("low.zip");
+    let high = root.join("high.zip");
+    fs::write(
+        &low,
+        raw_zip(&[
+            (b"gfx/\x80.dds", 0, b"low raw"),
+            (b"gfx/interface/\x81.dds", 0, b"low covered"),
+            (b"gfx\\world\\a.fnt", 0, b"fat"),
+            (b"gfx\\world\\b.fnt", 3, b"unix"),
+        ]),
+    )
+    .unwrap();
+    fs::write(&high, raw_zip(&[(b"gfx/\x80.dds", 0, b"high raw")])).unwrap();
+    let mut layers = ResolvedLayers {
+        layers: vec![
+            folder_layer("base", &root.join("base"), Vec::new()),
+            archive_layer("low", &low, &[]),
+        ],
+        ..ResolvedLayers::default()
+    };
+    layers.layers[0].inventory().unwrap();
+    layers.layers[0]
+        .hash(&mut HashCache::default(), &mut HashStats::default())
+        .unwrap();
+    layers.finish().unwrap();
+    assert_eq!(
+        layers.read_uncovered_path(b"gfx/\x80.dds").unwrap(),
+        b"low raw"
+    );
+    // Twice: the second read is the memo's.
+    assert_eq!(
+        layers.read_uncovered_path(b"gfx/\x80.dds").unwrap(),
+        b"low raw"
+    );
+    assert_eq!(
+        layers.read_path(b"gfx/interface/\x81.dds").unwrap(),
+        b"low covered"
+    );
+    // The zip crate's CP437 spelling of 0x80 is `Ç`: no member has those bytes.
+    for lossy in ["gfx/\u{C7}.dds", "gfx/\u{FFFD}.dds"] {
+        let error = layers.read_uncovered(lossy).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound, "{lossy}");
+    }
+    assert_eq!(layers.read_uncovered("gfx/world/a.fnt").unwrap(), b"fat");
+    let error = layers.read_uncovered("gfx/world/b.fnt").unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    // A covered non-UTF-8 path is indexed and verified, and absent from the text listings.
+    assert!(
+        layers
+            .effective
+            .contains_key(b"gfx/interface/\x81.dds".as_slice())
+    );
+    assert!(!layers.paths().any(|path| path.contains('\u{FFFD}')));
+    // A later layer wins by the same bytes; its `replace_path`, bytes too, hides the base's
+    // covered directory from the covered read.
+    layers
+        .layers
+        .push(archive_layer("high", &high, &[b"gfx\\interface\\"]));
+    layers.finish().unwrap();
+    assert_eq!(layers.layers[2].replace_paths, [b"gfx/interface"]);
+    assert_eq!(
+        layers.read_uncovered_path(b"gfx/\x80.dds").unwrap(),
+        b"high raw"
+    );
+    assert_eq!(
+        layers
+            .read_path(b"gfx/interface/kept.dds")
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::NotFound
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// Two records whose names differ in bytes but decode alike (`\x80` without the UTF-8 flag
+/// is CP437 `Ç`, `\xC3\x87` with it is UTF-8 `Ç`) are two members, in either order, as
+/// The byte-keyed registration and lookup described by [`LayerPath`] keep them apart:
+/// both are inventoried, hashed, listed and read, covered or not.
+#[test]
+fn records_whose_names_decode_alike_stay_apart() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_zip_collide_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let record = |name, flags, data| Record {
+        name,
+        host: 0,
+        flags,
+        deflate: false,
+        data,
+    };
+    let cp437: &[u8] = b"gfx/interface/\x80.dds";
+    let utf8: &[u8] = b"gfx/interface/\xC3\x87.dds";
+    let (cp437_font, utf8_font): (&[u8], &[u8]) =
+        (b"gfx/world/\x80.fnt", b"gfx/world/\xC3\x87.fnt");
+    for (order, flipped) in [("first", false), ("second", true)] {
+        let mut records = vec![
+            record(cp437, 0, b"cp437"),
+            record(utf8, 0x800, b"utf8"),
+            record(cp437_font, 0, b"cp437 font"),
+            record(utf8_font, 0x800, b"utf8 font"),
+        ];
+        if flipped {
+            records.reverse();
+        }
+        let archive = root.join(format!("{order}.zip"));
+        fs::write(&archive, zip_records(&[], &records)).unwrap();
+        let layers = ResolvedLayers {
+            layers: vec![archive_layer(order, &archive, &[])],
+            ..ResolvedLayers::default()
+        };
+        let layer = &layers.layers[0];
+        assert_eq!(
+            layer.files.keys().collect::<Vec<_>>(),
+            [&cp437.to_vec(), &utf8.to_vec()],
+            "{order}"
+        );
+        for (name, data) in [(cp437, &b"cp437"[..]), (utf8, b"utf8")] {
+            let hash: [u8; 32] = Sha256::digest(data).into();
+            assert_eq!(layer.hashes.get(name), Some(&hash), "{order}");
+        }
+        let mut layers = layers;
+        layers.finish().unwrap();
+        assert_eq!(layers.read_path(cp437).unwrap(), b"cp437", "{order}");
+        assert_eq!(layers.read_path(utf8).unwrap(), b"utf8", "{order}");
+        assert_eq!(
+            layers.listed_layer_paths(b"gfx/interface/"),
+            BTreeSet::from([cp437.to_vec(), utf8.to_vec()]),
+            "{order}"
+        );
+        assert_eq!(
+            layers.read_uncovered_path(cp437_font).unwrap(),
+            b"cp437 font",
+            "{order}"
+        );
+        assert_eq!(
+            layers.read_uncovered_path(utf8_font).unwrap(),
+            b"utf8 font",
+            "{order}"
+        );
+    }
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// The mount fails, as the whole archive, when two records name one node (its
+/// modification time is already set, as [`physfs_zip`] registers it) or a record lies below a
+/// file; a file record named like a directory the tree made before stays a
+/// directory, which opens as no file. A deflated record inflates, and a stub before the
+/// archive shifts every offset by its prefix length.
+#[test]
+fn archive_tree_preserves_registration_rules() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_zip_tree_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let record = |name, deflate, data| Record {
+        name,
+        host: 3,
+        flags: 0,
+        deflate,
+        data,
+    };
+    let mount = |name: &str, prefix: &[u8], records: &[Record]| {
+        let path = root.join(name);
+        fs::write(&path, zip_records(prefix, records)).unwrap();
+        physfs_zip::Archive::open(&path)
+            .unwrap()
+            .mount()
+            .map(|mounted| mounted.entries)
+    };
+    let twice = mount(
+        "twice.zip",
+        &[],
+        &[
+            record(b"gfx/interface/a.dds", false, b"one"),
+            record(b"gfx/interface/a.dds", false, b"two"),
+        ],
+    );
+    assert!(twice.unwrap_err().to_string().contains("two records name"));
+    // A directory record and a file record of one name are one node too.
+    let both = mount(
+        "both.zip",
+        &[],
+        &[
+            record(b"gfx/interface/", false, b""),
+            record(b"gfx/interface", false, b"file"),
+        ],
+    );
+    assert!(both.unwrap_err().to_string().contains("two records name"));
+    let below = mount(
+        "below.zip",
+        &[],
+        &[
+            record(b"gfx/a", false, b"file"),
+            record(b"gfx/a/b.dds", false, b"below"),
+        ],
+    );
+    assert!(below.unwrap_err().to_string().contains("a file"));
+    let text = b"spriteTypes = { spriteType = { name = \"GFX_a\" } } ".repeat(40);
+    let entries = mount(
+        "stub.zip",
+        b"MZ stub",
+        &[
+            record(b"gfx/a/b.dds", false, b"below"),
+            record(b"gfx/a", false, b"file"),
+            record(b"interface/a.gfx", true, &text),
+        ],
+    )
+    .unwrap();
+    let directories: Vec<_> = entries.iter().map(|entry| entry.directory).collect();
+    assert_eq!(directories, [false, true, false]);
+    let mut archive = physfs_zip::Archive::open(&root.join("stub.zip")).unwrap();
+    assert_eq!(archive.read(&entries[0], None).unwrap().unwrap(), b"below");
+    assert_eq!(archive.read(&entries[2], None).unwrap().unwrap(), text);
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// A folder layer of `files` below `root`, inventoried and hashed.
+fn folder_of(id: &str, root: &Path, files: &[(&str, &[u8])]) -> ResolvedLayer {
+    for (path, data) in files {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, data).unwrap();
+    }
+    let mut layer = folder_layer(id, root, Vec::new());
+    layer.inventory().unwrap();
+    layer
+        .hash(&mut HashCache::default(), &mut HashStats::default())
+        .unwrap();
+    layer
+}
+
+/// A record the game lists but does not open (its local header's method disagrees with its
+/// central record, as [`record_digest`] describes; or it is encrypted and the request carries
+/// no password) is passed: [`ResolvedLayers::lookup_path`] goes on to the next search-path
+/// entry, so the layer below answers, covered or not; the record is still listed.
+#[test]
+fn records_the_game_does_not_open_pass_to_the_layers_below() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_zip_unopened_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let record = |name, data| Record {
+        name,
+        host: 0,
+        flags: 0,
+        deflate: false,
+        data,
+    };
+    let (covered, uncovered): (&[u8], &[u8]) = (b"gfx/interface/a.dds", b"gfx/world/f.fnt");
+    let mut bytes = zip_records(
+        &[],
+        &[record(covered, b"mod a"), record(uncovered, b"mod f")],
+    );
+    // Each local header says deflate where its central record says stored.
+    for local in [0, 30 + covered.len() + 5] {
+        bytes[local + 8] = 8;
+    }
+    let archive = root.join("broken.zip");
+    fs::write(&archive, bytes).unwrap();
+    let encrypted = root.join("encrypted.zip");
+    fs::write(&encrypted, include_bytes!("testdata/zipcrypto_stored.zip")).unwrap();
+    let base = folder_of(
+        "base",
+        &root.join("base"),
+        &[
+            ("gfx/interface/a.dds", b"base a"),
+            ("gfx/world/f.fnt", b"base f"),
+            ("gfx/interface/e.dds", b"base e"),
+        ],
+    );
+    let mut layers = ResolvedLayers {
+        layers: vec![
+            base,
+            archive_layer("broken", &archive, &[]),
+            archive_layer("encrypted", &encrypted, &[]),
+        ],
+        ..ResolvedLayers::default()
+    };
+    layers.finish().unwrap();
+    assert_eq!(layers.read_path(covered).unwrap(), b"base a");
+    assert_eq!(layers.read_uncovered_path(uncovered).unwrap(), b"base f");
+    assert_eq!(layers.read_path(b"gfx/interface/e.dds").unwrap(), b"base e");
+    let listed = layers.listed_layer_paths(b"gfx/interface/");
+    assert!(listed.contains(covered) && listed.contains(b"gfx/interface/e.dds".as_slice()));
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// A request is sanitized by [`sanitize`] before any layer is searched: a
+/// `\` (or `:`) fails the open, so a `\` in a record's name from a host other than FAT is a
+/// byte of that name, never a separator, covered or not; the covered index, the listings
+/// and the uncovered lookup agree, and the layer below answers the `/` spelling.
+#[test]
+fn a_backslash_is_part_of_a_record_name_and_fails_a_request() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_zip_backslash_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let record = |name, host, data| Record {
+        name,
+        host,
+        flags: 0,
+        deflate: false,
+        data,
+    };
+    let archive = root.join("unix.zip");
+    fs::write(
+        &archive,
+        zip_records(
+            &[],
+            &[
+                record(b"gfx\\interface\\b.dds", 3, b"unix b"),
+                record(b"gfx\\world\\c.fnt", 3, b"unix c"),
+                record(b"gfx\\interface\\fat.dds", 0, b"fat"),
+            ],
+        ),
+    )
+    .unwrap();
+    let base = folder_of(
+        "base",
+        &root.join("base"),
+        &[
+            ("gfx/interface/b.dds", b"base b"),
+            ("gfx/world/c.fnt", b"base c"),
+        ],
+    );
+    let mut layers = ResolvedLayers {
+        layers: vec![base, archive_layer("unix", &archive, &[])],
+        ..ResolvedLayers::default()
+    };
+    layers.finish().unwrap();
+    // The listing seeds the uncovered lookup; both agree with it.
+    assert_eq!(
+        layers.descriptor_paths("gfx/world", &[".fnt"]).unwrap(),
+        ["gfx/world/c.fnt"]
+    );
+    assert_eq!(layers.read_path(b"gfx/interface/b.dds").unwrap(), b"base b");
+    assert_eq!(
+        layers.read_uncovered_path(b"gfx/world/c.fnt").unwrap(),
+        b"base c"
+    );
+    assert_eq!(layers.read_path(b"gfx/interface/fat.dds").unwrap(), b"fat");
+    for request in [
+        &b"gfx\\interface\\b.dds"[..],
+        b"gfx\\world\\c.fnt",
+        b"gfx:x.dds",
+    ] {
+        let error = layers.read_uncovered_path(request).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    }
+    // A name without `/` is a file at the tree's root, never below `gfx/`.
+    assert_eq!(
+        layers.listed_layer_paths(b"gfx/interface/"),
+        BTreeSet::from([
+            b"gfx/interface/b.dds".to_vec(),
+            b"gfx/interface/fat.dds".to_vec()
+        ])
+    );
+    // Leading and doubled separators are PhysFS's own to drop.
+    assert_eq!(
+        layers.read_path(b"//gfx//interface/fat.dds").unwrap(),
+        b"fat"
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// A reviewed 7-Zip vector whose `gfx/fonts/` member names, now covered, are renamed in place to
+/// the uncovered `gfx/world/`: names are outside the `ZipCrypto` keys and the CRC.
+fn uncovered_members(vector: &[u8]) -> Vec<u8> {
+    let mut bytes = vector.to_vec();
+    for at in 0..bytes.len() {
+        if bytes[at..].starts_with(b"gfx/fonts/") {
+            bytes[at..at + 10].copy_from_slice(b"gfx/world/");
+        }
+    }
+    bytes
+}
+
+/// Only when no node has a request's name, and the archive holds an encrypted record, the
+/// request up to its last `$` names the record and the rest is its password
+/// (see [`ResolvedLayer::archive_open`]): the traditional PKWARE keys decrypt it ([`physfs_zip`]),
+/// stored or deflated, covered (verified through its stored bytes) or not. A wrong password
+/// fails the open, which the layer below answers. The archives are 7-Zip's (`-mem=ZipCrypto`).
+#[test]
+fn a_dollar_opens_an_encrypted_record_with_its_password() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_zip_password_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let (stored, deflated) = (root.join("stored.zip"), root.join("deflated.zip"));
+    fs::write(&stored, include_bytes!("testdata/zipcrypto_stored.zip")).unwrap();
+    fs::write(
+        &deflated,
+        uncovered_members(include_bytes!("testdata/zipcrypto_deflated.zip")),
+    )
+    .unwrap();
+    let base = folder_of(
+        "base",
+        &root.join("base"),
+        &[("gfx/interface/e.dds$wrong", b"base wrong")],
+    );
+    let mut layers = ResolvedLayers {
+        layers: vec![
+            base,
+            archive_layer("stored", &stored, &[]),
+            archive_layer("deflated", &deflated, &[]),
+        ],
+        ..ResolvedLayers::default()
+    };
+    layers.finish().unwrap();
+    assert_eq!(
+        layers.read_path(b"gfx/interface/e.dds$secret").unwrap(),
+        b"encrypted stored texture"
+    );
+    assert_eq!(
+        layers
+            .read_uncovered_path(b"gfx/world/x.fnt$secret")
+            .unwrap(),
+        b"info face=\"x\" size=12\n".repeat(20)
+    );
+    assert_eq!(
+        layers.read_path(b"gfx/interface/e.dds$wrong").unwrap(),
+        b"base wrong"
+    );
+    assert_eq!(
+        layers
+            .read_uncovered_path(b"gfx/world/x.fnt$wrong")
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::NotFound
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// Under flag 8 a password is checked against the central record's DOS time
+/// (see [`record_digest`]), which the local-header check never compares with the local
+/// header: two archives whose local bytes are identical but whose central times differ open
+/// differently, so the layer hash tells them apart, and each opens as the game opens it.
+#[test]
+fn central_password_metadata_is_part_of_an_encrypted_records_identity() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_zip_central_time_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let original = include_bytes!("testdata/zipcrypto_stored.zip");
+    let central = original
+        .windows(4)
+        .position(|word| word == b"PK\x01\x02")
+        .unwrap();
+    // Flag 8 in the central record only; the DOS time's high byte (offset 13) the CRC's
+    // high byte (offset 19), which the header's check byte holds, or one off it.
+    let variant = |name: &str, off: u8| {
+        let mut bytes = original.to_vec();
+        bytes[central + 8] |= 8;
+        bytes[central + 13] = bytes[central + 19] ^ off;
+        let path = root.join(name);
+        fs::write(&path, bytes).unwrap();
+        archive_layer(name, &path, &[])
+    };
+    let (opens, refuses) = (variant("opens.zip", 0), variant("refuses.zip", 1));
+    let name: &[u8] = b"gfx/interface/e.dds";
+    assert_ne!(opens.hashes.get(name), refuses.hashes.get(name));
+    let request: &[u8] = b"gfx/interface/e.dds$secret";
+    for (layer, expected) in [
+        (opens, &b"encrypted stored texture"[..]),
+        (refuses, b"base"),
+    ] {
+        let base = folder_of(
+            "base",
+            &root.join("base"),
+            &[("gfx/interface/e.dds$secret", b"base")],
+        );
+        let mut layers = ResolvedLayers {
+            layers: vec![base, layer],
+            ..ResolvedLayers::default()
+        };
+        layers.finish().unwrap();
+        assert_eq!(layers.read_path(request).unwrap(), expected);
+    }
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// A `$` request that names a plain record of an archive holding encrypted ones carries a
+/// password the plain record refuses (see [`ResolvedLayer::archive_open`]): the open fails before
+/// any verification and [`ResolvedLayers::lookup_path`] takes the layer below, covered or not.
+/// The archive is 7-Zip's: one `ZipCrypto` record, two plain ones.
+#[test]
+fn a_password_for_a_plain_record_passes_to_the_layers_below() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_zip_mixed_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let mixed = root.join("mixed.zip");
+    fs::write(
+        &mixed,
+        uncovered_members(include_bytes!("testdata/zipcrypto_mixed.zip")),
+    )
+    .unwrap();
+    let base = folder_of(
+        "base",
+        &root.join("base"),
+        &[
+            ("gfx/interface/plain.dds$secret", b"base plain"),
+            ("gfx/world/p.fnt$secret", b"base font"),
+        ],
+    );
+    let mut layers = ResolvedLayers {
+        layers: vec![base, archive_layer("mixed", &mixed, &[])],
+        ..ResolvedLayers::default()
+    };
+    layers.finish().unwrap();
+    assert_eq!(
+        layers.read_path(b"gfx/interface/plain.dds$secret").unwrap(),
+        b"base plain"
+    );
+    assert_eq!(
+        layers
+            .read_uncovered_path(b"gfx/world/p.fnt$secret")
+            .unwrap(),
+        b"base font"
+    );
+    assert_eq!(
+        layers.read_path(b"gfx/interface/plain.dds").unwrap(),
+        b"plain covered texture"
+    );
+    assert_eq!(
+        layers.read_path(b"gfx/interface/e.dds$secret").unwrap(),
+        b"encrypted stored texture"
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// The 7-Zip `ZipCrypto` record with flag 8 set in its central record, whose DOS time's high
+/// byte (offset 13) is the CRC's high byte (offset 19, which the header's check byte holds)
+/// when `opens`, else one off it: the password check described by [`record_digest`] opens it
+/// or not, local bytes identical.
+fn flagged_encrypted(opens: bool) -> Vec<u8> {
+    let mut bytes = include_bytes!("testdata/zipcrypto_stored.zip").to_vec();
+    let central = bytes
+        .windows(4)
+        .position(|word| word == b"PK\x01\x02")
+        .unwrap();
+    bytes[central + 8] |= 8;
+    bytes[central + 13] = bytes[central + 19] ^ u8::from(!opens);
+    bytes
+}
+
+/// A covered encrypted record whose password stops opening it after verification (its
+/// central DOS time changed, as [`record_digest`] describes) is "changed since verification", never a
+/// silent pass to the lower layer: through the archive's stamp, and through the record's
+/// digest when the stamp does not show it.
+#[test]
+fn a_password_that_stops_opening_after_verification_is_a_change() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_zip_changed_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let archive = root.join("encrypted.zip");
+    fs::write(&archive, flagged_encrypted(true)).unwrap();
+    let base = folder_of(
+        "base",
+        &root.join("base"),
+        &[("gfx/interface/e.dds$secret", b"base")],
+    );
+    let mut layers = ResolvedLayers {
+        layers: vec![base, archive_layer("encrypted", &archive, &[])],
+        ..ResolvedLayers::default()
+    };
+    layers.finish().unwrap();
+    let request: &[u8] = b"gfx/interface/e.dds$secret";
+    assert_eq!(
+        layers.read_path(request).unwrap(),
+        b"encrypted stored texture"
+    );
+    fs::write(&archive, flagged_encrypted(false)).unwrap();
+    let error = layers.read_path(request).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(
+        error.to_string().contains("changed since verification"),
+        "{error}"
+    );
+    // The same change where the stamp does not show it: the record's own digest does.
+    layers.layers[1].archive_stamp = Some(Stamp::read(&archive).unwrap());
+    let error = layers.read_path(request).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("content file changed since verification"),
+        "{error}"
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// The persistent hash cache keys each archive record by the digest scheme: an entry an
+/// earlier scheme wrote for an unchanged archive (here the S2 digest of an encrypted record,
+/// without its central fields) is not served, so gathering with that cache gives the same
+/// layer hash as gathering with none.
+#[test]
+fn a_cache_written_by_an_earlier_digest_scheme_is_not_served() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_zip_cache_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("encrypted.zip");
+    fs::write(&path, flagged_encrypted(true)).unwrap();
+    let layer = |cache: &mut HashCache| {
+        let mut layer = ResolvedLayer {
+            coverage: CoveragePolicy::default(),
+            id: "encrypted".into(),
+            source: LayerSource::Archive(path.clone()),
+            descriptor: None,
+            replace_paths: Vec::new(),
+            files: Default::default(),
+            lookup: Default::default(),
+            hashes: Default::default(),
+            archive_stamp: None,
+            descriptor_hash: None,
+            overlay: None,
+        };
+        layer.inventory().unwrap();
+        layer.hash(cache, &mut HashStats::default()).unwrap()
+    };
+    let fresh = layer(&mut HashCache::default());
+    // What the previous scheme cached for this very archive: the stored bytes alone.
+    let mut archive = physfs_zip::Archive::open(&path).unwrap();
+    let entry = archive.mount().unwrap().entries.remove(0);
+    let mut earlier = Sha256::new();
+    earlier.update(b"\0unopened archive record\0");
+    earlier.update(archive.stored(&entry).unwrap());
+    let mut cache = HashCache::default();
+    cache.insert(
+        format!("{}\0gfx/interface/e.dds", text_path(&path).unwrap()),
+        Stamp::read(&path).unwrap(),
+        earlier.finalize().into(),
+    );
+    assert_eq!(layer(&mut cache), fresh);
+    // And the cache this scheme writes serves it unchanged.
+    assert_eq!(layer(&mut cache), fresh);
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// The 7-Zip `ZipCrypto` record renamed (in its local and central headers, same length) to
+/// `gfx/descriptor1.gfx`: a covered record whose `$` request, `gfx/descriptor1.gfx$secret`,
+/// is uncovered, as the texture resolver's original-name candidate reaches it
+/// (the conversion described by [`sanitize`], then [`ResolvedLayer::archive_open`]).
+fn covered_encrypted_descriptor() -> Vec<u8> {
+    let original = include_bytes!("testdata/zipcrypto_stored.zip");
+    let (from, to): (&[u8], &[u8]) = (b"gfx/interface/e.dds", b"gfx/descriptor1.gfx");
+    let mut bytes = original.to_vec();
+    let mut at = 0;
+    while let Some(found) = bytes[at..].windows(from.len()).position(|w| w == from) {
+        bytes[at + found..at + found + from.len()].copy_from_slice(to);
+        at += found + from.len();
+    }
+    bytes
+}
+
+/// Layers of a folder base holding the file the `$` request would fall through to, and the
+/// archive at `path`, inventoried and hashed.
+fn password_stack(root: &Path, path: &Path) -> ResolvedLayers {
+    let base = folder_of(
+        "base",
+        &root.join("base"),
+        &[
+            ("gfx/descriptor1.gfx$secret", b"base"),
+            ("gfx/descriptor1.gfx$wrong", b"base wrong"),
+        ],
+    );
+    let mut layers = ResolvedLayers {
+        layers: vec![base, archive_layer("encrypted", path, &[])],
+        ..ResolvedLayers::default()
+    };
+    layers.finish().unwrap();
+    layers
+}
+
+/// An uncovered `$` request whose record is covered, answered once and then from the memo:
+/// a payload changed after that cached read is "changed since verification" on the next
+/// read (through the archive's stamp, and through the record's digest when the stamp does
+/// not show it), never the changed bytes.
+#[test]
+fn a_memoized_password_read_of_a_changed_payload_is_a_change() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_zip_memo_changed_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("encrypted.zip");
+    fs::write(&path, covered_encrypted_descriptor()).unwrap();
+    let mut layers = password_stack(&root, &path);
+    let request: &[u8] = b"gfx/descriptor1.gfx$secret";
+    assert!(!covered_path(request) && covered_path(b"gfx/descriptor1.gfx"));
+    for _ in 0..2 {
+        assert_eq!(
+            layers.read_uncovered_path(request).unwrap(),
+            b"encrypted stored texture"
+        );
+    }
+    // The payload's last byte, before the central directory, flipped.
+    let mut bytes = covered_encrypted_descriptor();
+    let central = bytes
+        .windows(4)
+        .position(|word| word == b"PK\x01\x02")
+        .unwrap();
+    bytes[central - 1] ^= 0x55;
+    fs::write(&path, bytes).unwrap();
+    let error = layers.read_uncovered_path(request).unwrap_err();
+    assert!(
+        error.to_string().contains("changed since verification"),
+        "{error}"
+    );
+    layers.layers[1].archive_stamp = Some(Stamp::read(&path).unwrap());
+    let error = layers.read_uncovered_path(request).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("content file changed since verification"),
+        "{error}"
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// A covered record removed from its archive after verification, before any read, is
+/// "changed since verification" for the uncovered `$` request that names it, never a silent
+/// pass to the folder file below (through the stamp, and through the mounted records when
+/// the stamp does not show it); a memoized miss, and a memoized hit in the folder below the
+/// record, are verified the same way.
+#[test]
+fn a_password_read_of_a_removed_record_is_a_change() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_zip_removed_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("encrypted.zip");
+    fs::write(&path, covered_encrypted_descriptor()).unwrap();
+    let mut layers = password_stack(&root, &path);
+    // A miss, memoized: the wrong password does not open the record, and no layer holds
+    // the request.
+    let missing: &[u8] = b"gfx/descriptor1.gfx$other";
+    // A hit in the folder below, memoized: its password does not open the record either.
+    let lower_hit: &[u8] = b"gfx/descriptor1.gfx$wrong";
+    for _ in 0..2 {
+        let error = layers.read_uncovered_path(missing).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(
+            layers.read_uncovered_path(lower_hit).unwrap(),
+            b"base wrong"
+        );
+    }
+    let other = Record {
+        name: b"gfx/world/other.fnt",
+        host: 0,
+        flags: 0,
+        deflate: false,
+        data: b"other",
+    };
+    fs::write(&path, zip_records(&[], &[other])).unwrap();
+    for request in [&b"gfx/descriptor1.gfx$secret"[..], missing, lower_hit] {
+        let error = layers.read_uncovered_path(request).unwrap_err();
+        assert!(
+            error.to_string().contains("changed since verification"),
+            "{error}"
+        );
+    }
+    layers.layers[1].archive_stamp = Some(Stamp::read(&path).unwrap());
+    for request in [&b"gfx/descriptor1.gfx$secret"[..], missing, lower_hit] {
+        let error = layers.read_uncovered_path(request).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("content file changed since verification: gfx/descriptor1.gfx"),
+            "{error}"
+        );
+    }
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// A covered folder request is verified in every layer the search reaches
+/// ([`ResolvedLayers::lookup_path`]), not only in the one that answered it when verified: a
+/// covered file that appeared above the effective one, or where no layer had one, is
+/// "changed since verification", and so is the effective file gone, never a pass to the
+/// layers below or a miss.
+#[test]
+fn a_covered_folder_file_gone_or_appearing_after_verification_is_a_change() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_folder_changed_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let (base, top) = (root.join("base"), root.join("top"));
+    let mut layers = ResolvedLayers {
+        layers: vec![
+            folder_of("base", &base, &[("common/a.txt", b"base a")]),
+            folder_of("top", &top, &[("common/b.txt", b"top b")]),
+        ],
+        ..ResolvedLayers::default()
+    };
+    layers.finish().unwrap();
+    let assert_changed = |error: io::Error, path: &str| {
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("content file changed since verification: {path}")),
+            "{error}"
+        );
+    };
+    assert_eq!(layers.read("common/a.txt").unwrap(), b"base a");
+    // Appeared above the effective file.
+    fs::write(top.join("common/a.txt"), b"top a").unwrap();
+    assert_changed(layers.read("common/a.txt").unwrap_err(), "common/a.txt");
+    fs::remove_file(top.join("common/a.txt")).unwrap();
+    assert_eq!(layers.read("common/a.txt").unwrap(), b"base a");
+    // Appeared where no layer had one.
+    let error = layers.read("common/c.txt").unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    fs::write(base.join("common/c.txt"), b"base c").unwrap();
+    assert_changed(layers.read("common/c.txt").unwrap_err(), "common/c.txt");
+    // The effective file gone.
+    fs::remove_file(base.join("common/a.txt")).unwrap();
+    assert_changed(layers.read("common/a.txt").unwrap_err(), "common/a.txt");
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_folder_aliases_verify_the_opened_file_including_memoized_hits() {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_folder_alias_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let (base, top) = (root.join("base"), root.join("top"));
+    let name = "gfx/Élementlongname.gfx";
+    let mut layers = ResolvedLayers {
+        layers: vec![
+            folder_of(
+                "base",
+                &base,
+                &[(name, b"verified"), ("gfx/älternate.gfx", b"base")],
+            ),
+            folder_of("top", &top, &[("gfx/Älternate.gfx", b"top")]),
+        ],
+        ..ResolvedLayers::default()
+    };
+    layers.finish().unwrap();
+    assert_eq!(layers.read("gfx/älternate.gfx").unwrap(), b"top");
+    let mut aliases = vec![
+        format!("{name}."),
+        format!("{name} "),
+        "gfx/éLEMENTLONGNAME.GFX".into(),
+    ];
+    assert!(!covered(&aliases[0]) && !covered(&aliases[1]));
+    let path: Vec<_> = base
+        .join(name)
+        .as_os_str()
+        .encode_wide()
+        .chain([0])
+        .collect();
+    let mut short = vec![0; 32768];
+    // The volume may disable 8.3 names; the other aliases still exercise verification.
+    let length =
+        unsafe { GetShortPathNameW(path.as_ptr(), short.as_mut_ptr(), short.len() as u32) };
+    assert!(length > 0 && (length as usize) < short.len());
+    let short = PathBuf::from(std::ffi::OsString::from_wide(&short[..length as usize]));
+    let short_name = short.file_name().unwrap().to_str().unwrap();
+    if !short_name.eq_ignore_ascii_case("Élementlongname.gfx") {
+        aliases.push(format!("gfx/{short_name}"));
+    }
+    for alias in &aliases {
+        for _ in 0..2 {
+            assert_eq!(
+                layers.read_uncovered(alias).unwrap(),
+                b"verified",
+                "{alias}"
+            );
+            assert_eq!(layers.read(alias).unwrap(), b"verified", "{alias}");
+        }
+    }
+    fs::write(base.join(name), b"modified").unwrap();
+    for alias in &aliases {
+        for error in [
+            layers.read_uncovered(alias).unwrap_err(),
+            layers.read(alias).unwrap_err(),
+        ] {
+            assert!(error.to_string().contains(name), "{alias}: {error}");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        }
+    }
+    fs::remove_file(base.join(name)).unwrap();
+    assert_eq!(
+        layers.read_uncovered(&aliases[0]).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+    fs::write(base.join(name), b"verified").unwrap();
+    // A new covered file above a memoized alias must not escape verification either.
+    fs::write(top.join(name), b"appeared").unwrap();
+    assert_eq!(
+        layers.read_uncovered(&aliases[0]).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+    fs::write(top.join("gfx/uncovered.fnt"), b"outside").unwrap();
+    assert_eq!(
+        layers.read_uncovered("gfx/uncovered.fnt").unwrap(),
+        b"outside"
+    );
+    assert!(
+        layers
+            .read("gfx/uncovered.fnt")
+            .unwrap_err()
+            .to_string()
+            .contains("this reader does not report uncovered reads")
+    );
+    let reads = layers.report_uncovered_reads();
+    assert_eq!(layers.read("gfx/uncovered.fnt").unwrap(), b"outside");
+    assert_eq!(
+        reads.warning().unwrap(),
+        format!(
+            "Content: 1 file(s) read outside the recorded content coverage policy {COVERAGE_POLICY_VERSION}; these bytes are not hash-verified: gfx/uncovered.fnt."
+        )
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// The game enumerates `interface/**/*.gui` and `*.gfx` by the layers' own bytes: a ZIP
+/// member whose name is not UTF-8 is listed, ordered by its bytes, and read, as its GUI
+/// template and its sprite show; the text listing leaves it out.
+#[test]
+fn gui_and_gfx_files_are_enumerated_by_their_bytes() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_raw_gui_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let archive = root.join("mod.zip");
+    fs::write(
+        &archive,
+        raw_zip(&[
+            (
+                b"interface/\xE9t\xE9.gui",
+                0,
+                b"guiTypes = { containerWindowType = { name = \"raw_window\" } }",
+            ),
+            (
+                b"interface/sub/\x80.gfx",
+                0,
+                b"spriteTypes = { spriteType = { name = \"GFX_raw\" texturefile = \"gfx/x.dds\" } }",
+            ),
+            (b"interface/a.gfx", 0, b"spriteTypes = { }"),
+            (b"common/synchronized_dynamic_tokens/\x80.txt", 0, b"raw_startup_token\n"),
+            (b"common/synchronized_dynamic_tokens/nested/ignored.txt", 0, b"nested_token\n"),
+            (b"common/synchronized_dynamic_tokens/ignored.TXT", 0, b"uppercase_extension_token\n"),
+        ]),
+    )
+    .unwrap();
+    let mut layers = ResolvedLayers {
+        layers: vec![archive_layer("mod", &archive, &[])],
+        ..ResolvedLayers::default()
+    };
+    layers.finish().unwrap();
+    let listed = layers.listed_layer_paths(b"interface/");
+    assert!(listed.contains(b"interface/\xE9t\xE9.gui".as_slice()));
+    assert!(listed.contains(b"interface/sub/\x80.gfx".as_slice()));
+    assert_eq!(
+        layers.listed_paths("interface/"),
+        BTreeSet::from(["interface/a.gfx".to_owned()])
+    );
+    assert_eq!(
+        crate::gui::native::sprites::gfx_order(&layers).unwrap(),
+        [
+            b"interface/a.gfx".to_vec(),
+            b"interface/sub/\x80.gfx".to_vec()
+        ]
+    );
+    let guis = crate::gui::native::read_layers(&layers).unwrap();
+    assert!(guis.template(b"raw_window").is_some());
+    let registry = crate::gui::native::resources::Registry::load(&layers).unwrap();
+    assert!(registry.sprite(b"GFX_raw").is_some());
+    let dynamic = crate::gui::native::keywords::DynamicTokens::read(&layers).unwrap();
+    assert_eq!(
+        dynamic,
+        crate::gui::native::keywords::DynamicTokens::from_files(
+            [b"raw_startup_token\n".as_slice()]
+        )
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn hash_mismatch_names_the_layer_and_both_digests() {
+    check_hash("DLC", "dlc034_no_step_back", [7; 32], [7; 32]).unwrap();
+    let error = check_hash("DLC", "dlc034_no_step_back", [8; 32], [7; 32])
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("DLC dlc034_no_step_back"));
+    assert!(error.contains(&"07".repeat(32)));
+    assert!(error.contains(&"08".repeat(32)));
+}
+
+fn mod_order(mods: &[(&str, &str)]) -> (io::Result<Vec<String>>, Vec<String>) {
+    let mut notes = Vec::new();
+    let selected = mods
+        .iter()
+        .map(|(path, text)| {
+            (
+                path.to_string(),
+                (),
+                parser::parse(text.as_bytes()).unwrap(),
+            )
+        })
+        .collect();
+    let order = native_mod_order(selected, &mut notes)
+        .map(|mods| mods.into_iter().map(|(path, ..)| path).collect());
+    (order, notes)
+}
+
+#[test]
+fn mods_mount_in_the_engines_dependency_then_path_order() {
+    // The launcher's order is ignored; equal weights sort by path bytes.
+    let (order, notes) = mod_order(&[
+        ("mod/b.mod", r#"name="B""#),
+        ("mod/a.mod", r#"name="A" dependencies={}"#),
+        ("mod/B.mod", r#"name="C""#),
+    ]);
+    assert_eq!(order.unwrap(), ["mod/B.mod", "mod/a.mod", "mod/b.mod"]);
+    assert!(notes.is_empty());
+    // A dependency mounts below everything that needs it, through chains
+    // and diamonds; blocks append, and a name not enabled changes nothing.
+    let (order, _) = mod_order(&[
+        (
+            "mod/a.mod",
+            r#"name="Top" dependencies={"Absent"} dependencies={"Left" "Right"}"#,
+        ),
+        ("mod/b.mod", r#"name="Left" dependencies={"Base"}"#),
+        ("mod/c.mod", r#"name="Right" dependencies={"Base"}"#),
+        ("mod/d.mod", r#"name="Base""#),
+        ("mod/0.mod", r#"name="Alone""#),
+    ]);
+    assert_eq!(
+        order.unwrap(),
+        [
+            "mod/d.mod",
+            "mod/b.mod",
+            "mod/c.mod",
+            "mod/0.mod",
+            "mod/a.mod"
+        ]
+    );
+}
+
+#[test]
+fn a_new_recording_takes_the_engine_mod_order_and_a_replay_keeps_it() {
+    let root = std::env::temp_dir().join(format!("hoi4_mod_order_{}", std::process::id()));
+    let write = |path: &str, text: &str| {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    };
+    write("game/hoi4.exe", "synthetic executable");
+    write("game/common/file.txt", "vanilla");
+    write(
+        "game/dlc/dlc_synthetic/content.dlc",
+        r#"name="Synthetic DLC" path="dlc/dlc_synthetic""#,
+    );
+    write("game/dlc/dlc_synthetic/common/file.txt", "DLC");
+    write("user/settings.txt", "language=l_english");
+    // The launcher lists the top mod first; the engine mounts its
+    // dependency first, whatever the paths' byte order.
+    write(
+        "user/dlc_load.json",
+        r#"{"enabled_mods":["mod/a_top.mod","mod/b_base.mod"],"disabled_dlcs":[]}"#,
+    );
+    write(
+        "user/mod/a_top.mod",
+        r#"name="Top" remote_file_id=42 path="layers/top" dependencies={"Base"}"#,
+    );
+    write("user/mod/b_base.mod", r#"name="Base" path="layers/base""#);
+    write("user/layers/top/common/file.txt", "top");
+    write("user/layers/base/common/file.txt", "base");
+    let (game_dir, user_dir, cache_dir) =
+        (root.join("game"), root.join("user"), root.join("cache"));
+    let gathered = gather(&GatherOptions {
+        game_dir: game_dir.clone(),
+        user_dir: user_dir.clone(),
+        cache_dir: cache_dir.clone(),
+        dlc_order: None,
+    })
+    .unwrap();
+    assert_eq!(gathered.order_note, None);
+    assert_eq!(gathered.mod_descriptors, ["b_base.mod", "a_top.mod"]);
+    assert_eq!(gathered.layers.read("common/file.txt").unwrap(), b"top");
+    let identity = gathered
+        .identity(
+            "build".into(),
+            Sha256::digest(b"synthetic executable").into(),
+            20,
+            "test".into(),
+            [0; 32],
+        )
+        .unwrap();
+    let ids = identity.mods.iter().map(|layer| layer.id.as_str());
+    assert_eq!(ids.collect::<Vec<_>>(), ["b_base.mod", "42"]);
+    // A replay resolves its recorded order, whatever the launcher says now.
+    write("user/dlc_load.json", "not JSON");
+    let options = ResolveOptions {
+        game_dir,
+        user_dir,
+        cache_dir,
+    };
+    let resolved = resolve(&identity, &options).unwrap();
+    let layers = resolved.layers.layers.iter().map(|layer| layer.id.as_str());
+    assert!(layers.collect::<Vec<_>>().ends_with(&["b_base.mod", "42"]));
+    assert_eq!(resolved.layers.read("common/file.txt").unwrap(), b"top");
+    write("user/layers/base/common/file.txt", "changed");
+    let error = resolve(&identity, &options).unwrap_err().to_string();
+    assert!(
+        error.contains("Mod b_base.mod: content hash mismatch"),
+        "{error}"
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn mod_forms_the_engine_cannot_order_are_named() {
+    let (_, notes) = mod_order(&[
+        ("mod/a.mod", r#"name="Same""#),
+        ("mod/b.mod", r#"name="Same""#),
+    ]);
+    assert_eq!(
+        notes,
+        [
+            r#"enabled mods mod/a.mod, mod/b.mod share the display name "Same"; the engine mounts only one"#
+        ]
+    );
+    for (mods, refusal) in [
+        (
+            &[
+                ("mod/a.mod", r#"name="A" dependencies={"B"}"#),
+                ("mod/b.mod", r#"name="B" dependencies={"A"}"#),
+            ][..],
+            "dependency cycle",
+        ),
+        (
+            &[("mod/a.mod", r#"name="A" dependencies={"A"}"#)],
+            "Mod mod/a.mod: dependency cycle",
+        ),
+        (
+            &[("mod/a.mod", r#"name="A" dependencies="B""#)],
+            "Mod mod/a.mod: dependencies is not a list",
+        ),
+        (
+            &[("mod/a.mod", r#"name="A" dependencies={x=y}"#)],
+            "other than a name",
+        ),
+        (
+            &[("mod/a.mod", r#"dependencies={}"#)],
+            "Mod mod/a.mod: descriptor lacks name",
+        ),
+    ] {
+        let error = mod_order(mods).0.unwrap_err().to_string();
+        assert!(error.contains(refusal), "{error}");
+    }
+}
+
+/// Bootstrap files open by their literal lowercase paths: a folder file in
+/// any case, an archive record by its exact bytes (see [`LayerPath`]); the main
+/// pass drops exactly those names. So an archive's `Load_Screen.gui` is no
+/// bootstrap file and is read once, in the main pass, while a folder's is opened by the
+/// bootstrap request and read again by the main pass; the same for `.gfx`. (A case-variant
+/// pair across a folder and an archive is refused when the stack resolves.)
+#[test]
+fn bootstrap_files_open_by_their_literal_paths() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_bootstrap_case_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let folder = root.join("folder");
+    fs::create_dir_all(folder.join("interface")).unwrap();
+    let window = b"guiTypes = { containerWindowType = { name = \"window\" } }";
+    fs::write(folder.join("interface/Load_Screen.gui"), window).unwrap();
+    fs::write(
+        folder.join("interface/Load_Screen.gfx"),
+        b"spriteTypes = { }",
+    )
+    .unwrap();
+    let archive = root.join("mod.zip");
+    fs::write(
+        &archive,
+        raw_zip(&[
+            (b"interface/Load_Screen.gui", 0, window.as_slice()),
+            (b"interface/Load_Screen.gfx", 0, b"spriteTypes = { }"),
+        ]),
+    )
+    .unwrap();
+    let mut archived = ResolvedLayers {
+        layers: vec![archive_layer("mod", &archive, &[])],
+        ..ResolvedLayers::default()
+    };
+    archived.finish().unwrap();
+    let mut layer = folder_layer("mod", &folder, Vec::new());
+    layer.inventory().unwrap();
+    layer
+        .hash(&mut HashCache::default(), &mut HashStats::default())
+        .unwrap();
+    let mut foldered = ResolvedLayers {
+        layers: vec![layer],
+        ..ResolvedLayers::default()
+    };
+    foldered.finish().unwrap();
+    let labels = |layers: &ResolvedLayers| -> Vec<String> {
+        crate::gui::native::read_layers(layers)
+            .unwrap()
+            .files
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect()
+    };
+    assert_eq!(labels(&archived), ["interface/Load_Screen.gui"]);
+    assert_eq!(
+        crate::gui::native::sprites::gfx_order(&archived).unwrap(),
+        [b"interface/Load_Screen.gfx".to_vec()]
+    );
+    assert_eq!(
+        labels(&foldered),
+        ["interface/load_screen.gui", "interface/Load_Screen.gui"]
+    );
+    assert_eq!(
+        crate::gui::native::sprites::gfx_order(&foldered).unwrap(),
+        [
+            b"interface/load_screen.gfx".to_vec(),
+            b"interface/Load_Screen.gfx".to_vec()
+        ]
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// `has_file` finds what the texture loader can read: a covered file from the
+/// index and a mod's texture outside the coverage roots by the uncovered scan.
+#[cfg(feature = "test-support")]
+#[test]
+fn has_file_sees_covered_and_uncovered_files_the_loader_reads() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_has_file_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let (base, mod_root) = (root.join("base"), root.join("mod"));
+    for (dir, file) in [
+        (&base, "common/other.txt"),
+        (&mod_root, "gfx/designs/my_tank.dds"),
+    ] {
+        let path = dir.join(file);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, file).unwrap();
+    }
+    let layers = ResolvedLayers::from_folders(&[(&base, &[][..]), (&mod_root, &[][..])]).unwrap();
+    assert!(!covered("gfx/designs/my_tank.dds"));
+    assert!(layers.has_file("gfx/designs/my_tank.dds").unwrap());
+    assert!(
+        layers.has_file("GFX/Designs/My_Tank.dds").unwrap(),
+        "matched case-insensitively"
+    );
+    assert!(layers.has_file("common/other.txt").unwrap());
+    assert!(!layers.has_file("gfx/designs/absent.dds").unwrap());
+    assert!(!layers.has_file("common/absent.txt").unwrap());
+    assert!(!layers.has_file("../escape.dds").unwrap());
+    // An archive's lookup is exact: a member asked for in another case is absent,
+    // as `read_uncovered` finds it, covered or not.
+    let zip_path = root.join("assets.zip");
+    fs::write(
+        &zip_path,
+        raw_zip(&[
+            (b"gfx/interface/MyTank.dds", 0, b"tank"),
+            (b"gfx/designs/Other.dds", 0, b"other"),
+        ]),
+    )
+    .unwrap();
+    let zipped = ResolvedLayers::from_folders(&[(&base, &[][..]), (&zip_path, &[][..])]).unwrap();
+    assert!(covered("gfx/interface/MyTank.dds"));
+    // Covered and uncovered existence read no payload, from a folder or archive.
+    LOADS.with(|loads| loads.set(0));
+    for _ in 0..2 {
+        assert!(layers.has_file("COMMON/Other.txt").unwrap());
+        assert!(!layers.has_file("common/absent.txt").unwrap());
+        assert!(zipped.has_file("gfx/interface/MyTank.dds").unwrap());
+        assert!(!zipped.has_file("gfx/interface/mytank.dds").unwrap());
+        assert!(layers.has_file("GFX/Designs/My_Tank.dds").unwrap());
+        assert!(zipped.has_file("gfx/designs/Other.dds").unwrap());
+        assert!(!zipped.has_file("gfx/designs/other.dds").unwrap());
+    }
+    assert_eq!(LOADS.with(|loads| loads.get()), 0, "no bytes loaded");
+    assert!(layers.read("common/other.txt").is_ok());
+    assert_eq!(
+        LOADS.with(|loads| loads.get()),
+        1,
+        "the hook detects a covered payload read"
+    );
+    for (path, found) in [
+        ("gfx/interface/MyTank.dds", true),
+        ("gfx/interface/mytank.dds", false),
+        ("gfx/designs/Other.dds", true),
+        ("gfx/designs/other.dds", false),
+    ] {
+        assert_eq!(zipped.has_file(path).unwrap(), found, "{path}");
+        assert_eq!(
+            zipped.read_uncovered(path).is_ok(),
+            found,
+            "{path} as read_uncovered loads it"
+        );
+    }
+    fs::write(base.join("common/other.txt"), b"changed").unwrap();
+    // Presence remains the verified inventory's; loading still verifies the payload.
+    assert!(layers.has_file("common/other.txt").unwrap());
+    assert!(zipped.has_file("common/other.txt").unwrap());
+    assert!(
+        layers
+            .read("common/other.txt")
+            .unwrap_err()
+            .to_string()
+            .contains("changed")
+    );
+    assert!(
+        zipped
+            .read("common/other.txt")
+            .unwrap_err()
+            .to_string()
+            .contains("changed")
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn has_file_dollar_lookup_precedes_the_effective_file_without_payload_reads() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_has_file_dollar_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let archive = root.join("encrypted.zip");
+    fs::write(&archive, include_bytes!("testdata/zipcrypto_stored.zip")).unwrap();
+    let request = b"gfx/interface/e.dds$secret";
+    let mut layers = ResolvedLayers {
+        layers: vec![
+            folder_of(
+                "base",
+                &root.join("base"),
+                &[("gfx/interface/e.dds$secret", b"base")],
+            ),
+            archive_layer("encrypted", &archive, &[]),
+        ],
+        ..ResolvedLayers::default()
+    };
+    layers.finish().unwrap();
+    assert_eq!(layers.effective.get(request.as_slice()).unwrap().layer, 0);
+    LOADS.with(|loads| loads.set(0));
+    for _ in 0..2 {
+        assert!(layers.has_file("gfx/interface/e.dds$secret").unwrap());
+        assert!(!layers.has_file("gfx/interface/e.dds$wrong").unwrap());
+        let Some(hit) = layers.lookup_path(request).unwrap() else {
+            panic!("encrypted record must open");
+        };
+        assert_eq!(hit.layer, 1);
+        assert_eq!(hit.path, request);
+    }
+    assert_eq!(LOADS.with(|loads| loads.get()), 0, "no bytes loaded");
+    assert_eq!(
+        layers.read_path(request).unwrap(),
+        b"encrypted stored texture"
+    );
+    layers.layers.remove(0);
+    layers.finish().unwrap();
+    LOADS.with(|loads| loads.set(0));
+    assert!(layers.has_file("gfx/interface/e.dds$secret").unwrap());
+    assert_eq!(LOADS.with(|loads| loads.get()), 0, "no bytes loaded");
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn has_file_case_missing_archive_member_falls_through_to_folder_without_payload_reads() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_has_file_case_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let archive = root.join("assets.zip");
+    fs::write(
+        &archive,
+        raw_zip(&[
+            (b"gfx/interface/Asset.dds", 0, b"archive"),
+            (b"gfx/world/font.fnt", 0, b"font"),
+        ]),
+    )
+    .unwrap();
+    let mut layers = ResolvedLayers {
+        layers: vec![
+            folder_of(
+                "base",
+                &root.join("base"),
+                &[("gfx/interface/Asset.dds", b"folder")],
+            ),
+            archive_layer("assets", &archive, &[]),
+        ],
+        ..ResolvedLayers::default()
+    };
+    layers.finish().unwrap();
+    let request = b"GFX/Interface/ASSET.dds";
+    LOADS.with(|loads| loads.set(0));
+    for _ in 0..2 {
+        assert!(layers.has_file("GFX/Interface/ASSET.dds").unwrap());
+        assert!(layers.has_file("gfx/interface/Asset.dds").unwrap());
+        let Some(hit) = layers.lookup_path(request).unwrap() else {
+            panic!("folder file must open");
+        };
+        assert_eq!(hit.layer, 0);
+        assert_eq!(hit.path, b"gfx/interface/Asset.dds");
+    }
+    assert_eq!(LOADS.with(|loads| loads.get()), 0, "no bytes loaded");
+    assert_eq!(layers.read_path(request).unwrap(), b"folder");
+    assert_eq!(layers.read("gfx/interface/Asset.dds").unwrap(), b"archive");
+    // The font exists, but an ordinary uncovered read needs reporting opt-in.
+    let loads = LOADS.with(|loads| loads.get());
+    let error = layers.read_path(b"gfx/world/font.fnt").unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(
+        error
+            .to_string()
+            .contains("this reader does not report uncovered reads")
+    );
+    assert_eq!(LOADS.with(|loads| loads.get()), loads);
+    let reads = layers.report_uncovered_reads();
+    assert_eq!(reads.warning(), None);
+    assert_eq!(layers.read_path(b"gfx/world/font.fnt").unwrap(), b"font");
+    assert!(reads.warning().unwrap().contains("gfx/world/font.fnt"));
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn has_file_replace_path_stops_fallthrough_without_payload_reads() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_has_file_replace_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let archive = root.join("assets.zip");
+    fs::write(
+        &archive,
+        raw_zip(&[(b"gfx/interface/Asset.dds", 0, b"archive")]),
+    )
+    .unwrap();
+    let mut layers = ResolvedLayers {
+        layers: vec![
+            folder_of(
+                "base",
+                &root.join("base"),
+                &[
+                    ("gfx/interface/asset.dds", b"folder"),
+                    ("gfx/interface/hidden.dds", b"hidden"),
+                ],
+            ),
+            archive_layer("assets", &archive, &[b"GFX/Interface"]),
+        ],
+        ..ResolvedLayers::default()
+    };
+    layers.finish().unwrap();
+    LOADS.with(|loads| loads.set(0));
+    for _ in 0..2 {
+        assert!(!layers.has_file("gfx/interface/asset.dds").unwrap());
+        assert!(!layers.has_file("gfx/interface/hidden.dds").unwrap());
+        assert!(layers.has_file("gfx/interface/Asset.dds").unwrap());
+    }
+    assert_eq!(LOADS.with(|loads| loads.get()), 0, "no bytes loaded");
+    for path in ["gfx/interface/asset.dds", "gfx/interface/hidden.dds"] {
+        assert_eq!(
+            layers.read(path).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+    assert_eq!(layers.read("gfx/interface/Asset.dds").unwrap(), b"archive");
+    fs::remove_dir_all(&root).unwrap();
+}
+
+thread_local! {
+    /// Payload reads on this thread, for tests that existence probes load no bytes.
+    pub(super) static LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}

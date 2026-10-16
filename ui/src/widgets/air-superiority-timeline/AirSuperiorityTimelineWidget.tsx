@@ -1,4 +1,5 @@
-import { useCallback, useMemo } from 'react';
+import { useParityRows } from '../../dashboard/parityRows';
+import { useCallback, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
 import HeatChart from '../../charts/heat/HeatChart';
@@ -21,6 +22,10 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
     ...(air.mode.theatres.length ? [{ id: 'filtered', label: 'Outlined = outside selected theatres' }] : [])],
     [air.legend, air.mode.theatres.length, options.look, air.tokens.surface, air.tokens.text]);
   const tooltip = useCallback((row: { id: string }, period: { readHour: number | null } | null, hour: number) => air.tooltip(Number(row.id), period?.readHour ?? hour), [air.tooltip]);
+  const root = useRef<HTMLDivElement>(null);
+  useParityRows(root, () => ({ kind: 'chart', label: 'Air superiority daily values', complete: !!air.data,
+    hour: air.hour, total: air.data?.view === 'timeline' ? air.data.rows.length : 0,
+    rows: air.data?.view === 'timeline' ? air.data.rows : [] }));
   if (air.needsViewpoint) return <WidgetState kind="empty" icon="plane" message="Choose a dashboard country or a viewpoint in the widget settings." />;
   if (!air.track) return <WidgetState kind="empty" icon="plane" message="Load a campaign to see its air superiority." />;
   if (!air.window || air.beforeBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
@@ -28,7 +33,7 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   if (!air.data || !air.projectedTimeline || !air.labelCatalogue) return <WidgetState kind="loading" label="Loading air superiority…" />;
   if (!air.data.available) return <WidgetState kind="unavailable" />;
   if (!air.projectedTimeline.rows.length) return <WidgetState kind="empty" message="No air regions match these filters." />;
-  return <div className="air-timeline">
+  return <div ref={root} className="air-timeline">
     <div className="air-pattern-key" aria-label="Data states">
       <span><i aria-hidden="true" style={{ background: air.tokens.surface }} />No activity</span>
       <span><i aria-hidden="true" style={{ background: `color-mix(in srgb, ${air.tokens.error} ${air.tokens.gapOpacity * 100}%, ${air.tokens.surface})` }} />Not recorded</span>

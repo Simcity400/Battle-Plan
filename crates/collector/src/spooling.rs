@@ -24,8 +24,8 @@ use replay::{
     identity::{SessionStart, is_campaign_uuid},
     rows::{
         BorderConflictRow, CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow,
-        FactionMemberRow, FactionRow, ProvinceRow, RowCodec, ScriptVariablesRow, StateRow, TableId,
-        TableRows, TableSchema, WarRelationRow, tables,
+        FactionMemberRow, FactionRow, ProvinceRow, ScriptVariablesRow, StateRow, TableId,
+        TableRows, WarRelationRow, tables,
     },
     spool::{ControlRecord, FileBackend, Record, SegmentBackend, SegmentedSpool},
 };
@@ -36,7 +36,6 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::{
-    cell::{Cell, RefCell},
     fs::{self, File},
     io,
     path::{Path, PathBuf},
@@ -172,107 +171,7 @@ fn committed_spool_record(segment: u32, bytes: u64, complete_hour: bool) {
     crate::allocation::committed(segment, bytes);
 }
 
-#[derive(Default)]
-pub(super) struct Distribution {
-    samples_ns: Vec<u64>,
-    total_ns: u64,
-    cached: Cell<Option<Percentiles>>,
-    scratch: RefCell<Vec<u64>>,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Percentiles {
-    p50_ns: u64,
-    p95_ns: u64,
-    p99_ns: u64,
-    max_ns: u64,
-}
-
-fn exact_percentiles(samples: &mut [u64]) -> Percentiles {
-    if samples.is_empty() {
-        return Percentiles::default();
-    }
-    let max_ns = samples.iter().copied().max().unwrap();
-    let ranks = [50, 95, 99].map(|percent| {
-        samples.len() / 100 * percent + (samples.len() % 100 * percent).div_ceil(100) - 1
-    });
-    let mut values = [0; 3];
-    let mut remaining = samples;
-    let mut offset = 0;
-    let mut selected = 0;
-    for (rank, value) in ranks.into_iter().zip(&mut values) {
-        if rank >= offset {
-            let (_, at_rank, suffix) = remaining.select_nth_unstable(rank - offset);
-            selected = *at_rank;
-            remaining = suffix;
-            offset = rank + 1;
-        }
-        // Small samples can put several requested percentiles at the same rank.
-        *value = selected;
-    }
-    Percentiles {
-        p50_ns: values[0],
-        p95_ns: values[1],
-        p99_ns: values[2],
-        max_ns,
-    }
-}
-
-impl Distribution {
-    pub fn record_ticks(&mut self, ticks: i64, frequency: u64) {
-        let ns = ((ticks.max(0) as u128 * 1_000_000_000) / u128::from(frequency)) as u64;
-        self.record_ns(ns);
-    }
-
-    fn record_ns(&mut self, ns: u64) {
-        if engine::allocation::reserve(&mut self.samples_ns, 1).is_err() {
-            return;
-        }
-        self.total_ns = self.total_ns.saturating_add(ns);
-        self.samples_ns.push(ns);
-        self.cached.set(None);
-    }
-
-    fn try_percentiles(&self) -> io::Result<Percentiles> {
-        // Repeated status reads reuse exact results until another sample arrives.
-        if let Some(cached) = self.cached.get() {
-            return Ok(cached);
-        }
-        let mut scratch = self.scratch.borrow_mut();
-        scratch.clear();
-        engine::allocation::reserve(&mut scratch, self.samples_ns.len())?;
-        scratch.extend_from_slice(&self.samples_ns);
-        let result = exact_percentiles(&mut scratch);
-        self.cached.set(Some(result));
-        Ok(result)
-    }
-
-    pub(crate) fn status(&self) -> io::Result<DistributionStatus> {
-        let percentiles = self.try_percentiles()?;
-        let count = self.samples_ns.len();
-        Ok(DistributionStatus {
-            calls: count,
-            total_ns: self.total_ns,
-            mean_ns: if count == 0 {
-                0.0
-            } else {
-                self.total_ns as f64 / count as f64
-            },
-            p50_ns: percentiles.p50_ns,
-            p95_ns: percentiles.p95_ns,
-            p99_ns: percentiles.p99_ns,
-            max_ns: percentiles.max_ns,
-        })
-    }
-    #[cfg(test)]
-    fn percentiles(&self) -> Percentiles {
-        self.try_percentiles().unwrap()
-    }
-    #[cfg(test)]
-    pub(crate) fn json(&self) -> Value {
-        serde_json::to_value(self.status().unwrap()).unwrap()
-    }
-}
+pub(crate) use collector_extended_support::distribution::Distribution;
 
 /// Cumulative wall of a cost reported every hour without percentiles: its
 /// storage and status cost stay fixed however many hours are recorded.
@@ -305,17 +204,6 @@ impl WallTotals {
             "max_ns": self.max_ns,
         })
     }
-}
-
-#[derive(Clone, Copy, Default, Serialize)]
-pub(crate) struct DistributionStatus {
-    calls: usize,
-    total_ns: u64,
-    mean_ns: f64,
-    p50_ns: u64,
-    p95_ns: u64,
-    p99_ns: u64,
-    max_ns: u64,
 }
 
 struct PendingBranch {
@@ -508,6 +396,7 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     /// Each production line's output on the current branch.
     line_output: crate::extended::line_output::Totals,
     operation_outcomes: crate::extended::operation_outcomes::Ledger,
+    map_events: crate::extended::map_events::Ledger,
     politics: crate::extended::politics::Ledger,
     /// Each construction line's output on the current branch.
     construction_ic: crate::extended::construction_ic::Totals,
@@ -572,6 +461,7 @@ impl Campaign {
             retired: Vec::new(),
             line_output: Default::default(),
             operation_outcomes: Default::default(),
+            map_events: Default::default(),
             politics: Default::default(),
             construction_ic: Default::default(),
             fuel_awards: Default::default(),
@@ -2002,6 +1892,7 @@ pub(crate) struct PreparedFrame {
     sampled: CapturedStatistics,
     witness: PreparedOrderWitness,
     operation_publication: Option<crate::extended::operation_outcomes::Publication>,
+    map_event_publication: Option<crate::extended::map_events::Publication>,
     event_feed_publication: Option<crate::event_feed_history::Prepared>,
 }
 
@@ -2592,6 +2483,9 @@ impl Processor {
         let operation_publication = campaign
             .operation_outcomes
             .assemble_owned(captured.extended.operation_outcomes(), &mut source.tables);
+        let map_event_publication = campaign
+            .map_events
+            .assemble_owned(captured.extended.map_events(), &mut source.tables);
         if crate::allocation::failed() {
             return Err(crate::allocation::oom());
         }
@@ -2643,6 +2537,7 @@ impl Processor {
             sampled,
             witness,
             operation_publication,
+            map_event_publication,
             event_feed_publication,
         })
     }
@@ -2669,6 +2564,7 @@ impl Processor {
             sampled,
             witness,
             operation_publication,
+            map_event_publication,
             event_feed_publication,
         } = prepared;
         self.unpublished_families |= unpublished_families;
@@ -2748,6 +2644,9 @@ impl Processor {
             crate::event_feed_observer::accepted(&publication)?;
         }
         if let Some(publication) = operation_publication {
+            publication.commit();
+        }
+        if let Some(publication) = map_event_publication {
             publication.commit();
         }
         self.retry_full |= retry_full;
@@ -3184,11 +3083,13 @@ impl Processor {
             "scientist_activity": crate::extended::projects::scientist_active_data(),
             "instant_decisions": crate::extended::visibility::instant_decisions_data(),
             "political_runtime_scalars": crate::extended::visibility::runtime_scalars_data(),
+            "movement_defines": crate::extended::visibility::movement_defines_data(),
             "selected_ordered_enemies":crate::extended::visibility::ordered_enemy_data(),
             "unit_combat_references":crate::extended::unit_combat_references::data(),
             "air_wing_names": crate::map_capture::air_wing_name_data(),
             "railway_gun_names": crate::extended::railway_guns::name_data(),
             "railway_gun_eta": crate::extended::railway_guns::eta_data(),
+            "railway_gun_owner_transport": crate::extended::railway_guns::transport_data(),
             "division_movement_arrows": crate::extended::division_presentation::movement_arrow_data(),
             "railway_gun_movement_arrows": crate::extended::railway_guns::movement_arrow_data(),
             "task_force_movement_arrows": crate::extended::naval_counters::movement_arrow_data(),
@@ -3261,85 +3162,7 @@ pub(super) fn campaign_name(bytes: &[u8]) -> io::Result<String> {
     engine::allocation::string(std::str::from_utf8(bytes).expect("validated UUID is ASCII"))
 }
 
-pub(crate) fn unavailable(reason: &str) -> TableView {
-    TableView::Unavailable {
-        reason: if crate::allocation::failed() {
-            String::new()
-        } else {
-            // prepare_frame and write_prepared reject the latched terminal
-            // state before any unavailable fallback can be published.
-            engine::allocation::string(reason).unwrap_or_default()
-        },
-    }
-}
-
-pub(crate) fn table<S: TableSchema, T>(
-    outcome: Outcome,
-    source: &[T],
-    convert: impl Fn(&T) -> S::Row,
-) -> TableView {
-    let Some(source) = source.get(..outcome.len()) else {
-        return unavailable("walker row count exceeds allocated buffer");
-    };
-    table_iter::<S, _>(outcome, source.iter(), convert)
-}
-
-/// Convert borrowed rows without first materializing a parallel reference list.
-pub(crate) fn table_iter<S: TableSchema, T>(
-    outcome: Outcome,
-    source: impl Iterator<Item = T>,
-    convert: impl Fn(T) -> S::Row,
-) -> TableView {
-    if crate::allocation::failed() {
-        return TableView::Unavailable {
-            reason: String::new(),
-        };
-    }
-    match outcome {
-        Outcome::Unavailable { reason } => unavailable(reason),
-        Outcome::Rows { len } | Outcome::Truncated { len, .. } => {
-            let mut rows = match engine::allocation::vec(len) {
-                Ok(rows) => rows,
-                Err(_) => {
-                    return TableView::Unavailable {
-                        reason: String::new(),
-                    };
-                }
-            };
-            for row in source {
-                if rows.len() == len {
-                    return unavailable("walker row count exceeds allocated buffer");
-                }
-                rows.push(convert(row));
-                if crate::allocation::failed() {
-                    return TableView::Unavailable {
-                        reason: String::new(),
-                    };
-                }
-            }
-            if rows.len() != len {
-                return unavailable("walker row count exceeds allocated buffer");
-            }
-            rows.sort_unstable_by_key(RowCodec::key);
-            if rows.windows(2).any(|rows| rows[0].key() == rows[1].key()) {
-                return unavailable("walker produced duplicate engine ids");
-            }
-            let rows = TableRows::from_rows::<S>(rows);
-            match outcome {
-                Outcome::Truncated { unread_rows, .. } if unread_rows != 0 => {
-                    TableView::Truncated {
-                        rows,
-                        missing: unread_rows,
-                    }
-                }
-                Outcome::Truncated { .. } => {
-                    unavailable("walker marked truncation without a missing count")
-                }
-                _ => TableView::Complete(rows),
-            }
-        }
-    }
-}
+pub(crate) use crate::table_conversion::{table, table_iter, unavailable};
 
 /// The controller-area node a province row holds
 /// ([`engine::cprovince::Row::area_node`]): the area it labels.
@@ -3409,6 +3232,7 @@ fn state_table(
             movement_infrastructure: state.movement_infrastructure,
             continent: replay::rows::Recorded::Value(state.continent),
             manpower_available: state.manpower_available,
+            population: replay::rows::Recorded::Value(state.population),
             railway_infrastructure: replay::rows::Recorded::Value(
                 captured.state_inputs.fraction(state.id),
             ),
@@ -4249,103 +4073,6 @@ mod tests {
     }
 
     #[test]
-    fn work_ticks_use_nanoseconds_and_nearest_rank_percentiles() {
-        let mut values = Distribution::default();
-        assert_eq!(values.json()["calls"], 0);
-        for ticks in [4, 1, 3, 2] {
-            values.record_ticks(ticks, 10_000_000);
-        }
-        let report = values.json();
-        assert_eq!(report["calls"], 4);
-        assert_eq!(report["total_ns"], 1_000);
-        assert_eq!(report["mean_ns"], 250.0);
-        assert_eq!(report["p50_ns"], 200);
-        assert_eq!(report["p95_ns"], 400);
-    }
-
-    #[test]
-    fn selected_percentiles_match_sorted_ranks_for_small_tied_and_extreme_samples() {
-        for len in 0..=257 {
-            let mut input: Vec<_> = (0..len)
-                .map(|index| match index % 5 {
-                    0 => 0,
-                    1 => u64::MAX,
-                    2 => (index % 7) as u64,
-                    3 => (len - index) as u64,
-                    _ => 17,
-                })
-                .collect();
-            let mut sorted = input.clone();
-            sorted.sort_unstable();
-            let at = |percent: usize| {
-                if sorted.is_empty() {
-                    0
-                } else {
-                    sorted[(sorted.len() * percent).div_ceil(100) - 1]
-                }
-            };
-            let expected = Percentiles {
-                p50_ns: at(50),
-                p95_ns: at(95),
-                p99_ns: at(99),
-                max_ns: sorted.last().copied().unwrap_or(0),
-            };
-            assert_eq!(exact_percentiles(&mut input), expected, "length {len}");
-            sorted.reverse();
-            assert_eq!(
-                exact_percentiles(&mut sorted),
-                expected,
-                "reverse length {len}"
-            );
-        }
-    }
-
-    #[test]
-    fn cached_percentiles_refresh_after_samples_below_and_above_the_old_range() {
-        let mut values = Distribution::default();
-        assert_eq!(values.percentiles(), Percentiles::default());
-        assert_eq!(values.cached.get(), Some(Percentiles::default()));
-        for ns in [10, 20, 30] {
-            values.record_ns(ns);
-        }
-        assert_eq!(values.cached.get(), None);
-        let first = values.json();
-        assert_eq!(
-            first,
-            json!({
-                "calls": 3, "total_ns": 60, "mean_ns": 20.0,
-                "p50_ns": 20, "p95_ns": 30, "p99_ns": 30, "max_ns": 30,
-            })
-        );
-        let cached = values.cached.get();
-        assert!(cached.is_some());
-        assert_eq!(values.json(), first);
-        assert_eq!(values.cached.get(), cached);
-
-        values.record_ns(5);
-        assert_eq!(values.cached.get(), None);
-        assert_eq!(
-            values.json(),
-            json!({
-                "calls": 4, "total_ns": 65, "mean_ns": 16.25,
-                "p50_ns": 10, "p95_ns": 30, "p99_ns": 30, "max_ns": 30,
-            })
-        );
-        values.record_ticks(100, 1_000_000_000);
-        assert_eq!(values.cached.get(), None);
-        let last = values.json();
-        assert_eq!(
-            last,
-            json!({
-                "calls": 5, "total_ns": 165, "mean_ns": 33.0,
-                "p50_ns": 20, "p95_ns": 100, "p99_ns": 100, "max_ns": 100,
-            })
-        );
-        assert_eq!(values.json(), last);
-        assert_eq!(values.samples_ns, [10, 20, 30, 5, 100]);
-    }
-
-    #[test]
     fn callback_tail_histogram_and_slowest_hours_share_callback_work_samples() {
         let mut processor = Processor {
             root: PathBuf::new(),
@@ -4816,6 +4543,7 @@ mod tests {
             sampled: CapturedStatistics::capture(captured).unwrap(),
             witness: PreparedOrderWitness::capture(captured, Some(branch)),
             operation_publication: None,
+            map_event_publication: None,
             event_feed_publication: None,
         }
     }
@@ -5791,6 +5519,7 @@ mod tests {
                 retired: Vec::new(),
                 line_output: Default::default(),
                 operation_outcomes: Default::default(),
+                map_events: Default::default(),
                 politics: Default::default(),
                 construction_ic: Default::default(),
                 fuel_awards: Default::default(),
@@ -7164,6 +6893,8 @@ mod tests {
             TableView::Complete(TableRows::ReservedCountryNaming(vec![
                 replay::rows::ReservedCountryNamingRow::default(),
             ]));
+        tables[TableId::MapEvents.index()] =
+            TableView::Complete(TableRows::MapEvents(vec![Default::default()]));
         tables[TableId::GameScoreMultipliers.index()] = TableView::Unavailable {
             reason: "score multipliers outside staggered fixture".into(),
         };

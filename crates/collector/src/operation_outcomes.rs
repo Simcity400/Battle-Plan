@@ -1315,20 +1315,15 @@ mod tests {
     #[test]
     fn completion_storage_refuses_allocator_failure_before_publication() {
         assert!(matches!(
-            crate::allocation_failure_tests::with_allocations_denied(|| ByteRing::try_new(1024)),
+            crate::test_support::with_allocations_denied(|| ByteRing::try_new(1024)),
             Err("operation completion description allocation failed")
         ));
         assert!(matches!(
-            crate::allocation_failure_tests::with_allocations_denied(|| Lane::new(4097, 1024)),
+            crate::test_support::with_allocations_denied(|| Lane::new(4097, 1024)),
             Err("operation completion description allocation failed")
         ));
         assert!(matches!(
-            crate::allocation_failure_tests::with_allocations_denied(|| Log::new(
-                4097,
-                1024,
-                2,
-                &[]
-            )),
+            crate::test_support::with_allocations_denied(|| Log::new(4097, 1024, 2, &[])),
             Err("operation completion description allocation failed")
         ));
     }
@@ -1567,7 +1562,7 @@ mod tests {
             lane.grow_bytes_for(5000 * description.len()).unwrap();
         }
         let fixture = Fixture::new(&description);
-        crate::allocation_failure_tests::with_allocations_denied(|| {
+        crate::test_support::with_allocations_denied(|| {
             for owner in 1..=5000 {
                 fixture.identify(owner, owner);
                 complete(&log, &fixture, 1);
@@ -2054,7 +2049,7 @@ mod tests {
             .map(|_| log.shared.reserve().unwrap())
             .collect();
         let refused_fixture = Fixture::new(b"x");
-        crate::allocation_failure_tests::with_allocations_denied(|| {
+        crate::test_support::with_allocations_denied(|| {
             observe_return(&log, Target::Shared, &refused_fixture, BASE, INSTANCE, 1);
         });
         assert_eq!(FAILURES[refused].load(Ordering::Relaxed), refusals + 1);
@@ -2083,7 +2078,7 @@ mod tests {
         let fresh = offered().unwrap();
         assert!(fresh.lanes.len() > old.lanes.len());
         // The lane boundary seals the old generation for its own handoff.
-        let sealed = crate::allocation_failure_tests::with_allocations_denied(|| seal_offered(old));
+        let sealed = crate::test_support::with_allocations_denied(|| seal_offered(old));
         assert!(std::ptr::eq(sealed, old));
         assert!(std::ptr::eq(log().unwrap(), fresh));
         assert!(offered().is_none());

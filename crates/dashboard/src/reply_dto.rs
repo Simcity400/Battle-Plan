@@ -1,0 +1,59 @@
+//! Reply types shared by the land-owner and focus products and the
+//! frontend. Engine identifiers and native fixed-point values are decimal strings.
+
+use crate::CountryMetadata;
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LandOwners {
+    pub countries: Vec<CountryMetadata>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusEntry {
+    pub ordinal: u32,
+    pub token: String,
+    /// First observed completion after an earlier readable focus list. This is
+    /// an upper bound, not an invented timestamp for pre-recording completions.
+    pub completed_by_hour: Option<i32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusOrder {
+    pub completed: Vec<FocusEntry>,
+    pub current: Option<String>,
+    pub continuous: Option<String>,
+    pub paused: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusSegment {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub order: FocusOrder,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusHistory {
+    pub segments: Vec<FocusSegment>,
+    /// Recorded focus progress, compressed across equal consecutive hours.
+    pub progress: Vec<FocusProgress>,
+}
+
+/// Focus progress: fixed5 days of work toward the current
+/// focus (the daily update adds the day's focus speed; idle days bank it).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusProgress {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    /// Exact signed fixed5 value as a decimal string.
+    pub progress_raw: String,
+}

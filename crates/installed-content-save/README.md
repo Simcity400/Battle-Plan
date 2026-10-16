@@ -11,7 +11,7 @@ Read the [project rules](../../AGENTS.md) before changing a reader. Consumers us
 | Save projection and map membership | [lib.rs](src/lib.rs): dates, exact values, captured state, content joins and partial state membership. |
 | Country emissions | [countries.rs](src/countries.rs): one owning save tree and authenticated physical-country projection. |
 | Field readers | Domain modules such as [units.rs](src/units.rs), [construction.rs](src/construction.rs), [intel.rs](src/intel.rs) and [naval_history.rs](src/naval_history.rs) retain serializer output and ordering. |
-| Exact decimals | [installed-content parser/decimal.rs](../installed-content/src/parser/decimal.rs): `Decimal` and `FIXED_SCALE`, used by this crate's public value types. |
+| Exact decimals | The decimal parser in [installed-content-core](../installed-content-core/README.md): `Decimal` and `FIXED_SCALE`, used by this crate's public value types. |
 
 ## Save contracts
 

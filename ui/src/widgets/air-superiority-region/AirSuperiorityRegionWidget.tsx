@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useParityRows } from '../../dashboard/parityRows';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -57,6 +58,10 @@ export default function AirSuperiorityRegionWidget(props: WidgetProps) {
     };
   }, []);
   const legend = air.legend;
+  const root = useRef<HTMLDivElement>(null);
+  useParityRows(root, () => ({ kind: 'chart', label: 'Air superiority region values', complete: !!air.data,
+    hour: air.hour, total: air.data?.view === 'moment' ? air.data.regions.length : 0,
+    rows: air.data?.view === 'moment' ? air.data.regions : [] }));
   if (air.needsViewpoint) return <WidgetState kind="empty" icon="plane" message="Choose a dashboard country or a viewpoint in the widget settings." />;
   if (!air.track) return <WidgetState kind="empty" icon="plane" message="Load a campaign to see its air superiority." />;
   if (!air.window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
@@ -66,7 +71,7 @@ export default function AirSuperiorityRegionWidget(props: WidgetProps) {
   if (order === 'name' && !air.choices) return <WidgetState kind="loading" label="Loading air regions…" />;
   if (air.readHour == null) return <WidgetState kind="unavailable" message="Not recorded at this time." />;
   const knownEmpty = air.data.view === 'moment' && inSpans(air.data.complete, air.readHour) && inSpans(air.data.wingsKnown, air.readHour);
-  return <div className="air-regions" data-glide={air.glides} style={air.glideStyle}>
+  return <div ref={root} className="air-regions" data-glide={air.glides} style={air.glideStyle}>
     <Legend label="Air superiority sides" items={legend} always windowed />
     <WindowedRows items={rows} rowHeight={38} fit minRowHeight={16} className="air-region-scroll" label="Air superiority by region"
       empty={<WidgetState kind="empty" message={knownEmpty ? 'No regions have a score or assigned wings at this time.' : 'Air activity is unknown at this time.'} />}>

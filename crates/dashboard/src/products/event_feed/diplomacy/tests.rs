@@ -179,12 +179,12 @@ fn event_feed_diplomacy_group_gap_boundaries_are_counted_without_invented_events
         !feed
             .moments
             .iter()
-            .any(|row| matches!(row.kind, "factionLeft" | "peace"))
+            .any(|row| matches!(row.kind.as_str(), "factionLeft" | "peace"))
     );
     assert_eq!(
         feed.unavailable
             .iter()
-            .filter(|entry| matches!(entry.key, "factionBoundary" | "warBoundary"))
+            .filter(|entry| matches!(entry.key.as_str(), "factionBoundary" | "warBoundary"))
             .map(|entry| entry.count)
             .sum::<u64>(),
         2
@@ -528,4 +528,101 @@ fn unread_capitulation_hours_and_unattributed_events_have_separate_counts() {
             .count,
         1
     );
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn event_feed_diplomacy_observer_resumes_and_appends_without_repeating_relations() {
+    for countries in [3, 5_000] {
+        let observed = |hour: i32| {
+            let mut frame = scale_frame(1, hour, countries);
+            for rows in [
+                TableRows::HumanControllers(Vec::new()),
+                TableRows::Capitulation(Vec::new()),
+                TableRows::Factions(Vec::new()),
+                TableRows::FactionMembers(Vec::new()),
+                TableRows::WarRelations(Vec::new()),
+                TableRows::CountryCounterInputs(
+                    (0..countries)
+                        .map(|index| CountryCounterInputRow {
+                            country: 100_000 + index,
+                            owned_state_count: if hour < 103 { 1 } else { 0 },
+                            ..Default::default()
+                        })
+                        .collect(),
+                ),
+                TableRows::RelationTuples(if hour == 100 {
+                    Vec::new()
+                } else {
+                    vec![RelationTupleRow {
+                        owner_country: 100_000,
+                        target_country: 100_001,
+                        first_country: 100_000,
+                        second_country: 100_001,
+                        start_hour: 101,
+                        type_id: engine::cguarantee_relation::TYPE,
+                        ..Default::default()
+                    }]
+                }),
+                TableRows::SliceReads(vec![SliceReadRow {
+                    table: TableId::RelationTuples.index() as u32,
+                    owner: 100_000,
+                    sample_hour: hour,
+                }]),
+            ] {
+                let table = rows.table();
+                *frame.tables[table.index()] = TableView::Complete(rows);
+                frame.metrics.table_ns[table.index()] = 1;
+            }
+            frame
+        };
+        let prefix = records(1, vec![observed(100), observed(101)]);
+        let first = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&prefix)).unwrap();
+        let tail = crate::test_fixtures::continuation_records(&first, 1, vec![observed(103)]);
+        let second =
+            Replay::from_records(CAMPAIGN.into(), &[prefix.clone(), tail.clone()]).unwrap();
+        let append = crate::test_fixtures::continuation_records(&second, 1, vec![observed(104)]);
+        let replay = Replay::from_records(CAMPAIGN.into(), &[prefix, tail, append]).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let groups = country_groups::scan_branch(&replay, 1, &cancelled).unwrap();
+        let oracle = scan(&replay, 1, &groups, &cancelled).unwrap();
+        let mut observer = Observer::default();
+        let mut out = Scan {
+            moments: Vec::new(),
+            observed: BTreeSet::new(),
+            unavailable: Vec::new(),
+        };
+        let selected = [
+            TableId::Campaign,
+            TableId::Countries,
+            TableId::CountryLinks,
+            TableId::CountryCounterInputs,
+            TableId::RelationTuples,
+            TableId::SliceReads,
+        ];
+        for block in &replay.index {
+            let mut decoder = FrameDecoder::for_tables(&selected);
+            for encoded in replay.read_block_selected(block, &selected).unwrap() {
+                observer
+                    .observe(decoder.advance(&encoded).unwrap(), replay.format, &mut out)
+                    .unwrap();
+            }
+            // Both publication boundaries and the appended tail reload continuation.
+            observer = serde_json::from_slice(&serde_json::to_vec(&observer).unwrap()).unwrap();
+        }
+        assert_eq!(out.moments, oracle.moments);
+        assert_eq!(out.unavailable, oracle.unavailable);
+        assert_eq!(observer.guarantees.len(), 1);
+        assert_eq!(observer.existence.len(), countries as usize);
+        assert_eq!(out.moments.len(), countries as usize + 1);
+        assert_eq!(out.moments[0].kind, "guaranteeGranted");
+        assert_eq!((out.moments[0].hour, out.moments[0].read_hour), (101, 101));
+        for row in &out.moments[1..] {
+            assert_eq!(row.kind, "ceasedToExist");
+            assert_eq!((row.hour, row.read_hour, row.name_hour), (103, 103, 101));
+        }
+    }
 }

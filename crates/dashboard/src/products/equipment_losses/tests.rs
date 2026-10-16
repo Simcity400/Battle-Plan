@@ -10,7 +10,7 @@ fn scan(replay: &Replay, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::
 #[test]
 fn recorded_census_dates_partial_counts_without_selecting_divisions() {
     use replay::rows::DivisionCensusRow;
-    assert!(!SELECTED.contains(&TableId::Divisions));
+    assert!(!oracle::SELECTED.contains(&TableId::Divisions));
     let base = 60_827_880;
     let mut first = frame(base, vec![], &[]);
     *first.tables[TableId::Divisions.index()] = TableView::Unavailable {
@@ -289,6 +289,7 @@ fn frame(hour: i32, log: Vec<CombatLogEquipmentRow>, read: &[u32]) -> DecodedFra
             weather_suspend: replay::rows::Recorded::Value(None),
             instant_decisions: replay::rows::Recorded::Value(Some(0)),
             runtime_scalars: Default::default(),
+            movement_defines: Default::default(),
         }]),
     );
     put(
@@ -1346,6 +1347,7 @@ fn a_disabled_writer_feature_is_not_logged_without_excluding_recorded_totals() {
                 weather_suspend: replay::rows::Recorded::Value(None),
                 instant_decisions: replay::rows::Recorded::Value(Some(0)),
                 runtime_scalars: Default::default(),
+                movement_defines: Default::default(),
             },
         ]));
     let scanned = scan(&replay_of(vec![frame]), 1, "GER", &AtomicBool::new(false)).unwrap();
@@ -1529,6 +1531,7 @@ fn closed_feature_gate_stays_not_logged_with_an_unread_census() {
                 weather_suspend: replay::rows::Recorded::Value(None),
                 instant_decisions: replay::rows::Recorded::Value(Some(0)),
                 runtime_scalars: Default::default(),
+                movement_defines: Default::default(),
             },
         ]));
     let scanned = scan(&replay_of(vec![frame]), 1, "GER", &AtomicBool::new(false)).unwrap();

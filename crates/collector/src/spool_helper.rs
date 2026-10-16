@@ -270,7 +270,7 @@ mod tests {
             count.fetch_add(1, Ordering::Relaxed);
         };
         helper.join(false, &job, || ());
-        crate::allocation_failure_tests::with_allocations_denied(|| {
+        crate::test_support::with_allocations_denied(|| {
             helper.join(true, &job, || ());
         });
         assert_eq!(count.load(Ordering::Relaxed), 2);

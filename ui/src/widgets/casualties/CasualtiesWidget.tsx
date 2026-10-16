@@ -1,6 +1,7 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { ButterflyChart } from '../../charts/butterfly';
+import { PreparedLogCoverage } from '../../charts/log/LogList';
 import type { ButterflyItem } from '../../charts/butterfly';
 import { jumpItem } from '../../charts/jump';
 import { useChartTokens } from '../../charts/useChartTokens';
@@ -15,10 +16,10 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
+import { useParityRows } from '../../dashboard/parityRows';
+import { usePreparedCasualties } from './preparedCasualties';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import type { CasualtyReply } from '../../generated/dashboard';
-import { casualtiesAt, casualtyBarStretch, casualtyBarValue, casualtyIndex, casualtyLookSegments, casualtyRaceEntries, casualtyRequest, casualtyRatio, casualtyTooltip, GAP_NOTE, SUBTOTAL_NOTE, formatCasualties, selectCasualties, validateCasualtyReply } from './casualtiesData';
+import { casualtiesAt, casualtyBarStretch, casualtyBarValue, casualtyIndex, casualtyLookSegments, casualtyRaceEntries, casualtyRequest, casualtyRatio, casualtyTooltip, GAP_NOTE, SUBTOTAL_NOTE, formatCasualties, selectCasualties } from './casualtiesData';
 import type { CountryCasualties } from './casualtiesData';
 import { OPTIONS } from './definition';
 import './casualties.css';
@@ -26,7 +27,7 @@ import './casualties.css';
 const NO_WARNINGS: string[] = [];
 type CasualtyItem = ButterflyItem & { data: CountryCasualties };
 
-/** Current cumulative losses, resolved locally from the branch reply. */
+/** Current cumulative losses from the requested prepared hour. */
 export default function CasualtiesWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const hoursPerSecond = usePlaybackSpeed(runtime.clock);
@@ -35,16 +36,20 @@ export default function CasualtiesWidget({ widget, runtime, active, onDiagnostic
   const race = options.view === 'race';
   const track = runtime.tracks.find(track => track.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
-  const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
+  const requestedHour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
+  const anchor = useRef<HTMLDivElement>(null);
   const includeUnknown = options.includeUnknown === true;
   const groups = useCountryGroups(runtime, track, active && widget.countries.kind === 'group' && widget.countries.group.type !== 'top');
   const chosen = track ? casualtyRequest(track.branch.id, widget.countries, defaultCountryTag(track), groups.data, track.branch.lastHour) : null;
   const request = track && chosen && (widget.countries.kind === 'all' || chosen.params.top || chosen.params.tags.length)
     ? { sourceId: track.source.id, revision: track.source.revision, product: 'war-casualties', params: chosen.params } : null;
-  const { data, error, retry } = useProduct<CasualtyReply>(runtime.client, request, active, validateCasualtyReply);
+  const { data, error, retry, hour } = usePreparedCasualties(runtime.client, track, request?.params ?? null, requestedHour, active);
   const index = useMemo(() => data ? casualtyIndex(data) : null, [data]);
   const snapshot = useMemo(() => index ? casualtiesAt(index, hour, includeUnknown) : [], [index, hour, includeUnknown]);
   const selected = useMemo(() => selectCasualties(snapshot, widget.countries, groups.data, hour, track?.branch.lastHour ?? hour), [snapshot, widget.countries, groups.data, hour, track?.branch.lastHour]);
+  useParityRows(anchor, () => ({ kind: 'chart', label: 'Casualties exact values', complete: !!data, total: selected.length,
+    rows: selected.map(row => ({ ...row, dealt: row.dealt?.toString() ?? null, taken: row.taken?.toString() ?? null,
+      knownTaken: row.knownTaken?.toString() ?? null, unknown: row.unknown?.toString() ?? null })), warnings: data?.warnings }));
   const ranked = useMemo(() => casualtyRaceEntries(selected), [selected]);
   const rowsByTag = useMemo(() => new Map(selected.map(row => [row.tag, row])), [selected]);
   const hours = useMemo(() => new Map(selected.flatMap(row => row.readHour == null ? [] : [[row.tag, row.readHour] as const])), [selected]);
@@ -74,10 +79,14 @@ export default function CasualtiesWidget({ widget, runtime, active, onDiagnostic
   if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (chosen?.reason) return <WidgetState kind="unavailable" message={chosen.reason} />;
   if (!request && !(widget.countries.kind === 'group' && widget.countries.group.type !== 'top' && !groups.data)) return <WidgetState kind="empty" message="No casualties yet." />;
-  if (!data || widget.countries.kind === 'group' && widget.countries.group.type !== 'top' && !groups.data) return <WidgetState kind="loading" label="Loading casualties…" />;
-  const notes = <>{data.hasGap && <p className="chart-line-key">{GAP_NOTE}</p>}
+  if (!data || widget.countries.kind === 'group' && widget.countries.group.type !== 'top' && !groups.data) return <>
+    <PreparedLogCoverage coverage={!data ? null : undefined} />
+    <WidgetState kind="loading" label="Loading casualties…" />
+  </>;
+  const notes = <><PreparedLogCoverage coverage={hour !== requestedHour ? null : undefined} />
+    {data.hasGap && <p className="chart-line-key">{GAP_NOTE}</p>}
     {selected.some(row => row.atLeast) && <p className="chart-line-key">{SUBTOTAL_NOTE}</p>}</>;
-  const withGap = (content: React.ReactNode) => <div className="casualties">{content}{notes}</div>;
+  const withGap = (content: React.ReactNode) => <div ref={anchor} className="casualties">{content}{notes}</div>;
   const groupAt = widget.countries.kind === 'group' && widget.countries.membership === 'end' ? track.branch.lastHour : hour;
   if (widget.countries.kind === 'group' && widget.countries.group.type !== 'top' && widget.countries.membership !== 'ever' && groups.data
     && groupUnobserved(groups.data, widget.countries.group).some(span => span.firstHour <= groupAt && groupAt <= span.lastHour)) return withGap(<WidgetState kind="unavailable" message="This group’s members were not recorded at this moment." />);
@@ -85,7 +94,7 @@ export default function CasualtiesWidget({ widget, runtime, active, onDiagnostic
   if (race && !runAt(data.observed, hour)) return withGap(<WidgetState kind="unavailable" message="Casualties were not recorded at this moment." />);
   if (!snapshot.length && data.series.length) return withGap(<WidgetState kind="unavailable" message="Casualties were not recorded at this time." />);
   if (!items.length) return withGap(<WidgetState kind="empty" message="No casualties yet." />);
-  if (race) return <div className="casualties">
+  if (race) return <div ref={anchor} className="casualties">
     <CountryRaceView key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])}
       runtime={runtime} track={track} active={active} options={options} view="race"
       extent={[window.firstHour, window.lastHour]} playhead={widget.time.mode === 'follow' ? hour : null}
@@ -99,7 +108,7 @@ export default function CasualtiesWidget({ widget, runtime, active, onDiagnostic
       .map(row => looks.name(row.tag, row.readHour ?? row.hour)).join(', ')}.</p>}
     {notes}
   </div>;
-  return <div className="casualties">
+  return <div ref={anchor} className="casualties">
     <ButterflyChart key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Casualties dealt and taken" items={items}
       slots={chosen?.params.top?.count ?? selected.length}
       leftLabel="◀ Taken" rightLabel="Dealt ▶" ratioLabel="Ratio" active={active} hoursPerSecond={hoursPerSecond}

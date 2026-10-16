@@ -1140,12 +1140,8 @@ fn distinct_owner_and_gap_details_survive_and_repeated_details_merge() {
 }
 
 #[test]
-fn dashboard_exports_recording_cause_names_and_writer_domains() {
-    let declaration = destruction_cause_typescript();
+fn recording_causes_keep_their_writer_domains() {
     for cause in NativeCause::ALL {
-        let serialized = serde_json::to_value(LossSource::Destruction(cause)).unwrap();
-        assert_eq!(serialized["reason"], cause.as_str());
-        assert!(declaration.contains(&format!("\"{}\"", cause.as_str())));
         assert_eq!(
             LossSource::Destruction(cause).domain(),
             if matches!(

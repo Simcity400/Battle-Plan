@@ -1,57 +1,6 @@
 use super::*;
-
-#[test]
-fn retirements_are_bounded_even_when_the_destructor_stalls() {
-    /// Counts its drop; the first one stalls the destructor until released.
-    struct Counted(
-        Arc<std::sync::atomic::AtomicUsize>,
-        Option<(Sender<()>, Receiver<()>)>,
-    );
-    impl Drop for Counted {
-        fn drop(&mut self) {
-            if let Some((started, release)) = self.1.take() {
-                started.send(()).unwrap();
-                release.recv().unwrap();
-            }
-            self.0.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-    for capacity in [1, builder_count()] {
-        let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let frame = |pieces| {
-            let mut retired = Retired::default();
-            for _ in 0..pieces {
-                retired.push(Counted(Arc::clone(&dropped), None));
-            }
-            retired
-        };
-        let (started, stalled) = mpsc::channel();
-        let (release, wait) = mpsc::channel();
-        let dropper = Dropper::with_capacity(capacity).unwrap();
-        dropper.drop_later(Counted(Arc::clone(&dropped), Some((started, wait))));
-        stalled.recv().unwrap();
-        // A frame's pieces take one place in the queue however many.
-        for _ in 0..capacity {
-            dropper.drop_later(frame(3));
-        }
-        assert_eq!(dropped.load(Ordering::SeqCst), 0);
-        // Full: this frame's retirement is freed here, without waiting on
-        // the stalled destructor; every queued one is still held.
-        dropper.drop_later(frame(2));
-        assert_eq!(dropped.load(Ordering::SeqCst), 2);
-        release.send(()).unwrap();
-        // The destructor frees the queue in order, then the thread ends.
-        drop(dropper);
-        let deadline = Instant::now() + crate::TEST_HANG_GUARD;
-        while dropped.load(Ordering::SeqCst) < 3 + 3 * capacity {
-            assert!(
-                Instant::now() < deadline,
-                "the queued retirements were not freed"
-            );
-            thread::yield_now();
-        }
-    }
-}
+#[cfg(test)]
+use crate::map::test_support::TEST_HANG_GUARD;
 
 #[test]
 fn playing_finishes_in_flight_hours_at_or_before_the_playhead() {
@@ -395,7 +344,7 @@ fn frame_within(lane: &Arc<DecodeLane>, branch: BranchId, hour: Hour) -> Current
         let _ = done.send(asker.frame(branch, hour));
     });
     result
-        .recv_timeout(crate::TEST_HANG_GUARD)
+        .recv_timeout(TEST_HANG_GUARD)
         .expect("the lane answers")
 }
 
@@ -461,7 +410,7 @@ fn a_dropped_lane_ends_its_thread_and_a_dead_lane_answers_with_a_gap() {
     let lane = lane_over(&replay);
     let shared = Arc::downgrade(&lane.shared);
     drop(lane);
-    let deadline = std::time::Instant::now() + crate::TEST_HANG_GUARD;
+    let deadline = std::time::Instant::now() + TEST_HANG_GUARD;
     while shared.strong_count() > 0 {
         assert!(
             std::time::Instant::now() < deadline,
@@ -508,6 +457,118 @@ fn the_decode_lane_decodes_wanted_hours_ahead_and_serves_any_other() {
         Current::Frame(frame) => assert_eq!(*frame, expected),
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn source_worker_seed_attaches_committed_checkpoints_and_clear_keeps_exact_hour_ownership() {
+    use dashboard::prepared_map::{Builder, Position, Progress, selected_tables};
+    use replay::{frame::FrameDecoder, rows::TableId};
+    let path = std::env::temp_dir().join(format!(
+        "native-checkpoint-worker-{}.battleplan",
+        uuid::Uuid::new_v4()
+    ));
+    let original = crate::playback::tests::fixture();
+    std::fs::write(&path, original.bytes()).unwrap();
+    let replay = Arc::new(Replay::open_path(&path).unwrap());
+    let source = Arc::new(
+        dashboard::Source::from_replay(
+            dashboard::SourceKey {
+                source_id: "synthetic-host-source".into(),
+                revision: dashboard::protocol::replay_revision(&path).unwrap(),
+            },
+            path.clone(),
+            Arc::clone(&replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap(),
+    );
+    let (store, key) = dashboard::prepared::files(&source, None).unwrap();
+    let mut writer = store.replace(key).unwrap();
+    let mut builder = Builder::new(
+        std::num::NonZeroU32::new(2).unwrap(),
+        selected_tables(),
+        Progress::default(),
+    )
+    .unwrap();
+    builder.set_ranges(&replay);
+    let mut decoder = FrameDecoder::new();
+    let mut last = None;
+    for (block, index) in replay.index.iter().enumerate() {
+        for (offset, frame) in replay.read_block(index).unwrap().iter().enumerate() {
+            let decoded = decoder.apply(frame).unwrap();
+            let position = Position {
+                block,
+                next_frame: offset + 1,
+            };
+            builder
+                .accept(&mut writer, frame.clone(), &decoded, position)
+                .unwrap();
+            last = Some((decoded, position));
+        }
+    }
+    let (last, position) = last.unwrap();
+    builder
+        .save_resume(&mut writer, &last, position, &TableId::ALL)
+        .unwrap();
+    builder.save_gaps(&mut writer, &replay.gaps).unwrap();
+    dashboard::prepared::pipeline::write_map_progress(&mut writer, builder.progress()).unwrap();
+    writer.commit().unwrap();
+    let resources = Resources::new().unwrap();
+    let worker = resources.decoder(Arc::clone(&replay)).unwrap();
+    let context = crate::map_checkpoints::CheckpointSource::new(source, None);
+    worker
+        .seed(
+            Playback::unloaded(Arc::clone(&replay))
+                .unwrap()
+                .with_checkpoint_source(context),
+        )
+        .unwrap();
+    let current = worker.frame(1, 105).unwrap();
+    assert!(matches!(current, Current::Frame(ref frame) if frame.hour == 105 && frame.branch == 1));
+    let expected = replay
+        .seek_selected(1, 105, Some(selected_tables()))
+        .unwrap();
+    // The map's nuclear impacts survive checkpoint restoration.
+    let strikes = |current: &Current| match current {
+        Current::Frame(frame) => frame
+            .complete::<replay::rows::tables::NuclearStrikes>()
+            .map(|rows| rows.iter().map(|row| row.id).collect::<Vec<_>>())
+            .map_err(|error| error.to_string()),
+        Current::Gap { reason, .. } => Err(reason.clone()),
+    };
+    assert_eq!(strikes(&current), Ok(vec![7]));
+    assert!(
+        matches!((current, expected), (Current::Frame(actual), replay::container::SeekResult::Frame(expected)) if actual.as_ref() == expected.as_ref())
+    );
+    // Stepping on from the restored hour replaces the hourly impacts.
+    assert_eq!(strikes(&worker.frame(1, 820).unwrap()), Ok(Vec::new()));
+    let metrics = worker
+        .0
+        .lock()
+        .unwrap()
+        .playback
+        .checkpoint_metrics()
+        .unwrap();
+    assert!(metrics.0 < 2);
+    assert!(
+        metrics.1 > 0,
+        "the actual shared worker used an indexed checkpoint"
+    );
+    store.clear().unwrap();
+    assert!(
+        matches!(worker.frame(1, 101).unwrap(), Current::Frame(ref frame) if frame.hour == 101)
+    );
+    assert!(
+        matches!(worker.frame(1, 102).unwrap(), Current::Gap { hour: 102, branch: 1, ref reason } if reason == "flush failed")
+    );
+    assert!(
+        store.saved_key().unwrap().is_none(),
+        "native playback does not resurrect cleared preparation"
+    );
+    drop(worker);
+    drop(resources);
+    drop(replay);
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]

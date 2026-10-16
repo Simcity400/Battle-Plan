@@ -16,6 +16,7 @@ import type { ChartLayer } from '../../charts/TimeChart';
 import { fitTooltip } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { useContentRevision } from '../../dashboard/contentRevision';
 import { flagReadSpec } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryFactsRead, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -24,6 +25,7 @@ import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
+import { useParityRows } from '../../dashboard/parityRows';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { CasualtyBreakdownReply } from '../../generated/dashboard';
 import { breakdownWindows, exactLosses, lossItems, lossesAt, lossStack, lossText, validateBreakdown, viewChange, viewWindows } from './casualtiesBreakdownData';
@@ -41,6 +43,7 @@ const WAR: TableColumn<LossRow> = { key: 'war', header: 'War', label: 'War', val
 const LOSSES: TableColumn<LossRow> = { key: 'losses', header: 'Losses taken', label: 'Losses taken', numeric: true, width: 'max-content', value: row => row.value, render: lossText };
 
 export default function CasualtiesBreakdownWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
+  const content = useContentRevision(runtime.client);
   const speed = usePlaybackSpeed(runtime.clock), tokens = useChartTokens(), height = useViewportHeight();
   const options = resolveOptions(definition.options, widget.options);
   const anchor = useRef<HTMLDivElement>(null);
@@ -65,22 +68,30 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   const follow = () => setDrill(state => reduceDrill(state.breakdown ? state : effectiveDrill, { type: 'follow' }));
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'casualty-breakdown', params: { branchId: track.branch.id, tag, window: null } } : null;
-  const manifest = useProduct<CasualtyBreakdownReply>(runtime.client, request, active, validateBreakdown);
+  const manifest = useProduct<CasualtyBreakdownReply>(runtime.client, request, active, validateBreakdown, track?.source);
   const currentWindows = breakdownWindows(manifest.data, hour, widget.time.mode === 'follow');
   const detailWindows = breakdownWindows(manifest.data, detailHour, effectiveDrill.follow);
   const finalIndex = manifest.data ? manifest.data.windows.length - 1 : -1;
   const chartWindows = open && manifest.data ? viewWindows(manifest.data.windows, chartRange) : [];
   const onChartView = useCallback((range: readonly [number, number]) => setChartRange(viewChange(manifest.data?.windows ?? [], range)), [manifest.data]);
   const wanted = [...new Set([...currentWindows, ...detailWindows, ...chartWindows, ...(finalIndex >= 0 ? [finalIndex] : [])])].sort((a, b) => a - b);
-  const identity = track && tag ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag]) : null;
+  const identity = track && tag ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag, content]) : null;
   const histories = useProductWindows<CasualtyBreakdownReply>(runtime.client, identity, index => ({ ...request!,
-    params: { branchId: track!.branch.id, tag: tag!, window: index } }), wanted, active && manifest.data?.available === true, validateBreakdown);
+    params: { branchId: track!.branch.id, tag: tag!, window: index } }), wanted, active && manifest.data?.available === true, validateBreakdown, track?.source);
   const current = currentWindows[0] === undefined ? undefined : histories.data.get(currentWindows[0]);
   const detail = detailWindows[0] === undefined ? undefined : histories.data.get(detailWindows[0]);
   const final = histories.data.get(finalIndex);
   const snapshot = useMemo(() => current ? lossesAt(current, hour) : null, [current, hour]);
   const details = useMemo(() => detail ? lossesAt(detail, detailHour) : null, [detail, detailHour]);
   const end = useMemo(() => final && track ? lossesAt(final, track.branch.lastHour) : null, [final, track]);
+  useParityRows(anchor, () => ({ kind: 'windowed', label: 'Casualty breakdown exact values',
+    complete: !!manifest.data && !!current && !!final,
+    total: snapshot?.rows.length ?? 0, hour,
+    identity: snapshot?.identity ?? null, incomplete: snapshot?.incomplete ?? null,
+    signedTotal: snapshot?.total.toString() ?? null,
+    rows: snapshot?.rows.map(row => ({ ...row, value: row.value.toString() })) ?? [],
+    manifest: manifest.data, windows: [...histories.data].sort(([left], [right]) => left - right).map(([window, reply]) => ({ window, reply })),
+  }));
   const nameFacts = useMemo(() => [...(snapshot?.rows ?? []), ...(details?.rows ?? []), ...(end?.rows ?? [])]
     .map(row => ({ tag: row.enemyTag, hour: row.enemyHour })), [snapshot, details, end]);
   const names = useCountryNamesAt(runtime.client, track, nameFacts, active);

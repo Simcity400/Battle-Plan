@@ -1,9 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { SHARE_TICKS, drawShareBands, shareLayer, sharePixels, shareSegments, shareStack } from './share.ts';
+import { SHARE_TICKS, drawShareBands, shareLayer, sharePixels, shareSegments, shareStack, summaryShareRuns } from './share.ts';
+import type { ChartSummary } from './chartSummary';
 import { valueTicks } from './draw.ts';
 import { plotFrame } from './frame.ts';
 import { tokensFromValues } from './tokens.ts';
+
+test('prepared share geometry fills dense complete buckets, preserves gaps and leaves exact counts unchanged', () => {
+  const runs = [{ firstHour: 0, lastHour: 0, counts: [1, 0, 0], startsSegment: true },
+    { firstHour: 4, lastHour: 4, counts: [0, 1, 0] }, { firstHour: 9, lastHour: 9, counts: [0, 0, 1] }];
+  const before = structuredClone(runs);
+  const summary: ChartSummary = { from: 0, to: 9, width: 1, buckets: [{ firstHour: 0, lastHour: 9,
+    firstValue: 1, lastValue: 0, lastValueHour: 9, minHour: 4, minValue: 0, maxHour: 0, maxValue: 1, firstBreak: true, hasBreak: false }] };
+  assert.deepEqual(summaryShareRuns(runs, [summary]).map(run => [run.firstHour, run.lastHour]), [[0, 3], [4, 8], [9, 9]]);
+  const broken = { ...summary, buckets: summary.buckets.map(bucket => bucket && { ...bucket, hasBreak: true }) };
+  assert.deepEqual(summaryShareRuns(runs, [broken]).map(run => [run.firstHour, run.lastHour]), [[0, 0], [4, 4], [9, 9]]);
+  assert.equal(summaryShareRuns(runs, [{ ...summary, runs: [] }]), runs);
+  assert.deepEqual(runs, before);
+});
 
 test('stacked shares retain internal changes, held values, identity breaks and missing hours', () => {
   const stack = shareStack([

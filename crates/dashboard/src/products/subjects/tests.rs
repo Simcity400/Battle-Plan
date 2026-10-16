@@ -6,6 +6,78 @@ use replay::{
 };
 use std::sync::atomic::AtomicBool;
 
+#[test]
+fn prepared_observer_roundtrip_preserves_reply_names_with_and_without_content() {
+    engine::executable_tables::initialize_for_tests().unwrap();
+    use crate::products::{
+        ContentOptions, LoadContext, Product,
+        subjects::{Scan, SubjectParams, Subjects},
+    };
+    let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/autonomous_states/mod.txt",
+            "autonomy_state={id=mod_level min_freedom_level=0.2}",
+        ),
+        (
+            "localisation/mod_l_english.yml",
+            "\u{feff}l_english:\n mod_level:0 \"\"\n",
+        ),
+        ("settings.txt", "language=\"l_english\""),
+    ]);
+    let options = ContentOptions {
+        options: installed_content::ResolveOptions {
+            game_dir: folder.0.clone(),
+            user_dir: folder.0.clone(),
+            cache_dir: folder.0.join("cache"),
+        },
+        allow_unverified: true,
+    };
+    let frames = [
+        subject_frame(100, &[(9001, 44, 40)], Some(&[(44, "mod_level")])),
+        subject_frame(101, &[(9001, 44, 40)], Some(&[(44, "mod_level")])),
+    ];
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap();
+    let source = crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "subjects-content".into(),
+            revision: "1".into(),
+        },
+        Default::default(),
+        std::sync::Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    source.set_test_content(options.options.clone(), catalogue.content.clone());
+    let mut scan = Scan::new(source.replay_ref(), 1);
+    scan.observe(&frames[0]).unwrap();
+    let mut scan: Scan = serde_json::from_slice(&serde_json::to_vec(&scan).unwrap()).unwrap();
+    scan.observe(&frames[1]).unwrap();
+    for content in [None, Some(options)] {
+        let context = LoadContext { content };
+        let expected = Subjects::load(
+            &source,
+            &SubjectParams {
+                branch_id: "1".into(),
+            },
+            &context,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let actual = scan
+            .finish(source.replay_ref(), 1)
+            .reply(&source, "1", &context)
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&actual).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert_eq!(
+            actual.levels[0].name,
+            context.content.map(|_| String::new())
+        );
+    }
+}
+
 /// Countries GER (link 9001), FRA (44), CTL (55) and MOD (66), with the given
 /// subject relations (overlord, subject, start hour) and each subject's current
 /// autonomy state; `None` leaves the Autonomy table unavailable this hour.
@@ -489,4 +561,345 @@ fn subjects_keep_dynamic_and_unusual_tags_as_recorded() {
         ]
     );
     assert!(scan.warnings().is_empty(), "{:?}", scan.warnings());
+}
+
+#[test]
+fn subject_changes_keep_quiet_hours_and_closed_history_flat_and_reuse_holder_joins() {
+    use super::Scan;
+    use crate::prepared::{
+        frame_changes::FrameChangeTracker,
+        observer_tests::{assert_flat, scaled_work, unchanged_frames},
+        series::{Accumulator, LateIndex},
+    };
+    let format = replay::format::FormatVersion::CURRENT;
+    let initial = subject_frame(100, &[(9001, 44, 40)], Some(&[(44, "level")]));
+    assert_flat(
+        scaled_work(10, |hours| {
+            let mut scan = Scan::default();
+            let mut events = Accumulator::default();
+            let mut late = LateIndex::default();
+            let mut tracker = FrameChangeTracker::new();
+            scan.prepare_changes_changed(
+                &initial,
+                &tracker.observe(&initial, format),
+                &mut events,
+                &mut late,
+            )?;
+            unchanged_frames(
+                scan.work,
+                &initial,
+                hours as i32,
+                format,
+                |frame, changes| {
+                    scan.prepare_changes_changed(frame, changes, &mut events, &mut late)?;
+                    Ok(scan.work)
+                },
+            )
+        })
+        .unwrap(),
+    );
+    assert_flat(
+        scaled_work(10, |history| {
+            let mut scan = Scan::default();
+            let mut events = Accumulator::default();
+            let mut late = LateIndex::default();
+            let mut tracker = FrameChangeTracker::new();
+            let mut current = initial.clone();
+            for index in 0..history {
+                current.hour = 100 + index as i32;
+                if let TableView::Complete(TableRows::Subjects(rows)) =
+                    &mut *current.tables[TableId::Subjects.index()]
+                {
+                    rows[0].start_hour = current.hour;
+                }
+                scan.prepare_changes_changed(
+                    &current,
+                    &tracker.observe(&current, format),
+                    &mut events,
+                    &mut late,
+                )?;
+            }
+            unchanged_frames(scan.work, &current, 10, format, |frame, changes| {
+                scan.prepare_changes_changed(frame, changes, &mut events, &mut late)?;
+                Ok(scan.work)
+            })
+        })
+        .unwrap(),
+    );
+    let mut scan = Scan::default();
+    let mut events = Accumulator::default();
+    let mut late = LateIndex::default();
+    let mut tracker = FrameChangeTracker::new();
+    scan.prepare_changes_changed(
+        &initial,
+        &tracker.observe(&initial, format),
+        &mut events,
+        &mut late,
+    )
+    .unwrap();
+    let before = scan.work;
+    let mut changed = initial.clone();
+    changed.hour += 1;
+    if let TableView::Complete(TableRows::Autonomy(rows)) =
+        &mut *changed.tables[TableId::Autonomy.index()]
+    {
+        rows[0].state = b"next".to_vec();
+    }
+    scan.prepare_changes_changed(
+        &changed,
+        &tracker.observe(&changed, format),
+        &mut events,
+        &mut late,
+    )
+    .unwrap();
+    assert_eq!(
+        scan.work.row_visits - before.row_visits,
+        1,
+        "no visits to Subjects or holder tables on a level-only change"
+    );
+}
+
+#[test]
+fn subject_deferred_spans_and_refusal_rates_match_oracle_after_commits_resume_append_and_expiry() {
+    use super::Scan;
+    use crate::prepared::{
+        frame_changes::FrameChangeTracker,
+        series::{Accumulator, LateIndex},
+    };
+    let flag = AtomicBool::new(false);
+    for levels in [None, Some(&[(44, "level")][..])] {
+        let mut initial = subject_frame(100, &[(9001, 44, 40)], levels);
+        if let TableView::Complete(TableRows::Subjects(rows)) =
+            &mut *initial.tables[TableId::Subjects.index()]
+        {
+            rows[0].end_hour = 109;
+        }
+        let mut frames: Vec<_> = (100..=110)
+            .map(|hour| {
+                let mut frame = initial.clone();
+                frame.hour = hour;
+                frame
+            })
+            .collect();
+        let mut resumed = initial.clone();
+        resumed.hour = 113;
+        frames.push(resumed.clone());
+        resumed.hour = 114;
+        frames.push(resumed);
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+        let source = crate::Source::from_replay(
+            crate::SourceKey {
+                source_id: "subjects-deferred".into(),
+                revision: "1".into(),
+            },
+            Default::default(),
+            std::sync::Arc::new(replay),
+            &flag,
+        )
+        .unwrap();
+        let mut fixture = crate::prepared::series::tests::Fixture::new();
+        let mut scan = Scan::new(source.replay_ref(), 1);
+        let mut events = Accumulator::default();
+        let mut late = LateIndex::default();
+        for (index, batch) in [&frames[..6], &frames[6..11], &frames[11..]]
+            .into_iter()
+            .enumerate()
+        {
+            let mut tracker = FrameChangeTracker::new();
+            for frame in batch {
+                scan.prepare_changes_changed(
+                    frame,
+                    &tracker.observe(frame, source.replay_ref().format),
+                    &mut events,
+                    &mut late,
+                )
+                .unwrap();
+            }
+            scan.seal();
+            let mut writer = if index == 2 {
+                fixture.append_writer()
+            } else {
+                fixture.writer()
+            };
+            events
+                .flush(&mut writer, "subject-changes-1", 0, &flag)
+                .unwrap();
+            writer
+                .write_at(
+                    "subjects-1",
+                    0,
+                    zstd::stream::encode_all(serde_json::to_vec(&scan).unwrap().as_slice(), 3)
+                        .unwrap()
+                        .as_slice(),
+                )
+                .unwrap();
+            writer.commit().unwrap();
+            scan = serde_json::from_reader(
+                zstd::stream::Decoder::new(
+                    fixture
+                        .store
+                        .read(&fixture.key, "subjects-1", 0)
+                        .unwrap()
+                        .unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            events = serde_json::from_slice(&serde_json::to_vec(&events).unwrap()).unwrap();
+        }
+        let context = crate::products::LoadContext { content: None };
+        let actual = scan
+            .finish(source.replay_ref(), 1)
+            .reply(&source, "1", &context)
+            .unwrap();
+        let expected = super::scan_branch(source.replay_ref(), 1, &flag)
+            .unwrap()
+            .reply(&source, "1", &context)
+            .unwrap();
+        crate::prepared::observer_tests::assert_reply_parity(&actual, &expected).unwrap();
+        assert_eq!(
+            actual.runs[0].last_hour, 108,
+            "a stored native end seals the open relation at the old frontier"
+        );
+    }
+}
+
+#[test]
+fn subject_level_change_revisits_one_of_five_thousand_relations_and_keeps_other_diagnostic_rates() {
+    use super::Scan;
+    use crate::prepared::{
+        frame_changes::FrameChangeTracker,
+        observer_tests::{Work, assert_flat, scaled_work},
+        series::{Accumulator, LateIndex},
+    };
+    let format = replay::format::FormatVersion::CURRENT;
+    assert_flat(
+        scaled_work(500, |countries| {
+            let mut first = crate::test_fixtures::scale_frame(1, 100, countries as u32);
+            *first.tables[TableId::Subjects.index()] = TableView::Complete(TableRows::Subjects(
+                (1..countries)
+                    .map(|index| replay::rows::SubjectRow {
+                        overlord: 100_000,
+                        subject: 100_000 + index as u32,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ));
+            *first.tables[TableId::Autonomy.index()] =
+                TableView::Complete(TableRows::Autonomy(vec![replay::rows::AutonomyRow {
+                    subject: 100_001,
+                    state: b"before".to_vec(),
+                    ..Default::default()
+                }]));
+            let mut scan = Scan::default();
+            let mut events = Accumulator::default();
+            let mut late = LateIndex::default();
+            let mut tracker = FrameChangeTracker::new();
+            scan.prepare_changes_changed(
+                &first,
+                &tracker.observe(&first, format),
+                &mut events,
+                &mut late,
+            )?;
+            let before = scan.work;
+            let mut changed = first.clone();
+            changed.hour = 101;
+            if let TableView::Complete(TableRows::Autonomy(rows)) =
+                &mut *changed.tables[TableId::Autonomy.index()]
+            {
+                rows[0].state = b"after".to_vec();
+            }
+            scan.prepare_changes_changed(
+                &changed,
+                &tracker.observe(&changed, format),
+                &mut events,
+                &mut late,
+            )?;
+            let work = Work {
+                row_visits: scan.work.row_visits - before.row_visits,
+                history_visits: scan.work.history_visits - before.history_visits,
+                ..Default::default()
+            };
+            assert_eq!((work.row_visits, work.history_visits), (1, 1));
+            assert_eq!(scan.open.len(), countries - 1);
+            assert_eq!(scan.unleveled, 2 * (countries - 2) as u32);
+            let mut oracle = Scan::default();
+            oracle.observe(&first)?;
+            oracle.observe(&changed)?;
+            scan.seal();
+            assert_eq!(
+                serde_json::to_value(&scan.runs)?,
+                serde_json::to_value(&oracle.runs)?
+            );
+            assert_eq!(scan.change_warnings(), oracle.change_warnings());
+            Ok(work)
+        })
+        .unwrap(),
+    );
+}
+
+#[test]
+fn subject_holder_change_reuses_unchanged_native_relation_level_and_link_tables() {
+    use super::Scan;
+    use crate::prepared::{
+        frame_changes::FrameChangeTracker,
+        series::{Accumulator, LateIndex},
+    };
+    let mut first = crate::test_fixtures::world_frame(100, true);
+    *first.tables[TableId::Subjects.index()] =
+        TableView::Complete(TableRows::Subjects(vec![replay::rows::SubjectRow {
+            overlord: 11,
+            subject: 31,
+            start_hour: 90,
+            ..Default::default()
+        }]));
+    *first.tables[TableId::Autonomy.index()] =
+        TableView::Complete(TableRows::Autonomy(vec![replay::rows::AutonomyRow {
+            subject: 31,
+            state: b"level".to_vec(),
+            ..Default::default()
+        }]));
+    let mut renamed = first.clone();
+    renamed.hour = 101;
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *renamed.tables[TableId::Countries.index()]
+    {
+        rows.iter_mut().find(|row| row.id == 31).unwrap().tag = b"RENAMED".to_vec();
+    }
+    let mut scan = Scan::default();
+    let mut events = Accumulator::default();
+    let mut late = LateIndex::default();
+    let mut tracker = FrameChangeTracker::new();
+    let format = replay::format::FormatVersion::CURRENT;
+    scan.prepare_changes_changed(
+        &first,
+        &tracker.observe(&first, format),
+        &mut events,
+        &mut late,
+    )
+    .unwrap();
+    let before = scan.work;
+    scan.prepare_changes_changed(
+        &renamed,
+        &tracker.observe(&renamed, format),
+        &mut events,
+        &mut late,
+    )
+    .unwrap();
+    assert_eq!(
+        scan.work.row_visits - before.row_visits,
+        renamed
+            .complete::<replay::rows::tables::Countries>()
+            .unwrap()
+            .len()
+    );
+    let mut oracle = Scan::default();
+    oracle.observe(&first).unwrap();
+    oracle.observe(&renamed).unwrap();
+    scan.seal();
+    assert_eq!(
+        serde_json::to_value(&scan.runs).unwrap(),
+        serde_json::to_value(&oracle.runs).unwrap()
+    );
+    assert_eq!(scan.change_warnings(), oracle.change_warnings());
 }

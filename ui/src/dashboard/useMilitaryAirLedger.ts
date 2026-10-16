@@ -12,7 +12,7 @@ export function useMilitaryAirLedger(widget: WidgetSpec, runtime: WidgetRuntime,
   const top = query && widget.countries.kind === 'group' && widget.countries.group.type === 'top' ? { count: widget.countries.group.count, metric: query.metric } : null;
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'military-air-ledger', params: { branchId: track.branch.id, family,
     regions: query?.regions ?? [], causes: query?.causes ?? [], fromHour: widget.time.mode === 'range' ? window?.firstHour ?? null : null, top } } : null;
-  return { track, ...useProduct<MilitaryAirReply>(runtime.client, request, active, validateMilitaryAirReply) };
+  return { track, ...useProduct<MilitaryAirReply>(runtime.client, request, active, validateMilitaryAirReply, track?.source) };
 }
 
 export function useAirLossChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {

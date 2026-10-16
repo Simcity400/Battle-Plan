@@ -4,7 +4,7 @@
 use super::*;
 use replay::rows::{FuelDemandRead, FuelDemandSite, FuelDemandUnit, FuelDemandWing};
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FuelConsumptionRead {
     pub first_hour: i32,
@@ -21,9 +21,9 @@ pub struct FuelConsumptionRead {
     pub reasons: [Option<String>; 3],
 }
 /// A [`FuelConsumptionRead`] as exact integers; only replies format them.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct RawConsumption {
-    first_hour: i32,
+    pub(super) first_hour: i32,
     pub(super) last_hour: i32,
     starts_segment: bool,
     pub(super) segment_start_hour: i32,
@@ -439,7 +439,8 @@ fn warnings(reasons: impl IntoIterator<Item = String>) -> Vec<String> {
         })
         .collect()
 }
-fn summary_at<'a>(
+#[cfg(test)]
+pub(super) fn summary_at<'a>(
     branch: &'a ScannedBranch,
     params: &FuelAwardsParams,
 ) -> io::Result<&'a RawConsumption> {
@@ -474,6 +475,7 @@ impl Product for CountryFuelConsumption {
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.validate()
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -532,8 +534,7 @@ impl Product for CountryFuelDemand {
             .branch_id
             .parse()
             .map_err(|error: std::num::ParseIntError| crate::invalid(error.to_string()))?;
-        let scanned = scanned(source, branch, cancelled)?;
-        let read = FuelConsumptionRead::from(summary_at(&scanned, params)?);
+        let read = prepared::summary_at(source, params, context, cancelled)?;
         let raw = detail::basis_reads(source, branch, params.hour, cancelled)?;
         let pack =
             pack_of(detail::authenticated(&raw, params)?, params.hour).map_err(crate::invalid)?;
@@ -713,7 +714,8 @@ fn unknown(first_hour: i32, last_hour: i32, reason: String) -> FuelDemandRun {
     }
 }
 /// A tag change alone does not end the selected native actor's demand segment.
-fn actor_consumption<'a>(
+#[cfg(test)]
+pub(super) fn actor_consumption<'a>(
     summary: &'a ScannedBranch,
     basis: &FuelAwardsParams,
 ) -> Vec<(&'a str, &'a RawConsumption)> {
@@ -771,8 +773,8 @@ fn stacked_history(
         .branch_id
         .parse()
         .map_err(|error: std::num::ParseIntError| crate::invalid(error.to_string()))?;
-    let summary = scanned(source, branch, cancelled)?;
-    let selected = summary_at(&summary, basis)?;
+    let summary = prepared::window_summary(source, branch, window, context, cancelled)?;
+    let selected = prepared::summary_at(source, basis, context, cancelled)?;
     let basis_raw = detail::basis_reads(source, branch, basis.hour, cancelled)?;
     let pack =
         pack_of(detail::authenticated(&basis_raw, basis)?, basis.hour).map_err(crate::invalid)?;
@@ -802,7 +804,7 @@ fn stacked_history(
         .collect();
     let mut next = first_hour;
     {
-        let actor_reads = actor_consumption(&summary, basis);
+        let actor_reads = prepared::actor_consumption(source, basis, window, context, cancelled)?;
         for (tag, read) in actor_reads
             .into_iter()
             .filter(|(_, read)| read.last_hour >= first_hour && read.first_hour <= last_hour)
@@ -819,7 +821,7 @@ fn stacked_history(
             }
             let pack = raw
                 .get(&read.first_hour)
-                .and_then(|rows| rows.get(tag))
+                .and_then(|rows| rows.get(&tag))
                 .ok_or_else(|| "Supplying current fuel read unavailable".to_string())
                 .and_then(|row| pack_of(row, read.first_hour));
             for (part, key) in parts.iter_mut().zip(&parsed) {

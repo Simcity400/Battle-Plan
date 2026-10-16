@@ -27,6 +27,7 @@ fn panicking_recording_requests_report_errors_and_leave_loaders_running() {
             Arc::clone(&request),
             LoadJob::Fixture {
                 request,
+                interactive: false,
                 run: Box::new(move || panic!("synthetic {stage} panic")),
             },
         );
@@ -75,7 +76,7 @@ fn panicking_recording_requests_report_errors_and_leave_loaders_running() {
         request: ProductRequest {
             source_id: opened.id,
             revision: opened.revision,
-            product: "country-groups".into(),
+            product: "ships-sunk".into(),
             params: serde_json::json!({"branchId": "1"}),
         },
     });
@@ -97,6 +98,10 @@ fn panicking_recording_requests_report_errors_and_leave_loaders_running() {
 /// A valid in-memory source needs a session identity, but no map assets,
 /// recorded tables or file I/O for these ownership tests.
 fn source() -> Arc<Source> {
+    source_with_id("source-test")
+}
+
+fn source_with_id(id: &str) -> Arc<Source> {
     let session = SessionStart {
         id: 1,
         process_id: 1,
@@ -128,7 +133,7 @@ fn source() -> Arc<Source> {
         .unwrap(),
     );
     let key = SourceKey {
-        source_id: "source-test".into(),
+        source_id: id.into(),
         revision: "revision-test".into(),
     };
     Arc::new(
@@ -432,6 +437,167 @@ fn unknown_products_and_unleased_sources_fail_before_loading() {
 }
 
 #[test]
+fn preparation_commands_preserve_lease_identity_and_exact_progress_counts() {
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    let source = source();
+    let open_request = Request::new("prepared-open".into());
+    service.inner.pending.lock().unwrap().leases.insert(
+        "prepared-lease".into(),
+        Lease {
+            request: open_request,
+            source: Arc::clone(&source),
+        },
+    );
+    let exact = "9007199254740993";
+    {
+        let progress = source.state::<crate::prepared::Progress>();
+        let mut progress = progress.lock().unwrap();
+        progress.state = crate::prepared::State::Ready;
+        progress.bytes = exact.parse().unwrap();
+        progress.sections.push(crate::prepared::Section {
+            id: "focus".into(),
+            label: "National focus".into(),
+            state: crate::prepared::State::Ready,
+            done: exact.into(),
+            total: Some(exact.into()),
+            error: None,
+        });
+    }
+    service.dispatch(DataCommand::Preparation {
+        id: "prepared-status".into(),
+        source_id: "prepared-lease".into(),
+        revision: source.key().revision.clone(),
+        action: crate::prepared::Action::Status,
+    });
+    let mut json = String::new();
+    loop {
+        match receive.recv_timeout(HANG_GUARD).unwrap() {
+            DataEvent::Chunk {
+                id, fragment, last, ..
+            } => {
+                assert_eq!(id, "prepared-status");
+                json.push_str(&fragment);
+                if last {
+                    break;
+                }
+            }
+            event => panic!("unexpected preparation event: {event:?}"),
+        }
+    }
+    let reply: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(reply["sourceId"], "prepared-lease");
+    assert_eq!(reply["revision"], source.key().revision);
+    assert_eq!(reply["requestId"], "prepared-status");
+    assert_eq!(reply["state"], "ready");
+    assert_eq!(reply["bytes"], exact);
+    assert_eq!(reply["sections"][0]["done"], exact);
+    assert_eq!(reply["sections"][0]["total"], exact);
+    service.dispatch(DataCommand::Preparation {
+        id: "stale-cancel".into(),
+        source_id: "prepared-lease".into(),
+        revision: "previous-revision".into(),
+        action: crate::prepared::Action::Cancel,
+    });
+    assert!(matches!(receive.recv_timeout(HANG_GUARD).unwrap(),
+        DataEvent::Error { id, message } if id == "stale-cancel" && message.contains("unavailable or changed")));
+    assert!(
+        !source
+            .state::<crate::prepared::Progress>()
+            .lock()
+            .unwrap()
+            .cancelled
+            .load(Ordering::Acquire)
+    );
+    service.dispatch(DataCommand::PreparedQuery {
+        id: "stale-page".into(),
+        request: ProductRequest {
+            source_id: "prepared-lease".into(),
+            revision: "previous-revision".into(),
+            product: "focus-hour".into(),
+            params: serde_json::json!({"branchId":"1", "tag":"synthetic", "hour":0}),
+        },
+    });
+    assert!(matches!(receive.recv_timeout(HANG_GUARD).unwrap(),
+        DataEvent::Error { id, message } if id == "stale-page" && message.contains("unavailable or changed")));
+    service.shutdown();
+}
+
+#[test]
+fn disabling_background_work_preserves_explicit_preparation_and_clear() {
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let automatic = source();
+    let manual = source();
+    for (key, source, is_automatic) in [("automatic", &automatic, true), ("manual", &manual, false)]
+    {
+        let progress = source.state::<crate::prepared::Progress>();
+        let mut progress = progress.lock().unwrap();
+        progress.running = true;
+        progress.state = crate::prepared::State::Preparing;
+        progress.automatic = is_automatic;
+        service
+            .inner
+            .sources
+            .lock()
+            .unwrap()
+            .entries
+            .insert((PathBuf::from(key), key.into()), Arc::downgrade(source));
+    }
+    assert!(service.preparation_preferences().background_enabled);
+    service.set_background_preparation(false);
+    assert!(!service.preparation_preferences().background_enabled);
+    assert!(
+        automatic
+            .state::<crate::prepared::Progress>()
+            .lock()
+            .unwrap()
+            .cancelled
+            .load(Ordering::Acquire)
+    );
+    assert!(
+        !manual
+            .state::<crate::prepared::Progress>()
+            .lock()
+            .unwrap()
+            .cancelled
+            .load(Ordering::Acquire)
+    );
+    // An explicit Start remains valid while the global background default is off.
+    service
+        .inner
+        .start_preparation(Arc::clone(&manual), false, &AtomicBool::new(false))
+        .unwrap();
+    assert!(
+        !manual
+            .state::<crate::prepared::Progress>()
+            .lock()
+            .unwrap()
+            .automatic
+    );
+    // Automatic admission never opens storage after this source was cleared.
+    let cleared = source();
+    cleared
+        .state::<crate::prepared::Progress>()
+        .lock()
+        .unwrap()
+        .cleared = true;
+    service.set_background_preparation(true);
+    service
+        .inner
+        .start_preparation(Arc::clone(&cleared), true, &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(
+        cleared
+            .state::<crate::prepared::Progress>()
+            .lock()
+            .unwrap()
+            .state,
+        crate::prepared::State::Idle
+    );
+    service.shutdown();
+}
+
+#[test]
 fn failed_source_reply_rolls_back_before_callback_and_preserves_sibling_lease() {
     let service = Service::new(Arc::new(|_| true)).unwrap();
     let source = source();
@@ -557,6 +723,10 @@ fn failed_delivery_stops_admission_and_shutdown_still_joins() {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn air_superiority_source_cache_fork_never_blocks_another_path() {
     use crate::test_fixtures;
     use std::sync::Condvar;
@@ -635,6 +805,10 @@ fn air_superiority_source_cache_fork_never_blocks_another_path() {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn damaged_opens_use_sidebar_sentences_and_valid_opens_keep_their_metadata() {
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[]);
     let valid = Replay::from_records(
@@ -673,6 +847,7 @@ fn damaged_opens_use_sidebar_sentences_and_valid_opens_keep_their_metadata() {
     let path = folder.0.join("valid.battleplan");
     std::fs::write(&path, valid.bytes()).unwrap();
     let source = service.open_map(&path, None).unwrap();
+    assert!(source.replay_ref().is_file_backed());
     let expected = crate::metadata::read(
         &Arc::new(valid),
         &path.canonicalize().unwrap(),
@@ -683,11 +858,12 @@ fn damaged_opens_use_sidebar_sentences_and_valid_opens_keep_their_metadata() {
         serde_json::to_value(source.metadata()).unwrap(),
         serde_json::to_value(expected).unwrap()
     );
-    let mut bytes = source.replay_ref().bytes().to_vec();
+    let mut bytes = std::fs::read(&path).unwrap();
     *bytes.last_mut().unwrap() ^= 1;
     let path = folder.0.join("modified-crc.battleplan");
     std::fs::write(&path, bytes).unwrap();
     let modified = service.open_map(&path, None).unwrap();
+    assert!(modified.replay_ref().is_file_backed());
     let metadata = modified.metadata();
     assert!(metadata.damaged.is_some());
     assert!(
@@ -698,5 +874,781 @@ fn damaged_opens_use_sidebar_sentences_and_valid_opens_keep_their_metadata() {
     );
     assert_eq!(metadata.countries, source.metadata().countries);
     assert_eq!(metadata.branches, source.metadata().branches);
+    service.shutdown();
+}
+
+struct LibraryFixture {
+    _folder: crate::catalogue::tests::Folder,
+    paths: Vec<PathBuf>,
+    replay: Replay,
+}
+impl LibraryFixture {
+    fn new(names: &[&str]) -> Self {
+        let (_, folder) = crate::catalogue::tests::folder_catalogue(&[]);
+        let first = Replay::from_records(
+            crate::test_fixtures::CAMPAIGN.into(),
+            &[crate::test_fixtures::records(
+                1,
+                vec![crate::test_fixtures::source(1, 0, Some(1))],
+            )],
+        )
+        .unwrap();
+        let replay = first
+            .append(&[crate::test_fixtures::records(
+                2,
+                vec![crate::test_fixtures::source(2, 10, Some(2))],
+            )])
+            .unwrap();
+        let paths = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let path = folder.0.join(format!("{name}.battleplan"));
+                std::fs::write(&path, replay.bytes()).unwrap();
+                let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+                file.set_times(std::fs::FileTimes::new().set_modified(
+                    std::time::UNIX_EPOCH + Duration::from_secs(1_000_000 + index as u64),
+                ))
+                .unwrap();
+                path.canonicalize().unwrap()
+            })
+            .collect();
+        Self {
+            _folder: folder,
+            paths,
+            replay,
+        }
+    }
+    fn append(&self, path: &Path) {
+        self.replay
+            .append(&[crate::test_fixtures::records(
+                3,
+                vec![crate::test_fixtures::source(3, 20, Some(3))],
+            )])
+            .unwrap()
+            .write_atomic(path)
+            .unwrap();
+    }
+}
+impl Drop for LibraryFixture {
+    fn drop(&mut self) {
+        for path in &self.paths {
+            if let Ok(store) = crate::prepared::recording_store(path) {
+                let _ = store.clear();
+            }
+        }
+    }
+}
+
+fn wait_library_source(source: &Source) {
+    let progress = source.state::<crate::prepared::Progress>();
+    let finished = Arc::clone(&progress.lock().unwrap().finished);
+    let done = finished.0.lock().unwrap();
+    let (done, _) = finished
+        .1
+        .wait_timeout_while(done, HANG_GUARD, |done| !*done)
+        .unwrap();
+    assert!(*done, "preparation did not finish");
+    assert_eq!(
+        progress.lock().unwrap().state,
+        crate::prepared::State::Ready
+    );
+}
+
+/// Occupy the real workers so queue order and cancellation are deterministic.
+struct PreparationHold(Vec<Arc<AtomicBool>>);
+impl PreparationHold {
+    fn new(service: &Service) -> Self {
+        let (sent, seen) = mpsc::channel();
+        let flags: Vec<_> = (0..2).map(|_| Arc::new(AtomicBool::new(false))).collect();
+        for flag in &flags {
+            let sent = sent.clone();
+            service
+                .inner
+                .preparation
+                .submit(Arc::clone(flag), move |cancelled| {
+                    sent.send(()).unwrap();
+                    while !cancelled.load(Ordering::Acquire) {
+                        std::thread::yield_now();
+                    }
+                })
+                .unwrap();
+        }
+        for _ in &flags {
+            seen.recv_timeout(HANG_GUARD).unwrap();
+        }
+        Self(flags)
+    }
+}
+impl Drop for PreparationHold {
+    fn drop(&mut self) {
+        for flag in &self.0 {
+            flag.store(true, Ordering::Release);
+        }
+    }
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn library_preparation_waits_for_game_exit_and_prepares_unopened_published_sessions() {
+    let fixture = LibraryFixture::new(&["unopened"]);
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    service.set_preparation_suspended(true);
+    service.prepare_library(&fixture.paths).unwrap();
+    assert!(service.inner.sources.lock().unwrap().entries.is_empty());
+    service.set_preparation_suspended(false);
+    service.prepare_library(&fixture.paths).unwrap();
+    let source = service.open_map(&fixture.paths[0], None).unwrap();
+    wait_library_source(&source);
+    assert!(service.inner.pending.lock().unwrap().leases.is_empty());
+    assert_eq!(
+        crate::prepared::unprepared_blocks(&source, None).unwrap(),
+        Some(0)
+    );
+    service.prepare_library(&fixture.paths).unwrap();
+    assert!(
+        service.inner.sources.lock().unwrap().library.is_empty(),
+        "ready library sources are released"
+    );
+    fixture.append(&fixture.paths[0]);
+    service.set_preparation_suspended(true);
+    service.prepare_library(&fixture.paths).unwrap();
+    assert_eq!(
+        service
+            .inner
+            .sources
+            .lock()
+            .unwrap()
+            .completed
+            .get(&fixture.paths[0]),
+        Some(&source.key().revision)
+    );
+    service.set_preparation_suspended(false);
+    service.prepare_library(&fixture.paths).unwrap();
+    let grown = service.open_map(&fixture.paths[0], None).unwrap();
+    assert_ne!(grown.key().revision, source.key().revision);
+    wait_library_source(&grown);
+    assert_eq!(
+        crate::prepared::unprepared_blocks(&grown, None).unwrap(),
+        Some(0)
+    );
+    service.shutdown();
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn library_preparation_admits_newest_first_and_retries_a_full_runner() {
+    let fixture = LibraryFixture::new(&["oldest", "middle", "newest"]);
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let hold = PreparationHold::new(&service);
+    assert_eq!(
+        service.prepare_library(&fixture.paths).unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    let admitted: Vec<_> = {
+        let sources = service.inner.sources.lock().unwrap();
+        assert!(sources.library.contains_key(&fixture.paths[2]));
+        assert!(sources.library.contains_key(&fixture.paths[1]));
+        let waiting = sources.library.get(&fixture.paths[0]).unwrap();
+        assert_eq!(
+            waiting
+                .state::<crate::prepared::Progress>()
+                .lock()
+                .unwrap()
+                .state,
+            crate::prepared::State::Idle
+        );
+        sources
+            .library
+            .values()
+            .filter(|source| {
+                source
+                    .state::<crate::prepared::Progress>()
+                    .lock()
+                    .unwrap()
+                    .running
+            })
+            .cloned()
+            .collect()
+    };
+    drop(hold);
+    for source in admitted {
+        wait_library_source(&source);
+    }
+    service.prepare_library(&fixture.paths).unwrap();
+    let oldest = service.open_map(&fixture.paths[0], None).unwrap();
+    wait_library_source(&oldest);
+    assert_eq!(
+        crate::prepared::unprepared_blocks(&oldest, None).unwrap(),
+        Some(0)
+    );
+    service.shutdown();
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn library_preparation_suspends_queued_automatic_work_and_resumes_outside_library() {
+    let fixture = LibraryFixture::new(&["paused"]);
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let hold = PreparationHold::new(&service);
+    service.prepare_library(&fixture.paths).unwrap();
+    let source = service.open_map(&fixture.paths[0], None).unwrap();
+    service.set_preparation_suspended(true);
+    assert!(
+        source
+            .state::<crate::prepared::Progress>()
+            .lock()
+            .unwrap()
+            .cancelled
+            .load(Ordering::Acquire)
+    );
+    drop(hold);
+    crate::prepared::wait_cancelled(&source, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        crate::prepared::unprepared_blocks(&source, None).unwrap(),
+        None
+    );
+    service.prepare_library(&fixture.paths).unwrap();
+    assert!(
+        !source
+            .state::<crate::prepared::Progress>()
+            .lock()
+            .unwrap()
+            .running
+    );
+    service.set_preparation_suspended(false);
+    // Even after the configured library changes, interrupted opened paths resume.
+    service.prepare_library(&[]).unwrap();
+    wait_library_source(&source);
+    assert_eq!(
+        crate::prepared::unprepared_blocks(&source, None).unwrap(),
+        Some(0)
+    );
+    service.shutdown();
+}
+
+#[test]
+fn game_presence_cancels_automatic_work_without_cancelling_manual_prepare() {
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let automatic = source();
+    let manual = source();
+    for (key, source, automatic) in [("automatic", &automatic, true), ("manual", &manual, false)] {
+        let progress = source.state::<crate::prepared::Progress>();
+        let mut progress = progress.lock().unwrap();
+        progress.running = true;
+        progress.automatic = automatic;
+        service
+            .inner
+            .sources
+            .lock()
+            .unwrap()
+            .entries
+            .insert((PathBuf::from(key), key.into()), Arc::downgrade(source));
+    }
+    service.set_preparation_suspended(true);
+    assert!(
+        automatic
+            .state::<crate::prepared::Progress>()
+            .lock()
+            .unwrap()
+            .cancelled
+            .load(Ordering::Acquire)
+    );
+    assert!(
+        !manual
+            .state::<crate::prepared::Progress>()
+            .lock()
+            .unwrap()
+            .cancelled
+            .load(Ordering::Acquire)
+    );
+    let unopened = source();
+    service
+        .inner
+        .start_preparation(Arc::clone(&unopened), true, &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(
+        unopened
+            .state::<crate::prepared::Progress>()
+            .lock()
+            .unwrap()
+            .state,
+        crate::prepared::State::Idle
+    );
+    service.shutdown();
+}
+
+fn library_action(
+    service: &Service,
+    source: Arc<Source>,
+    action: crate::prepared::Action,
+    id: &str,
+    receive: &mpsc::Receiver<DataEvent>,
+) {
+    let request = service.inner.begin(id.into()).unwrap();
+    service.inner.submit(
+        Arc::clone(&request),
+        LoadJob::Preparation {
+            request,
+            source_id: "library-test".into(),
+            source,
+            action,
+        },
+    );
+    loop {
+        match receive.recv_timeout(HANG_GUARD).unwrap() {
+            DataEvent::Chunk {
+                id: received, last, ..
+            } => {
+                assert_eq!(received, id);
+                if last {
+                    break;
+                }
+            }
+            event => panic!("unexpected preparation action reply: {event:?}"),
+        }
+    }
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn library_preparation_preserves_disabled_clear_and_cancel_until_manual_start() {
+    use crate::prepared::{Action, Progress};
+    let fixture = LibraryFixture::new(&["preferences"]);
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    service.set_background_preparation(false);
+    service.prepare_library(&fixture.paths).unwrap();
+    assert!(service.inner.sources.lock().unwrap().entries.is_empty());
+    let source = service.open_map(&fixture.paths[0], None).unwrap();
+    // Both the game guard and the saved automatic preference permit manual work.
+    service.set_preparation_suspended(true);
+    library_action(
+        &service,
+        Arc::clone(&source),
+        Action::Start,
+        "manual-disabled",
+        &receive,
+    );
+    wait_library_source(&source);
+    assert!(!source.state::<Progress>().lock().unwrap().automatic);
+    library_action(
+        &service,
+        Arc::clone(&source),
+        Action::Clear,
+        "clear-library",
+        &receive,
+    );
+    service.set_background_preparation(true);
+    service.set_preparation_suspended(false);
+    for _ in 0..2 {
+        service.prepare_library(&fixture.paths).unwrap();
+    }
+    assert!(
+        crate::prepared::files(&source, None)
+            .unwrap()
+            .0
+            .saved_key()
+            .unwrap()
+            .is_none()
+    );
+    fixture.append(&fixture.paths[0]);
+    let grown = service.open_map(&fixture.paths[0], None).unwrap();
+    service.prepare_library(&fixture.paths).unwrap();
+    assert!(!grown.state::<Progress>().lock().unwrap().running);
+    assert!(
+        crate::prepared::files(&grown, None)
+            .unwrap()
+            .0
+            .saved_key()
+            .unwrap()
+            .is_none()
+    );
+    library_action(
+        &service,
+        Arc::clone(&grown),
+        Action::Cancel,
+        "cancel-library",
+        &receive,
+    );
+    service.prepare_library(&fixture.paths).unwrap();
+    assert!(!grown.state::<Progress>().lock().unwrap().running);
+    library_action(
+        &service,
+        Arc::clone(&grown),
+        Action::Start,
+        "manual-cleared",
+        &receive,
+    );
+    wait_library_source(&grown);
+    assert_eq!(
+        crate::prepared::unprepared_blocks(&grown, None).unwrap(),
+        Some(0)
+    );
+
+    service.shutdown();
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn library_preparation_failed_opens_stop_at_one_attempt_for_5000_inputs() {
+    let fixture = LibraryFixture::new(&["failed-open"]);
+    let path = &fixture.paths[0];
+    std::fs::write(path, b"synthetic unreadable recording").unwrap();
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let paths = vec![path.clone(); 5_000];
+    for _ in 0..5 {
+        service.prepare_library(&paths).unwrap();
+    }
+    assert_eq!(
+        service.inner.sources.lock().unwrap().open_attempts(),
+        1,
+        "unchanged failed inputs must not reopen on no-progress replies"
+    );
+    std::fs::write(path, b"a changed synthetic unreadable recording").unwrap();
+    for _ in 0..5 {
+        service.prepare_library(&paths).unwrap();
+    }
+    assert_eq!(
+        service.inner.sources.lock().unwrap().open_attempts(),
+        2,
+        "only a changed recording permits another open attempt"
+    );
+    service.set_preparation_suspended(true);
+    service.set_preparation_suspended(false);
+    for _ in 0..5 {
+        service.prepare_library(&paths).unwrap();
+    }
+    assert_eq!(
+        service.inner.sources.lock().unwrap().open_attempts(),
+        2,
+        "queue/game changes must not reopen the same failed input"
+    );
+    service.shutdown();
+}
+
+/// Only the loaders are stalled. All repeated product bodies and cancellation
+/// calls below go through the real service admission and physical lane queue.
+struct LoaderHold(Arc<(Mutex<bool>, std::sync::Condvar)>);
+impl LoaderHold {
+    fn new(service: &Service, interactive: bool) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
+        let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let (sent, seen) = mpsc::channel();
+        let count = if interactive {
+            INTERACTIVE_THREADS
+        } else {
+            LOADER_THREADS
+        };
+        for index in 0..count {
+            let id = format!("stalled-{sequence}-{index}");
+            let request = service.inner.begin(id.clone()).unwrap();
+            let released = Arc::clone(&release);
+            let sent = sent.clone();
+            service.inner.submit(
+                Arc::clone(&request),
+                LoadJob::Fixture {
+                    request,
+                    interactive,
+                    run: Box::new(move || {
+                        sent.send(()).unwrap();
+                        let ready = released.0.lock().unwrap();
+                        let (ready, _) = released
+                            .1
+                            .wait_timeout_while(ready, HANG_GUARD, |ready| !*ready)
+                            .unwrap();
+                        assert!(*ready, "stalled loader was not released");
+                    }),
+                },
+            );
+            seen.recv_timeout(HANG_GUARD).unwrap();
+            drop(service.inner.pending.lock().unwrap().cancel(&id));
+        }
+        Self(release)
+    }
+}
+impl Drop for LoaderHold {
+    fn drop(&mut self) {
+        *self.0.0.lock().unwrap() = true;
+        self.0.1.notify_all();
+    }
+}
+
+/// Requests still alive once the response pump lets go of them. A refusal
+/// from a full lane is delivered on the pump thread, which holds that one
+/// request until delivery ends, so a count taken at once can see the full lane
+/// plus it. Lane-retained requests never settle, so the old unbounded channel
+/// still fails at `MAX_PENDING + 1`.
+fn settled_live_requests(retained: &[std::sync::Weak<Request>]) -> usize {
+    let live = || {
+        retained
+            .iter()
+            .filter(|request| request.strong_count() != 0)
+            .count()
+    };
+    let deadline = std::time::Instant::now() + HANG_GUARD;
+    loop {
+        let count = live();
+        if count <= MAX_PENDING || std::time::Instant::now() >= deadline {
+            return count;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn cancelled_resubmitted_jobs_keep_both_loader_lanes_bounded() {
+    // Hard bound: the old unbounded channel fails at MAX_PENDING + 1, rather
+    // than letting the reproducer itself run away.
+    const CYCLES: usize = MAX_PENDING * 4;
+    for interactive in [false, true] {
+        let (sent, receive) = mpsc::channel();
+        let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+        let hold = LoaderHold::new(&service, interactive);
+        let source = source();
+        let countries: Vec<_> = (0..5_000)
+            .map(|index| format!("synthetic-{index}"))
+            .collect();
+        let params = serde_json::json!({"countries": countries, "hour": 1});
+        let mut retained = Vec::new();
+        for index in 0..CYCLES {
+            let id = format!("cancel-resubmit-{index}");
+            let request = service.inner.begin(id.clone()).unwrap();
+            retained.push(Arc::downgrade(&request));
+            let body = ProductRequest {
+                source_id: source.key().source_id.clone(),
+                revision: source.key().revision.clone(),
+                product: "country-groups".into(),
+                params: params.clone(),
+            };
+            assert_eq!(body.params["countries"].as_array().unwrap().len(), 5_000);
+            let job = if interactive {
+                LoadJob::PreparedQuery {
+                    request: Arc::clone(&request),
+                    source: Arc::clone(&source),
+                    body,
+                }
+            } else {
+                LoadJob::Product {
+                    request: Arc::clone(&request),
+                    lease_id: "test-lease".into(),
+                    source: Arc::clone(&source),
+                    body,
+                }
+            };
+            service.inner.submit(Arc::clone(&request), job);
+            drop(service.inner.pending.lock().unwrap().cancel(&id));
+            drop(request);
+            assert!(
+                settled_live_requests(&retained) <= MAX_PENDING,
+                "cancelled queued jobs exceeded the existing lane budget at cycle {index}"
+            );
+        }
+        assert_eq!(settled_live_requests(&retained), MAX_PENDING);
+        // A full lane reports the existing retryable capacity refusal.
+        let request = service.inner.begin("lane-full".into()).unwrap();
+        service.inner.submit(
+            Arc::clone(&request),
+            if interactive {
+                LoadJob::PreparedQuery {
+                    request,
+                    source: Arc::clone(&source),
+                    body: ProductRequest {
+                        source_id: "source-test".into(),
+                        revision: "revision-test".into(),
+                        product: "country-groups".into(),
+                        params: params.clone(),
+                    },
+                }
+            } else {
+                LoadJob::Product {
+                    request,
+                    lease_id: "test-lease".into(),
+                    source: Arc::clone(&source),
+                    body: ProductRequest {
+                        source_id: "source-test".into(),
+                        revision: "revision-test".into(),
+                        product: "country-groups".into(),
+                        params: params.clone(),
+                    },
+                }
+            },
+        );
+        let mut refused = false;
+        for _ in 0..=CYCLES {
+            if let DataEvent::Error { id, message } = receive.recv_timeout(HANG_GUARD).unwrap() {
+                assert_eq!(message, crate::transport::CAPACITY_REACHED);
+                if id == "lane-full" {
+                    refused = true;
+                    break;
+                }
+            }
+        }
+        assert!(refused);
+        drop(hold);
+        service.shutdown();
+        assert!(retained.iter().all(|request| request.strong_count() == 0));
+    }
+}
+
+#[test]
+fn preparation_refreshes_coalesce_per_source_and_share_the_history_bound() {
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let hold = LoaderHold::new(&service, false);
+    let source = source();
+    for _ in 0..MAX_PENDING * 4 {
+        service
+            .inner
+            .refresh_preparation(Arc::clone(&source), false)
+            .unwrap();
+    }
+    service
+        .inner
+        .refresh_preparation(Arc::clone(&source), true)
+        .unwrap();
+    service
+        .inner
+        .refresh_preparation(Arc::clone(&source), false)
+        .unwrap();
+    {
+        let loader = service.inner.loader.lock().unwrap();
+        let refreshes = &loader.as_ref().unwrap().refreshes;
+        assert_eq!(
+            refreshes.len(),
+            1,
+            "repeat refreshes must retain one queued job"
+        );
+        assert!(
+            refreshes.get(source.key()).unwrap().load(Ordering::Acquire),
+            "restart upgrades cannot be lost"
+        );
+    }
+    assert_eq!(
+        Arc::strong_count(&source),
+        2,
+        "one queued refresh owns one source reference"
+    );
+    // The refresh consumes an ordinary history slot, so only budget - 1
+    // cancelled product jobs can still be physically retained.
+    let mut retained = Vec::new();
+    for index in 0..MAX_PENDING * 2 {
+        let id = format!("refresh-shared-{index}");
+        let request = service.inner.begin(id.clone()).unwrap();
+        retained.push(Arc::downgrade(&request));
+        service.inner.submit(
+            Arc::clone(&request),
+            LoadJob::Product {
+                request: Arc::clone(&request),
+                lease_id: "test-lease".into(),
+                source: Arc::clone(&source),
+                body: ProductRequest {
+                    source_id: "source-test".into(),
+                    revision: "revision-test".into(),
+                    product: "country-groups".into(),
+                    params: serde_json::json!({}),
+                },
+            },
+        );
+        drop(service.inner.pending.lock().unwrap().cancel(&id));
+        drop(request);
+    }
+    assert_eq!(
+        retained
+            .iter()
+            .filter(|request| request.strong_count() != 0)
+            .count(),
+        MAX_PENDING - 1
+    );
+    let other = source_with_id("other-refresh");
+    assert_eq!(
+        service
+            .inner
+            .refresh_preparation(other, true)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        service
+            .inner
+            .loader
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .refreshes
+            .len(),
+        1
+    );
+    drop(hold);
+    service.shutdown();
+}
+
+#[test]
+fn preparation_refresh_coalescing_retires_when_loader_receives_the_job() {
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let hold = LoaderHold::new(&service, false);
+    let source = source();
+    service
+        .inner
+        .refresh_preparation(Arc::clone(&source), false)
+        .unwrap();
+    assert_eq!(
+        service
+            .inner
+            .loader
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .refreshes
+            .len(),
+        1
+    );
+    drop(hold);
+    // Occupying every worker behind that refresh proves physical retirement,
+    // without an unbounded status/request poll.
+    let behind_refresh = LoaderHold::new(&service, false);
+    assert!(
+        service
+            .inner
+            .loader
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .refreshes
+            .is_empty()
+    );
+    service.inner.refresh_preparation(source, true).unwrap();
+    assert_eq!(
+        service
+            .inner
+            .loader
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .refreshes
+            .len(),
+        1
+    );
+    drop(behind_refresh);
     service.shutdown();
 }

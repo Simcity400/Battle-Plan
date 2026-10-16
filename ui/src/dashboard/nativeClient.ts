@@ -1,7 +1,11 @@
+import { validatePreparationReply, validatePreparationPreferences } from '../shell/preparation/contract.ts';
+import { validateProductReply } from './client.ts';
+import type { PreparationRequest, PreparationReply, PreparationPreferences } from '../shell/preparation/contract';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { newId } from '../shell/ids.ts';
 import { desktopAvailable } from '../shell/api';
+import type { ContentFolders } from '../shell/api';
 import type { SourceReply } from '../generated/dashboard';
 import type { DashboardClient, DashboardMapState, DashboardSource, HistoryCacheReply, MapSettingsReply, ProductReply, RecorderSettings, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
@@ -45,6 +49,18 @@ async function request<T>(
   }
 }
 
+async function preparation(command: string, query: PreparationRequest, signal: AbortSignal): Promise<PreparationReply> {
+  if (!desktopAvailable) throw new Error('Open the desktop app to prepare recordings.');
+  if (signal.aborted) throw cancelled();
+  const abort = () => { void invoke('dashboard_cancel', { requestId: query.requestId }).catch(() => {}); };
+  signal.addEventListener('abort', abort, { once: true });
+  try {
+    const reply = await rawInvoke<PreparationReply>(command, query as unknown as Record<string, unknown>);
+    if (signal.aborted) throw cancelled();
+    return validatePreparationReply(reply, query);
+  } finally { signal.removeEventListener('abort', abort); }
+}
+
 async function releaseSource(sourceId: string): Promise<void> {
   if (!desktopAvailable) return;
   await invoke('dashboard_release_source', { sourceId });
@@ -59,6 +75,10 @@ export const nativeDashboardClient: DashboardClient = {
     chooseReplayFolder: (initial?: string) => invoke<string | null>('choose_replay_folder', { initial: initial ?? null }),
     chooseRecording: () => invoke<string | null>('choose_recording'),
     recorderSettings: () => invoke<RecorderSettings>('recorder_settings'),
+    // The host owns the content folders and sends them to its native viewer.
+    contentFolders: () => invoke<ContentFolders>('content_folders'),
+    chooseContentFolder: (kind: 'game' | 'user', initial: string) => invoke<string | null>('choose_content_folder', { kind, initial }),
+    setContentFolders: (game: string, user: string) => invoke<ContentFolders>('set_content_folders', { game, user }),
   } : {}),
 
   async mapSettings(sourceId, revision, settings, signal, target = { scope: 'campaign' }) {
@@ -67,6 +87,16 @@ export const nativeDashboardClient: DashboardClient = {
     return reply;
   },
 
+  preparationPreferences: async (enabled, signal) => validatePreparationPreferences(await request<PreparationPreferences>('dashboard_preparation_preferences', () => ({ enabled }), signal)),
+  preparationStatus: (query, signal) => preparation('dashboard_preparation_status', query, signal),
+  async preparedQuery<T>(source: DashboardSource, product: string, params: unknown, options: { signal: AbortSignal }): Promise<T> {
+    const query = { sourceId: source.id, revision: source.revision, product, params };
+    const reply = await request<ProductReply<T>>('dashboard_prepared_query', () => ({ query }), options.signal);
+    return validateProductReply(reply, query).data;
+  },
+  prepareSource: (query, signal) => preparation('dashboard_prepare_source', query, signal),
+  cancelPreparation: (query, signal) => preparation('dashboard_cancel_preparation', query, signal),
+  clearPreparation: (query, signal) => preparation('dashboard_clear_preparation', query, signal),
   historyCache: (clear, signal) => request<HistoryCacheReply>('dashboard_history_cache', () => ({ clear }), signal),
 
   async openSource(path, signal): Promise<DashboardSource> {

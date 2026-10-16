@@ -1,5 +1,5 @@
-//! One branch scan shared by the Raid log and Raid tally. All countries enter
-//! the scan. Hourly reads supply every value; gaps end runs, never imply zero.
+//! One prepared observer shared by the Raid log and Raid tally. All countries
+//! enter the observer. Hourly reads supply every value; gaps end runs, never imply zero.
 //! Counts are observed launches/results, not an invented pre-recording census.
 
 use super::{
@@ -11,7 +11,7 @@ use super::{
 use crate::{
     Source,
     catalogue::{self, Catalogue, Refusals, View},
-    metadata::{IdentityTrack, LinkTags, mapped_slot, slot_read, validate_campaign},
+    metadata::{IdentityTrack, LinkTags, mapped_slot, slot_read},
     scripted_text::{self, StateNames},
     transport::json_len,
 };
@@ -21,23 +21,28 @@ use installed_content::raids::{
     target::{country as target_country, state as target_state},
 };
 use replay::{
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder},
+    frame::DecodedFrame,
     rows::{RaidRow, RaidScope, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     io,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex, atomic::AtomicBool},
 };
 use ts_rs::TS;
+#[cfg(test)]
+use {
+    crate::metadata::validate_campaign,
+    replay::{container::Replay, frame::FrameDecoder},
+    std::{collections::VecDeque, sync::atomic::Ordering},
+};
 
 pub struct Raids;
 
+pub(crate) mod prepared;
+
+#[cfg(test)]
 const CACHED_BRANCHES: usize = 4;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -88,13 +93,13 @@ pub struct RaidArtwork {
     pub missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RaidDate {
     pub hour: i32,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RaidRun {
     pub first_hour: i32,
@@ -122,7 +127,7 @@ pub struct RaidRun {
 /// Stored preparation hours supply elapsed phase time in phase 2 only.
 /// Every hour in a run was read and matched its exact slope; a missing read
 /// ends it, so this encoding never interpolates across a gap.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct RaidPreparationRun(pub i32, pub i32, pub i32, #[ts(type = "number")] pub i64);
 
 impl RaidPreparationRun {
@@ -142,7 +147,7 @@ impl RaidPreparationRun {
     }
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RaidEpisode {
     pub id: String,
@@ -153,7 +158,7 @@ pub struct RaidEpisode {
     pub preparation: Vec<RaidPreparationRun>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RaidTallyRun {
     pub first_hour: i32,
@@ -234,7 +239,7 @@ fn succeeded(row: &RaidRow) -> Option<bool> {
     }
 }
 
-struct Content {
+pub(crate) struct Content {
     catalogue: Arc<Catalogue>,
     raids: Catalog,
     names: StateNames,
@@ -455,7 +460,7 @@ fn target_name(
     .and_then(|text| catalogue::plain_text(&text))
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct ScannedRaids {
     pub episodes: Vec<RaidEpisode>,
     pub series: BTreeMap<String, Vec<RaidTallyRun>>,
@@ -466,7 +471,7 @@ pub struct ScannedRaids {
     pub warnings: Vec<String>,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Track {
     identity: IdentityTrack,
     segments: Vec<HourSpan>,
@@ -474,19 +479,55 @@ struct Track {
     holder: Option<(u32, u32)>,
 }
 
+#[derive(Serialize, Deserialize)]
 struct Scan {
     /// The recording's format, which dates its daily tables
-    /// ([`crate::metadata::slot_read`]).
+    /// ([`crate::metadata::slot_read`]); every observation supplies it.
+    #[serde(skip)]
     format: replay::format::FormatVersion,
     result: ScannedRaids,
     tracks: BTreeMap<String, Track>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     tallies: BTreeMap<Identity, (u32, u32)>,
     tags: LinkTags,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     open: BTreeMap<(u32, u32), usize>,
     counted_launch: BTreeSet<(u32, u32)>,
     counted_success: BTreeSet<(u32, u32)>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     ended_victims: BTreeMap<(u32, u32), Option<String>>,
     refusals: Refusals,
+    last_frame: Option<(u64, i32)>,
+    presence_through: Option<i32>,
+    raid_through: Option<i32>,
+    present_tags: BTreeSet<String>,
+    raid_tags: BTreeSet<String>,
+    world_read: bool,
+    #[serde(skip)]
+    country_keys: Option<crate::metadata::CountryKeys>,
+    #[serde(skip)]
+    by_slot: BTreeMap<u32, String>,
+    #[serde(skip)]
+    identity_ready: bool,
+    #[serde(skip)]
+    raid_ready: bool,
+    #[serde(skip)]
+    parents_ready: bool,
+    #[serde(skip)]
+    parent_tags: BTreeMap<u32, String>,
+    #[serde(skip)]
+    parents_changed: bool,
+    #[serde(skip)]
+    changed_tallies: BTreeSet<String>,
+    #[cfg(test)]
+    #[serde(skip)]
+    work: crate::prepared::observer_tests::Work,
+}
+
+impl Default for Scan {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Scan {
@@ -502,90 +543,269 @@ impl Scan {
             counted_success: BTreeSet::new(),
             ended_victims: BTreeMap::new(),
             refusals: Refusals::default(),
+            last_frame: None,
+            presence_through: None,
+            raid_through: None,
+            present_tags: BTreeSet::new(),
+            raid_tags: BTreeSet::new(),
+            world_read: false,
+            country_keys: None,
+            by_slot: BTreeMap::new(),
+            identity_ready: false,
+            raid_ready: false,
+            parents_ready: false,
+            parent_tags: BTreeMap::new(),
+            parents_changed: false,
+            changed_tallies: BTreeSet::new(),
+            #[cfg(test)]
+            work: Default::default(),
         }
     }
 
+    fn seal_presence(&mut self) {
+        if let Some(hour) = self.presence_through {
+            for tag in &self.present_tags {
+                #[cfg(test)]
+                {
+                    self.work.history_visits += 1;
+                }
+                let track = self.tracks.get_mut(tag).expect("present country track");
+                track.identity.advance(hour);
+                track
+                    .segments
+                    .last_mut()
+                    .expect("present segment")
+                    .last_hour = hour;
+            }
+        }
+    }
+    fn seal_raids(&mut self) {
+        if let Some(hour) = self.raid_through {
+            for &index in self.open.values() {
+                #[cfg(test)]
+                {
+                    self.work.history_visits += 1;
+                }
+                let episode = &mut self.result.episodes[index];
+                if let Some(run) = episode.runs.last_mut() {
+                    run.last_hour = hour;
+                }
+                if let Some(last) = episode.preparation.last_mut() {
+                    if last.1 < hour && last.3 != 0 {
+                        let held = i128::from(last.2)
+                            + (i128::from(last.1) - i128::from(last.0)) * i128::from(last.3);
+                        let first = last.1 + 1;
+                        episode.preparation.push(RaidPreparationRun(
+                            first,
+                            hour,
+                            i32::try_from(held).expect("recorded preparation value"),
+                            0,
+                        ));
+                    } else {
+                        last.1 = hour;
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(test)]
     fn observe(&mut self, frame: &DecodedFrame, content: Option<&Content>) -> io::Result<()> {
+        self.observe_changed(frame, content, None).map(|_| ())
+    }
+    fn observe_changed(
+        &mut self,
+        frame: &DecodedFrame,
+        content: Option<&Content>,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+    ) -> io::Result<(bool, bool)> {
         let hour = frame.hour;
-        if self.tags.update(frame).is_err() {
-            return Ok(());
+        self.parents_changed = false;
+        self.changed_tallies.clear();
+        let continuous = self.last_frame.is_some_and(|(branch, last)| {
+            branch == frame.branch && last.checked_add(1) == Some(hour)
+        });
+        self.last_frame = Some((frame.branch, hour));
+        if !continuous {
+            self.seal_presence();
+            self.seal_raids();
+            self.presence_through = None;
+            self.raid_through = None;
+            self.identity_ready = false;
+            self.raid_ready = false;
         }
-        let countries = frame.complete::<tables::Countries>()?;
-        let links = frame.complete::<tables::CountryLinks>()?;
-        let mut by_slot = BTreeMap::new();
-        for country in countries {
-            let Ok(slot) = mapped_slot(country, links) else {
-                self.refusals
-                    .note("unresolved country identity", country.id.to_string());
-                continue;
-            };
-            let Some(tag) = self.tags.get(country.id) else {
-                self.refusals
-                    .note("unresolved country tag", country.id.to_string());
-                continue;
-            };
-            if !self.tracks.contains_key(tag.as_str()) {
-                self.tracks.insert(tag.clone(), Track::default());
+        let (Ok(countries), Ok(links)) = (
+            frame.complete::<tables::Countries>(),
+            frame.complete::<tables::CountryLinks>(),
+        ) else {
+            self.seal_presence();
+            self.seal_raids();
+            self.present_tags.clear();
+            self.presence_through = None;
+            self.raid_through = None;
+            self.identity_ready = false;
+            self.raid_ready = false;
+            return Ok((true, false));
+        };
+        let country_changed = changes.is_none_or(|changes| {
+            changes.rows_changed[TableId::Countries.index()]
+                && self.country_keys.as_ref().is_none_or(|keys| {
+                    #[cfg(test)]
+                    let before = keys.row_visits();
+                    let changed = !keys.same(countries);
+                    #[cfg(test)]
+                    {
+                        self.work.row_visits += keys.row_visits() - before;
+                    }
+                    changed
+                })
+        });
+        let identity_changed = !self.identity_ready
+            || country_changed
+            || changes.is_none_or(|changes| changes.rows_changed[TableId::CountryLinks.index()]);
+        if identity_changed {
+            #[cfg(test)]
+            {
+                self.work.row_visits += countries.len() + links.len();
             }
-            let track = self.tracks.get_mut(tag.as_str()).expect("country track");
-            let holder = (slot, country.id);
-            let continues = track.identity.step(Some(holder), hour);
-            track.holder = Some(holder);
-            if continues {
-                track.segments.last_mut().unwrap().last_hour = hour;
-            } else {
-                track.segments.push(HourSpan {
-                    first_hour: hour,
-                    last_hour: hour,
-                });
+            self.tags.update(frame)?;
+            self.seal_presence();
+            self.present_tags.clear();
+            self.by_slot.clear();
+            self.country_keys = Some(crate::metadata::CountryKeys::read(countries));
+            for country in countries {
+                #[cfg(test)]
+                {
+                    self.work.row_visits += 1;
+                }
+                let Ok(slot) = mapped_slot(country, links) else {
+                    self.refusals
+                        .note("unresolved country identity", country.id.to_string());
+                    continue;
+                };
+                let Some(tag) = self.tags.get(country.id) else {
+                    self.refusals
+                        .note("unresolved country tag", country.id.to_string());
+                    continue;
+                };
+                if !self.tracks.contains_key(tag.as_str()) {
+                    self.tracks.insert(tag.clone(), Track::default());
+                }
+                let track = self.tracks.get_mut(tag.as_str()).expect("country track");
+                let holder = (slot, country.id);
+                let continues = track.identity.step(Some(holder), hour);
+                track.holder = Some(holder);
+                if continues {
+                    track.segments.last_mut().unwrap().last_hour = hour;
+                } else {
+                    track.segments.push(HourSpan {
+                        first_hour: hour,
+                        last_hour: hour,
+                    });
+                }
+                self.present_tags.insert(tag.clone());
+                self.by_slot.insert(slot, tag.clone());
             }
-            by_slot.insert(slot, tag.as_str());
+            self.identity_ready = true;
         }
-        if !slot_read(self.format, &frame.metrics, TableId::Raids, hour) {
-            return Ok(());
+        self.presence_through = Some(hour);
+        if !changes.map_or_else(
+            || slot_read(self.format, &frame.metrics, TableId::Raids, hour),
+            |changes| changes.slot_read[TableId::Raids.index()],
+        ) {
+            self.seal_raids();
+            self.raid_through = None;
+            self.raid_ready = false;
+            return Ok((identity_changed, false));
         }
         let (Ok(parents), Ok(raids)) = (
             frame.complete::<tables::RaidCountries>(),
             frame.complete::<tables::Raids>(),
         ) else {
-            return Ok(());
+            self.seal_raids();
+            self.raid_through = None;
+            self.raid_ready = false;
+            return Ok((identity_changed, false));
         };
-        self.result.recording_present |= parents
-            .iter()
-            .any(|parent| !parent.eligible_types.is_empty())
+        let raid_changed = identity_changed
+            || !self.raid_ready
+            || changes.is_none_or(|changes| {
+                [
+                    TableId::RaidCountries,
+                    TableId::Raids,
+                    TableId::RaidTargets,
+                    TableId::LexicalTokens,
+                    TableId::Provinces,
+                    TableId::States,
+                    TableId::CountryAppearance,
+                ]
+                .iter()
+                .any(|table| changes.rows_changed[table.index()])
+            });
+        if !raid_changed {
+            if self.world_read {
+                self.result.read_hours.push(hour);
+            }
+            self.raid_through = Some(hour);
+            return Ok((identity_changed, false));
+        }
+        self.seal_raids();
+        self.result.recording_present |= (changes
+            .is_none_or(|changes| changes.rows_changed[TableId::RaidCountries.index()])
+            && parents
+                .iter()
+                .any(|parent| !parent.eligible_types.is_empty()))
             || !raids.is_empty();
         let targets = frame.complete::<tables::RaidTargets>().ok();
         let lexical = frame.complete::<tables::LexicalTokens>().ok();
-        let mut parent_tags = BTreeMap::new();
-        for parent in parents {
-            let valid = crate::metadata::link_slot(links, parent.country as u32)
-                == Some(parent.canonical_slot);
-            if let Some(tag) = by_slot.get(&parent.canonical_slot).filter(|_| valid) {
-                parent_tags.insert(parent.canonical_slot, *tag);
-            } else {
-                self.refusals.note(
-                    "RaidCountries country link does not establish its canonical slot",
-                    parent.canonical_slot.to_string(),
-                );
-            }
-        }
-        if by_slot.len() == countries.len()
-            && parent_tags.len() == by_slot.len()
-            && parent_tags.len() == parents.len()
-        {
-            self.result.read_hours.push(hour);
-        } else {
-            // Valid country rows keep their values, but incomplete identity or
-            // parent coverage cannot prove that an empty race is a world zero.
-            for (slot, tag) in &by_slot {
-                if !parent_tags.contains_key(slot) {
-                    self.refusals
-                        .note("RaidCountries row was not recorded", *tag);
+        self.parents_changed = identity_changed
+            || !self.parents_ready
+            || changes.is_none_or(|changes| changes.rows_changed[TableId::RaidCountries.index()]);
+        if self.parents_changed {
+            let by_slot = &self.by_slot;
+            let mut parent_tags = BTreeMap::new();
+            for parent in parents {
+                #[cfg(test)]
+                {
+                    self.work.row_visits += 1;
+                }
+                let valid = crate::metadata::link_slot(links, parent.country as u32)
+                    == Some(parent.canonical_slot);
+                if let Some(tag) = by_slot.get(&parent.canonical_slot).filter(|_| valid) {
+                    parent_tags.insert(parent.canonical_slot, tag.clone());
+                } else {
+                    self.refusals.note(
+                        "RaidCountries country link does not establish its canonical slot",
+                        parent.canonical_slot.to_string(),
+                    );
                 }
             }
+            self.world_read = by_slot.len() == countries.len()
+                && parent_tags.len() == by_slot.len()
+                && parent_tags.len() == parents.len();
+            if !self.world_read {
+                // Valid country rows keep their values, but incomplete identity or
+                // parent coverage cannot prove that an empty race is a world zero.
+                for (slot, tag) in by_slot {
+                    if !parent_tags.contains_key(slot) {
+                        self.refusals
+                            .note("RaidCountries row was not recorded", tag.as_str());
+                    }
+                }
+            }
+            self.raid_tags = parent_tags.values().cloned().collect();
+            self.parent_tags = parent_tags;
+            self.parents_ready = true;
         }
+        if self.world_read {
+            self.result.read_hours.push(hour);
+        }
+        let parent_tags = &self.parent_tags;
         let mut next = BTreeMap::new();
         for row in raids {
+            #[cfg(test)]
+            {
+                self.work.row_visits += 1;
+            }
             let key = (row.id, row.reference_type);
             let index = match self.open.get(&key) {
                 Some(index) => *index,
@@ -664,6 +884,10 @@ impl Scan {
                     }
                 }
                 if let Some(content) = content {
+                    #[cfg(test)]
+                    {
+                        self.work.interpreter_calls += 1;
+                    }
                     match target_name(frame, &target.scope, content) {
                         Ok(text) => name = Some(text),
                         Err(reason) => self.refusals.note(reason, &id),
@@ -731,12 +955,14 @@ impl Scan {
                 let holder = self.tracks[tag].holder.expect("current country holder");
                 let tally = self.tallies.entry(holder).or_default();
                 if was_launched == Some(true) && self.counted_launch.insert(key) {
+                    self.changed_tallies.insert(tag.clone());
                     tally.0 = tally
                         .0
                         .checked_add(1)
                         .ok_or_else(|| io::Error::other("Raid launch count overflow"))?;
                 }
                 if was_success == Some(true) && self.counted_success.insert(key) {
+                    self.changed_tallies.insert(tag.clone());
                     tally.1 = tally
                         .1
                         .checked_add(1)
@@ -829,34 +1055,44 @@ impl Scan {
             }
         }
         self.open = next;
-        for tag in parent_tags.values() {
-            let track = self.tracks.get_mut(*tag).expect("country track");
-            let (launched, succeeded) = self
-                .tallies
-                .get(&track.holder.expect("current country holder"))
-                .copied()
-                .unwrap_or_default();
-            let run = RaidTallyRun {
-                first_hour: hour,
-                last_hour: hour,
-                read_hour: hour,
-                launched,
-                succeeded,
-            };
-            if let Some(last) = track.runs.last_mut()
-                && last.last_hour.checked_add(1) == Some(hour)
-                && last.launched == run.launched
-                && last.succeeded == run.succeeded
-            {
-                last.last_hour = hour;
-            } else {
-                track.runs.push(run);
+        if changes.is_none() {
+            for tag in parent_tags.values() {
+                #[cfg(test)]
+                {
+                    self.work.row_visits += 1;
+                }
+                let track = self.tracks.get_mut(tag).expect("country track");
+                let (launched, succeeded) = self
+                    .tallies
+                    .get(&track.holder.expect("current country holder"))
+                    .copied()
+                    .unwrap_or_default();
+                let run = RaidTallyRun {
+                    first_hour: hour,
+                    last_hour: hour,
+                    read_hour: hour,
+                    launched,
+                    succeeded,
+                };
+                if let Some(last) = track.runs.last_mut()
+                    && last.last_hour.checked_add(1) == Some(hour)
+                    && last.launched == run.launched
+                    && last.succeeded == run.succeeded
+                {
+                    last.last_hour = hour;
+                } else {
+                    track.runs.push(run);
+                }
             }
         }
-        Ok(())
+        self.raid_through = Some(hour);
+        self.raid_ready = true;
+        Ok((identity_changed, true))
     }
 
     fn finish(mut self) -> ScannedRaids {
+        self.seal_presence();
+        self.seal_raids();
         for (tag, track) in self.tracks {
             self.result.segments.insert(tag.clone(), track.segments);
             if !track.runs.is_empty() {
@@ -873,6 +1109,7 @@ impl Scan {
     }
 }
 
+#[cfg(test)]
 fn scan(
     replay: &Replay,
     branch: u64,
@@ -939,7 +1176,9 @@ fn scan(
 
 #[derive(Default)]
 struct Cache {
-    content: Option<Arc<Content>>,
+    content: catalogue::CachedResult<Content>,
+    content_catalogue: Option<Arc<Catalogue>>,
+    #[cfg(test)]
     scans: VecDeque<(u64, Option<Arc<Catalogue>>, Arc<ScannedRaids>)>,
 }
 
@@ -947,6 +1186,7 @@ struct Cache {
 /// read. The allowed-type roster is populated at load/new game/database reload,
 /// independently of player status. Neither a missing row nor an empty roster
 /// invents a disabled feature.
+#[cfg(test)]
 fn recording_available(
     replay: &Replay,
     branch: u64,
@@ -1230,6 +1470,115 @@ fn selected_series_with_histories(
     Ok(series)
 }
 
+pub(crate) fn prepared_content(
+    source: &Source,
+    context: &LoadContext,
+) -> io::Result<(Option<Arc<Content>>, Vec<String>)> {
+    let state = source.state::<Cache>();
+    let mut cache = state.lock().unwrap_or_else(|e| e.into_inner());
+    let cat = context
+        .content()
+        .and_then(|options| catalogue::catalogue(source, options));
+    let mut warnings = Vec::new();
+    let content = match cat {
+        Ok(cat) => {
+            if !cache
+                .content_catalogue
+                .as_ref()
+                .is_some_and(|c| Arc::ptr_eq(c, &cat))
+            {
+                cache.content = catalogue::CachedResult::default();
+                cache.content_catalogue = Some(Arc::clone(&cat));
+            }
+            Some(cache.content.get_or_init(|| read_content(cat))?)
+        }
+        Err(error) => {
+            warnings.push(format!(
+                "Raid content names and artwork are unavailable: {error}"
+            ));
+            None
+        }
+    };
+    if let Some(content) = &content {
+        warnings.extend(content.warnings.iter().cloned());
+    }
+    Ok((content, warnings))
+}
+
+fn reply(
+    params: &RaidsParams,
+    content: Option<&Content>,
+    available: Option<bool>,
+    warnings: Vec<String>,
+    scanned: Option<&ScannedRaids>,
+    histories: Option<&RecordedHistories>,
+    cancelled: &AtomicBool,
+) -> io::Result<RaidsReply> {
+    let mut reply = RaidsReply {
+        branch_id: params.branch_id.clone(),
+        phase_preparing: native::PHASE_PREPARING,
+        phase_ended: native::PHASE_ENDED,
+        outcome_none: native::OUTCOME_NONE,
+        available,
+        unavailable: (available == Some(false))
+            .then(|| "Not in this recording: the recorded content defines no raid types".into()),
+        types: content.map_or_else(Vec::new, |c| c.types.clone()),
+        artwork: Vec::new(),
+        episodes: Vec::new(),
+        series: Vec::new(),
+        read_hours: Vec::new(),
+        warnings,
+    };
+    if let Some(scanned) = scanned {
+        if scanned.recording_present {
+            reply.available = Some(true);
+            reply.unavailable = None;
+        }
+        for token in &scanned.types {
+            if !reply.types.iter().any(|kind| &kind.token == token) {
+                reply.types.push(RaidTypeInfo {
+                    token: token.clone(),
+                    name: None,
+                    missing: Some(format!(
+                        "raid type {token} is absent from the recorded content catalogue"
+                    )),
+                });
+            }
+        }
+        reply.read_hours.clone_from(&scanned.read_hours);
+        reply.warnings.extend(scanned.warnings.iter().cloned());
+        reply.warnings.push("Counts are lower bounds from observed raids. A recorded in-progress phase or finite nonzero travelled distance proves launch, counted by its first proving read. A terminal result alone has unknown launch because native console completion can bypass it. Success is counted by its first successful result read. Pre-recording and entirely between-read raids are unknown. Limited success is not a native success.".into());
+        if params.view == RaidsView::Tally {
+            if let Some(content) = content {
+                for warning in content.catalogue.refusal_lines() {
+                    if !reply.warnings.contains(&warning) {
+                        reply.warnings.push(warning);
+                    }
+                }
+            }
+            let bytes = json_len(&reply, MAX_PRODUCT_REPLY_BYTES).ok_or_else(|| io::Error::other("RaidReplyTooLarge: the complete raid reply exceeds one complete response; no countries or raids were omitted"))?;
+            reply.series =
+                selected_series_with_histories(scanned, params, cancelled, histories, bytes)?;
+        }
+    }
+    let episodes = scanned
+        .filter(|_| params.view == RaidsView::Log)
+        .map_or(&[][..], |s| s.episodes.as_slice());
+    if let Some(content) = content {
+        if params.view == RaidsView::Log {
+            reply.artwork = log_artwork(content, episodes);
+        }
+        for warning in content.catalogue.refusal_lines() {
+            if !reply.warnings.contains(&warning) {
+                reply.warnings.push(warning);
+            }
+        }
+    }
+    measure_reply(&reply, episodes)?;
+    reply.episodes.extend_from_slice(episodes);
+    Ok(reply)
+}
+
 impl Product for Raids {
     const KEY: &'static str = "raids";
     const CONTENT_DEPENDENT: bool = true;
@@ -1267,39 +1616,16 @@ impl Product for Raids {
         }
         Ok(())
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
-        let cat = context
-            .content()
-            .and_then(|options| catalogue::catalogue(source, options));
+        let (content, warnings) = prepared_content(source, context)?;
         let state = source.state::<Cache>();
         let mut cache = state.lock().unwrap_or_else(|e| e.into_inner());
-        let mut warnings = Vec::new();
-        let content = match cat {
-            Ok(cat) => {
-                if !cache
-                    .content
-                    .as_ref()
-                    .is_some_and(|c| Arc::ptr_eq(&c.catalogue, &cat))
-                {
-                    cache.content = Some(Arc::new(read_content(cat)?));
-                }
-                cache.content.clone()
-            }
-            Err(error) => {
-                warnings.push(format!(
-                    "Raid content names and artwork are unavailable: {error}"
-                ));
-                None
-            }
-        };
-        if let Some(content) = &content {
-            warnings.extend(content.warnings.iter().cloned());
-        }
         let branch = params.branch_id.parse::<u64>().expect("validated branch");
         let available = if content.as_ref().is_some_and(|c| !c.raids.types.is_empty()) {
             Some(true)
@@ -1311,25 +1637,7 @@ impl Product for Raids {
                     .map(|_| false)
             })
         };
-        let mut reply = RaidsReply {
-            branch_id: params.branch_id.clone(),
-            // Phase text and feedback tooltips select these raid enum IDs.
-            phase_preparing: native::PHASE_PREPARING,
-            phase_ended: native::PHASE_ENDED,
-            outcome_none: native::OUTCOME_NONE,
-            available,
-            unavailable: (available == Some(false)).then(|| {
-                "Not in this recording: the recorded content defines no raid types".into()
-            }),
-            types: content.as_ref().map_or_else(Vec::new, |c| c.types.clone()),
-            artwork: Vec::new(),
-            episodes: Vec::new(),
-            series: Vec::new(),
-            read_hours: Vec::new(),
-            warnings,
-        };
-        let mut log_scan = None;
-        if params.view != RaidsView::Catalogue {
+        let scanned = if params.view != RaidsView::Catalogue {
             let catalogue = content.as_ref().map(|c| Arc::clone(&c.catalogue));
             let same = |a: &Option<Arc<Catalogue>>, b: &Option<Arc<Catalogue>>| match (a, b) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -1358,69 +1666,30 @@ impl Product for Raids {
                     scanned
                 }
             };
-            if scanned.recording_present {
-                reply.available = Some(true);
-                reply.unavailable = None;
-            }
-            for token in scanned
-                .types
-                .iter()
-                .filter(|token| !reply.types.iter().any(|t| &t.token == *token))
-                .cloned()
-                .collect::<Vec<_>>()
-            {
-                reply.types.push(RaidTypeInfo {
-                    token: token.clone(),
-                    name: None,
-                    missing: Some(format!(
-                        "raid type {token} is absent from the recorded content catalogue"
-                    )),
-                });
-            }
-            reply.read_hours.clone_from(&scanned.read_hours);
-            reply.warnings.extend(scanned.warnings.iter().cloned());
-            reply.warnings.push("Counts are lower bounds from observed raids. A recorded in-progress phase or finite nonzero travelled distance proves launch, counted by its first proving read. A terminal result alone has unknown launch because native console completion can bypass it. Success is counted by its first successful result read. Pre-recording and entirely between-read raids are unknown. Limited success is not a native success.".into());
-            if params.view == RaidsView::Log {
-                log_scan = Some(scanned);
-            } else {
-                if let Some(content) = &content {
-                    for warning in content.catalogue.refusal_lines() {
-                        if !reply.warnings.contains(&warning) {
-                            reply.warnings.push(warning);
-                        }
-                    }
-                }
-                let histories =
-                    country_history::branch_histories(source, branch, false, &[], cancelled)?;
-                let bytes = json_len(&reply, MAX_PRODUCT_REPLY_BYTES).ok_or_else(|| io::Error::other(
-                    "RaidReplyTooLarge: the complete raid reply exceeds one complete response; no countries or raids were omitted"))?;
-                reply.series = selected_series_with_histories(
-                    &scanned,
-                    params,
-                    cancelled,
-                    Some(&histories),
-                    bytes,
-                )?;
-            }
-        }
-        if let Some(content) = &content {
-            if let Some(scan) = &log_scan {
-                reply.artwork = log_artwork(content, &scan.episodes);
-            }
-            for warning in content.catalogue.refusal_lines() {
-                if !reply.warnings.contains(&warning) {
-                    reply.warnings.push(warning);
-                }
-            }
-        }
-        measure_reply(
-            &reply,
-            log_scan.as_ref().map_or(&[][..], |s| s.episodes.as_slice()),
-        )?;
-        if let Some(scan) = log_scan {
-            reply.episodes.clone_from(&scan.episodes);
-        }
-        Ok(reply)
+            Some(scanned)
+        } else {
+            None
+        };
+        let histories = if params.view == RaidsView::Tally {
+            Some(country_history::branch_histories(
+                source,
+                branch,
+                false,
+                &[],
+                cancelled,
+            )?)
+        } else {
+            None
+        };
+        reply(
+            params,
+            content.as_deref(),
+            available,
+            warnings,
+            scanned.as_deref(),
+            histories.as_deref(),
+            cancelled,
+        )
     }
 }
 

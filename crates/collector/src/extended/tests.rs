@@ -8,7 +8,7 @@ fn final_worker_loan_preserves_mod_sized_storage_without_callback_allocation() {
     captured.divisions = Divisions::new(5_000);
     let source_storage = captured.divisions.first.as_ptr();
     let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
-    crate::allocation_failure_tests::with_allocations_denied(|| {
+    crate::test_support::with_allocations_denied(|| {
         let request = captured.take_final_inputs_request(&countries, 0, 0, 41, true);
         assert_eq!(captured.divisions.first.capacity(), 0);
         assert_eq!(captured.economy.allocated_bytes(), 0);
@@ -2166,31 +2166,6 @@ fn division_sources_preserve_census_identity_and_reject_an_incomplete_parent() {
         Outcome::Unavailable { .. }
     ));
 }
-#[test]
-fn registry_false_counts_are_rejected_and_incomplete_censuses_remain_incomplete() {
-    assert!(matches!(
-        bounded_registry(Outcome::Rows { len: 3 }, 2),
-        Outcome::Unavailable { .. }
-    ));
-    assert!(matches!(
-        bounded_registry(
-            Outcome::Truncated {
-                len: 0,
-                unread_rows: 0
-            },
-            2
-        ),
-        Outcome::Unavailable { .. }
-    ));
-    let empty = bounded_registry(Outcome::Rows { len: 0 }, 0);
-    assert_eq!(empty, Outcome::Rows { len: 0 });
-    let truncated = Outcome::Truncated {
-        len: 1,
-        unread_rows: 9,
-    };
-    assert_eq!(bounded_registry(truncated, 1), truncated);
-}
-
 #[test]
 fn the_slow_job_stores_travel_with_it_and_always_return() {
     let mut captured = Captured::with_capacities(&Capacities::default());

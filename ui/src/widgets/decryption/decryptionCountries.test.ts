@@ -15,6 +15,7 @@ test('actual cipher label reads finish during fast playback and retain only thei
   let cursor = 0, nextTimer = 0;
   const same = (a: readonly unknown[], b: readonly unknown[]) => a.length === b.length && a.every((value, i) => Object.is(value, b[i]));
   const fixture = {
+    useSyncExternalStore: (_subscribe: unknown, snapshot: () => number) => snapshot(),
     now: 0,
     useState(initial?: unknown) {
       const index = cursor++;

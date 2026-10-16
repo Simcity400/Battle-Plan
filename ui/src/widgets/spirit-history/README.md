@@ -6,7 +6,7 @@ One timeline lane per national spirit, showing observed holdings and whether the
 
 ## Products it reads
 
-[`idea-history`](../../../../crates/dashboard/src/products/idea_history.rs) through [useIdeaHistory](../../dashboard/ideaHistory.ts), sharing [spiritsData.ts](../national-spirits/spiritsData.ts) with National spirits.
+[`idea-history`](../../../../crates/dashboard-base/src/products/idea_history.rs) through [useIdeaHistory](../../dashboard/ideaHistory.ts), sharing [spiritsData.ts](../national-spirits/spiritsData.ts) with National spirits.
 
 ## Settings
 

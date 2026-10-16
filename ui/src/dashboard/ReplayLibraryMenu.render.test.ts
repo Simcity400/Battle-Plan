@@ -196,3 +196,10 @@ test('a manually picked recording retains its path and file name when its archiv
   assert.deepEqual(view.loads, Array(2).fill(['C:/elsewhere/Picked.battleplan', 'Picked.battleplan', 'new']));
   assert.deepEqual(view.renames, []); assert.deepEqual(view.updates, []);
 }));
+
+test('loaded and archive recordings expose real preparation and storage when the client supports it', async () => fixture(async view => {
+  for (const row of [view.loaded, view.archived]) assert.ok(!view.menu(row()).some((item: MenuItem) => item.label === 'Preparation and storage'));
+  view.props.client.preparationStatus = async () => { throw new Error('Test does not request backend state'); };
+  view.render();
+  for (const row of [view.loaded, view.archived]) assert.ok(view.menu(row()).some((item: MenuItem) => item.label === 'Preparation and storage'));
+}));

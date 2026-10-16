@@ -1071,7 +1071,7 @@ fn prepared_growth_never_locks_writers_and_retires_storage_off_thread() {
     drop(held);
     let diagnostics = refusal_diagnostics();
     let slot = STORAGE_SWAP.lock().unwrap();
-    crate::allocation_failure_tests::with_allocations_denied(|| {
+    crate::test_support::with_allocations_denied(|| {
         unsafe {
             attrition(
                 world.army() + carmy::EQUIPMENT_POOL,
@@ -1086,7 +1086,7 @@ fn prepared_growth_never_locks_writers_and_retires_storage_off_thread() {
     assert_eq!(refusal_diagnostics(), diagnostics);
     assert_eq!(STORE.lock().unwrap().entries.as_ptr(), old_entries);
     drop(slot);
-    crate::allocation_failure_tests::with_allocations_denied(|| boundary(clock(3, 1)));
+    crate::test_support::with_allocations_denied(|| boundary(clock(3, 1)));
     let held = STORE.lock().unwrap();
     assert_ne!(held.entries.as_ptr(), old_entries);
     assert_eq!(held.queued_count, 1);
@@ -3178,7 +3178,7 @@ fn worker_drain_grows_empty_and_recycled_frames_for_every_owned_entry() {
         boundary(clock(2, 1));
         {
             let mut store = STORE.lock().unwrap();
-            crate::allocation_failure_tests::with_allocations_denied(|| {
+            crate::test_support::with_allocations_denied(|| {
                 for index in 0..count {
                     store
                         .append(
@@ -3218,7 +3218,7 @@ fn rejected_rows_and_calls_prepare_the_full_burst_without_country_growth() {
     };
     {
         let mut store = STORE.lock().unwrap();
-        crate::allocation_failure_tests::with_allocations_denied(|| {
+        crate::test_support::with_allocations_denied(|| {
             for index in 0..10003 {
                 assert_eq!(store.append(SiteId::Attrition, entry).is_ok(), index == 0);
             }
@@ -3229,7 +3229,7 @@ fn rejected_rows_and_calls_prepare_the_full_burst_without_country_growth() {
             event_overflow(SiteId::Attrition),
         );
     }
-    crate::allocation_failure_tests::with_allocations_denied(|| {
+    crate::test_support::with_allocations_denied(|| {
         for _ in 0..12007 {
             let call = Call::enter(SiteId::Attrition);
             call.run(|| ());
@@ -3249,7 +3249,7 @@ fn rejected_rows_and_calls_prepare_the_full_burst_without_country_growth() {
     boundary(clock(4, 1));
     {
         let mut store = STORE.lock().unwrap();
-        crate::allocation_failure_tests::with_allocations_denied(|| {
+        crate::test_support::with_allocations_denied(|| {
             for _ in 0..12007 {
                 store.append(SiteId::Attrition, entry).unwrap();
             }
@@ -3272,7 +3272,7 @@ fn rejected_original_pool_headers_prepare_every_scratch_arena_without_country_gr
         let world = World::new(count);
         let live = unsafe { engine::memory::LiveMemory::new() };
         let mut short = [equipment_entry::Row::default(); 1];
-        crate::allocation_failure_tests::with_allocations_denied(|| {
+        crate::test_support::with_allocations_denied(|| {
             assert_eq!(
                 snapshot(
                     &live,

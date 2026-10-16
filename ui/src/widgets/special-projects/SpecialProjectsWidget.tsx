@@ -1,4 +1,4 @@
-import { useContext, useEffect, useId, useMemo } from 'react';
+import { useContext, useEffect, useId, useMemo, useRef } from 'react';
 import type { CSSProperties, HTMLAttributes, KeyboardEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -20,6 +20,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProducts } from '../../dashboard/products';
+import { useParityRows } from '../../dashboard/parityRows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { ProjectPresentation, SpecialProjectsReply } from '../../generated/dashboard';
@@ -84,6 +85,7 @@ function CurrentList({ reply, at, item }: { reply: SpecialProjectsReply; at: num
 }
 
 function ProjectPanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
+  const parityRoot = useRef<HTMLDivElement>(null);
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const owner = useId();
   const viewport = useViewportHeight();
@@ -106,6 +108,12 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const requestedTags = view === 'live' ? tags.filter(tag => resolved.match.matches(tag, at)) : tags;
   const requests = track && resolved.ready ? requestedTags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision, product: 'special-projects', params: { branchId: track.branch.id, tag, selectionTags: resolved.rootsFor.get(tag) ?? [] } })) : [];
   const { data, error, retry } = useProducts<SpecialProjectsReply>(runtime.client, requests, active, validateSpecialProjectsReply);
+  const parity = useMemo(() => data?.map(reply => ({ tag: reply.tag, identities: reply.identities,
+    available: reply.available, readHours: reply.readHours, projects: reply.projects,
+    presentations: reply.presentations, people: reply.people, iterationTexts: reply.iterationTexts,
+    unavailable: reply.unavailable, warnings: reply.warnings })) ?? [], [data]);
+  if (import.meta.env.MODE === 'parity') useParityRows(parityRoot, () => ({ kind: 'log', label: 'Special project values',
+    complete: true, total: parity.length, rows: parity }));
   const wanted = data?.flatMap(reply => {
     const hour = projectCountryHour(reply, at, resolved.memberships.get(reply.tag));
     return hour === null ? [] : [{ tag: reply.tag, hour }];
@@ -182,7 +190,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
       const card = id === null ? null : historyCard(reply, id, at, resolved.memberships.get(reply.tag));
       if (card) openMenu(card, x, y);
     }} />;
-  return <div className="special-projects">{body}{menu.menu}</div>;
+  return <div ref={parityRoot} className="special-projects">{body}{menu.menu}</div>;
 }
 
 /** A country's projects can be missing for several reasons; the card only says they are. */

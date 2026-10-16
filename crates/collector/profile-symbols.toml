@@ -1,0 +1,167 @@
+[profile.release.package.collector]
+debug = 2
+
+[profile.release.package.collector-status]
+debug = 2
+
+[profile.release.package.collector-primitives]
+debug = 2
+
+[profile.release.package.collector-hooks]
+debug = 2
+
+[profile.release.package.collector-timing]
+debug = 2
+
+[profile.release.package.collector-certificates]
+debug = 2
+
+[profile.release.package.collector-snapshots]
+debug = 2
+
+[profile.release.package.collector-metadata]
+debug = 2
+
+[profile.release.package.collector-lifetime]
+debug = 2
+
+[profile.release.package.collector-logistics]
+debug = 2
+
+[profile.release.package.collector-memory]
+debug = 2
+
+[profile.release.package.collector-raw]
+debug = 2
+
+[profile.release.package.collector-projection]
+debug = 2
+
+[profile.release.package.collector-combat]
+debug = 2
+
+[profile.release.package.collector-economy]
+debug = 2
+
+[profile.release.package.collector-production]
+debug = 2
+
+[profile.release.package.collector-advisors]
+debug = 2
+
+[profile.release.package.collector-air-histories]
+debug = 2
+
+[profile.release.package.collector-air-records]
+debug = 2
+
+[profile.release.package.collector-air-relations]
+debug = 2
+
+[profile.release.package.collector-air-sorties]
+debug = 2
+
+[profile.release.package.collector-army-icons]
+debug = 2
+
+[profile.release.package.collector-combat-log]
+debug = 2
+
+[profile.release.package.collector-construction]
+debug = 2
+
+[profile.release.package.collector-country-counters]
+debug = 2
+
+[profile.release.package.collector-division-parts]
+debug = 2
+
+[profile.release.package.collector-experience-gains]
+debug = 2
+
+[profile.release.package.collector-extended-support]
+debug = 2
+
+[profile.release.package.collector-fuel-awards]
+debug = 2
+
+[profile.release.package.collector-governance]
+debug = 2
+
+[profile.release.package.collector-intel]
+debug = 2
+
+[profile.release.package.collector-leaders]
+debug = 2
+
+[profile.release.package.collector-ledger-tables]
+debug = 2
+
+[profile.release.package.collector-lexical]
+debug = 2
+
+[profile.release.package.collector-map-tables]
+debug = 2
+
+[profile.release.package.collector-model-inputs]
+debug = 2
+
+[profile.release.package.collector-naval-counters]
+debug = 2
+
+[profile.release.package.collector-naval-details]
+debug = 2
+
+[profile.release.package.collector-naval-movement]
+debug = 2
+
+[profile.release.package.collector-new-divisions]
+debug = 2
+
+[profile.release.package.collector-observers]
+debug = 2
+
+[profile.release.package.collector-output]
+debug = 2
+
+[profile.release.package.collector-peace]
+debug = 2
+
+[profile.release.package.collector-politics]
+debug = 2
+
+[profile.release.package.collector-production-daily]
+debug = 2
+
+[profile.release.package.collector-projects]
+debug = 2
+
+[profile.release.package.collector-raids]
+debug = 2
+
+[profile.release.package.collector-railway-guns]
+debug = 2
+
+[profile.release.package.collector-session]
+debug = 2
+
+[profile.release.package.collector-ship-models]
+debug = 2
+
+[profile.release.package.collector-slow-tables]
+debug = 2
+
+[profile.release.package.collector-stability]
+debug = 2
+
+[profile.release.package.collector-supply-trains]
+debug = 2
+
+[profile.release.package.collector-visibility]
+debug = 2
+
+[profile.release.package.collector-war-overview]
+debug = 2
+
+[profile.release.package.collector-weather]
+debug = 2

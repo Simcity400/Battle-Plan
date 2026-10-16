@@ -2,48 +2,39 @@
 //! the host/viewer protocol and the native data service. No map assets are
 //! rendered here and no live game memory is read.
 
-pub mod blocks;
-pub mod catalogue;
-pub mod character_scope;
-pub mod config;
-pub mod content;
 pub mod content_check;
-pub mod cryptology;
-mod dto;
-pub mod effect_description;
-mod faction_names;
-pub mod map_settings;
-pub mod metadata;
-pub mod modifier_text;
-pub mod naval_battle_name;
+pub mod prepared;
+pub mod prepared_focus;
+pub mod prepared_map;
+pub mod prepared_stability;
 pub mod products;
-pub mod protocol;
-pub mod ranking;
-pub mod read_runs;
 pub mod reply_cache;
-pub mod scope;
-pub mod scripted_text;
+mod reply_dto;
 pub mod service;
-pub mod source;
-pub mod state_resources;
-pub mod transport;
-pub mod triggers;
-pub mod unit_names;
+
+pub use dashboard_base::{
+    catalogue, content, prepared_chart, prepared_measure, prepared_production, ranking, read_runs,
+    research_dto::*, source,
+};
+pub(crate) use dashboard_core::invalid;
+pub use dashboard_core::{blocks, config, dto::*, map_display, map_settings, protocol, transport};
+#[cfg(test)]
+pub(crate) use dashboard_text::air_wing_names;
+pub use dashboard_text::{
+    character_scope, cryptology, effect_description, flag_choices, identity, metadata,
+    modifier_text, naval_battle_name, scope, scripted_text, state_resources, triggers, unit_names,
+};
+pub(crate) use dashboard_text::{faction_names, idea_names, party_names};
 
 pub use config::Config;
-pub use dto::*;
 #[cfg(test)]
 pub(crate) use products::{
     land_owners::land_owners,
     national_focus::{FocusCache, focus_branch, focus_history, focus_order},
-    research::{ResearchCache, research_branch},
 };
+pub use reply_dto::*;
 pub use service::Service;
 pub use source::{Source, SourceKey};
-
-pub(crate) fn invalid(message: impl Into<String>) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::InvalidData, message.into())
-}
 
 /// The generated TypeScript contract: shared types, then every product's
 /// parameters and reply. One deterministic file, exported explicitly.
@@ -79,10 +70,47 @@ pub fn typescript_contract() -> String {
         ResearchFolder::decl(),
         ResearchTechnologyFolder::decl(),
         protocol::MapGraphics::decl(),
+        protocol::MapGraphicsOverrides::decl(),
+        protocol::MapAudio::decl(),
+        protocol::MapAudioOverrides::decl(),
+        protocol::CounterFilter::decl(),
         protocol::CampaignMapSettings::decl(),
+        map_settings::RecordedMod::decl(),
+        protocol::ResolvedMapSettings::decl(),
         map_settings::Reply::decl(),
         transport::HistoryCacheReply::decl(),
         transport::SourceReply::decl(),
+        prepared::State::decl(),
+        prepared::Action::decl(),
+        prepared::Section::decl(),
+        prepared::Reply::decl(),
+        prepared::pipeline::Coverage::decl(),
+        prepared::Preferences::decl(),
+        prepared_focus::PresentedFocus::decl(),
+        prepared_focus::Pages::decl(),
+        prepared_focus::Hour::decl(),
+        prepared_focus::TableRefusal::decl(),
+        prepared_focus::UnavailableHour::decl(),
+        prepared_chart::ChartBucket::decl(),
+        prepared_chart::ChartRun::decl(),
+        prepared_chart::ChartSummary::decl(),
+        prepared_chart::MarkCluster::decl(),
+        prepared_chart::MarkSummary::decl(),
+        prepared_measure::MeasureRun::decl(),
+        prepared_measure::MeasureActor::decl(),
+        prepared_measure::query::MeasureKey::decl(),
+        prepared_measure::query::MeasureRead::decl(),
+        prepared_measure::query::MeasureState::decl(),
+        prepared_measure::query::MeasureStateReply::decl(),
+        prepared_measure::query::MeasureSummaryLine::decl(),
+        prepared_measure::query::MeasureSummaryReply::decl(),
+        prepared_measure::query::MeasureKeyReply::decl(),
+        prepared_measure::query::MeasureDropReply::decl(),
+        prepared_measure::query::MeasureEvent::decl(),
+        prepared_measure::query::MeasureMarkReply::decl(),
+        prepared_production::SelectedValue::decl(),
+        prepared_production::SelectedCountry::decl(),
+        prepared_production::SelectionPage::decl(),
     ];
     for product in products::PRODUCTS {
         declarations.extend((product.types)());
@@ -169,6 +197,8 @@ pub fn typescript_contract() -> String {
 }
 
 #[cfg(test)]
+mod contract_tests;
+#[cfg(test)]
 mod mod_fixtures;
 #[cfg(test)]
-mod test_fixtures;
+pub(crate) use dashboard_base::test_fixtures;

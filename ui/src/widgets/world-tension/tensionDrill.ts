@@ -16,7 +16,7 @@ export const TENSION_BREAKDOWN = { id: 'breakdown', label: 'Country contribution
  * to the proven holder, never to another country that later reused its tag. */
 export function tensionLookAt(model: TensionModel, key: string, hour: number, branch: RecordedBranch) {
   const identities = model.identities.get(key) ?? [];
-  const origin = runAt(identities, model.raw.get(key)?.[0]?.firstHour ?? NaN);
+  const origin = runAt(identities, model.firstContributions.get(key) ?? NaN);
   if (!origin) return null;
   const holders = identities.filter(identity => identity.firstHour <= hour);
   const holder = holders.at(-1);

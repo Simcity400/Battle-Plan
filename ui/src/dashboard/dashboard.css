@@ -386,3 +386,6 @@ button.size-stepper-value:hover { background: var(--hover); }
 
 /* Styled flags already carry the content's mask and overlay. Keep the whole artwork visible. */
 :root :is(img, canvas).country-flag-art { object-fit: contain; border-radius: 0; box-shadow: none; }
+
+.timeline-prepared-markers { position: absolute; top: calc(50% + 5px); left: 7px; right: 7px; height: 2px; pointer-events: none; }
+.timeline-prepared { position: absolute; height: 2px; background: var(--accent); opacity: .65; pointer-events: auto; }

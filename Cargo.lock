@@ -552,7 +552,63 @@ dependencies = [
 name = "collector"
 version = "0.1.0"
 dependencies = [
- "cc",
+ "collector-advisors",
+ "collector-air-histories",
+ "collector-air-records",
+ "collector-air-relations",
+ "collector-air-sorties",
+ "collector-army-icons",
+ "collector-certificates",
+ "collector-combat",
+ "collector-combat-log",
+ "collector-construction",
+ "collector-country-counters",
+ "collector-division-parts",
+ "collector-economy",
+ "collector-experience-gains",
+ "collector-extended-support",
+ "collector-fuel-awards",
+ "collector-governance",
+ "collector-hooks",
+ "collector-intel",
+ "collector-leaders",
+ "collector-ledger-tables",
+ "collector-lexical",
+ "collector-lifetime",
+ "collector-logistics",
+ "collector-map-events",
+ "collector-map-tables",
+ "collector-memory",
+ "collector-metadata",
+ "collector-model-inputs",
+ "collector-naval-counters",
+ "collector-naval-details",
+ "collector-naval-movement",
+ "collector-new-divisions",
+ "collector-observers",
+ "collector-output",
+ "collector-peace",
+ "collector-politics",
+ "collector-primitives",
+ "collector-production",
+ "collector-production-daily",
+ "collector-projection",
+ "collector-projects",
+ "collector-raids",
+ "collector-railway-guns",
+ "collector-raw",
+ "collector-session",
+ "collector-ship-models",
+ "collector-slow-tables",
+ "collector-snapshots",
+ "collector-stability",
+ "collector-status",
+ "collector-supply-trains",
+ "collector-test-support",
+ "collector-timing",
+ "collector-visibility",
+ "collector-war-overview",
+ "collector-weather",
  "crossbeam-queue",
  "engine",
  "replay",
@@ -560,6 +616,931 @@ dependencies = [
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-advisors"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-air-histories"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-memory",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-air-records"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-lifetime",
+ "collector-memory",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-air-relations"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-air-sorties"
+version = "0.1.0"
+dependencies = [
+ "collector-extended-support",
+ "collector-primitives",
+ "collector-projection",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-army-icons"
+version = "0.1.0"
+dependencies = [
+ "collector-extended-support",
+ "collector-memory",
+ "collector-primitives",
+ "collector-production",
+ "collector-projection",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-certificates"
+version = "0.1.0"
+dependencies = [
+ "collector-primitives",
+ "collector-status",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+]
+
+[[package]]
+name = "collector-combat"
+version = "0.1.0"
+dependencies = [
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+]
+
+[[package]]
+name = "collector-combat-log"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-construction"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-country-counters",
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-raw",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-country-counters"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-memory",
+ "collector-naval-movement",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-division-parts"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-memory",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-economy"
+version = "0.1.0"
+dependencies = [
+ "collector-memory",
+ "collector-primitives",
+ "collector-projection",
+ "collector-raw",
+ "collector-test-support",
+ "engine",
+ "replay",
+]
+
+[[package]]
+name = "collector-experience-gains"
+version = "0.1.0"
+dependencies = [
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-lifetime",
+ "collector-memory",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-extended-support"
+version = "0.1.0"
+dependencies = [
+ "collector-memory",
+ "collector-primitives",
+ "collector-status",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-fuel-awards"
+version = "0.1.0"
+dependencies = [
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-lifetime",
+ "collector-observers",
+ "collector-primitives",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-governance"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-hooks"
+version = "0.1.0"
+dependencies = [
+ "collector-primitives",
+ "collector-status",
+ "collector-test-support",
+ "engine",
+ "retour",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-intel"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-memory",
+ "collector-metadata",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-raw",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-leaders"
+version = "0.1.0"
+dependencies = [
+ "collector-extended-support",
+ "collector-memory",
+ "collector-primitives",
+ "collector-projection",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-ledger-tables"
+version = "0.1.0"
+dependencies = [
+ "collector-extended-support",
+ "collector-lifetime",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-lexical"
+version = "0.1.0"
+dependencies = [
+ "collector-extended-support",
+ "collector-memory",
+ "collector-primitives",
+ "collector-projection",
+ "collector-raw",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-lifetime"
+version = "0.1.0"
+dependencies = [
+ "collector-hooks",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "engine",
+ "serde",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-logistics"
+version = "0.1.0"
+dependencies = [
+ "collector-hooks",
+ "collector-primitives",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "engine",
+ "serde",
+]
+
+[[package]]
+name = "collector-map-events"
+version = "0.1.0"
+dependencies = [
+ "collector-hooks",
+ "collector-lifetime",
+ "collector-primitives",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-map-tables"
+version = "0.1.0"
+dependencies = [
+ "collector-extended-support",
+ "collector-memory",
+ "collector-primitives",
+ "collector-projection",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-memory"
+version = "0.1.0"
+dependencies = [
+ "collector-test-support",
+ "engine",
+ "replay",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-metadata"
+version = "0.1.0"
+dependencies = [
+ "collector-status",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-model-inputs"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-memory",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-naval-counters"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-division-parts",
+ "collector-extended-support",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-naval-details"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-combat",
+ "collector-extended-support",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-naval-movement"
+version = "0.1.0"
+dependencies = [
+ "collector-extended-support",
+ "collector-primitives",
+ "collector-status",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-new-divisions"
+version = "0.1.0"
+dependencies = [
+ "collector-extended-support",
+ "collector-memory",
+ "collector-primitives",
+ "collector-projection",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-observers"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-lifetime",
+ "collector-memory",
+ "collector-primitives",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "crossbeam-queue",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-output"
+version = "0.1.0"
+dependencies = [
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-lifetime",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-peace"
+version = "0.1.0"
+dependencies = [
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-memory",
+ "collector-primitives",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-politics"
+version = "0.1.0"
+dependencies = [
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-primitives"
+version = "0.1.0"
+dependencies = [
+ "collector-status",
+ "collector-test-support",
+ "engine",
+ "serde",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-production"
+version = "0.1.0"
+dependencies = [
+ "collector-memory",
+ "collector-primitives",
+ "collector-projection",
+ "collector-raw",
+ "collector-test-support",
+ "engine",
+ "replay",
+]
+
+[[package]]
+name = "collector-production-daily"
+version = "0.1.0"
+dependencies = [
+ "collector-extended-support",
+ "collector-memory",
+ "collector-primitives",
+ "collector-projection",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-projection"
+version = "0.1.0"
+dependencies = [
+ "collector-memory",
+ "collector-status",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+]
+
+[[package]]
+name = "collector-projects"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-raw",
+ "collector-status",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-raids"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-railway-guns"
+version = "0.1.0"
+dependencies = [
+ "collector-division-parts",
+ "collector-extended-support",
+ "collector-memory",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-raw"
+version = "0.1.0"
+dependencies = [
+ "collector-memory",
+ "collector-primitives",
+ "collector-snapshots",
+ "collector-status",
+ "collector-test-support",
+ "engine",
+ "serde",
+]
+
+[[package]]
+name = "collector-session"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-raw",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-ship-models"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-slow-tables"
+version = "0.1.0"
+dependencies = [
+ "collector-extended-support",
+ "collector-logistics",
+ "collector-memory",
+ "collector-primitives",
+ "collector-projection",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-snapshots"
+version = "0.1.0"
+dependencies = [
+ "collector-test-support",
+ "engine",
+]
+
+[[package]]
+name = "collector-stability"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-status"
+version = "0.1.0"
+dependencies = [
+ "collector-test-support",
+ "engine",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-supply-trains"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-memory",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-test-support"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-timing"
+version = "0.1.0"
+dependencies = [
+ "collector-primitives",
+ "collector-status",
+ "collector-test-support",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-visibility"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-war-overview"
+version = "0.1.0"
+dependencies = [
+ "collector-extended-support",
+ "collector-memory",
+ "collector-primitives",
+ "collector-projection",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "collector-weather"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-raw",
+ "collector-test-support",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -832,10 +1813,12 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
- "crc32fast",
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-politics-ledger",
+ "dashboard-text",
  "engine",
  "installed-content",
- "installed-content-save",
  "mimalloc",
  "png 0.18.1",
  "replay",
@@ -843,9 +1826,81 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "shader-pipeline",
+ "store",
  "ts-rs",
  "uuid",
+ "windows-sys 0.61.2",
+ "zstd",
+]
+
+[[package]]
+name = "dashboard-base"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "png 0.18.1",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
+name = "dashboard-core"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-core",
+ "installed-content-settings",
+ "replay",
+ "serde",
+ "serde_json",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "dashboard-politics-ledger"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "png 0.18.1",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
+name = "dashboard-text"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "crc32fast",
+ "dashboard-core",
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "png 0.18.1",
+ "replay",
+ "serde",
+ "serde_json",
+ "shader-pipeline",
  "zstd",
 ]
 
@@ -1235,9 +2290,288 @@ checksum = "4ef6b89e5b37196644d8796de5268852ff179b44e96276cf4290264843743bb7"
 name = "engine"
 version = "0.1.0"
 dependencies = [
- "cc",
+ "engine-air-history",
+ "engine-characters",
+ "engine-decisions",
+ "engine-deployment",
+ "engine-dlc",
+ "engine-equipment",
+ "engine-events",
+ "engine-executable",
+ "engine-fixed-layout",
+ "engine-focus",
+ "engine-fuel",
+ "engine-intelligence",
+ "engine-land-inputs",
+ "engine-map-air",
+ "engine-mutations",
+ "engine-native",
+ "engine-naval-history",
+ "engine-occupation",
+ "engine-peace",
+ "engine-power-balance",
+ "engine-production",
+ "engine-projects",
+ "engine-raid-inputs",
+ "engine-railways",
+ "engine-research",
+ "engine-resources",
+ "engine-scripts",
+ "engine-stability",
+ "engine-visibility",
+]
+
+[[package]]
+name = "engine-air-history"
+version = "0.1.0"
+dependencies = [
+ "engine-native",
+]
+
+[[package]]
+name = "engine-characters"
+version = "0.1.0"
+dependencies = [
+ "engine-native",
+]
+
+[[package]]
+name = "engine-decisions"
+version = "0.1.0"
+dependencies = [
+ "engine-native",
+]
+
+[[package]]
+name = "engine-deployment"
+version = "0.1.0"
+dependencies = [
+ "engine-native",
+]
+
+[[package]]
+name = "engine-dlc"
+version = "0.1.0"
+dependencies = [
+ "engine-native",
+]
+
+[[package]]
+name = "engine-equipment"
+version = "0.1.0"
+dependencies = [
+ "engine-native",
+]
+
+[[package]]
+name = "engine-events"
+version = "0.1.0"
+dependencies = [
+ "engine-deployment",
+ "engine-native",
+ "engine-peace",
+ "engine-production",
+]
+
+[[package]]
+name = "engine-executable"
+version = "0.1.0"
+dependencies = [
  "iced-x86",
  "sha2",
+]
+
+[[package]]
+name = "engine-fixed-layout"
+version = "0.1.0"
+dependencies = [
+ "engine-executable",
+ "engine-native",
+]
+
+[[package]]
+name = "engine-focus"
+version = "0.1.0"
+dependencies = [
+ "engine-governance-tests",
+ "engine-native",
+ "engine-research",
+]
+
+[[package]]
+name = "engine-fuel"
+version = "0.1.0"
+dependencies = [
+ "engine-native",
+]
+
+[[package]]
+name = "engine-governance-tests"
+version = "0.1.0"
+dependencies = [
+ "engine-executable",
+ "engine-focus",
+ "engine-native",
+ "engine-research",
+]
+
+[[package]]
+name = "engine-intelligence"
+version = "0.1.0"
+dependencies = [
+ "engine-native",
+]
+
+[[package]]
+name = "engine-land-inputs"
+version = "0.1.0"
+dependencies = [
+ "engine-air-history",
+ "engine-deployment",
+ "engine-executable",
+ "engine-native",
+]
+
+[[package]]
+name = "engine-map-air"
+version = "0.1.0"
+dependencies = [
+ "engine-native",
+]
+
+[[package]]
+name = "engine-mutations"
+version = "0.1.0"
+dependencies = [
+ "engine-deployment",
+ "engine-events",
+ "engine-focus",
+ "engine-native",
+ "engine-projects",
+ "engine-railways",
+ "engine-research",
+ "engine-resources",
+ "engine-stability",
+]
+
+[[package]]
+name = "engine-native"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "engine-executable",
+]
+
+[[package]]
+name = "engine-naval-history"
+version = "0.1.0"
+dependencies = [
+ "engine-executable",
+ "engine-native",
+ "engine-stability",
+]
+
+[[package]]
+name = "engine-occupation"
+version = "0.1.0"
+dependencies = [
+ "engine-deployment",
+ "engine-native",
+]
+
+[[package]]
+name = "engine-peace"
+version = "0.1.0"
+dependencies = [
+ "engine-native",
+]
+
+[[package]]
+name = "engine-power-balance"
+version = "0.1.0"
+dependencies = [
+ "engine-executable",
+ "engine-native",
+]
+
+[[package]]
+name = "engine-production"
+version = "0.1.0"
+dependencies = [
+ "engine-dlc",
+ "engine-executable",
+ "engine-land-inputs",
+ "engine-native",
+]
+
+[[package]]
+name = "engine-projects"
+version = "0.1.0"
+dependencies = [
+ "engine-native",
+]
+
+[[package]]
+name = "engine-raid-inputs"
+version = "0.1.0"
+dependencies = [
+ "engine-executable",
+ "engine-intelligence",
+ "engine-native",
+ "engine-projects",
+ "engine-resources",
+ "engine-stability",
+]
+
+[[package]]
+name = "engine-railways"
+version = "0.1.0"
+dependencies = [
+ "engine-equipment",
+ "engine-fixed-layout",
+ "engine-native",
+ "engine-naval-history",
+]
+
+[[package]]
+name = "engine-research"
+version = "0.1.0"
+dependencies = [
+ "engine-characters",
+ "engine-executable",
+ "engine-governance-tests",
+ "engine-native",
+ "engine-projects",
+]
+
+[[package]]
+name = "engine-resources"
+version = "0.1.0"
+dependencies = [
+ "engine-native",
+]
+
+[[package]]
+name = "engine-scripts"
+version = "0.1.0"
+dependencies = [
+ "engine-native",
+]
+
+[[package]]
+name = "engine-stability"
+version = "0.1.0"
+dependencies = [
+ "engine-native",
+]
+
+[[package]]
+name = "engine-visibility"
+version = "0.1.0"
+dependencies = [
+ "engine-dlc",
+ "engine-executable",
+ "engine-native",
 ]
 
 [[package]]
@@ -1512,9 +2846,45 @@ name = "installed-content"
 version = "0.1.0"
 dependencies = [
  "engine",
+ "installed-content-abilities",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-division-names",
+ "installed-content-equipment-graphics",
+ "installed-content-events",
+ "installed-content-focus",
+ "installed-content-gfx",
+ "installed-content-localisation",
+ "installed-content-naval-combat-defines",
+ "installed-content-naval-path",
+ "installed-content-province-area",
+ "installed-content-raids",
+ "installed-content-regions",
+ "installed-content-scripted-localisation",
+ "installed-content-settings",
+ "installed-content-state-categories",
+ "installed-content-states",
+ "installed-content-unit-path",
+ "installed-content-wargoals",
+ "installed-content-weather",
+]
+
+[[package]]
+name = "installed-content-abilities"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-core",
+]
+
+[[package]]
+name = "installed-content-core"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-image",
  "miniz_oxide 0.8.9",
  "mlua",
- "png 0.18.1",
  "replay",
  "serde",
  "serde_json",
@@ -1523,11 +2893,179 @@ dependencies = [
 ]
 
 [[package]]
+name = "installed-content-country-names"
+version = "0.1.0"
+dependencies = [
+ "installed-content-core",
+ "installed-content-localisation",
+ "replay",
+]
+
+[[package]]
+name = "installed-content-division-names"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-core",
+]
+
+[[package]]
+name = "installed-content-equipment-graphics"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-core",
+ "installed-content-states",
+ "replay",
+]
+
+[[package]]
+name = "installed-content-events"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-core",
+]
+
+[[package]]
+name = "installed-content-focus"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-core",
+]
+
+[[package]]
+name = "installed-content-gfx"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-core",
+]
+
+[[package]]
+name = "installed-content-image"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide 0.8.9",
+ "png 0.18.1",
+ "sha2",
+]
+
+[[package]]
+name = "installed-content-localisation"
+version = "0.1.0"
+dependencies = [
+ "installed-content-core",
+]
+
+[[package]]
+name = "installed-content-naval-combat-defines"
+version = "0.1.0"
+dependencies = [
+ "installed-content-core",
+]
+
+[[package]]
+name = "installed-content-naval-path"
+version = "0.1.0"
+dependencies = [
+ "installed-content-core",
+]
+
+[[package]]
+name = "installed-content-province-area"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-core",
+]
+
+[[package]]
+name = "installed-content-raids"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-division-names",
+ "replay",
+]
+
+[[package]]
+name = "installed-content-regions"
+version = "0.1.0"
+dependencies = [
+ "installed-content-core",
+ "replay",
+]
+
+[[package]]
 name = "installed-content-save"
 version = "0.1.0"
 dependencies = [
  "engine",
  "installed-content",
+ "replay",
+]
+
+[[package]]
+name = "installed-content-scripted-localisation"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-core",
+]
+
+[[package]]
+name = "installed-content-settings"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-core",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "installed-content-state-categories"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-core",
+]
+
+[[package]]
+name = "installed-content-states"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-core",
+]
+
+[[package]]
+name = "installed-content-unit-path"
+version = "0.1.0"
+dependencies = [
+ "installed-content-core",
+]
+
+[[package]]
+name = "installed-content-wargoals"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-core",
+]
+
+[[package]]
+name = "installed-content-weather"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-core",
+ "installed-content-regions",
  "replay",
 ]
 
@@ -3850,6 +5388,14 @@ dependencies = [
  "engine",
  "installed-content",
  "installed-content-save",
+ "recorder-derived",
+ "recorder-metrics",
+ "recorder-movement-oracle",
+ "recorder-oracle",
+ "recorder-platform",
+ "recorder-replay",
+ "recorder-sizes",
+ "recorder-test-support",
  "replay",
  "serde_json",
  "windows-sys 0.61.2",
@@ -3861,6 +5407,7 @@ name = "recorder-app"
 version = "0.1.0"
 dependencies = [
  "installed-content",
+ "installed-content-image",
  "recorder",
  "replay",
  "rfd",
@@ -3869,6 +5416,632 @@ dependencies = [
  "tauri",
  "tauri-build",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "recorder-derived"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "recorder-platform",
+ "replay",
+]
+
+[[package]]
+name = "recorder-metrics"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "recorder-test-support",
+ "replay",
+ "serde_json",
+]
+
+[[package]]
+name = "recorder-movement-oracle"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "recorder-platform",
+ "serde_json",
+]
+
+[[package]]
+name = "recorder-oracle"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-air",
+ "recorder-oracle-air-ledger",
+ "recorder-oracle-air-missions",
+ "recorder-oracle-characters",
+ "recorder-oracle-combat-details",
+ "recorder-oracle-combat-log",
+ "recorder-oracle-construction",
+ "recorder-oracle-core",
+ "recorder-oracle-counters",
+ "recorder-oracle-economy",
+ "recorder-oracle-equipment-destruction",
+ "recorder-oracle-event-feed",
+ "recorder-oracle-faction-theatres",
+ "recorder-oracle-factories",
+ "recorder-oracle-fog",
+ "recorder-oracle-game-score",
+ "recorder-oracle-governance",
+ "recorder-oracle-intel",
+ "recorder-oracle-land",
+ "recorder-oracle-map-inputs",
+ "recorder-oracle-military",
+ "recorder-oracle-modifier-breakdowns",
+ "recorder-oracle-modifiers",
+ "recorder-oracle-naval-history",
+ "recorder-oracle-naval-result-sources",
+ "recorder-oracle-pass-inputs",
+ "recorder-oracle-peace",
+ "recorder-oracle-plans",
+ "recorder-oracle-politics",
+ "recorder-oracle-power-ledger",
+ "recorder-oracle-production",
+ "recorder-oracle-projects",
+ "recorder-oracle-railway-guns",
+ "recorder-oracle-relations",
+ "recorder-oracle-rocket-output",
+ "recorder-oracle-saved-event-targets",
+ "recorder-oracle-selected-routes",
+ "recorder-oracle-session",
+ "recorder-oracle-stability",
+ "recorder-oracle-supply-trains",
+ "recorder-oracle-support",
+ "recorder-oracle-unit-combat-references",
+ "recorder-oracle-visibility",
+ "recorder-oracle-wars",
+ "recorder-oracle-weather",
+ "recorder-platform",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-air"
+version = "0.1.0"
+dependencies = [
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "recorder-test-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-air-ledger"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "recorder-test-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-air-missions"
+version = "0.1.0"
+dependencies = [
+ "installed-content-save",
+ "recorder-oracle-relations",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-characters"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-intel",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-combat-details"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-combat-log"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-save",
+ "recorder-oracle-naval-history",
+ "recorder-oracle-production",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-construction"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-core"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-counters"
+version = "0.1.0"
+dependencies = [
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-country-rosters"
+version = "0.1.0"
+dependencies = [
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-characters",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-economy"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-fuel-demand",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-equipment-destruction"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-event-feed"
+version = "0.1.0"
+dependencies = [
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-faction-theatres"
+version = "0.1.0"
+dependencies = [
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-factories"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-fog"
+version = "0.1.0"
+dependencies = [
+ "installed-content-save",
+ "recorder-oracle-support",
+ "recorder-test-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-fuel-demand"
+version = "0.1.0"
+dependencies = [
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-game-score"
+version = "0.1.0"
+dependencies = [
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-governance"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-intel"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-land"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-military",
+ "recorder-oracle-support",
+ "replay",
+ "serde_json",
+]
+
+[[package]]
+name = "recorder-oracle-map-inputs"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-military"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-combat-details",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-modifier-breakdowns"
+version = "0.1.0"
+dependencies = [
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-modifiers"
+version = "0.1.0"
+dependencies = [
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-naval-history"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-core",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-naval-missions"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-naval-result-sources"
+version = "0.1.0"
+dependencies = [
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-pass-inputs"
+version = "0.1.0"
+dependencies = [
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-counters",
+ "recorder-oracle-country-rosters",
+ "recorder-oracle-naval-missions",
+ "recorder-oracle-supply-trains",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-peace"
+version = "0.1.0"
+dependencies = [
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-projects",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-plans"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-politics"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-characters",
+ "recorder-oracle-governance",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-power-ledger"
+version = "0.1.0"
+dependencies = [
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-production"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-projects"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-railway-guns"
+version = "0.1.0"
+dependencies = [
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-relations"
+version = "0.1.0"
+dependencies = [
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-rocket-output"
+version = "0.1.0"
+dependencies = [
+ "recorder-oracle-support",
+ "recorder-test-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-saved-event-targets"
+version = "0.1.0"
+dependencies = [
+ "installed-content-save",
+ "recorder-oracle-counters",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-selected-routes"
+version = "0.1.0"
+dependencies = [
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-session"
+version = "0.1.0"
+dependencies = [
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-stability"
+version = "0.1.0"
+dependencies = [
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-supply-trains"
+version = "0.1.0"
+dependencies = [
+ "installed-content",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-support"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-unit-combat-references"
+version = "0.1.0"
+dependencies = [
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-visibility"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-wars"
+version = "0.1.0"
+dependencies = [
+ "installed-content-save",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-oracle-weather"
+version = "0.1.0"
+dependencies = [
+ "installed-content-save",
+ "recorder-oracle-core",
+ "recorder-oracle-support",
+ "replay",
+]
+
+[[package]]
+name = "recorder-platform"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "replay",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "recorder-replay"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "recorder-metrics",
+ "recorder-platform",
+ "recorder-test-support",
+ "replay",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "recorder-sizes"
+version = "0.1.0"
+dependencies = [
+ "recorder-test-support",
+ "replay",
+ "serde_json",
+ "zstd",
+]
+
+[[package]]
+name = "recorder-test-support"
+version = "0.1.0"
+dependencies = [
+ "replay",
 ]
 
 [[package]]
@@ -3981,9 +6154,18 @@ version = "0.1.0"
 dependencies = [
  "crc32fast",
  "engine",
+ "replay-data",
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
+ "zstd",
+]
+
+[[package]]
+name = "replay-data"
+version = "0.1.0"
+dependencies = [
+ "engine",
  "zstd",
 ]
 
@@ -5568,18 +7750,109 @@ dependencies = [
  "eframe",
  "engine",
  "installed-content",
- "installed-content-save",
  "mimalloc",
  "png 0.18.1",
  "pollster 0.4.0",
  "raw-window-handle",
  "replay",
- "rfd",
  "serde",
  "serde_json",
  "sha2",
  "shader-pipeline",
+ "store",
+ "uuid",
+ "viewer-combat",
+ "viewer-counter-products",
+ "viewer-counters",
+ "viewer-foundation",
+ "viewer-raids",
+ "viewer-world",
  "windows-sys 0.61.2",
+ "zstd",
+]
+
+[[package]]
+name = "viewer-combat"
+version = "0.1.0"
+dependencies = [
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "viewer-foundation",
+]
+
+[[package]]
+name = "viewer-counter-products"
+version = "0.1.0"
+dependencies = [
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "viewer-foundation",
+]
+
+[[package]]
+name = "viewer-counters"
+version = "0.1.0"
+dependencies = [
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "serde_json",
+ "viewer-foundation",
+]
+
+[[package]]
+name = "viewer-foundation"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "dashboard-core",
+ "dashboard-text",
+ "eframe",
+ "engine",
+ "installed-content",
+ "installed-content-save",
+ "pollster 0.4.0",
+ "replay",
+ "shader-pipeline",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "viewer-raids"
+version = "0.1.0"
+dependencies = [
+ "dashboard-core",
+ "dashboard-text",
+ "eframe",
+ "engine",
+ "installed-content",
+ "replay",
+ "viewer-foundation",
+]
+
+[[package]]
+name = "viewer-world"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "dashboard-core",
+ "dashboard-text",
+ "eframe",
+ "engine",
+ "installed-content",
+ "pollster 0.4.0",
+ "replay",
+ "serde_json",
+ "shader-pipeline",
+ "viewer-foundation",
 ]
 
 [[package]]
@@ -6622,16 +8895,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wire"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "serde",
- "serde_json",
- "xxhash-rust",
-]
-
-[[package]]
 name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6755,12 +9018,6 @@ name = "xml-rs"
 version = "0.8.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
-
-[[package]]
-name = "xxhash-rust"
-version = "0.8.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "550a2b930b62486a393c52d5c3b84bff264b28aa437ed64694d31e93b1757af7"
 
 [[package]]
 name = "yoke"

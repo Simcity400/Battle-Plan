@@ -34,7 +34,7 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
     humans: [{ tag: 'mod A', firstHour: 104, lastHour: 112 }, { tag: 'new B', firstHour: 111, lastHour: 112 }],
     countryIdentities: reply.series.map(({ tag, identities }) => ({ tag, identities: identities! })) };
   type Effect = { setup: () => void | (() => void); cleanup?: () => void };
-  const state = { reply, groups, hour: 108, hooks: [] as unknown[], cursor: 0, dirty: false, effects: [] as (() => void)[],
+  const state = { reply, groups, hour: 108, pendingManifest:false, windowRequests:0, frames:new Map<number,FrameRequestCallback>(), hooks: [] as unknown[], cursor: 0, dirty: false, effects: [] as (() => void)[],
     main: undefined as CountryRaceViewProps | undefined, detail: undefined as CountryRaceViewProps | undefined,
     host: undefined as ComponentProps<typeof DrillHost> | undefined, picker: undefined as ComponentProps<typeof CountryPicker> | undefined,
     settingsCountries: undefined as ComponentProps<typeof CountriesSection> | undefined,
@@ -44,6 +44,10 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
     added: [] as WidgetSpec[] };
   const globals = globalThis as typeof globalThis & { __navalPinLifecycle?: typeof state };
   globals.__navalPinLifecycle = state;
+  const oldRequestFrame = globalThis.requestAnimationFrame, oldCancelFrame = globalThis.cancelAnimationFrame;
+  let frameId = 0;
+  globalThis.requestAnimationFrame = callback => { state.frames.set(++frameId,callback); return frameId; };
+  globalThis.cancelAnimationFrame = id => { state.frames.delete(id); };
   // Execute the actual adapter's effect setup/cleanup and retain hook cells only
   // for that mount. The shared reducer, holder projection and emitted spec are real.
   const hooks = `const cell = init => { const state = globalThis.__navalPinLifecycle, index = state.cursor++; return state.hooks[index] ??= init(); };
@@ -61,7 +65,19 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
       return [saved.value, action => { const value = reduce(saved.value, action);
         if (!Object.is(value, saved.value)) { saved.value = value; globalThis.__navalPinLifecycle.dirty = true; } }]; };`;
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = (_client, request) => ({ data: request ? globalThis.__navalPinLifecycle.reply : undefined });',
+    '/dashboard/products.ts': `const manifests = new WeakMap();
+      export const useProduct = (_client, request) => {
+        const reply = globalThis.__navalPinLifecycle.reply;
+        if (!manifests.has(reply)) manifests.set(reply, {...reply,windows:[{firstHour:100,lastHour:112}],
+          series:reply.series.map(row=>({...row,runs:[]}))});
+        return {data:request && !globalThis.__navalPinLifecycle.pendingManifest ? manifests.get(reply) : undefined};
+      };
+      export const loadProduct = async (_client, request, _signal, validate) => {
+        globalThis.__navalPinLifecycle.windowRequests++;
+        if (globalThis.__navalPinLifecycle.windowRequests > 512) throw Error('Naval window request bound exceeded');
+        const reply = globalThis.__navalPinLifecycle.reply;
+        return validate ? validate(reply) : reply;
+      };`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__navalPinLifecycle.groups });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = (_client, _track, wanted, active) => {
@@ -89,7 +105,14 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
       transform(source, id) {
         const path = id.replaceAll('\\', '/'), replacement = Object.entries(replacements).find(([suffix]) => path.endsWith(suffix));
         if (replacement) return replacement[1];
-        if (path.endsWith('/naval-losses/NavalLossesWidget.tsx')) return source.replace("from 'react'", "from 'naval-pin-hooks'").replace("from 'react-dom'", "from 'naval-pin-portals'");
+        if (path.endsWith('/dashboard/preparedSeries.ts')) {
+          // Stress the real polling code with an immediate test wait. Repeated
+          // progress must stop with the shared no-progress error.
+          const defaultWait = 'wait: (signal: AbortSignal) => Promise<void> = pause';
+          assert.equal(source.split(defaultWait).length, 2, 'one shared polling wait is injected');
+          return source.replace(defaultWait, 'wait: (signal: AbortSignal) => Promise<void> = async () => {}');
+        }
+        if (['/naval-losses/NavalLossesWidget.tsx','/naval-losses/preparedNaval.ts','/dashboard/productWindows.ts'].some(suffix=>path.endsWith(suffix))) return source.replace("from 'react'", "from 'naval-pin-hooks'").replace("from 'react-dom'", "from 'naval-pin-portals'");
         if (path.endsWith('/dashboard/DashboardGrid.tsx')) return source.replace('const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(null);',
           'const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(globalThis.__navalPinLifecycle.countrySlot);')
           .replace('onDiagnostics={setDiagnostics}', 'onDiagnostics={() => {}}');
@@ -114,11 +137,16 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
       client: {}, clock: { getHour: () => state.hour - 100, getSnapshot: () => ({ playing: false }) },
       maps: { schedule() {} }, campaignTracks: [], defaultRoleId: null,
       addWidgetBelow: (_id: string, pinned: WidgetSpec) => state.added.push(pinned) }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
-    const commit = () => {
+    const flushEffects = async () => {
+      for (const effect of state.effects.splice(0)) effect();
+      await Promise.resolve(); await Promise.resolve();
+      for (const [id,callback] of [...state.frames]) { state.frames.delete(id); callback(0); }
+    };
+    const commit = async () => {
       for (let pass = 0; pass < 12; pass++) {
         state.cursor = 0; state.dirty = false; state.main = undefined; state.detail = undefined; state.host = undefined; state.picker = undefined;
         renderToStaticMarkup(createElement(Widget, props));
-        for (const effect of state.effects.splice(0)) effect();
+        await flushEffects();
         if (!state.dirty && !state.effects.length) return;
       }
       assert.fail('the Naval adapter did not settle its mounted effects');
@@ -127,7 +155,7 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
       assert.ok(state.detail?.mix, 'a fresh mount restores one native actor without asking for another choice');
       assert.equal(state.detail!.mix!.tag, tag);
       assert.equal(state.detail!.moment, hour);
-      assert.equal(state.detail!.state, undefined);
+      assert.ok(state.detail!.state === undefined);
       assert.equal(state.picker!.selectedTag, tag, 'restoration opens the saved native actor instead of a multi-holder chooser');
       assert.deepEqual(new Set(state.detail!.mix!.bands![0].map(run => run.value)), new Set([40]));
       assert.deepEqual(new Set(state.detail!.mix!.bands![1].map(run => run.value)), new Set([0]), 'signed corrections retain no positive geometry');
@@ -147,55 +175,102 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
       assert.equal(state.dirty, false, 'no held callback changes the abandoned mount');
       return pin;
     };
-    await context.test('emitted Pin and Follow specs restore only the chosen native holder after fresh mount', () => {
-      commit();
-      state.main!.onPick!(108, 'reused alias', ['reused alias']); commit();
-      state.detail!.onPick!(108); commit(); state.host!.onPin!();
+    await context.test('real prepared hook stops instant-wait polling and bounds equivalent views', async () => {
+      unmount(); state.reply=reply; props.widget=original; state.hour=108;
+      const client=props.runtime.client;
+      let queries=0,statuses=0;
+      client.preparedQuery=async<T>()=>{
+        queries++;
+        assert.ok(queries<=2,'the unchanged viewport must not re-request its summary');
+        return null as T;
+      };
+      client.preparationStatus=async request=>{
+        statuses++;
+        assert.ok(statuses<=2,'unchanged coverage must wait instead of spinning');
+        return {...request,state:'preparing',sections:[{id:'naval-losses',label:'Naval losses',state:'preparing',
+          done:'1',total:'2',error:null}],backgroundEnabled:true,bytes:'0',error:null};
+      };
+      const view={from:100,to:112,width:1};
+      try {
+        await commit();
+        const windows=state.windowRequests;
+        state.main!.onSummaryView!(view); // Wrapper derives the authenticated bindings.
+        await commit(); await Promise.resolve(); await commit();
+        assert.equal(queries,2); assert.equal(statuses,2);
+        for(let pass=0;pass<20;pass++) {
+          state.main!.onSummaryView!({...view});
+          await commit();
+        }
+        await new Promise(resolve=>setTimeout(resolve,30));
+        assert.equal(queries,2,'no requests after repeated progress and identical view operands');
+        assert.equal(statuses,2,'unchanged progress stops instant-wait polling');
+        assert.equal(state.windowRequests,windows,'repeated geometry does not reload reached windows');
+        const failure=state.main!.state;
+        assert.ok(isValidElement<{detail?:string}>(failure));
+        assert.match(failure.props.detail??'',/Campaign preparation made no progress\./);
+        unmount();
+        queries=0; statuses=0;
+        client.preparedQuery=async<T>()=>{
+          queries++;
+          assert.ok(queries<=1,'one stable completed summary issues one request');
+          return {series:[]} as T;
+        };
+        await commit(); state.main!.onSummaryView!(view); await commit(); await Promise.resolve(); await commit();
+        for(let pass=0;pass<20;pass++) {state.main!.onSummaryView!({...view}); await commit();}
+        assert.equal(queries,1); assert.equal(statuses,0);
+      } finally {
+        unmount(); delete client.preparedQuery; delete client.preparationStatus;
+      }
+    });
+    await context.test('emitted Pin and Follow specs restore only the chosen native holder after fresh mount', async () => {
+      await commit();
+      state.main!.onPick!(108, 'reused alias', ['reused alias']); await commit();
+      state.detail!.onPick!(108); await commit(); state.host!.onPin!();
       const picked = JSON.parse(JSON.stringify(state.added.at(-1))) as WidgetSpec;
       assert.deepEqual(picked.countries, { kind: 'tags', tags: ['reused alias'] });
       assert.deepEqual(picked.time, { mode: 'pin', windows: { track: { firstOffset: 8, lastOffset: 8 } } });
-      unmount(); props.widget = picked; state.hour = 112; commit(); assertB('reused alias', 108);
+      unmount(); props.widget = picked; state.hour = 112; await commit(); assertB('reused alias', 108);
       assert.equal(picked.options!.drillOriginOffset, 8);
       assert.equal(picked.options!.drillOriginTag, 'reused:20:alias');
-      unmount(); props.widget = original; state.hour = 108; commit();
-      state.main!.onPick!(108, 'reused alias', ['reused alias']); commit(); state.host!.onPin!();
+      unmount(); props.widget = original; state.hour = 108; await commit();
+      state.main!.onPick!(108, 'reused alias', ['reused alias']); await commit(); state.host!.onPin!();
       const following = JSON.parse(JSON.stringify(state.added.at(-1))) as WidgetSpec;
       assert.deepEqual(following.time, { mode: 'follow' });
-      unmount(); props.widget = following; state.hour = 112; commit(); assertB('new B', 112);
+      unmount(); props.widget = following; state.hour = 112; await commit(); assertB('new B', 112);
       assert.equal(following.options!.drillOriginOffset, 8);
       assert.equal(following.options!.drillOriginTag, 'reused:20:alias');
-      state.hour = 102; commit(); assertB('old B', 102);
+      state.hour = 102; await commit(); assertB('old B', 102);
       for (const offset of [-1, 0.5, 8 + 1e-10, 99, 'invalid']) {
-        unmount(); props.widget = { ...following, options: { ...following.options, drillOriginOffset: offset } }; commit();
+        unmount(); props.widget = { ...following, options: { ...following.options, drillOriginOffset: offset } }; await commit();
         assert.equal(state.detail!.mix, null);
         assert.match(renderToStaticMarkup(state.detail!.state), /Saved country selection unavailable/);
-        state.picker!.onChange('reused alias'); commit(); assert.equal(state.detail!.mix, null, 'invalid origins do not fall back to a current tag holder');
+        state.picker!.onChange('reused alias'); await commit(); assert.equal(state.detail!.mix, null, 'invalid origins do not fall back to a current tag holder');
       }
       for (const identities of [undefined, [], [identity(100, 103, 1, 11), identity(109, 110, 2, 22), identity(111, 112, 3, 33)]]) {
         unmount(); props.widget = following;
-        state.reply = { ...reply, series: reply.series.map(series => series.tag === 'reused alias' ? { ...series, identities } : series) }; commit();
+        state.reply = { ...reply, series: reply.series.map(series => series.tag === 'reused alias' ? { ...series, identities } : series) }; await commit();
         assert.equal(state.detail!.mix, null);
         assert.match(renderToStaticMarkup(state.detail!.state), /Saved country selection unavailable/,
           'absent, empty and origin-gap identity metadata cannot be replaced by counts or later holders');
       }
     });
-    await context.test('adapter effect cleanup rejects held callbacks while setup replay and a new mount stay usable', () => {
-      unmount(); state.reply = reply; props.widget = original; state.hour = 108; commit();
+    await context.test('adapter effect cleanup rejects held callbacks while setup replay and a new mount stay usable', async () => {
+      unmount(); state.reply = reply; props.widget = original; state.hour = 108; await commit();
       // StrictMode's cleanup/setup replay republishes this same mounted instance.
       const mountedEffects = state.hooks.filter((cell): cell is Effect => !!cell && typeof cell === 'object' && 'setup' in cell);
       for (const cell of mountedEffects) cell.cleanup?.();
       for (const cell of mountedEffects) { const cleanup = cell.setup(); cell.cleanup = typeof cleanup === 'function' ? cleanup : undefined; }
-      commit(); state.main!.onPick!(108, 'reused alias', ['reused alias']); commit();
+      await commit(); state.main!.onPick!(108, 'reused alias', ['reused alias']); await commit();
       assert.equal(state.detail!.mix!.tag, 'reused alias', 'effect setup replay re-admits the live mounted instance');
       const abandonedPin = unmountWithHeldCallbacks(), count = state.added.length;
-      props.widget = original; commit(); abandonedPin();
+      props.widget = original; await commit(); abandonedPin();
       assert.equal(state.added.length, count, 'fresh mount never re-admits the old instance callback');
-      state.main!.onPick!(108, 'reused alias', ['reused alias']); commit(); state.host!.onPin!();
+      state.main!.onPick!(108, 'reused alias', ['reused alias']); await commit(); state.host!.onPin!();
       assert.equal(state.added.length, count + 1, 'the replacement mount can still pin its own actor');
     });
-    await context.test('actual Countries settings preserve unchanged origins and release changed selections on update and fresh mount', () => {
-      unmount(); state.reply = reply; props.widget = original; state.hour = 108; commit();
-      state.main!.onPick!(108, 'reused alias', ['reused alias']); commit(); state.host!.onPin!();
+    await context.test('actual Countries settings preserve unchanged origins and release changed selections on update and fresh mount', async () => {
+      unmount(); state.reply = reply; props.widget = original; state.hour = 108; await commit();
+      state.main!.onPick!(108, 'reused alias', ['reused alias']); await commit(); state.host!.onPin!();
       const saved = JSON.parse(JSON.stringify(state.added.at(-1))) as WidgetSpec;
       const template: DashboardTemplate = { version: 1, name: 'Naval settings', alignment: 'calendar',
         roles: [{ id: 'primary', label: 'Primary', selectedTag: null }],
@@ -204,7 +279,7 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
       const selections: CountrySelection[] = [saved.countries, { kind: 'tags', tags: ['new B'] },
         { kind: 'tags', tags: ['mod A', 'new B'] }, { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }];
       for (const countries of selections) {
-        unmount(); props.widget = saved; state.hour = 112; commit(); assertB('new B', 112);
+        unmount(); props.widget = saved; state.hour = 112; await commit(); assertB('new B', 112);
         const changes: WidgetSpec[] = [];
         state.settingsCountries = undefined;
         renderToStaticMarkup(createElement(Settings, { widget: saved, template, runtime: props.runtime,
@@ -217,35 +292,35 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
         assert.ok(changed);
         assert.deepEqual(changed.countries, countries);
         assert.deepEqual(changed.options, saved.options, 'the actual settings callback retains the old hidden origin witness');
-        const assertSelection = () => {
+        const assertSelection = async () => {
           if (countries.kind === 'group' || countries.kind === 'tags' && countries.tags.length > 1) {
-            assert.equal(state.detail, undefined, 'a changed multi-country selection opens the normal chooser');
+            assert.ok(state.detail === undefined, 'a changed multi-country selection opens the normal chooser');
             assert.equal(state.picker!.selectedTag, null);
             assert.deepEqual([...state.picker!.allowedTags!].sort(), ['mod A', 'new B']);
-            state.picker!.onChange('new B'); commit();
+            state.picker!.onChange('new B'); await commit();
           }
           assertB('new B', 112);
         };
-        props.widget = changed; commit(); assertSelection();
-        unmount(); props.widget = JSON.parse(JSON.stringify(changed)) as WidgetSpec; commit(); assertSelection();
+        props.widget = changed; await commit(); await assertSelection();
+        unmount(); props.widget = JSON.parse(JSON.stringify(changed)) as WidgetSpec; await commit(); await assertSelection();
         if (countries.kind === 'tags' && countries.tags.length === 1) {
-          state.hour = 102; commit(); assertB('old B', 102);
+          state.hour = 102; await commit(); assertB('old B', 102);
         }
       }
     });
-    await context.test('registered countrySlot follows the actual pinned actor and displayed date without layout writes', () => {
-      unmount(); state.reply = reply; props.widget = original; state.hour = 108; commit();
-      state.main!.onPick!(108, 'reused alias', ['reused alias']); commit(); state.host!.onPin!();
+    await context.test('registered countrySlot follows the actual pinned actor and displayed date without layout writes', async () => {
+      unmount(); state.reply = reply; props.widget = original; state.hour = 108; await commit();
+      state.main!.onPick!(108, 'reused alias', ['reused alias']); await commit(); state.host!.onPin!();
       const following = JSON.parse(JSON.stringify(state.added.at(-1))) as WidgetSpec;
       const template: DashboardTemplate = { version: 1, name: 'Naval header', alignment: 'calendar', roles: [], tracks: [], widgets: [following], layouts: {} };
       const changes: WidgetSpec[] = [];
-      const frame = () => {
+      const frame = async () => {
         for (let pass = 0; pass < 12; pass++) {
           state.cursor = 0; state.dirty = false; state.main = undefined; state.detail = undefined; state.host = undefined; state.picker = undefined;
           state.portals = []; state.labelRequests = [];
           const html = renderToStaticMarkup(createElement(Grid, { template, runtime: props.runtime,
             editing: false, onLayouts() {}, onApply: next => changes.push(next), onRemove() {} }));
-          for (const effect of state.effects.splice(0)) effect();
+          await flushEffects();
           if (!state.dirty && !state.effects.length) return html;
         }
         return assert.fail('the registered frame body did not settle its mounted effects');
@@ -267,88 +342,91 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
         assert.doesNotMatch(html, /Replacement C/);
         assert.deepEqual(state.labelRequests.at(-1), { wanted: [{ tag, hour }], active: true });
       };
-      unmount(); state.hour = 112; frame(); assertB('new B', 112); assertHeader('new B', 112, 'Native B at 112', '/B112.svg');
-      state.picker!.onChange('reused alias'); frame();
+      unmount(); state.hour = 112; await frame(); assertB('new B', 112); assertHeader('new B', 112, 'Native B at 112', '/B112.svg');
+      state.picker!.onChange('reused alias'); await frame();
       assert.equal(state.detail!.mix!.tag, 'reused alias'); assert.equal(state.detail!.moment, 112);
       assert.deepEqual(new Set(state.detail!.mix!.bands![0].map(run => run.value)), new Set([900]));
       assertHeader('reused alias', 112, 'Native C at 112', '/C112.svg');
       assert.equal(following.options!.drillOriginOffset, 8, 'local replacement choice does not rewrite the saved restoration anchor');
-      state.detail!.onPick!(108); frame();
+      state.detail!.onPick!(108); await frame();
       assert.ok(state.detail!.state, 'C remains selected where its history has no recorded native identity');
       assert.match(header(), /unavailable/); assert.doesNotMatch(header(), /Native B|B108.svg/);
       assert.deepEqual(state.labelRequests.at(-1), { wanted: [], active: false }, 'a historical gap cannot retarget the saved B holder');
       const recoveryButton = (state.detail!.beforeChart as ReactElement<{ children: ReactNode[] }>).props.children[0];
-      assert.ok(isValidElement<{ onClick: () => void }>(recoveryButton)); recoveryButton.props.onClick(); frame();
+      assert.ok(isValidElement<{ onClick: () => void }>(recoveryButton)); recoveryButton.props.onClick(); await frame();
       assertHeader('reused alias', 112, 'Native C at 112', '/C112.svg');
-      state.picker!.onChange('mod A'); frame();
+      state.picker!.onChange('mod A'); await frame();
       assert.deepEqual(new Set(state.detail!.mix!.bands![0].map(run => run.value)), new Set([4]));
       assertHeader('mod A', 112, 'Native A at 112', '/A112.svg');
-      unmount(); props.widget = original; state.hour = 108; commit();
-      state.main!.onPick!(108, 'reused alias', ['reused alias']); commit(); state.detail!.onPick!(108); commit(); state.host!.onPin!();
+      unmount(); props.widget = original; state.hour = 108; await commit();
+      state.main!.onPick!(108, 'reused alias', ['reused alias']); await commit(); state.detail!.onPick!(108); await commit(); state.host!.onPin!();
       const pinned = JSON.parse(JSON.stringify(state.added.at(-1))) as WidgetSpec;
       const savedTime = { mode: 'pin', windows: { track: { firstOffset: 8, lastOffset: 8 } } };
-      unmount(); template.widgets = [pinned]; state.hour = 112; frame(); assertB('reused alias', 108);
+      unmount(); template.widgets = [pinned]; state.hour = 112; await frame(); assertB('reused alias', 108);
       assertHeader('reused alias', 108, 'Native B at 108', '/B108.svg');
-      state.detail!.onPick!(112); frame(); assertB('new B', 112); assertHeader('new B', 112, 'Native B at 112', '/B112.svg');
+      state.detail!.onPick!(112); await frame(); assertB('new B', 112); assertHeader('new B', 112, 'Native B at 112', '/B112.svg');
       assert.deepEqual(pinned.time, savedTime, 'local historical pick keeps the original saved Pin at 108');
       const followButton = (state.detail!.beforeChart as ReactElement<{ children: ReactNode[] }>).props.children[0];
       assert.ok(isValidElement<{ onClick: () => void }>(followButton)); assert.equal(followButton.type, 'button');
-      state.hour = 102; followButton.props.onClick(); frame(); assertB('old B', 102); assertHeader('old B', 102, 'Native B at 102', '/B102.svg');
+      state.hour = 102; followButton.props.onClick(); await frame(); assertB('old B', 102); assertHeader('old B', 102, 'Native B at 102', '/B102.svg');
       assert.deepEqual(pinned.time, savedTime, 'local Follow uses its displayed date without rewriting WidgetSpec.time');
-      state.hour = 112; frame(); assertB('new B', 112); assertHeader('new B', 112, 'Native B at 112', '/B112.svg');
+      state.hour = 112; await frame(); assertB('new B', 112); assertHeader('new B', 112, 'Native B at 112', '/B112.svg');
       const labelKey = JSON.stringify([112, 'new B']);
-      state.labels[labelKey] = { name: '', known: true, flagPending: true }; frame();
+      state.labels[labelKey] = { name: '', known: true, flagPending: true }; await frame();
       assert.match(header(), /Flag loading/); assert.doesNotMatch(header(), /Selected country unavailable|Replacement C/);
-      state.labels[labelKey] = { name: '', known: true, flagPending: false, flagReason: 'Displayed flag was not recorded' }; frame();
+      state.labels[labelKey] = { name: '', known: true, flagPending: false, flagReason: 'Displayed flag was not recorded' }; await frame();
       assert.match(header(), /Flag unavailable/);
-      state.labels[labelKey] = { name: 'Unproved name', known: false, nameFailed: true, flag: '/B112.svg', flagPending: false }; frame();
+      state.labels[labelKey] = { name: 'Unproved name', known: false, nameFailed: true, flag: '/B112.svg', flagPending: false }; await frame();
       assert.match(header(), /Unavailable/); assert.doesNotMatch(header(), /Unproved name/);
       assert.ok(header().includes('src="/B112.svg"'), 'the authenticated current flag remains independent of a failed name');
       assert.match(header(), /Name unavailable/);
       state.labels[labelKey] = { name: 'Unproved name', known: false, nameFailed: true, flagPending: false,
-        flagReason: 'Exact displayed flag refusal' }; frame();
+        flagReason: 'Exact displayed flag refusal' }; await frame();
       assert.match(header(), /Flag unavailable/);
       assert.match(header(), /Name unavailable/);
-      state.labels[labelKey] = { name: 'Unproved name', known: false, nameFailed: true, flagPending: true }; frame();
+      state.labels[labelKey] = { name: 'Unproved name', known: false, nameFailed: true, flagPending: true }; await frame();
       assert.match(header(), /Flag loading/); assert.doesNotMatch(header(), /Flag not available: The country name request failed/);
       state.labels[labelKey] = { name: 'Native B at 112', known: true, flag: '/B112.svg', flagPending: false };
-      state.reply = { ...reply, series: reply.series.map(series => series.tag === 'new B' ? { ...series, identities: [] } : series) }; frame();
+      state.reply = { ...reply, series: reply.series.map(series => series.tag === 'new B' ? { ...series, identities: [] } : series) }; await frame();
       assert.match(header(), /unavailable/); assert.doesNotMatch(header(), /Native B|B112.svg/);
       assert.deepEqual(state.labelRequests.at(-1), { wanted: [], active: false }, 'a displayed identity gap never requests another holder’s looks');
-      state.reply = { ...reply, series: [...reply.series, history('conflicting B', [identity(111, 112, 2, 22)], 40, -3)] }; frame();
+      state.reply = { ...reply, series: [...reply.series, history('conflicting B', [identity(111, 112, 2, 22)], 40, -3)] }; await frame();
       assert.match(header(), /unavailable/); assert.deepEqual(state.labelRequests.at(-1), { wanted: [], active: false });
       assert.ok(header().includes('As of ' + formatDateTime(112)), 'a known displayed date remains explicit when identity is refused');
       state.reply = reply; state.labels = {}; unmount(); template.widgets = [original]; state.hour = 112;
-      assert.match(frame(), /Country name unavailable/); assert.equal(state.portals.length, 0);
-      state.main!.onPick!(108, 'reused alias', ['reused alias']); assert.match(frame(), /Country name unavailable/);
+      assert.match(await frame(), /Country name unavailable/); assert.equal(state.portals.length, 0);
+      state.main!.onPick!(108, 'reused alias', ['reused alias']); assert.match(await frame(), /Country name unavailable/);
       assert.equal(state.portals.length, 0, 'ordinary main/comparison headers keep their country roots during an inline drill');
       assert.deepEqual(changes, [], 'local choices, history and Follow never write layout preferences');
     });
-    await context.test('a catalogue breakdown card asks for a country, then names the one chosen in its body', () => {
+    await context.test('a catalogue breakdown card asks for a country, then names the one chosen in its body', async () => {
       const variant = registry.widgetDefinition('naval-losses').variants.find((item: { key: string }) => item.key === 'show=parts');
       const card: WidgetSpec = { ...original, id: 'card', ...variant.initial, countries: { kind: 'tags', tags: ['mod A', 'new B'] }, time: { mode: 'follow' } };
       const template: DashboardTemplate = { version: 1, name: 'Naval card', alignment: 'calendar', roles: [], tracks: [], widgets: [card], layouts: {} };
       const changes: WidgetSpec[] = [];
-      const frame = () => {
+      const frame = async () => {
         for (let pass = 0; pass < 12; pass++) {
           state.cursor = 0; state.dirty = false; state.detail = undefined; state.picker = undefined; state.portals = [];
           renderToStaticMarkup(createElement(Grid, { template, runtime: props.runtime,
             editing: false, onLayouts() {}, onApply: next => changes.push(next), onRemove() {} }));
-          for (const effect of state.effects.splice(0)) effect();
+          await flushEffects();
           if (!state.dirty && !state.effects.length) return;
         }
         assert.fail('the catalogue card did not settle its mounted effects');
       };
       const header = () => { assert.equal(state.portals.length, 1); return renderToStaticMarkup(state.portals[0].child); };
       state.reply = reply; state.labels = { [JSON.stringify([112, 'new B'])]: { name: 'Native B at 112', flag: '/B112.svg', known: true, flagPending: false } };
-      unmount(); state.hour = 112; frame();
-      assert.equal(state.detail, undefined, 'two countries open the chooser');
+      unmount(); state.hour = 112; await frame();
+      assert.ok(state.detail === undefined, 'two countries open the chooser');
       assert.match(header(), />Choose a country</); assert.doesNotMatch(header(), /Unavailable/);
-      state.picker!.onChange('new B'); frame();
+      state.picker!.onChange('new B'); await frame();
       assert.equal(state.detail!.mix!.tag, 'new B');
       assert.ok(header().includes('Native B at 112')); assert.ok(header().includes('src="/B112.svg"'));
       assert.ok(header().includes('As of ' + formatDateTime(112)));
       assert.equal(card.options!.drillOriginOffset, undefined); assert.deepEqual(changes, [], 'choosing in the body writes no pin');
     });
-  } finally { unmount(); await vite.close(); delete globals.__navalPinLifecycle; }
+  } finally {
+    unmount(); await vite.close(); delete globals.__navalPinLifecycle;
+    globalThis.requestAnimationFrame=oldRequestFrame; globalThis.cancelAnimationFrame=oldCancelFrame;
+  }
 });

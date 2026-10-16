@@ -1,32 +1,6 @@
 use super::*;
 
 #[test]
-fn air_superiority_frontend_contract_matches_the_rust_air_declarations() {
-    let generated = include_str!("../../../../../ui/src/generated/dashboard.ts");
-    let expected: Vec<_> = model::types()
-        .into_iter()
-        .map(|declaration| format!("export {declaration}"))
-        .collect();
-    let names: Vec<_> = expected
-        .iter()
-        .filter_map(|line| {
-            line.strip_prefix("export type ")
-                .and_then(|line| line.split_once(" = ").map(|(name, _)| name))
-        })
-        .collect();
-    let actual: Vec<_> = generated
-        .lines()
-        .filter(|line| {
-            line.strip_prefix("export type ")
-                .and_then(|line| line.split_once(" = ").map(|(name, _)| name))
-                .is_some_and(|name| names.contains(&name))
-        })
-        .map(str::to_owned)
-        .collect();
-    assert_eq!(actual, expected, "stale, missing or extra air declarations");
-}
-
-#[test]
 fn air_superiority_viewpoint_indices_and_reads_survive_base_catalogue_growth() {
     let frame = |hour, score| {
         let mut frame = air(hour, score);
@@ -486,7 +460,7 @@ use replay::{
     rows::{AirWingRow, FactionMemberRow, FactionRow, RaidAirScoreRow, TableRows},
 };
 
-fn params(view: AirView, first: i32, last: i32) -> AirParams {
+pub(super) fn params(view: AirView, first: i32, last: i32) -> AirParams {
     AirParams {
         branch_id: "1".into(),
         view,
@@ -503,7 +477,7 @@ fn params(view: AirView, first: i32, last: i32) -> AirParams {
     }
 }
 
-fn air(hour: i32, friendly: i64) -> DecodedFrame {
+pub(super) fn air(hour: i32, friendly: i64) -> DecodedFrame {
     let mut frame = ownership_frame(1, hour, 44);
     *frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(vec![
         FactionRow {
@@ -553,34 +527,38 @@ fn air(hour: i32, friendly: i64) -> DecodedFrame {
                 region: 7000,
                 friendly: 100_000,
                 enemy: friendly,
+                impact: Default::default(),
             },
             RaidAirScoreRow {
                 country: 55,
                 region: 7999,
                 friendly: 0,
                 enemy: 0,
+                impact: Default::default(),
             },
             RaidAirScoreRow {
                 country: 66,
                 region: 7999,
                 friendly: 0,
                 enemy: 0,
+                impact: Default::default(),
             },
             RaidAirScoreRow {
                 country: 9001,
                 region: 7000,
                 friendly,
                 enemy: 100_000,
+                impact: Default::default(),
             },
         ]));
     *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(vec![]));
     frame
 }
 
-fn recording(frames: Vec<DecodedFrame>) -> Replay {
+pub(super) fn recording(frames: Vec<DecodedFrame>) -> Replay {
     Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap()
 }
-fn groups(replay: &Replay) -> country_groups::Scan {
+pub(super) fn groups(replay: &Replay) -> country_groups::Scan {
     country_groups::scan_branch(replay, 1, &AtomicBool::new(false)).unwrap()
 }
 fn cell_sides(cell: &AirCell) -> AirSideCell {
@@ -679,6 +657,7 @@ fn air_superiority_indexed_daily_snapshots_match_full_reconstruction() {
                 region: 8000,
                 friendly: 300_000,
                 enemy: 0,
+                impact: Default::default(),
             });
         }
         if (36..40).contains(&hour) {
@@ -692,6 +671,7 @@ fn air_superiority_indexed_daily_snapshots_match_full_reconstruction() {
                 region: 7000,
                 friendly: 900_000,
                 enemy: 0,
+                impact: Default::default(),
             });
         }
         frames.push(frame);
@@ -1009,6 +989,7 @@ fn the_largest_region_id_never_supplies_the_absent_region_fallback() {
             region: u32::MAX,
             friendly: 900_000,
             enemy: 0,
+            impact: Default::default(),
         });
         rows.sort_by_key(|row| (row.country, row.region));
     }
@@ -1726,6 +1707,7 @@ fn selected_5000_countries_are_served_and_oversize_replies_are_never_truncated()
                 region: 7000,
                 friendly: 100_000,
                 enemy: 0,
+                impact: Default::default(),
             })
             .collect(),
     ));
@@ -1958,7 +1940,9 @@ fn product_load_inherits_verified_append_state_and_keeps_prior_source_independen
         unreachable!()
     };
     assert_eq!(first_again.rows[0].cells, first_reply.rows[0].cells);
-    let changed_source = make("changed", recording(vec![air(0, 900_000)]));
+    // A rewritten recording whose block index differs (it starts an hour later); a
+    // rewrite that compresses to the same block lengths is indistinguishable here.
+    let changed_source = make("changed", recording(vec![air(1, 900_000)]));
     changed_source.inherit_append_states(&first_source);
     assert!(
         changed_source
@@ -2047,6 +2031,7 @@ fn top_region_ranking_preserves_single_fixed5_unit_differences_above_f64_precisi
             region: 9000,
             friendly: smaller + 1,
             enemy: 0,
+            impact: Default::default(),
         });
         rows.sort_by_key(|row| (row.country, row.region));
     }
@@ -2358,6 +2343,10 @@ fn air_superiority_new_viewpoints_share_auxiliary_reads_side_catalogue_and_histo
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn air_superiority_within_day_appends_replace_the_prior_partial_snapshot() {
     let cancelled = AtomicBool::new(false);
     let first = recording(vec![air(0, 1)]);

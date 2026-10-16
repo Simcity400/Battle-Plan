@@ -45,35 +45,43 @@
 //! incomplete, so an hour the recording lacks is never given a value.
 
 use super::{
-    BranchParams, LoadContext, Product,
-    country_history::{CountryIdentityRun, branch_histories},
-    country_measure::FixedRun,
+    BranchParams, Product, country_history::CountryIdentityRun, country_measure::FixedRun,
 };
+#[cfg(test)]
+use super::{LoadContext, country_history::branch_histories};
+#[cfg(test)]
+use crate::metadata::validate_campaign;
 use crate::{
     Source,
     catalogue::display_text,
-    metadata::{link_slot, mapped_slot, slot_read, validate_campaign},
+    metadata::{link_slots, slot_read},
 };
 use engine::{cthreat_source, cworld_threat};
+#[cfg(test)]
+use replay::{container::Replay, frame::FrameDecoder};
 use replay::{
-    container::Replay,
-    frame::{FrameDecoder, TableView},
-    rows::{CountryLinkRow, CountryRow, TableId, tables},
+    frame::{DecodedFrame, TableView},
+    rows::{TableId, tables},
 };
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
+    sync::{Arc, atomic::Ordering},
+};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::atomic::AtomicBool,
 };
 use ts_rs::TS;
 
 pub struct WorldTension;
 
+pub(crate) mod prepared;
+
 /// Branches kept per source.
+#[cfg(test)]
 const CACHED_BRANCHES: usize = 4;
 /// World tension units per percentage point: contributions' units over the
 /// divisor the engine stores the clamped sum with.
@@ -178,7 +186,7 @@ type EventKey = (u32, u32, i32, Vec<u8>, u32);
 /// A source's country and second country references, date and reason.
 type SourceIdentity<'a> = (u32, u32, i32, &'a [u8]);
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ScannedTension {
     pub reads: Vec<TensionRead>,
     pub countries: Vec<TensionCountry>,
@@ -189,31 +197,77 @@ pub struct ScannedTension {
     pub tension_mismatches: usize,
     /// Reads whose source rows are incomplete, so their events may be missing.
     pub partial_sources: usize,
+    unnamed_reads: usize,
+    first_contributions: Vec<i32>,
+    read_count: u64,
 }
 
 /// A country's runs while scanning: runs by read index, so a carried read extends
 /// them without touching every country.
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Building {
     tag: String,
     slot: u32,
+    first_hour: i32,
     /// (first read, last read, value, starts segment)
     runs: Vec<(usize, usize, i64, bool)>,
 }
 
-/// The tag of each canonical slot this hour, as `mapped_slot` confirms it.
-fn slot_tags(countries: &[CountryRow], links: &[CountryLinkRow]) -> HashMap<u32, String> {
+/// Authenticate the retained holder operands against the current link projection.
+fn slot_tags(
+    countries: &crate::metadata::CountryKeys,
+    links: &HashMap<u32, u32>,
+) -> HashMap<u32, String> {
     countries
         .iter()
-        .filter_map(|row| {
-            mapped_slot(row, links)
-                .ok()
-                .map(|slot| (slot, String::from_utf8_lossy(&row.tag).into_owned()))
-        })
+        .filter(|&(id, slot, _tag)| links.get(&id) == Some(&slot))
+        .map(|(_id, slot, tag)| (slot, String::from_utf8_lossy(tag).into_owned()))
         .collect()
 }
 
+/// Current source operands omit decay fields the reply never reads.
+#[derive(Clone)]
+struct SourceOperand {
+    country: u32,
+    second_country: u32,
+    date: i32,
+    reason: Vec<u8>,
+    current_raw: i64,
+    final_raw: i64,
+}
+fn source_operands(frame: &DecodedFrame) -> Option<(Vec<SourceOperand>, bool)> {
+    let (rows, complete) = match &*frame.tables[TableId::ThreatSources.index()] {
+        TableView::Complete(rows) => (rows.rows::<tables::ThreatSources>()?, true),
+        TableView::Truncated { rows, .. } => (rows.rows::<tables::ThreatSources>()?, false),
+        TableView::Unavailable { .. } => return None,
+    };
+    Some((
+        rows.iter()
+            .map(|row| SourceOperand {
+                country: row.country,
+                second_country: row.second_country,
+                date: row.date,
+                reason: row.reason.clone(),
+                current_raw: row.current_raw,
+                final_raw: row.final_raw,
+            })
+            .collect(),
+        complete,
+    ))
+}
+fn aggregate_operands(frame: &DecodedFrame) -> Option<Vec<(u32, i64)>> {
+    Some(
+        frame
+            .complete::<tables::ThreatCountryAggregates>()
+            .ok()?
+            .iter()
+            .map(|row| (row.country_slot, row.total_raw))
+            .collect(),
+    )
+}
+
 /// Scans one branch for its tension reads, contributions and events.
+#[cfg(test)]
 pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<ScannedTension> {
     let selected = [
         TableId::Campaign,
@@ -229,19 +283,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
             "World tension request cancelled",
         )
     };
-    let mut result = ScannedTension::default();
-    let mut building: Vec<Building> = Vec::new();
-    // Each country by its identity (slot) and the tag it held.
-    let mut by_country: HashMap<(u32, String), usize> = HashMap::new();
-    // The tag a slot was last recorded under: a country that no longer exists keeps
-    // its sources, and so its contribution, until they decay.
-    let mut known: HashMap<u32, String> = HashMap::new();
-    // The slot a raw link was last recorded for, for the same reason.
-    let mut known_links: HashMap<u32, u32> = HashMap::new();
-    let mut events: HashMap<EventKey, usize> = HashMap::new();
-    let mut last_hour: Option<i32> = None;
-    // Whether the last read is carried to the previous hour.
-    let mut open = false;
+    let mut observer = Scan::default();
     crate::blocks::scan_blocks(
         replay,
         replay.index.iter().filter(|block| block.branch == branch),
@@ -254,7 +296,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 }
                 let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
-                    open = false;
+                    observer.open = false;
                     continue;
                 };
                 for frame in frames {
@@ -262,224 +304,629 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                         return Err(cancel());
                     }
                     let Ok(decoded) = decoder.advance(&frame) else {
-                        open = false;
+                        observer.open = false;
                         break;
                     };
                     if validate_campaign(decoded, replay).is_err() {
-                        open = false;
+                        observer.open = false;
                         break;
                     }
-                    let hour = frame.hour;
-                    let continues = last_hour.and_then(|last| last.checked_add(1)) == Some(hour);
-                    last_hour = Some(hour);
-                    open &= continues;
-                    // Identities are remembered from every hour that records them, with or
-                    // without the tension tables: a country seen only then still names its
-                    // slot and links at a later read.
-                    let identity = decoded
-                        .complete::<tables::Countries>()
-                        .ok()
-                        .zip(decoded.complete::<tables::CountryLinks>().ok());
-                    if let Some((countries, links)) = identity {
-                        known.extend(slot_tags(countries, links));
-                        known_links.extend(links.iter().map(|link| (link.id, link.canonical_slot)));
-                    }
-                    let tables = identity
-                        .map(|(_, links)| links)
-                        .zip(decoded.complete::<tables::WorldTension>().ok())
-                        .zip(decoded.complete::<tables::ThreatCountryAggregates>().ok());
-                    let Some(((links, tension), aggregates)) = tables else {
-                        open = false;
-                        continue;
-                    };
-                    if !slot_read(replay.format, &decoded.metrics, TableId::WorldTension, hour) {
-                        if open && let Some(read) = result.reads.last_mut() {
-                            read.last_hour = hour;
-                        }
-                        continue;
-                    }
-                    let Some(tension) = tension.first() else {
-                        open = false;
-                        continue;
-                    };
-                    let index = result.reads.len();
-                    let starts_segment = !open;
-                    open = true;
-                    let mut sum = 0_i64;
-                    let mut unnamed = 0_i64;
-                    for row in aggregates.iter().filter(|row| row.total_raw != 0) {
-                        sum = sum.checked_add(row.total_raw).ok_or_else(|| {
-                            io::Error::other(
-                                "World tension contribution sum exceeds signed 64-bit range",
-                            )
-                        })?;
-                        let Some(tag) = known.get(&row.country_slot) else {
-                            unnamed = unnamed.checked_add(row.total_raw).ok_or_else(|| {
-                            io::Error::other(
-                                "World tension unnamed contribution sum exceeds signed 64-bit range",
-                            )
-                        })?;
-                            continue;
-                        };
-                        let at = *by_country
-                            .entry((row.country_slot, tag.clone()))
-                            .or_insert_with(|| {
-                                building.push(Building {
-                                    tag: tag.clone(),
-                                    slot: row.country_slot,
-                                    runs: Vec::new(),
-                                });
-                                building.len() - 1
-                            });
-                        let runs = &mut building[at].runs;
-                        match runs.last_mut() {
-                            Some(run)
-                                if !starts_segment
-                                    && run.1 + 1 == index
-                                    && run.2 == row.total_raw =>
-                            {
-                                run.1 = index;
-                            }
-                            // One identity, so only a gap breaks its line.
-                            _ => runs.push((index, index, row.total_raw, starts_segment)),
-                        }
-                    }
-                    result.reads.push(TensionRead {
-                        first_hour: hour,
-                        last_hour: hour,
-                        starts_segment,
-                        tension_raw: tension.total_raw.to_string(),
-                        sum_raw: sum.to_string(),
-                        unnamed_raw: unnamed.to_string(),
-                    });
-                    // World tension stores the clamped and scaled sum.
-                    let capped =
-                        sum.clamp(0, cworld_threat::CLAMP_CEILING) / cworld_threat::SCALAR_DIVISOR;
-                    if capped != tension.total_raw {
-                        result.tension_mismatches += 1;
-                    }
-                    let sources = match &*decoded.tables[TableId::ThreatSources.index()] {
-                        TableView::Complete(rows) => rows
-                            .rows::<tables::ThreatSources>()
-                            .map(|rows| (rows, true)),
-                        TableView::Truncated { rows, .. } => rows
-                            .rows::<tables::ThreatSources>()
-                            .map(|rows| (rows, false)),
-                        TableView::Unavailable { .. } => None,
-                    };
-                    let whole = sources.is_some_and(|(rows, complete)| {
-                        complete && usize::try_from(tension.source_count).ok() == Some(rows.len())
-                    });
-                    if !whole {
-                        result.partial_sources += 1;
-                    } else if let Some((rows, _)) = sources {
-                        let current: i64 = rows.iter().try_fold(0_i64, |sum, row| {
-                            sum.checked_add(row.current_raw).ok_or_else(|| {
-                                io::Error::other(
-                                    "World tension source sum exceeds signed 64-bit range",
-                                )
-                            })
-                        })?;
-                        if current != sum {
-                            result.aggregate_mismatches += 1;
-                        }
-                    }
-                    // Sources equal in all four, counted in stored order.
-                    let mut seen: HashMap<SourceIdentity, u32> = HashMap::new();
-                    for row in sources.map(|(rows, _)| rows).unwrap_or_default() {
-                        let slot = link_slot(links, row.country)
-                            .or_else(|| known_links.get(&row.country).copied());
-                        let place = seen
-                            .entry((
-                                row.country,
-                                row.second_country,
-                                row.date,
-                                row.reason.as_slice(),
-                            ))
-                            .or_default();
-                        let key = (
-                            row.country,
-                            row.second_country,
-                            row.date,
-                            row.reason.clone(),
-                            *place,
-                        );
-                        *place += 1;
-                        let added = row.final_raw.to_string();
-                        let tag = slot.and_then(|slot| known.get(&slot).cloned());
-                        match events.get(&key) {
-                            Some(&at) => {
-                                let event = &mut result.events[at];
-                                event.last_read = hour;
-                                // A country first read unnamed takes its name once it is recorded.
-                                if event.tag.is_none() {
-                                    event.tag = tag;
-                                }
-                                if event
-                                    .added
-                                    .last()
-                                    .is_none_or(|last| last.added_raw != added)
-                                {
-                                    event.added.push(TensionAdded {
-                                        hour,
-                                        added_raw: added,
-                                    });
-                                }
-                            }
-                            None => {
-                                events.insert(key, result.events.len());
-                                result.events.push(TensionEvent {
-                                    hour: row.date,
-                                    tag,
-                                    reason: display_text(&row.reason).map_err(|reason| {
-                                        io::Error::other(format!(
-                                            "The recorded threat reason at hour {} {reason}",
-                                            row.date
-                                        ))
-                                    })?,
-                                    added: vec![TensionAdded {
-                                        hour,
-                                        added_raw: added,
-                                    }],
-                                    first_read: hour,
-                                    last_read: hour,
-                                });
-                            }
-                        }
-                    }
+                    observer.observe(replay.format, decoded)?;
                 }
             }
             Ok(())
         },
     )?;
-    let reads = &result.reads;
-    let mut countries: Vec<_> = building
-        .into_iter()
-        .map(|country| TensionCountry {
-            tag: country.tag,
-            slot: country.slot,
-            identities: None,
-            runs: country
-                .runs
+    Ok(observer.finish())
+}
+
+#[derive(Default, Serialize, Deserialize)]
+pub(crate) struct Scan {
+    result: ScannedTension,
+    building: Vec<Building>,
+    #[serde(
+        serialize_with = "crate::prepared_production::map_pairs::ordered_pairs",
+        deserialize_with = "crate::prepared_production::map_pairs::deserialize"
+    )]
+    by_country: HashMap<(u32, String), usize>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
+    known: HashMap<u32, String>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
+    known_links: HashMap<u32, u32>,
+    #[serde(
+        serialize_with = "crate::prepared_production::map_pairs::ordered_pairs",
+        deserialize_with = "crate::prepared_production::map_pairs::deserialize"
+    )]
+    event_indices: HashMap<EventKey, usize>,
+    last_hour: Option<i32>,
+    open: bool,
+    current: BTreeMap<usize, i64>,
+    coverage: Vec<super::country_groups::HourSpan>,
+    batch: crate::prepared::series::Accumulator,
+    active_sources: BTreeSet<usize>,
+    last_source_read: Option<i32>,
+    diagnostic_rate: (usize, usize, usize, usize),
+    #[serde(skip)]
+    country_keys: Option<crate::metadata::CountryKeys>,
+    #[serde(skip)]
+    link_inputs: Option<HashMap<u32, u32>>,
+    #[serde(skip)]
+    aggregate_inputs: Option<Vec<(u32, i64)>>,
+    #[serde(skip)]
+    source_inputs: Option<(Vec<SourceOperand>, bool)>,
+    #[serde(skip)]
+    source_sum: Option<Result<i64, String>>,
+    #[serde(skip)]
+    source_count: Option<usize>,
+    #[cfg(test)]
+    #[serde(skip)]
+    work: crate::prepared::observer_tests::Work,
+    #[cfg(test)]
+    #[serde(skip)]
+    test_changes: Option<crate::prepared::frame_changes::FrameChangeTracker>,
+}
+impl Scan {
+    #[cfg(test)]
+    fn observe(
+        &mut self,
+        format: replay::format::FormatVersion,
+        decoded: &DecodedFrame,
+    ) -> io::Result<()> {
+        self.refresh_holders(decoded, true, true);
+        self.refresh_inputs(decoded, true, true);
+        self.observe_inputs(format, decoded, true, true, true)
+    }
+    fn refresh_holders(&mut self, frame: &DecodedFrame, countries: bool, links: bool) {
+        if countries {
+            self.country_keys = frame
+                .complete::<tables::Countries>()
+                .ok()
+                .map(crate::metadata::CountryKeys::read);
+            #[cfg(test)]
+            {
+                self.work.row_visits += frame
+                    .complete::<tables::Countries>()
+                    .map_or(0, |rows| rows.len());
+            }
+        }
+        if links {
+            self.link_inputs = frame
+                .complete::<tables::CountryLinks>()
+                .ok()
+                .map(link_slots);
+            #[cfg(test)]
+            {
+                self.work.row_visits += frame
+                    .complete::<tables::CountryLinks>()
+                    .map_or(0, |rows| rows.len());
+            }
+        }
+    }
+    fn refresh_inputs(&mut self, frame: &DecodedFrame, aggregates: bool, sources: bool) {
+        if aggregates {
+            self.aggregate_inputs = aggregate_operands(frame);
+            #[cfg(test)]
+            {
+                self.work.row_visits += self.aggregate_inputs.as_ref().map_or(0, Vec::len);
+            }
+        }
+        if sources {
+            self.source_inputs = source_operands(frame);
+            #[cfg(test)]
+            {
+                self.work.row_visits += self
+                    .source_inputs
+                    .as_ref()
+                    .map_or(0, |(rows, _)| rows.len());
+            }
+            self.source_count = self
+                .source_inputs
+                .as_ref()
+                .and_then(|(rows, complete)| complete.then_some(rows.len()));
+            self.source_sum = self.source_inputs.as_ref().map(|(rows, _)| {
+                rows.iter().try_fold(0_i64, |sum, row| {
+                    sum.checked_add(row.current_raw).ok_or_else(|| {
+                        "World tension source sum exceeds signed 64-bit range".to_owned()
+                    })
+                })
+            });
+        }
+    }
+    fn observe_inputs(
+        &mut self,
+        format: replay::format::FormatVersion,
+        decoded: &DecodedFrame,
+        identities_changed: bool,
+        contributions_changed: bool,
+        sources_changed: bool,
+    ) -> io::Result<()> {
+        let hour = decoded.hour;
+        let continues = self.last_hour.and_then(|last| last.checked_add(1)) == Some(hour);
+        self.last_hour = Some(hour);
+        self.open &= continues;
+        // Identities are remembered from every hour that records them, with or
+        // without the tension tables: a country seen only then still names its
+        // slot and links at a later read.
+        let identity = self.country_keys.as_ref().zip(self.link_inputs.as_ref());
+        if identities_changed && let Some((countries, links)) = identity {
+            self.known.extend(slot_tags(countries, links));
+            self.known_links
+                .extend(links.iter().map(|(&raw, &slot)| (raw, slot)));
+        }
+        let tables = identity
+            .map(|_| ())
+            .zip(decoded.complete::<tables::WorldTension>().ok())
+            .zip(self.aggregate_inputs.as_ref());
+        let Some(((_, tension), aggregates)) = tables else {
+            self.open = false;
+            return Ok(());
+        };
+        if !slot_read(format, &decoded.metrics, TableId::WorldTension, hour) {
+            if self.open
+                && let Some(read) = self.result.reads.last_mut()
+            {
+                read.last_hour = hour;
+            }
+            return Ok(());
+        }
+        let Some(tension) = tension.first() else {
+            self.open = false;
+            return Ok(());
+        };
+        let index = self.result.reads.len();
+        let starts_segment = !self.open;
+        self.open = true;
+        let mut sum = 0_i64;
+        let mut unnamed = 0_i64;
+        if !contributions_changed {
+            let previous = self
+                .result
+                .reads
+                .last()
+                .expect("held contribution projection");
+            sum = previous.sum_raw.parse().expect("native contribution sum");
+            unnamed = previous.unnamed_raw.parse().expect("native unnamed sum");
+        } else {
+            self.current.clear();
+            for &(slot, total) in aggregates.iter().filter(|(_, total)| *total != 0) {
+                sum = sum.checked_add(total).ok_or_else(|| {
+                    io::Error::other("World tension contribution sum exceeds signed 64-bit range")
+                })?;
+                let Some(tag) = self.known.get(&slot) else {
+                    unnamed = unnamed.checked_add(total).ok_or_else(|| {
+                        io::Error::other(
+                            "World tension unnamed contribution sum exceeds signed 64-bit range",
+                        )
+                    })?;
+                    continue;
+                };
+                let at = *self
+                    .by_country
+                    .entry((slot, tag.clone()))
+                    .or_insert_with(|| {
+                        self.building.push(Building {
+                            tag: tag.clone(),
+                            slot,
+                            first_hour: hour,
+                            runs: Vec::new(),
+                        });
+                        self.building.len() - 1
+                    });
+                let runs = &mut self.building[at].runs;
+                self.current.insert(at, total);
+                match runs.last_mut() {
+                    Some(run) if !starts_segment && run.1 + 1 == index && run.2 == total => {
+                        run.1 = index;
+                    }
+                    // One identity, so only a gap breaks its line.
+                    _ => runs.push((index, index, total, starts_segment)),
+                }
+            }
+        }
+        self.result.unnamed_reads += usize::from(unnamed != 0);
+        self.result.read_count += 1;
+        self.result.reads.push(TensionRead {
+            first_hour: hour,
+            last_hour: hour,
+            starts_segment,
+            tension_raw: tension.total_raw.to_string(),
+            sum_raw: sum.to_string(),
+            unnamed_raw: unnamed.to_string(),
+        });
+        // World tension stores the clamped and scaled sum.
+        let capped = sum.clamp(0, cworld_threat::CLAMP_CEILING) / cworld_threat::SCALAR_DIVISOR;
+        if capped != tension.total_raw {
+            self.result.tension_mismatches += 1;
+        }
+        let whole = self
+            .source_count
+            .is_some_and(|count| usize::try_from(tension.source_count).ok() == Some(count));
+        if !whole {
+            self.result.partial_sources += 1;
+        } else if let Some(current) = &self.source_sum {
+            let current = current
+                .as_ref()
+                .map_err(|reason| io::Error::other(reason.clone()))?;
+            if *current != sum {
+                self.result.aggregate_mismatches += 1;
+            }
+        }
+        if !sources_changed {
+            return Ok(());
+        }
+        self.active_sources.clear();
+        // Sources equal in all four, counted in stored order.
+        let mut seen: HashMap<SourceIdentity, u32> = HashMap::new();
+        for row in self
+            .source_inputs
+            .as_ref()
+            .map(|(rows, _)| rows.as_slice())
+            .unwrap_or_default()
+        {
+            let slot = self.known_links.get(&row.country).copied();
+            let place = seen
+                .entry((
+                    row.country,
+                    row.second_country,
+                    row.date,
+                    row.reason.as_slice(),
+                ))
+                .or_default();
+            let key = (
+                row.country,
+                row.second_country,
+                row.date,
+                row.reason.clone(),
+                *place,
+            );
+            *place += 1;
+            let added = row.final_raw.to_string();
+            let tag = slot.and_then(|slot| self.known.get(&slot).cloned());
+            match self.event_indices.get(&key) {
+                Some(&at) => {
+                    self.active_sources.insert(at);
+                    let event = &mut self.result.events[at];
+                    event.last_read = hour;
+                    // A country first read unnamed takes its name once it is recorded.
+                    if event.tag.is_none() {
+                        event.tag = tag;
+                    }
+                    if event
+                        .added
+                        .last()
+                        .is_none_or(|last| last.added_raw != added)
+                    {
+                        event.added.push(TensionAdded {
+                            hour,
+                            added_raw: added,
+                        });
+                    }
+                }
+                None => {
+                    self.active_sources.insert(self.result.events.len());
+                    self.event_indices.insert(key, self.result.events.len());
+                    self.result.events.push(TensionEvent {
+                        hour: row.date,
+                        tag,
+                        reason: display_text(&row.reason).map_err(|reason| {
+                            io::Error::other(format!(
+                                "The recorded threat reason at hour {} {reason}",
+                                row.date
+                            ))
+                        })?,
+                        added: vec![TensionAdded {
+                            hour,
+                            added_raw: added,
+                        }],
+                        first_read: hour,
+                        last_read: hour,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn unreadable_block(&mut self) {
+        self.open = false;
+    }
+    #[cfg(test)]
+    pub(crate) fn prepare(
+        &mut self,
+        format: replay::format::FormatVersion,
+        frame: &DecodedFrame,
+    ) -> io::Result<()> {
+        let changes = self
+            .test_changes
+            .get_or_insert_with(crate::prepared::frame_changes::FrameChangeTracker::new)
+            .observe(frame, format);
+        self.prepare_changed(format, frame, &changes)
+    }
+    pub(crate) fn prepare_changed(
+        &mut self,
+        format: replay::format::FormatVersion,
+        frame: &DecodedFrame,
+        changes: &crate::prepared::frame_changes::FrameChanges,
+    ) -> io::Result<()> {
+        self.batch.advance(frame.hour)?;
+        self.refresh_inputs(
+            frame,
+            changes.rows_changed[TableId::ThreatCountryAggregates.index()],
+            changes.rows_changed[TableId::ThreatSources.index()],
+        );
+        let identity_changed = changes.rows_changed[TableId::CountryLinks.index()]
+            || changes.rows_changed[TableId::Countries.index()]
+                && self.country_keys.as_ref().is_none_or(|keys| {
+                    frame
+                        .complete::<tables::Countries>()
+                        .map_or(true, |rows| !keys.same(rows))
+                });
+        let same = !identity_changed
+            && ![
+                TableId::WorldTension,
+                TableId::ThreatSources,
+                TableId::ThreatCountryAggregates,
+            ]
+            .iter()
+            .any(|table| changes.rows_changed[table.index()]);
+        if same && self.last_hour.and_then(|hour| hour.checked_add(1)) == Some(frame.hour) {
+            if !self.open {
+                self.last_hour = Some(frame.hour);
+                return Ok(());
+            }
+            let read = self.result.reads.last_mut().expect("held tension read");
+            if changes.slot_read[TableId::WorldTension.index()] {
+                self.result.read_count += 1;
+                self.result.unnamed_reads += self.diagnostic_rate.0;
+                self.result.partial_sources += self.diagnostic_rate.1;
+                self.result.aggregate_mismatches += self.diagnostic_rate.2;
+                self.result.tension_mismatches += self.diagnostic_rate.3;
+                read.first_hour = frame.hour;
+                read.starts_segment = false;
+                self.batch
+                    .observe(3, frame.hour, Some(i128::from(frame.hour)), false);
+                self.last_source_read = Some(frame.hour);
+            }
+            read.last_hour = frame.hour;
+            self.last_hour = Some(frame.hour);
+            super::country_groups::record_hour(&mut self.coverage, frame.hour);
+            return Ok(());
+        }
+        self.seal_sources();
+        self.refresh_holders(
+            frame,
+            identity_changed && changes.rows_changed[TableId::Countries.index()],
+            changes.rows_changed[TableId::CountryLinks.index()],
+        );
+        let before = (
+            self.result.unnamed_reads,
+            self.result.partial_sources,
+            self.result.aggregate_mismatches,
+            self.result.tension_mismatches,
+        );
+        let new_segment =
+            !self.open || self.last_hour.and_then(|hour| hour.checked_add(1)) != Some(frame.hour);
+        self.prepare_frame(
+            format,
+            frame,
+            identity_changed,
+            identity_changed
+                || new_segment
+                || changes.rows_changed[TableId::ThreatCountryAggregates.index()],
+            identity_changed || new_segment || changes.rows_changed[TableId::ThreatSources.index()],
+        )?;
+        self.diagnostic_rate = (
+            self.result.unnamed_reads - before.0,
+            self.result.partial_sources - before.1,
+            self.result.aggregate_mismatches - before.2,
+            self.result.tension_mismatches - before.3,
+        );
+        Ok(())
+    }
+    fn seal_sources(&mut self) {
+        if let Some(hour) = self.last_source_read {
+            for &index in &self.active_sources {
+                self.result.events[index].last_read = hour;
+            }
+        }
+    }
+    fn prepare_frame(
+        &mut self,
+        format: replay::format::FormatVersion,
+        frame: &DecodedFrame,
+        identities_changed: bool,
+        contributions_changed: bool,
+        sources_changed: bool,
+    ) -> io::Result<()> {
+        let previous_current = if contributions_changed {
+            self.current.clone()
+        } else {
+            BTreeMap::new()
+        };
+        let was_open = self.open;
+        let follows = self.last_hour.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
+        let previous_reads = self.result.read_count;
+        self.observe_inputs(
+            format,
+            frame,
+            identities_changed,
+            contributions_changed,
+            sources_changed,
+        )?;
+        if self.result.read_count != previous_reads {
+            self.last_source_read = Some(frame.hour);
+        }
+        self.batch.through(frame.hour);
+        if self.open
+            && let Some(read) = self
+                .result
+                .reads
+                .last()
+                .filter(|read| read.last_hour == frame.hour)
+        {
+            super::country_groups::record_hour(&mut self.coverage, frame.hour);
+            let broken = read.starts_segment && read.first_hour == frame.hour;
+            let values = [&read.tension_raw, &read.sum_raw, &read.unnamed_raw]
+                .map(|raw| raw.parse::<i128>().expect("native tension integer"));
+            let shares_changed =
+                self.batch
+                    .state(0)
+                    .and_then(|state| state.last)
+                    .is_none_or(|run| {
+                        run.value != values[0] * i128::from(cworld_threat::SCALAR_DIVISOR)
+                    });
+            for (key, value) in values
                 .into_iter()
-                .map(|(first, last, value, starts_segment)| FixedRun {
-                    first_hour: reads[first].first_hour,
-                    last_hour: reads[last].last_hour,
-                    value_raw: value.to_string(),
-                    starts_segment,
+                .enumerate()
+                .map(|(key, value)| (key as u64, value))
+                .chain([(3, i128::from(read.first_hour)), (4, 0)])
+            {
+                let value = if key == 0 {
+                    value * i128::from(cworld_threat::SCALAR_DIVISOR)
+                } else {
+                    value
+                };
+                if broken
+                    || !was_open
+                    || self
+                        .batch
+                        .state(key)
+                        .and_then(|state| state.last)
+                        .is_none_or(|run| run.value != value)
+                {
+                    self.batch.observe(key, frame.hour, Some(value), broken);
+                }
+            }
+            let indices: BTreeSet<_> = if !contributions_changed && !shares_changed && !broken {
+                BTreeSet::new()
+            } else if !was_open || !follows {
+                (0..self.building.len()).collect()
+            } else {
+                self.current
+                    .keys()
+                    .chain(previous_current.keys())
+                    .copied()
+                    .collect()
+            };
+            #[cfg(test)]
+            {
+                self.work.history_visits += indices.len();
+            }
+            for index in indices {
+                let value = self.current.get(&index).copied().unwrap_or(0);
+                let share = if values[1] > 0 {
+                    let product = i128::from(value) * values[0];
+                    let scale = i128::from(cworld_threat::SCALAR_DIVISOR);
+                    (product / values[1])
+                        .checked_mul(scale)
+                        .and_then(|whole| {
+                            whole.checked_add((product % values[1]) * scale / values[1])
+                        })
+                        .ok_or_else(|| {
+                            io::Error::other("World tension share exceeds signed 128-bit range")
+                        })?
+                } else {
+                    0
+                };
+                for (key, value) in [
+                    (5 + index as u64 * 2, i128::from(value)),
+                    (6 + index as u64 * 2, share),
+                ] {
+                    if broken
+                        || !was_open
+                        || self
+                            .batch
+                            .state(key)
+                            .and_then(|state| state.last)
+                            .is_none_or(|run| run.value != value)
+                    {
+                        self.batch.observe(key, frame.hour, Some(value), broken);
+                    }
+                }
+            }
+        } else if was_open {
+            for key in 0..5 + self.building.len() as u64 * 2 {
+                self.batch.observe(key, frame.hour, None, false);
+            }
+        }
+        if contributions_changed {
+            for &index in self.current.keys() {
+                self.building[index].runs.clear();
+            }
+        }
+        if self.result.reads.len() > 1 {
+            self.result.reads = self.result.reads.last().cloned().into_iter().collect();
+        }
+        Ok(())
+    }
+    pub(crate) fn buffered_bytes(&self) -> usize {
+        self.batch.bytes()
+    }
+    pub(crate) fn flush(
+        &mut self,
+        writer: &mut store::Writer,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.seal_sources();
+        self.batch
+            .flush(writer, &format!("tension-series-{branch}"), 5, cancelled)?;
+        crate::prepared::series::write_catalogue(
+            writer,
+            "world-tension",
+            branch,
+            &self
+                .by_country
+                .iter()
+                .map(|((slot, tag), index)| {
+                    (
+                        crate::prepared::series::field_key(tag, &slot.to_string()),
+                        *index as u64,
+                    )
                 })
                 .collect(),
-        })
-        .collect();
-    countries.sort_by(|a, b| (&a.tag, a.slot).cmp(&(&b.tag, b.slot)));
-    result.countries = countries;
-    result
-        .events
-        .sort_by_key(|event| (event.hour, event.first_read));
-    Ok(result)
+            self,
+        )
+    }
+    #[cfg(test)]
+    fn finish(mut self) -> ScannedTension {
+        let mut result = self.result;
+        let reads = &result.reads;
+        self.building
+            .sort_by(|a, b| (&a.tag, a.slot).cmp(&(&b.tag, b.slot)));
+        result.first_contributions = self
+            .building
+            .iter()
+            .map(|country| country.first_hour)
+            .collect();
+        let countries: Vec<_> = self
+            .building
+            .into_iter()
+            .map(|country| TensionCountry {
+                tag: country.tag,
+                slot: country.slot,
+                identities: None,
+                runs: country
+                    .runs
+                    .into_iter()
+                    .map(|(first, last, value, starts_segment)| FixedRun {
+                        first_hour: reads[first].first_hour,
+                        last_hour: reads[last].last_hour,
+                        value_raw: value.to_string(),
+                        starts_segment,
+                    })
+                    .collect(),
+            })
+            .collect();
+        result.countries = countries;
+        result
+            .events
+            .sort_by_key(|event| (event.hour, event.first_read));
+        result
+    }
 }
 
 #[derive(Default)]
+#[cfg(test)]
 struct Cache {
     entries: VecDeque<(u64, Arc<ScannedTension>)>,
 }
@@ -506,6 +953,7 @@ impl Product for WorldTension {
         params.validate()
     }
 
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -535,40 +983,45 @@ impl Product for WorldTension {
                 scanned
             }
         };
+        let history = branch_histories(source, branch, false, &[], cancelled)?;
+        scanned.reply(params, &history)
+    }
+}
+impl ScannedTension {
+    fn reply(
+        &self,
+        params: &BranchParams,
+        history: &super::country_history::RecordedHistories,
+    ) -> io::Result<TensionReply> {
         let mut warnings = Vec::new();
-        if scanned.reads.is_empty() {
+        if self.read_count == 0 {
             warnings.push("No world tension was recorded in this branch.".to_owned());
         }
-        if scanned.partial_sources > 0 {
+        if self.partial_sources > 0 {
             warnings.push(format!(
                 "Reads whose threat sources were not all recorded: {}. Events they would name may be missing.",
-                scanned.partial_sources
+                self.partial_sources
             ));
         }
-        if scanned.aggregate_mismatches > 0 {
+        if self.aggregate_mismatches > 0 {
             warnings.push(format!(
                 "Reads whose country contributions do not add up to their threat sources: {}.",
-                scanned.aggregate_mismatches
+                self.aggregate_mismatches
             ));
         }
-        if scanned.tension_mismatches > 0 {
+        if self.tension_mismatches > 0 {
             warnings.push(format!(
                 "Reads whose world tension is not the game's cap of the contributions' sum: {}.",
-                scanned.tension_mismatches
+                self.tension_mismatches
             ));
         }
-        let unnamed = scanned
-            .reads
-            .iter()
-            .filter(|read| read.unnamed_raw != "0")
-            .count();
+        let unnamed = self.unnamed_reads;
         if unnamed > 0 {
             warnings.push(format!(
                 "Reads with a contribution from a country the recording never names: {unnamed}. It is counted in Other."
             ));
         }
-        let history = branch_histories(source, branch, false, &[], cancelled)?;
-        let mut countries = scanned.countries.clone();
+        let mut countries = self.countries.clone();
         for country in &mut countries {
             country.identities = Some(history.countries.get(&country.tag).map_or_else(
                 Vec::new,
@@ -584,13 +1037,11 @@ impl Product for WorldTension {
         }
         let unproved = countries
             .iter()
-            .filter(|country| {
-                country.runs.first().is_some_and(|run| {
-                    !country.identities.as_ref().is_some_and(|identities| {
-                        identities.iter().any(|identity| {
-                            identity.first_hour <= run.first_hour
-                                && run.first_hour <= identity.last_hour
-                        })
+            .zip(&self.first_contributions)
+            .filter(|(country, first)| {
+                !country.identities.as_ref().is_some_and(|identities| {
+                    identities.iter().any(|identity| {
+                        identity.first_hour <= **first && **first <= identity.last_hour
                     })
                 })
             })
@@ -603,9 +1054,9 @@ impl Product for WorldTension {
             tension_scale: TENSION_SCALE as u32,
             contribution_scale: cthreat_source::FIXED_POINT_SCALE as u32,
             ceiling_raw: cworld_threat::CLAMP_CEILING.to_string(),
-            reads: scanned.reads.clone(),
+            reads: self.reads.clone(),
             countries,
-            events: scanned.events.clone(),
+            events: self.events.clone(),
             warnings,
         };
         super::check_reply_budget(&reply)?;

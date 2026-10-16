@@ -161,16 +161,20 @@ pub async fn choose_recording(window: WebviewWindow) -> Result<Option<String>, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn cancellation_interrupts_a_scan_between_recording_metadata_reads() {
         let root = std::env::temp_dir().join(format!(
-            "hoi4-library-cancel-{}-{}",
+            "hoi4-library-cancel-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&root).unwrap();
         for number in 0..10 {
@@ -199,12 +203,13 @@ mod tests {
     #[test]
     fn library_lists_nested_replays_without_decoding_them() {
         let root = std::env::temp_dir().join(format!(
-            "hoi4-library-{}-{}",
+            "hoi4-library-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(root.join("Campaign A")).unwrap();
         std::fs::create_dir_all(root.join(".hidden")).unwrap();

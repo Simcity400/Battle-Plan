@@ -13,7 +13,8 @@ test('every bundled font retains its exact upstream attribution and complete lic
   for (const font of fonts) {
     const upstream = await readFile(new URL(`LICENSE`, import.meta.resolve(`@fontsource-variable/${font}`)));
     const shipped = await readFile(new URL(`LICENSES/Fontsource-${font}-LICENSE.txt`, root));
-    assert.deepEqual(shipped, upstream, `${font}: retain the upstream notice unchanged`);
+    // Git may check text notices out with CRLF on Windows; their complete text stays exact.
+    assert.equal(shipped.toString().replaceAll('\r\n', '\n'), upstream.toString().replaceAll('\r\n', '\n'), `${font}: retain the upstream notice unchanged`);
     assert.match(shipped.toString(), /SIL OPEN FONT LICENSE Version 1\.1/);
   }
 });

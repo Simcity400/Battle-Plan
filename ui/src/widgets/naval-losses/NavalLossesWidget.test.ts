@@ -22,6 +22,7 @@ import { runAt } from '../../charts/series.ts';
 import { resolveWindow } from '../../dashboard/model.ts';
 import type { WidgetSpec } from '../../dashboard/model';
 import { definition } from './definition.ts';
+import { navalWindowFixture } from './navalWindowFixture.ts';
 
 test('known zero naval rows render inside a wrapper that fills the widget height', async () => {
   const reply: NavalLossesReply = { branchId: '1', available: true, firstRead: 100, shipFirstRead: 100,
@@ -31,6 +32,7 @@ test('known zero naval rows render inside a wrapper that fills the widget height
       runs: [{ firstHour: 100, lastHour: 105, startsSegment: true, ships: 0, convoys: 0 }] })) };
   // Keep the widget, drill host and race view; replace transport and country artwork.
   const replacements: Record<string, string> = {
+    '/dashboard/productWindows.ts': navalWindowFixture,
     '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(reply)} });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {}; export const usePlaybackSpeed = () => 1;',
@@ -75,6 +77,7 @@ test('a February race pick retains its displayed zero month while Jump uses the 
     ] }] };
   const picks: [number, string | undefined][] = [], jumps: number[] = [];
   const replacements: Record<string, string> = {
+    '/dashboard/productWindows.ts': navalWindowFixture,
     '/charts/race/RaceChart.tsx': `export default function Race(p) {
       (p.onPick ?? p.onSelect)?.('mod country A'); p.onContextMenu?.('mod country A', 0, 0); return null;
     }`,
@@ -122,6 +125,7 @@ test('an open naval drill keeps its chosen country and full history after Top N 
   const groups = { warnings: [], countryIdentities, humans: [{ tag: 'mod country A', firstHour: 100, lastHour: 101 },
     { tag: 'mod country B', firstHour: 100, lastHour: 105 }], unobserved: { humans: [], factions: [], wars: [] } };
   const replacements: Record<string, string> = {
+    '/dashboard/productWindows.ts': navalWindowFixture,
     '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ data: request?.params.top === null
       && request.params.tags.length === 1 && request.params.tags[0] === 'mod country A' ? ${JSON.stringify(full)} : ${JSON.stringify(reply)} });`,
     '/components/CountryPicker.tsx': `import { createElement } from 'react'; export default props => createElement('button', { 'data-selected': props.selectedTag }, props.selectedTag);`,
@@ -174,6 +178,7 @@ test('Pin as widget keeps the picked February hour rather than the March display
       ] }] };
   assert.equal(navalReadHour(reply, pickedHour, 'both'), readHour);
   const replacements: Record<string, string> = {
+    '/dashboard/productWindows.ts': navalWindowFixture,
     '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(reply)} });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
@@ -236,6 +241,7 @@ test('a queued drill history pick survives playback and artwork updates but reje
   };
   host.__navalReducer = reducer => [state.drill, action => { state.drill = reducer(state.drill, action); }];
   const replacements: Record<string, string> = {
+    '/dashboard/productWindows.ts': navalWindowFixture,
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__navalPick.reply });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {}; export const usePlaybackSpeed = () => 1;',
@@ -325,6 +331,7 @@ test('the actual Naval adapter holds overlapping drawn choices, follows the alig
     export const useReducer = (reduce, initial) => { const saved = cell(() => ({ value: initial }));
       return [saved.value, action => { saved.value = reduce(saved.value, action); }]; };`;
   const replacements: Record<string, string> = {
+    '/dashboard/productWindows.ts': navalWindowFixture,
     '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ data: request ?
       request.params.top === null && request.params.tags.length === 1 && globalThis.__navalAdapter.detailReply
         ? globalThis.__navalAdapter.detailReply : globalThis.__navalAdapter.reply : undefined });`,

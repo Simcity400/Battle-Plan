@@ -1,0 +1,66 @@
+[package]
+name = "recorder-oracle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+recorder-oracle-weather.workspace = true
+recorder-oracle-wars.workspace = true
+recorder-oracle-visibility.workspace = true
+recorder-oracle-unit-combat-references.workspace = true
+recorder-oracle-stability.workspace = true
+recorder-oracle-session.workspace = true
+recorder-oracle-selected-routes.workspace = true
+recorder-oracle-saved-event-targets.workspace = true
+recorder-oracle-rocket-output.workspace = true
+recorder-oracle-railway-guns.workspace = true
+recorder-oracle-power-ledger.workspace = true
+recorder-oracle-politics.workspace = true
+recorder-oracle-plans.workspace = true
+recorder-oracle-peace.workspace = true
+recorder-oracle-projects.workspace = true
+recorder-oracle-pass-inputs.workspace = true
+recorder-oracle-supply-trains.workspace = true
+recorder-oracle-naval-result-sources.workspace = true
+recorder-oracle-modifiers.workspace = true
+recorder-oracle-modifier-breakdowns.workspace = true
+recorder-oracle-map-inputs.workspace = true
+recorder-oracle-land.workspace = true
+recorder-oracle-military.workspace = true
+recorder-oracle-governance.workspace = true
+recorder-oracle-game-score.workspace = true
+recorder-oracle-fog.workspace = true
+recorder-oracle-factories.workspace = true
+recorder-oracle-faction-theatres.workspace = true
+recorder-oracle-event-feed.workspace = true
+recorder-oracle-equipment-destruction.workspace = true
+recorder-oracle-economy.workspace = true
+recorder-oracle-counters.workspace = true
+recorder-oracle-construction.workspace = true
+recorder-oracle-combat-log.workspace = true
+recorder-oracle-production.workspace = true
+recorder-oracle-naval-history.workspace = true
+recorder-oracle-core.workspace = true
+recorder-oracle-combat-details.workspace = true
+recorder-oracle-characters.workspace = true
+recorder-oracle-intel.workspace = true
+recorder-oracle-air-missions.workspace = true
+recorder-oracle-relations.workspace = true
+recorder-oracle-air-ledger.workspace = true
+recorder-oracle-air.workspace = true
+recorder-oracle-support.workspace = true
+engine.workspace = true
+replay.workspace = true
+installed-content.workspace = true
+installed-content-save.workspace = true
+recorder-platform.workspace = true
+
+[dev-dependencies]
+recorder-oracle-support = { workspace = true, features = ["test-support"] }
+installed-content = { workspace = true, features = ["test-support"] }

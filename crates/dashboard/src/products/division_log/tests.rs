@@ -7,6 +7,9 @@ use replay::{
     },
 };
 
+#[path = "tests/speed.rs"]
+mod speed;
+
 fn frame(hour: i32, divisions: u32) -> DecodedFrame {
     let mut frame = crate::test_fixtures::source(1, hour, Some(0));
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
@@ -122,7 +125,7 @@ fn initial_census_is_not_creation_and_every_new_country_is_retained() {
             .template
             .as_ref()
             .unwrap()
-            .name,
+            .literal,
         b"Template 5000"
     );
 }
@@ -383,7 +386,7 @@ fn observed_cached_names_survive_generator_failure_and_do_not_load_legacy_conten
                 ..Default::default()
             }]));
         let mut presentation = Presentations::new(&supplied, None)
-            .get(1 << 32 | 4713)
+            .get(1 << 32 | 4713, None)
             .unwrap();
         // Name-only request: unrelated template and image loaders stay out of the seam.
         presentation.template = None;
@@ -417,4 +420,222 @@ fn observed_cached_names_survive_generator_failure_and_do_not_load_legacy_conten
         }
         assert!(source.state::<Cache>().lock().unwrap().names.is_none());
     }
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn prepared_division_log_matches_oracle_after_commits_resume_append_and_country_scale() {
+    use crate::prepared::series::tests::Fixture;
+    let flag = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let mut death = frame(103, 4999);
+    witness(
+        &mut death,
+        Disposition::Loss,
+        Some(Cause::DivisionDestroyed),
+    );
+    destroyed(&mut death);
+    if let TableView::Complete(TableRows::DestroyedDivisions(rows)) =
+        &mut *death.tables[TableId::DestroyedDivisions.index()]
+    {
+        rows[0].hour = 102;
+    }
+    let mut unknown = frame(104, 5000);
+    unknown.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
+        reason: "synthetic missing actors".into(),
+    }
+    .into();
+    witness(&mut unknown, Disposition::Merged, None);
+    let inputs = [
+        frame(100, 1),
+        frame(101, 4999),
+        frame(102, 4999),
+        death,
+        unknown,
+    ];
+    let mut replay = Replay::from_records(
+        crate::test_fixtures::CAMPAIGN.into(),
+        &[crate::test_fixtures::records(1, vec![inputs[0].clone()])],
+    )
+    .unwrap();
+    for input in &inputs[1..] {
+        replay = replay
+            .append(&[crate::test_fixtures::continuation_records(
+                &replay,
+                1,
+                vec![input.clone()],
+            )])
+            .unwrap();
+    }
+    let source = Source::from_replay(
+        crate::SourceKey {
+            source_id: "prepared-divisions".into(),
+            revision: "1".into(),
+        },
+        "prepared-divisions.battleplan".into(),
+        Arc::new(replay),
+        &flag,
+    )
+    .unwrap();
+    let fixture = Fixture::new();
+    let mut prepared = Scan::new(source.replay_ref().format);
+    for (index, input) in inputs.iter().enumerate() {
+        prepared.configure(source.replay_ref().format);
+        prepared.prepare(input).unwrap();
+        let mut writer = fixture.writer();
+        prepared
+            .publish_block(&source, &context, &mut writer, 1, index, &flag)
+            .unwrap();
+        writer.commit().unwrap();
+        prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
+        prepared.resume(input);
+    }
+    let oracle = scan(source.replay_ref(), 1, &flag).unwrap();
+    for index in 0..super::windows(source.replay_ref(), 1).len() {
+        let params = DivisionLogParams {
+            branch_id: "1".into(),
+            window: index,
+        };
+        let actual = prepared::query(
+            &source,
+            "division-log",
+            serde_json::to_value(&params).unwrap(),
+            &fixture.store,
+            &fixture.key,
+            &flag,
+        )
+        .unwrap();
+        assert_eq!(
+            actual,
+            serde_json::to_value(oracle.reply(&source, &params, &context, &flag).unwrap()).unwrap()
+        );
+    }
+    let params = BranchParams {
+        branch_id: "1".into(),
+    };
+    let actual = prepared::query(
+        &source,
+        "division-log-manifest",
+        serde_json::to_value(&params).unwrap(),
+        &fixture.store,
+        &fixture.key,
+        &flag,
+    )
+    .unwrap();
+    assert_eq!(
+        actual,
+        serde_json::to_value(oracle.manifest(&source, &params, &context, &flag).unwrap()).unwrap()
+    );
+    let all = LandBattleCountryFilter {
+        tags: None,
+        membership: None,
+        unobserved: vec![],
+    };
+    let filters = [
+        all.clone(),
+        LandBattleCountryFilter {
+            tags: Some(vec![
+                "mod country 1".into(),
+                "mod country 1".into(),
+                "mod country 4999".into(),
+            ]),
+            ..all.clone()
+        },
+        LandBattleCountryFilter {
+            tags: None,
+            membership: Some(vec![
+                crate::products::country_groups::MembershipRun {
+                    tag: "mod country 1".into(),
+                    first_hour: 101,
+                    last_hour: 104,
+                },
+                crate::products::country_groups::MembershipRun {
+                    tag: "mod country 1".into(),
+                    first_hour: 102,
+                    last_hour: 103,
+                },
+            ]),
+            unobserved: vec![crate::products::country_groups::HourSpan {
+                first_hour: 102,
+                last_hour: 102,
+            }],
+        },
+        LandBattleCountryFilter {
+            unobserved: vec![crate::products::country_groups::HourSpan {
+                first_hour: 103,
+                last_hour: 104,
+            }],
+            ..all
+        },
+    ];
+    for countries in filters {
+        for templates in [
+            None,
+            Some(vec![]),
+            Some(vec![(1_u64 << 32 | 4714).to_string()]),
+        ] {
+            for first_hour in 100..=104 {
+                for last_hour in first_hour..=104 {
+                    let params = DivisionLogTotalsParams {
+                        branch_id: "1".into(),
+                        first_hour,
+                        last_hour,
+                        countries: countries.clone(),
+                        templates: templates.clone(),
+                    };
+                    let index = totals_index(&oracle, &params, "oracle".into(), &flag).unwrap();
+                    let expected = totals_reply(
+                        index.counts[index.reads.partition_point(|read| *read <= last_hour)],
+                    )
+                    .unwrap();
+                    let actual = prepared::query(
+                        &source,
+                        "division-log-totals",
+                        serde_json::to_value(&params).unwrap(),
+                        &fixture.store,
+                        &fixture.key,
+                        &flag,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        actual,
+                        serde_json::to_value(expected).unwrap(),
+                        "range {first_hour}..{last_hour}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn prepared_division_resume_keeps_last_complete_presentation_and_witness_signature() {
+    let mut prepared = Scan::default();
+    let mut oracle = Scan::default();
+    let first = frame(100, 1);
+    let mut unavailable = frame(101, 0);
+    *unavailable.tables[TableId::Divisions.index()] = TableView::Unavailable {
+        reason: "census failed".into(),
+    };
+    let mut removed = frame(102, 0);
+    witness(&mut removed, Disposition::VolunteerTransferred, None);
+    for input in [&first, &unavailable, &removed] {
+        prepared.observe(input);
+        oracle.observe(input);
+        prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
+        prepared.resume(input);
+    }
+    let mut repeated = removed.clone();
+    repeated.hour = 103;
+    prepared.observe(&repeated);
+    oracle.observe(&repeated);
+    assert_eq!(prepared.events.len(), 1);
+    assert_eq!(prepared.events[0].row.presentation_hour, Some(100));
+    assert_eq!(
+        serde_json::to_value(&prepared.events).unwrap(),
+        serde_json::to_value(&oracle.events).unwrap()
+    );
 }

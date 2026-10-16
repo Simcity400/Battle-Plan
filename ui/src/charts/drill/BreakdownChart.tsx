@@ -2,7 +2,9 @@ import { useMemo } from 'react';
 import { drawBands, drawPlayhead } from '../draw';
 import { clipToSpans, runAt } from '../series';
 import type { Run, Span } from '../series';
-import { buildStack, stackExtent } from '../stack';
+import { drawApproximateSpans, exactRuns, summaryStack } from '../chartSummary';
+import type { ChartSummary } from '../chartSummary';
+import { compactStackExtent, forEachCompactStackSegment, buildStack, stackExtent } from '../stack';
 import { countryRaceSegments } from '../race/countryRace';
 import { shownUntil } from '../view';
 import TimeChart from '../TimeChart';
@@ -15,19 +17,32 @@ export interface BreakdownSeries { id: string; label: string; color: string; run
 
 /** Parts share the same signed stack and exact hover amounts. Picking a day
  * changes the drill state, never the dashboard clock. */
-export default function BreakdownChart({ series, within, selectedHour, tooltipHeight, ...props }: Omit<TimeChartProps, 'layers' | 'tooltip' | 'revision'> & {
+export default function BreakdownChart({ series, within, selectedHour, tooltipHeight, summaries, ...props }: Omit<TimeChartProps, 'layers' | 'tooltip' | 'revision'> & {
   series: readonly BreakdownSeries[]; within?: readonly Span[] | null; selectedHour?: number | null;
   /** Fit long cohorts to the viewport, retaining all exact amounts in spoken text. */
-  tooltipHeight?: number;
+  tooltipHeight?: number; summaries?: { parts: readonly ChartSummary[]; total?: ChartSummary };
 }) {
   const parts = useMemo(() => series.map(part => {
     const runs = clipToSpans(part.runs, [{ firstHour: props.extent[0], lastHour: props.extent[1] }]);
     return { ...part, runs: within ? clipToSpans(runs, within) : runs };
   }), [series, within, props.extent]);
   const stack = useMemo(() => buildStack(parts.map(part => part.runs)), [parts]);
+  const dense = useMemo(() => summaries && summaries.parts.length === parts.length
+    && summaries.parts.some(part => exactRuns(part) === null || !!part.approximate?.length)
+    ? summaryStack(summaries.total ? summaries.parts.slice(0, -1) : summaries.parts, summaries.total) : null, [parts, summaries]);
   const until = shownUntil(props.playhead, props.playback, props.afterPlayhead === true);
   const layers = useMemo(() => [{
     draw: (ctx: CanvasRenderingContext2D, frame: Parameters<typeof drawBands>[1], tokens: Parameters<typeof drawBands>[2], state: { playhead: number | null }) => {
+      if (dense) {
+        const view = summaries!.parts[0];
+        if (view.from !== frame.x[0] || view.to !== Math.min(frame.x[1], state.playhead ?? frame.x[1])
+          || view.width !== Math.ceil(frame.plotWidth)) return;
+        drawApproximateSpans(ctx, frame, dense.approximate, state.playhead, () => forEachCompactStackSegment(dense.model, frame.x[0], Math.min(frame.x[1], state.playhead ?? frame.x[1]),
+          (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth), segment => {
+            drawBands(ctx, frame, tokens, segment.hours, segment.bands, parts.map(part => part.color));
+          }, dense.sample));
+        return;
+      }
       for (const segment of countryRaceSegments(stack, frame.x[0], Math.min(frame.x[1], state.playhead ?? frame.x[1]),
         (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth))) {
         drawBands(ctx, frame, tokens, segment.hours, segment.bands, parts.map(part => part.color));
@@ -35,10 +50,11 @@ export default function BreakdownChart({ series, within, selectedHour, tooltipHe
     },
     extent: (x: readonly [number, number]) => {
       const end = Math.min(x[1], until ?? x[1]);
-      return end >= x[0] ? stackExtent(stack, x[0], end) : null;
+      return end >= x[0] ? dense ? compactStackExtent(dense.model, x[0], end) : stackExtent(stack, x[0], end) : null;
     },
-  }], [stack, parts, until]);
-  return <div className="breakdown-chart"><TimeChart {...props} layers={layers} keyHours={props.keyHours ?? stack.hours} revision={parts}
+  }], [stack, dense, parts, until, summaries]);
+  return <div className="breakdown-chart">{!!dense?.approximate.length && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Approximate</p>}
+    <TimeChart {...props} layers={layers} keyHours={props.keyHours ?? dense?.model.hours ?? stack.hours} revision={parts}
     overlay={(ctx, frame, tokens) => {
       props.overlay?.(ctx, frame, tokens);
       if (selectedHour != null && selectedHour >= props.extent[0] && selectedHour <= props.extent[1]

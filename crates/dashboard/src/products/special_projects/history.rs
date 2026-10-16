@@ -1,13 +1,18 @@
 //! Shared recorded inputs, independent of a country's reply and content folders.
 use super::*;
-use crate::metadata::{check_cancel, tagged_countries, validate_campaign};
+#[cfg(test)]
+use crate::metadata::validate_campaign;
+use crate::metadata::{check_cancel, tagged_countries};
+use replay::rows::CountryRow;
+#[cfg(test)]
 use replay::{
     container::Replay,
     frame::{FrameDecoder, Metrics, SharedView, TableView},
-    rows::{CountryRow, RowCodec, TableRows, TableSchema},
+    rows::{RowCodec, TableRows, TableSchema},
 };
 use std::collections::BTreeSet;
 
+#[cfg(test)]
 const SELECTED: [TableId; 9] = [
     TableId::Campaign,
     TableId::Countries,
@@ -29,28 +34,80 @@ const TABLES: [TableId; 6] = [
 ];
 
 #[derive(Default, PartialEq, Eq)]
-struct Actors {
-    known: bool,
-    unresolved: usize,
-    tags: BTreeMap<Vec<u8>, (u32, u32)>,
-    links: BTreeMap<u32, Vec<CountryLinkRow>>,
+pub(super) struct Actors {
+    pub(super) known: bool,
+    pub(super) unresolved: usize,
+    pub(super) tags: BTreeMap<Vec<u8>, (u32, u32)>,
+    pub(super) links: BTreeMap<u32, Vec<CountryLinkRow>>,
 }
 impl Actors {
-    fn read(frame: &DecodedFrame) -> Self {
-        let mut actors = Self::default();
-        if let (Ok(countries), Ok(links)) = (
-            frame.complete::<tables::Countries>(),
-            frame.complete::<tables::CountryLinks>(),
-        ) {
-            actors.known = true;
+    fn digest(&self) -> [u8; 32] {
+        let mut hash = blake3::Hasher::new();
+        hash.update(&[u8::from(self.known)]);
+        hash.update(&(self.unresolved as u64).to_le_bytes());
+        hash.update(&(self.tags.len() as u64).to_le_bytes());
+        for (tag, &(id, slot)) in &self.tags {
+            hash.update(&(tag.len() as u64).to_le_bytes());
+            hash.update(tag);
+            hash.update(&id.to_le_bytes());
+            hash.update(&slot.to_le_bytes());
+        }
+        hash.update(&(self.links.len() as u64).to_le_bytes());
+        for (&slot, links) in &self.links {
+            hash.update(&slot.to_le_bytes());
+            hash.update(&(links.len() as u64).to_le_bytes());
             for link in links {
+                hash.update(&link.id.to_le_bytes());
+            }
+        }
+        *hash.finalize().as_bytes()
+    }
+    pub(super) fn read(frame: &DecodedFrame) -> Self {
+        let countries = frame
+            .complete::<tables::Countries>()
+            .ok()
+            .map(crate::metadata::CountryKeys::read);
+        let links = Self::link_operands(frame);
+        Self::bind(countries.as_ref(), links.as_deref())
+    }
+    pub(super) fn link_operands(frame: &DecodedFrame) -> Option<Vec<(u32, u32)>> {
+        Some(
+            frame
+                .complete::<tables::CountryLinks>()
+                .ok()?
+                .iter()
+                .map(|link| (link.id, link.canonical_slot))
+                .collect(),
+        )
+    }
+    pub(super) fn bind(
+        countries: Option<&crate::metadata::CountryKeys>,
+        links: Option<&[(u32, u32)]>,
+    ) -> Self {
+        let mut actors = Self::default();
+        if let Some((countries, links)) = countries.zip(links) {
+            let countries: Vec<_> = countries
+                .iter()
+                .map(|(id, canonical_slot, tag)| CountryRow {
+                    id,
+                    canonical_slot,
+                    tag: tag.to_vec(),
+                    ..Default::default()
+                })
+                .collect();
+            let links: Vec<_> = links
+                .iter()
+                .map(|&(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
+                .collect();
+            actors.known = true;
+            for link in &links {
                 actors
                     .links
                     .entry(link.canonical_slot)
                     .or_default()
                     .push(link.clone());
             }
-            for (tag, found) in tagged_countries(countries, links) {
+            for (tag, found) in tagged_countries(&countries, &links) {
                 if let Some((country, slot)) = found.found() {
                     actors.tags.insert(tag.to_vec(), (country.id, slot));
                 } else {
@@ -62,7 +119,58 @@ impl Actors {
     }
 }
 
+/// The recording oracle and preparation count structural diagnostics once per
+/// input span. Resume retains only an actor digest and rebinds decoder views.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub(super) struct SpanBoundary {
+    hour: Option<i32>,
+    actors: Option<[u8; 32]>,
+    #[serde(skip)]
+    views: Option<[ViewIdentity; TABLES.len()]>,
+}
+impl SpanBoundary {
+    pub(super) fn restore_views(&mut self, frame: &DecodedFrame) {
+        self.views = Some(TABLES.map(|table| frame.tables[table.index()].identity()));
+    }
+    #[cfg(test)]
+    pub(super) fn observe(&mut self, frame: &DecodedFrame, actors: &Actors) -> bool {
+        let actors = actors.digest();
+        self.observe_digest(frame, actors)
+    }
+    pub(super) fn observe_changed(
+        &mut self,
+        frame: &DecodedFrame,
+        actors: &Actors,
+        identities_changed: bool,
+    ) -> bool {
+        let digest = if identities_changed {
+            actors.digest()
+        } else {
+            self.actors.unwrap_or_else(|| actors.digest())
+        };
+        self.observe_digest(frame, digest)
+    }
+    pub(super) fn advance(&mut self, hour: i32) {
+        self.hour = Some(hour);
+    }
+    fn observe_digest(&mut self, frame: &DecodedFrame, actors: [u8; 32]) -> bool {
+        let same = self.hour.and_then(|hour| hour.checked_add(1)) == Some(frame.hour)
+            && self.actors == Some(actors)
+            && self.views.as_ref().is_some_and(|views| {
+                views
+                    .iter()
+                    .zip(TABLES)
+                    .all(|(view, table)| view.is(&frame.tables[table.index()]))
+            });
+        self.hour = Some(frame.hour);
+        self.actors = Some(actors);
+        self.restore_views(frame);
+        !same
+    }
+}
+
 /// The complete table's rows at `keys`, in key order; None when it is incomplete.
+#[cfg(test)]
 fn rows_at<T: TableSchema>(
     frame: &DecodedFrame,
     keys: impl IntoIterator<Item = u32>,
@@ -79,6 +187,7 @@ fn rows_at<T: TableSchema>(
 
 /// The projected rows, or Unavailable: the projection reads neither the rows
 /// nor the reason of an incomplete table.
+#[cfg(test)]
 fn projected<T: TableSchema>(rows: Option<Vec<T::Row>>) -> SharedView {
     rows.map_or_else(
         || TableView::Unavailable {
@@ -89,12 +198,14 @@ fn projected<T: TableSchema>(rows: Option<Vec<T::Row>>) -> SharedView {
     .into()
 }
 
+#[cfg(test)]
 pub(super) struct Inputs {
     views: [SharedView; TABLES.len()],
     /// The recorded LexicalTokens read, which renews cached presentations.
     pub lexical: ViewIdentity,
     actors: Arc<Actors>,
 }
+#[cfg(test)]
 impl Inputs {
     fn new(frame: &DecodedFrame, actors: Arc<Actors>, previous: Option<&Self>) -> Self {
         // Builder::person reads each program a project references, that program's
@@ -212,6 +323,7 @@ impl Inputs {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone)]
 pub(super) struct Span {
     pub first_hour: i32,
@@ -219,6 +331,7 @@ pub(super) struct Span {
     pub inputs: Arc<Inputs>,
     pub reads: Vec<i32>,
 }
+#[cfg(test)]
 #[derive(Clone, Default)]
 pub(super) struct BranchScan {
     /// The recording's format, which dates its daily tables
@@ -229,9 +342,9 @@ pub(super) struct BranchScan {
     blocks: usize,
     actors: Option<Arc<Actors>>,
     actor_views: Option<[ViewIdentity; 2]>,
-    /// The last span's recorded tables; a span ends where one is replaced.
-    views: Option<[ViewIdentity; TABLES.len()]>,
+    boundary: SpanBoundary,
 }
+#[cfg(test)]
 impl BranchScan {
     #[cfg(test)]
     pub(super) fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Self> {
@@ -256,14 +369,9 @@ impl BranchScan {
         }
         let actors = Arc::clone(self.actors.as_ref().expect("actor index observed"));
         let read = slot_read(self.format, &frame.metrics, TableId::Projects, frame.hour);
-        let recorded = TABLES.map(|table| &frame.tables[table.index()]);
+        let changed = self.boundary.observe(frame, &actors);
         if let Some(span) = self.spans.last_mut()
-            && span.last_hour.checked_add(1) == Some(frame.hour)
-            && Arc::ptr_eq(&span.inputs.actors, &actors)
-            && self
-                .views
-                .as_ref()
-                .is_some_and(|views| views.iter().zip(recorded).all(|(seen, view)| seen.is(view)))
+            && !changed
         {
             span.last_hour = frame.hour;
             if read {
@@ -273,7 +381,6 @@ impl BranchScan {
         }
         let previous = self.spans.last().map(|span| &*span.inputs);
         let inputs = Arc::new(Inputs::new(frame, actors, previous));
-        self.views = Some(recorded.map(SharedView::identity));
         self.spans.push(Span {
             first_hour: frame.hour,
             last_hour: frame.hour,
@@ -331,12 +438,14 @@ impl BranchScan {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Default)]
 pub(super) struct Scans {
     branches: Vec<(u64, Arc<BranchScan>)>,
     #[cfg(test)]
     pub decoded_blocks: usize,
 }
+#[cfg(test)]
 pub(super) fn cached(
     source: &Source,
     branch: u64,
@@ -385,9 +494,11 @@ struct NameRun {
     last: i32,
     value: Name,
 }
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub(super) struct Names {
+    #[serde(skip)]
     runs: BTreeMap<(String, u32, u32), Vec<NameRun>>,
+    counts: BTreeMap<String, BTreeMap<String, usize>>,
     #[cfg(test)]
     pub decoded_blocks: usize,
 }
@@ -417,28 +528,27 @@ impl Names {
             .map_or(&[], |run| run.value.warnings.as_slice())
     }
     pub(super) fn warnings(&self, tag: &str) -> Vec<String> {
-        let mut warnings = BTreeMap::<&str, usize>::new();
-        for ((owner, _, _), runs) in &self.runs {
-            if owner != tag {
-                continue;
-            }
-            for run in runs {
-                for warning in &run.value.warnings {
-                    *warnings.entry(warning).or_default() +=
-                        (i64::from(run.last) - i64::from(run.first) + 1) as usize;
-                }
-            }
-        }
-        warnings
+        self.counts
+            .get(tag)
             .into_iter()
+            .flatten()
             .map(|(reason, count)| format!("{reason} ({count} project-name observations)."))
             .collect()
     }
     fn observe(&mut self, key: (String, u32, u32), hour: i32, value: Name) {
+        let owner = key.0.clone();
         let runs = self.runs.entry(key).or_default();
         // Several projects may use the same definition and owner at this hour.
         if runs.last().is_some_and(|last| last.last == hour) {
             return;
+        }
+        for reason in &value.warnings {
+            *self
+                .counts
+                .entry(owner.clone())
+                .or_default()
+                .entry(reason.clone())
+                .or_default() += 1;
         }
         if let Some(last) = runs.last_mut()
             && last.last.checked_add(1) == Some(hour)
@@ -455,7 +565,7 @@ impl Names {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Actor {
     last: Option<((u32, u32), i32)>,
     identity: Option<(u32, u32)>,
@@ -463,6 +573,202 @@ struct Actor {
     open: BTreeSet<(u32, u32)>,
 }
 
+#[derive(Default, Serialize, Deserialize)]
+pub(super) struct NameScan {
+    #[serde(with = "crate::prepared_production::map_pairs")]
+    actors: BTreeMap<Vec<u8>, Actor>,
+    #[serde(skip)]
+    keys: BTreeMap<(u32, String), Option<String>>,
+    #[serde(skip)]
+    lexical_view: Option<ViewIdentity>,
+    #[serde(skip)]
+    active: BTreeSet<(u32, String)>,
+    pub(super) names: Names,
+}
+impl NameScan {
+    pub(super) fn observe(
+        &mut self,
+        frame: &DecodedFrame,
+        input: &Actors,
+        read: bool,
+        content: &Content,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        check_cancel(cancelled)?;
+        self.active.clear();
+        let Ok(countries) = frame.complete::<tables::Countries>() else {
+            return Ok(());
+        };
+        let projects = frame.complete::<tables::Projects>().ok();
+        let lexical = &frame.tables[TableId::LexicalTokens.index()];
+        if self
+            .lexical_view
+            .as_ref()
+            .is_none_or(|seen| !seen.is(lexical))
+        {
+            self.keys.clear();
+            self.lexical_view = Some(lexical.identity());
+        }
+        for (tag, &(id, slot)) in &input.tags {
+            let Ok(index) = countries.binary_search_by_key(&id, |country| country.id) else {
+                continue;
+            };
+            let country = &countries[index];
+            let identity = (slot, country.id);
+            let actor = self.actors.entry(tag.clone()).or_default();
+            if actor.last.is_none_or(|(old, hour)| {
+                old != identity || hour.checked_add(1) != Some(frame.hour)
+            }) {
+                actor.admitted = false;
+            }
+            if actor.identity.is_some_and(|old| old != identity) {
+                actor.open.clear();
+            }
+            actor.identity = Some(identity);
+            actor.last = Some((identity, frame.hour));
+            let Some(projects) = projects else {
+                actor.admitted = false;
+                continue;
+            };
+            if read {
+                actor.admitted = true;
+            }
+            if !actor.admitted {
+                continue;
+            }
+            let Some(links) = input.links.get(&slot) else {
+                continue;
+            };
+            let mut next = BTreeSet::new();
+            for project in owned_rows(projects, links, slot, |row| row.owner) {
+                let key = (project.local_id, project.definition_id);
+                if !visible(project, actor.open.contains(&key)) {
+                    continue;
+                }
+                next.insert(key);
+                let Ok(tag) = std::str::from_utf8(tag) else {
+                    continue;
+                };
+                // Resolve each definition/country key once per lexical view;
+                // only reached scoped names evaluate the complete World.
+                let key = self
+                    .keys
+                    .entry((project.definition_id, tag.to_owned()))
+                    .or_insert_with(|| scope_key(frame, content, project.definition_id, tag));
+                let Some(key) = key else {
+                    continue;
+                };
+                self.active.insert((project.definition_id, tag.to_owned()));
+                let value = name_at(frame, slot, key, content);
+                self.names.observe(
+                    (tag.to_owned(), slot, project.definition_id),
+                    frame.hour,
+                    value,
+                );
+            }
+            actor.open = next;
+        }
+        Ok(())
+    }
+    pub(super) fn take_current(&mut self) -> Names {
+        Names {
+            runs: std::mem::take(&mut self.names.runs),
+            ..Default::default()
+        }
+    }
+    pub(super) fn rebind(
+        &mut self,
+        frame: &DecodedFrame,
+        tag: &str,
+        definition: u32,
+        content: &Content,
+    ) {
+        let key = (definition, tag.to_owned());
+        let value = scope_key(frame, content, definition, tag);
+        if value.is_some() {
+            self.active.insert(key.clone());
+        } else {
+            self.active.remove(&key);
+        }
+        self.keys.insert(key, value);
+    }
+    pub(super) fn active_countries(&self) -> impl Iterator<Item = String> + '_ {
+        self.active.iter().map(|(_, tag)| tag.clone())
+    }
+    pub(super) fn evaluate_current(
+        &mut self,
+        frame: &DecodedFrame,
+        actors: &Actors,
+        content: &Content,
+        cancelled: &AtomicBool,
+    ) -> io::Result<BTreeSet<String>> {
+        let mut countries = BTreeSet::new();
+        for (definition, tag) in &self.active {
+            check_cancel(cancelled)?;
+            let Some((_, slot)) = actors.tags.get(tag.as_bytes()) else {
+                continue;
+            };
+            let Some(Some(key)) = self.keys.get(&(*definition, tag.clone())) else {
+                continue;
+            };
+            let value = name_at(frame, *slot, key, content);
+            self.names
+                .observe((tag.clone(), *slot, *definition), frame.hour, value);
+            countries.insert(tag.clone());
+        }
+        Ok(countries)
+    }
+}
+fn scope_key(
+    frame: &DecodedFrame,
+    content: &Content,
+    definition: u32,
+    tag: &str,
+) -> Option<String> {
+    let tokens = frame.complete::<tables::LexicalTokens>().ok()?;
+    let token = tokens
+        .binary_search_by_key(&definition, |row| row.token)
+        .ok()
+        .and_then(|index| std::str::from_utf8(&tokens[index].literal).ok())?;
+    let definition = content.definitions.projects.get(token)?;
+    if content.definitions.unsettled.is_some() || definition.refusal.is_some() {
+        return None;
+    }
+    let key = country_key(&content.catalogue, tag, project_name_key(definition, token));
+    needs_scope(&content.catalogue.localisation, &key).then_some(key)
+}
+fn name_at(frame: &DecodedFrame, slot: u32, key: &str, content: &Content) -> Name {
+    match content.catalogue.scripted_content() {
+        Ok(scripted) => {
+            let context = crate::scripted_text::ScriptedText::new(
+                frame,
+                &content.catalogue.localisation,
+                scripted,
+                slot,
+            );
+            let (text, mut findings) = catalogue::localised_in_details(
+                &content.catalogue.localisation,
+                key,
+                &[],
+                &context,
+            );
+            let text = text.map_err(|finding| findings.push(*finding)).ok();
+            Name {
+                text,
+                warnings: findings
+                    .into_iter()
+                    .map(|finding| format!("{}: {}", finding.subject, finding.message))
+                    .collect(),
+            }
+        }
+        Err(reason) => Name {
+            text: None,
+            warnings: vec![format!("Project name {key}: {reason}")],
+        },
+    }
+}
+
+#[cfg(test)]
 pub(super) fn scoped_names(
     replay: &Replay,
     scan: &BranchScan,
@@ -470,10 +776,7 @@ pub(super) fn scoped_names(
     content: &Content,
     cancelled: &AtomicBool,
 ) -> io::Result<Names> {
-    let mut names = Names::default();
-    let mut actors = BTreeMap::<Vec<u8>, Actor>::new();
-    let mut keys = BTreeMap::<(u32, String), Option<String>>::new();
-    let mut lexical_view: Option<ViewIdentity> = None;
+    let mut observer = NameScan::default();
     let mut at = 0;
     // Scripted names and their triggers read the trigger kit.
     let mut selected = SELECTED.to_vec();
@@ -490,7 +793,7 @@ pub(super) fn scoped_names(
                 check_cancel(cancelled)?;
                 #[cfg(test)]
                 {
-                    names.decoded_blocks += 1;
+                    observer.names.decoded_blocks += 1;
                 }
                 let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
@@ -514,130 +817,17 @@ pub(super) fn scoped_names(
                     else {
                         continue;
                     };
-                    let Ok(countries) = frame.complete::<tables::Countries>() else {
-                        continue;
-                    };
-                    let projects = frame.complete::<tables::Projects>().ok();
-                    let tokens = frame.complete::<tables::LexicalTokens>().ok();
-                    let lexical = &frame.tables[TableId::LexicalTokens.index()];
-                    if lexical_view.as_ref().is_none_or(|seen| !seen.is(lexical)) {
-                        keys.clear();
-                        lexical_view = Some(lexical.identity());
-                    }
-                    for (tag, &(id, slot)) in &span.inputs.actors.tags {
-                        let Ok(index) = countries.binary_search_by_key(&id, |country| country.id)
-                        else {
-                            continue;
-                        };
-                        let country = &countries[index];
-                        let identity = (slot, country.id);
-                        let actor = actors.entry(tag.clone()).or_default();
-                        if actor.last.is_none_or(|(old, hour)| {
-                            old != identity || hour.checked_add(1) != Some(frame.hour)
-                        }) {
-                            actor.admitted = false;
-                        }
-                        if actor.identity.is_some_and(|old| old != identity) {
-                            actor.open.clear();
-                        }
-                        actor.identity = Some(identity);
-                        actor.last = Some((identity, frame.hour));
-                        let Some(projects) = projects else {
-                            actor.admitted = false;
-                            continue;
-                        };
-                        if span.reads.binary_search(&frame.hour).is_ok() {
-                            actor.admitted = true;
-                        }
-                        if !actor.admitted {
-                            continue;
-                        }
-                        let Some(links) = span.inputs.actors.links.get(&slot) else {
-                            continue;
-                        };
-                        let mut next = BTreeSet::new();
-                        for project in owned_rows(projects, links, slot, |row| row.owner) {
-                            let key = (project.local_id, project.definition_id);
-                            if !visible(project, actor.open.contains(&key)) {
-                                continue;
-                            }
-                            next.insert(key);
-                            let Ok(tag) = std::str::from_utf8(tag) else {
-                                continue;
-                            };
-                            // Resolve each definition/country key once per lexical view;
-                            // only reached scoped names evaluate the complete World.
-                            let key = keys
-                                .entry((project.definition_id, tag.to_owned()))
-                                .or_insert_with(|| {
-                                    let tokens = tokens?;
-                                    let token = tokens
-                                        .binary_search_by_key(&project.definition_id, |row| {
-                                            row.token
-                                        })
-                                        .ok()
-                                        .and_then(|index| {
-                                            std::str::from_utf8(&tokens[index].literal).ok()
-                                        })?;
-                                    let definition = content.definitions.projects.get(token)?;
-                                    if content.definitions.unsettled.is_some()
-                                        || definition.refusal.is_some()
-                                    {
-                                        return None;
-                                    }
-                                    let key = country_key(
-                                        &content.catalogue,
-                                        tag,
-                                        project_name_key(definition, token),
-                                    );
-                                    needs_scope(&content.catalogue.localisation, &key)
-                                        .then_some(key)
-                                });
-                            let Some(key) = key else {
-                                continue;
-                            };
-                            let value = match content.catalogue.scripted_content() {
-                                Ok(scripted) => {
-                                    let context = crate::scripted_text::ScriptedText::new(
-                                        frame,
-                                        &content.catalogue.localisation,
-                                        scripted,
-                                        slot,
-                                    );
-                                    let (text, mut findings) = catalogue::localised_in_details(
-                                        &content.catalogue.localisation,
-                                        key,
-                                        &[],
-                                        &context,
-                                    );
-                                    let text = text.map_err(|finding| findings.push(*finding)).ok();
-                                    Name {
-                                        text,
-                                        warnings: findings
-                                            .into_iter()
-                                            .map(|finding| {
-                                                format!("{}: {}", finding.subject, finding.message)
-                                            })
-                                            .collect(),
-                                    }
-                                }
-                                Err(reason) => Name {
-                                    text: None,
-                                    warnings: vec![format!("Project name {key}: {reason}")],
-                                },
-                            };
-                            names.observe(
-                                (tag.to_owned(), slot, project.definition_id),
-                                frame.hour,
-                                value,
-                            );
-                        }
-                        actor.open = next;
-                    }
+                    observer.observe(
+                        frame,
+                        &span.inputs.actors,
+                        span.reads.binary_search(&frame.hour).is_ok(),
+                        content,
+                        cancelled,
+                    )?;
                 }
             }
             Ok(())
         },
     )?;
-    Ok(names)
+    Ok(observer.names)
 }

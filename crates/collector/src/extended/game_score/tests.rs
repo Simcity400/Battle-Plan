@@ -429,7 +429,7 @@ fn game_score_live_demand_presizes_all_frame_and_wing_job_buffers() {
     capacity.raise(demand);
     for _ in 0..crate::sampling::BUFFERS {
         let mut capture = Captured::with_capacities(&capacity);
-        crate::allocation_failure_tests::with_allocations_denied(|| {
+        crate::test_support::with_allocations_denied(|| {
             capture.capture(&memory, 0, kit::GAME_STATE);
             capture.begin_air();
             capture.owner(&memory, 0, 1, Some(ENTRY));
@@ -458,7 +458,7 @@ fn game_score_live_demand_presizes_all_frame_and_wing_job_buffers() {
     for _ in 0..3 {
         let mut job = AirWingJob::fixture();
         job.game_score = AirWingJob::with_game_score(true).game_score;
-        let report = crate::allocation_failure_tests::with_allocations_denied(|| {
+        let report = crate::test_support::with_allocations_denied(|| {
             air::copy_air_refresh(&memory, context, &mut job)
         });
         assert!(report.raw_ok);
@@ -583,7 +583,7 @@ fn game_score_owned_air_shares_census_and_preserves_independent_failures() {
     };
     let mut job = AirWingJob::fixture();
     job.game_score = AirInputs::new(false, 3, 2, 2);
-    let report = crate::allocation_failure_tests::with_allocations_denied(|| {
+    let report = crate::test_support::with_allocations_denied(|| {
         air::copy_air_refresh(&kit::memory(&bytes), context, &mut job)
     });
     assert!(report.raw_ok);
@@ -752,7 +752,7 @@ fn game_score_fleet_header_grows_first_witness_and_keeps_independent_air_pressur
     for hour in 0..2 {
         capture.reset();
         capture.capture(&memory, 0, kit::GAME_STATE);
-        crate::allocation_failure_tests::with_allocations_denied(|| {
+        crate::test_support::with_allocations_denied(|| {
             capture.begin_air();
             capture.owner(&memory, 0, 1, Some(ENTRY));
             capture.finish_air(Outcome::Rows { len: 0 });
@@ -899,7 +899,7 @@ fn game_score_typed_air_fallback_uses_frame_buffers_while_ordinary_is_loaned() {
     let mut map = MapCaptured::with_capacities(&map_capacity);
     {
         let mut sources = captured.sources(&memory, 0, false, true);
-        crate::allocation_failure_tests::with_allocations_denied(|| {
+        crate::test_support::with_allocations_denied(|| {
             map.sample(&memory, 0, kit::GAME_STATE, &mut sources);
         });
     }

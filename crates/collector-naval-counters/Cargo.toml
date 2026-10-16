@@ -1,0 +1,38 @@
+[package]
+name = "collector-naval-counters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+test-support = ["collector-certificates/test-support", "collector-division-parts/test-support", "collector-extended-support/test-support", "collector-memory/test-support", "collector-observers/test-support", "collector-primitives/test-support"]
+
+[dependencies]
+engine.workspace = true
+replay.workspace = true
+serde = { workspace = true, features = ["derive"] }
+collector-certificates.workspace = true
+collector-division-parts.workspace = true
+collector-extended-support.workspace = true
+collector-memory.workspace = true
+collector-observers.workspace = true
+collector-primitives.workspace = true
+collector-projection.workspace = true
+collector-status.workspace = true
+windows-sys = { workspace = true, features = ["Win32_System_Performance"] }
+
+[dev-dependencies]
+collector-test-support.workspace = true
+serde_json.workspace = true
+engine = { workspace = true, features = ["batch-fallback-test-counts"] }
+collector-extended-support = { workspace = true, features = ["test-support"] }
+collector-certificates = { workspace = true, features = ["test-support"] }
+collector-division-parts = { workspace = true, features = ["default", "test-support"] }
+collector-memory = { workspace = true, features = ["test-support"] }
+collector-observers = { workspace = true, features = ["default", "test-support"] }
+collector-primitives = { workspace = true, features = ["test-support"] }

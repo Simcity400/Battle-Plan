@@ -6,7 +6,11 @@ One compact card per research slot open at the hour shown: the technology it res
 
 ## Products it reads
 
-[`research`](../../../../crates/dashboard/src/products/research.rs), shared with Research history, and [`technology-artwork`](../../../../crates/dashboard/src/products/technology_artwork.rs) for the pictures.
+The prepared research query, using the [`research`](../../../../crates/dashboard-base/src/products/research.rs) observer and reply presentation shared with Research history, and [`technology-artwork`](../../../../crates/dashboard/src/products/technology_artwork.rs) for the pictures.
+
+Until the requested history is prepared, the shared preparation status says
+"This range is still being prepared." Slot segments, assignment attribution and
+carried progress require the research observer's earlier reads.
 
 ## Settings
 
@@ -27,3 +31,5 @@ Country and campaign/follow/pin; Live is the default. No widget-specific options
 | [ActiveResearchWidget.tsx](ActiveResearchWidget.tsx) | Cards, tooltip and breakdown popover. |
 | [activeResearchData.ts](activeResearchData.ts) | Each slot's state at the hour; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [activeResearch.css](activeResearch.css) | Metadata, registration and layout. |
+
+Parity builds expose the "Active research" model, including exact slot state, progress, countdown and saved-day values.

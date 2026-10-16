@@ -10,7 +10,7 @@ import { armyMetadataRequest, measureChoices, validateArmySizeReply } from './ar
 function useArmyChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const request = armyMetadataRequest(track);
-  const { data } = useProduct<ArmySizeReply>(runtime.client, request, true, validateArmySizeReply);
+  const { data } = useProduct<ArmySizeReply>(runtime.client, request, true, validateArmySizeReply, track?.source);
   return { measure: measureChoices(data) };
 }
 

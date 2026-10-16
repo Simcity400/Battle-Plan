@@ -28,3 +28,5 @@ All countries by default, manual/groups, campaign/follow/pin/range; observed con
 | [RaidLogWidget.tsx](RaidLogWidget.tsx) | Shared virtual log, type chips and dated facts. |
 | [raidLogData.ts](raidLogData.ts) | Validation, row dates and wording; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts) | Availability, options and registration. |
+
+The widget reads the prepared raid adapter and exposes the "Raid log rows" parity model.

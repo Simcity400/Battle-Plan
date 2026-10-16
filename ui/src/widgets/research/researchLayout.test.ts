@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { ResearchEntry, ResearchHistory, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
 import { researchAt, researchFolderList, researchFolderLooks, researchHeldRuns, researchLatestProgress } from './researchData.ts';
-import { completedTooltip, coverageAt, researchDateRange, researchItemDate, researchLanes, researchRows } from './researchLayout.ts';
+import { completedTooltip, coverageAt, researchDateRange, researchItemDate, researchLanes, researchLanesAt, researchRows } from './researchLayout.ts';
 
 // Noon on 1 Jan 1944, so day arithmetic never crosses the calendar's 24:00 display hour.
 const base = HOUR_EPOCH + 1944 * 8760 + 12;
@@ -19,6 +19,34 @@ const held = (token: string, firstHour: number, lastHour: number): ResearchSlotS
   speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0' });
 const lanesAt = (history: ResearchHistory, hour: number) => researchLanes(researchAt(history, hour), coverageAt(history.coverage, hour), hour);
 const kinds = (history: ResearchHistory, hour: number) => lanesAt(history, hour).map(lane => lane.items.map(item => item.kind));
+
+test('indexed lanes match clipped histories through gaps, late confirmations, held runs and slot changes in either playback direction', () => {
+  const history: ResearchHistory = { coverage: [{ firstHour: 0, lastHour: 40 }, { firstHour: 60, lastHour: 100 }], slots: [
+    slot(0, [{ firstHour: 0, lastHour: 40 }, { firstHour: 60, lastHour: 100 }], [
+      { ...entry('A', 0, 10), outcomeObservedHour: 30 }, entry('B', 10, 25, 'switched'), entry('C', 25, 35),
+      entry('D', 60, 70), entry('E', 70, null, 'active'),
+    ]),
+    slot(1, [{ firstHour: 20, lastHour: 40 }, { firstHour: 60, lastHour: 80 }], [], [held('old_a', 20, 29), held('old_b', 30, 40), held('old_c', 60, 80)]),
+    slot(2, [{ firstHour: 60, lastHour: 100 }], [entry('F', 65, 80)]),
+  ] };
+  const project = (lanes: ReturnType<typeof researchLanes>) => lanes.map(lane => ({ index: lane.slot.index, appeared: lane.appeared,
+    offset: lane.offset, items: lane.items.map(item => { const { slot: _slot, ...value } = item as typeof item & { slot?: ResearchSlotHistory }; return value; }) }));
+  const hours = Array.from({ length: 104 }, (_, at) => at - 1);
+  for (const hour of [...hours, ...[...hours].reverse()]) assert.deepEqual(project(researchLanesAt(history, hour)), project(lanesAt(history, hour)), `hour ${hour}`);
+  assert.deepEqual(researchLanesAt(history, NaN), []);
+});
+
+test('5000 indexed completion rows retain their identities between observed changes', () => {
+  const history: ResearchHistory = { coverage: [{ firstHour: 0, lastHour: 20000 }], slots: [slot(0, [{ firstHour: 0, lastHour: 20000 }],
+    Array.from({ length: 5000 }, (_, at) => ({ ...entry(`tech${at}`, at * 3, at * 3 + 1), outcomeObservedHour: at * 3 + 2 })))] };
+  const before = researchLanesAt(history, 15001), items = before[0].items;
+  assert.equal(items.length, 5000);
+  assert.equal(researchLanesAt(history, 15002), before);
+  assert.equal(researchLanesAt(history, 15002)[0].items, items);
+  assert.equal(researchLanesAt(history, 1)[0].items.length, 0, 'a later completion confirmation stays hidden');
+  assert.equal(researchLanesAt(history, 2)[0].items.length, 1);
+  assert.equal(researchLanesAt(history, 15002)[0].items[0], items[0], 'rewind preserves each indexed row');
+});
 
 test('each slot lists only its completions, packed, and a slot that opened later starts at the row the others had reached', () => {
   const history: ResearchHistory = { coverage: [{ firstHour: day(0), lastHour: day(200) }], slots: [

@@ -835,38 +835,17 @@ fn a_project_first_listed_at_the_same_place_makes_a_rise_nobody_s() {
         let end = project.end.as_ref().unwrap();
         (end.kind, end.hour, end.unknown)
     };
-    assert_eq!(
-        ending("1"),
-        (
-            EndKind::Unknown,
-            None,
-            Some(UnknownEnd::CompletionNotRecorded)
-        )
-    );
-    assert_eq!(
-        ending("10"),
-        (
-            EndKind::Unknown,
-            None,
-            Some(UnknownEnd::CompletionNotRecorded)
-        )
-    );
-    assert_eq!(
-        ending("3"),
-        (
-            EndKind::Unknown,
-            None,
-            Some(UnknownEnd::CompletionNotRecorded)
-        )
-    );
-    assert_eq!(
-        ending("12"),
-        (
-            EndKind::Unknown,
-            None,
-            Some(UnknownEnd::CompletionNotRecorded)
-        )
-    );
+    for id in ["1", "10", "3", "12"] {
+        assert_eq!(
+            ending(id),
+            (
+                EndKind::Unknown,
+                None,
+                Some(UnknownEnd::CompletionNotRecorded)
+            ),
+            "project {id}"
+        );
+    }
 }
 
 /// A little TGA image of side-by-side 2x2 frames, frame k all of `colours[k]`.
@@ -2462,4 +2441,58 @@ fn a_project_s_first_repair_advance_is_its_first_output_read_counting_one() {
     let log = timed_scan(&replay, 1, &AtomicBool::new(false)).unwrap();
     assert_eq!(log.projects[0].first_repair_tick, Some(124));
     assert_eq!(log.outputs[0].len(), 3);
+}
+
+#[test]
+fn construction_observer_restores_claims_from_the_shared_frame_after_two_commits() {
+    let flag = AtomicBool::new(false);
+    let mut frames: Vec<_> = (100..=151)
+        .filter(|hour| *hour != 132)
+        .map(|hour| {
+            let lines = if hour < 148 {
+                vec![building_line(900, 40, if hour < 124 { 2 } else { 1 }, 0, 3)]
+            } else {
+                vec![]
+            };
+            construction_frame(
+                hour,
+                [100, 124, 148].contains(&hour),
+                lines,
+                vec![],
+                Some(vec![building_at(
+                    40,
+                    CIVILIAN,
+                    (
+                        if hour < 120 { 0 } else { 1 },
+                        if hour < 120 { 0 } else { 1 },
+                    ),
+                )]),
+                vec![],
+            )
+        })
+        .collect();
+    let dictionary = frames[0].tables[TableId::LexicalTokens.index()].clone();
+    for frame in &mut frames {
+        frame.tables[TableId::LexicalTokens.index()] = dictionary.clone();
+    }
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+    let expected = timed_scan(&replay, 1, &flag).unwrap();
+    let mut scan = super::Scan::default();
+    for frame in &frames {
+        let read = frame.metrics.table_ns[TableId::StateGarrisons.index()] != 0;
+        scan.observe_reads(frame, read, read, read, [true; 2], true);
+        if [117, 125].contains(&frame.hour) {
+            let saved = serde_json::to_vec(&scan).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+            assert!(value["changes"].get("states").is_none());
+            assert!(value.get("dictionary").is_none());
+            scan = serde_json::from_slice(&saved).unwrap();
+            scan.restore_frame(frame);
+        }
+    }
+    scan.finish(&replay, 1);
+    assert_eq!(
+        serde_json::to_value(&scan.log).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
 }

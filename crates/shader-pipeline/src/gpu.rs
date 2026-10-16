@@ -274,6 +274,35 @@ pub struct Cache {
 }
 
 impl Cache {
+    /// Release cache-held bindings after encoding; submitted commands keep their
+    /// own handles. This lets the owner bound its retained texture uploads.
+    pub fn release_bind_groups(&self) {
+        for (_, result) in self.entries.values().flatten() {
+            if let Ok(pipeline) = result {
+                pipeline.release_bind_groups();
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_texture_bind_groups(&self) -> usize {
+        self.entries
+            .values()
+            .flatten()
+            .filter_map(|(_, result)| result.as_ref().ok())
+            .map(|pipeline| {
+                pipeline
+                    .groups
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .textures
+                    .values()
+                    .map(Vec::len)
+                    .sum::<usize>()
+            })
+            .sum()
+    }
+
     /// The packed pipeline of `selection` drawing the caller's `topology`; each topology
     /// is its own pipeline.
     pub fn get(
@@ -346,6 +375,21 @@ impl Cache {
 }
 
 impl Pipeline {
+    fn release_bind_groups(&self) {
+        *self.groups.lock().unwrap_or_else(|e| e.into_inner()) = Groups::default();
+        if let Some(fallback) = &self.fallback {
+            for pipeline in fallback
+                .variants
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .filter_map(|result| result.as_ref().ok())
+            {
+                pipeline.release_bind_groups();
+            }
+        }
+    }
+
     pub fn new(
         device: &wgpu::Device,
         compiled: &Compiled,

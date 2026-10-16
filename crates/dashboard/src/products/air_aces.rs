@@ -7,8 +7,8 @@
 //! stores the selected definition. The recorded selected modifier is distinct
 //! from the compatibility mask and the aircraft assigned to the wing.
 //!
-//! One per-source branch scan is shared by manifest, windows and portraits.
-//! Windows come from recording blocks, with no player gate or truncation;
+//! Prepared manifests, recording-block windows and portraits share the roster
+//! observer. Windows have no player gate or truncation;
 //! only the transport reply budget may refuse it.
 //! The ace reader and air writer retain the full reference, owner-roster link,
 //! roster position, aircraft mask, wing, name fields, alive and handled flags,
@@ -23,18 +23,18 @@ use super::{
 use crate::{
     Source,
     catalogue::{self, Catalogue, Refusals, View},
-    metadata::{LinkTags, branch_bounds, slot_read, validate_campaign},
+    metadata::{LinkTags, branch_bounds, slot_read},
     transport::json_len,
 };
 use installed_content::localisation::Argument;
 use replay::{
     container::Replay,
-    frame::{DecodedFrame, FrameDecoder, SharedView, TableView, ViewIdentity},
+    frame::{DecodedFrame, SharedView, TableView, ViewIdentity},
     rows::{AirAceRow, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
     sync::{
         Arc,
@@ -42,9 +42,13 @@ use std::{
     },
 };
 use ts_rs::TS;
+#[cfg(test)]
+use {crate::metadata::validate_campaign, replay::frame::FrameDecoder, std::collections::VecDeque};
 
 pub struct AirAces;
 pub struct AirAcePortraits;
+
+pub(crate) mod prepared;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, TS)]
 #[serde(rename_all = "kebab-case")]
@@ -65,7 +69,7 @@ pub struct AirAcesParams {
     pub window: Option<usize>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AirAceDeath {
     pub last_alive: Option<i32>,
@@ -74,7 +78,7 @@ pub struct AirAceDeath {
     pub killer_tag: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AirAceRun {
     pub first_hour: i32,
@@ -89,7 +93,7 @@ pub struct AirAceRun {
     pub death: Option<AirAceDeath>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize, TS, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AirAceEntry {
     pub id: String,
@@ -97,14 +101,14 @@ pub struct AirAceEntry {
     pub runs: Vec<AirAceRun>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize, TS, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AirAceIdentity {
     pub id: String,
     pub first_seen: i32,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize, TS, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AirAcesManifestReply {
     pub branch_id: String,
@@ -123,7 +127,7 @@ pub struct AirAcesManifestReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize, TS, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AirAcesWindowReply {
     pub branch_id: String,
@@ -136,7 +140,7 @@ pub struct AirAcesWindowReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize, TS, Deserialize)]
 #[serde(untagged)]
 pub enum AirAcesReply {
     Manifest(AirAcesManifestReply),
@@ -160,7 +164,7 @@ pub struct AirAcePortraitParams {
     pub ids: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize, TS, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AirAcePortrait {
     pub id: String,
@@ -168,7 +172,7 @@ pub struct AirAcePortrait {
     pub missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize, TS, Deserialize)]
 pub struct AirAcePortraitReply {
     pub portraits: Vec<AirAcePortrait>,
     pub warnings: Vec<String>,
@@ -195,8 +199,9 @@ impl std::ops::Deref for RecordedAce {
         }
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Facts {
+    #[serde(skip, default = "unrestored_ace")]
     row: RecordedAce,
     tag: Option<String>,
     variants: Option<Vec<u64>>,
@@ -205,13 +210,13 @@ struct Facts {
     dead_by: Option<i32>,
     killer_tag: Option<String>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Run {
     first: i32,
     last: i32,
     facts: Facts,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Ace {
     id: u64,
     first_seen: i32,
@@ -220,28 +225,43 @@ struct Ace {
     dead_by: Option<i32>,
     runs: Vec<Run>,
 }
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Scan {
     /// The recording's format, which dates its daily tables
     /// ([`crate::metadata::slot_read`]).
+    #[serde(skip)]
     format: replay::format::FormatVersion,
     first: i32,
     last: i32,
+    #[serde(skip)]
     windows: Vec<HourSpan>,
     unread: bool,
     last_frame: Option<i32>,
+    read_through: Option<i32>,
+    #[serde(skip)]
+    country_keys: Option<crate::metadata::CountryKeys>,
+    #[cfg(test)]
+    #[serde(skip)]
+    work: crate::prepared::observer_tests::Work,
     known: bool,
     aces: Vec<Ace>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
     indices: HashMap<u64, usize>,
     active: Vec<usize>,
     observed: Vec<HourSpan>,
     reads: Vec<i32>,
+    #[serde(skip)]
     from: Vec<ViewIdentity>,
+    variant_ids: BTreeSet<u64>,
     variants: VariantCatalogue,
     tags: LinkTags,
     warnings: BTreeSet<String>,
     refusals: Refusals,
     wing_refusals: Refusals,
+}
+
+fn unrestored_ace() -> RecordedAce {
+    RecordedAce::Changed(Box::default())
 }
 
 fn bounded<T: Serialize>(reply: T, kind: &str) -> io::Result<T> {
@@ -266,12 +286,33 @@ fn cancelled(flag: &AtomicBool) -> io::Result<()> {
 impl Scan {
     fn close(&mut self, last: i32) {
         for &index in &self.active {
+            #[cfg(test)]
+            {
+                self.work.history_visits += 1;
+            }
+            let ace = &mut self.aces[index];
+            if let Some(read) = self.read_through {
+                ace.last_read = Some(read);
+                if ace.runs.last().is_some_and(|run| run.facts.row.alive != 0) {
+                    ace.last_alive = Some(read);
+                }
+            }
             if let Some(run) = self.aces[index].runs.last_mut() {
                 run.last = last;
             }
         }
     }
+    #[cfg(test)]
     fn observe(&mut self, frame: &DecodedFrame) {
+        self.variants.observe(self.format, frame);
+        self.observe_roster(frame, None);
+    }
+    fn observe_roster(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+    ) -> bool {
+        let mut changed = false;
         let hour = frame.hour;
         if self
             .last_frame
@@ -280,15 +321,21 @@ impl Scan {
             self.close(self.last_frame.unwrap());
             self.active.clear();
             self.known = false;
+            self.read_through = None;
+            changed = true;
         }
-        self.variants.observe(self.format, frame);
         let rows = frame.complete::<tables::AirAces>();
-        let read = slot_read(self.format, &frame.metrics, TableId::AirAces, hour);
+        let read = changes.map_or_else(
+            || slot_read(self.format, &frame.metrics, TableId::AirAces, hour),
+            |changes| changes.slot_read[TableId::AirAces.index()],
+        );
         match rows {
             Err(_) => {
                 self.close(self.last_frame.unwrap_or(hour.saturating_sub(1)));
                 self.active.clear();
                 self.known = false;
+                self.read_through = None;
+                changed = true;
             }
             Ok(rows) if read => {
                 let same_roster = self.known
@@ -296,14 +343,23 @@ impl Scan {
                         identity.is(&frame.tables[TableId::AirAces.index()])
                     });
                 let mut ids = HashSet::new();
-                if !same_roster && rows.iter().any(|row| !ids.insert(row.id)) {
+                if !same_roster
+                    && rows.iter().any(|row| {
+                        #[cfg(test)]
+                        {
+                            self.work.row_visits += 1;
+                        }
+                        !ids.insert(row.id)
+                    })
+                {
                     self.close(hour.saturating_sub(1));
                     self.active.clear();
                     self.known = false;
                     self.refusals
                         .note("Duplicate ace reference; read is a gap", hour.to_string());
+                    self.read_through = None;
                     self.last_frame = Some(hour);
-                    return;
+                    return true;
                 }
                 let inputs = [
                     TableId::AirAces,
@@ -314,36 +370,73 @@ impl Scan {
                     TableId::Raids,
                     TableId::RaidTooltipOperands,
                 ];
+                let country_same = changes
+                    .is_some_and(|changes| !changes.rows_changed[TableId::Countries.index()])
+                    || self.country_keys.as_ref().is_some_and(|keys| {
+                        #[cfg(test)]
+                        let before = keys.row_visits();
+                        let same = frame
+                            .complete::<tables::Countries>()
+                            .is_ok_and(|rows| keys.same(rows));
+                        #[cfg(test)]
+                        {
+                            self.work.row_visits += keys.row_visits() - before;
+                        }
+                        same
+                    });
                 if self.known
                     && self.from.len() == inputs.len()
-                    && self
-                        .from
-                        .iter()
-                        .zip(inputs)
-                        .all(|(identity, table)| identity.is(&frame.tables[table.index()]))
+                    && self.from.iter().zip(inputs).all(|(identity, table)| {
+                        (table == TableId::Countries && country_same)
+                            || changes.map_or_else(
+                                || identity.is(&frame.tables[table.index()]),
+                                |changes| !changes.rows_changed[table.index()],
+                            )
+                    })
                 {
-                    // A successful equal read still supplies a new date and death
-                    // bound, without rejoining or copying 100,000 unchanged rows.
-                    for &index in &self.active {
-                        let ace = &mut self.aces[index];
-                        ace.last_read = Some(hour);
-                        let run = ace.runs.last_mut().expect("active ace");
-                        if run.facts.row.alive != 0 {
-                            ace.last_alive = Some(hour);
-                        }
-                        run.last = hour;
-                    }
+                    self.read_through = Some(hour);
                 } else {
+                    changed = true;
                     self.close(hour.saturating_sub(1));
+                    self.country_keys = frame
+                        .complete::<tables::Countries>()
+                        .ok()
+                        .map(crate::metadata::CountryKeys::read);
+                    #[cfg(test)]
+                    {
+                        self.work.row_visits += rows.len();
+                    }
                     let previous_read = self.known.then(|| self.reads.last().copied()).flatten();
                     self.active.clear();
+                    #[cfg(test)]
+                    {
+                        self.work.row_visits += frame
+                            .complete::<tables::Countries>()
+                            .map_or(0, |rows| rows.len())
+                            + frame
+                                .complete::<tables::CountryLinks>()
+                                .map_or(0, |rows| rows.len());
+                    }
                     let tags_known = self.tags.update(frame).is_ok();
                     let equipment = frame.complete::<tables::WingEquipment>().ok();
                     let wings = frame.complete::<tables::AirWings>().ok();
-                    let wing_ids: HashSet<u64> =
-                        wings.into_iter().flatten().map(|row| row.id).collect();
+                    let wing_ids: HashSet<u64> = wings
+                        .into_iter()
+                        .flatten()
+                        .map(|row| {
+                            #[cfg(test)]
+                            {
+                                self.work.row_visits += 1;
+                            }
+                            row.id
+                        })
+                        .collect();
                     let mut by_wing: HashMap<u64, Vec<(u32, u64)>> = HashMap::new();
                     for row in equipment.into_iter().flatten() {
+                        #[cfg(test)]
+                        {
+                            self.work.row_visits += 1;
+                        }
                         by_wing
                             .entry(row.wing)
                             .or_default()
@@ -416,6 +509,8 @@ impl Scan {
                         } else {
                             None
                         };
+                        self.variant_ids
+                            .extend(variants.into_iter().flatten().copied());
                         let killer_tag = row.death.as_ref().and_then(|death| {
                             tags_known
                                 .then(|| self.tags.get(death.killer_country))
@@ -467,6 +562,7 @@ impl Scan {
                         .collect();
                 }
                 self.known = true;
+                self.read_through = Some(hour);
                 self.reads.push(hour);
             }
             Ok(_) => {}
@@ -481,7 +577,9 @@ impl Scan {
             }
         }
         self.last_frame = Some(hour);
+        changed
     }
+    #[cfg(test)]
     fn at(&self, id: u64, hour: i32) -> Option<&Run> {
         let ace = &self.aces[*self.indices.get(&id)?];
         let at = ace
@@ -493,6 +591,7 @@ impl Scan {
     }
 }
 
+#[cfg(test)]
 fn scan(replay: &Replay, branch_id: u64, flag: &AtomicBool) -> io::Result<Scan> {
     let branch = replay
         .branches
@@ -573,10 +672,12 @@ fn scan(replay: &Replay, branch_id: u64, flag: &AtomicBool) -> io::Result<Scan> 
     Ok(result)
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct Cache {
     branches: VecDeque<(u64, Arc<Scan>)>,
 }
+#[cfg(test)]
 fn cached(source: &Source, branch: u64, flag: &AtomicBool) -> io::Result<Arc<Scan>> {
     let state = source.state::<Cache>();
     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -634,7 +735,6 @@ fn manifest(
     cat: Option<&Catalogue>,
     flag: &AtomicBool,
 ) -> io::Result<AirAcesManifestReply> {
-    let mut variant_ids = BTreeSet::new();
     let mut aces = Vec::with_capacity(scan.aces.len());
     for ace in &scan.aces {
         cancelled(flag)?;
@@ -642,12 +742,11 @@ fn manifest(
             id: ace.id.to_string(),
             first_seen: ace.first_seen,
         });
-        for run in &ace.runs {
-            variant_ids.extend(run.facts.variants.iter().flatten().copied());
-        }
     }
-    let variants = variant_ids
-        .into_iter()
+    let variants = scan
+        .variant_ids
+        .iter()
+        .copied()
         .map(|id| {
             (
                 id.to_string(),
@@ -787,6 +886,7 @@ fn window_reply(
 
 // Like Raids' catalogue view, stop at the first positive recording evidence.
 // No joins, content names, portraits or history materialization for the picker.
+#[cfg(test)]
 fn recording_available(
     replay: &Replay,
     branch: u64,
@@ -839,19 +939,61 @@ fn recording_available(
 // The portrait ladder uses a named literal first, then the retained country/gender pool.
 // Only an empty country pool builds culture sprites, stopping at the
 // first missing sprite or the game's own 256-entry bound; global pool last.
-fn portrait(facts: &Facts, cat: &Catalogue) -> Result<String, String> {
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct PortraitPool {
+    cached: Option<Vec<u8>>,
+    culture: Option<Vec<u8>>,
+    fallback: Option<Vec<u8>>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct PortraitSelection {
+    gender: u8,
+    pool_index: i32,
+    portrait: Option<PortraitPool>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct PortraitOperands {
+    tag: Option<String>,
+    name: Vec<u8>,
+    surname: Vec<u8>,
+    fields: Result<Option<PortraitSelection>, String>,
+}
+impl From<&Facts> for PortraitOperands {
+    fn from(facts: &Facts) -> Self {
+        Self {
+            tag: facts.tag.clone(),
+            name: facts.row.name.clone(),
+            surname: facts.row.surname.clone(),
+            fields: facts
+                .row
+                .presentation
+                .require("Ace presentation")
+                .map(|fields| {
+                    fields.as_ref().map(|fields| PortraitSelection {
+                        gender: fields.gender,
+                        pool_index: fields.pool_index,
+                        portrait: fields.portrait.as_ref().map(|pool| PortraitPool {
+                            cached: pool.cached.clone(),
+                            culture: pool.culture.clone(),
+                            fallback: pool.fallback.clone(),
+                        }),
+                    })
+                }),
+        }
+    }
+}
+fn portrait(facts: &PortraitOperands, cat: &Catalogue) -> Result<String, String> {
     let tag = facts.tag.as_ref().ok_or("Ace country not recorded")?;
-    let name = std::str::from_utf8(&facts.row.name).map_err(|_| "Ace name is not UTF-8")?;
-    let surname =
-        std::str::from_utf8(&facts.row.surname).map_err(|_| "Ace surname is not UTF-8")?;
+    let name = std::str::from_utf8(&facts.name).map_err(|_| "Ace name is not UTF-8")?;
+    let surname = std::str::from_utf8(&facts.surname).map_err(|_| "Ace surname is not UTF-8")?;
     let key = format!("GFX_{tag}_ace_{name}_{surname}");
     let sprite = match cat.sprites.find(&key)? {
         Some(sprite) => sprite,
         None => {
             let fields = facts
-                .row
-                .presentation
-                .require("Ace presentation")?
+                .fields
+                .as_ref()
+                .map_err(|reason| reason.clone())?
                 .as_ref()
                 .ok_or("Ace presentation capture failed")?;
             let pool = fields
@@ -901,33 +1043,18 @@ fn portrait(facts: &Facts, cat: &Catalogue) -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
-type PortraitKey = (
-    Option<String>,
-    Vec<u8>,
-    Vec<u8>,
-    bool,
-    Option<replay::rows::AirAcePresentation>,
-);
 #[derive(Default)]
 struct PortraitCache {
     catalogue: Option<Arc<Catalogue>>,
-    entries: HashMap<PortraitKey, Result<String, String>>,
+    entries: HashMap<PortraitOperands, Result<String, String>>,
 }
-fn cached_portrait(source: &Source, facts: &Facts, cat: &Arc<Catalogue>) -> Result<String, String> {
+fn cached_portrait(
+    source: &Source,
+    facts: &PortraitOperands,
+    cat: &Arc<Catalogue>,
+) -> Result<String, String> {
     let state = source.state::<PortraitCache>();
-    let key = (
-        facts.tag.clone(),
-        facts.row.name.clone(),
-        facts.row.surname.clone(),
-        matches!(facts.row.presentation, replay::rows::Recorded::NotRecorded),
-        facts
-            .row
-            .presentation
-            .require("Ace presentation")
-            .ok()
-            .cloned()
-            .flatten(),
-    );
+    let key = facts.clone();
     {
         let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
         if !state
@@ -954,6 +1081,21 @@ fn cached_portrait(source: &Source, facts: &Facts, cat: &Arc<Catalogue>) -> Resu
         return state.entries.entry(key).or_insert(found).clone();
     }
     found
+}
+
+fn ace_warnings(result: &mut AirAcesReply, cat: Result<&Catalogue, &io::Error>) {
+    let warnings = match result {
+        AirAcesReply::Manifest(reply) => &mut reply.warnings,
+        AirAcesReply::Window(reply) => &mut reply.warnings,
+    };
+    match cat {
+        Err(why) => warnings.push(format!("Ace content unavailable: {why}")),
+        Ok(cat) => {
+            warnings.extend(cat.verification.iter().cloned());
+            warnings.extend(cat.warnings.iter().cloned());
+            warnings.extend(cat.refusal_lines());
+        }
+    }
 }
 
 impl Product for AirAces {
@@ -989,6 +1131,7 @@ impl Product for AirAces {
             StockVariantName::decl(),
         ]
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -1050,18 +1193,7 @@ impl Product for AirAces {
             }
             AirAcesView::Catalogue => unreachable!("catalogue returned above"),
         };
-        let warnings = match &mut result {
-            AirAcesReply::Manifest(reply) => &mut reply.warnings,
-            AirAcesReply::Window(reply) => &mut reply.warnings,
-        };
-        match cat {
-            Err(why) => warnings.push(format!("Ace content unavailable: {why}")),
-            Ok(cat) => {
-                warnings.extend(cat.verification.iter().cloned());
-                warnings.extend(cat.warnings.iter().cloned());
-                warnings.extend(cat.refusal_lines());
-            }
-        }
+        ace_warnings(&mut result, cat.as_deref());
         bounded(
             result,
             if matches!(params.view, AirAcesView::Window) {
@@ -1072,6 +1204,61 @@ impl Product for AirAces {
         )
     }
 }
+fn portrait_reply(
+    source: &Source,
+    params: &AirAcePortraitParams,
+    context: &LoadContext,
+    flag: &AtomicBool,
+    lookup: impl Fn(u64, i32) -> Option<PortraitOperands>,
+) -> io::Result<AirAcePortraitReply> {
+    let cat = context
+        .content()
+        .and_then(|options| catalogue::catalogue(source, options));
+    let mut portraits = vec![];
+    let mut refusals = Refusals::default();
+    for id in &params.ids {
+        cancelled(flag)?;
+        let result = lookup(
+            id.parse().map_err(|_| crate::invalid("Invalid ace"))?,
+            params.hour,
+        )
+        .ok_or_else(|| "Ace not recorded at this hour".to_owned())
+        .and_then(|operands| {
+            cat.as_ref()
+                .map_err(|error| error.to_string())
+                .and_then(|cat| cached_portrait(source, &operands, cat))
+        });
+        let (image, missing) = match result {
+            Ok(image) => (Some(image), None),
+            Err(reason) => {
+                refusals.note(&reason, format!("Ace {id}"));
+                (None, Some(reason))
+            }
+        };
+        portraits.push(AirAcePortrait {
+            id: id.clone(),
+            image,
+            missing,
+        });
+    }
+    let mut warnings = cat.as_ref().map_or_else(
+        |why| vec![format!("Ace portraits unavailable: {why}")],
+        |cat| {
+            cat.warnings
+                .iter()
+                .chain(cat.verification.iter())
+                .cloned()
+                .collect()
+        },
+    );
+    warnings.extend(refusals.counts("ace portraits"));
+    let result = AirAcePortraitReply {
+        portraits,
+        warnings,
+    };
+    bounded(result, "portraits")
+}
+
 impl Product for AirAcePortraits {
     const KEY: &'static str = "air-ace-portraits";
     const CONTENT_DEPENDENT: bool = true;
@@ -1095,6 +1282,7 @@ impl Product for AirAcePortraits {
             AirAcePortrait::decl(),
         ]
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -1109,53 +1297,10 @@ impl Product for AirAcePortraits {
                 .map_err(|_| crate::invalid("Invalid branch"))?,
             flag,
         )?;
-        let cat = context
-            .content()
-            .and_then(|options| catalogue::catalogue(source, options));
-        let mut portraits = vec![];
-        let mut refusals = Refusals::default();
-        for id in &params.ids {
-            cancelled(flag)?;
-            let result = scan
-                .at(
-                    id.parse().map_err(|_| crate::invalid("Invalid ace"))?,
-                    params.hour,
-                )
-                .ok_or_else(|| "Ace not recorded at this hour".to_owned())
-                .and_then(|run| {
-                    cat.as_ref()
-                        .map_err(|error| error.to_string())
-                        .and_then(|cat| cached_portrait(source, &run.facts, cat))
-                });
-            let (image, missing) = match result {
-                Ok(image) => (Some(image), None),
-                Err(reason) => {
-                    refusals.note(&reason, format!("Ace {id}"));
-                    (None, Some(reason))
-                }
-            };
-            portraits.push(AirAcePortrait {
-                id: id.clone(),
-                image,
-                missing,
-            });
-        }
-        let mut warnings = cat.as_ref().map_or_else(
-            |why| vec![format!("Ace portraits unavailable: {why}")],
-            |cat| {
-                cat.warnings
-                    .iter()
-                    .chain(cat.verification.iter())
-                    .cloned()
-                    .collect()
-            },
-        );
-        warnings.extend(refusals.counts("ace portraits"));
-        let result = AirAcePortraitReply {
-            portraits,
-            warnings,
-        };
-        bounded(result, "portraits")
+        portrait_reply(source, params, context, flag, |id, hour| {
+            scan.at(id, hour)
+                .map(|run| PortraitOperands::from(&run.facts))
+        })
     }
 }
 

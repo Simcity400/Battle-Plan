@@ -1,0 +1,27 @@
+[package]
+name = "viewer-raids"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+slow-tests = ["viewer-foundation/slow-tests"]
+test-support = ["viewer-foundation/test-support"]
+
+[dependencies]
+viewer-foundation = { path = "../viewer-foundation" }
+dashboard-core.workspace = true
+dashboard-text.workspace = true
+engine.workspace = true
+installed-content.workspace = true
+replay.workspace = true
+eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts"] }
+
+[dev-dependencies]
+viewer-foundation = { path = "../viewer-foundation", features = ["test-support"] }
+installed-content = { workspace = true, features = ["test-support"] }

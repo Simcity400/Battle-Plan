@@ -329,7 +329,7 @@ fn a_window_does_not_grow_with_its_branch() {
         let reply = window_reply(&scan(days), "1", 1, interval);
         serde_json::to_string(&reply).unwrap()
     };
-    assert_eq!(window(90), window(36_500));
+    assert_eq!(window(90), window(120));
 }
 
 #[test]
@@ -980,7 +980,7 @@ fn native_zero_strength_requires_complete_resolved_manpower_or_the_failure_flag(
                 ..Default::default()
             }]));
         *read.tables[TableId::StateAssignedManpower.index()] = assigned;
-        scan.push(&read, hour).unwrap();
+        scan.push(&read, hour, None).unwrap();
     }
     let reply = scan.finish().states;
     let runs = &reply.states[0].runs;
@@ -1127,7 +1127,7 @@ fn a_mod_threshold_uses_native_fixed5_and_missing_garrisons_are_not_zero() {
         TableView::Complete(TableRows::StateGarrisons(vec![]));
     let mut scan = super::scan::Scan::new(Some(&cat));
     for frame in [known, missing] {
-        scan.push(&frame, frame.hour).unwrap();
+        scan.push(&frame, frame.hour, None).unwrap();
     }
     let reply = scan.finish().states;
     assert_eq!(reply.states[0].runs[0].value.garrison_red, Some(false));
@@ -1184,7 +1184,7 @@ fn non_utf8_overrides_and_unresolved_links_are_named_and_counted_by_reason() {
             },
         ]));
     let mut scan = super::scan::Scan::new(None);
-    scan.push(&read, 100).unwrap();
+    scan.push(&read, 100, None).unwrap();
     let reply = scan.finish().states;
     assert!(
         reply
@@ -1265,7 +1265,7 @@ fn long_campaign_scan_at_design_scale() {
                 *frame.tables[TableId::Countries.index()] =
                     TableView::Complete(TableRows::Countries(rows));
             }
-            scan.push(&frame, hour).unwrap();
+            scan.push(&frame, hour, None).unwrap();
         }
         let reply = scan.finish().states;
         let seconds = started.elapsed().as_secs_f64();
@@ -1397,7 +1397,7 @@ fn occupation_group_law_and_null_default_are_joined_at_the_supplying_read() {
         TableView::Complete(TableRows::OccupationSettings(vec![settings]));
     let mut scan = super::scan::Scan::new(Some(&cat));
     for frame in [first, held, next, absent] {
-        scan.push(&frame, frame.hour).unwrap();
+        scan.push(&frame, frame.hour, None).unwrap();
     }
     let reply = scan.finish().states;
     let runs = &reply.states[0].runs;
@@ -1470,7 +1470,7 @@ fn occupation_default_scope_uses_the_retained_country_pointer_independently_of_m
                 fallback_law: Recorded::Value(Some(b"native_fallback".to_vec())),
                 ..Default::default()
             }]));
-        scan.push(&read, read.hour).unwrap();
+        scan.push(&read, read.hour, None).unwrap();
     }
     let reply = scan.finish().states;
     let runs = &reply.states[0].runs;
@@ -1585,7 +1585,7 @@ fn occupation_political_default_does_not_require_unrelated_map_assets() {
             reason: "unrelated map gap".into(),
         };
         let mut scan = super::scan::Scan::new(Some(&cat));
-        scan.push(&read, 100).unwrap();
+        scan.push(&read, 100, None).unwrap();
         assert_eq!(
             scan.finish().states.states[0].runs[0].value.law.as_deref(),
             Some("mod_default"),
@@ -1662,7 +1662,7 @@ fn occupation_default_continent_reads_the_retained_cache_through_from_capital() 
         };
         states[0].continent = continent;
         let mut scan = super::scan::Scan::new(Some(&cat));
-        scan.push(&read, 100).unwrap();
+        scan.push(&read, 100, None).unwrap();
         let reply = scan.finish().states;
         let value = &reply.states[0].runs[0].value;
         assert_eq!(value.law.as_deref(), expected);
@@ -1694,7 +1694,7 @@ fn occupation_default_continent_reads_the_retained_cache_through_from_capital() 
     };
     states[0].continent = Recorded::Value(Some(901));
     let mut scan = super::scan::Scan::new(Some(&duplicates));
-    scan.push(&read, 100).unwrap();
+    scan.push(&read, 100, None).unwrap();
     let reply = scan.finish().states;
     let value = &reply.states[0].runs[0].value;
     assert!(value.law.is_none());

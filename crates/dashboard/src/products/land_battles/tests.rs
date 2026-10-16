@@ -7,6 +7,8 @@ use replay::{
     },
 };
 
+mod speed;
+
 fn frame(hour: i32, countries: u32, combats: u32) -> DecodedFrame {
     let mut frame = crate::test_fixtures::source(1, hour, Some(0));
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
@@ -150,7 +152,7 @@ fn land_battles_wire_joins_hourly_losses_missing_reads_and_terminal_verdict() {
     assert_eq!(row.casualties_at(102), Some(13.0));
     assert_eq!(row.casualties_at(103), Some(21.0));
     assert!(
-        matches!(&row.losses[0].sides, Ok([attacker, _]) if attacker.equipment == Recorded::Value(vec![(0, -100_000)]))
+        matches!(&row.losses[0].sides, Ok([attacker, _]) if attacker.equipment == Some(vec![(0, -100_000)]))
     );
     let early = census.reply(&params(None), &windows(100, 102)).unwrap();
     assert!(early.rows[0].result.is_none());
@@ -939,8 +941,8 @@ fn loss_read(hour: i32, terminal: bool, manpower: [i32; 2]) -> losses::LossRead 
         hour,
         terminal,
         sides: Ok(manpower.map(|value| losses::SideRead {
-            manpower: Recorded::Value(value),
-            equipment: Recorded::Value(Vec::new()),
+            manpower: Some(value),
+            equipment: Some(Vec::new()),
         })),
     }
 }
@@ -1031,7 +1033,7 @@ fn land_battles_casualties_unknown_side_is_not_zero_and_recorded_zero_ranks() {
             .effective_measure,
         "Casualties"
     );
-    census.episodes[0].losses[0].sides.as_mut().unwrap()[1].manpower = Recorded::NotRecorded;
+    census.episodes[0].losses[0].sides.as_mut().unwrap()[1].manpower = None;
     assert_eq!(census.episodes[0].casualties_at(100), None);
     assert_eq!(
         census
@@ -1401,4 +1403,224 @@ fn land_battles_busy_block_sends_changed_losses_far_below_their_full_reads() {
         })
         .sum::<usize>();
     assert!(sent * 3 < full * 2, "{sent} amounts for {full}");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn prepared_land_matches_oracle_across_commits_resume_append_and_large_census() {
+    use crate::prepared::series::{self, tests::Fixture};
+    let flag = AtomicBool::new(false);
+    let mut inputs = Vec::new();
+    for hour in 100..104 {
+        let mut sample = frame(hour, 5000, 6000);
+        if let TableView::Complete(TableRows::LandCombats(rows)) =
+            &mut *sample.tables[TableId::LandCombats.index()]
+        {
+            for row in rows {
+                row.duration = 12 + hour - 100;
+            }
+        }
+        inputs.push(sample);
+    }
+    // A delayed result dates its loss read before the block that observes it.
+    let mut result = result_frame(104, 3);
+    if let TableView::Complete(TableRows::LandCombatResults(rows)) =
+        &mut *result.tables[TableId::LandCombatResults.index()]
+    {
+        rows[0].end_hour = 103;
+    }
+    if let TableView::Complete(TableRows::LandEventCoverage(rows)) =
+        &mut *result.tables[TableId::LandEventCoverage.index()]
+    {
+        rows[0].from_hour = 102;
+    }
+    inputs.push(result);
+    let mut replay = Replay::from_records(
+        crate::test_fixtures::CAMPAIGN.into(),
+        &[crate::test_fixtures::records(1, vec![inputs[0].clone()])],
+    )
+    .unwrap();
+    for input in &inputs[1..] {
+        replay = replay
+            .append(&[crate::test_fixtures::continuation_records(
+                &replay,
+                1,
+                vec![input.clone()],
+            )])
+            .unwrap();
+    }
+    let source = Source::from_replay(
+        crate::SourceKey {
+            source_id: "prepared-land".into(),
+            revision: "1".into(),
+        },
+        "prepared-land.battleplan".into(),
+        Arc::new(replay),
+        &flag,
+    )
+    .unwrap();
+    let fixture = Fixture::new();
+    let mut prepared = Census::new(source.replay_ref().format);
+    for (index, input) in inputs.iter().enumerate() {
+        prepared.configure(&source, &LoadContext { content: None });
+        prepared.observe(input).unwrap();
+        let mut writer = fixture.writer();
+        prepared
+            .publish_block(&mut writer, source.replay_ref(), 1, index, &flag)
+            .unwrap();
+        writer.commit().unwrap();
+        // Every committed state can resume without observing its accepted prefix.
+        prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
+    }
+    let mut oracle = scan(source.replay_ref(), 1, &flag, None).unwrap();
+    oracle
+        .content_warnings
+        .push("Game content unavailable; land equipment names are not resolved.".into());
+    let expected_windows = super::windows(source.replay_ref(), 1);
+    for index in 0..expected_windows.len() {
+        let params = params(Some(index));
+        let actual = prepared::query(
+            &source,
+            "land-battles",
+            serde_json::to_value(&params).unwrap(),
+            &fixture.store,
+            &fixture.key,
+            &flag,
+        )
+        .unwrap();
+        assert_eq!(
+            actual,
+            serde_json::to_value(oracle.reply(&params, &expected_windows).unwrap()).unwrap()
+        );
+    }
+    for measure in ["Peak size", "Length", "Casualties"] {
+        for last_hour in 100..=104 {
+            let params = LandBattlesRankingParams {
+                branch_id: "1".into(),
+                first_hour: 101,
+                last_hour: last_hour.max(101),
+                top_n: 12.0,
+                measure: measure.into(),
+                countries: LandBattleCountryFilter {
+                    tags: None,
+                    membership: None,
+                    unobserved: vec![],
+                },
+            };
+            let actual = prepared::query(
+                &source,
+                "land-battles-ranking",
+                serde_json::to_value(&params).unwrap(),
+                &fixture.store,
+                &fixture.key,
+                &flag,
+            )
+            .unwrap();
+            assert_eq!(
+                actual,
+                serde_json::to_value(oracle.ranked(&params, &flag).unwrap()).unwrap()
+            );
+        }
+    }
+    for episode in oracle.episodes.iter().take(3) {
+        let params = LandBattleCourseParams {
+            branch_id: "1".into(),
+            id: episode.id.clone(),
+        };
+        let actual = prepared::query(
+            &source,
+            "land-battle-course",
+            serde_json::to_value(params).unwrap(),
+            &fixture.store,
+            &fixture.key,
+            &flag,
+        )
+        .unwrap();
+        assert_eq!(
+            actual,
+            serde_json::to_value(oracle.course(&episode.id).unwrap()).unwrap()
+        );
+    }
+    let (keys, ()) =
+        series::read_catalogue::<()>(&fixture.store, &fixture.key, "land-battle-keys", 1)
+            .unwrap()
+            .unwrap();
+    assert!(!keys.contains_key("missing"));
+}
+
+#[test]
+fn prepared_land_ranking_keeps_gap_endings_and_census_reads_in_unrecorded_windows() {
+    use crate::prepared::series::tests::Fixture;
+    let flag = AtomicBool::new(false);
+    let first = frame(100, 5000, 1);
+    let last = frame(104, 5000, 0);
+    let original = Replay::from_records(
+        crate::test_fixtures::CAMPAIGN.into(),
+        &[crate::test_fixtures::records(1, vec![first.clone()])],
+    )
+    .unwrap();
+    let replay = original
+        .append(&[crate::test_fixtures::continuation_records(
+            &original,
+            1,
+            vec![last.clone()],
+        )])
+        .unwrap();
+    let source = Source::from_replay(
+        crate::SourceKey {
+            source_id: "land-gap".into(),
+            revision: "1".into(),
+        },
+        "land-gap.battleplan".into(),
+        Arc::new(replay),
+        &flag,
+    )
+    .unwrap();
+    let fixture = Fixture::new();
+    let context = LoadContext { content: None };
+    let mut prepared = Census::new(source.replay_ref().format);
+    for (index, input) in [&first, &last].into_iter().enumerate() {
+        prepared.configure(&source, &context);
+        prepared.observe(input).unwrap();
+        let mut writer = fixture.writer();
+        prepared
+            .publish_block(&mut writer, source.replay_ref(), 1, index, &flag)
+            .unwrap();
+        writer.commit().unwrap();
+        prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
+    }
+    let mut oracle = scan(source.replay_ref(), 1, &flag, None).unwrap();
+    oracle
+        .content_warnings
+        .push("Game content unavailable; land equipment names are not resolved.".into());
+    for (first_hour, last_hour) in [(101, 102), (102, 103), (101, 104), (105, 110)] {
+        let params = LandBattlesRankingParams {
+            branch_id: "1".into(),
+            first_hour,
+            last_hour,
+            top_n: 5.0,
+            measure: "Length".into(),
+            countries: LandBattleCountryFilter {
+                tags: None,
+                membership: None,
+                unobserved: vec![],
+            },
+        };
+        let actual = prepared::query(
+            &source,
+            "land-battles-ranking",
+            serde_json::to_value(&params).unwrap(),
+            &fixture.store,
+            &fixture.key,
+            &flag,
+        )
+        .unwrap();
+        assert_eq!(
+            actual,
+            serde_json::to_value(oracle.ranked(&params, &flag).unwrap()).unwrap()
+        );
+    }
 }

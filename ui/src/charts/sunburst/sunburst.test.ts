@@ -11,6 +11,36 @@ const key = (id: string) => ({ id, label: id.toUpperCase() });
 const item = (path: string[], value: number | null, extra: Partial<SunburstItem> = {}): SunburstItem => ({ path: path.map(key), value, ...extra });
 const ROOT = { id: 'all', label: 'All' };
 
+test('aggregate payment counts add through grouped and hidden levels without contributor IDs', () => {
+  const parts = [
+    item(['category', 'first'], 10, { count: 7000 }),
+    item(['category', 'second'], 20, { count: 8000 }),
+    item(['category', 'future'], null, { count: 9000, present: false, final: 30 }),
+  ];
+  for (const levels of [[true, true], [true, false], [false, true]]) {
+    const tree = groupTree(parts, ROOT, levels);
+    assert.equal(tree.count, 15000);
+    assert.equal(tree.counted.size, 0);
+    assert.equal(tree.aggregateCount, 15000);
+    assert.equal(tree.children.reduce((total, node) => total + node.count, 0), 15000);
+  }
+});
+
+test('aggregate counts and counted-ID unions stay exact through Other folding', () => {
+  const tree = foldTree(groupTree([
+    item(['large'], 100, { counted: ['shared'], count: 2 }),
+    item(['first'], 10, { counted: ['shared', 'first'], count: 3 }),
+    item(['second'], 5, { counted: ['shared', 'second'], count: 7 }),
+  ], ROOT), 2);
+  const other = tree.children.find(node => node.other)!;
+  assert.equal(tree.count, 15);
+  assert.deepEqual([...tree.counted].sort(), ['first', 'second', 'shared']);
+  assert.equal(other.count, 13);
+  assert.equal(other.aggregateCount, 10);
+  assert.deepEqual([...other.counted].sort(), ['first', 'second', 'shared']);
+  assert.equal(other.children.reduce((total, node) => total + node.aggregateCount, 0), 10);
+});
+
 test('an unfolded 5000-country legend mounts only its viewport and formats no full tooltips in render', async () => {
   let tooltips = 0;
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },

@@ -51,7 +51,7 @@ function pendingTransport() {
     const request: PendingHttp = { body, signal: init.signal as AbortSignal, done: false,
       finish: (data = {}, ok = true) => {
         request.done = true; response.ok = ok;
-        resolve(JSON.stringify(body.type === 'product' && ok ? { ...body.request, data } : data));
+        resolve(JSON.stringify((body.type === 'product' || body.type === 'preparedQuery') && ok ? { ...body.request, data } : data));
       },
       fail: error => { request.done = true; reject(error); },
     };
@@ -163,4 +163,55 @@ test('the history cache request says only whether to clear', async () => {
   const { browserDashboardClient: client } = await import('./browserClient.ts');
   assert.deepEqual(await client.historyCache!(true, AbortSignal.timeout(1000)), { bytes: 0, limit: 1 });
   assert.deepEqual(bodies, [{ type: 'historyCache', clear: true }]);
+});
+
+test('prepared pages use reserved query capacity, preserve exact values, and reject another revision', async () => {
+  const { browserDashboardClient: client } = await import('./browserClient.ts');
+  const transport = pendingTransport();
+  const source = { id: 'prepared-source', revision: 'v1', path: 'synthetic.battleplan', metadata: {} } as import('./client').DashboardSource;
+  const histories = Array.from({ length: 3 }, () => client.product(query('national-focus'), new AbortController().signal));
+  try {
+    await tick();
+    const page = client.preparedQuery!<{ raw: string }>(source, 'focus-hour', { branchId: '1', tag: 'Synthetic country', hour: 100 }, { signal: new AbortController().signal });
+    await tick();
+    const http = transport.requests.find(request => request.body.type === 'preparedQuery')!;
+    assert.ok(http, 'prepared-page queries do not wait for whole-history responses');
+    http.finish({ raw: '9007199254740993' });
+    assert.deepEqual(await page, { raw: '9007199254740993' });
+    const stale = client.preparedQuery!(source, 'focus-hour', {}, { signal: new AbortController().signal });
+    const refused = assert.rejects(stale, /reply does not match this recording and product/);
+    await tick();
+    const staleHttp = transport.requests.filter(request => request.body.type === 'preparedQuery').at(-1)!;
+    staleHttp.body.request = { ...staleHttp.body.request!, revision: 'previous-revision' };
+    staleHttp.finish({ raw: '1' });
+    await refused;
+    await transport.drain();
+    await Promise.all(histories);
+  } finally { await transport.drain(); transport.restore(); }
+});
+
+test('preparation commands echo their request identity and preserve decimal counts', async () => {
+  const { browserDashboardClient: client } = await import('./browserClient.ts');
+  const previous = globalThis.fetch;
+  const bodies: Record<string, unknown>[] = [];
+  globalThis.fetch = (async (_url: string, init: RequestInit) => {
+    const body = JSON.parse(String(init.body));
+    bodies.push(body);
+    const reply = {
+      sourceId: body.sourceId, revision: body.revision, requestId: body.id, state: 'ready',
+      sections: [{ id: 'focus', label: 'National focus', state: 'ready', done: '9007199254740993', total: '9007199254740993', error: null }],
+      bytes: '9007199254740993', error: null,
+      backgroundEnabled: true,
+    };
+    if (body.id === 'stale-progress') reply.requestId = 'previous-progress';
+    return { ok: true, text: async () => JSON.stringify(reply) };
+  }) as unknown as typeof fetch;
+  try {
+    const identity = { sourceId: 'prepared-source', revision: 'v1', requestId: 'exact-progress' };
+    const reply = await client.preparationStatus!(identity, new AbortController().signal);
+    assert.equal(reply.bytes, '9007199254740993');
+    assert.equal(reply.sections[0].done, '9007199254740993');
+    assert.deepEqual(bodies[0], { type: 'preparation', id: 'exact-progress', sourceId: 'prepared-source', revision: 'v1', action: 'status' });
+    await assert.rejects(client.preparationStatus!({ ...identity, requestId: 'stale-progress' }, new AbortController().signal), /does not match this recording and request/);
+  } finally { globalThis.fetch = previous; }
 });

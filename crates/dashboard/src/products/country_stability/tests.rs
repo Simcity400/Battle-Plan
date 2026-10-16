@@ -658,3 +658,101 @@ fn stability_oversized_breakdown_refuses_the_complete_reply_by_name() {
         "{error}"
     );
 }
+
+// Idea names as politics content selects them for breakdown lines.
+mod idea_names {
+    use crate::products::country_stability::{BreakdownLine, line_name};
+    use crate::products::politics_content::{CountryLook, IdeaCountry, PoliticsContent};
+    use std::sync::Arc;
+
+    /// Name selection localises only its chosen key; description selection
+    /// takes `token_desc` before the override's. Read from a content folder
+    /// through the Politics content loader.
+    #[test]
+    fn an_idea_name_is_its_selected_key_alone() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+            (
+                "localisation/test_l_english.yml",
+                concat!(
+                    "\u{feff}l_english:\n",
+                    " MOD_spirit:0 \"Token Name\"\n",
+                    " MOD_spirit_renamed:0 \"Jos¤é\"\n",
+                    " MOD_spirit_desc:0 \"Token description\"\n",
+                    " MOD_spirit_renamed_desc:0 \"Override description\"\n",
+                    " MOD_other:0 \"Other Token Name\"\n",
+                    " MOD_other_override_desc:0 \"Override only\"\n",
+                    " MOD_plain:0 \"Plain Name\"\n",
+                ),
+            ),
+            (
+                "common/defines/00_defines.lua",
+                "NDefines = { NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { \"theorist\" } } }",
+            ),
+            (
+                "common/ideas/mod.txt",
+                "ideas = { country = { MOD_spirit = { name = MOD_spirit_renamed } MOD_other = { name = MOD_other_override } MOD_plain = { } } }",
+            ),
+        ]);
+        let content = PoliticsContent::load(Arc::new(catalogue)).unwrap();
+        let look = CountryLook {
+            name_tag: "",
+            original_or_own_tag: Ok("MOD"),
+            cosmetic_tag: "",
+            civil_war: Ok(false),
+        };
+        let country = IdeaCountry {
+            tag: "MOD",
+            slot: 0,
+            look: Some(look),
+        };
+        // A refused override is not replaced by the token's text.
+        let (spirit, _) = content.idea_artwork("MOD_spirit", None, country);
+        assert_eq!(spirit.name, None);
+        assert_eq!(spirit.description.as_deref(), Some("Token description"));
+        assert!(
+            content
+                .catalogue
+                .refusal_lines()
+                .iter()
+                .any(|line| line.contains("MOD_spirit_renamed")),
+            "{:?}",
+            content.catalogue.refusal_lines()
+        );
+        // A missing override stays unavailable; the token's text does not stand in.
+        let (other, _) = content.idea_artwork("MOD_other", None, country);
+        assert_eq!(other.name, None);
+        assert_eq!(other.description.as_deref(), Some("Override only"));
+        let (plain, _) = content.idea_artwork("MOD_plain", None, country);
+        assert_eq!(
+            (plain.name.as_deref(), plain.description),
+            (Some("Plain Name"), None)
+        );
+        // The stability breakdown selects the same key.
+        let line = |identity: &str| BreakdownLine {
+            line: 0,
+            kind: "idea".into(),
+            identity: identity.into(),
+            identity_id: 0,
+            secondary_raw: String::new(),
+            value_raw: String::new(),
+            text: None,
+            label: None,
+            group: None,
+            group_kind: None,
+        };
+        assert_eq!(
+            line_name(&line("MOD_spirit"), &content, None, None, country),
+            None
+        );
+        assert_eq!(
+            line_name(&line("MOD_other"), &content, None, None, country).as_deref(),
+            None
+        );
+        assert_eq!(
+            line_name(&line("MOD_plain"), &content, None, None, country).as_deref(),
+            Some("Plain Name")
+        );
+    }
+}

@@ -9,28 +9,108 @@ debug = 0
 [profile.test]
 debug = 0
 
-# Replay stays optimised in dev (interactive loading) and in tests. `[profile.test]` inherits every
-# `[profile.dev.package.*]` override, so this level applies to tests too. Unoptimised, replay's
-# library builds in about 25 s instead of 100-170 s (110 s at opt-level 1), but its 2,000-hour fault
-# acceptance test takes about 130 s instead of 13 s and dashboard's suite more than doubles; the
-# workspace dependency features keep it to one test build per worktree.
+# Replay stays optimised in dev for interactive loading. Unoptimised, replay's library builds in
+# about 25 s instead of 100-170 s (110 s at opt-level 1).
 [profile.dev.package.replay]
 opt-level = 2
 
-# The engine scale tests run up to 5,000 countries in the default suite. Engine takes about 70 s
-# unoptimised and 6 s optimised; dev optimises it too, so dev and test share it.
+# replay-data holds the row codecs replay used to compile, at the same level.
+[profile.dev.package.replay-data]
+opt-level = 2
+
+# Native readers stay optimised in dev for interactive runs.
 [profile.dev.package.engine]
 opt-level = 2
 
-[profile.test.package.engine]
+[profile.dev.package.engine-air-history]
 opt-level = 2
 
-# Collector's test binary builds unoptimised in about 90 s (190 CPU-s) instead of 350 s (1,900 CPU-s)
-# at opt-level 1, and recompiles after an edit to widely used code in minutes less. Its suite takes
-# about 85 s instead of 36 s. Unoptimised frames are large (`sampling::acquire` needs 8 MiB), so the
-# test binary gives its threads 32 MiB stacks (`TEST_THREAD_STACK` in src/lib.rs).
-[profile.test.package.collector]
-opt-level = 0
+[profile.dev.package.engine-characters]
+opt-level = 2
+
+[profile.dev.package.engine-decisions]
+opt-level = 2
+
+[profile.dev.package.engine-deployment]
+opt-level = 2
+
+[profile.dev.package.engine-dlc]
+opt-level = 2
+
+[profile.dev.package.engine-equipment]
+opt-level = 2
+
+[profile.dev.package.engine-events]
+opt-level = 2
+
+[profile.dev.package.engine-executable]
+opt-level = 2
+
+[profile.dev.package.engine-fixed-layout]
+opt-level = 2
+
+[profile.dev.package.engine-focus]
+opt-level = 2
+
+[profile.dev.package.engine-fuel]
+opt-level = 2
+
+[profile.dev.package.engine-governance-tests]
+opt-level = 2
+
+[profile.dev.package.engine-intelligence]
+opt-level = 2
+
+[profile.dev.package.engine-land-inputs]
+opt-level = 2
+
+[profile.dev.package.engine-map-air]
+opt-level = 2
+
+[profile.dev.package.engine-mutations]
+opt-level = 2
+
+[profile.dev.package.engine-native]
+opt-level = 2
+
+[profile.dev.package.engine-naval-history]
+opt-level = 2
+
+[profile.dev.package.engine-occupation]
+opt-level = 2
+
+[profile.dev.package.engine-peace]
+opt-level = 2
+
+[profile.dev.package.engine-power-balance]
+opt-level = 2
+
+[profile.dev.package.engine-production]
+opt-level = 2
+
+[profile.dev.package.engine-projects]
+opt-level = 2
+
+[profile.dev.package.engine-raid-inputs]
+opt-level = 2
+
+[profile.dev.package.engine-railways]
+opt-level = 2
+
+[profile.dev.package.engine-research]
+opt-level = 2
+
+[profile.dev.package.engine-resources]
+opt-level = 2
+
+[profile.dev.package.engine-scripts]
+opt-level = 2
+
+[profile.dev.package.engine-stability]
+opt-level = 2
+
+[profile.dev.package.engine-visibility]
+opt-level = 2
 
 # Release settings with incremental compilation, for iterating on throughput: after a one-line
 # collector edit, recorder+collector rebuild in about 20 s (35 CPU-s) instead of 110 s (460 CPU-s).
@@ -45,7 +125,85 @@ incremental = true
 [profile.dev.package.installed-content]
 opt-level = 2
 
+[profile.dev.package.installed-content-core]
+opt-level = 2
+
+[profile.dev.package.installed-content-abilities]
+opt-level = 2
+
+[profile.dev.package.installed-content-country-names]
+opt-level = 2
+
+[profile.dev.package.installed-content-division-names]
+opt-level = 2
+
+[profile.dev.package.installed-content-equipment-graphics]
+opt-level = 2
+
+[profile.dev.package.installed-content-events]
+opt-level = 2
+
+[profile.dev.package.installed-content-focus]
+opt-level = 2
+
+[profile.dev.package.installed-content-gfx]
+opt-level = 2
+
+[profile.dev.package.installed-content-localisation]
+opt-level = 2
+
+[profile.dev.package.installed-content-naval-combat-defines]
+opt-level = 2
+
+[profile.dev.package.installed-content-naval-path]
+opt-level = 2
+
+[profile.dev.package.installed-content-province-area]
+opt-level = 2
+
+[profile.dev.package.installed-content-raids]
+opt-level = 2
+
+[profile.dev.package.installed-content-regions]
+opt-level = 2
+
+[profile.dev.package.installed-content-scripted-localisation]
+opt-level = 2
+
+[profile.dev.package.installed-content-settings]
+opt-level = 2
+
+[profile.dev.package.installed-content-state-categories]
+opt-level = 2
+
+[profile.dev.package.installed-content-states]
+opt-level = 2
+
+[profile.dev.package.installed-content-unit-path]
+opt-level = 2
+
+[profile.dev.package.installed-content-wargoals]
+opt-level = 2
+
+[profile.dev.package.installed-content-weather]
+opt-level = 2
+
+[profile.dev.package.installed-content-image]
+opt-level = 2
+
 [profile.dev.package.dashboard]
+opt-level = 2
+
+[profile.dev.package.dashboard-base]
+opt-level = 2
+
+[profile.dev.package.dashboard-politics-ledger]
+opt-level = 2
+
+[profile.dev.package.dashboard-core]
+opt-level = 2
+
+[profile.dev.package.dashboard-text]
 opt-level = 2
 
 # Replay loading decompresses large blocks. Keep the native codec optimized in
@@ -55,3 +213,381 @@ opt-level = 3
 
 [profile.test.package.zstd-sys]
 opt-level = 3
+
+# Tests build every workspace crate unoptimised. `[profile.test]` inherits each
+# `[profile.dev.package.*]` override, so the crates dev optimises are reset here: an edit then costs
+# an incremental unoptimised compile instead of re-optimising the crate and its dependents, and test
+# builds no longer share artifacts with interactive dev builds. Tests that take more than about two
+# seconds unoptimised run behind their crate's `slow-tests` feature. Third-party crates keep their
+# dev settings (zstd-sys stays at opt-level 3).
+[profile.test.package.replay]
+opt-level = 0
+
+[profile.test.package.replay-data]
+opt-level = 0
+
+[profile.test.package.engine]
+opt-level = 0
+
+[profile.test.package.engine-air-history]
+opt-level = 0
+
+[profile.test.package.engine-characters]
+opt-level = 0
+
+[profile.test.package.engine-decisions]
+opt-level = 0
+
+[profile.test.package.engine-deployment]
+opt-level = 0
+
+[profile.test.package.engine-dlc]
+opt-level = 0
+
+[profile.test.package.engine-equipment]
+opt-level = 0
+
+[profile.test.package.engine-events]
+opt-level = 0
+
+[profile.test.package.engine-executable]
+opt-level = 0
+
+[profile.test.package.engine-fixed-layout]
+opt-level = 0
+
+[profile.test.package.engine-focus]
+opt-level = 0
+
+[profile.test.package.engine-fuel]
+opt-level = 0
+
+[profile.test.package.engine-governance-tests]
+opt-level = 0
+
+[profile.test.package.engine-intelligence]
+opt-level = 0
+
+[profile.test.package.engine-land-inputs]
+opt-level = 0
+
+[profile.test.package.engine-map-air]
+opt-level = 0
+
+[profile.test.package.engine-mutations]
+opt-level = 0
+
+[profile.test.package.engine-native]
+opt-level = 0
+
+[profile.test.package.engine-naval-history]
+opt-level = 0
+
+[profile.test.package.engine-occupation]
+opt-level = 0
+
+[profile.test.package.engine-peace]
+opt-level = 0
+
+[profile.test.package.engine-power-balance]
+opt-level = 0
+
+[profile.test.package.engine-production]
+opt-level = 0
+
+[profile.test.package.engine-projects]
+opt-level = 0
+
+[profile.test.package.engine-raid-inputs]
+opt-level = 0
+
+[profile.test.package.engine-railways]
+opt-level = 0
+
+[profile.test.package.engine-research]
+opt-level = 0
+
+[profile.test.package.engine-resources]
+opt-level = 0
+
+[profile.test.package.engine-scripts]
+opt-level = 0
+
+[profile.test.package.engine-stability]
+opt-level = 0
+
+[profile.test.package.engine-visibility]
+opt-level = 0
+
+[profile.test.package.installed-content]
+opt-level = 0
+
+[profile.test.package.installed-content-core]
+opt-level = 0
+
+[profile.test.package.installed-content-abilities]
+opt-level = 0
+
+[profile.test.package.installed-content-country-names]
+opt-level = 0
+
+[profile.test.package.installed-content-division-names]
+opt-level = 0
+
+[profile.test.package.installed-content-equipment-graphics]
+opt-level = 0
+
+[profile.test.package.installed-content-events]
+opt-level = 0
+
+[profile.test.package.installed-content-focus]
+opt-level = 0
+
+[profile.test.package.installed-content-gfx]
+opt-level = 0
+
+[profile.test.package.installed-content-localisation]
+opt-level = 0
+
+[profile.test.package.installed-content-naval-combat-defines]
+opt-level = 0
+
+[profile.test.package.installed-content-naval-path]
+opt-level = 0
+
+[profile.test.package.installed-content-province-area]
+opt-level = 0
+
+[profile.test.package.installed-content-raids]
+opt-level = 0
+
+[profile.test.package.installed-content-regions]
+opt-level = 0
+
+[profile.test.package.installed-content-scripted-localisation]
+opt-level = 0
+
+[profile.test.package.installed-content-settings]
+opt-level = 0
+
+[profile.test.package.installed-content-state-categories]
+opt-level = 0
+
+[profile.test.package.installed-content-states]
+opt-level = 0
+
+[profile.test.package.installed-content-unit-path]
+opt-level = 0
+
+[profile.test.package.installed-content-wargoals]
+opt-level = 0
+
+[profile.test.package.installed-content-weather]
+opt-level = 0
+
+[profile.test.package.installed-content-image]
+opt-level = 0
+
+[profile.test.package.dashboard]
+opt-level = 0
+
+[profile.test.package.dashboard-base]
+opt-level = 0
+
+[profile.test.package.dashboard-politics-ledger]
+opt-level = 0
+
+[profile.test.package.dashboard-core]
+opt-level = 0
+
+[profile.test.package.dashboard-text]
+opt-level = 0
+
+# The full suite before merging (`cargo test --profile full --features slow-tests`, AGENTS.md)
+# runs the 5,000-country scale and long campaign tests optimised, as dev builds the same crates;
+# unoptimised, the slowest take several minutes each. Its artifacts live in `<target>/full`.
+[profile.full]
+inherits = "test"
+
+[profile.full.package.replay]
+opt-level = 2
+
+[profile.full.package.replay-data]
+opt-level = 2
+
+[profile.full.package.engine]
+opt-level = 2
+
+[profile.full.package.engine-air-history]
+opt-level = 2
+
+[profile.full.package.engine-characters]
+opt-level = 2
+
+[profile.full.package.engine-decisions]
+opt-level = 2
+
+[profile.full.package.engine-deployment]
+opt-level = 2
+
+[profile.full.package.engine-dlc]
+opt-level = 2
+
+[profile.full.package.engine-equipment]
+opt-level = 2
+
+[profile.full.package.engine-events]
+opt-level = 2
+
+[profile.full.package.engine-executable]
+opt-level = 2
+
+[profile.full.package.engine-fixed-layout]
+opt-level = 2
+
+[profile.full.package.engine-focus]
+opt-level = 2
+
+[profile.full.package.engine-fuel]
+opt-level = 2
+
+[profile.full.package.engine-governance-tests]
+opt-level = 2
+
+[profile.full.package.engine-intelligence]
+opt-level = 2
+
+[profile.full.package.engine-land-inputs]
+opt-level = 2
+
+[profile.full.package.engine-map-air]
+opt-level = 2
+
+[profile.full.package.engine-mutations]
+opt-level = 2
+
+[profile.full.package.engine-native]
+opt-level = 2
+
+[profile.full.package.engine-naval-history]
+opt-level = 2
+
+[profile.full.package.engine-occupation]
+opt-level = 2
+
+[profile.full.package.engine-peace]
+opt-level = 2
+
+[profile.full.package.engine-power-balance]
+opt-level = 2
+
+[profile.full.package.engine-production]
+opt-level = 2
+
+[profile.full.package.engine-projects]
+opt-level = 2
+
+[profile.full.package.engine-raid-inputs]
+opt-level = 2
+
+[profile.full.package.engine-railways]
+opt-level = 2
+
+[profile.full.package.engine-research]
+opt-level = 2
+
+[profile.full.package.engine-resources]
+opt-level = 2
+
+[profile.full.package.engine-scripts]
+opt-level = 2
+
+[profile.full.package.engine-stability]
+opt-level = 2
+
+[profile.full.package.engine-visibility]
+opt-level = 2
+
+[profile.full.package.installed-content]
+opt-level = 2
+
+[profile.full.package.installed-content-core]
+opt-level = 2
+
+[profile.full.package.installed-content-abilities]
+opt-level = 2
+
+[profile.full.package.installed-content-country-names]
+opt-level = 2
+
+[profile.full.package.installed-content-division-names]
+opt-level = 2
+
+[profile.full.package.installed-content-equipment-graphics]
+opt-level = 2
+
+[profile.full.package.installed-content-events]
+opt-level = 2
+
+[profile.full.package.installed-content-focus]
+opt-level = 2
+
+[profile.full.package.installed-content-gfx]
+opt-level = 2
+
+[profile.full.package.installed-content-localisation]
+opt-level = 2
+
+[profile.full.package.installed-content-naval-combat-defines]
+opt-level = 2
+
+[profile.full.package.installed-content-naval-path]
+opt-level = 2
+
+[profile.full.package.installed-content-province-area]
+opt-level = 2
+
+[profile.full.package.installed-content-raids]
+opt-level = 2
+
+[profile.full.package.installed-content-regions]
+opt-level = 2
+
+[profile.full.package.installed-content-scripted-localisation]
+opt-level = 2
+
+[profile.full.package.installed-content-settings]
+opt-level = 2
+
+[profile.full.package.installed-content-state-categories]
+opt-level = 2
+
+[profile.full.package.installed-content-states]
+opt-level = 2
+
+[profile.full.package.installed-content-unit-path]
+opt-level = 2
+
+[profile.full.package.installed-content-wargoals]
+opt-level = 2
+
+[profile.full.package.installed-content-weather]
+opt-level = 2
+
+[profile.full.package.installed-content-image]
+opt-level = 2
+
+[profile.full.package.dashboard]
+opt-level = 2
+
+[profile.full.package.dashboard-base]
+opt-level = 2
+
+[profile.full.package.dashboard-politics-ledger]
+opt-level = 2
+
+[profile.full.package.dashboard-core]
+opt-level = 2
+
+[profile.full.package.dashboard-text]
+opt-level = 2

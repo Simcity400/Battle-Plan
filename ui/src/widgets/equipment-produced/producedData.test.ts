@@ -132,7 +132,7 @@ test('race bars are one total or one segment per group, summing to the label', (
 test('production tooltips name the hovered hour and lines name their own drawn ends', async () => {
   // Render the widget and shared view; only transport, artwork and canvas leaves are replaced.
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(REPLY)} });`,
+    '/dashboard/products.ts': `export const useProduct = (_client, request) => request?.product === 'equipment-produced' ? ({ data: ${JSON.stringify(REPLY)} }) : {};`,
     '/dashboard/playback.ts': `export const usePlaybackHour = () => {};
       export const usePlaybackSpeed = clock => clock.getSnapshot().hoursPerSecond;`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
@@ -163,7 +163,7 @@ test('production tooltips name the hovered hour and lines name their own drawn e
       widget.options = { view };
       const track = { id: 'track-1', source: { id: 's', revision: 1, metadata: { countries: [] } },
         branch: { id: '1', firstHour: 8, lastHour, gaps: [] } };
-      const runtime = { tracks: [track], clock: { getHour: () => lastHour, getSnapshot: () => ({ hoursPerSecond: 24 }) } };
+      const runtime = { client: {}, tracks: [track], clock: { getHour: () => lastHour, getSnapshot: () => ({ hoursPerSecond: 24 }) } };
       return renderToStaticMarkup(createElement(Widget, { widget, runtime, active: true, onDiagnostics() {} }));
     };
     assert.match(render('race', 40), /GER hovered 40/);

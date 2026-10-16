@@ -1,5 +1,6 @@
+import { withWindowEntries } from './windowMap.ts';
 import { useEffect, useMemo, useState } from 'react';
-import type { DashboardClient, ProductRequest } from './client';
+import type { DashboardClient, DashboardSource, ProductRequest } from './client';
 import { loadProduct } from './products.ts';
 
 /** A product asked for one fixed window of hours at a time (such as a month of a
@@ -14,7 +15,7 @@ export interface ProductWindows<T> {
 }
 
 /** The windows loaded (or failed) for one identity. */
-export interface Held<T> { identity: string | null; data: Map<number, T>; errors: Map<number, string> }
+export interface Held<T> { identity: string | null; data: ReadonlyMap<number, T>; errors: ReadonlyMap<number, string> }
 
 export interface WindowDisplay<T> { identity: string; data: T; hour: number }
 
@@ -34,14 +35,14 @@ export function useWindowDisplay<T>(identity: string | null, data: T | undefined
   return shown;
 }
 
-const withEntries = <V>(map: Map<number, V>, entries: readonly [number, V][]) => entries.length ? new Map([...map, ...entries]) : map;
+const withEntries = withWindowEntries;
 
 /** What is held once `wanted` is all that is wanted: nothing of another identity, and
  * none of the windows no longer wanted; the same object when nothing changes, so a
  * render that wants the same windows is not repeated. */
 export function keepWanted<T>(held: Held<T>, identity: string | null, wanted: ReadonlySet<number>): Held<T> {
   if (held.identity !== identity) return { identity, data: new Map(), errors: new Map() };
-  const keep = <V>(map: Map<number, V>) => [...map.keys()].every(window => wanted.has(window)) ? map : new Map([...map].filter(([window]) => wanted.has(window)));
+  const keep = <V>(map: ReadonlyMap<number, V>) => [...map.keys()].every(window => wanted.has(window)) ? map : new Map([...map].filter(([window]) => wanted.has(window)));
   const [data, errors] = [keep(held.data), keep(held.errors)];
   return data === held.data && errors === held.errors ? held : { identity, data, errors };
 }
@@ -52,7 +53,7 @@ export function keepWanted<T>(held: Held<T>, identity: string | null, wanted: Re
  * (the next month during playback) is ready the moment it is shown, with no load in
  * between. Windows no longer wanted are released. */
 export function useProductWindows<T>(client: DashboardClient, identity: string | null, request: (window: number) => ProductRequest,
-  wanted: readonly number[], active: boolean, validate?: (data: unknown) => T): ProductWindows<T> {
+  wanted: readonly number[], active: boolean, validate?: (data: unknown) => T, source?: DashboardSource): ProductWindows<T> {
   const owner = useMemo(() => ({ client, identity }), [client, identity]);
   const [held, setHeld] = useState<Held<T> & { owner: typeof owner; attempt: number }>({ owner, identity, data: new Map(), errors: new Map(), attempt: 0 });
   const current = held.owner === owner ? held : null;
@@ -87,7 +88,7 @@ export function useProductWindows<T>(client: DashboardClient, identity: string |
     };
     for (const window of want) {
       if (current?.data.has(window) || current?.errors.has(window)) continue;
-      void loadProduct<T>(client, request(window), controller.signal, validate).then(
+      void loadProduct<T>(client, request(window), controller.signal, validate, source, attempt > 0).then(
         data => arrive(() => arrived.data.push([window, data])),
         error => arrive(() => arrived.errors.push([window, error instanceof Error ? error.message : String(error)])),
       );

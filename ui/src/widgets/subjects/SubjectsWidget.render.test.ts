@@ -19,7 +19,7 @@ test('subject legends keep missing and folded level names without raw tokens or 
   const state = { data, groups, legend: [] as LegendItem[], timeline: undefined as TimelineProps | undefined };
   const host = globalThis as typeof globalThis & { __subjectLegend?: typeof state }; host.__subjectLegend = state;
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__subjectLegend.data });',
+    '/dashboard/products.ts': 'export const useProduct = (client, request, active, validate, source) => { if (source?.id !== request.sourceId || request.product !== "subjects") throw new Error("Subjects require prepared loading"); return { data: globalThis.__subjectLegend.data }; };',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__subjectLegend.groups });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/dashboard/useCountriesAt.ts': 'export const useCountriesAt = () => ({ country: tag => ({ name: tag }), revision: 0 });',

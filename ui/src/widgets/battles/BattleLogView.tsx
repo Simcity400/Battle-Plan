@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ComponentType } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { logSettings } from '../../charts/log/logOptions';
@@ -26,6 +26,9 @@ import { battleCountryRequests, battleJumpHour, battlePlaceRequests, namedBattle
 import { placeKey, validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
 import type { BattleLabels, BattleLossFormatter, BattleMeasure, BattleSideSummary } from './battleRows';
 import { DEFAULT_SORT, DEFAULT_TOP_N } from './battleOptions';
+import { parityWindowCoverage, parityWindowIndices, useParityPreparation } from '../../dashboard/parityPreparation';
+import { useParityRows } from '../../dashboard/parityRows';
+import type { BattleSemantic } from './BattleLog';
 import './battles.css';
 
 interface ViewRow extends BattleRow { provinceId: number; windowIndex: number }
@@ -94,12 +97,17 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
   const manifest = useProduct<ManifestReply>(runtime.client, manifestRequest, active, adapter.validateManifest);
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : null;
   const playheadWindow = battleWindowIndex(manifest.data?.windows ?? [], hour ?? first);
+  const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
+  const parityId = import.meta.env.MODE === 'parity' ? useId() : undefined;
+  const parityEmptyRoot = import.meta.env.MODE === 'parity' ? useRef<HTMLDivElement>(null) : null;
   const [browse, setBrowse] = useState<{ identity: string | null; hour: number | null }>({ identity: null, hour: null });
-  const shownHour = view === 'log' && browse.identity === identity && browse.hour !== null ? Math.min(browse.hour, hour ?? browse.hour) : hour;
+  const shownHour = !parity?.requested && view === 'log' && browse.identity === identity && browse.hour !== null ? Math.min(browse.hour, hour ?? browse.hour) : hour;
   const browseIndex = battleWindowIndex(manifest.data?.windows ?? [], shownHour ?? first);
   const [visibleWindows, setVisibleWindows] = useState<{ identity: string | null; at: number; windows: number[] }>({ identity: null, at: -1, windows: [] });
   const visibleIndices = visibleWindows.identity === identity && visibleWindows.at === playheadWindow ? visibleWindows.windows : [];
-  const wantedWindows = inBranch && view === 'log' ? battleWindows(manifest.data, hour ?? first, live, [...visibleIndices, ...(browse.hour !== null && browse.identity === identity ? [browseIndex] : [])], first) : [];
+  const fullWindows = import.meta.env.MODE === 'parity' ? parityWindowIndices(manifest.data?.windows, first, hour ?? first) : [];
+  const wantedWindows = inBranch && view === 'log' ? parity?.requested ? fullWindows
+    : battleWindows(manifest.data, hour ?? first, live, [...visibleIndices, ...(browse.hour !== null && browse.identity === identity ? [browseIndex] : [])], first) : [];
   const history = useProductWindows<Window>(runtime.client, identity, index => ({ sourceId: track!.source.id,
     revision: track!.source.revision, product: adapter.product, params: { branchId: track!.branch.id, window: index } }),
   wantedWindows, active && inBranch && manifest.data?.available === true, adapter.validateWindow);
@@ -112,6 +120,8 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
   const shown = useMemo(() => !inBranch || shownHour === null || !match.ready ? NO_ROWS : view === 'biggest' ? adapter.rankedRows(ranking.data, shownHour)
     : adapter.rows(history.data, shownHour, match.matches, widget.countries.kind === 'all', widget.time.mode === 'range' ? first : null),
   [adapter, inBranch, view, ranking.data, history.data, shownHour, match, widget.countries.kind, widget.time.mode, first]);
+  const fullHistory = import.meta.env.MODE === 'parity' ? parityWindowCoverage(fullWindows, history.data, history.errors) : null;
+  const historyComplete = !!manifest.data && (view === 'log' ? fullHistory?.complete === true : !!ranking.data);
   const [visible, setVisible] = useState<readonly Row[]>(NO_ROWS);
   const currentRows = useMemo(() => new Map(shown.map(row => [row.id, row])), [shown]);
   const drawn = useMemo(() => visible.flatMap(row => { const current = currentRows.get(row.id); return current ? [current] : []; }), [visible, currentRows]);
@@ -123,6 +133,18 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
   const placeRequest = track && places.length ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'place-names', params: { branchId: track.branch.id, places, states: [], land: adapter.landPlaceNames === true } } : null;
   const placeData = useProduct<PlaceNamesReply>(runtime.client, placeRequest, active, validatePlaceNamesReply);
+  let paritySemantic: BattleSemantic<Row> | undefined;
+  if (import.meta.env.MODE === 'parity') {
+    const complete = parity!.requested && historyComplete;
+    const preparation = { id: parityId, prepare: parity!.prepare, ready: () => complete,
+      error: () => manifest.error ?? (view === 'log' ? fullHistory?.error : ranking.error) ?? null };
+    const reads = { windows: fullHistory?.outcomes ?? [] };
+    paritySemantic = { rows: shown, complete, historyComplete, preparation, reads };
+    // An empty newest block still prepares earlier blocks. Its stable identity
+    // follows the existing empty state as it gains the ordinary log or table.
+    useParityRows(shown.length ? null : parityEmptyRoot!, () => ({ kind: 'log', label: adapter.definition.title,
+      complete, historyComplete, total: 0, rows: [], readOutcomes: reads }), preparation);
+  }
   // Names already read stay while the next drawn rows load, so scrolling never blanks them.
   const [placeNames, setPlaceNames] = useState<{ identity: string | null; names: ReadonlyMap<string, PlaceName> }>({ identity: null, names: new Map() });
   useEffect(() => {
@@ -182,7 +204,7 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
     {shownHour !== hour && <button type="button" className="button small" onClick={() => { setBrowse({ identity, hour: null }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Latest battles</button>}
   </div>;
   // An adapter's own view draws its empty list, keeping its header controls.
-  if (!shown.length && !(adapter.view && censusHour !== null)) return <div className="battle-widget">{navigation}<WidgetState kind={censusHour === null ? 'unavailable' : 'empty'}
+  if (!shown.length && !(adapter.view && censusHour !== null)) return <div ref={parityEmptyRoot} className="battle-widget">{navigation}<WidgetState kind={censusHour === null ? 'unavailable' : 'empty'}
     message={censusHour === null ? 'Not in this recording' : `No recorded ${adapter.definition.title.toLowerCase()} match these settings.`} /></div>;
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const summary = adapter.summary?.(shown, ranking.data, measure, view);
@@ -199,7 +221,8 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
         setOption, cellBars: options.cellBars === true, rankMarkers: options.rankMarkers === true, hoursPerSecond,
         menu: row => [jumpItem(runtime, track.id, battleJumpHour(row))], empty: `No recorded ${adapter.definition.title.toLowerCase()} match these settings.`,
         note: adapter.note, formatLoss: adapter.formatLoss, compactSides: adapter.compactSides, resultMeasure: adapter.resultMeasure,
-        description: adapter.description, tooltipRows: adapter.tooltipRows, onVisibleRows, placePending };
+        description: adapter.description, tooltipRows: adapter.tooltipRows, onVisibleRows, placePending,
+        ...(import.meta.env.MODE === 'parity' ? { paritySemantic } : {}) };
       const View = adapter.view;
       return View ? <View {...props} context={{ runtime, track, active, widget, setOption, shownHour: shownHour!, rankedMeasure, placePending }} /> : <BattleLog {...props} />;
     })()}

@@ -1,14 +1,14 @@
-//! The day scan needs hourly changes, but materialises only daily score cells.
-//! Keep keyed rows in place rather than merging a full sorted table each hour.
-//! Block reads validate the wire; DeltaRow::apply remains the row-codec authority.
+//! Shared regional score views and the recording oracle's keyed delta reader.
 
-use replay::{
-    frame::{Frame, TableUpdate},
-    rows::{RaidAirScoreRow, TableId, TableRows},
-};
-use std::{
-    collections::{HashMap, HashSet},
-    io,
+use replay::rows::RaidAirScoreRow;
+use std::collections::HashMap;
+#[cfg(test)]
+use {
+    replay::{
+        frame::{Frame, TableUpdate},
+        rows::{TableId, TableRows},
+    },
+    std::{collections::HashSet, io},
 };
 
 pub(super) type OwnerIndex = HashMap<u32, HashMap<u32, usize>>;
@@ -21,6 +21,7 @@ pub(super) struct ScoreView<'a> {
     pub active: Option<&'a HashMap<u32, usize>>,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 pub(super) struct ScoreRead {
     rows: Vec<RaidAirScoreRow>,
@@ -32,6 +33,7 @@ pub(super) struct ScoreRead {
     baseline: Option<(u64, i32)>,
     complete: bool,
 }
+#[cfg(test)]
 impl ScoreRead {
     pub fn view(&self) -> ScoreView<'_> {
         ScoreView {
@@ -185,6 +187,7 @@ impl ScoreRead {
 
 // Scores usually change while their region remains active. Only zero crossings,
 // insertions and deletions touch the region counts.
+#[cfg(test)]
 fn update_activity(
     active: &mut HashMap<u32, usize>,
     old: Option<&RaidAirScoreRow>,
@@ -227,6 +230,7 @@ mod tests {
                     region: 7000,
                     friendly: i64::from(country == 0),
                     enemy: 0,
+                    impact: Default::default(),
                 })
                 .collect();
             *frame.tables[TableId::RaidAirScores.index()] =
@@ -259,6 +263,7 @@ mod tests {
                             region: 9900,
                             friendly: 8,
                             enemy: 0,
+                            impact: Default::default(),
                         });
                     }
                     4 => {

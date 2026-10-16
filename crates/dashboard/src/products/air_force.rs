@@ -3,9 +3,10 @@
 //! equipment-pool sum divided by 100000; fuel use reads that signed count.
 //!
 //! A single source/branch scan serves both ownership modes, both widget measures
-//! and the Scoreboard count APIs. Content resolution happens after that scan,
-//! using each variant's token at the observation, never a later daily definition.
+//! and the test-only Scoreboard count oracle. Content resolution happens after
+//! that scan, using each variant's token at the observation, never a later daily definition.
 
+pub(crate) mod prepared;
 mod reply;
 mod scan;
 #[cfg(test)]
@@ -17,7 +18,7 @@ use super::{
     country_history::{self, CountryIdentityRun},
     validate_tag,
 };
-use crate::{Source, catalogue, transport};
+use crate::{Source, catalogue};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -107,7 +108,7 @@ pub struct AirForceReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct Counts {
     planes: i64,
     wings: i64,
@@ -115,11 +116,12 @@ struct Counts {
     planes_by_token: BTreeMap<String, Option<i64>>,
     /// Each wing counts once under its set of observed equipment tokens. Reply
     /// content may collapse several tokens to one authored archetype.
+    #[serde(with = "map_rows")]
     wings_by_tokens: BTreeMap<Vec<String>, i64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct RawRun {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RawRun {
     first_hour: i32,
     last_hour: i32,
     starts_segment: bool,
@@ -144,9 +146,11 @@ impl RawRun {
     }
 }
 
-#[derive(Debug, Default)]
-struct ScannedAir {
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub(crate) struct ScannedAir {
+    #[serde(skip)]
     series: BTreeMap<String, Vec<RawRun>>,
+    #[serde(skip)]
     segments: BTreeMap<String, Vec<HourSpan>>,
     unreadable_owners: [usize; 2],
     equipment_missing: usize,
@@ -156,7 +160,8 @@ struct ScannedAir {
     reconciled_wings: usize,
     #[cfg(test)]
     projected_countries: usize,
-    undisplayable_tags: BTreeMap<Vec<u8>, usize>,
+    #[serde(with = "map_rows")]
+    pub(crate) undisplayable_tags: BTreeMap<Vec<u8>, usize>,
 }
 
 #[derive(Default)]
@@ -185,40 +190,11 @@ fn scanned_branch(
     Ok(scanned)
 }
 
-/// Every country observed in this branch, with its roster-owned planes at this
-/// exact hour. Missing census, gaps, incomplete ownership and countries absent
-/// at the hour are None. Only a complete census proves an existing country's 0.
-/// The widget and Scoreboard reuse the same per-source branch scan.
-/// Tags that cannot be represented as UTF-8 refuse the map by name and count.
-pub fn planes_at(
-    source: &Source,
-    branch: u64,
-    hour: i32,
-    cancelled: &AtomicBool,
-) -> io::Result<BTreeMap<String, Option<i64>>> {
-    let scanned = scanned_branch(source, branch, cancelled)?;
-    super::require_displayable_tags(&scanned.undisplayable_tags)?;
-    scanned
-        .series
-        .iter()
-        .map(|(tag, runs)| {
-            let at = runs.partition_point(|run| run.first_hour <= hour);
-            let value = at
-                .checked_sub(1)
-                .and_then(|index| runs.get(index))
-                .filter(|run| hour <= run.last_hour)
-                .and_then(|run| run.roster.as_ref())
-                .map(|counts| counts.planes);
-            reply::cancel(cancelled)?;
-            Ok((tag.clone(), value))
-        })
-        .collect::<io::Result<_>>()
-}
-
 /// Visit requested tags' roster-plane runs from the widget's cached branch scan.
 /// Bounds, breaks and explicit unknowns are copied without coalescing; gaps and
 /// unobserved tags emit nothing. Inputs are hourly censuses, not daily carries.
 /// Callback errors and cancellation abort the visit; discard any partial result.
+#[cfg(test)]
 pub fn visit_plane_runs(
     source: &Source,
     branch: u64,
@@ -288,27 +264,109 @@ impl Product for AirForceSize {
         let branch = params.branch_id.parse().expect("validated branch");
         let scanned = scanned_branch(source, branch, cancelled)?;
         let history = country_history::branch_histories(source, branch, false, &[], cancelled)?;
-        let mut selection = params.clone();
-        if selection.top.is_none() {
-            selection.tags = country_history::selected_aliases(&history, &params.tags);
+        present(
+            source,
+            params,
+            context,
+            cancelled,
+            &scanned,
+            Some(&history),
+            None,
+        )
+    }
+}
+
+// Native map keys are sequences; JSON continuation state stores their entries.
+pub(super) mod map_rows {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+    pub fn serialize<K: Serialize, V: Serialize, S: Serializer>(
+        map: &BTreeMap<K, V>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        map.iter().collect::<Vec<_>>().serialize(serializer)
+    }
+    pub fn deserialize<
+        'de,
+        K: Deserialize<'de> + Ord,
+        V: Deserialize<'de>,
+        D: Deserializer<'de>,
+    >(
+        deserializer: D,
+    ) -> Result<BTreeMap<K, V>, D::Error> {
+        Ok(Vec::<(K, V)>::deserialize(deserializer)?
+            .into_iter()
+            .collect())
+    }
+}
+
+#[derive(Default)]
+struct PartContent {
+    binding: Option<(Option<Arc<catalogue::Catalogue>>, Arc<reply::Parts>)>,
+}
+fn part_content(
+    source: &Source,
+    catalogue: Option<&Arc<catalogue::Catalogue>>,
+) -> Arc<reply::Parts> {
+    let state = source.state::<PartContent>();
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    if !state
+        .binding
+        .as_ref()
+        .is_some_and(|(old, _)| match (old.as_ref(), catalogue) {
+            (Some(old), Some(current)) => Arc::ptr_eq(old, current),
+            (None, None) => true,
+            _ => false,
+        })
+    {
+        state.binding = Some((catalogue.cloned(), Arc::default()));
+    }
+    Arc::clone(&state.binding.as_ref().expect("air part binding").1)
+}
+fn configure(source: &Source, context: &LoadContext) {
+    if let Ok(catalogue) = context
+        .content()
+        .and_then(|options| catalogue::catalogue(source, options))
+    {
+        let _ = super::equipment::units(source, &catalogue);
+        part_content(source, Some(&catalogue));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn present(
+    source: &Source,
+    params: &AirForceParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+    scanned: &ScannedAir,
+    history: Option<&country_history::RecordedHistories>,
+    membership: Option<BTreeMap<String, Vec<HourSpan>>>,
+) -> io::Result<AirForceReply> {
+    let mut selection = params.clone();
+    if selection.top.is_none()
+        && let Some(history) = history
+    {
+        selection.tags = country_history::selected_aliases(history, &params.tags);
+    }
+    let mut warnings = Vec::new();
+    let catalogue = match context
+        .content()
+        .and_then(|content| catalogue::catalogue(source, content))
+    {
+        Ok(catalogue) => {
+            warnings.extend(catalogue.verification.clone());
+            warnings.extend(catalogue.warnings.iter().cloned());
+            Some(catalogue)
         }
-        let mut warnings = Vec::new();
-        let catalogue = match context
-            .content()
-            .and_then(|content| catalogue::catalogue(source, content))
-        {
-            Ok(catalogue) => {
-                warnings.extend(catalogue.verification.clone());
-                warnings.extend(catalogue.warnings.iter().cloned());
-                Some(catalogue)
-            }
-            Err(error) => {
-                warnings.push(format!("Air equipment type names are unavailable: {error}"));
-                None
-            }
-        };
-        let units = catalogue.as_ref().and_then(|catalogue| {
-            match super::equipment::units(source, catalogue) {
+        Err(error) => {
+            warnings.push(format!("Air equipment type names are unavailable: {error}"));
+            None
+        }
+    };
+    let units =
+        catalogue.as_ref().and_then(
+            |catalogue| match super::equipment::units(source, catalogue) {
                 Ok(units) => {
                     warnings.extend(super::equipment::equipment_warnings(&units));
                     Some(units)
@@ -317,33 +375,46 @@ impl Product for AirForceSize {
                     warnings.push(format!("Air equipment content is unavailable: {error}"));
                     None
                 }
-            }
-        });
-        let mut reply = reply::reply(
-            &scanned,
+            },
+        );
+    let localise = |token: &str| {
+        let catalogue = catalogue.as_ref()?;
+        catalogue.localisation.get(token)?;
+        catalogue.localised(token, catalogue::View::Plain)
+    };
+    let parts = part_content(source, catalogue.as_ref());
+    let mut reply = if let Some(membership) = membership {
+        reply::selected(
+            scanned,
             &selection,
             units.as_deref(),
-            |token| {
-                let catalogue = catalogue.as_ref()?;
-                catalogue.localisation.get(token)?;
-                catalogue.localised(token, catalogue::View::Plain)
-            },
+            localise,
             warnings,
             cancelled,
-        )?;
-        for series in &mut reply.series {
-            if let Some(country) = history.countries.get(&series.tag) {
-                series.identities = country.identities.as_ref().clone();
-            }
+            Some(membership),
+            Some(&parts),
+        )?
+    } else {
+        reply::reply_cached(
+            scanned,
+            &selection,
+            units.as_deref(),
+            localise,
+            warnings,
+            cancelled,
+            Some(&parts),
+        )?
+    };
+    for series in &mut reply.series {
+        if let Some(country) = history.and_then(|history| history.countries.get(&series.tag)) {
+            series.identities = country.identities.as_ref().clone();
         }
-        if let Some(catalogue) = catalogue {
-            reply.warnings.extend(catalogue.refusal_lines());
-        }
-        if transport::json_len(&reply, MAX_REPLY_BYTES).is_none() {
-            return Err(io::Error::other(
-                "Air force history exceeds the reply budget; choose fewer countries",
-            ));
-        }
-        Ok(reply)
     }
+    if let Some(catalogue) = catalogue {
+        reply.warnings.extend(catalogue.refusal_lines());
+    }
+    super::check_reply_budget(&reply).map_err(|_| {
+        io::Error::other("Air force history exceeds the reply budget; choose fewer countries")
+    })?;
+    Ok(reply)
 }

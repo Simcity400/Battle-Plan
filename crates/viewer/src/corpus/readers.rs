@@ -5,6 +5,9 @@
 //! preparation on top (the combat content, the scripted text content, the
 //! state neighbours and resource bonuses the trigger environment reads).
 
+use std::collections::BTreeSet;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::{
     collections::BTreeMap,
     fmt::{Debug, Display},
@@ -12,6 +15,9 @@ use std::{
     sync::Arc,
     time::Instant,
 };
+use viewer_combat as combat;
+use viewer_foundation::map::sprites::Interface;
+use viewer_foundation::map::text::load;
 
 use installed_content::{
     ResolvedLayers,
@@ -180,10 +186,32 @@ pub fn run(
     };
     let layers: &ResolvedLayers = &resolved.layers;
     let defines = log.read("defines", || installed_content::defines::read(layers));
-    let interface = interface(&mut log, layers, &language, decode);
+    // The map camera's zoom law and height limits, as the window reads them from the stack.
+    match &defines {
+        Some(defines) => {
+            log.read("viewer.zoom_defines", || {
+                viewer_foundation::map::camera::motion::CameraLaw::content_defines(defines)
+            });
+            log.read("viewer.camera_heights", || {
+                Ok([
+                    defines.number("NFrontend", "CAMERA_MIN_HEIGHT")?,
+                    defines.number("NFrontend", "CAMERA_MAX_HEIGHT")?,
+                ])
+            });
+        }
+        None => log.not_run(&["viewer.zoom_defines", "viewer.camera_heights"], "defines"),
+    }
+    let (interface, localisation) = interface(&mut log, layers, &language, decode);
     let map = map(&mut log, layers, defines.as_ref(), decode);
     politics(&mut log, layers, defines.as_ref());
-    units(&mut log, layers, defines.as_ref(), &map, decode);
+    units(
+        &mut log,
+        layers,
+        defines.as_ref(),
+        &map,
+        decode,
+        localisation.as_ref(),
+    );
     viewer_map_assets(
         &mut log,
         layers,
@@ -210,7 +238,7 @@ pub fn run(
     match (&defines, counts) {
         (Some(defines), Some((buildings, ideologies, resources))) => {
             if let Some(mut combat) = log.read("viewer.combat", || {
-                crate::combat::CombatContent::read(layers, defines)
+                combat::CombatContent::read(layers, defines)
             }) {
                 combat.set_count_trigger_names(buildings, ideologies, resources);
                 log.value("viewer.combat", &combat);
@@ -276,10 +304,14 @@ fn interface(
     layers: &ResolvedLayers,
     language: &str,
     decode: installed_content::image::native::Decode,
-) -> Option<crate::map::sprites::Interface> {
-    if let Some(localisation) = log.read("localisation", || {
+) -> (
+    Option<Interface>,
+    Option<installed_content::localisation::Localisation>,
+) {
+    let localisation = log.read("localisation", || {
         installed_content::localisation::read(layers, language)
-    }) {
+    });
+    if let Some(localisation) = &localisation {
         for message in &localisation.logged {
             log.note("localisation", Kind::Logged, message.clone());
         }
@@ -299,12 +331,12 @@ fn interface(
     // The native GUI resources: every `.gfx` file's sprites and font
     // declarations as the game reads them, then the sprite set the viewer
     // and dashboard look sprites up in, and every registered font as the
-    // viewer loads it (map::text::load) for the language.
+    // viewer loads it (viewer_foundation::map::text::load) for the language.
     let interface = log
         .read("gui.resources", || {
             installed_content::gui::native::resources::Registry::load(layers)
         })
-        .map(|registry| crate::map::sprites::Interface {
+        .map(|registry| Interface {
             sprites: installed_content::gfx::SpriteSet::new(&registry.files),
             registry,
             decode,
@@ -327,7 +359,7 @@ fn interface(
                 }
             }
             log.notes("gfx", Kind::Refused, &interface.sprites.refused);
-            let names: std::collections::BTreeSet<String> = interface
+            let names: BTreeSet<String> = interface
                 .registry
                 .fonts
                 .fonts()
@@ -339,8 +371,7 @@ fn interface(
             log.read("viewer.fonts", || {
                 for name in &names {
                     let mut images = Vec::new();
-                    let font =
-                        crate::map::text::load(layers, interface, name, language, &mut images);
+                    let font = load(layers, interface, name, language, &mut images);
                     if let Some(writer) = &values {
                         writer.write("viewer.fonts", &(name, &images));
                     }
@@ -410,15 +441,15 @@ fn interface(
                         if let Some(writer) = &values {
                             writer.write("particles.emitters", &(object, &document));
                         }
-                        let root = crate::map::weather_effects::particle_root(
+                        let root = viewer_world::map::weather_effects::particle_root(
                             &document,
                             &particle.path,
                             &particle.name,
-                            crate::map::weather_effects::Pick::First,
+                            viewer_world::map::weather_effects::Pick::First,
                         )?;
                         let mut textures = Vec::new();
                         let mut pages = BTreeMap::new();
-                        let read = crate::map::weather_effects::read_emitters(
+                        let read = viewer_world::map::weather_effects::read_emitters(
                             layers,
                             decode,
                             root,
@@ -459,7 +490,7 @@ fn interface(
         log.typed("abilities", abilities.warnings);
     }
     log.read("ambient", || installed_content::ambient::read(layers));
-    interface
+    (interface, localisation)
 }
 
 /// What the map readers give the later ones.
@@ -579,7 +610,12 @@ fn map(
     if let Some((_, warnings)) = &ideologies {
         log.typed("ideologies", warnings.clone());
     }
-    const NEEDS_DEFINES: [&str; 3] = ["movement", "dashboard.resource_bonuses", "states"];
+    const NEEDS_DEFINES: [&str; 4] = [
+        "movement",
+        "movement.defines",
+        "dashboard.resource_bonuses",
+        "states",
+    ];
     let Some(defines) = defines else {
         log.not_run(&NEEDS_DEFINES, "defines");
         log.not_run(&["province_graph.neighbor_states"], "states");
@@ -602,6 +638,21 @@ fn map(
                 format_args!("edge {from} -> {to}"),
                 why,
             );
+        }
+    }
+    // The arrival estimates' organisation term and the railway and task-force domains
+    // refuse independently of the common movement defines.
+    if let Some(movement) = log.read("movement.defines", || {
+        installed_content::movement::MovementDefines::read(defines)
+    }) {
+        for (part, refusal) in [
+            ("organisation", movement.organisation.as_ref().err()),
+            ("rail", movement.rail.as_ref().err()),
+            ("naval", movement.naval.as_ref().err()),
+        ] {
+            if let Some(why) = refusal {
+                log.about("movement.defines", Kind::Refused, part, why);
+            }
         }
     }
     log.read("dashboard.resource_bonuses", || {
@@ -784,14 +835,16 @@ fn units(
     defines: Option<&Defines>,
     map: &Map,
     decode: installed_content::image::native::Decode,
+    localisation: Option<&installed_content::localisation::Localisation>,
 ) {
-    if let Some(equipment) = log.read("equipment", || installed_content::equipment::Database::load(layers))
-    {
+    let equipment = log.read("equipment", || installed_content::equipment::Database::load(layers));
+    if let Some(equipment) = &equipment {
         log.notes("equipment", Kind::Misread, &equipment.misreads);
         if let Some(lost) = &equipment.lost {
             log.note("equipment", Kind::Unsettled, lost.clone());
         }
     }
+    model_labels(log, layers, equipment.as_ref(), localisation);
     if let Some(groups) = log.read("equipment.groups", || {
         installed_content::equipment::Groups::load(layers)
     }) {
@@ -860,7 +913,7 @@ fn units(
         (Some(defines), Some(data), Some((_, default_map))) => {
             let mut warnings = Vec::new();
             let assets = log.read("viewer.unit_models", || {
-                crate::map::unit_models::UnitModelAssets::try_load(
+                viewer_world::map::unit_models::UnitModelAssets::try_load(
                     layers,
                     decode,
                     defines,
@@ -897,7 +950,7 @@ fn units(
         installed_content::train_gfx::cultures(layers)
     });
     let tags = log.read("viewer.country_tags", || {
-        crate::map::trains::country_tag_index(layers)
+        viewer_world::map::trains::country_tag_index(layers)
     });
     let roster = layers.descriptor_roster();
     if log.values.is_some() {
@@ -930,6 +983,67 @@ fn units(
             &["train_gfx"],
             "train_gfx.cultures, viewer.country_tags and mesh.roster",
         ),
+    }
+}
+
+/// The content the land-model fallback's option labels read: the dynamic
+/// country tags, the display language's first-row label and each equipment
+/// type's variant name keys. A key the language leaves undefined labels its
+/// rows with the key's own text, as the game's localiser does.
+fn model_labels(
+    log: &mut Log,
+    layers: &ResolvedLayers,
+    equipment: Option<&installed_content::equipment::Database>,
+    localisation: Option<&installed_content::localisation::Localisation>,
+) {
+    const READER: &str = "viewer.model_labels";
+    let (Some(equipment), Some(localisation)) = (equipment, localisation) else {
+        log.not_run(&[READER], "equipment and localisation");
+        return;
+    };
+    let Some(tags) = log.read(READER, || installed_content::country_tags::read_definitions(layers)) else {
+        return;
+    };
+    let dynamic: Vec<&String> = tags
+        .iter()
+        .filter(|(_, tag)| tag.dynamic)
+        .map(|(name, _)| name)
+        .collect();
+    let keys: Vec<(String, String)> = equipment
+        .equipment
+        .iter()
+        .flat_map(|kind| {
+            [&kind.derived_variant_name, &kind.variant_name]
+                .into_iter()
+                .filter(|key| !key.is_empty())
+                .map(|key| {
+                    (
+                        String::from_utf8_lossy(&kind.name).into_owned(),
+                        String::from_utf8_lossy(key).into_owned(),
+                    )
+                })
+        })
+        .collect();
+    log.value(READER, &(&dynamic, &keys));
+    let first =
+        std::str::from_utf8(viewer_world::map::model_labels::DEFAULT_MODEL_KEY).unwrap_or_default();
+    if localisation.get(first).is_none() {
+        log.about(
+            READER,
+            Kind::Fallback,
+            first,
+            "the display language does not define the option list's first row; it shows the key",
+        );
+    }
+    for (kind, key) in &keys {
+        if localisation.get(key).is_none() {
+            log.about(
+                READER,
+                Kind::Fallback,
+                format!("equipment {kind}"),
+                &format!("variant name key {key} is not defined in the display language; unnamed variants show the key"),
+            );
+        }
     }
 }
 
@@ -1049,17 +1163,22 @@ fn viewer_map_assets(
     };
     let mut warnings = Vec::new();
     log.read("viewer.trains", || {
-        crate::map::trains::TrainAssets::load(layers, decode, defines, &mut warnings)
+        viewer_world::map::trains::TrainAssets::load(layers, decode, defines, &mut warnings)
     });
     log.typed("viewer.trains", warnings);
     let mut warnings = Vec::new();
     log.read("viewer.bridges", || {
-        crate::map::railways::Bridges::load(layers, decode, defines, &mut warnings)
+        viewer_world::map::railways::Bridges::load(layers, decode, defines, &mut warnings)
     });
     log.typed("viewer.bridges", warnings);
     let mut warnings = Vec::new();
     if let Some(orders) = log.read("viewer.orders", || {
-        crate::map::orders::OrderAssets::load(layers, decode, defines, &mut warnings)
+        viewer_foundation::map::ribbon_content::OrderAssets::load(
+            layers,
+            decode,
+            defines,
+            &mut warnings,
+        )
     }) && let Err(why) = &orders.raid_defines
     {
         log.note("viewer.orders", Kind::Refused, why.clone());
@@ -1076,7 +1195,7 @@ fn viewer_map_assets(
         Some(regions) => {
             let mut warnings = Vec::new();
             if let Some(aircraft) = log.read("viewer.aircraft", || {
-                crate::map::aircraft::AircraftAssets::load(
+                viewer_world::map::aircraft::AircraftAssets::load(
                     layers,
                     decode,
                     data,
@@ -1100,7 +1219,7 @@ fn viewer_map_assets(
     }
     let mut warnings = Vec::new();
     log.read("viewer.map_buildings", || {
-        crate::map::map_buildings::MapBuildingAssets::load(
+        viewer_world::map::map_buildings::MapBuildingAssets::load(
             layers,
             decode,
             data,
@@ -1110,11 +1229,24 @@ fn viewer_map_assets(
     });
     log.typed("viewer.map_buildings", warnings);
     let Some(registry) = registry else {
-        log.not_run(&["viewer.raids"], "gui.resources");
+        log.not_run(&["viewer.raids", "viewer.map_text"], "gui.resources");
         return;
     };
+    // The floating map text's two types, their fonts' shader and its cutoff.
+    if let Some(refusals) = log.read("viewer.map_text", || {
+        Ok(viewer_world::map::animated_map_text::Assets::load(
+            layers,
+            defines,
+            [data.width, data.height],
+            decode,
+            &registry.files,
+        )
+        .refusals())
+    }) {
+        log.notes("viewer.map_text", Kind::Refused, &refusals);
+    }
     if let Some(raids) = log.read("viewer.raids", || {
-        crate::map::raids::RaidAssets::load(layers, defines, data, registry)
+        viewer_raids::map::raids::RaidAssets::load(layers, defines, data, registry)
     }) {
         log.typed("viewer.raids", raids.warnings.iter().cloned());
         log.notes("viewer.raids", Kind::Refused, &raids.refusals());
@@ -1125,6 +1257,9 @@ fn viewer_map_assets(
 mod tests {
     use super::*;
     use installed_content::raids::RaidType;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn state_history_uses_kept_state_sources_and_diagnostics_from_the_same_read() {
@@ -1135,14 +1270,15 @@ mod tests {
             time::{SystemTime, UNIX_EPOCH},
         };
         let root = std::env::temp_dir().join(format!(
-            "hoi4_viewer_corpus_states_{}_{}",
+            "hoi4_viewer_corpus_states_{}_{}_{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        struct Fixture(std::path::PathBuf);
+        struct Fixture(PathBuf);
         impl Drop for Fixture {
             fn drop(&mut self) {
                 let _ = fs::remove_dir_all(&self.0);
@@ -1253,14 +1389,15 @@ mod tests {
             time::{SystemTime, UNIX_EPOCH},
         };
         let root = std::env::temp_dir().join(format!(
-            "hoi4_viewer_corpus_raids_{}_{}",
+            "hoi4_viewer_corpus_raids_{}_{}_{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        struct Fixture(std::path::PathBuf);
+        struct Fixture(PathBuf);
         impl Drop for Fixture {
             fn drop(&mut self) {
                 let _ = fs::remove_dir_all(&self.0);

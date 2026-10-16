@@ -1,11 +1,17 @@
 //! Opt-in content-stack integration check; never launches or attaches to the game.
-use super::{
-    borders::HeightField, camera, frame, mapframe, rivers, scene, sprites, textures, trees,
-};
+use crate::map_icons::MapIcons;
 use eframe::wgpu;
 use installed_content::ResolvedLayers;
 use serde::Deserialize;
+use std::sync::Arc;
 use std::{fs, io, path::PathBuf};
+use viewer_foundation::map::gpu_contract::device_descriptor;
+use viewer_foundation::map::gpu_contract::select_adapter;
+use {
+    viewer_foundation::map::camera, viewer_foundation::map::frame,
+    viewer_foundation::map::province_map::HeightField, viewer_world::map::mapframe,
+    viewer_world::map::rivers, viewer_world::map::scene, viewer_world::map::trees,
+};
 
 #[derive(Deserialize)]
 struct Layer {
@@ -30,6 +36,36 @@ struct Input {
     presentation_steps: u32,
     #[serde(default)]
     presentation_dt: f32,
+    /// Synthetic strike impacts, started with the first presentation step:
+    /// the content's effect entities at each province's authored standstill anchor.
+    #[serde(default)]
+    impacts: Vec<SyntheticImpact>,
+}
+
+#[derive(Deserialize)]
+struct SyntheticImpact {
+    province: u32,
+    #[serde(default)]
+    effect: SyntheticEffect,
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SyntheticEffect {
+    #[default]
+    Nuclear,
+    Thermonuclear,
+    CriticalBombardment,
+}
+
+impl From<SyntheticEffect> for viewer_world::map::strike_effects::Effect {
+    fn from(effect: SyntheticEffect) -> Self {
+        match effect {
+            SyntheticEffect::Nuclear => Self::Nuclear,
+            SyntheticEffect::Thermonuclear => Self::Thermonuclear,
+            SyntheticEffect::CriticalBombardment => Self::CriticalBombardment,
+        }
+    }
 }
 
 fn default_steps() -> u32 {
@@ -91,7 +127,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
     let decode = installed_content::image::native::Decode {
         force_pow2_textures: input.force_pow2_textures,
     };
-    let assets = textures::MapAssets::load(
+    let assets = crate::map_assets::load(
         layers,
         &defines,
         map,
@@ -106,7 +142,15 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
     let regions = installed_content::regions::read(layers)?.regions;
     // No settings.txt here: the constructor's 1280 x 720 frame, which decides
     // only which resources the map-icon windows load.
-    let icons = sprites::MapIcons::load(
+    let crate::map_icons::LoadedIcons {
+        combat,
+        raids,
+        images,
+        fonts,
+        counters,
+        animated_text,
+        lazy,
+    } = MapIcons::load(
         layers,
         &defines,
         &map_data,
@@ -116,6 +160,15 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         [1280, 720],
         decode,
     )?;
+    let icons = MapIcons {
+        combat: Arc::new(combat),
+        raids: Arc::new(raids),
+        images,
+        fonts,
+        counters: Arc::new(counters),
+        animated_text: Arc::new(animated_text),
+        lazy,
+    };
     let camera_defines = camera::MapDefines::load(&defines, input.camera_tilt)?;
     let heights = HeightField {
         width: map.width,
@@ -139,7 +192,12 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         warnings,
     )?;
     eprintln!("Content scene: ambient assets");
-    let frame_assets = mapframe::FrameAssets::load(layers, decode, icons.raids.facts(), warnings)?;
+    let frame_assets = mapframe::FrameAssets::load(
+        layers,
+        decode,
+        icons.raids.trigger_content.facts(),
+        warnings,
+    )?;
     let river_assets = rivers::RiverAssets::load(layers, [map.width, map.height], 0, decode)?;
     let (river_mesh, _) = rivers::build(
         &rivers::RiverImage {
@@ -150,8 +208,12 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         &heights,
     )?;
     eprintln!("Content scene: particle assets");
-    let weather =
-        super::weather_effects::Assets::load(layers, &defines, [map.width, map.height], decode)?;
+    let weather = viewer_world::map::weather_effects::Assets::load(
+        layers,
+        &defines,
+        [map.width, map.height],
+        decode,
+    )?;
     if !weather.unresolved.is_empty() {
         warnings.push(format!(
             "{} unresolved particle declarations: {}",
@@ -162,12 +224,19 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
     pollster::block_on(async {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
-        let adapter = crate::render::select_adapter(&adapters, None)?;
+        let adapter = select_adapter(&adapters, None)?;
         let (device, queue) = adapter
-            .request_device(&crate::render::device_descriptor(&adapter))
+            .request_device(&device_descriptor(&adapter))
             .await
             .map_err(io::Error::other)?;
-        let mut scene = scene::Scene::new(&device, &queue, &assets, &icons, Default::default())?;
+        let mut scene = scene::Scene::new(
+            &device,
+            &queue,
+            &assets,
+            &icons.images,
+            &icons.lazy,
+            Default::default(),
+        )?;
         scene.set_trees(
             &device,
             &queue,
@@ -178,7 +247,12 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         scene.set_map_frame(&device, &queue, &frame_assets)?;
         scene.warm_weather(&device, &queue, weather)?;
         scene.set_rivers(&device, &queue, &river_assets, &river_mesh)?;
+        let impacts = synthetic_impacts(layers, &input.impacts)?;
         for (index, &[x, z, height]) in input.cameras.iter().enumerate() {
+            scene.set_nuclear_impacts(
+                [&impacts],
+                viewer_foundation::map::presentation::Continuity::Reset,
+            );
             eprintln!("Content scene: view {index}");
             let request = scene::Request {
                 size: input.size,
@@ -233,4 +307,46 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         }
         Ok(())
     })
+}
+
+/// Impacts with ascending ids at their provinces' authored standstill anchors.
+fn synthetic_impacts(
+    layers: &ResolvedLayers,
+    impacts: &[SyntheticImpact],
+) -> io::Result<viewer_world::map::strike_effects::Impacts> {
+    let stacks = installed_content::positions::read_unit_stacks(layers)?;
+    let map = installed_content::map::load(layers)?;
+    let boxes = viewer_foundation::map::province_admission::province_boxes(
+        &viewer_foundation::map::province_map::ProvinceMap {
+            width: map.width,
+            height: map.height,
+            ids: &map.province_ids,
+        },
+    );
+    let mut out = viewer_world::map::strike_effects::Impacts::default();
+    for (id, impact) in impacts.iter().enumerate() {
+        let stack = stacks
+            .iter()
+            .find(|stack| {
+                stack.province == impact.province
+                    && stack.kind == viewer_foundation::map::unit_rules::STANDSTILL
+            })
+            .ok_or_else(|| {
+                io::Error::other(format!(
+                    "province {} has no authored standstill anchor",
+                    impact.province
+                ))
+            })?;
+        let bounds = *boxes.get(&impact.province).ok_or_else(|| {
+            io::Error::other(format!("province {} is not painted", impact.province))
+        })?;
+        out.impacts.push(viewer_world::map::strike_effects::Impact {
+            id: id as u64,
+            province: impact.province,
+            effect: impact.effect.into(),
+            position: [stack.x, stack.y, stack.z],
+            bounds,
+        });
+    }
+    Ok(out)
 }

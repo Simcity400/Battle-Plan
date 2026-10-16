@@ -14,3 +14,18 @@ export function timelineGaps(gaps: readonly RecordingGap[], offset: number, firs
     return [{ ...gap, left: span ? 100 * (start - first) / span : 0, width: span ? 100 * (end - start) / span : 100 }];
   });
 }
+
+/** Preparation covers a prefix, but recorded gaps are never exact data. */
+export function timelinePrepared(coverage: { firstHour: number; lastHour: number } | null,
+  gaps: readonly RecordingGap[], offset: number, first: number, last: number) {
+  if (!coverage) return [];
+  let spans = [{ firstHour: coverage.firstHour, lastHour: coverage.lastHour }];
+  for (const gap of gaps) spans = spans.flatMap(span => {
+    if (gap.lastHour < span.firstHour || gap.firstHour > span.lastHour) return [span];
+    return [
+      { firstHour: span.firstHour, lastHour: gap.firstHour - 1 },
+      { firstHour: gap.lastHour + 1, lastHour: span.lastHour },
+    ].filter(span => span.firstHour <= span.lastHour);
+  });
+  return timelineGaps(spans.map(span => ({ ...span, reason: 'Exact prepared hours' })), offset, first, last);
+}

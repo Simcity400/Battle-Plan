@@ -2,9 +2,13 @@
 
 **What it shows:** An overlord/subject tree on a lane timeline, with relation spans, subject levels and overlord bands sized by subject count.
 
-**Product(s) it reads:** [`subjects`](../../../../crates/dashboard/src/products/subjects.rs) supplies relation/level runs and coverage; [`country-groups`](../../../../crates/dashboard/src/products/country_groups.rs) supplies native endpoint identities and selection histories.
+**Prepared data it reads:** [`subjects`](../../../../crates/dashboard/src/products/subjects.rs) supplies relation/level runs and coverage; [`country-groups`](../../../../crates/dashboard-base/src/products/country_groups.rs) supplies native endpoint identities and selection histories.
 
 **Settings:** All countries by default, or chosen native countries' relevant trees through manual/smart groups; overlord/subject ordering, former subjects, level names/legend and Grow with playback; Campaign, Follow, Pin and Range.
+
+The widget reads the prepared branch reply through shared loading and coverage
+polling. Its relation/level observer and content reply builder also serve the
+recording product used for exact comparisons.
 
 **Notable behaviour:**
 

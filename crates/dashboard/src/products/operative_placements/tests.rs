@@ -7,7 +7,7 @@ use replay::{
 };
 use std::sync::Arc;
 
-fn operative(id: u64) -> OperativeMembershipRow {
+pub(super) fn operative(id: u64) -> OperativeMembershipRow {
     OperativeMembershipRow {
         id,
         owner_country: 1007,
@@ -53,7 +53,7 @@ fn countries() -> (Vec<CountryRow>, Vec<CountryLinkRow>) {
     (countries, links)
 }
 
-fn frame(hour: i32, read: bool, mut rows: Vec<OperativeMembershipRow>) -> DecodedFrame {
+pub(super) fn frame(hour: i32, read: bool, mut rows: Vec<OperativeMembershipRow>) -> DecodedFrame {
     let mut frame = source(1, hour, None);
     let (countries, links) = countries();
     *frame.tables[TableId::Countries.index()] =
@@ -805,9 +805,8 @@ fn placements_equal_reads_compress_but_operative_names_and_country_identities_sp
     );
 }
 
-#[test]
-fn placements_five_thousand_countries_use_sparse_pairs_without_a_player_predicate() {
-    let mut frame = frame(10, true, vec![]);
+pub(super) fn scale_frame(hour: i32, read: bool) -> DecodedFrame {
+    let mut frame = frame(hour, read, vec![]);
     let countries = (0..5000)
         .map(|i| CountryRow {
             id: 100_000 + i,
@@ -836,6 +835,12 @@ fn placements_five_thousand_countries_use_sparse_pairs_without_a_player_predicat
         TableView::Complete(TableRows::CountryLinks(links));
     *frame.tables[TableId::OperativeMemberships.index()] =
         TableView::Complete(TableRows::OperativeMemberships(rows));
+    frame
+}
+
+#[test]
+fn placements_five_thousand_countries_use_sparse_pairs_without_a_player_predicate() {
+    let frame = scale_frame(10, true);
     let mut second = frame.clone();
     second.hour += 1;
     second.metrics.table_ns[TableId::OperativeMemberships.index()] = 0;
@@ -902,40 +907,4 @@ fn held_placements_project_hourly_tags_without_redating_the_membership() {
         Observation::Unavailable(PlacementAvailability::TablesNotRecorded),
     );
     assert!(history.held.is_none());
-}
-
-#[test]
-fn registered_operative_endpoints_answer_real_recorded_requests() {
-    let source = Source::from_replay(
-        crate::SourceKey {
-            source_id: "operative-endpoints".into(),
-            revision: "1".into(),
-        },
-        "synthetic.battleplan".into(),
-        Arc::new(replay(vec![frame(10, true, vec![operative(1)])])),
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    let context = LoadContext { content: None };
-    let cancelled = AtomicBool::new(false);
-    for (key, params) in [
-        ("operative-placements", serde_json::json!({"branchId": "1"})),
-        (
-            "operatives-roster",
-            serde_json::json!({"branchId": "1", "tags": ["Mod | country"]}),
-        ),
-    ] {
-        let endpoint = super::super::find(key).expect("operative endpoint registered");
-        let reply = (endpoint.load)(&source, "lease", params, &context, &cancelled).unwrap();
-        let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
-        assert_eq!(reply["product"], key);
-        assert_eq!(reply["sourceId"], "lease");
-        if key == "operative-placements" {
-            assert_eq!(reply["data"]["pairs"][0]["runs"][0]["count"], 1);
-            assert_eq!(reply["data"]["readHours"], serde_json::json!([10]));
-        } else {
-            assert_eq!(reply["data"]["countries"][0]["operatives"][0]["id"], "1");
-            assert_eq!(reply["data"]["countries"][0]["observed"][0]["readHour"], 10);
-        }
-    }
 }

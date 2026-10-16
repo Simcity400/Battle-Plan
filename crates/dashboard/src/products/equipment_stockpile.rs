@@ -78,31 +78,36 @@ use super::{
 };
 use crate::{
     Source, catalogue,
-    metadata::{link_slot, slot_read, tagged_country, validate_campaign},
+    metadata::{IdentityTrack, slot_read},
     products::country_groups::HourSpan,
     read_runs::{AmountRun, ReadRuns},
 };
 use installed_content::equipment::Database;
 use replay::{
-    container::Replay,
-    frame::FrameDecoder,
-    rows::{TableId, tables},
+    frame::DecodedFrame,
+    rows::{LogisticsEquipmentRow, ProductionLineRow, StockpileRow, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     io,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
+
+#[cfg(test)]
+use crate::metadata::validate_campaign;
+#[cfg(test)]
+use replay::{container::Replay, frame::FrameDecoder};
+#[cfg(test)]
+use std::{collections::VecDeque, sync::atomic::Ordering};
 
 pub struct EquipmentStockpile;
 
 pub mod artwork;
+pub(crate) mod prepared;
 
+#[cfg(test)]
 const CACHED_COUNTRIES: usize = 8;
 
 pub use super::equipment::StockVariantName;
@@ -205,7 +210,7 @@ pub struct EquipmentStockpileReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ScannedStockpile {
     pub stock: ReadRuns<u64>,
     /// Units a day, IC a day and the lowest and highest cost per unit by variant.
@@ -215,6 +220,7 @@ pub struct ScannedStockpile {
     pub cost_high: ReadRuns<u64>,
     pub reads: Vec<i32>,
     /// Each variant's naming operands, with where they are known.
+    #[serde(skip)]
     pub variants: VariantCatalogue,
     /// Lines of the country whose cost gives no daily output, per read.
     pub costless: usize,
@@ -266,7 +272,304 @@ impl ScannedStockpile {
     }
 }
 
+/// Tables are joined and grouped once for all countries in one accepted frame.
+pub(crate) struct FrameRows<'a> {
+    frame: &'a DecodedFrame,
+    pub(crate) identities: BTreeMap<String, (u32, u32)>,
+    stock: Option<BTreeMap<u32, Vec<&'a StockpileRow>>>,
+    lines: Option<BTreeMap<u32, Vec<&'a ProductionLineRow>>>,
+    logistics: Option<BTreeMap<u32, Vec<&'a LogisticsEquipmentRow>>>,
+}
+impl<'a> FrameRows<'a> {
+    #[cfg(test)]
+    pub(crate) fn new(frame: &'a DecodedFrame) -> Self {
+        let reads = frame
+            .complete::<tables::Countries>()
+            .ok()
+            .map(|countries| super::territory::CountryReads::new(frame, countries));
+        Self::resolved(frame, reads.as_ref(), true, true)
+    }
+    pub(crate) fn resolved(
+        frame: &'a DecodedFrame,
+        reads: Option<&super::territory::CountryReads>,
+        stock_read: bool,
+        logistics_read: bool,
+    ) -> Self {
+        let reads = reads.filter(|_| frame.complete::<tables::CountryLinks>().is_ok());
+        let identities = reads
+            .map(|reads| {
+                reads
+                    .holders()
+                    .iter()
+                    .filter_map(|(tag, identity)| identity.map(|identity| (tag.clone(), identity)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            frame,
+            identities,
+            stock: frame
+                .complete::<tables::Stockpiles>()
+                .ok()
+                .zip(reads)
+                .map(|(rows, reads)| {
+                    if stock_read {
+                        owners(rows, reads.slots(), |row| row.country)
+                    } else {
+                        BTreeMap::new()
+                    }
+                }),
+            lines: frame
+                .complete::<tables::ProductionLines>()
+                .ok()
+                .zip(reads)
+                .map(|(rows, reads)| {
+                    if stock_read {
+                        owners(rows, reads.slots(), |row| row.country)
+                    } else {
+                        BTreeMap::new()
+                    }
+                }),
+            logistics: frame
+                .complete::<tables::LogisticsEquipment>()
+                .ok()
+                .zip(reads)
+                .map(|(rows, reads)| {
+                    if logistics_read {
+                        owners(rows, reads.slots(), |row| row.country)
+                    } else {
+                        BTreeMap::new()
+                    }
+                }),
+        }
+    }
+}
+fn owners<'a, T>(
+    rows: &'a [T],
+    slots: &std::collections::HashMap<u32, u32>,
+    country: impl Fn(&T) -> u32,
+) -> BTreeMap<u32, Vec<&'a T>> {
+    let mut result = BTreeMap::<u32, Vec<&T>>::new();
+    for row in rows {
+        #[cfg(test)]
+        ROW_VISITS.with(|count| count.set(count.get() + 1));
+        if let Some(&slot) = slots.get(&country(row)) {
+            result.entry(slot).or_default().push(row);
+        }
+    }
+    result
+}
+#[cfg(test)]
+thread_local! { static ROW_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+/// The legacy frame step; preparation retains one instance per selected holder.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub(crate) struct ScanState {
+    pub(crate) result: ScannedStockpile,
+    track: IdentityTrack,
+}
+impl ScanState {
+    pub(crate) fn advance(&mut self, hour: i32) {
+        self.track.advance(hour);
+        for rows in [
+            &mut self.result.stock,
+            &mut self.result.daily,
+            &mut self.result.daily_ic,
+            &mut self.result.cost_low,
+            &mut self.result.cost_high,
+        ] {
+            rows.advance(hour);
+        }
+        for rows in [
+            &mut self.result.balance,
+            &mut self.result.logistics_stock,
+            &mut self.result.available,
+        ] {
+            rows.advance(hour);
+        }
+        self.result.ai.advance(hour);
+    }
+    pub(crate) fn seal(&mut self) {
+        for rows in [
+            &mut self.result.stock,
+            &mut self.result.daily,
+            &mut self.result.daily_ic,
+            &mut self.result.cost_low,
+            &mut self.result.cost_high,
+        ] {
+            rows.seal();
+        }
+        for rows in [
+            &mut self.result.balance,
+            &mut self.result.logistics_stock,
+            &mut self.result.available,
+        ] {
+            rows.seal();
+        }
+        self.result.ai.seal();
+    }
+    pub(crate) fn observe(
+        &mut self,
+        format: replay::format::FormatVersion,
+        input: &FrameRows<'_>,
+        identity: Option<(u32, u32)>,
+    ) {
+        let decoded = input.frame;
+        let hour = decoded.hour;
+        let result = &mut self.result;
+        let continues = self.track.step(identity, hour);
+        let stock = input.stock.as_ref();
+        let lines = input.lines.as_ref();
+        // Each table ends its own values where it is missing; the other goes on.
+        if !continues || stock.is_none() {
+            result.stock.close();
+        }
+        if !continues || lines.is_none() {
+            result.close_lines();
+        }
+        let logistics = input.logistics.as_ref();
+        if !continues || logistics.is_none() {
+            result.balance.close();
+            result.logistics_stock.close();
+            result.available.close();
+            result.ai.close();
+        }
+        let Some((slot, _)) = identity else {
+            return;
+        };
+        match logistics {
+            Some(rows)
+                if slot_read(
+                    format,
+                    &decoded.metrics,
+                    TableId::LogisticsEquipment,
+                    decoded.hour,
+                ) =>
+            {
+                let own = rows.get(&slot).map(Vec::as_slice).unwrap_or_default();
+                if own.is_empty() {
+                    // The game computed no balance: the country was AI-controlled.
+                    result.ai.read(hour, []);
+                    result.balance.close();
+                    result.logistics_stock.close();
+                    result.available.close();
+                } else {
+                    result.logistics_reads.push(hour);
+                    if let Ok(lexical) = decoded.complete::<tables::LexicalTokens>() {
+                        for row in own {
+                            if let Ok(index) =
+                                lexical.binary_search_by_key(&row.token, |token| token.token)
+                            {
+                                result.logistics_tokens.entry(row.token).or_insert_with(|| {
+                                    String::from_utf8_lossy(&lexical[index].literal).into_owned()
+                                });
+                            }
+                        }
+                    }
+                    result.balance.read(
+                        hour,
+                        own.iter().map(|row| (row.token, Some(row.balance_raw))),
+                    );
+                    result
+                        .logistics_stock
+                        .read(hour, own.iter().map(|row| (row.token, Some(row.stock_raw))));
+                    result.missing_available += own
+                        .iter()
+                        .filter(|row| {
+                            !matches!(row.available_raw, replay::rows::Recorded::Value(Some(_)))
+                        })
+                        .count();
+                    result.available.read(
+                        hour,
+                        own.iter().map(|row| {
+                            let value = match row.available_raw {
+                                replay::rows::Recorded::Value(value) => value,
+                                replay::rows::Recorded::NotRecorded => None,
+                            };
+                            (row.token, value)
+                        }),
+                    );
+                    result.ai.close();
+                }
+            }
+            _ => {
+                result.balance.carry(hour);
+                result.logistics_stock.carry(hour);
+                result.available.carry(hour);
+                result.ai.carry(hour);
+            }
+        }
+        if !slot_read(format, &decoded.metrics, TableId::Stockpiles, decoded.hour) {
+            // Carried: the last read still holds, but only after a read of this identity.
+            result.stock.carry(hour);
+            result.carry_lines(hour);
+            return;
+        }
+        if let Some(stock) = stock {
+            result.reads.push(hour);
+            result.stock.read(
+                hour,
+                stock
+                    .get(&slot)
+                    .into_iter()
+                    .flatten()
+                    .map(|row| (row.variant_handle, Some(row.amount_raw))),
+            );
+        }
+        if let Some(lines) = lines {
+            result.line_reads.push(hour);
+            let (mut daily, mut daily_ic) = (Vec::new(), Vec::new());
+            // Each variant's lowest and highest cost per unit among its
+            // military lines; unknown once any of them has no positive cost.
+            let mut costs: BTreeMap<u64, Option<(i64, i64)>> = BTreeMap::new();
+            for line in lines.get(&slot).into_iter().flatten() {
+                // A rate that cannot be computed makes the variant's daily
+                // total unknown at this read, never zero or a partial sum. Only a
+                // military line's rate is the military formula; what a naval,
+                // refit or railway-gun line delivers is not established.
+                let military = line.kind == engine::cequipment_production_line::KIND_MILITARY;
+                let units = if military {
+                    let units = equipment::daily_units_raw(line.speed_raw, line.cost_raw);
+                    if units.is_none() {
+                        result.costless += 1;
+                    }
+                    units
+                } else {
+                    result.other_kinds += 1;
+                    None
+                };
+                daily.push((line.variant, units));
+                daily_ic.push((line.variant, military.then_some(line.speed_raw)));
+                let cost = (military && line.cost_raw > 0).then_some(line.cost_raw);
+                costs
+                    .entry(line.variant)
+                    .and_modify(|range| {
+                        *range = range
+                            .zip(cost)
+                            .map(|((low, high), cost)| (low.min(cost), high.max(cost)))
+                    })
+                    .or_insert(cost.map(|cost| (cost, cost)));
+            }
+            result.daily.read(hour, daily);
+            result.daily_ic.read(hour, daily_ic);
+            result.cost_low.read(
+                hour,
+                costs
+                    .iter()
+                    .map(|(variant, range)| (*variant, range.map(|range| range.0))),
+            );
+            result.cost_high.read(
+                hour,
+                costs
+                    .iter()
+                    .map(|(variant, range)| (*variant, range.map(|range| range.1))),
+            );
+        }
+    }
+}
+
 /// Scans one branch for one country's stockpile, production and variant names.
+#[cfg(test)]
 pub fn scan(
     replay: &Replay,
     branch: u64,
@@ -283,26 +586,7 @@ pub fn scan(
     .chain(VariantCatalogue::TABLES)
     .collect();
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Stockpile request cancelled");
-    let mut result = ScannedStockpile {
-        stock: ReadRuns::new(),
-        daily: ReadRuns::new(),
-        daily_ic: ReadRuns::new(),
-        cost_low: ReadRuns::new(),
-        cost_high: ReadRuns::new(),
-        reads: Vec::new(),
-        variants: VariantCatalogue::default(),
-        costless: 0,
-        other_kinds: 0,
-        balance: ReadRuns::new(),
-        logistics_stock: ReadRuns::new(),
-        available: ReadRuns::new(),
-        missing_available: 0,
-        ai: ReadRuns::new(),
-        logistics_reads: Vec::new(),
-        line_reads: Vec::new(),
-        logistics_tokens: BTreeMap::new(),
-    };
-    let mut last: Option<((u32, u32), i32)> = None;
+    let mut state = ScanState::default();
     crate::blocks::scan_blocks(
         replay,
         replay.index.iter().filter(|block| block.branch == branch),
@@ -327,206 +611,26 @@ pub fn scan(
                     if validate_campaign(decoded, replay).is_err() {
                         break;
                     }
-                    let hour = frame.hour;
-                    let tables = decoded
-                        .complete::<tables::Countries>()
-                        .ok()
-                        .zip(decoded.complete::<tables::CountryLinks>().ok());
-                    let identity = tables.and_then(|(countries, links)| {
-                        tagged_country(countries, links, tag)
-                            .found()
-                            .map(|(country, slot)| (slot, country.id))
-                    });
-                    let continues = identity.is_some_and(|identity| {
-                        last.is_some_and(|(seen, at)| {
-                            seen == identity && at.checked_add(1) == Some(hour)
-                        })
-                    });
-                    last = identity.map(|identity| (identity, hour));
-                    // Variant names and types, with where they are known (the shared catalogue).
-                    result.variants.observe(replay.format, decoded);
-                    let stock = decoded.complete::<tables::Stockpiles>().ok();
-                    let lines = decoded.complete::<tables::ProductionLines>().ok();
-                    // Each table ends its own values where it is missing; the other goes on.
-                    if !continues || stock.is_none() {
-                        result.stock.close();
-                    }
-                    if !continues || lines.is_none() {
-                        result.close_lines();
-                    }
-                    let logistics = decoded.complete::<tables::LogisticsEquipment>().ok();
-                    if !continues || logistics.is_none() {
-                        result.balance.close();
-                        result.logistics_stock.close();
-                        result.available.close();
-                        result.ai.close();
-                    }
-                    let (Some((slot, _)), Some((_, links))) = (identity, tables) else {
-                        continue;
-                    };
-                    match logistics {
-                        Some(rows)
-                            if slot_read(
-                                replay.format,
-                                &decoded.metrics,
-                                TableId::LogisticsEquipment,
-                                decoded.hour,
-                            ) =>
-                        {
-                            let own: Vec<_> = rows
-                                .iter()
-                                .filter(|row| link_slot(links, row.country) == Some(slot))
-                                .collect();
-                            if own.is_empty() {
-                                // The game computed no balance: the country was AI-controlled.
-                                result.ai.read(hour, []);
-                                result.balance.close();
-                                result.logistics_stock.close();
-                                result.available.close();
-                            } else {
-                                result.logistics_reads.push(hour);
-                                if let Ok(lexical) = decoded.complete::<tables::LexicalTokens>() {
-                                    for row in &own {
-                                        if let Ok(index) = lexical
-                                            .binary_search_by_key(&row.token, |token| token.token)
-                                        {
-                                            result
-                                                .logistics_tokens
-                                                .entry(row.token)
-                                                .or_insert_with(|| {
-                                                    String::from_utf8_lossy(&lexical[index].literal)
-                                                        .into_owned()
-                                                });
-                                        }
-                                    }
-                                }
-                                result.balance.read(
-                                    hour,
-                                    own.iter().map(|row| (row.token, Some(row.balance_raw))),
-                                );
-                                result.logistics_stock.read(
-                                    hour,
-                                    own.iter().map(|row| (row.token, Some(row.stock_raw))),
-                                );
-                                result.missing_available += own
-                                    .iter()
-                                    .filter(|row| {
-                                        !matches!(
-                                            row.available_raw,
-                                            replay::rows::Recorded::Value(Some(_))
-                                        )
-                                    })
-                                    .count();
-                                result.available.read(
-                                    hour,
-                                    own.iter().map(|row| {
-                                        let value = match row.available_raw {
-                                            replay::rows::Recorded::Value(value) => value,
-                                            replay::rows::Recorded::NotRecorded => None,
-                                        };
-                                        (row.token, value)
-                                    }),
-                                );
-                                result.ai.close();
-                            }
-                        }
-                        _ => {
-                            result.balance.carry(hour);
-                            result.logistics_stock.carry(hour);
-                            result.available.carry(hour);
-                            result.ai.carry(hour);
-                        }
-                    }
-                    if !slot_read(
-                        replay.format,
-                        &decoded.metrics,
-                        TableId::Stockpiles,
-                        decoded.hour,
-                    ) {
-                        // Carried: the last read still holds, but only after a read of this identity.
-                        result.stock.carry(hour);
-                        result.carry_lines(hour);
-                        continue;
-                    }
-                    if let Some(stock) = stock {
-                        result.reads.push(hour);
-                        result.stock.read(
-                            hour,
-                            stock
-                                .iter()
-                                .filter(|row| link_slot(links, row.country) == Some(slot))
-                                .map(|row| (row.variant_handle, Some(row.amount_raw))),
-                        );
-                    }
-                    if let Some(lines) = lines {
-                        result.line_reads.push(hour);
-                        let (mut daily, mut daily_ic) = (Vec::new(), Vec::new());
-                        // Each variant's lowest and highest cost per unit among its
-                        // military lines; unknown once any of them has no positive cost.
-                        let mut costs: BTreeMap<u64, Option<(i64, i64)>> = BTreeMap::new();
-                        for line in lines
-                            .iter()
-                            .filter(|line| link_slot(links, line.country) == Some(slot))
-                        {
-                            // A rate that cannot be computed makes the variant's daily
-                            // total unknown at this read, never zero or a partial sum. Only a
-                            // military line's rate is the military formula; what a naval,
-                            // refit or railway-gun line delivers is not established.
-                            let military =
-                                line.kind == engine::cequipment_production_line::KIND_MILITARY;
-                            let units = if military {
-                                let units =
-                                    equipment::daily_units_raw(line.speed_raw, line.cost_raw);
-                                if units.is_none() {
-                                    result.costless += 1;
-                                }
-                                units
-                            } else {
-                                result.other_kinds += 1;
-                                None
-                            };
-                            daily.push((line.variant, units));
-                            daily_ic.push((line.variant, military.then_some(line.speed_raw)));
-                            let cost = (military && line.cost_raw > 0).then_some(line.cost_raw);
-                            costs
-                                .entry(line.variant)
-                                .and_modify(|range| {
-                                    *range = range
-                                        .zip(cost)
-                                        .map(|((low, high), cost)| (low.min(cost), high.max(cost)))
-                                })
-                                .or_insert(cost.map(|cost| (cost, cost)));
-                        }
-                        result.daily.read(hour, daily);
-                        result.daily_ic.read(hour, daily_ic);
-                        result.cost_low.read(
-                            hour,
-                            costs
-                                .iter()
-                                .map(|(variant, range)| (*variant, range.map(|range| range.0))),
-                        );
-                        result.cost_high.read(
-                            hour,
-                            costs
-                                .iter()
-                                .map(|(variant, range)| (*variant, range.map(|range| range.1))),
-                        );
-                    }
+                    let input = FrameRows::new(decoded);
+                    state.result.variants.observe(replay.format, decoded);
+                    state.observe(replay.format, &input, input.identities.get(tag).copied());
                 }
             }
             Ok(())
         },
     )?;
-    Ok(result)
+    Ok(state.result)
 }
 
 /// A scan as cached: only the variants its reply lists, with the variant
 /// warnings of every variant it read.
+#[cfg(test)]
 struct Cached {
     scanned: ScannedStockpile,
     variant_warnings: Vec<String>,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct Cache {
     entries: VecDeque<((u64, String), Arc<Cached>)>,
@@ -580,6 +684,11 @@ impl Product for EquipmentStockpile {
             StockVariant::decl(),
             StockType::decl(),
             TypeLogistics::decl(),
+            prepared::choices::StockpileChoicePeak::decl(),
+            prepared::StockpileOperandSummary::decl(),
+            prepared::StockpileGroupSummary::decl(),
+            prepared::StockpileNamesPage::decl(),
+            prepared::StockpileDisplay::decl(),
             EquipmentStockpileReply::decl(),
         ]
     }
@@ -588,6 +697,7 @@ impl Product for EquipmentStockpile {
         params.validate()
     }
 
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -627,232 +737,250 @@ impl Product for EquipmentStockpile {
                 cached
             }
         };
-        let scanned = &cached.scanned;
-        let mut warnings = cached.variant_warnings.clone();
-        // Without the game folders the stock still shows, by variant and unnamed types.
-        let content = match context
-            .content()
-            .and_then(|content| catalogue::catalogue(source, content))
-        {
-            Ok(catalogue) => {
-                warnings.extend(catalogue.verification.iter().cloned());
-                warnings.extend(catalogue.warnings.iter().cloned());
-                match equipment::units(source, &catalogue) {
-                    Ok(types) => {
-                        warnings.extend(equipment_warnings(&types));
-                        Some((catalogue, types))
-                    }
-                    Err(error) => {
-                        warnings.push(format!("Equipment types are unavailable: {error}"));
-                        None
-                    }
+        reply(
+            source,
+            params,
+            context,
+            &cached.scanned,
+            cached.variant_warnings.clone(),
+            cancelled,
+        )
+    }
+}
+
+/// The existing stockpile projection, shared by the legacy scan and prepared reads.
+pub(crate) fn reply(
+    source: &Source,
+    params: &CountryParams,
+    context: &LoadContext,
+    scanned: &ScannedStockpile,
+    mut warnings: Vec<String>,
+    cancelled: &AtomicBool,
+) -> io::Result<EquipmentStockpileReply> {
+    crate::metadata::check_cancel(cancelled)?;
+    // Without the game folders the stock still shows, by variant and unnamed types.
+    let content = match context
+        .content()
+        .and_then(|content| catalogue::catalogue(source, content))
+    {
+        Ok(catalogue) => {
+            warnings.extend(catalogue.verification.iter().cloned());
+            warnings.extend(catalogue.warnings.iter().cloned());
+            match equipment::units(source, &catalogue) {
+                Ok(types) => {
+                    warnings.extend(equipment_warnings(&types));
+                    Some((catalogue, types))
+                }
+                Err(error) => {
+                    warnings.push(format!("Equipment types are unavailable: {error}"));
+                    None
                 }
             }
-            Err(error) => {
-                warnings.push(format!(
-                    "Equipment names and types are unavailable: {error}"
-                ));
-                None
-            }
-        };
-        let used: BTreeSet<u64> = scanned
-            .stock
-            .runs
-            .keys()
-            .chain(scanned.daily.runs.keys())
-            .copied()
-            .collect();
-        let mut types: BTreeMap<String, (usize, Domain)> = BTreeMap::new();
-        let mut variants = Vec::new();
-        // Types content does not resolve: refused by name and counted, never assumed.
-        let (mut unnamed, mut untyped, mut untyped_count) = (0, BTreeSet::new(), 0usize);
-        for id in &used {
-            if !scanned.variants.versions.contains_key(id) {
-                unnamed += 1;
-            }
-            // A variant's type never changes; its latest spelling names it.
-            let token = scanned.variants.token(*id);
-            let archetype = match (&content, token.is_empty()) {
-                (Some((_, known)), false) => match archetype_of(known, token) {
-                    Ok((archetype, ordinal, domain)) => {
-                        types.insert(archetype.clone(), (ordinal, domain));
-                        Some(archetype)
-                    }
-                    Err(reason) => {
-                        untyped.insert(reason);
-                        untyped_count += 1;
-                        None
-                    }
-                },
-                _ => None,
-            };
-            let texts = content
-                .as_ref()
-                .map(|(catalogue, _)| &**catalogue as &dyn Texts);
-            variants.push(StockVariant {
-                id: id.to_string(),
-                token: token.to_owned(),
-                archetype,
-                names: scanned.variants.names(*id, texts),
-                stock: scanned.stock.runs.get(id).cloned().unwrap_or_default(),
-                daily: scanned.daily.runs.get(id).cloned().unwrap_or_default(),
-                daily_ic: scanned.daily_ic.runs.get(id).cloned().unwrap_or_default(),
-                unit_cost_low: scanned.cost_low.runs.get(id).cloned().unwrap_or_default(),
-                unit_cost_high: scanned.cost_high.runs.get(id).cloned().unwrap_or_default(),
-            });
         }
-        // Archetypes of the logistics record: every one with a value in the branch,
-        // including shortages of types the country holds none of.
-        let logistics_tokens: BTreeSet<u32> = scanned
-            .balance
-            .runs
-            .keys()
-            .chain(scanned.logistics_stock.runs.keys())
-            .copied()
-            .collect();
-        let mut logistics = Vec::new();
-        for token in logistics_tokens {
-            let spelling = scanned
-                .logistics_tokens
+        Err(error) => {
+            warnings.push(format!(
+                "Equipment names and types are unavailable: {error}"
+            ));
+            None
+        }
+    };
+    let used: BTreeSet<u64> = scanned
+        .stock
+        .runs
+        .keys()
+        .chain(scanned.daily.runs.keys())
+        .copied()
+        .collect();
+    let mut types: BTreeMap<String, (usize, Domain)> = BTreeMap::new();
+    let mut variants = Vec::new();
+    // Types content does not resolve: refused by name and counted, never assumed.
+    let (mut unnamed, mut untyped, mut untyped_count) = (0, BTreeSet::new(), 0usize);
+    for id in &used {
+        if !scanned.variants.versions.contains_key(id) {
+            unnamed += 1;
+        }
+        // The final nonempty spelling also classifies earlier recorded stock.
+        let token = scanned.variants.token(*id);
+        let archetype = match (&content, token.is_empty()) {
+            (Some((_, known)), false) => match archetype_of(known, token) {
+                Ok((archetype, ordinal, domain)) => {
+                    types.insert(archetype.clone(), (ordinal, domain));
+                    Some(archetype)
+                }
+                Err(reason) => {
+                    untyped.insert(reason);
+                    untyped_count += 1;
+                    None
+                }
+            },
+            _ => None,
+        };
+        let texts = content
+            .as_ref()
+            .map(|(catalogue, _)| &**catalogue as &dyn Texts);
+        variants.push(StockVariant {
+            id: id.to_string(),
+            token: token.to_owned(),
+            archetype,
+            names: scanned.variants.names(*id, texts),
+            stock: scanned.stock.runs.get(id).cloned().unwrap_or_default(),
+            daily: scanned.daily.runs.get(id).cloned().unwrap_or_default(),
+            daily_ic: scanned.daily_ic.runs.get(id).cloned().unwrap_or_default(),
+            unit_cost_low: scanned.cost_low.runs.get(id).cloned().unwrap_or_default(),
+            unit_cost_high: scanned.cost_high.runs.get(id).cloned().unwrap_or_default(),
+        });
+    }
+    // Archetypes of the logistics record: every one with a value in the branch,
+    // including shortages of types the country holds none of.
+    let logistics_tokens: BTreeSet<u32> = scanned
+        .balance
+        .runs
+        .keys()
+        .chain(scanned.logistics_stock.runs.keys())
+        .copied()
+        .collect();
+    let mut logistics = Vec::new();
+    for token in logistics_tokens {
+        let spelling = scanned
+            .logistics_tokens
+            .get(&token)
+            .cloned()
+            .unwrap_or_else(|| format!("token {token}"));
+        let key = match &content {
+            Some((_, known)) => match archetype_of(known, &spelling) {
+                Ok((archetype, ordinal, domain)) => {
+                    types.insert(archetype.clone(), (ordinal, domain));
+                    archetype
+                }
+                Err(reason) => {
+                    untyped.insert(reason);
+                    untyped_count += 1;
+                    format!("{UNRESOLVED_MARK}{spelling}")
+                }
+            },
+            None => format!("{UNRESOLVED_MARK}{spelling}"),
+        };
+        logistics.push(TypeLogistics {
+            key,
+            balance: scanned
+                .balance
+                .runs
                 .get(&token)
                 .cloned()
-                .unwrap_or_else(|| format!("token {token}"));
-            let key = match &content {
-                Some((_, known)) => match archetype_of(known, &spelling) {
-                    Ok((archetype, ordinal, domain)) => {
-                        types.insert(archetype.clone(), (ordinal, domain));
-                        archetype
-                    }
-                    Err(reason) => {
-                        untyped.insert(reason);
-                        untyped_count += 1;
-                        format!("{UNRESOLVED_MARK}{spelling}")
-                    }
-                },
-                None => format!("{UNRESOLVED_MARK}{spelling}"),
-            };
-            logistics.push(TypeLogistics {
-                key,
-                balance: scanned
-                    .balance
-                    .runs
-                    .get(&token)
-                    .cloned()
-                    .unwrap_or_default(),
-                available: scanned
-                    .available
-                    .runs
-                    .get(&token)
-                    .cloned()
-                    .unwrap_or_default(),
-                stock: scanned
-                    .logistics_stock
-                    .runs
-                    .get(&token)
-                    .cloned()
-                    .unwrap_or_default(),
-            });
-        }
-        let mut types: Vec<(String, usize, Domain)> = types
-            .into_iter()
-            .map(|(key, (ordinal, domain))| (key, ordinal, domain))
-            .collect();
-        types.sort_by_key(|(_, ordinal, _)| *ordinal);
-        let marked: Vec<&str> = types
-            .iter()
-            .map(|(key, _, _)| key.as_str())
-            .filter(|key| key.starts_with(UNRESOLVED_MARK))
-            .collect();
-        if !marked.is_empty() {
-            warnings.push(format!(
-                "Equipment types whose key starts with \"{UNRESOLVED_MARK}\" are not supported: the widget marks unresolved types that way, so they could be mistaken for one ({}).",
-                marked.join(", ")
-            ));
-        }
-        let types = types
-            .into_iter()
-            .map(|(key, _, domain)| StockType {
-                name: content
-                    .as_ref()
-                    .and_then(|(catalogue, _)| type_name(catalogue, &key)),
-                need_note: match &content {
-                    Some((_, known)) => need_note(known, &key).unwrap_or_else(Some),
-                    None => Some(
-                        "Content is unavailable, so what is needed cannot be derived.".to_owned(),
-                    ),
-                },
-                key,
-                domain,
-            })
-            .collect();
-        if unnamed > 0 {
-            warnings.push(format!(
-                "{unnamed} variants in stock or production have no recorded definition in this branch; their type is unknown."
-            ));
-        }
-        if untyped_count > 0 {
-            warnings.push(format!(
-                "{untyped_count} recorded variants or archetypes have an equipment type the content does not resolve; their type titles and every total they could belong to are unavailable ({}).",
-                untyped.into_iter().collect::<Vec<_>>().join("; ")
-            ));
-        }
-        if scanned.costless > 0 {
-            warnings.push(format!(
-                "{} production line reads have no positive cost, so their variant's daily output and cost per unit are unknown at those reads (the game shows only a placeholder rate for them).",
-                scanned.costless
-            ));
-        }
-        if scanned.logistics_reads.is_empty() && scanned.ai.spans.is_empty() {
-            warnings.push("The surplus or shortage is not in this recording: it has no logistics record (LogisticsEquipment).".to_owned());
-        }
-        if scanned.missing_available > 0 {
-            warnings.push(format!("{} logistics archetype reads have no matching recorded available-stock operand; convoy, truck and train need remains unknown at those reads.", scanned.missing_available));
-        }
-        let overflowed = scanned.stock.overflowed
-            + scanned.daily.overflowed
-            + scanned.daily_ic.overflowed
-            + scanned.balance.overflowed
-            + scanned.logistics_stock.overflowed
-            + scanned.available.overflowed;
-        if overflowed > 0 {
-            warnings.push(format!(
-                "{overflowed} recorded totals do not fit a 64-bit amount; they are shown as unknown, never clamped."
-            ));
-        }
-        if scanned.other_kinds > 0 {
-            warnings.push(format!(
-                "{} naval, refit or railway-gun line reads make equipment whose daily output is not established, so it, its IC and its cost are unknown at those reads.",
-                scanned.other_kinds
-            ));
-        }
-        if scanned.reads.is_empty() {
-            warnings.push(format!(
-                "{}: no recorded stockpile in this branch",
-                params.tag
-            ));
-        }
-        if let Some((catalogue, _)) = &content {
-            warnings.extend(catalogue.refusal_lines());
-        }
-        Ok(EquipmentStockpileReply {
-            branch_id: params.branch_id.clone(),
-            tag: params.tag.clone(),
-            campaign_key: engine::allocation::string(source.campaign_key())?,
-            decimals: equipment::EQUIPMENT_DECIMALS,
-            types,
-            variants,
-            reads: scanned.reads.clone(),
-            stock_hours: scanned.stock.spans.clone(),
-            line_hours: scanned.daily.spans.clone(),
-            line_reads: scanned.line_reads.clone(),
-            logistics,
-            logistics_reads: scanned.logistics_reads.clone(),
-            balance_hours: scanned.balance.spans.clone(),
-            ai_hours: scanned.ai.spans.clone(),
-            need_bound_raw: NEED_BOUND_RAW.to_string(),
-            warnings,
-        })
+                .unwrap_or_default(),
+            available: scanned
+                .available
+                .runs
+                .get(&token)
+                .cloned()
+                .unwrap_or_default(),
+            stock: scanned
+                .logistics_stock
+                .runs
+                .get(&token)
+                .cloned()
+                .unwrap_or_default(),
+        });
     }
+    let mut types: Vec<(String, usize, Domain)> = types
+        .into_iter()
+        .map(|(key, (ordinal, domain))| (key, ordinal, domain))
+        .collect();
+    types.sort_by_key(|(_, ordinal, _)| *ordinal);
+    let marked: Vec<&str> = types
+        .iter()
+        .map(|(key, _, _)| key.as_str())
+        .filter(|key| key.starts_with(UNRESOLVED_MARK))
+        .collect();
+    if !marked.is_empty() {
+        warnings.push(format!(
+            "Equipment types whose key starts with \"{UNRESOLVED_MARK}\" are not supported: the widget marks unresolved types that way, so they could be mistaken for one ({}).",
+            marked.join(", ")
+        ));
+    }
+    let types = types
+        .into_iter()
+        .map(|(key, _, domain)| StockType {
+            name: content
+                .as_ref()
+                .and_then(|(catalogue, _)| type_name(catalogue, &key)),
+            need_note: match &content {
+                Some((_, known)) => need_note(known, &key).unwrap_or_else(Some),
+                None => {
+                    Some("Content is unavailable, so what is needed cannot be derived.".to_owned())
+                }
+            },
+            key,
+            domain,
+        })
+        .collect();
+    if unnamed > 0 {
+        warnings.push(format!(
+            "{unnamed} variants in stock or production have no recorded definition in this branch; their type is unknown."
+        ));
+    }
+    if untyped_count > 0 {
+        warnings.push(format!(
+            "{untyped_count} recorded variants or archetypes have an equipment type the content does not resolve; their type titles and every total they could belong to are unavailable ({}).",
+            untyped.into_iter().collect::<Vec<_>>().join("; ")
+        ));
+    }
+    if scanned.costless > 0 {
+        warnings.push(format!(
+            "{} production line reads have no positive cost, so their variant's daily output and cost per unit are unknown at those reads (the game shows only a placeholder rate for them).",
+            scanned.costless
+        ));
+    }
+    if scanned.logistics_reads.is_empty() && scanned.ai.spans.is_empty() {
+        warnings.push("The surplus or shortage is not in this recording: it has no logistics record (LogisticsEquipment).".to_owned());
+    }
+    if scanned.missing_available > 0 {
+        warnings.push(format!("{} logistics archetype reads have no matching recorded available-stock operand; convoy, truck and train need remains unknown at those reads.", scanned.missing_available));
+    }
+    let overflowed = scanned.stock.overflowed
+        + scanned.daily.overflowed
+        + scanned.daily_ic.overflowed
+        + scanned.balance.overflowed
+        + scanned.logistics_stock.overflowed
+        + scanned.available.overflowed;
+    if overflowed > 0 {
+        warnings.push(format!(
+            "{overflowed} recorded totals do not fit a 64-bit amount; they are shown as unknown, never clamped."
+        ));
+    }
+    if scanned.other_kinds > 0 {
+        warnings.push(format!(
+            "{} naval, refit or railway-gun line reads make equipment whose daily output is not established, so it, its IC and its cost are unknown at those reads.",
+            scanned.other_kinds
+        ));
+    }
+    if scanned.reads.is_empty() {
+        warnings.push(format!(
+            "{}: no recorded stockpile in this branch",
+            params.tag
+        ));
+    }
+    if let Some((catalogue, _)) = &content {
+        warnings.extend(catalogue.refusal_lines());
+    }
+    Ok(EquipmentStockpileReply {
+        branch_id: params.branch_id.clone(),
+        tag: params.tag.clone(),
+        campaign_key: engine::allocation::string(source.campaign_key())?,
+        decimals: equipment::EQUIPMENT_DECIMALS,
+        types,
+        variants,
+        reads: scanned.reads.clone(),
+        stock_hours: scanned.stock.spans.clone(),
+        line_hours: scanned.daily.spans.clone(),
+        line_reads: scanned.line_reads.clone(),
+        logistics,
+        logistics_reads: scanned.logistics_reads.clone(),
+        balance_hours: scanned.balance.spans.clone(),
+        ai_hours: scanned.ai.spans.clone(),
+        need_bound_raw: NEED_BOUND_RAW.to_string(),
+        warnings,
+    })
 }
 
 #[cfg(test)]

@@ -6,13 +6,17 @@ Country factory counts as a race, lines or one-country type mix, with the gameâ€
 
 ## Products it reads
 
-[`country-factories`](../../../../crates/dashboard/src/products/country_factories.rs) supplies recorded groups and ranked histories. [factoryMeasure.ts](../../dashboard/factoryMeasure.ts) owns count choices shared with Faction strength.
+[`country-factories`](../../../../crates/dashboard-base/src/products/country_factories.rs) supplies recorded groups and ranked histories. [factoryMeasure.ts](../../dashboard/factoryMeasure.ts) owns count choices shared with Faction strength.
 
 ## Settings
 
 Top 10 by default, manual countries/groups; Available, Built or Top bar counts, content types, split bars and shared race/playback/axis/drill options.
 
 ## Notable behaviour
+
+- Race, hover and keyboard read exact prepared hours. Line/mix charts and drills query their viewport, use width summaries for dense views and retain native runs for exact views. Top N uses prepared rank positions for the selected count and groups.
+- Beyond prepared coverage, the shared reader samples factory parts from block keyframes and reconstructs all frames within thirteen blocks. The same native count formula supplies transient totals and Top ranks. Lines and mixes use the shared approximate drawing; missing parts remain unknown.
+
 
 - Counts use native truncation and recorded factory groups. Content production flags define types; a modâ€™s factories share the engine group their flags select. Rocket sites are not recorded.
 - Building titles come from recorded content localisation, preserving authored empty text. Missing titles use unavailable wording; keys remain in diagnostics.

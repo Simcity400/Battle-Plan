@@ -1,6 +1,6 @@
 # shader-pipeline
 
-Shared executable PdxShader backend for map passes and native GUI. [installed_content::pdxshader](../installed-content/src/pdxshader/mod.rs) owns parsing and DX11 source assembly; DXC emits SPIR-V and naga validates/translates it to WGSL. This crate has no GUI layout dependency and never chooses a substitute program by effect filename.
+Shared executable PdxShader backend for map passes and native GUI. [installed_content::pdxshader](../installed-content-core/src/pdxshader/mod.rs) owns parsing and DX11 source assembly; DXC emits SPIR-V and naga validates/translates it to WGSL. This crate has no GUI layout dependency and never chooses a substitute program by effect filename.
 
 ## Source map
 
@@ -58,7 +58,7 @@ Once cells serialize identical in-process requests; cross-process races leave a 
 Isolated artwork retains parsed effect sources and map dimensions once per
 resolved content stack. It uses the same recorded reads and diagnostics for
 cache hits; icons do not reread the province bitmap for each draw. Stack clones
-share these inputs, and a replacement stack or cosmetic overlay has fresh inputs.
+share these inputs, and a replacement stack has fresh inputs.
 
 ## Compiler and packaging
 
@@ -83,3 +83,5 @@ Synthetic tests cover lazy selection/variants, invalidation, native state loweri
 Installed checks use `BATTLE_PLAN_GAME_DIR` and `BATTLE_PLAN_SHADER_COMPILER`, without launching the game. Run `cargo test -p shader-pipeline -- --ignored --skip installed_vanilla_persistent_cache_across_processes --nocapture --test-threads=1` for installed GUI compilation and GPU cases.
 
 For the separate disk-cache process check, set `BATTLE_PLAN_CACHE_TEST_DIR` to new external scratch. Run `cargo test -p shader-pipeline installed_vanilla_persistent_cache_across_processes -- --ignored --nocapture` twice: `BATTLE_PLAN_EXPECT_COMPILES=1`, then `BATTLE_PLAN_EXPECT_COMPILES=0`. The second process must not discover the compiler. Map effects also require their consumer-supplied globals. Cache reuse, identical-input pixels and a matched live game frame are distinct checks.
+
+`artwork::render_batch` renders independent targets in one submission with one readback buffer. Only draw preparation and submission hold the renderer mutex; mapping, waiting and copying happen after releasing it. Uploaded textures reuse already-read decoded bytes within a 64 MiB budget; the least recently used uploads leave when the budget is exceeded. Submission releases cached texture bind groups so they cannot retain removed uploads.

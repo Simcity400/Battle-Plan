@@ -5,11 +5,12 @@
 
 use crate::{
     catalogue::{self, Catalogue},
+    idea_names::{CountryLook, IdeaCountry},
     products::{
         country_flags::{FlagSearch, ShieldStyle, find_flag},
         idea_history::{Joined, categories},
         party_history::ideology_infos,
-        politics_content::{CountryLook, IdeaCountry, PoliticsContent},
+        politics_content::PoliticsContent,
         resources::{ContentView, resource_content},
         validate_tag,
     },

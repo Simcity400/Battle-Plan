@@ -1,0 +1,64 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { DashboardClient } from '../../dashboard/client';
+import type { BoundTrack } from '../../dashboard/model';
+import { loadProduct, useProduct } from '../../dashboard/products';
+import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
+import type { ArmySizeParams, ArmySizeReply, ChartSummary, CountryIdentityRun } from '../../generated/dashboard';
+import type { TimeChartProps } from '../../charts/TimeChart';
+import { validateArmySizeReply } from './armySizeData';
+import { countryValueAt, countryValuesModel } from '../../charts/race/countryValues';
+
+export function usePreparedArmy(client: DashboardClient, track: BoundTrack | undefined, params: ArmySizeParams | null, manifest: ArmySizeReply | undefined, active: boolean) {
+  const key = JSON.stringify([track?.source.id, track?.source.revision, params]);
+  const owner = useMemo(() => ({ client, key }), [client, key]);
+  const alive = useRef(owner); alive.current = owner;
+  const pending = useRef(new Set<AbortController>());
+  const [keyboard, setKeyboard] = useState<{ owner: typeof owner; hour: number | null; revision: number }>();
+  const [navigationError, setNavigationError] = useState<{ owner: typeof owner; error: string }>();
+  useEffect(() => () => { for (const request of pending.current) request.abort(); pending.current.clear(); }, [owner, active]);
+  const [view, setView] = useState<{ key: string; from: number; to: number; width: number }>();
+  const dense = !!client.preparedQuery && view?.key === key && Math.ceil(view.to) - Math.floor(view.from) + 1 > view.width;
+  const request = view?.key === key && track && params ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-summary',
+    params: { branchId: params.branchId, family: { kind: 'army-size', measure: params.measure, countFor: params.countFor, top: params.top },
+      tags: params.tags, from: view!.from, to: view!.to, width: view!.width } } : null;
+  const incoming = useProduct<{ series: { tag: string; summary: ChartSummary; identities?: CountryIdentityRun[] }[] }>(client, request, active, value => {
+    const reply = value as { series: { tag: string; summary: ChartSummary; identities?: CountryIdentityRun[] }[] };
+    if (!Array.isArray(reply?.series) || reply.series.some(line => typeof line.tag !== 'string' || !Array.isArray(line.summary?.buckets))) throw Error('The army summary is malformed.');
+    return reply;
+  }, track?.source);
+  const summaries = useMemo(() => new Map(incoming.data?.series.map(line => [line.tag, line.summary])), [incoming.data]);
+  const onSummaryView = useCallback<NonNullable<TimeChartProps['onSummaryView']>>(next => {
+    if (next.to < next.from) return;
+    setView(before => before?.key === key && before.from === next.from && before.to === next.to && before.width === next.width ? before : { key, ...next });
+  }, [key]);
+  const exactLineTags = useCallback(async (hour: number) => {
+    const window = manifest?.windows.findIndex(span => span.firstHour <= hour && hour <= span.lastHour) ?? -1;
+    if (!track || !params || !active || window < 0) return null;
+    const controller = new AbortController(); pending.current.add(controller);
+    try {
+      const reply = await loadProduct(client, { sourceId: track.source.id, revision: track.source.revision, product: 'army-size',
+        params: { ...params, window } }, controller.signal, validateArmySizeReply, track.source);
+      if (controller.signal.aborted || alive.current !== owner) return null;
+      const model = countryValuesModel(reply);
+      return model.tags.filter(tag => countryValueAt(model, tag, Math.floor(hour))?.total != null);
+    } catch (error) {
+      if (!controller.signal.aborted && alive.current === owner) setNavigationError({ owner, error: String(error) });
+      return null;
+    } finally { pending.current.delete(controller); }
+  }, [owner, manifest, active]);
+  const onNavigateHour = useCallback<NonNullable<TimeChartProps['onNavigateHour']>>((action, from, x, until) => {
+    if (!track || !params || !active) return;
+    setNavigationError(undefined);
+    const controller = new AbortController(); pending.current.add(controller);
+    void preparedSeriesQuery(client, track.source, 'series-next-change', { branchId: params.branchId,
+      family: { kind: 'army-size', measure: params.measure, countFor: params.countFor, top: params.top }, tags: params.tags,
+      key: action, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) }, controller.signal).then(value => {
+      if (!controller.signal.aborted && alive.current === owner) setKeyboard(previous => ({ owner, hour: (value as { hour: number | null }).hour, revision: (previous?.revision ?? 0) + 1 }));
+    }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setNavigationError({ owner, error: String(error) }); }).finally(() => pending.current.delete(controller));
+  }, [owner, active]);
+  return { dense, summaries, identities: useMemo(() => incoming.data?.series.map(line => ({ tag: line.tag, identities: line.identities ?? [] })), [incoming.data]), exactLineTags, onNavigateHour, keyboardHour: keyboard?.owner === owner ? keyboard.hour : undefined,
+    keyboardRevision: keyboard?.owner === owner ? keyboard.revision : undefined,
+    onSummaryView: client.preparedQuery ? onSummaryView : undefined, ...incoming,
+    error: incoming.error ?? (navigationError?.owner === owner ? navigationError.error : undefined),
+    retry: () => { setNavigationError(undefined); incoming.retry(); } };
+}

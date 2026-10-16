@@ -1,4 +1,7 @@
 use super::*;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT: AtomicU64 = AtomicU64::new(0);
 
 struct Content(std::path::PathBuf);
 
@@ -11,8 +14,9 @@ impl Content {
             .unwrap()
             .as_nanos();
         let content = Self(std::env::temp_dir().join(format!(
-            "hoi4_installed_content_save_history_{}_{stamp}",
+            "hoi4_installed_content_save_history_{}_{stamp}_{}",
             std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         )));
         for (path, bytes) in [
             (

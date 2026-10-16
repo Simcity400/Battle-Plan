@@ -329,7 +329,7 @@ fn keyframes_store_unchanged_tables_at_constant_cost_against_their_anchor() {
         offset: prefix.len() as u64,
         ..second.clone()
     }];
-    prefix.extend_from_slice(replay.block_bytes(second).unwrap());
+    prefix.extend_from_slice(&replay.block_bytes(second).unwrap());
     index[0].offset = replay.header_end as u64;
     let orphan = Replay::open(rebuild(&replay, prefix, &index)).unwrap();
     assert!(
@@ -621,6 +621,10 @@ fn a_wrapping_clock_decodes_exactly_and_never_costs_more_than_plain_deltas() {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn predictions_restart_at_keyframes_and_branch_starts_and_seek_exactly() {
     // Two blocks of one branch, then a loaded branch of the same session.
     let mut frames = moving_frames((1..=730).chain(1_000..=1_010));
@@ -851,6 +855,10 @@ fn keyed_blocks_name_changing_rows_by_position_and_masks_by_recency() {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn every_layout_reads_every_update_kind_as_written() {
     let records = every_update_kind_records();
     let replay = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&records)).unwrap();
@@ -925,6 +933,10 @@ fn streaky_frames(hours: std::ops::RangeInclusive<i32>) -> Vec<DecodedFrame> {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn modelled_blocks_decode_exactly_and_store_streaky_rows_smaller_than_keyed_ones() {
     let frames = streaky_frames(1..=800);
     let records = session_records(&frames);
@@ -1019,6 +1031,10 @@ fn rotating_slice_frames() -> Vec<DecodedFrame> {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn chosen_blocks_list_rotating_slices_and_decode_every_hour_in_every_view() {
     let frames = rotating_slice_frames();
     let records = session_records(&frames);
@@ -1380,6 +1396,45 @@ fn anchored_keyframes_chain_past_four_blocks_within_their_size_bound_and_seek_ex
 }
 
 #[test]
+fn reused_compression_contexts_write_the_bytes_of_fresh_ones_at_every_level() {
+    let (_, frames) = drifting_frames(1);
+    let mut frames = frames;
+    frames.extend(moving_frames(2..=240));
+    let replay = Replay::from_records(CAMPAIGN.into(), &[session_records(&frames)]).unwrap();
+    let sections: Vec<Vec<u8>> = replay
+        .block_sections(&replay.index[0])
+        .unwrap()
+        .unwrap()
+        .into_iter()
+        .map(|section| {
+            grouped::stored_section(&replay, 0, section.section)
+                .unwrap()
+                .1
+        })
+        .collect();
+    assert!(sections.len() > 1);
+    // Levels the writer uses (3, 9 and the stored level) and the windowed
+    // high level the size survey compares.
+    for level in [3, 9, grouped::STORED_LEVEL, 22] {
+        for raw in &sections {
+            // The first call creates the context; later calls reuse it.
+            let (fresh, failed) = grouped::fresh_and_failed_reuse(raw, level).unwrap();
+            assert!(failed, "a one-byte buffer must fail mid-frame");
+            assert_eq!(
+                grouped::compress_at(raw, level).unwrap(),
+                fresh,
+                "level {level}"
+            );
+            assert_eq!(
+                grouped::compress_at(raw, level).unwrap(),
+                fresh,
+                "level {level}"
+            );
+        }
+    }
+}
+
+#[test]
 fn sections_are_stored_at_the_stored_level_where_that_is_smaller() {
     let (_, frames) = drifting_frames(1);
     let mut frames = frames;
@@ -1586,6 +1641,10 @@ fn walking_frames(hours: std::ops::RangeInclusive<i32>) -> Vec<DecodedFrame> {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn a_path_that_loses_its_head_is_one_tag_and_decodes_exactly() {
     let table = TableId::DivisionMovement;
     let frames = walking_frames(1..=200);

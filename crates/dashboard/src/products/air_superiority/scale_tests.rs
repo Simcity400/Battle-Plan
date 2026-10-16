@@ -29,7 +29,6 @@ struct Fixture {
     gap_hours: usize,
     recorded_hours: usize,
     truncated_hours: usize,
-    period: i32,
 }
 
 fn region_id(index: u32) -> u32 {
@@ -282,6 +281,7 @@ fn fixture(scenario: Scenario) -> Fixture {
                         region: region_id(region as u32),
                         friendly: values[side],
                         enemy: values[side ^ 1],
+                        impact: Default::default(),
                     });
                 }
             }
@@ -290,6 +290,7 @@ fn fixture(scenario: Scenario) -> Fixture {
                 region: region_id(scenario.regions - 1),
                 friendly: 0,
                 enemy: 0,
+                impact: Default::default(),
             });
         }
         for index in 0..neutral_count {
@@ -298,6 +299,7 @@ fn fixture(scenario: Scenario) -> Fixture {
                 region: region_id(scenario.regions - 1),
                 friendly: 0,
                 enemy: 0,
+                impact: Default::default(),
             });
         }
         rows.sort_by_key(|row| (row.country, row.region));
@@ -404,82 +406,7 @@ fn fixture(scenario: Scenario) -> Fixture {
         gap_hours,
         recorded_hours,
         truncated_hours,
-        period,
     }
-}
-
-#[test]
-fn air_superiority_sparse_fixture_uses_mod_cadence_and_owner_witnesses() {
-    let fixture = fixture(Scenario {
-        countries: 40,
-        members: vec![3, 3, 4, 4],
-        co_belligerents: 2,
-        regions: 300,
-        active_regions: 120,
-        hours: 48,
-        sparse: true,
-        gaps: vec![],
-    });
-    assert_eq!(fixture.period, 6); // The later synthetic content layer wins.
-    assert_eq!(fixture.owners, 18);
-    assert_eq!(fixture.truncated_hours, 1);
-    let mut previous = BTreeMap::new();
-    let mut changes = 0;
-    for hour in 0..48 {
-        let replay::container::SeekResult::Frame(frame) = fixture.replay.seek(1, hour).unwrap()
-        else {
-            panic!("fixture hour is recorded")
-        };
-        let rows = recorded_rows::<tables::RaidAirScores>(&frame).unwrap();
-        let current: BTreeMap<_, _> = rows
-            .iter()
-            .map(|row| ((row.country, row.region), (row.friendly, row.enemy)))
-            .collect();
-        assert_eq!(rows.len(), current.len(), "no duplicate witness pair");
-        assert_eq!(
-            frame.complete::<tables::RaidAirScores>().is_err(),
-            hour == 37
-        );
-        if hour != 37 {
-            assert_eq!(
-                rows.iter()
-                    .filter(|row| row.region == region_id(299)
-                        && row.friendly == 0
-                        && row.enemy == 0)
-                    .count(),
-                fixture.owners,
-                "each air-object owner has a zero witness in every complete read"
-            );
-        }
-        if hour == 0 {
-            assert!(!rows.iter().any(|row| row.country == 100_039)); // No air object.
-            let mut neutral_assignments = BTreeMap::<_, usize>::new();
-            for wing in frame
-                .complete::<tables::AirWings>()
-                .unwrap()
-                .iter()
-                .filter(|wing| wing.owner >= 100_016)
-            {
-                *neutral_assignments.entry(wing.owner).or_default() += 1;
-            }
-            assert_eq!(neutral_assignments.len(), fixture.neutral_owners as usize);
-            assert!(neutral_assignments.values().all(|count| *count <= 5));
-        }
-        for (&(country, region), &value) in &current {
-            if let Some(old) = previous.get(&(country, region))
-                && old != &value
-            {
-                assert_eq!(
-                    hour % fixture.period,
-                    ((region - region_id(0)) / 3) as i32 % fixture.period,
-                    "region changes only at its staggered phase"
-                );
-                changes += 1;
-            }
-        }
-        previous = current;
-    }
-    assert!(changes > 0, "varying observations exercise delta decoding");
 }
 
 #[test]

@@ -55,12 +55,19 @@ import type { MarkerKind } from './markers';
 import type { FocusReply, PartyHistoryReply } from '../../generated/dashboard';
 import { validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply';
 import type { IdeaHistoryReply } from '../../generated/dashboard';
-import { validatePartyHistoryReply } from '../ruling-party/partyData';
+import { validatePartyHistoryReply, partyBadges } from '../ruling-party/partyData';
+import { contentTitle } from '../../dashboard/contentTitles';
+import PartyEventList from '../ruling-party/PartyEventList';
+import { partyMarkSummaries, usePreparedParty } from '../ruling-party/preparedParty';
+import { usePartyParity } from '../ruling-party/partyParity';
 import { validateFocusReply } from '../national-focus/focusData';
 import { breakdownRows, formatPercent, linesPerMeasure, rawAt, zoomRange } from './stabilityData';
 import type { Measure } from './stabilityData';
 import { chooseStabilityActor, pickStabilityLine, pinStabilityDrill, stabilityNumbers, stabilityPartsNumbers, stabilityPickAction, stabilityPlotSeries, stabilityLookSegments, stabilityCountryParts } from './stabilityDrillData';
 import type { StabilityPick } from './stabilityDrillData';
+import { usePreparedScalarParity } from '../country-measure/usePreparedScalarParity';
+import { percentSummary, usePreparedStability } from './preparedStability';
+import { drawLineSummary, pickSummaryLines } from '../../charts/chartSummary';
 import './stability.css';
 
 const NO_WARNINGS: string[] = [];
@@ -112,18 +119,20 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const groupStore = useMemo(() => new NumericReply<CountryGroupReply>(), [runtime.client]);
   const groupData = groupStore.update(JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, widget.countries]), groups.data, groupNumbers);
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groupData, lastHour, Number.MAX_SAFE_INTEGER), [widget.countries, fallback, groupData, lastHour]);
-  const request = track && resolved.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-stability',
-    params: { branchId: track.branch.id, tags: resolved.tags, hour: null } } : null;
-  const product = useProduct<CountryStabilityReply>(runtime.client, request, active, validateStabilityReply);
-  const { error, retry } = product;
-  const numberStore = useMemo(() => new NumericReply<CountryStabilityReply>(), [runtime.client]);
-  const numbers = numberStore.update(JSON.stringify(request), product.data, stabilityNumbers);
-  const data = product.data ?? numbers;
-
   const following = widget.time.mode === 'follow';
   const pinned = widget.time.mode === 'pin';
   const playhead = window && (following || pinned) ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
+  const [preparedHover, setPreparedHover] = useState<number | null>(null);
+  const prepared = usePreparedStability(runtime.client, track?.source, track?.branch.id, resolved.tags, playhead ?? extent[1], preparedHover, active, shown.map(measure => measure.key), resolved.membership ?? undefined);
+  const request = track && resolved.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-stability',
+    params: { branchId: track.branch.id, tags: resolved.tags, hour: null } } : null;
+  const product = useProduct<CountryStabilityReply>(runtime.client, request, active && !prepared.enabled, validateStabilityReply);
+  const { error, retry } = prepared.enabled ? prepared : product;
+  const numberStore = useMemo(() => new NumericReply<CountryStabilityReply>(), [runtime.client]);
+  const numbers = numberStore.update(JSON.stringify(request), prepared.enabled ? prepared.data : product.data, stabilityNumbers);
+  const data = (prepared.enabled ? prepared.data : product.data) ?? numbers;
+
   const styleAt = playhead ?? (widget.time.mode === 'range' && window ? window.lastHour : lastHour);
   const segmentAt = useMemo(() => stabilityLookSegments(numbers), [numbers]);
   const flagTags = active && !(drill.breakdown && options.drill !== 'popout') ? visibleFlags : NO_FLAGS;
@@ -200,7 +209,15 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const markerTag = resolved.tags.length === 1 && kinds.size && !partsOnly ? resolved.tags[0] : null;
   const markerGroups = useCountryGroups(runtime, track, active && markerTag != null && (kinds.has('wars') || kinds.has('factions')));
   const markerRequest = (product: string) => track && markerTag ? { sourceId: track.source.id, revision: track.source.revision, product, params: { branchId: track.branch.id, tag: markerTag } } : null;
-  const markerParties = useProduct<PartyHistoryReply>(runtime.client, kinds.has('government') ? markerRequest('party-history') : null, active, validatePartyHistoryReply);
+  const [partyHover,setPartyHover] = useState<number | null>(null);
+  const preparedParties = usePreparedParty(runtime.client,track?.source,track?.branch.id,markerTag ?? undefined,playhead ?? extent[1],partyHover,active && kinds.has('government'),['ruling'],false,markerTag ? resolved.membership?.get(markerTag) : undefined);
+  const oldParties = useProduct<PartyHistoryReply>(runtime.client,kinds.has('government') ? markerRequest('party-history') : null,active && !preparedParties.enabled,validatePartyHistoryReply);
+  const markerParties = preparedParties.enabled ? {...preparedParties,data:preparedParties.summary?.reply} : oldParties;
+  const partyMember = useCallback((hour:number)=>isMember(markerTag ? resolved.membership?.get(markerTag) : undefined,hour),[markerTag,resolved.membership]);
+  const partyParity = import.meta.env.MODE==='parity' ? usePartyParity(runtime.client,track?.source,track?.branch.id,kinds.has('government') ? markerTag ?? undefined : undefined,extent,'Stability party markers',oldParties.data,markerTag ? resolved.membership?.get(markerTag) : undefined) : undefined;
+  const partyEvents = (reply:PartyHistoryReply | undefined) => reply ? partyBadges(reply,token=>contentTitle(reply.ideologies.find(item=>item.token===token)?.name,token,'Ideology name unavailable')).filter(badge=>badge.glyph!=='\u2713' && partyMember(badge.hour)) : [];
+  const partyPageBadges = partyEvents(preparedParties.events?.reply).map(badge=>({...badge,glyph:'\u2699'}));
+  const partyReachedBadges = partyEvents(preparedParties.reached?.reply).map(badge=>({...badge,glyph:'\u2699'}));
   const markerFocus = useProduct<FocusReply>(runtime.client, kinds.has('focus') ? markerRequest('national-focus') : null, active, validateFocusReply);
   // The idea history of the marker country itself (a group may resolve to another country).
   const markerIdeas = useProduct<IdeaHistoryReply>(runtime.client, kinds.has('government') ? markerRequest('idea-history') : null, active, validateIdeaHistoryReply);
@@ -209,8 +226,8 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     tag: markerTag, extent, branch: [track.branch.firstHour, track.branch.lastHour] as const,
     member: (hour: number) => isMember(resolved.membership?.get(markerTag), hour),
     groups: markerGroups.data, factionName: (faction: CountryGroupReply['factions'][number], hour: number) => factionNameAt(faction, hour, factionOverrides?.[faction.id]?.name), ideas: markerIdeas.data && markerIdeas.data.tag === markerTag ? markerIdeas.data : undefined,
-    parties: markerParties.data, focus: markerFocus.data,
-  }, [track, factionOverrides, markerTag, extent[0], extent[1], resolved.membership, markerGroups.data, markerIdeas.data, markerParties.data, markerFocus.data]); // eslint-disable-line react-hooks/exhaustive-deps
+    parties: preparedParties.enabled && preparedParties.summary?.marks.some(mark=>!mark.exact) ? undefined : markerParties.data, focus: markerFocus.data,
+  }, [preparedParties.enabled, preparedParties.summary, track, factionOverrides, markerTag, extent[0], extent[1], resolved.membership, markerGroups.data, markerIdeas.data, markerParties.data, markerFocus.data]); // eslint-disable-line react-hooks/exhaustive-deps
   // Other countries are named as the game showed them at each event's hour; until
   // (or where) that is not known, by their name in the recording's metadata.
   const markerReads = useMemo(() => {
@@ -246,7 +263,8 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     options.stability, options.warSupport, options.scale, options.show, options.playback, options.afterPlayhead, options.windowDays]),
   [track?.source.id, track?.source.revision, track?.branch.id, widget.countries, widget.countries.kind === 'selected' ? fallback : null, widget.time, extent[0], extent[1], resolved.tags, resolved.membership,
     options.stability, options.warSupport, options.scale, options.show, options.playback, options.afterPlayhead, options.windowDays]);
-  const pickOwner = useMemo(() => ({ scope: choiceScope, numbers }), [choiceScope, numbers]);
+  const valueOwner = prepared.enabled ? prepared.owner : numbers;
+  const pickOwner = useMemo(() => ({ scope: choiceScope, numbers: valueOwner }), [choiceScope, valueOwner]);
   const chosen = actorPick?.owner === pickOwner ? actorPick.pick : null;
   const drillOpen = drill.breakdown !== null && chosen !== null;
   const drillTag = chosen ? chosen.tag : singleTag;
@@ -265,33 +283,39 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const actorSpans = useMemo(() => selectedCountry && groupData && track ? drillCountrySpans(groupData.countryIdentities, selectedCountry, track, resolved.membership) : null,
     [selectedCountry, groupData, track, resolved.membership]);
   const aliasTags = useMemo(() => actorSpans ? [...actorSpans.keys()] : [], [actorSpans]);
-  const partsRequests = track && (drillOpen || pinnedMeasure) ? aliasTags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
+  const partsRequests = track && !runtime.client.preparedQuery && (drillOpen || pinnedMeasure) ? aliasTags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
     product: 'stability-parts', params: { branchId: track.branch.id, tag } })) : [];
   const parts = useProducts<StabilityPartsReply>(runtime.client, partsRequests, active, validateStabilityPartsReply);
-  const joinedParts = useMemo(() => parts.data && actorSpans && drillTag ? stabilityCountryParts(parts.data, actorSpans, drillTag) : undefined,
-    [parts.data, actorSpans, drillTag]);
+  const joinedParts = useMemo(() => runtime.client.preparedQuery && track && actorSpans && drillTag && (drillOpen || pinnedMeasure)
+    ? {branchId:track.branch.id,tag:drillTag,decimals:5,stability:{parts:[],observed:[]},warSupport:{parts:[],observed:[]},warnings:[]}
+    : parts.data && actorSpans && drillTag ? stabilityCountryParts(parts.data, actorSpans, drillTag) : undefined,
+    [parts.data, actorSpans, drillTag, runtime.client, track, drillOpen, pinnedMeasure]);
   const partsStore = useMemo(() => new NumericReply<StabilityPartsReply>(), [runtime.client]);
   const partsKey = JSON.stringify([partsRequests, selectedCountry, actorSpans ? [...actorSpans] : null]);
   const partNumbers = partsStore.update(partsKey, joinedParts, stabilityPartsNumbers);
   const partsData = joinedParts ?? partNumbers;
   const detailPickOwner = useMemo(() => ({ parent: pickOwner, actor: selectedCountry, measure: drillMeasure, parts: partNumbers }),
     [pickOwner, selectedCountry, drillMeasure, partNumbers]);
-  const aliasRequest = track && aliasTags.length ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'country-stability', params: { branchId: track.branch.id, tags: aliasTags, hour: null } } : null;
-  const aliasValues = useProduct<CountryStabilityReply>(runtime.client, aliasRequest, active, validateStabilityReply);
-  const aliasStore = useMemo(() => new NumericReply<CountryStabilityReply>(), [runtime.client]);
-  const aliasNumbers = aliasStore.update(JSON.stringify(aliasRequest), aliasValues.data, stabilityNumbers);
-  const aliasData = aliasValues.data ?? aliasNumbers;
+  const preparedPartsBinding = track ? {client:runtime.client,source:track.source,branchId:track.branch.id,tags:aliasTags,within:actorSpans ?? undefined} : undefined;
+  const [preparedPartsNotes,setPreparedPartsNotes] = useState<readonly string[]>([]);
   const liveHour = track ? Math.floor(clockHour) + track.axisOffset : null;
   const pinnedFollowing = localHour === null || localHour === undefined && following;
   const pinnedAt = localHour === undefined ? playhead ?? extent[1] : localHour === null ? liveHour : localHour;
   const drillAt = pinnedMeasure ? pinnedAt : drillOpen ? drillHour(drill, liveHour) : null;
   const drillPlayhead = pinnedMeasure ? pinnedAt : drillOpen && drill.follow ? liveHour : playhead;
+  const aliasPrepared = usePreparedStability(runtime.client, aliasTags.length ? track?.source : undefined, track?.branch.id, aliasTags, drillAt ?? extent[1], preparedHover, active);
+  const aliasRequest = track && aliasTags.length ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'country-stability', params: { branchId: track.branch.id, tags: aliasTags, hour: null } } : null;
+  const aliasValues = useProduct<CountryStabilityReply>(runtime.client, aliasRequest, active && !aliasPrepared.enabled, validateStabilityReply);
+  const aliasStore = useMemo(() => new NumericReply<CountryStabilityReply>(), [runtime.client]);
+  const aliasNumbers = aliasStore.update(JSON.stringify(aliasRequest), aliasPrepared.enabled ? aliasPrepared.data : aliasValues.data, stabilityNumbers);
+  const aliasData = (aliasPrepared.enabled ? aliasPrepared.data : aliasValues.data) ?? aliasNumbers;
   const shownTag = actorSpans && drillAt !== null ? countryDrillTagAt(actorSpans, Math.floor(drillAt)) : null;
   const drillLabels = useCountryLabelsAt(runtime.client, track,
     (drillOpen || pinnedMeasure && savedCountry) && shownTag && drillAt !== null ? [{ tag: shownTag, hour: Math.floor(drillAt) }] : [], active);
   const drillReadAt = (hour: number) => {
     const tag = actorSpans ? countryDrillTagAt(actorSpans, hour) : null;
+    if (aliasPrepared.enabled && tag && !aliasPrepared.hourLoaded(tag, hour)) { queueMicrotask(() => setPreparedHover(hour)); return null; }
     const carried = (aliasData ?? data)?.series.find(item => item.tag === tag)?.carried;
     return carried ? readHourAt(carried, hour) : null;
   };
@@ -310,11 +334,11 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
       ...(groups.error ? [`Country membership could not be loaded: ${groups.error}`] : []),
       ...(uncoloured.length ? [`Map colours unavailable for ${uncoloured.join(', ')}; shown in grey.`] : []),
       ...(breakdown.data?.warnings ?? []), ...(breakdown.error ? [`The breakdown could not be loaded: ${breakdown.error}`] : []),
-      ...markerNotes, ...focusText.warnings,
+      ...markerNotes, ...focusText.warnings, ...preparedPartsNotes,
       ...(partsRequests.length ? [...(joinedParts?.warnings ?? []), ...(parts.error ? [`The parts could not be loaded: ${parts.error}`] : [])] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, error, series, groups.data, groups.error, breakdown.data, breakdown.error, markerNotes, focusText.warnings, partsRequests.length, joinedParts, parts.error, onDiagnostics]);
+  }, [data, error, series, groups.data, groups.error, breakdown.data, breakdown.error, markerNotes, focusText.warnings, partsRequests.length, joinedParts, parts.error, preparedPartsNotes, onDiagnostics]);
   const menu = useContextMenu('Chart actions');
   const head = playhead ?? extent[1];
   // With the keyboard: while focus is in the widget, the breakdown of the read behind
@@ -344,10 +368,20 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   }, [focused, single, headRead, head, spokenAt, spokenEmpty]);
   const playback = (options.playback as PlaybackMode) ?? 'draw-in';
   const until = shownUntil(playhead, playback, options.afterPlayhead === true);
+  const chartParity = import.meta.env.MODE === 'parity' ? usePreparedScalarParity(runtime.client, track?.source, track?.branch.id, resolved.tags, extent, resolved.membership ?? undefined) : undefined;
   const layers = useMemo<ChartLayer[]>(() => series.flatMap(item => shown.map(measure => ({
-    draw: (ctx, frame, chartTokens, state) => { drawLine(ctx, frame, chartTokens, item.lines[measure.key], item.hex, { dash: measure.dash, until: state.playhead ?? undefined }); },
-    extent: (x: readonly [number, number]) => extentOf(item.lines[measure.key], x[0], Math.min(x[1], until ?? x[1])),
-  }))), [series, shown, until]);
+    draw: (ctx, frame, chartTokens, state) => {
+      const summary = prepared[measure.key].summaryByTag.get(item.tag)?.summary;
+      if (prepared.enabled) { if (summary) drawLineSummary(ctx, frame, chartTokens, percentSummary(summary), item.hex, false, state.playhead, { dash: measure.dash }); }
+      else drawLine(ctx, frame, chartTokens, item.lines[measure.key], item.hex, { dash: measure.dash, until: state.playhead ?? undefined });
+    },
+    extent: (x: readonly [number, number]) => {
+      if (!prepared.enabled) return extentOf(item.lines[measure.key], x[0], Math.min(x[1], until ?? x[1]));
+      const summary = prepared[measure.key].summaryByTag.get(item.tag)?.summary;
+      const buckets = summary?.from === x[0] && summary.to === Math.min(x[1], until ?? x[1]) ? summary.buckets.filter(bucket => bucket !== null) : [];
+      return buckets.length ? [Math.min(...buckets.map(bucket => bucket.minValue * 100)), Math.max(...buckets.map(bucket => bucket.maxValue * 100))] : null;
+    },
+  }))), [series, shown, until, prepared.enabled, prepared.stability.summaryByTag, prepared.warSupport.summaryByTag]);
 
   if (!track) return <WidgetState kind="empty" icon="sliders" message="Load a campaign to see stability and war support." />;
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
@@ -362,7 +396,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
           : parts.error && !partsData ? <WidgetState kind="error" detail={parts.error} onRetry={parts.retry} />
             : error && !data ? <WidgetState kind="error" detail={error} onRetry={retry} />
               : !partsData || !data ? <WidgetState kind="loading" label="Loading what makes up the values…" />
-                : <StabilityDrill reply={partsData} numbers={partNumbers!} pickOwner={detailPickOwner} presentationReady={parts.data !== undefined} measure={pinnedMeasure}
+                : <StabilityDrill preparedBinding={preparedPartsBinding} onPreparedDiagnostics={setPreparedPartsNotes} reply={partsData} numbers={partNumbers!} pickOwner={detailPickOwner} presentationReady={parts.data !== undefined} measure={pinnedMeasure}
                   playback={{ playhead: drillPlayhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }} hour={drillAt} extent={extent}
                   within={null} readAt={drillReadAt} onPick={hour => setLocalHour(Math.floor(hour))}
                   onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])}
@@ -380,7 +414,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   if (error && !data) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data || (widget.countries.kind === 'group' && !groupData)) return <WidgetState kind="loading" label="Loading stability and war support…" />;
   if (!shown.length) return <WidgetState kind="empty" message="Both lines are switched off in the settings." />;
-  if (series.every(item => shown.every(measure => !item.lines[measure.key].length))) return <WidgetState kind="unavailable" message="Stability and war support are unavailable for these countries." />;
+  if (!prepared.enabled && series.every(item => shown.every(measure => !item.lines[measure.key].length))) return <WidgetState kind="unavailable" message="Stability and war support are unavailable for these countries." />;
 
   const decimals = data.decimals;
   // Zoom fits the values drawn in view (both bounds, as the view moves); the fixed scale is 0-100%.
@@ -393,7 +427,8 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     : spokenBreakdown ? `Breakdown on ${dayLabel(Math.floor(head))}${headRead < Math.floor(head) ? `, as of ${formatDateTime(headRead)}` : ''}: ${spokenBreakdown}.`
       : spoken.error && spokenAt?.read === headRead ? 'Couldn’t load the breakdown.'
         : spokenEmpty && spokenAt?.read === headRead && spokenAt.hour === Math.floor(head) ? `No breakdown was recorded for ${dayLabel(Math.floor(head))}.` : '';
-  const main = <div className="stability-main">
+  const main = <div className="stability-main" ref={chartParity}>
+    {partyParity && <div ref={partyParity} />}
     <Legend label="Countries" items={legendItems} windowed onVisibleItems={onVisibleItems} />
     {/* The line styles are named: never the dash pattern alone. */}
     <p className="stability-key">{shown.map(measure => <span key={measure.key}><i aria-hidden="true" className={measure.dash ? 'is-dashed' : undefined} />{measure.dash ? 'Dashed' : 'Solid'}: {measure.label.toLowerCase()}</span>)}</p>
@@ -410,17 +445,26 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     }).join('; ')}</p>
     {/* Announced when it loads for a keyboard user, as focus stays on the chart. */}
     <p className="sr-only" aria-live="polite">{spokenNote}</p>
+    {kinds.has('government') && <PartyEventList prepared={preparedParties} badges={partyPageBadges} />}
     {/* Leaving the chart ends a hover, so coming back to the same hour asks again for a failed breakdown. */}
     <div className="stability-chart" onPointerLeave={() => { tipHour.current = null; }}>
       <TimeChart label={`Stability and war support of ${series.map(item => item.name).join(', ')}`} extent={extent} playhead={playhead}
+        onSummaryView={prepared.enabled || preparedParties.enabled ? view=>{if(prepared.enabled)prepared.onSummaryView(view);if(preparedParties.enabled)preparedParties.onSummaryView(view);} : undefined}
+        onNavigateHour={prepared.enabled ? prepared.onNavigateHour : undefined} keyboardHour={prepared.keyboardHour} keyboardRevision={prepared.keyboardRevision}
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: zoom ? null : 0, yMax: zoom ? null : 100, log: false }} fitValues={zoom ? zoomRange : undefined}
         padding={{ right: options.endLabels ? CHART_LAYOUT.countryEndLabels : CHART_LAYOUT.right }} layers={layers} active={active && !(drillOpen && options.drill !== 'popout')}
         pickOwner={pickOwner} revision={`${head}:${looks.revision}:${drillLabels.revision}:${data.branchId}:${series.length}:${shown.length}:${breakdown.data ? breakdownFor?.readHour ?? 'empty' : breakdown.error ? 'failed' : 'none'}`}
         formatValue={value => `${Number.isInteger(value) ? value : value.toFixed(1)}%`}
+        onHover={preparedParties.enabled ? setPartyHover : undefined}
+        markSummaries={kinds.has('government') && preparedParties.enabled ? partyMarkSummaries(preparedParties.summary,partyEvents(preparedParties.summary?.reply))?.map(summary=>({...summary,clusters:summary.clusters.map(cluster=>({...cluster,badge:cluster.badge ? {...cluster.badge,glyph:'\u2699'} : undefined}))})) : undefined}
+        onMarkHover={kinds.has('government') && preparedParties.enabled ? preparedParties.onMarkHover : undefined}
+        badgesAtHour={kinds.has('government') && preparedParties.enabled ? hour=>[...badges.filter(badge=>badge.hour===hour),...partyReachedBadges.filter(badge=>badge.hour===hour)] : undefined}
+        markTooltip={cluster=>({title:dayLabel(cluster.firstHour),rows:preparedParties.events ? badgeRows(partyPageBadges) : [{label:'Events',value:'Loading...'}]})}
         badges={badges.length ? badges : undefined}
         tooltip={(hour, _frame, hovered) => {
+          if (prepared.enabled && preparedHover !== hour) queueMicrotask(() => setPreparedHover(hour));
           const rows: TooltipRow[] = [...badgeRows(hovered)];
           if (series.length === 1) {
             const item = series[0];
@@ -508,9 +552,16 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
           ends.splice(0, ends.length, ...fitted);
           placeEndLabels(ctx, frame, chartTokens, ends, END_LABEL_GAP);
         }}
-        onPick={(hour, context?: ChartPick) => {
-          const picked = pickStabilityLine(series.flatMap(item => shown.map(measure => ({ tag: item.tag, measure: measure.key,
-            runs: item.lines[measure.key] }))), hour, context, drillMeasure);
+        onPick={async (hour, context?: ChartPick) => {
+          let picked: StabilityPick | null;
+          if (prepared.enabled) {
+            const exact = await Promise.all(shown.map(measure => prepared[measure.key].exactAt(hour)));
+            const known = new Set(exact.flatMap((reply, index) => reply?.states.filter(state => state.run && isMember(resolved.membership?.get(state.tag), hour)).map(state => JSON.stringify([state.tag, shown[index].key])) ?? []));
+            const lines = series.flatMap(item => shown.flatMap(measure => { const summary = prepared[measure.key].summaryByTag.get(item.tag)?.summary; return summary ? [{ key: JSON.stringify([item.tag, measure.key]), summary: percentSummary(summary) }] : []; }));
+            const witnessed = pickSummaryLines(lines, hour, known, context).map(key => { const [tag, measure] = JSON.parse(key) as [string, Measure]; return { tag, measure }; });
+            const candidates = [...new Set(witnessed.map(line => line.tag))];
+            picked = candidates.length ? { hour: Math.floor(hour), candidates, lines: witnessed, tag: candidates.length === 1 ? candidates[0] : null, measure: witnessed.find(line => line.measure === drillMeasure)?.measure ?? witnessed[0].measure } : null;
+          } else picked = pickStabilityLine(series.flatMap(item => shown.map(measure => ({ tag: item.tag, measure: measure.key, runs: item.lines[measure.key] }))), hour, context, drillMeasure);
           if (!picked) return;
           setActorPick({ owner: pickOwner, pick: picked });
           setDrillMeasure(picked.measure);
@@ -547,7 +598,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
         : groups.error && !groupData ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
         : parts.error && !partsData ? <WidgetState kind="error" detail={parts.error} onRetry={parts.retry} />
         : !partsData ? <WidgetState kind="loading" label="Loading what makes up the values…" />
-          : <StabilityDrill reply={partsData} numbers={partNumbers!} pickOwner={detailPickOwner} presentationReady={parts.data !== undefined} measure={drillMeasure} onMeasure={setDrillMeasure} playback={{ playhead: drillPlayhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }} hour={drillAt} onPick={hour => dispatchDrill({ type: 'pick', hour })}
+          : <StabilityDrill preparedBinding={preparedPartsBinding} onPreparedDiagnostics={setPreparedPartsNotes} reply={partsData} numbers={partNumbers!} pickOwner={detailPickOwner} presentationReady={parts.data !== undefined} measure={drillMeasure} onMeasure={setDrillMeasure} playback={{ playhead: drillPlayhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }} hour={drillAt} onPick={hour => dispatchDrill({ type: 'pick', hour })}
             within={null} readAt={drillReadAt}
             onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])}
             extent={extent} branchStart={track.branch.firstHour} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} tokens={tokens} />}

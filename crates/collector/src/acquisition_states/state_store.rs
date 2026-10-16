@@ -1,8 +1,8 @@
 //! States rows held between hours ([`crate::territory_changes`]).
 //!
 //! Each hour the States job still reads the state array header, every slot
-//! pointer, each state's identity and manpower (rewritten every hour by
-//! reinforcement), and the shared infrastructure and continent operands
+//! pointer, each state's identity, available manpower (rewritten every hour
+//! by reinforcement) and population in one record, and the shared infrastructure and continent operands
 //! ([`cstate::globals`]), and the StateFlags visitor still reads every
 //! state. A state's owner, controller, continent, movement infrastructure,
 //! names and railway fraction are carried, without reading its tags,
@@ -94,7 +94,7 @@ pub(crate) struct StateStore {
     marked: Vec<u32>,
     slots: Vec<usize>,
     ids: Vec<u32>,
-    manpower: Vec<i32>,
+    manpower: Vec<cstate::Manpower>,
     /// Per held row: read afresh, and whether only for comparison.
     reread: Vec<bool>,
     sampled: Vec<bool>,
@@ -259,7 +259,8 @@ impl StateStore {
         }
         for (index, row) in rows[..len].iter_mut().enumerate() {
             *row = cstate::Row {
-                manpower_available: self.manpower[index],
+                manpower_available: self.manpower[index].available,
+                population: self.manpower[index].population,
                 ..self.held.rows[index]
             };
             if self.reread[index] {
@@ -426,7 +427,7 @@ impl StateStore {
             + self.marked.capacity() * size_of::<u32>()
             + self.slots.capacity() * size_of::<usize>()
             + self.ids.capacity() * size_of::<u32>()
-            + self.manpower.capacity() * size_of::<i32>()
+            + self.manpower.capacity() * size_of::<cstate::Manpower>()
             + self.reread.capacity()
             + self.sampled.capacity();
     }

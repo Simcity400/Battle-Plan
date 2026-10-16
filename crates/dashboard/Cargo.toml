@@ -6,13 +6,25 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[lib]
+doctest = false
+
+[features]
+# Tests that take more than about two seconds; see AGENTS.md.
+slow-tests = []
+
 [dependencies]
 blake3.workspace = true
+dashboard-base.workspace = true
+dashboard-politics-ledger.workspace = true
+dashboard-core.workspace = true
+dashboard-text.workspace = true
 replay.workspace = true
+store = { path = "../store" }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
 installed-content.workspace = true
-installed-content-save.workspace = true
 engine.workspace = true
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 ts-rs = "11.1"
 base64 = "0.22.1"
@@ -22,17 +34,23 @@ rfd.workspace = true
 sha2.workspace = true
 mimalloc.workspace = true
 zstd = "0.13"
-shader-pipeline = { path = "../shader-pipeline" }
 
 [[bin]]
 name = "export-types"
 path = "src/bin/export-types.rs"
+# No tests of its own; `cargo test` would only build and link an empty harness.
+test = false
 
 [[bin]]
 name = "dashboard-bridge"
 path = "src/bin/dashboard-bridge.rs"
 
 [dev-dependencies]
+dashboard-politics-ledger = { workspace = true, features = ["test-support"] }
+dashboard-base = { workspace = true, features = ["test-support"] }
+dashboard-core = { workspace = true, features = ["test-support"] }
+dashboard-text = { workspace = true, features = ["test-support"] }
 # Folder layers, so tests load localisation files as the game content does.
 installed-content = { workspace = true, features = ["test-support"] }
-crc32fast = "1"
+# Prepared files publish without disk flushes, which no test can observe.
+store = { path = "../store", features = ["test-support"] }

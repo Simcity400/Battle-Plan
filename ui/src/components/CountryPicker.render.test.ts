@@ -8,6 +8,7 @@ test('renaming an open recording retains the top-bar flag and list flag requests
   let effects: (() => void)[] = [];
   let flags = 0;
   let lists = 0;
+  let ownerSource: unknown;
   const fixture = {
     useState(initial: any) { const index = cursor++; if (!(index in slots)) slots[index] = typeof initial === 'function' ? initial() : initial;
       return [slots[index], (value: any) => { slots[index] = typeof value === 'function' ? value(slots[index]) : value; }]; },
@@ -19,7 +20,10 @@ test('renaming an open recording retains the top-bar flag and list flag requests
     useEffect(effect: () => any, deps: any[]) { const index = cursor++; const before = slots[index];
       if (!before || !deps.every((value, index) => Object.is(value, before[index]))) { slots[index] = deps; effects.push(effect); } },
     useLayoutEffect() {},
-    async product() { flags++; return { flags: [] }; },
+    async product(_client: unknown, request: { product: string }, _signal: unknown, _validate: unknown, source: unknown) {
+      if (request.product === 'land-owners') { ownerSource = source; return { countries: [], warnings: [] }; }
+      flags++; return { flags: [] };
+    },
     async listFlags() { lists++; },
   };
   const host = globalThis as typeof globalThis & { __pickerRename?: typeof fixture };
@@ -31,7 +35,7 @@ test('renaming an open recording retains the top-bar flag and list flag requests
         if (file.endsWith('/components/CountryPicker.tsx')) return source.replace("import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';",
           'const { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } = globalThis.__pickerRename;');
         if (file.endsWith('/components/Popover.tsx')) return 'export const usePopover = () => ({ open: true, trigger: { current: null } }); export const Popover = props => props.children;';
-        if (file.endsWith('/dashboard/products.ts')) return 'export const forgetSettledProducts = () => {}; export const loadProduct = () => globalThis.__pickerRename.product(); export const loadTransientProduct = loadProduct;';
+        if (file.endsWith('/dashboard/products.ts')) return 'export const forgetSettledProducts = () => {}; export const loadProduct = (...args) => globalThis.__pickerRename.product(...args); export const loadTransientProduct = loadProduct;';
         if (file.endsWith('/dashboard/flagCache.ts')) return 'export class FlagStore { static key() { return "flag"; } } export const flagStore = () => ({ get() {} }); export const loadListFlags = () => globalThis.__pickerRename.listFlags();';
         if (file.endsWith('/dashboard/contentRevision.ts')) return 'export const useContentRevision = () => 0;';
         if (file.endsWith('/dashboard/countryNamesAt.ts')) return 'const names = new Map(); export const useCountryNamesAt = () => names; export const nameKey = () => "";';
@@ -50,5 +54,8 @@ test('renaming an open recording retains the top-bar flag and list flag requests
     await render();
     assert.equal(flags, beforeFlags, 'the same source revision and shown hour need no new top-bar flag read');
     assert.equal(lists, beforeLists, 'renaming does not repeat list flag reads');
+    props.allowedTags = undefined;
+    await render();
+    assert.equal(ownerSource, props.source, 'campaign-wide owner discovery uses the prepared polling source');
   } finally { await vite.close(); delete host.__pickerRename; }
 });

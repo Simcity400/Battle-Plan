@@ -6,7 +6,7 @@ One political-screen idea category over time, with lanes for law/designer slots 
 
 ## Products it reads
 
-[`idea-history`](../../../../crates/dashboard/src/products/idea_history.rs) through [useIdeaHistory](../../dashboard/ideaHistory.ts); [idea tooltips](../../dashboard/useIdeaTooltips.ts) provide dated effects and targets.
+[`idea-history`](../../../../crates/dashboard-base/src/products/idea_history.rs) through [useIdeaHistory](../../dashboard/ideaHistory.ts); [idea tooltips](../../dashboard/useIdeaTooltips.ts) provide dated effects and targets.
 
 ## Settings
 
@@ -24,5 +24,5 @@ Content category, law shading/icons, holder portrait/name, Grow with playback, a
 | File | Responsibility |
 |---|---|
 | [IdeaTimelineWidget.tsx](IdeaTimelineWidget.tsx), [ideaTimelineData.ts](ideaTimelineData.ts) | Lanes, holder presentation and validation; adjacent tests. |
-| [categoryChoices.ts](categoryChoices.ts), [IdeaTimelinePickerItems.tsx](IdeaTimelinePickerItems.tsx) | Content categories and picker presets. |
+| [categoryChoices.ts](categoryChoices.ts), [ideaTimelinePresets.ts](ideaTimelinePresets.ts) | Content categories and catalogue presets. The preset hook is registered before the catalogue opens; the body loads independently. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [ideaTimeline.css](ideaTimeline.css) | Settings, registration and layout. |

@@ -36,6 +36,33 @@ export type Breakable = Span & { breakBefore?: boolean; startsSegment?: boolean 
 /** Whether a line breaks before this run even if the hours touch. */
 export const breaksBefore = (run: Breakable) => run.breakBefore === true || run.startsSegment === true;
 
+/** Replace reached hours without allowing coarse runs to shadow exact values or missing reads. */
+export function overlayRuns<T extends Breakable>(before: readonly T[], incoming: readonly T[], equal: (a:T,b:T)=>boolean, within: readonly Span[] = incoming): T[] {
+  const cuts = clipToSpans([{firstHour:-2147483648,lastHour:2147483647}],within);
+  const retained: T[] = [];
+  let index = 0;
+  for (const run of before) {
+    while (index < cuts.length && cuts[index].lastHour < run.firstHour) index++;
+    let first = run.firstHour;
+    for (let at = index; at < cuts.length && cuts[at].firstHour <= run.lastHour; at++) {
+      if (first < cuts[at].firstHour) retained.push({...run,firstHour:first,lastHour:cuts[at].firstHour-1,
+        ...('startsSegment' in run ? {startsSegment:first===run.firstHour && run.startsSegment} : {}),
+        ...('breakBefore' in run ? {breakBefore:first===run.firstHour && run.breakBefore} : {})});
+      first = Math.max(first,cuts[at].lastHour+1);
+    }
+    if (first <= run.lastHour) retained.push({...run,firstHour:first,
+      ...('startsSegment' in run ? {startsSegment:first===run.firstHour && run.startsSegment} : {}),
+      ...('breakBefore' in run ? {breakBefore:first===run.firstHour && run.breakBefore} : {})});
+  }
+  const joined:T[]=[];
+  for (const run of [...retained,...incoming.map(run=>({...run}))].sort((a,b)=>a.firstHour-b.firstHour)) {
+    const previous=joined.at(-1);
+    if(previous && previous.lastHour+1===run.firstHour && !breaksBefore(run) && equal(previous,run)) previous.lastHour=run.lastHour;
+    else joined.push(run);
+  }
+  return joined;
+}
+
 /** The index of the run holding `hour`, by binary search over runs sorted by hour
  * that never overlap; -1 when none holds it. */
 export function runIndexAt(runs: readonly Span[], hour: number): number {
@@ -98,6 +125,16 @@ export function valueAt(runs: readonly Run[], hour: number): number | null {
   return runAt(runs, Math.floor(hour))?.value ?? null;
 }
 
+/** Bounds of ordered spans intersecting an inclusive hour range. */
+export function rangeBounds(runs: readonly Span[], from: number, to: number): [number, number] {
+  let low = 0, high = runs.length;
+  while (low < high) { const mid = (low + high) >>> 1; if (runs[mid].lastHour < Math.floor(from)) low = mid + 1; else high = mid; }
+  const first = low;
+  high = runs.length;
+  while (low < high) { const mid = (low + high) >>> 1; if (!(runs[mid].firstHour > to)) low = mid + 1; else high = mid; }
+  return [first, low];
+}
+
 /** Unbroken stretches of runs overlapping [from, to]. Runs that touch hour to
  * hour join; any missing hour between them starts a new segment. */
 export function segments(runs: readonly Run[], from: number, to: number): Run[][] {
@@ -107,8 +144,9 @@ export function segments(runs: readonly Run[], from: number, to: number): Run[][
   let current: Run[] = [];
   // The hour a fractional edge falls in is visible, as valueAt treats it.
   const first = Math.floor(from);
-  for (const run of runs) {
-    if (run.lastHour < first || run.firstHour > to) continue;
+  const [start, end] = rangeBounds(runs, first, to);
+  for (let i = start; i < end; i++) {
+    const run = runs[i];
     const clipped = { firstHour: Math.max(run.firstHour, Math.floor(from)), lastHour: Math.min(run.lastHour, Math.ceil(to)), value: run.value };
     const previous = current.at(-1);
     if (previous && (previous.lastHour + 1 !== run.firstHour || run.breakBefore)) { result.push(current); current = []; }
@@ -220,9 +258,9 @@ export function heldSegments(runs: readonly Run[], from: number, to: number, toX
     current!.points.push(point);
     current!.path.push([move ? 'M' : 'L', point.x, point.y]);
   };
-  for (const run of runs) {
-    if (run.lastHour < Math.floor(from)) continue;
-    if (run.firstHour > to) break;
+  const [start, end] = rangeBounds(runs, from, to);
+  for (let i = start; i < end; i++) {
+    const run = runs[i];
     const first = Math.max(from, run.firstHour);
     const last = Math.min(to, run.lastHour + 1);
     const continues = previous && previous.lastHour + 1 === run.firstHour && !run.breakBefore;
@@ -284,12 +322,11 @@ export function stack(layers: readonly (readonly (number | null)[])[]): (number 
 
 /** The lowest and highest value of the runs inside [from, to], or null. */
 export function extentOf(runs: readonly Run[], from: number, to: number): [number, number] | null {
-  let low = Infinity;
-  let high = -Infinity;
-  for (const run of runs) {
-    if (run.lastHour < Math.floor(from) || run.firstHour > to) continue;
-    low = Math.min(low, run.value);
-    high = Math.max(high, run.value);
+  const [start, end] = rangeBounds(runs, from, to);
+  let low = Infinity, high = -Infinity;
+  for (let index = start; index < end; index++) {
+    low = Math.min(low, runs[index].value);
+    high = Math.max(high, runs[index].value);
   }
   return low <= high ? [low, high] : null;
 }
@@ -332,9 +369,10 @@ export function divergingStack(layers: readonly (readonly number[])[]): Band[] {
  * Something drawn from these runs (a bar, a number) glides between the two only
  * then; across a break it jumps, as a line breaks. */
 export function sameStretch(runs: readonly Breakable[], from: number, to: number): boolean {
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return false;
   const first = Math.min(from, to);
   const last = Math.max(from, to);
-  let index = runs.findIndex(run => run.firstHour <= first && first <= run.lastHour);
+  let index = runIndexAt(runs, first);
   if (index < 0) return false;
   while (runs[index].lastHour < last) {
     const next = runs[index + 1];

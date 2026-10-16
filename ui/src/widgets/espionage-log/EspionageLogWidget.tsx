@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import { ChipSet } from '../../components/ChipSet';
 import WidgetState from '../../components/WidgetState';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import LogList from '../../charts/log/LogList';
+import type { LogListProps } from '../../charts/log/LogList';
 import type { LogRow } from '../../charts/log/logData';
 import { logSettings } from '../../charts/log/logOptions';
 import ProgressMeter from '../../charts/meter/ProgressMeter';
@@ -21,6 +22,8 @@ import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, toggleContentSet } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useParityRows } from '../../dashboard/parityRows';
+import { parityWindowCoverage, parityWindowIndices, useParityPreparation } from '../../dashboard/parityPreparation';
 import { OPTIONS } from './definition';
 import { operationChoices, operationJumpHours, operationName, windowedOperationRows, operationWindowIndex, operationWindows, operationState, operationTooltip, operationWording, operationProgress, operationOutcome } from './espionageData';
 import type { OperationAt } from './espionageData';
@@ -56,13 +59,17 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const runningOrder = options.runningOrder === 'preparation' ? 'preparation' : 'start';
   const includeUnknownCountries = widget.countries.kind === 'all';
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : null;
+  const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
+  const parityId = import.meta.env.MODE === 'parity' ? useId() : undefined;
   const playheadWindow = operationWindowIndex(data?.windows ?? [], hour ?? 0);
   const [browse, setBrowse] = useState<{ identity: string | null; hour: number | null }>({ identity: null, hour: null });
-  const shownHour = browse.identity === identity && browse.hour !== null ? Math.min(browse.hour, hour ?? browse.hour) : hour;
+  const shownHour = parity?.requested ? hour : browse.identity === identity && browse.hour !== null ? Math.min(browse.hour, hour ?? browse.hour) : hour;
   const browseIndex = operationWindowIndex(data?.windows ?? [], shownHour ?? 0);
   const [visibleWindows, setVisibleWindows] = useState<{ identity: string | null; at: number; windows: number[] }>({ identity: null, at: -1, windows: [] });
   const visibleIndices = visibleWindows.identity === identity && visibleWindows.at === playheadWindow ? visibleWindows.windows : [];
-  const wantedWindows = operationWindows(data, hour ?? 0, live,
+  const completeWindows = import.meta.env.MODE === 'parity'
+    ? parityWindowIndices(data?.windows, from ?? track?.branch.firstHour ?? 0, hour ?? 0) : [];
+  const wantedWindows = parity?.requested ? completeWindows : operationWindows(data, hour ?? 0, live,
     [...visibleIndices, ...(browse.identity === identity && browse.hour !== null ? [browseIndex] : [])], from ?? -Infinity);
   const history = useEspionageWindows(track, runtime, wantedWindows, active && !!data);
   const rows = useMemo(() => inBranch && shownHour != null && match.ready
@@ -76,10 +83,11 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
       const next = drawn.map(row => currentRows.get(row.id) ?? row);
       return previous.length === next.length && previous.every((row, index) => row === next[index]) ? previous : next;
     });
+    if (parity?.requested) return;
     const windows = [...new Set(drawn.flatMap(row => row.item.windowIndex === undefined ? [] : [row.item.windowIndex]))].sort((a, b) => a - b);
     setVisibleWindows(previous => previous.identity === identity && previous.at === playheadWindow && JSON.stringify(previous.windows) === JSON.stringify(windows)
       ? previous : { identity, at: playheadWindow, windows });
-  }, [currentRows, identity, playheadWindow]);
+  }, [currentRows, identity, playheadWindow, parity?.requested]);
   const [tooltipRow, setTooltipRow] = useState<LogRow<OperationAt> | null>(null);
   const [description, setDescription] = useState<{ reference: OperationDescriptionRef; text: string; detail?: string } | null>(null);
   const descriptionRef = tooltipRow && shownHour != null && (tooltipRow.item.operation.end?.byHour ?? Infinity) <= shownHour
@@ -119,6 +127,24 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const labels = useCallback((row: LogRow<OperationAt>, tag: string | null): ReturnType<CountryLabel> => tag === null ? { name: 'Unknown country' } : labelAt(row.item.countryHour)(tag), [labelAt]);
   const chips = useMemo(() => operationChoices(data), [data]);
   const byType = useMemo(() => new Map(data?.types.map(type => [type.key, type])), [data]);
+  let parityHistoryComplete = false;
+  let paritySemantic: LogListProps<OperationAt>['paritySemantic'];
+  if (import.meta.env.MODE === 'parity') {
+    const coverage = parityWindowCoverage(completeWindows, history.data, history.errors);
+    parityHistoryComplete = !!data && coverage.complete;
+    const complete = parity!.requested && parityHistoryComplete && match.ready;
+    paritySemantic = { complete, preparation: { id: parityId, prepare: parity!.prepare, ready: () => complete,
+      error: () => error ?? coverage.error },
+      content: row => { const type = row.item.typeKey === null ? null : byType.get(row.item.typeKey); return type ? { key: type.key, name: type.name } : null; },
+      reads: { hour, from, windows: coverage.outcomes } };
+  }
+  const root = useRef<HTMLDivElement>(null);
+  useParityRows(root, () => ({ kind: 'log', label: 'Espionage operation values',
+    complete: Boolean(data && match.ready && (parity?.requested ? parityHistoryComplete : history.data.has(browseIndex))), total: rows.length,
+    rows: rows.map(row => ({ id: row.id, hour: row.hour, by: row.by, state: row.item.state, startHour: row.item.startHour,
+      readHour: row.item.readHour, countryHour: row.item.countryHour, ownerTag: row.item.ownerTag, targetTag: row.item.targetTag,
+      typeKey: row.item.typeKey, run: row.item.run, end: row.item.operation.end && row.item.operation.end.byHour <= (shownHour ?? -Infinity) ? row.item.operation.end : null })),
+  }), paritySemantic?.preparation ? { ...paritySemantic.preparation, id: `${parityId}:values` } : undefined);
   const warnings = useMemo(() => [...new Set([...(data?.warnings ?? NO_WARNINGS), ...[...history.data.values()].flatMap(reply => reply.warnings),
     ...(description?.detail ? [description.detail] : [])])], [data, history.data, description?.detail]);
   useEffect(() => {
@@ -170,7 +196,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
       </span>}
     </>;
   };
-  return <div className="espionage-log">
+  return <div ref={root} className="espionage-log">
     {navigation}
     {shownHour !== hour && <p className="espionage-muted">Showing operations through {formatDateTime(shownHour!)}</p>}
     {log.chips && chips.length > 1 && <div className="log-chips">
@@ -179,6 +205,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
         onToggle={value => { if (value === '') { if (chosen.length) setOption?.('types', ''); } else toggle(value); }} />
     </div>}
     <LogList anchorRows key={`${track.source.id}:${track.branch.id}`} rows={rows} label="Espionage operations" density={log.density} months={log.months}
+      {...(import.meta.env.MODE === 'parity' ? { parityHistoryComplete, paritySemantic } : {})}
       animate={log.animate && live && shownHour === hour} columns={row => drawsMeter(row.item, live) ? METER_COLUMNS : COLUMNS} renderRow={renderRow}
       describe={row => `${labels(row, row.item.ownerTag).name}${operationWording(row.item).action}${operationName(row.item.typeKey === null ? undefined : byType.get(row.item.typeKey))} against ${labels(row, row.item.targetTag).name}${operationWording(row.item).afterTarget}. ${operationState(row.item)}.`}
       onTooltip={onTooltip}

@@ -37,7 +37,7 @@ pub(crate) fn diff(base: &[u8], target: &[u8], out: &mut Vec<u8>) -> io::Result<
 /// [`diff`]; with `differences`, a hunk that replaces as many bytes as it
 /// removes stores each new byte's wrapping difference from the byte it
 /// replaces.
-pub(crate) fn diff_with(
+pub fn diff_with(
     base: &[u8],
     target: &[u8],
     out: &mut Vec<u8>,
@@ -212,7 +212,7 @@ pub(crate) fn apply(base: &[u8], input: &mut Decoder<'_>, out: &mut Vec<u8>) -> 
 }
 
 /// [`apply`] a patch written by [`diff_with`].
-pub(crate) fn apply_with(
+pub fn apply_with(
     base: &[u8],
     input: &mut Decoder<'_>,
     out: &mut Vec<u8>,

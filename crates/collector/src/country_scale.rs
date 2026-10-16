@@ -10,61 +10,18 @@
 //! worker acquisitions grow from their original observations for populations
 //! that can change between sizing polls.
 
+pub use crate::country_slots::{census_rows, note_slots, raise, reserve_census, rows};
 use crate::{extended, map_capture::MapCapacities, sampling};
 use engine::{Memory, cgame_state, country_memory::Cache};
-use std::sync::{
-    Mutex,
-    atomic::{AtomicU64, AtomicUsize, Ordering},
-};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 mod navies;
 pub(crate) mod source_demand;
 pub(crate) mod table_demand;
 pub(crate) use table_demand::presize as presize_table_inputs;
 
-/// Largest registry observed this attachment, for raw-copy jobs whose pools
-/// live outside the frame. Only rises.
-static SLOTS_HINT: AtomicUsize = AtomicUsize::new(0);
-
-pub(crate) struct DemandFailures {
-    count: AtomicU64,
-    last_reason: Mutex<Option<&'static str>>,
-}
-
-impl DemandFailures {
-    pub(crate) const fn new() -> Self {
-        Self {
-            count: AtomicU64::new(0),
-            last_reason: Mutex::new(None),
-        }
-    }
-
-    /// An unreadable sizing observation adds no hint, preserving the existing
-    /// capacities. It is counted separately from a successful empty census.
-    pub(crate) fn observe<T>(&self, demand: Result<T, &'static str>) -> Result<T, &'static str> {
-        match demand {
-            Ok(demand) => Ok(demand),
-            Err(reason) => {
-                *self
-                    .last_reason
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(reason);
-                self.count.fetch_add(1, Ordering::Relaxed);
-                Err(reason)
-            }
-        }
-    }
-
-    pub(crate) fn diagnostics(&self) -> impl serde::Serialize {
-        let last_reason = *self
-            .last_reason
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::status::status!({
-            "failed_observations": self.count.load(Ordering::Relaxed),
-            "last_reason": last_reason,
-        })
-    }
-}
+pub(crate) use collector_extended_support::demand::{
+    DemandFailures, demand_air_game_state, demand_game_state,
+};
 
 static AGENCY_UPGRADE_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
 static OPERATION_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
@@ -96,11 +53,6 @@ pub(crate) fn demand_diagnostics() -> impl serde::Serialize {
     })
 }
 
-/// Record an observed registry size for job pools sized later.
-pub fn note_slots(slots: usize) {
-    SLOTS_HINT.fetch_max(slots, Ordering::Relaxed);
-}
-
 /// Tests that raise the registry, carrier or wing-name hints, or measure
 /// buffers they size, hold this so a parallel test cannot move them
 /// mid-measurement. The hints only rise within an attachment (each DLL load
@@ -108,32 +60,12 @@ pub fn note_slots(slots: usize) {
 /// an earlier test's 5,000-country hint must not size a later test's storage.
 #[cfg(test)]
 pub(crate) fn hint_guard() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    SLOTS_HINT.store(0, Ordering::Relaxed);
+    let guard = crate::country_slots::hint_guard();
     AIR_WING_NAME_BYTES.store(0, Ordering::Relaxed);
     for hint in &CARRIER_HINT {
         hint.store(0, Ordering::Relaxed);
     }
     guard
-}
-
-/// Country census rows a raw-copy job needs for the largest observed registry.
-pub fn census_rows(minimum: usize) -> usize {
-    rows(SLOTS_HINT.load(Ordering::Relaxed), 1).max(minimum)
-}
-
-/// Off the game thread: reserve a census vector for the observed registry.
-/// Returns whether the allocation grew.
-pub fn reserve_census<T>(census: &mut Vec<T>) -> bool {
-    engine::allocation::advisory(|| reserve_rows(census, census_rows(0)))
-}
-
-fn reserve_rows<T>(census: &mut Vec<T>, target: usize) -> bool {
-    if census.capacity() >= target {
-        return false;
-    }
-    engine::allocation::reserve_exact(census, target - census.len()).is_ok()
 }
 
 /// The engine's own ceiling on canonical country slots. The supply system stores
@@ -301,32 +233,7 @@ pub fn observe_air_wing_names(
     engine::cair_wing::name_demand(memory, base, state).map(Some)
 }
 
-static RAILWAY_GUN_PATHS: AtomicUsize = AtomicUsize::new(0);
-static RAILWAY_GUN_ROWS: AtomicUsize = AtomicUsize::new(0);
-static RAILWAY_GUN_NAME_BYTES: AtomicUsize = AtomicUsize::new(0);
-static RAILWAY_GUN_NAMED_BONUSES: AtomicUsize = AtomicUsize::new(0);
-static RAILWAY_GUN_SUPPLY_ORIGINS: AtomicUsize = AtomicUsize::new(0);
-static RAILWAY_GUN_COMBAT_REFERENCES: AtomicUsize = AtomicUsize::new(0);
-
-pub(crate) fn railway_gun_name_demand() -> engine::railway_gun_counter_inputs::NameDemand {
-    engine::railway_gun_counter_inputs::NameDemand {
-        rows: RAILWAY_GUN_ROWS.load(Ordering::Relaxed),
-        paths: RAILWAY_GUN_PATHS.load(Ordering::Relaxed),
-        bytes: RAILWAY_GUN_NAME_BYTES.load(Ordering::Relaxed),
-        named_bonuses: RAILWAY_GUN_NAMED_BONUSES.load(Ordering::Relaxed),
-        supply_origins: RAILWAY_GUN_SUPPLY_ORIGINS.load(Ordering::Relaxed),
-        combat_references: RAILWAY_GUN_COMBAT_REFERENCES.load(Ordering::Relaxed),
-    }
-}
-
-pub(crate) fn note_railway_gun_names(demand: engine::railway_gun_counter_inputs::NameDemand) {
-    RAILWAY_GUN_ROWS.fetch_max(demand.rows, Ordering::Relaxed);
-    RAILWAY_GUN_PATHS.fetch_max(demand.paths, Ordering::Relaxed);
-    RAILWAY_GUN_NAME_BYTES.fetch_max(demand.bytes, Ordering::Relaxed);
-    RAILWAY_GUN_NAMED_BONUSES.fetch_max(demand.named_bonuses, Ordering::Relaxed);
-    RAILWAY_GUN_SUPPLY_ORIGINS.fetch_max(demand.supply_origins, Ordering::Relaxed);
-    RAILWAY_GUN_COMBAT_REFERENCES.fetch_max(demand.combat_references, Ordering::Relaxed);
-}
+pub(crate) use crate::extended::railway_guns::note_railway_gun_names;
 
 pub fn observe_railway_gun_names(
     memory: &impl Memory,
@@ -593,27 +500,6 @@ pub(crate) fn observe_reserved_visibility(
     engine::crelation_status::reserved_visibility_demand(memory, base, state).map(Some)
 }
 
-/// An absent or empty world is pending, not a failed census or a zero hint.
-pub(crate) fn demand_game_state(
-    memory: &impl Memory,
-    base: usize,
-) -> Result<Option<usize>, &'static str> {
-    let game_state = base
-        .checked_add(cgame_state::SINGLETON_RVA)
-        .and_then(|at| engine::read::<u64>(memory, at))
-        .ok_or("input demand game state unreadable or address overflow")?;
-    let state =
-        usize::try_from(game_state).map_err(|_| "input demand game state address overflow")?;
-    if state == 0 {
-        return Ok(None);
-    }
-    let countries = state
-        .checked_add(cgame_state::COUNTRIES)
-        .and_then(|at| engine::cpdx_array::Array::read(memory, at, 8))
-        .ok_or("input demand country array unreadable or invalid")?;
-    Ok((countries.count >= 2).then_some(state))
-}
-
 /// Daily native observations plus the bounded frame backlog, independent of
 /// population growth. A failed hint preserves staging and names its refusal.
 pub(crate) fn observe_politics_demand(
@@ -647,35 +533,6 @@ pub(crate) fn observe_advisor_modifiers(
             .map(|state| engine::cadvisor::modifier_demand(memory, base, state))
             .transpose()
     }))
-}
-
-/// The air manager is constructed after country roots, then its country-air
-/// slots are filled. Its count reaches the country count before filling slots.
-/// A null manager or shorter roster therefore leaves these hints pending.
-pub(crate) fn demand_air_game_state(
-    memory: &impl Memory,
-    base: usize,
-) -> Result<Option<usize>, &'static str> {
-    let Some(state) = demand_game_state(memory, base)? else {
-        return Ok(None);
-    };
-    let manager = state
-        .checked_add(cgame_state::STRATEGIC_AIR_MANAGER)
-        .and_then(|at| engine::read::<u64>(memory, at))
-        .and_then(|p| usize::try_from(p).ok())
-        .ok_or("input demand strategic air manager unreadable")?;
-    if manager == 0 {
-        return Ok(None);
-    }
-    let slots = manager
-        .checked_add(engine::cstrategic_air_manager::COUNTRY_AIR)
-        .and_then(|at| engine::cpdx_array::Array::read(memory, at, 8))
-        .ok_or("input demand strategic air country roster unreadable or invalid")?;
-    let countries = state
-        .checked_add(cgame_state::COUNTRIES)
-        .and_then(|at| engine::cpdx_array::Array::read(memory, at, 8))
-        .ok_or("input demand country array unreadable or invalid")?;
-    Ok((countries.count >= 2 && slots.count >= countries.count).then_some(state))
 }
 
 pub(crate) fn observe_production_modifiers(
@@ -1063,20 +920,6 @@ fn pride_name_demand(
         return Ok(0);
     };
     engine::cship::cached_name_demand(memory, base, ship, handle)
-}
-
-/// Rows for `per_country` rows per slot, with a third of headroom so the
-/// three-quarters growth rule does not double a fresh buffer on its first hour.
-pub fn rows(slots: usize, per_country: usize) -> usize {
-    slots
-        .saturating_mul(per_country)
-        .saturating_mul(4)
-        .div_ceil(3)
-}
-
-/// Raise `capacity` to at least `required`; never lowers it.
-pub fn raise(capacity: &mut usize, required: usize) {
-    *capacity = (*capacity).max(required);
 }
 
 /// Every capture capacity the frame pool is built from.
@@ -3619,27 +3462,6 @@ mod tests {
         // The spool thread frees the retired cache on its next offer.
         shared.offer_country_cache(0);
         assert!(shared.country_cache_swap.lock().unwrap().retired.is_none());
-    }
-
-    #[test]
-    fn rows_keep_growth_headroom_and_never_lower_capacity() {
-        assert_eq!(rows(0, 1), 0);
-        assert_eq!(rows(15_000, 1), 20_000);
-        assert_eq!(rows(15_000, 2), 40_000);
-        let mut capacity = 30_000;
-        raise(&mut capacity, rows(15_000, 1));
-        assert_eq!(capacity, 30_000);
-        raise(&mut capacity, rows(30_000, 1));
-        assert_eq!(capacity, 40_000);
-    }
-
-    #[test]
-    fn job_censuses_reserve_one_row_per_slot_with_headroom_only_once() {
-        let mut census = Vec::<(usize, u32)>::with_capacity(512);
-        assert!(reserve_rows(&mut census, rows(COUNTRIES + 1, 1)));
-        assert!(census.capacity() > COUNTRIES);
-        assert!(!reserve_rows(&mut census, rows(COUNTRIES + 1, 1)));
-        assert!(!reserve_rows(&mut census, rows(10, 1)));
     }
 
     #[test]

@@ -1,4 +1,6 @@
 use super::*;
+#[path = "file_backed_tests.rs"]
+mod file_backed_tests;
 use crate::{
     branches::Parentage,
     frame::{FrameEncoder, Metrics, TableUpdate},
@@ -7,7 +9,7 @@ use crate::{
     spool::{encode_record, recover_prefix},
 };
 
-const CAMPAIGN: &[u8] = b"container-test-campaign";
+pub(super) const CAMPAIGN: &[u8] = b"container-test-campaign";
 
 #[test]
 fn partial_capture_trailer_retains_prefix_gap_and_list_metadata() {
@@ -136,7 +138,7 @@ fn branch(id: u64, hour: i32) -> BranchStart {
     }
 }
 
-fn source(branch: u64, hour: i32) -> DecodedFrame {
+pub(super) fn source(branch: u64, hour: i32) -> DecodedFrame {
     let mut tables =
         std::array::from_fn(|index| TableView::Complete(TableRows::empty(TableId::ALL[index])));
     tables[TableId::Clock.index()] = TableView::Complete(TableRows::Clock(vec![ClockRow {
@@ -187,6 +189,8 @@ fn source(branch: u64, hour: i32) -> DecodedFrame {
                 ..Default::default()
             },
         ]));
+    tables[TableId::MapEvents.index()] =
+        TableView::Complete(TableRows::MapEvents(vec![Default::default()]));
     crate::frame::retire_absent(DecodedFrame {
         branch,
         hour,
@@ -324,16 +328,20 @@ fn destruction_hours_roundtrip_signed_empty_unavailable_and_selected() {
             );
         }
     }
-    // A selected seek stops at its hour yet verifies the rest of its block first, and
-    // rebuilds only what was asked for (with the campaign every frame is checked against).
+    // A selected seek stops at its hour, certifies its block only once it has read through
+    // the block's last hour, and rebuilds only what was asked for (with the campaign every
+    // frame is checked against).
     let tables = [TableId::EquipmentDestruction];
     let fresh = Replay::open(replay.bytes().to_vec()).unwrap();
     for (i, (amounts, _)) in views.iter().enumerate() {
-        let SeekResult::Frame(frame) = fresh.seek_selected(1, i as i32 + 1, Some(&tables)).unwrap()
-        else {
+        let hour = i as i32 + 1;
+        let SeekResult::Frame(frame) = fresh.seek_selected(1, hour, Some(&tables)).unwrap() else {
             panic!("missing hour");
         };
-        assert!(fresh.is_verified(&fresh.index[0]));
+        assert_eq!(
+            fresh.is_verified(&fresh.index[0]),
+            hour == fresh.index[0].last_hour
+        );
         assert_eq!(
             &*frame.tables[TableId::EquipmentDestruction.index()],
             amounts
@@ -357,7 +365,7 @@ fn destruction_hours_roundtrip_signed_empty_unavailable_and_selected() {
     );
 }
 
-fn records(id: u64, hours: &[i32]) -> Vec<Record> {
+pub(super) fn records(id: u64, hours: &[i32]) -> Vec<Record> {
     let mut encoder = FrameEncoder::new();
     let mut records = vec![
         Record::SessionStart(session(id)),
@@ -372,7 +380,7 @@ fn records(id: u64, hours: &[i32]) -> Vec<Record> {
 }
 
 /// The same recording with every block rewritten in the interleaved layout.
-fn interleaved_copy(replay: &Replay) -> Replay {
+pub(super) fn interleaved_copy(replay: &Replay) -> Replay {
     let mut prefix = replay.bytes()[..replay.header_end].to_vec();
     let mut blocks = Vec::new();
     for block in &replay.index {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { dayLabel } from '../../charts/draw';
@@ -19,6 +19,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
+import { useParityRows } from '../../dashboard/parityRows';
 import { STYLES, useCountriesAt } from '../../dashboard/useCountriesAt';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useHoverLabels } from '../../dashboard/useHoverLabels';
@@ -47,9 +48,15 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
   // The viewpoint is the widget's country: the dashboard's unless one is picked.
   const viewpointTag = selectedTags(widget.countries, track)[0] ?? null;
+  const [hoverHour,setHoverHour]=useState<number|null>(null);
   const product = useProduct(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'wars',
-    params: { branchId: track.branch.id, viewpointTag } } : null, active, validateWarsReply);
+    params: { branchId: track.branch.id, viewpointTag } } : null, active, validateWarsReply, track?.source);
+  // The structural reply stays mounted while independent exact counter reads load.
+  const exact=useProduct(runtime.client,track ? {sourceId:track.source.id,revision:track.source.revision,product:'wars',
+    params:{branchId:track.branch.id,viewpointTag,reads:[...new Set([at,...(hoverHour===null ? [] : [hoverHour])])].map(hour=>({hour}))}} : null,
+    active,validateWarsReply,track?.source);
   const data = product.data;
+  const exactWars=useMemo(()=>new Map(exact.data?.wars.map(war=>[war.id,war]) ?? []),[exact.data]);
   const groups = useCountryGroups(runtime, track, active);
   const factions = useFactionColours(runtime.client, track?.source);
   const identities = useMemo(() => groups.data ? countryIdentityIndex(groups.data.countryIdentities) : undefined, [groups.data]);
@@ -116,16 +123,25 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   useEffect(() => {
     const warnings = [...new Set([...(data?.warnings ?? []), ...(groups.data?.warnings ?? []), ...factions.warnings,
       ...(factions.error ? [factions.error] : []), ...(groups.error ? [`Country history unavailable: ${groups.error}`] : []),
+      ...(exact.error ? [`War casualty values unavailable: ${exact.error}`] : []),
       ...(prepared?.unidentifiedHours ? [`${prepared.unidentifiedHours} participant-hours have unknown countries; those lanes keep unknown labels and colours.`] : [])])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, groups.data, groups.error, factions.warnings, factions.error, prepared, onDiagnostics]);
+  }, [data, groups.data, groups.error, factions.warnings, factions.error, exact.error, prepared, onDiagnostics]);
+
+  const root=useRef<HTMLDivElement>(null);
+  useParityRows(root,()=>({kind:'chart',label:'Wars and casualties',scope:'displayed-hour',hour:at,
+    complete:!!data && !!exact.data && !exact.error,total:lanes.length,
+    rows:data?.wars.filter(war=>war.firstHour<=at).map(war=>({id:war.id,observation:observationAt(war,at),
+      casualties:exactWars.has(war.id) ? casualtiesAt(exactWars.get(war.id)!,at) : null,
+      participants:war.participants.filter(run=>run.firstHour<=at && at<=run.lastHour),capitulations:war.capitulations.filter(event=>event.hour<=at)})) ?? []}));
 
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its wars." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   const state = warsReplyState(data, product.error);
   if (state === 'error') return <WidgetState kind="error" detail={product.error!} onRetry={product.retry} />;
+  if (exact.error) return <WidgetState kind="error" detail={exact.error} onRetry={exact.retry} />;
   if (state === 'unavailable') return <WidgetState kind="unavailable" />;
   if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!data || !prepared) return <WidgetState kind="loading" label="Loading wars…" />;
@@ -155,7 +171,8 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
       : [...new Set([...(labelled ? [labelled.viewpointTag] : []), ...(observation ? [...observation.viewpointSide, ...observation.opposingSide] : [])])];
     if (recorded) hover.ask(hour, tags.filter(tag => prepared.identities?.keyAt(tag, hour) !== null));
     const participant = about.kind === 'participant' ? about.participant : bar?.participant;
-    const content = warTooltip({ war, observation, losses: casualtiesAt(war, hour), hour, until: at,
+    const content = warTooltip({ war, observation, losses: exactWars.has(war.id) ? casualtiesAt(exactWars.get(war.id)!,hour) : null,
+      lossesPending:!exact.data, hour, until: at,
       branchLast: track.branch.lastHour, unobserved: data.unobserved, branchGaps: track.branch.gaps, capitulationsUnobserved: data.capitulationsUnobserved,
       country: labels, day: dayLabel,
       ...(tag ? { participant: { tag, run: bar?.holding ?? (participant ? participantHoldingAt(participant, hour) : null),
@@ -165,12 +182,13 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   };
   const seenAs = viewpoint ? countries(viewpoint) : null;
   const summary = viewpointSummary(seenAs);
-  return <div className="timeline-scroll">
+  return <div ref={root} className="timeline-scroll">
     {!lanes.length ? <WidgetState kind="empty" message={data.unobserved.some(gap => gap.firstHour <= at && at <= gap.lastHour) ? 'Not recorded.' : 'No wars yet.'} />
       : <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}:${viewpointTag ?? ''}`} label="Wars timeline"
         extent={extent} playhead={playhead} labelHour={at} lanes={lanes} emptyLabel="Not recorded"
         labelCatalogue={prepared.labelCatalogue} preserveZoomOnExtentChange={options.grow === true}
         showIcons={false} showNames={false} active={active} unobserved={data.unobserved}
+        onHover={hour=>setHoverHour(hour===null ? null : Math.floor(hour))}
         onLaneActivate={activate} onLanesInView={onLanesInView}
         revision={`${revision}:${looks.revision}:${hover.revision}`} tooltip={tooltip}
         description={`${summary}. ${options.view === 'gantt' ? 'Enter or Space expands or collapses a war. ' : ''}Arrow keys step through lanes and bars.`}

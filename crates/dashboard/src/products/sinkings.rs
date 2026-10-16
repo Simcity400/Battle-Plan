@@ -28,12 +28,14 @@ use crate::{
         IdentityTrack, LinkTags, TaggedCountry, branch_bounds, link_slot, slot_read,
         tagged_countries, validate_campaign,
     },
+    prepared::frame_changes::FrameChanges,
 };
 use replay::{
     container::Replay,
     frame::{DecodedFrame, FrameDecoder, SharedView, TableView, ViewIdentity},
     rows::{SunkConvoyRow, SunkShipEntry, TableId, TableRows, tables},
 };
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
@@ -42,8 +44,12 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+mod preparation;
+pub(crate) use preparation::Change;
+use preparation::Pending;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(from = "SavedShip", into = "SavedShip")]
 pub struct ShipEvent {
     pub entry: SunkShipEntry,
     pub read_hour: i32,
@@ -54,7 +60,72 @@ pub struct ShipEvent {
     pub attacker_as_of: Option<i32>,
 }
 
-#[derive(Clone, Debug)]
+/// Whole-entry signatures preserve multiplicity and the historical naming inputs
+/// even after native retention prunes the entry from the decoder frame.
+#[derive(Serialize, Deserialize)]
+struct SavedShip {
+    signature: RefusedShipKey,
+    read_hour: i32,
+    victim: Option<String>,
+    attacker: Option<String>,
+    victim_as_of: Option<i32>,
+    attacker_as_of: Option<i32>,
+}
+impl From<ShipEvent> for SavedShip {
+    fn from(event: ShipEvent) -> Self {
+        let key = ShipKey::from(&event.entry);
+        Self {
+            signature: (key.text.map(|text| text.to_vec()), key.fields),
+            read_hour: event.read_hour,
+            victim: event.victim,
+            attacker: event.attacker,
+            victim_as_of: event.victim_as_of,
+            attacker_as_of: event.attacker_as_of,
+        }
+    }
+}
+impl From<SavedShip> for ShipEvent {
+    fn from(saved: SavedShip) -> Self {
+        let (
+            [
+                ship_name,
+                attribution_name,
+                class_name,
+                attribution_class_name,
+            ],
+            f,
+        ) = saved.signature;
+        Self {
+            entry: SunkShipEntry {
+                ship_name,
+                attribution_name,
+                class_name,
+                attribution_class_name,
+                victim_country: f[0] as u32,
+                attacker_country: f[1] as u32,
+                sink_hour: f[2] as u32 as i32,
+                class_token: f[3] as u32,
+                attribution_class_token: f[4] as u32,
+                attribution_class_present: f[5] as u8,
+                model_level: f[6] as u32 as i32,
+                victim_equipment_variant: f[7],
+                damage_source_reference: f[8],
+                province: f[9] as u32,
+                province_present: f[10] as u8,
+                battle: f[11],
+                cause_record: f[12] as u8,
+                assisted_kill: f[13] as u8,
+            },
+            read_hour: saved.read_hour,
+            victim: saved.victim,
+            attacker: saved.attacker,
+            victim_as_of: saved.victim_as_of,
+            attacker_as_of: saved.attacker_as_of,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConvoyEvent {
     pub month: i32,
     pub read_hour: i32,
@@ -69,14 +140,14 @@ pub struct ConvoyEvent {
 
 /// One tag's native holder over consecutive recorded hours. Tag spelling is
 /// presentation; the canonical slot and native country id own its tallies.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CountryIdentitySpan {
     pub first_hour: i32,
     pub last_hour: i32,
     pub identity: (u32, u32),
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Scanned {
     pub first_hour: i32,
     pub last_hour: i32,
@@ -86,7 +157,9 @@ pub struct Scanned {
     pub last_convoy_read: Option<i32>,
     pub ship_reads: Vec<i32>,
     pub convoy_reads: Vec<i32>,
+    #[serde(skip)]
     pub ships: Vec<ShipEvent>,
+    #[serde(skip)]
     pub convoys: Vec<ConvoyEvent>,
     pub ship_unread: Vec<HourSpan>,
     pub convoy_unread: Vec<HourSpan>,
@@ -99,14 +172,27 @@ pub struct Scanned {
     pub tokens: BTreeMap<u32, String>,
     pub warnings: Vec<String>,
     pub gap_recoveries: usize,
-    pub refused_entries: BTreeMap<&'static str, usize>,
+    pub refused_entries: BTreeMap<String, usize>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     pub uncertain_victims: BTreeMap<Identity, Vec<(i32, i32)>>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     pub uncertain_attackers: BTreeMap<Identity, Vec<(i32, i32)>>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     pub uncertain_convoy_owners: BTreeMap<Identity, Vec<(i32, i32)>>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     pub uncertain_convoy_killers: BTreeMap<Identity, Vec<(i32, i32)>>,
     pub unresolved: BTreeSet<u32>,
     /// The branch's country histories, from the frames `scan_histories` reads.
+    #[serde(skip)]
     pub(crate) histories: Arc<RecordedHistories>,
+    #[serde(skip)]
+    pub(crate) new_candidates: BTreeSet<Identity>,
+    #[serde(skip)]
+    pub(crate) new_tags: BTreeSet<String>,
+    #[serde(skip)]
+    pub(crate) current_holders: Vec<(String, Identity)>,
+    #[serde(skip)]
+    pub(crate) changed_references: BTreeSet<u32>,
 }
 
 /// Every recorded field participates, including attribution and presence flags.
@@ -146,12 +232,19 @@ impl<'a> From<&'a SunkShipEntry> for ShipKey<'a> {
 
 type RefusedShipKey = ([Vec<u8>; 4], [u64; 14]);
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Tracker {
+    #[serde(skip)]
     ships: Option<SharedView>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
+    ship_counts: HashMap<RefusedShipKey, usize>,
+    #[serde(skip)]
+    dictionary: Option<ViewIdentity>,
     ship_open: bool,
     ship_future: Option<i32>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     refused_ships: HashMap<RefusedShipKey, usize>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     convoys: BTreeMap<(i32, u32, u32), i32>,
     convoy_open: bool,
 }
@@ -180,6 +273,113 @@ fn append_span(spans: &mut Vec<HourSpan>, first: i32, last: i32) {
 }
 
 impl Scanned {
+    fn observe_tables(
+        &mut self,
+        track: &mut Tracker,
+        format: replay::format::FormatVersion,
+        frame: &DecodedFrame,
+        tags: &HashMap<u32, String>,
+        changes: Option<&FrameChanges>,
+    ) {
+        let hour = frame.hour;
+        let view = &frame.tables[TableId::LexicalTokens.index()];
+        if changes.map_or_else(
+            || !track.dictionary.as_ref().is_some_and(|last| last.is(view)),
+            |changes| changes.rows_changed[TableId::LexicalTokens.index()],
+        ) && let Ok(rows) = frame.complete::<tables::LexicalTokens>()
+        {
+            track.dictionary = Some(view.identity());
+            for row in rows {
+                if let Ok(text) = std::str::from_utf8(&row.literal) {
+                    self.tokens
+                        .entry(row.token)
+                        .or_insert_with(|| text.to_owned());
+                }
+            }
+        }
+        let ships = frame.complete::<tables::SunkShips>();
+        if let Ok([_]) = ships
+            && changes.map_or_else(
+                || slot_read(format, &frame.metrics, TableId::SunkShips, hour),
+                |changes| changes.slot_read[TableId::SunkShips.index()],
+            )
+        {
+            track.ships(self, &frame.tables[TableId::SunkShips.index()], hour);
+        } else if !matches!(ships, Ok([_])) || !track.ship_open {
+            append_span(&mut self.ship_unread, hour, hour);
+            append_span(
+                &mut self.ship_breaks,
+                self.last_ship_read.map_or(hour, |h| h.saturating_add(1)),
+                hour,
+            );
+            track.ship_open = false;
+        }
+        let convoys = frame.complete::<tables::SunkConvoys>();
+        if let Ok(rows) = convoys
+            && changes.map_or_else(
+                || slot_read(format, &frame.metrics, TableId::SunkConvoys, hour),
+                |changes| {
+                    changes.table_read[TableId::SunkConvoys.index()]
+                        || changes.slot_read[TableId::SunkConvoys.index()]
+                },
+            )
+        {
+            // Supplying reads use the oracle's accepted-frame/cadence date.
+            // Equal acquired rows advance that proof without another bucket walk.
+            if self.first_convoy_read.is_some()
+                && changes
+                    .is_some_and(|changes| !changes.rows_changed[TableId::SunkConvoys.index()])
+            {
+                track.confirm_convoy_read(self, hour);
+            } else {
+                track.convoys(self, rows, hour, tags);
+            }
+        } else if convoys.is_err() || !track.convoy_open {
+            append_span(&mut self.convoy_unread, hour, hour);
+            append_span(
+                &mut self.convoy_breaks,
+                self.last_convoy_read.map_or(hour, |h| h.saturating_add(1)),
+                hour,
+            );
+            track.convoy_open = false;
+        }
+    }
+    pub(crate) fn metadata(&self) -> Self {
+        Self {
+            first_hour: self.first_hour,
+            last_hour: self.last_hour,
+            first_ship_read: self.first_ship_read,
+            first_convoy_read: self.first_convoy_read,
+            last_ship_read: self.last_ship_read,
+            last_convoy_read: self.last_convoy_read,
+            ship_reads: Vec::new(),
+            convoy_reads: Vec::new(),
+            ships: Vec::new(),
+            convoys: Vec::new(),
+            ship_unread: self.ship_unread.clone(),
+            convoy_unread: self.convoy_unread.clone(),
+            ship_breaks: self.ship_breaks.clone(),
+            convoy_breaks: self.convoy_breaks.clone(),
+            country_candidates: self.country_candidates.clone(),
+            segments: self.segments.clone(),
+            country_identities: self.country_identities.clone(),
+            tokens: self.tokens.clone(),
+            warnings: self.warnings.clone(),
+            gap_recoveries: self.gap_recoveries,
+            refused_entries: self.refused_entries.clone(),
+            uncertain_victims: self.uncertain_victims.clone(),
+            uncertain_attackers: self.uncertain_attackers.clone(),
+            uncertain_convoy_owners: self.uncertain_convoy_owners.clone(),
+            uncertain_convoy_killers: self.uncertain_convoy_killers.clone(),
+            unresolved: self.unresolved.clone(),
+            histories: Arc::clone(&self.histories),
+            new_candidates: BTreeSet::new(),
+            new_tags: BTreeSet::new(),
+            current_holders: Vec::new(),
+            changed_references: BTreeSet::new(),
+        }
+    }
+
     pub(crate) fn identity(&self, tag: &str, hour: i32) -> Option<Identity> {
         let spans = self.country_identities.get(tag)?;
         let end = spans.partition_point(|span| span.first_hour <= hour);
@@ -230,14 +430,19 @@ impl Tracker {
         {
             return;
         }
-        let mut previous = HashMap::<ShipKey<'_>, usize>::new();
-        if let Some(view) = &self.ships {
-            for entry in ship_entries(view) {
-                if last_read.is_some_and(|hour| ship_refusal(entry, hour).is_none()) {
-                    *previous.entry(entry.into()).or_default() += 1;
-                }
-            }
-        }
+        let previous: HashMap<ShipKey<'_>, usize> = self
+            .ship_counts
+            .iter()
+            .map(|((text, fields), count)| {
+                (
+                    ShipKey {
+                        text: text.each_ref().map(|bytes| bytes.as_slice()),
+                        fields: *fields,
+                    },
+                    *count,
+                )
+            })
+            .collect();
         let mut now = HashMap::<ShipKey<'_>, (usize, &SunkShipEntry)>::new();
         self.ship_future = None;
         let mut refused = HashMap::<RefusedShipKey, usize>::new();
@@ -248,7 +453,7 @@ impl Tracker {
                 let count = refused.entry(key.clone()).or_default();
                 *count += 1;
                 if *count > self.refused_ships.get(&key).copied().unwrap_or(0) {
-                    *out.refused_entries.entry(reason).or_default() += 1;
+                    *out.refused_entries.entry(reason.into()).or_default() += 1;
                 }
                 if entry.sink_hour > hour {
                     self.ship_future = Some(
@@ -260,6 +465,10 @@ impl Tracker {
             }
             now.entry(entry.into()).or_insert((0, entry)).0 += 1;
         }
+        let counts = now
+            .iter()
+            .map(|(key, (count, _))| ((key.text.map(|bytes| bytes.to_vec()), key.fields), *count))
+            .collect();
         for entry in ship_entries(view) {
             let key = ShipKey::from(entry);
             let Some((count, entry)) = now.remove(&key) else {
@@ -279,6 +488,7 @@ impl Tracker {
         }
         drop(now);
         drop(previous);
+        self.ship_counts = counts;
         self.refused_ships = refused;
         self.ships = Some(view.clone());
     }
@@ -292,6 +502,8 @@ impl Tracker {
     ) {
         let baseline = out.first_convoy_read.is_none();
         for row in rows {
+            #[cfg(test)]
+            work::WORK.with(|work| work.borrow_mut().convoys += 1);
             let last = self
                 .convoys
                 .entry((row.month, row.killer_country, row.owner_country))
@@ -314,6 +526,9 @@ impl Tracker {
                 });
             }
         }
+        self.confirm_convoy_read(out, hour);
+    }
+    fn confirm_convoy_read(&mut self, out: &mut Scanned, hour: i32) {
         self.convoy_open = true;
         out.first_convoy_read.get_or_insert(hour);
         out.last_convoy_read = Some(hour);
@@ -342,7 +557,7 @@ fn ship_refusal(entry: &SunkShipEntry, hour: i32) -> Option<&'static str> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct TagRun {
     first: i32,
     last: i32,
@@ -350,16 +565,20 @@ struct TagRun {
     identity: Identity,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct CountryCache {
     links: LinkTags,
     holders: Vec<(String, Identity)>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
     tags: HashMap<u32, String>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
     empty: HashMap<u32, String>,
     /// The last hour with country tables, and the hour every holder's identity
     /// and tag run reach but are not yet written.
     hour: Option<i32>,
     extend_to: Option<i32>,
+    #[serde(skip)]
+    changed: bool,
 }
 
 impl CountryCache {
@@ -420,20 +639,10 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
         .find(|b| b.id == branch)
         .ok_or_else(|| io::Error::other("Naval sinkings branch not found"))?;
     let (first_hour, last_hour) = branch_bounds(replay, start);
-    let mut out = Scanned {
-        first_hour,
-        last_hour,
-        ..Default::default()
-    };
-    let mut track = Tracker::default();
-    let mut raw_history = HashMap::<u32, Vec<TagRun>>::new();
-    let mut identities = HashMap::<String, IdentityTrack>::new();
-    let mut country_cache = CountryCache::default();
+    let mut observer = ShipHistory::new(first_hour);
     let mut histories = HistoryScan::new(false, &[]);
-    let mut dictionary: Option<ViewIdentity> = None;
     let mut blocks: Vec<_> = replay.index.iter().filter(|b| b.branch == branch).collect();
     blocks.sort_unstable_by_key(|b| b.first_hour);
-    let mut next = i64::from(first_hour);
     crate::blocks::scan_blocks(replay, blocks, &selected, cancelled, |blocks| {
         for (_, frames) in blocks {
             if cancelled.load(Ordering::Acquire) {
@@ -462,7 +671,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 // Before the skips below: `scan_histories` reads exactly these frames.
                 histories.observe(decoded);
                 let hour = decoded.hour;
-                if i64::from(hour) < next
+                if i64::from(hour) < observer.next.expect("sinking cursor")
                     || replay
                         .gaps
                         .iter()
@@ -470,148 +679,14 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 {
                     continue;
                 }
-                if next < i64::from(hour) {
-                    out.missing(&mut track, next as i32, hour - 1);
-                }
-                let tags = countries(
-                    decoded,
-                    &mut out,
-                    &mut raw_history,
-                    &mut identities,
-                    &mut country_cache,
-                );
-                let view = &decoded.tables[TableId::LexicalTokens.index()];
-                if !dictionary.as_ref().is_some_and(|last| last.is(view))
-                    && let Ok(rows) = decoded.complete::<tables::LexicalTokens>()
-                {
-                    dictionary = Some(view.identity());
-                    for row in rows {
-                        if let Ok(text) = std::str::from_utf8(&row.literal) {
-                            out.tokens
-                                .entry(row.token)
-                                .or_insert_with(|| text.to_owned());
-                        }
-                    }
-                }
-                let ships = decoded.complete::<tables::SunkShips>();
-                if let Ok([_]) = ships
-                    && slot_read(replay.format, &decoded.metrics, TableId::SunkShips, hour)
-                {
-                    track.ships(&mut out, &decoded.tables[TableId::SunkShips.index()], hour);
-                } else if !matches!(ships, Ok([_])) || !track.ship_open {
-                    append_span(&mut out.ship_unread, hour, hour);
-                    append_span(
-                        &mut out.ship_breaks,
-                        out.last_ship_read.map_or(hour, |h| h.saturating_add(1)),
-                        hour,
-                    );
-                    track.ship_open = false;
-                }
-                let convoys = decoded.complete::<tables::SunkConvoys>();
-                if let Ok(rows) = convoys
-                    && slot_read(replay.format, &decoded.metrics, TableId::SunkConvoys, hour)
-                {
-                    track.convoys(&mut out, rows, hour, tags);
-                } else if convoys.is_err() || !track.convoy_open {
-                    append_span(&mut out.convoy_unread, hour, hour);
-                    append_span(
-                        &mut out.convoy_breaks,
-                        out.last_convoy_read.map_or(hour, |h| h.saturating_add(1)),
-                        hour,
-                    );
-                    track.convoy_open = false;
-                }
-                next = i64::from(hour) + 1;
+                observer.observe(replay.format, decoded);
             }
         }
         Ok(())
     })?;
-    country_cache.extend(&mut out, &mut raw_history, &mut identities);
-    out.histories = Arc::new(histories.finish());
-    if next <= i64::from(last_hour) {
-        out.missing(&mut track, next as i32, last_hour);
-    }
-    for event in &mut out.ships {
-        for (raw, tag, as_of, uncertain, primary) in [
-            (
-                event.entry.victim_country,
-                &mut event.victim,
-                &mut event.victim_as_of,
-                &mut out.uncertain_victims,
-                true,
-            ),
-            (
-                event.entry.attacker_country,
-                &mut event.attacker,
-                &mut event.attacker_as_of,
-                &mut out.uncertain_attackers,
-                event.entry.cause_record == 0 && event.entry.assisted_kill == 0,
-            ),
-        ] {
-            let (resolved, dated, possible) = ship_attribution(
-                raw,
-                event.entry.sink_hour,
-                event.read_hour,
-                &raw_history,
-                &out.country_candidates,
-            );
-            *tag = resolved;
-            *as_of = dated;
-            if raw != 0 && tag.is_none() {
-                out.unresolved.insert(raw);
-                if !primary {
-                    continue;
-                }
-                for identity in possible {
-                    uncertain
-                        .entry(identity)
-                        .or_default()
-                        .push((event.entry.sink_hour, event.read_hour));
-                }
-            }
-        }
-    }
-    for event in &mut out.convoys {
-        for (raw, tag, uncertain) in [
-            (
-                event.owner_raw,
-                &mut event.owner,
-                &mut out.uncertain_convoy_owners,
-            ),
-            (
-                event.killer_raw,
-                &mut event.killer,
-                &mut out.uncertain_convoy_killers,
-            ),
-        ] {
-            let (resolved, possible) =
-                attribution(raw, event.read_hour, &raw_history, &out.country_candidates);
-            *tag = resolved;
-            if raw != 0 && tag.is_none() {
-                out.unresolved.insert(raw);
-                for identity in possible {
-                    uncertain
-                        .entry(identity)
-                        .or_default()
-                        .push((event.month, event.read_hour));
-                }
-            }
-        }
-    }
-    if out.gap_recoveries > 0 {
-        out.warnings.push(format!("{} ship-history stretches resumed after missing coverage. Ships born and pruned wholly between reads cannot be counted when the break reaches retention.", out.gap_recoveries));
-    }
-    for (reason, count) in &out.refused_entries {
-        out.warnings
-            .push(format!("{count} naval entries refused: {reason}."));
-    }
-    if !out.unresolved.is_empty() {
-        out.warnings.push(format!(
-            "{} naval country references are unresolved.",
-            out.unresolved.len()
-        ));
-    }
-    Ok(out)
+    observer.finish(last_hour);
+    observer.scan.histories = Arc::new(histories.finish());
+    Ok(observer.scan)
 }
 
 fn countries<'a>(
@@ -621,9 +696,12 @@ fn countries<'a>(
     identities: &mut HashMap<String, IdentityTrack>,
     cache: &'a mut CountryCache,
 ) -> &'a HashMap<u32, String> {
+    cache.changed = cache.hour.and_then(|last| last.checked_add(1)) != Some(decoded.hour);
     let Ok(changed) = cache.links.update(decoded) else {
+        cache.changed |= cache.hour.is_some();
         return &cache.empty;
     };
+    cache.changed |= changed;
     let hour = decoded.hour;
     // The same holders an hour later continue every identity and tag run they
     // reached. Write that once, when the holders change, a break comes or the scan ends.
@@ -651,10 +729,13 @@ fn countries<'a>(
         }
         for link in links {
             if let Some(holders) = possible.get(&link.canonical_slot) {
-                out.country_candidates
-                    .entry(link.id)
-                    .or_default()
-                    .extend(holders);
+                let candidates = out.country_candidates.entry(link.id).or_default();
+                for &holder in holders {
+                    if candidates.insert(holder) {
+                        out.new_candidates.insert(holder);
+                        out.changed_references.insert(link.id);
+                    }
+                }
             }
         }
         let mut slots = HashMap::new();
@@ -663,6 +744,9 @@ fn countries<'a>(
                 && let Ok(tag) = std::str::from_utf8(tag)
             {
                 let tag = tag.to_owned();
+                if !out.segments.contains_key(&tag) {
+                    out.new_tags.insert(tag.clone());
+                }
                 out.segments.entry(tag.clone()).or_default();
                 out.country_identities.entry(tag.clone()).or_default();
                 identities.entry(tag.clone()).or_default();
@@ -717,6 +801,7 @@ fn countries<'a>(
         {
             run.last = hour;
         } else {
+            out.changed_references.insert(*raw);
             runs.push(TagRun {
                 first: hour,
                 last: hour,
@@ -750,6 +835,62 @@ fn ship_attribution(
         }
     }
     (tag, None, possible)
+}
+
+fn resolve_ship(
+    event: &mut ShipEvent,
+    history: &HashMap<u32, Vec<TagRun>>,
+    candidates: &BTreeMap<u32, BTreeSet<Identity>>,
+) -> [BTreeSet<Identity>; 2] {
+    let mut possible: [BTreeSet<Identity>; 2] = Default::default();
+    for (index, (raw, tag, as_of)) in [
+        (
+            event.entry.victim_country,
+            &mut event.victim,
+            &mut event.victim_as_of,
+        ),
+        (
+            event.entry.attacker_country,
+            &mut event.attacker,
+            &mut event.attacker_as_of,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (resolved, dated, holders) = ship_attribution(
+            raw,
+            event.entry.sink_hour,
+            event.read_hour,
+            history,
+            candidates,
+        );
+        *tag = resolved;
+        *as_of = dated;
+        if index == 0 || event.entry.cause_record == 0 && event.entry.assisted_kill == 0 {
+            possible[index] = holders;
+        }
+    }
+    possible
+}
+fn resolve_convoy(
+    event: &mut ConvoyEvent,
+    history: &HashMap<u32, Vec<TagRun>>,
+    candidates: &BTreeMap<u32, BTreeSet<Identity>>,
+) -> [BTreeSet<Identity>; 2] {
+    let mut possible: [BTreeSet<Identity>; 2] = Default::default();
+    for (index, (raw, tag)) in [
+        (event.owner_raw, &mut event.owner),
+        (event.killer_raw, &mut event.killer),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (resolved, holders) = attribution(raw, event.read_hour, history, candidates);
+        *tag = resolved;
+        possible[index] = holders;
+    }
+    possible
 }
 
 fn attribution(
@@ -798,6 +939,7 @@ struct Cache {
     gates: BTreeMap<u64, Arc<Mutex<()>>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Retention {
     pub ships: bool,
     pub convoys: bool,
@@ -813,66 +955,174 @@ pub(crate) fn retention(
     scan: &Scanned,
     catalogue: Option<&crate::catalogue::Catalogue>,
 ) -> Retention {
-    let mut result = Retention {
-        ships: false,
-        convoys: false,
-        ship_loss: Vec::new(),
-        convoy_loss: Vec::new(),
-        warnings: Vec::new(),
-    };
-    let Some(catalogue) = catalogue else {
-        result
-            .warnings
-            .push("Naval retention defines are unavailable; completeness is unknown.".into());
-        return result;
-    };
-    let defines = installed_content::defines::read(&catalogue.content.layers);
-    for (key, ship) in [
-        ("NAVAL_COMBAT_RESULT_TIMEOUT_YEARS", true),
-        ("CONVOY_LOSS_HISTORY_TIMEOUT_MONTHS", false),
-    ] {
-        let value = defines.as_ref().map_err(ToString::to_string).and_then(|d| {
-            d.number("NNavy", key).map_err(|e| e.to_string())?;
-            d.int32("NNavy", key).map_err(|e| e.to_string())
+    RetentionDefines::read(catalogue).evaluate(scan)
+}
+
+/// These validated content operands are fixed for a configured branch. The
+/// oracle and incremental observer use the same pruning arithmetic below.
+#[derive(Clone)]
+pub(crate) struct RetentionDefines {
+    values: Option<[Result<i32, String>; 2]>,
+}
+impl RetentionDefines {
+    pub(crate) fn read(catalogue: Option<&crate::catalogue::Catalogue>) -> Self {
+        let values = catalogue.map(|catalogue| {
+            #[cfg(test)]
+            work::WORK.with(|work| work.borrow_mut().defines += 1);
+            let defines = installed_content::defines::read(&catalogue.content.layers);
+            [
+                "NAVAL_COMBAT_RESULT_TIMEOUT_YEARS",
+                "CONVOY_LOSS_HISTORY_TIMEOUT_MONTHS",
+            ]
+            .map(|key| {
+                defines.as_ref().map_err(ToString::to_string).and_then(|d| {
+                    d.number("NNavy", key).map_err(|e| e.to_string())?;
+                    d.int32("NNavy", key).map_err(|e| e.to_string())
+                })
+            })
         });
-        match value {
-            Ok(value) if value > 0 && (!ship || value.checked_mul(0x2238).is_some()) => {
-                if ship {
-                    result.ships = true;
-                    let hours = i64::from(value) * 0x2238;
-                    for span in &scan.ship_breaks {
-                        let last = i64::from(span.last_hour) + 1 - hours;
-                        if last >= i64::from(span.first_hour) {
-                            result.ship_loss.push(HistoryLoss { first_hour: span.first_hour, last_hour: last as i32, known_at: span.last_hour.saturating_add(1) });
-                        }
-                    }
-                    let long = result.ship_loss.len();
-                    if long > 0 { result.warnings.push(format!("{long} unread ship-history spans reach NDefines.NNavy.{key} retention; sinkings born and pruned wholly between complete reads cannot be counted.")); }
-                } else {
-                    result.convoys = true;
-                    for span in &scan.convoy_breaks {
-                        if let (Some(first), Some(resume)) = (month(span.first_hour), month(span.last_hour.saturating_add(1))) {
-                            // Pruning uses strict <; equality survives.
-                            let last = resume - value - 1;
-                            if last >= first {
-                                result.convoy_loss.push(HistoryLoss {
-                                    first_hour: month_start(first).unwrap_or(span.first_hour),
-                                    last_hour: month_start(last + 1).unwrap_or(span.last_hour).saturating_sub(1),
-                                    known_at: span.last_hour.saturating_add(1),
-                                });
-                            }
-                        }
-                    }
-                    if !result.convoy_loss.is_empty() {
-                        result.warnings.push(format!("{} unread convoy-history spans exceed NDefines.NNavy.{key} retention; unseen pruned month buckets cannot be counted.", result.convoy_loss.len()));
-                    }
-                }
-            }
-            Ok(_) => result.warnings.push(format!("NDefines.NNavy.{key} is nonpositive or outside supported retention arithmetic; completeness is unknown.")),
-            Err(error) => result.warnings.push(format!("NDefines.NNavy.{key} is unavailable: {error}; completeness is unknown.")),
+        Self { values }
+    }
+    fn value(&self, ship: bool) -> Option<i32> {
+        self.values.as_ref()?[usize::from(!ship)]
+            .as_ref()
+            .ok()
+            .copied()
+            .filter(|value| *value > 0 && (!ship || value.checked_mul(0x2238).is_some()))
+    }
+    fn loss(&self, span: &HourSpan, ship: bool) -> Option<HistoryLoss> {
+        #[cfg(test)]
+        work::WORK.with(|work| work.borrow_mut().retention_spans += 1);
+        let value = self.value(ship)?;
+        if ship {
+            let last = i64::from(span.last_hour) + 1 - i64::from(value) * 0x2238;
+            (last >= i64::from(span.first_hour)).then_some(HistoryLoss {
+                first_hour: span.first_hour,
+                last_hour: last as i32,
+                known_at: span.last_hour.saturating_add(1),
+            })
+        } else {
+            let first = month(span.first_hour)?;
+            let resume = month(span.last_hour.saturating_add(1))?;
+            let last = resume - value - 1;
+            (last >= first).then(|| HistoryLoss {
+                first_hour: month_start(first).unwrap_or(span.first_hour),
+                last_hour: month_start(last + 1)
+                    .unwrap_or(span.last_hour)
+                    .saturating_sub(1),
+                known_at: span.last_hour.saturating_add(1),
+            })
         }
     }
-    result
+    fn warnings(&self, ship_losses: usize, convoy_losses: usize) -> Vec<String> {
+        let Some(values) = &self.values else {
+            return vec![
+                "Naval retention defines are unavailable; completeness is unknown.".into(),
+            ];
+        };
+        let mut warnings = Vec::new();
+        for (index, key) in [
+            "NAVAL_COMBAT_RESULT_TIMEOUT_YEARS",
+            "CONVOY_LOSS_HISTORY_TIMEOUT_MONTHS",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            match &values[index] {
+                Ok(_) if self.value(index == 0).is_some() => {
+                    if index == 0 && ship_losses > 0 {
+                        warnings.push(format!("{ship_losses} unread ship-history spans reach NDefines.NNavy.{key} retention; sinkings born and pruned wholly between complete reads cannot be counted."));
+                    } else if index == 1 && convoy_losses > 0 {
+                        warnings.push(format!("{convoy_losses} unread convoy-history spans exceed NDefines.NNavy.{key} retention; unseen pruned month buckets cannot be counted."));
+                    }
+                }
+                Ok(_) => warnings.push(format!("NDefines.NNavy.{key} is nonpositive or outside supported retention arithmetic; completeness is unknown.")),
+                Err(error) => warnings.push(format!("NDefines.NNavy.{key} is unavailable: {error}; completeness is unknown.")),
+            }
+        }
+        warnings
+    }
+    pub(crate) fn evaluate(&self, scan: &Scanned) -> Retention {
+        let ship_loss: Vec<_> = scan
+            .ship_breaks
+            .iter()
+            .filter_map(|span| self.loss(span, true))
+            .collect();
+        let convoy_loss: Vec<_> = scan
+            .convoy_breaks
+            .iter()
+            .filter_map(|span| self.loss(span, false))
+            .collect();
+        Retention {
+            ships: self.value(true).is_some(),
+            convoys: self.value(false).is_some(),
+            warnings: self.warnings(ship_loss.len(), convoy_loss.len()),
+            ship_loss,
+            convoy_loss,
+        }
+    }
+}
+
+/// Only the trailing break can extend; completed breaks never change again.
+pub(crate) struct RetentionProgress {
+    pub(crate) defines: RetentionDefines,
+    result: Retention,
+    seen: [usize; 2],
+    last: [Option<HourSpan>; 2],
+    last_loss: [bool; 2],
+}
+impl RetentionProgress {
+    pub(crate) fn new(defines: RetentionDefines) -> Self {
+        let result = defines.evaluate(&Scanned::default());
+        Self {
+            defines,
+            result,
+            seen: [0; 2],
+            last: [None, None],
+            last_loss: [false; 2],
+        }
+    }
+    pub(crate) fn update(&mut self, scan: &Scanned) -> &Retention {
+        for (index, spans) in [&scan.ship_breaks, &scan.convoy_breaks]
+            .into_iter()
+            .enumerate()
+        {
+            if spans.len() == self.seen[index] && spans.last() == self.last[index].as_ref() {
+                continue;
+            }
+            let losses = if index == 0 {
+                &mut self.result.ship_loss
+            } else {
+                &mut self.result.convoy_loss
+            };
+            let first = if spans.len() < self.seen[index] {
+                losses.clear();
+                0
+            } else if self.seen[index] > 0
+                && spans.get(self.seen[index] - 1) != self.last[index].as_ref()
+            {
+                if self.last_loss[index] {
+                    losses.pop();
+                }
+                self.seen[index] - 1
+            } else {
+                self.seen[index]
+            };
+            self.last_loss[index] = false;
+            for (at, span) in spans.iter().enumerate().skip(first) {
+                if let Some(loss) = self.defines.loss(span, index == 0) {
+                    losses.push(loss);
+                    self.last_loss[index] = at + 1 == spans.len();
+                }
+            }
+            self.seen[index] = spans.len();
+            self.last[index] = spans.last().cloned();
+            self.result.warnings = self
+                .defines
+                .warnings(self.result.ship_loss.len(), self.result.convoy_loss.len());
+        }
+        &self.result
+    }
 }
 
 /// Store zero-based month + ((hour - HOUR_EPOCH) / 0x2238) * 12,
@@ -947,3 +1197,317 @@ pub fn cached(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Resul
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) mod work;
+
+/// Only attribution operands continue after a sinking row/title has been published.
+#[derive(Serialize, Deserialize)]
+struct OpenShip {
+    victim: u32,
+    attacker: u32,
+    sink_hour: i32,
+    read_hour: i32,
+    primary: bool,
+}
+impl OpenShip {
+    fn event(&self) -> ShipEvent {
+        ShipEvent {
+            entry: SunkShipEntry {
+                victim_country: self.victim,
+                attacker_country: self.attacker,
+                sink_hour: self.sink_hour,
+                cause_record: u8::from(!self.primary),
+                ..Default::default()
+            },
+            read_hour: self.read_hour,
+            victim: None,
+            attacker: None,
+            victim_as_of: None,
+            attacker_as_of: None,
+        }
+    }
+}
+#[derive(Serialize, Deserialize)]
+struct OpenConvoy {
+    month: i32,
+    read_hour: i32,
+    count: i64,
+    baseline: bool,
+    previous_read: Option<i32>,
+    owner: u32,
+    killer: u32,
+}
+impl OpenConvoy {
+    fn event(&self) -> ConvoyEvent {
+        ConvoyEvent {
+            month: self.month,
+            read_hour: self.read_hour,
+            count: self.count,
+            baseline: self.baseline,
+            previous_read: self.previous_read,
+            owner_raw: self.owner,
+            killer_raw: self.killer,
+            owner: None,
+            killer: None,
+        }
+    }
+}
+
+/// The retained-vector scan shared by naval details, the sinking log and tallies.
+/// Country attribution uses the same dated holders as the recording scan.
+#[derive(Default, Serialize, Deserialize)]
+pub(crate) struct ShipHistory {
+    pub(crate) scan: Scanned,
+    pub(crate) ship_indices: Vec<u32>,
+    #[cfg(test)]
+    open_ships: Vec<OpenShip>,
+    #[cfg(test)]
+    open_convoys: Vec<OpenConvoy>,
+    next_ship_index: u32,
+    track: Tracker,
+    next: Option<i64>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
+    raw_history: HashMap<u32, Vec<TagRun>>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
+    identities: HashMap<String, IdentityTrack>,
+    countries: CountryCache,
+    #[serde(with = "crate::prepared_production::map_pairs")]
+    prepared_pending: BTreeMap<(bool, u64), Pending>,
+    next_convoy_index: u64,
+    #[serde(skip)]
+    prepared_references: Option<BTreeMap<u32, BTreeSet<(bool, u64)>>>,
+    #[cfg(test)]
+    #[serde(skip)]
+    preparing: bool,
+}
+impl ShipHistory {
+    pub(crate) fn new(first_hour: i32) -> Self {
+        Self {
+            scan: Scanned {
+                first_hour,
+                last_hour: first_hour,
+                ..Default::default()
+            },
+            next: Some(i64::from(first_hour)),
+            ..Default::default()
+        }
+    }
+    pub(crate) fn begin(&mut self, first: i32) {
+        if self.next.is_none() {
+            self.scan.first_hour = first;
+            self.next = Some(i64::from(first));
+        }
+    }
+    pub(crate) fn finish(&mut self, last_hour: i32) {
+        #[cfg(test)]
+        self.restore_open();
+        self.countries
+            .extend(&mut self.scan, &mut self.raw_history, &mut self.identities);
+        if let Some(next) = self.next
+            && next <= i64::from(last_hour)
+        {
+            self.scan.missing(&mut self.track, next as i32, last_hour);
+            self.next = Some(i64::from(last_hour) + 1);
+        }
+        self.scan.last_hour = last_hour;
+        self.scan.current_holders = if self.countries.hour == Some(last_hour) {
+            self.countries.holders.clone()
+        } else {
+            Vec::new()
+        };
+        self.resolve();
+    }
+    fn resolve(&mut self) {
+        let out = &mut self.scan;
+        let raw_history = &self.raw_history;
+        out.uncertain_victims.clear();
+        out.uncertain_attackers.clear();
+        out.uncertain_convoy_owners.clear();
+        out.uncertain_convoy_killers.clear();
+        out.unresolved.clear();
+        out.warnings.clear();
+        for event in &mut out.ships {
+            #[cfg(test)]
+            work::WORK.with(|work| work.borrow_mut().events += 1);
+            let possible = resolve_ship(event, raw_history, &out.country_candidates);
+            for ((raw, tag, uncertain), possible) in [
+                (
+                    event.entry.victim_country,
+                    &mut event.victim,
+                    &mut out.uncertain_victims,
+                ),
+                (
+                    event.entry.attacker_country,
+                    &mut event.attacker,
+                    &mut out.uncertain_attackers,
+                ),
+            ]
+            .into_iter()
+            .zip(possible)
+            {
+                if raw != 0 && tag.is_none() {
+                    out.unresolved.insert(raw);
+                    for identity in possible {
+                        uncertain
+                            .entry(identity)
+                            .or_default()
+                            .push((event.entry.sink_hour, event.read_hour));
+                    }
+                }
+            }
+        }
+        for event in &mut out.convoys {
+            #[cfg(test)]
+            work::WORK.with(|work| work.borrow_mut().events += 1);
+            let possible = resolve_convoy(event, raw_history, &out.country_candidates);
+            for ((raw, tag, uncertain), possible) in [
+                (
+                    event.owner_raw,
+                    &mut event.owner,
+                    &mut out.uncertain_convoy_owners,
+                ),
+                (
+                    event.killer_raw,
+                    &mut event.killer,
+                    &mut out.uncertain_convoy_killers,
+                ),
+            ]
+            .into_iter()
+            .zip(possible)
+            {
+                if raw != 0 && tag.is_none() {
+                    out.unresolved.insert(raw);
+                    for identity in possible {
+                        uncertain
+                            .entry(identity)
+                            .or_default()
+                            .push((event.month, event.read_hour));
+                    }
+                }
+            }
+        }
+        self.update_warnings();
+    }
+    fn update_warnings(&mut self) {
+        let out = &mut self.scan;
+        if out.gap_recoveries > 0 {
+            out.warnings.push(format!("{} ship-history stretches resumed after missing coverage. Ships born and pruned wholly between reads cannot be counted when the break reaches retention.", out.gap_recoveries));
+        }
+        for (reason, count) in &out.refused_entries {
+            out.warnings
+                .push(format!("{count} naval entries refused: {reason}."));
+        }
+        if !out.unresolved.is_empty() {
+            out.warnings.push(format!(
+                "{} naval country references are unresolved.",
+                out.unresolved.len()
+            ));
+        }
+    }
+
+    #[cfg(test)]
+    fn restore_open(&mut self) {
+        if self.scan.ships.is_empty() && !self.open_ships.is_empty() {
+            self.scan.ships = self.open_ships.iter().map(OpenShip::event).collect();
+        }
+        if self.scan.convoys.is_empty() && !self.open_convoys.is_empty() {
+            self.scan.convoys = self.open_convoys.iter().map(OpenConvoy::event).collect();
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn compact(&mut self) {
+        let mut indices = Vec::new();
+        self.open_ships.clear();
+        self.open_convoys.clear();
+        for (index, event) in std::mem::take(&mut self.ship_indices)
+            .into_iter()
+            .zip(std::mem::take(&mut self.scan.ships))
+        {
+            if (event.entry.victim_country != 0 && event.victim.is_none())
+                || (event.entry.attacker_country != 0 && event.attacker.is_none())
+            {
+                indices.push(index);
+                self.open_ships.push(OpenShip {
+                    victim: event.entry.victim_country,
+                    attacker: event.entry.attacker_country,
+                    sink_hour: event.entry.sink_hour,
+                    read_hour: event.read_hour,
+                    primary: event.entry.cause_record == 0 && event.entry.assisted_kill == 0,
+                });
+            }
+        }
+        self.ship_indices = indices;
+        for event in std::mem::take(&mut self.scan.convoys) {
+            if (event.owner_raw != 0 && event.owner.is_none())
+                || (event.killer_raw != 0 && event.killer.is_none())
+            {
+                self.open_convoys.push(OpenConvoy {
+                    month: event.month,
+                    read_hour: event.read_hour,
+                    count: event.count,
+                    baseline: event.baseline,
+                    previous_read: event.previous_read,
+                    owner: event.owner_raw,
+                    killer: event.killer_raw,
+                });
+            }
+        }
+        self.scan.ship_reads.clear();
+        self.scan.convoy_reads.clear();
+    }
+
+    pub(crate) fn resume(&mut self, frame: &DecodedFrame) {
+        #[cfg(test)]
+        self.restore_open();
+        if self.scan.last_ship_read == Some(frame.hour)
+            && frame.complete::<tables::SunkShips>().is_ok()
+        {
+            self.track.ships = Some(frame.tables[TableId::SunkShips.index()].clone());
+        }
+    }
+
+    pub(crate) fn observe(&mut self, format: replay::format::FormatVersion, frame: &DecodedFrame) {
+        self.observe_with_changes(format, frame, None);
+    }
+    fn observe_with_changes(
+        &mut self,
+        format: replay::format::FormatVersion,
+        frame: &DecodedFrame,
+        changes: Option<&FrameChanges>,
+    ) {
+        self.scan.new_candidates.clear();
+        self.scan.new_tags.clear();
+        self.scan.changed_references.clear();
+        #[cfg(test)]
+        if !self.preparing {
+            self.restore_open();
+        }
+        if self.next.is_none() {
+            self.scan.first_hour = frame.hour;
+        }
+        let first = *self.next.get_or_insert(i64::from(frame.hour));
+        if first < i64::from(frame.hour) {
+            self.scan
+                .missing(&mut self.track, first as i32, frame.hour - 1);
+        }
+        self.scan.last_hour = frame.hour;
+        let tags = countries(
+            frame,
+            &mut self.scan,
+            &mut self.raw_history,
+            &mut self.identities,
+            &mut self.countries,
+        );
+        let ships = self.scan.ships.len();
+        self.scan
+            .observe_tables(&mut self.track, format, frame, tags, changes);
+        for _ in ships..self.scan.ships.len() {
+            self.ship_indices.push(self.next_ship_index);
+            self.next_ship_index = self
+                .next_ship_index
+                .checked_add(1)
+                .expect("ship indices exceed the product's u32 row contract");
+        }
+        self.next = Some(i64::from(frame.hour) + 1);
+    }
+}

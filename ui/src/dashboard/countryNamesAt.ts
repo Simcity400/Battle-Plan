@@ -61,7 +61,7 @@ function useFactStore<V>(client: DashboardClient, track: Pick<BoundTrack, 'sourc
     store.current?.requests.cancel();
     const held = new HourStore<V>(MAX_NAME_HOURS);
     const source = track ? { sourceId: track.source.id, revision: track.source.revision, branchId: track.branch.id, content } : null;
-    const read: FactRead<V> = (plan, signal, onChunk) => source ? readFacts(client, source, spec, plan, signal, onChunk) : Promise.resolve();
+    const read: FactRead<V> = (plan, signal, onChunk) => source ? readFacts(client, source, spec, plan, signal, onChunk, track?.source) : Promise.resolve();
     store.current = { trackKey, client, store: held, requests: new FactRequests(held, read, () => setVersion(value => value + 1)) };
   }
   const { store: held, requests } = store.current;

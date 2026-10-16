@@ -5,6 +5,8 @@ import { createPortal } from 'react-dom';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { signed32 } from '../../dashboard/validation';
+import { countryDrillSpans } from '../../dashboard/countryIdentity';
+import { clipToSpans } from '../series';
 import WidgetState from '../../components/WidgetState';
 import CountryPicker from '../../components/CountryPicker';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -12,6 +14,9 @@ import { resolveWindow } from '../../dashboard/model';
 import type { BoundTrack } from '../../dashboard/model';
 import type { OptionValue } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
+import { usePreparedRace } from './PartsRaceView';
+import { mergeFactories, factoriesGeometry } from '../../widgets/factories/preparedFactories';
+import { validateFactoriesReply } from '../../widgets/factories/factoriesData';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { NumericReply } from '../../dashboard/numericReply';
 import { dayLabel } from '../draw';
@@ -66,7 +71,10 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
     : following ? clockHour ?? moment : drill.hour ?? moment);
   const chartPlayhead = drill.breakdown != null && drill.follow ? hour : playhead;
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product, params: params(tag) } : null;
-  const reply = useProduct(runtime.client, request, active, validate);
+  const prepared = usePreparedRace(runtime.client, track, product === 'country-factories' ? request : null, hour, active,
+    validateFactoriesReply, mergeFactories, factoriesGeometry);
+  const oracle = useProduct(runtime.client, product === 'country-factories' && runtime.client.preparedQuery ? null : request, active, validate);
+  const reply = product === 'country-factories' && runtime.client.preparedQuery ? { ...prepared, data: prepared.data as unknown as T | undefined } : oracle;
   const numeric = useMemo(() => new NumericReply<T>(), [runtime.client]);
   const pickScope = JSON.stringify([contextKey, product, 'mix', tag, originHour]);
   const pickNumbers = numeric.update(pickScope, reply.data, numbers);
@@ -89,6 +97,8 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   const binding = useMemo(() => nativeModel && tag ? bindCountryParts(nativeModel, tag, originHour, holder) : null,
     [nativeModel, tag, originHour, holder]);
   const model = binding?.data;
+  const identitySpans = useMemo(() => nativeModel && tag && holder !== null ? countryDrillSpans(nativeModel.histories,tag,originHour) : undefined,
+    [nativeModel,tag,originHour,holder]);
   const shownTag = binding?.tagAt(hour) ?? null;
   const headerReason = !active ? 'The breakdown is inactive.' : missingPinnedDate ? 'The chosen moment is unavailable.'
     : invalidSaved ? 'Saved country unavailable.'
@@ -112,7 +122,10 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   const parts = useMemo(() => model ? [...model.parts(read ?? hour), UNATTRIBUTED_PART] : [], [model, read, read == null ? hour : null]); // eslint-disable-line react-hooks/exhaustive-deps
   const colours = useMemo(() => partColours(parts, tokens.categories), [parts, tokens.categories]);
   const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  const bands = useMemo(() => model && tag ? model.bands(tag, range) : null, [model, tag, range]);
+  const geometry = useMemo(() => product === 'country-factories' && prepared.dense && prepared.geometry
+    ? bindCountryParts(decode(prepared.geometry as unknown as T), tag ?? '', originHour, holder)?.data : model,
+    [product, prepared.dense, prepared.geometry, decode, tag, originHour, holder, model]);
+  const bands = useMemo(() => geometry && tag ? geometry.bands(tag, range) : null, [geometry, tag, range]);
   const shownBands = useMemo(() => positiveGeometry ? bands?.map(runs => runs.map(run => ({ ...run, value: Math.max(0, run.value) }))) : bands,
     [bands, positiveGeometry]);
   const at = useMemo(() => model && tag ? model.at(tag, hour) : null, [model, tag, hour]);
@@ -145,8 +158,13 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
     state={unavailable} selectedHour={hour} pickOwner={pickOwner} label={title} empty="No recorded parts at this moment." formatValue={exactPartAmount}
     countryLookHour={(country, shownHour) => country && model ? model.readHour(country, shownHour) : null}
     segmentAt={(country, shownHour) => model?.segmentAt(country, shownHour) ?? null}
+    onSummaryView={product === 'country-factories' ? prepared.onSummaryView : undefined}
+    onReachHour={product === 'country-factories' ? prepared.onReachHour : undefined}
+    navigation={product === 'country-factories' ? prepared.navigation : undefined}
     keyHours={model?.keyHours} resetKey={resetKey} partsLabel={title}
-    mix={tag && shownBands ? { tag: shownTag ?? tag, tagAt: binding?.tagAt, bands: shownBands, compactStack: true, parts: parts.map((part, index) => ({ ...part,
+    mix={tag && shownBands ? { tag: shownTag ?? tag, tagAt: binding?.tagAt, bands: shownBands,
+      approximate: [...prepared.summaries].flatMap(([alias,summary]) => clipToSpans(summary.approximate ?? [], identitySpans?.get(alias) ?? [])),
+      compactStack: true, parts: parts.map((part, index) => ({ ...part,
       value: index === parts.length - 1 ? remainder == null ? 'Not known' : exactPartAmount(remainder)
         : at?.values[index] == null ? 'Not known' : exactPartAmount(at.values[index]!) })) } : null}
     tooltip={(country, shownHour, name, chartColours) => model?.tooltip(country, shownHour, name, chartColours) ?? null}

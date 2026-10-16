@@ -14,6 +14,9 @@ import { dayLabel, drawGapFill, drawLine } from '../../charts/draw';
 import { easeTau } from '../../charts/easing';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
+import { drawGapSummary, drawLineSummary, extentOfSummary, pickSummaryLines } from '../../charts/chartSummary';
+import type { PreparedResourceReply } from './useResourceBalance';
+import { useParityRows } from '../../dashboard/parityRows';
 import { pickLines } from '../../charts/linePick';
 import { lineStyles } from '../../charts/palette';
 import { clipToSpans, extentOfAll, runAt, sameStretch } from '../../charts/series';
@@ -41,7 +44,7 @@ import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboar
 import { usePlaybackHour } from '../../dashboard/playback';
 import type { ResourceBalanceReply, ResourceInfo } from '../../generated/dashboard';
 import { balanceOf, barScale, changeHours, chosenLines, chosenResources, dealsKnown, orderResources, overTimeTooltip, resourceName,
-  resourcePartGroups, resourceParts, resourceTooltip, supplyDemandRuns, toggleChosen, tooltipPartners, tradeIndex, tradesAt } from './balanceData';
+  resourcePartGroups, resourceParts, RESOURCE_PARTS, resourceTooltip, supplyDemandRuns, toggleChosen, tooltipPartners, tradeIndex, tradesAt } from './balanceData';
 import type { Balance, RowOrder } from './balanceData';
 import { BREAKDOWN, OPTIONS } from './definition';
 import { useResourceBalance, useResourceCountry } from './useResourceBalance';
@@ -67,18 +70,18 @@ function ResourceBreakdown({ data, resource, hour, tokens, runtime, track, ...ch
   data: ResourceBalanceReply; resource: ResourceInfo; hour: number | null; tokens: ChartTokens; runtime: WidgetProps['runtime']; track: BoundTrack;
 } & Omit<Parameters<typeof BreakdownChart>[0], 'series' | 'axes' | 'label'>) {
   const recorded = data.series.find(series => series.id === resource.id);
+  const summary = (data as PreparedResourceReply).summaries?.find(series => series.id === resource.id);
   const parts = useMemo<BreakdownSeries[]>(() => {
-    const sample = recorded?.runs[0] && resourceParts(recorded.runs[0]);
-    if (!sample) return [];
-    return sample.map((part, index) => ({ id: part.id, label: part.label, color: tokens.categories[index % tokens.categories.length],
-      runs: recorded!.runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour, breakBefore: run.startsSegment,
+    if (!recorded && !summary) return [];
+    return RESOURCE_PARTS.map((part, index) => ({ id: part.id, label: part.label, color: tokens.categories[index % tokens.categories.length],
+      runs: (recorded?.runs ?? []).map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour, breakBefore: run.startsSegment,
         value: fixedNumber(resourceParts(run)[index].raw, data.decimals) })),
       amount: at => {
-        const run = runAt(recorded!.runs, at);
+        const run = runAt(recorded?.runs ?? [], at);
         return run ? formatSigned(resourceParts(run)[index].raw, data.decimals, data.decimals) : 'Not recorded';
       },
     }));
-  }, [recorded, tokens.categories, data.decimals]);
+  }, [recorded, summary, tokens.categories, data.decimals]);
   const run = hour !== null && recorded ? runAt(recorded.runs, hour) : null;
   const balance = run && balanceOf(run);
   const values = run && resourceParts(run);
@@ -100,8 +103,9 @@ function ResourceBreakdown({ data, resource, hour, tokens, runtime, track, ...ch
       const pool = balance ? direction === 'imports' ? balance.imported : balance.exported : null;
       return <ResourceDeals key={direction} deals={deals[direction]} pool={pool} decimals={data.decimals} hour={hour}
         direction={direction} runtime={runtime} track={track} active={chart.active} />;
-    }) : <p className="drill-empty">Trade partners were not recorded at this hour.</p>}
-    <BreakdownChart {...chart} series={parts} selectedHour={hour} label={`${resourceName(resource)} parts over time`}
+    }) : <p className="drill-empty">{hour !== null && (data as PreparedResourceReply).coverage !== undefined && !(data as PreparedResourceReply).coverage?.complete
+      && hour > ((data as PreparedResourceReply).coverage?.lastHour ?? -Infinity) ? 'Trade partners are still being prepared.' : 'Trade partners were not recorded at this hour.'}</p>}
+    <BreakdownChart {...chart} series={parts} summaries={summary ? { parts: summary.parts, total: summary.total } : undefined} selectedHour={hour} label={`${resourceName(resource)} parts over time`}
       axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} />
   </>;
 }
@@ -112,7 +116,8 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
-  const { track, tag, data: reply, numbers, contentPending, error, retry } = useResourceBalance(widget, runtime, active);
+  const incoming = useResourceBalance(widget, runtime, active, within);
+  const { track, tag, data: reply, numbers, contentPending, error, retry } = incoming;
   const data = useMemo(() => reply && within ? { ...reply, series: reply.series.map(series => ({ ...series, runs: clipToSpans(series.runs, within) })),
     trades: clipResourceTrades(reply.trades, within), dealHours: clipToSpans(reply.dealHours, within) } : reply, [reply, within]);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
@@ -129,6 +134,9 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
   const extent: [number, number] = heldExtent ?? (track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1]);
   const head = Math.floor(playhead ?? extent[1]);
   const anchor = useRef<HTMLDivElement>(null);
+  useParityRows(anchor, () => ({ kind: 'chart', label: 'Resource balance values', complete: incoming.parityComplete,
+    total: data?.series.reduce((count, series) => count + series.runs.length, 0) ?? 0,
+    rows: data ? [{ branchId: data.branchId, tag: data.tag, decimals: data.decimals, resources: data.resources, series: data.series, dealHours: data.dealHours, trades: data.trades, warnings: data.warnings }] : [] }), { prepare: incoming.parityPrepare, ready: () => incoming.parityComplete, error: () => error ?? null });
   const [resourceId, setResourceId] = useState<number>();
   const savedKey = contentKey(String(options.partResource ?? ''));
   const picked = saved && savedKey ? data?.resources.find(resource => JSON.stringify([resource.token, resource.ordinal]) === savedKey)
@@ -138,7 +146,7 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
   const [countryPick, setCountryPick] = useState<ResourceCountrySelection | null>(null);
   const selectedCountry = saved ? savedCountry : countryPick;
   const originalGroup = useContext(ResourceGroup);
-  const actor = useResourceCountry(selectedCountry, runtime, track, active, originalGroup);
+  const actor = useResourceCountry(selectedCountry, runtime, track, active, originalGroup, incoming.view, drillAt);
   const detailData = selectedCountry ? actor.data : data;
   const headerTag = selectedCountry && actor.spans && drillAt !== null ? countryDrillTagAt(actor.spans, drillAt) : selectedCountry ? null : tag;
   const headerReason = saved && !savedCountry ? 'Saved country selection unavailable. Choose it again.'
@@ -186,7 +194,8 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
   if (error) return <>{pinnedHeader}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
   if (!data) return <>{pinnedHeader}<WidgetState kind="loading" label="Loading resources…" /></>;
-  if (!data.series.some(series => series.runs.length) || !data.resources.length) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Resources weren’t recorded for this country." /></>;
+  if ((!data.series.some(series => series.runs.length) && !(data as PreparedResourceReply).summaries?.some(item => item.supply.buckets.some(Boolean) || item.demand.buckets.some(Boolean)))
+    || !data.resources.length) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Resources weren’t recorded for this country." /></>;
 
   const jump = (hour: number) => [jumpItem(runtime, track.id, hour)];
   const open = (resource: ResourceInfo, hour: number) => {
@@ -200,7 +209,7 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
   const main = <>
     {options.view === 'time'
       ? <OverTime data={data} tokens={tokens} viewport={viewport} options={options} runtime={runtime} track={track} extent={extent} playhead={playhead} active={active}
-        numbers={numbers} within={within}
+        numbers={numbers} within={within} incoming={incoming}
         partnerAt={partners.labelAt} partnersRevision={partners.revision} onPartners={onPartners}
         onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} setOption={setOption} onPick={open} />
       : <BalanceBars data={data} tokens={tokens} hour={head} order={options.order as RowOrder} scale={options.scale === 'moment' ? 'moment' : 'campaign'}
@@ -213,7 +222,10 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
     : picked && detailData ? <ResourceBreakdown data={detailData} resource={picked} hour={drillAt} tokens={tokens}
     extent={extent} playhead={drill.breakdown !== null && drill.follow ? actualHour : playhead} playback={options.playback as PlaybackMode} afterPlayhead={options.afterPlayhead === true}
     windowHours={Number(options.windowDays ?? 365) * 24} branchStart={track.branch.firstHour} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
-    active={active} runtime={runtime} track={track} pickOwner={detailPickOwner} onPick={hour => dispatch(saved
+    active={active} runtime={runtime} track={track} pickOwner={detailPickOwner}
+    onSummaryView={incoming.onSummaryView && picked ? view => incoming.onSummaryView!(view, [picked.id]) : undefined} onHover={incoming.onHover}
+    onNavigateHour={incoming.onNavigateHour && picked ? (action, from, x, until) => incoming.onNavigateHour!([picked.id], action, from, x, until) : undefined}
+    keyboardHour={incoming.keyboardHour} keyboardRevision={incoming.keyboardRevision} onPick={hour => dispatch(saved
       ? { type: 'open', breakdown: BREAKDOWN.id, hour, playing: false, playhead: null } : { type: 'pick', hour })}
     onContextMenu={(hour, x, y) => menu.open(x, y, jump(hour))} /> : <p className="drill-empty">Resource unavailable. Choose another in settings.</p>;
   return <div ref={anchor} className="resource-balance">
@@ -248,7 +260,11 @@ function BalanceBars({ data, tokens, hour, order, scale, hideEmpty, owner, break
   hoursPerSecond: number; onMenu: (hour: number, x: number, y: number) => void;
   onPick: (resource: ResourceInfo, hour: number) => void;
 }) {
-  const campaignScale = useMemo(() => barScale(data.series, null), [data]);
+  const campaignScale = useMemo(() => {
+    const sizes = (data as PreparedResourceReply).campaignSizes;
+    const observed = barScale(data.series, null);
+    return sizes ? Object.values(sizes).reduce((largest, raw) => BigInt(raw) > largest ? BigInt(raw) : largest, observed) : observed;
+  }, [data]);
   const largest = scale === 'moment' ? barScale(data.series, hour) : campaignScale;
   // The hour drawn last, so a bar glides only from a value of the same stretch of recording.
   const drawnHour = useRef(hour);
@@ -321,9 +337,9 @@ function BalanceBars({ data, tokens, hour, order, scale, hideEmpty, owner, break
 
 /** Supply (solid) and demand (dashed) over time for the chosen resources, each in
  * its own palette colour; with one resource the gap between them is shaded. */
-function OverTime({ data, numbers, within, tokens, viewport, options, runtime, track, extent, playhead, active, partnerAt, partnersRevision, onPartners, onMenu, setOption, onPick }: {
+function OverTime({ data, numbers, within, incoming, tokens, viewport, options, runtime, track, extent, playhead, active, partnerAt, partnersRevision, onPartners, onMenu, setOption, onPick }: {
   data: ResourceBalanceReply; tokens: ChartTokens; options: Record<string, unknown>; runtime: WidgetProps['runtime']; track: BoundTrack;
-  numbers: ResourceBalanceReply | undefined; within?: ComparisonProps['within'];
+  numbers: ResourceBalanceReply | undefined; within?: ComparisonProps['within']; incoming?: ReturnType<typeof useResourceBalance>;
   extent: [number, number]; playhead: number | null; active: boolean; partnerAt: (hour: number) => CountryLabel; partnersRevision: number;
   onPartners: PartnerTargets; onMenu: (hour: number, x: number, y: number) => void; setOption: WidgetProps['setOption']; viewport: number;
   onPick: (resource: ResourceInfo, hour: number) => void;
@@ -347,7 +363,8 @@ function OverTime({ data, numbers, within, tokens, viewport, options, runtime, t
     const recorded = data.series.find(item => item.id === resource.id);
     const series = recorded && { id: recorded.id, runs: clipToSpans(recorded.runs, [{ firstHour: extent[0], lastHour: extent[1] }]) };
     const style = styles.get(resource.id)!;
-    return series ? [{ resource, series, color: style.color, dashes: style, ...supplyDemandRuns(series, data.decimals) }] : [];
+    const summary = (data as PreparedResourceReply).summaries?.find(item => item.id === resource.id);
+    return series ? [{ resource, series, summary, color: style.color, dashes: style, ...supplyDemandRuns(series, data.decimals) }] : [];
   }), [chosenInfo, data, styles, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   // The keyboard steps where a chosen resource's values or deals change; the kit adds
   // the start of a range or zoom that begins between two, so the value going on into
@@ -361,16 +378,26 @@ function OverTime({ data, numbers, within, tokens, viewport, options, runtime, t
       // Bounded by the very curves the two lines are drawn with, green where supply is higher.
       const line = lines[0];
       list.push({ draw: (ctx, frame, chartTokens, state) => {
-        drawGapFill(ctx, frame, line.supply, line.demand, chartTokens.positive, chartTokens.error, { until: state.playhead ?? undefined });
+        if (line.summary) drawGapSummary(ctx, frame, chartTokens, line.summary.supply, line.summary.demand, chartTokens.positive, chartTokens.error, state.playhead);
+        else drawGapFill(ctx, frame, line.supply, line.demand, chartTokens.positive, chartTokens.error, { until: state.playhead ?? undefined });
       } });
     }
     for (const line of lines) {
       list.push({
         draw: (ctx, frame, chartTokens, state) => {
+          if (line.summary) {
+            drawLineSummary(ctx, frame, chartTokens, line.summary.supply, line.color, false, state.playhead, { dash: line.dashes.primary });
+            drawLineSummary(ctx, frame, chartTokens, line.summary.demand, line.color, false, state.playhead, { dash: line.dashes.secondary, endDot: false });
+            return;
+          }
           drawLine(ctx, frame, chartTokens, line.supply, line.color, { until: state.playhead ?? undefined, dash: line.dashes.primary.length ? line.dashes.primary : undefined });
           drawLine(ctx, frame, chartTokens, line.demand, line.color, { until: state.playhead ?? undefined, dash: line.dashes.secondary, endDot: false });
         },
-        extent: x => extentOfAll([line.supply, line.demand], x[0], Math.min(x[1], until ?? x[1])),
+        extent: x => {
+          if (!line.summary) return extentOfAll([line.supply, line.demand], x[0], Math.min(x[1], until ?? x[1]));
+          const values = [line.summary.supply, line.summary.demand].map(summary => extentOfSummary(summary, x[0], Math.min(x[1], until ?? x[1]))).filter((value): value is [number, number] => value !== null);
+          return values.length ? [Math.min(...values.map(value => value[0])), Math.max(...values.map(value => value[1]))] : null;
+        },
       });
     }
     return list;
@@ -408,6 +435,7 @@ function OverTime({ data, numbers, within, tokens, viewport, options, runtime, t
       </button>;
     })}</div>
     <p className="chart-line-key">Supply above demand in each key · per day</p>
+    {lines.some(line => line.summary?.supply.approximate?.length || line.summary?.demand.approximate?.length) && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Approximate</p>}
     {selection && <div className="select-row">Choose a drawn resource on {dayLabel(selection.hour)} <Select autoFocus label="Drawn resource" value="" onChange={id => {
       const resource = chosenInfo.find(resource => String(resource.id) === id);
       if (resource && selection.ids.includes(String(resource.id))) { onPick(resource, selection.hour); setSelection(null); }
@@ -420,8 +448,12 @@ function OverTime({ data, numbers, within, tokens, viewport, options, runtime, t
         hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }}
         layers={layers} active={active} revision={`${head}:${data.branchId}:${chosen.join(' ')}:${shade}:${partnersRevision}:${viewport}`}
+        onSummaryView={incoming?.onSummaryView ? view => incoming.onSummaryView!(view, chosenInfo.map(item => item.id)) : undefined} onHover={incoming?.onHover}
+        onNavigateHour={incoming?.onNavigateHour ? (action, from, x, until) => incoming.onNavigateHour!(chosenInfo.map(item => item.id), action, from, x, until) : undefined}
+        keyboardHour={incoming?.keyboardHour} keyboardRevision={incoming?.keyboardRevision}
         keyHours={keyHours} pickOwner={pickOwner} onPick={(hour, context) => {
-          const ids = pickLines(lines.flatMap(line => [line.supply, line.demand].map(runs => ({ key: String(line.resource.id), runs }))), hour, context);
+          const ids = lines.some(line => line.summary) ? pickSummaryLines(lines.flatMap(line => line.summary ? [line.summary.supply, line.summary.demand].map(summary => ({ key: String(line.resource.id), summary })) : []),
+            hour, new Set(lines.filter(line => runAt(line.series.runs, hour)).map(line => String(line.resource.id))), context) : pickLines(lines.flatMap(line => [line.supply, line.demand].map(runs => ({ key: String(line.resource.id), runs }))), hour, context);
           if (ids.length === 1) {
             const resource = chosenInfo.find(resource => String(resource.id) === ids[0]);
             if (resource) { setSelection(null); onPick(resource, hour); }
@@ -429,6 +461,9 @@ function OverTime({ data, numbers, within, tokens, viewport, options, runtime, t
         }}
         tooltip={hour => {
           if (hour < extent[0] || hour > extent[1]) { onPartners(null); return null; }
+          if (incoming?.hasExactHour && !incoming.hasExactHour(hour)) {
+            onPartners(null); return { title: dayLabel(hour), rows: [{ label: 'Resource amounts', value: 'Loading...', tone: 'muted' }] };
+          }
           const partner = partnerAt(hour);
           const known = dealsKnown(data, hour);
           const content = overTimeTooltip(`${dayLabel(hour)} · per day`, lines.map(line => {

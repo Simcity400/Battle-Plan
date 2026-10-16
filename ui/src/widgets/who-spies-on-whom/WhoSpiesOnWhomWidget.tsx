@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
 import ChordChart from '../../charts/chord/ChordChart';
@@ -15,6 +15,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
+import { useParityRows } from '../../dashboard/parityRows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { compareTags } from '../../dashboard/tagOrder';
@@ -34,15 +35,22 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useChartTokens(), options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'operative-placements', params: { branchId: track.branch.id } } : null;
-  const { data, error, retry } = useProduct<OperativePlacementReply>(runtime.client, request, active, validatePlacementsReply);
-  const groups = useCountryGroups(runtime, track, active);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window?.lastHour ?? 0;
+  const first = track ? track.branch.firstHour + Math.floor((hour - track.branch.firstHour) / 24) * 24 : hour;
+  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'operative-placements', params: runtime.client.preparedQuery
+    ? { branchId: track.branch.id, firstHour: first, lastHour: Math.min(first + 23, track.branch.lastHour) }
+    : { branchId: track.branch.id } } : null;
+  const { data, error, retry } = useProduct<OperativePlacementReply>(runtime.client, request, active, validatePlacementsReply, track?.source);
+  const groups = useCountryGroups(runtime, track, active);
   const current = useMemo(() => data ? placementsAt(data, hour) : null, [data, hour]);
   const selectedTag = defaultCountryTag(track);
   const picked = useMemo(() => current ? selectPlacements(current.placements, widget.countries, groups.data, hour, track?.branch.lastHour ?? hour, selectedTag) : null,
     [current, widget.countries, groups.data, hour, track?.branch.lastHour, selectedTag]);
+  const root = useRef<HTMLDivElement>(null);
+  useParityRows(root, () => ({ kind: 'chart', label: 'Operative placement values', complete: Boolean(data && picked),
+    total: picked?.placements.length ?? 0, rows: picked?.placements ?? [], readHour: current?.read ?? null,
+  }));
   const wanted = useMemo(() => [...new Set(picked?.placements.flatMap(n => [n.owner, n.target]) ?? [])].map(tag => ({ hour, tag })), [picked, hour]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const colourTags = useMemo(() => [...new Set(groups.data?.countryIdentities?.map(country => country.tag) ?? [])].sort(compareTags), [groups.data]);
@@ -92,7 +100,7 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
   if (current.period?.availability !== 'recorded') return <WidgetState kind="unavailable" message={current.period?.availability === 'featureAbsent'
     ? 'Intelligence agencies were disabled.' : 'Operatives were not recorded at this time.'} />;
   if (picked?.reason) return <WidgetState kind="unavailable" message={picked.reason} />;
-  return <div className={`who-spies-on-whom${chartError ? ' has-chart-error' : ''}`}>
+  return <div ref={root} className={`who-spies-on-whom${chartError ? ' has-chart-error' : ''}`}>
     <ChordChart label="Who spies on whom" caption="Ribbon colour = the country spying" frame={{ data: null }} frameAt={frames.at} onError={setChartError}
       hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active}
       tooltip={(hit, data) => { const chord = frames.exact.get(data); return chord ? placementTooltip(hit, chord) : null; }}

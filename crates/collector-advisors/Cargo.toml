@@ -1,0 +1,43 @@
+[package]
+name = "collector-advisors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+test-support = ["collector-extended-support/test-support", "collector-observers/test-support"]
+default = ["advisor_changes", "character_changes", "advisor_pool_changes", "roster_changes", "appointment_changes", "character_record_changes"]
+advisor_changes = []
+advisor_pool_changes = ["character_changes"]
+appointment_changes = ["advisor_pool_changes", "roster_changes"]
+appointment_verify = ["appointment_changes"]
+character_changes = ["advisor_changes"]
+character_record_changes = ["advisor_pool_changes", "roster_changes"]
+character_record_verify = ["character_record_changes"]
+roster_changes = []
+
+[dependencies]
+engine.workspace = true
+replay.workspace = true
+serde = { workspace = true, features = ["derive"] }
+collector-certificates.workspace = true
+collector-extended-support.workspace = true
+collector-memory.workspace = true
+collector-observers.workspace = true
+collector-primitives.workspace = true
+collector-projection.workspace = true
+
+[dev-dependencies]
+collector-test-support.workspace = true
+serde_json.workspace = true
+engine = { workspace = true, features = ["batch-fallback-test-counts"] }
+collector-extended-support = { workspace = true, features = ["test-support"] }
+collector-certificates = { workspace = true, features = ["test-support"] }
+collector-memory = { workspace = true, features = ["test-support"] }
+collector-observers = { workspace = true, features = ["default", "test-support"] }
+collector-primitives = { workspace = true, features = ["test-support"] }

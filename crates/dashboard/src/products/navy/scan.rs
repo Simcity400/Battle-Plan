@@ -139,6 +139,7 @@ impl Totals {
 #[derive(Default)]
 struct Census {
     ships: HashMap<u64, Ship>,
+    dirty: BTreeSet<u32>,
     totals: [HashMap<u32, Totals>; 2],
     unattributed: [usize; 2],
     forces: HashMap<u64, [Option<u32>; 2]>,
@@ -170,6 +171,7 @@ impl Census {
                     continue;
                 };
                 if let Some(slot) = ship.owners[owner] {
+                    self.dirty.insert(slot);
                     let totals = self.totals[owner].entry(slot).or_default();
                     if !(same_owner && same_class) {
                         totals.count(ship, sign);
@@ -182,6 +184,18 @@ impl Census {
                     self.unattributed[owner] += 1;
                 } else {
                     self.unattributed[owner] -= 1;
+                }
+            }
+            for slot in before
+                .into_iter()
+                .chain(after)
+                .filter_map(|ship| ship.owners[owner])
+            {
+                if self.totals[owner]
+                    .get(&slot)
+                    .is_some_and(|total| total.count == 0)
+                {
+                    self.totals[owner].remove(&slot);
                 }
             }
         }
@@ -217,7 +231,7 @@ impl Census {
                         let id = u32::try_from(result.classes.len()).map_err(|_| {
                             io::Error::other("Navy class identity index exceeds u32")
                         })?;
-                        result.classes.push(entry.key().clone());
+                        Arc::make_mut(&mut result.classes).push(entry.key().clone());
                         entry.insert(id);
                         id
                     }
@@ -247,6 +261,7 @@ impl Census {
         result: &mut ScannedNavy,
         cancelled: &AtomicBool,
     ) -> io::Result<[bool; 2]> {
+        self.dirty.clear();
         let ships = decoded.complete::<tables::Ships>();
         let forces = decoded.complete::<tables::TaskForces>();
         let Ok(ships) = ships else {
@@ -361,6 +376,8 @@ impl Census {
             }
         } else {
             self.ships.clear();
+            self.dirty
+                .extend(self.totals.iter().flat_map(|totals| totals.keys()).copied());
             self.totals = Default::default();
             self.unattributed = [0; 2];
             // Full acquisitions use one sorted merge join, never Ships x Models.
@@ -394,6 +411,383 @@ impl Census {
     }
 }
 
+impl Track {
+    fn advance(&mut self, hour: i32) {
+        let Some((_, before)) = &mut self.last else {
+            return;
+        };
+        if let Some(segment) = self.segments.last_mut() {
+            segment.last_hour = hour;
+        }
+        self.last_identity.advance(hour);
+        for runs in self.runs.iter_mut().chain(&mut self.strength_runs) {
+            if let Some(run) = runs.last_mut().filter(|run| run.last_hour == *before) {
+                run.last_hour = hour;
+            }
+        }
+        *before = hour;
+    }
+}
+
+#[derive(Default, Serialize, Deserialize)]
+pub(crate) struct Scan {
+    pub(super) result: ScannedNavy,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
+    pub(super) tracks: HashMap<String, Track>,
+    last_hour: Option<i32>,
+    #[serde(skip)]
+    pub(super) countries: Countries,
+    #[serde(skip)]
+    census: Census,
+    live: BTreeSet<String>,
+    #[serde(skip)]
+    pub(super) observed: Vec<String>,
+    #[serde(skip)]
+    pub(super) removed: Vec<String>,
+    #[serde(skip)]
+    pub(super) applied: Option<i32>,
+    #[serde(skip)]
+    joined: bool,
+    #[serde(skip)]
+    slots: HashMap<u32, Vec<(String, Identity)>>,
+    #[serde(skip)]
+    previous_exact: Option<[bool; 2]>,
+    #[serde(skip)]
+    notes: HashMap<String, ([usize; 2], [usize; 2])>,
+    #[serde(skip)]
+    note_totals: ([usize; 2], [usize; 2]),
+    #[serde(skip)]
+    rates: [usize; 7],
+    #[serde(skip)]
+    undisplayable: Vec<Vec<u8>>,
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(super) work: crate::prepared::observer_tests::Work,
+}
+impl Scan {
+    pub(super) fn rejoin(
+        &mut self,
+        frame: &Frame,
+        decoded: &DecodedFrame,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        if self.last_hour != Some(decoded.hour) || self.census.ready {
+            return Ok(());
+        }
+        let tracks = std::mem::take(&mut self.tracks);
+        let live = std::mem::take(&mut self.live);
+        let result = self.result.clone();
+        self.step_changes(frame, decoded, cancelled, None)?;
+        self.tracks = tracks;
+        self.live = live;
+        self.result = result;
+        Ok(())
+    }
+    pub(super) fn seal(&mut self) {
+        if let Some(hour) = self.last_hour {
+            for tag in &self.live {
+                self.tracks
+                    .get_mut(tag)
+                    .expect("live navy track")
+                    .advance(hour);
+            }
+        }
+    }
+    pub(super) fn step_changes(
+        &mut self,
+        frame: &Frame,
+        decoded: &DecodedFrame,
+        cancelled: &AtomicBool,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+    ) -> io::Result<()> {
+        self.observed.clear();
+        self.removed.clear();
+        self.joined = !matches!(self.countries.update(decoded), Ok(false));
+        let unchanged = self
+            .last_hour
+            .is_some_and(|at| at.checked_add(1) == Some(decoded.hour))
+            && !self.joined
+            && changes.is_some_and(|changes| {
+                ![
+                    TableId::Ships,
+                    TableId::ShipModels,
+                    TableId::TaskForces,
+                    TableId::LexicalTokens,
+                ]
+                .iter()
+                .any(|id| changes.rows_changed[id.index()])
+            });
+        if unchanged {
+            self.last_hour = Some(decoded.hour);
+            self.result.unread += self.rates[0];
+            for owner in 0..2 {
+                self.result.unattributed[owner] += self.rates[1 + owner];
+                self.result.refused_strength[owner] += self.rates[3 + owner];
+                self.result.maximum_overflows[owner] += self.rates[5 + owner];
+            }
+            for tag in &self.undisplayable {
+                *self
+                    .result
+                    .undisplayable_tags
+                    .entry(tag.clone())
+                    .or_default() += 1;
+            }
+            return Ok(());
+        }
+        let before = [
+            self.result.unread,
+            self.result.unattributed[0],
+            self.result.unattributed[1],
+            self.result.refused_strength[0],
+            self.result.refused_strength[1],
+            self.result.maximum_overflows[0],
+            self.result.maximum_overflows[1],
+        ];
+        #[cfg(test)]
+        {
+            if let Some(changes) = changes {
+                self.work.row_visits += <super::prepared::Navy as crate::products::parts_race_prepared::Family>::SAMPLE_TABLES.iter()
+                    .filter(|id| changes.rows_changed[id.index()])
+                    .map(|id| match &*decoded.tables[id.index()] { replay::frame::TableView::Complete(rows)
+                        | replay::frame::TableView::Truncated { rows, .. } => rows.len(), _ => 0 }).sum::<usize>();
+            }
+        }
+        self.step(frame, decoded, cancelled)?;
+        self.applied = Some(decoded.hour);
+        self.rates = [
+            self.result.unread,
+            self.result.unattributed[0],
+            self.result.unattributed[1],
+            self.result.refused_strength[0],
+            self.result.refused_strength[1],
+            self.result.maximum_overflows[0],
+            self.result.maximum_overflows[1],
+        ];
+        for (rate, before) in self.rates.iter_mut().zip(before) {
+            *rate -= before;
+        }
+        Ok(())
+    }
+    pub(super) fn step(
+        &mut self,
+        frame: &Frame,
+        decoded: &DecodedFrame,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        if self.census.class_ids.is_empty() && !self.result.classes.is_empty() {
+            self.census.class_ids = self
+                .result
+                .classes
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(id, key)| (key, id as u32))
+                .collect();
+        }
+        let continuous = self
+            .last_hour
+            .is_some_and(|at| at.checked_add(1) == Some(decoded.hour));
+        if !continuous {
+            self.seal();
+        }
+        self.last_hour = Some(decoded.hour);
+        let Self {
+            result,
+            tracks,
+            countries,
+            census,
+            live,
+            observed,
+            removed,
+            joined,
+            slots,
+            previous_exact,
+            notes,
+            note_totals,
+            undisplayable,
+            ..
+        } = self;
+        let empty = Arc::new(BTreeMap::new());
+        let Ok(changed) = countries.update(decoded) else {
+            result.unread += 1;
+            if continuous {
+                for tag in live.iter() {
+                    tracks
+                        .get_mut(tag)
+                        .expect("live navy track")
+                        .advance(decoded.hour - 1);
+                }
+            }
+            census.ready = false;
+            removed.extend(std::mem::take(live));
+            slots.clear();
+            *previous_exact = None;
+            return Ok(());
+        };
+        let changed = changed || *joined || !continuous || slots.is_empty();
+        let previous = continuous.then(|| decoded.hour - 1);
+        if changed {
+            // Materialise the previous live set before changing native membership.
+            if let Some(hour) = previous {
+                for tag in live.iter() {
+                    tracks.get_mut(tag).expect("live navy track").advance(hour);
+                }
+            }
+            slots.clear();
+            undisplayable.clear();
+            notes.clear();
+            *note_totals = Default::default();
+            let mut current = BTreeSet::new();
+            for (tag, identity) in &countries.tags {
+                if let Ok(tag) = std::str::from_utf8(tag) {
+                    tracks.entry(tag.to_owned()).or_default();
+                } else {
+                    undisplayable.push(tag.clone());
+                }
+                if let (Ok(tag), Some(identity)) = (std::str::from_utf8(tag), *identity) {
+                    current.insert(tag.to_owned());
+                    slots
+                        .entry(identity.0)
+                        .or_default()
+                        .push((tag.to_owned(), identity));
+                }
+            }
+            removed.extend(live.difference(&current).cloned());
+            *live = current;
+        }
+        let exact = census.update(decoded, frame, countries, changed, result, cancelled)?;
+        let full = changed || *previous_exact != Some(exact);
+        *previous_exact = Some(exact);
+        let affected: Vec<_> = if full {
+            slots.values().flatten().cloned().collect()
+        } else {
+            census
+                .dirty
+                .iter()
+                .filter_map(|slot| slots.get(slot))
+                .flatten()
+                .cloned()
+                .collect()
+        };
+        for tag in undisplayable.iter() {
+            *result.undisplayable_tags.entry(tag.clone()).or_default() += 1;
+        }
+        for (tag, identity) in affected {
+            #[cfg(test)]
+            {
+                self.work.history_visits += 1;
+            }
+            let tag = tag.as_str();
+            let track = tracks.entry(tag.to_owned()).or_default();
+            if let Some(hour) = previous {
+                track.advance(hour);
+            }
+            let mut after_notes = ([0; 2], [0; 2]);
+            observe_identity(
+                &mut track.segments,
+                &mut track.last_identity,
+                identity,
+                frame.hour,
+            );
+            let identity_continuous = track.last.is_some_and(|(seen, at)| {
+                seen == identity && at.checked_add(1) == Some(frame.hour)
+            });
+            for (owner, exact) in exact.into_iter().enumerate() {
+                let summary = census.totals[owner].get_mut(&identity.0).map_or_else(
+                    || Totals::default().summary(&empty),
+                    |totals| totals.summary(&empty),
+                );
+                if census.ready {
+                    after_notes.0[owner] = usize::from(summary.refused);
+                    after_notes.1[owner] = usize::from(summary.maximum_overflow);
+                }
+                for (runs, total, classes, reference_total) in [
+                    (
+                        &mut track.runs[owner],
+                        exact.then_some(summary.count),
+                        summary.classes,
+                        None,
+                    ),
+                    (
+                        &mut track.strength_runs[owner],
+                        exact.then_some(summary.hp).flatten(),
+                        summary.hp_classes,
+                        exact.then_some(summary.maximum).flatten(),
+                    ),
+                ] {
+                    let starts_segment = !(identity_continuous
+                        && total.is_some()
+                        && runs.last().is_some_and(|run| run.total.is_some()));
+                    let classes = if total.is_some() {
+                        classes
+                    } else {
+                        Arc::clone(&empty)
+                    };
+                    match runs.last_mut() {
+                        Some(run)
+                            if identity_continuous
+                                && run.last_hour.checked_add(1) == Some(frame.hour)
+                                && run.total == total
+                                && run.classes == classes
+                                && run.reference_total == reference_total =>
+                        {
+                            run.last_hour = frame.hour;
+                        }
+                        _ => runs.push(RawNavyRun {
+                            first_hour: frame.hour,
+                            last_hour: frame.hour,
+                            starts_segment,
+                            total,
+                            classes,
+                            reference_total,
+                        }),
+                    }
+                }
+            }
+            if track
+                .runs
+                .iter()
+                .chain(&track.strength_runs)
+                .any(|runs| runs.last().is_some_and(|run| run.first_hour == frame.hour))
+            {
+                observed.push(tag.to_owned());
+            }
+            let before_notes = notes
+                .insert(tag.to_owned(), after_notes)
+                .unwrap_or_default();
+            for owner in 0..2 {
+                note_totals.0[owner] =
+                    note_totals.0[owner] + after_notes.0[owner] - before_notes.0[owner];
+                note_totals.1[owner] =
+                    note_totals.1[owner] + after_notes.1[owner] - before_notes.1[owner];
+            }
+            track.last = Some((identity, frame.hour));
+        }
+        for owner in 0..2 {
+            result.refused_strength[owner] += note_totals.0[owner];
+            result.maximum_overflows[owner] += note_totals.1[owner];
+        }
+        Ok(())
+    }
+    fn finish(mut self) -> ScannedNavy {
+        self.seal();
+        for (tag, track) in self.tracks {
+            self.result.segments.insert(tag.clone(), track.segments);
+            for (owner, runs) in track.runs.into_iter().enumerate() {
+                self.result.series[owner].insert(tag.clone(), runs);
+            }
+            for (owner, runs) in track.strength_runs.into_iter().enumerate() {
+                self.result.strength_series[owner].insert(tag.clone(), runs);
+            }
+        }
+        #[cfg(test)]
+        {
+            self.result.updated_ships = self.census.updated;
+        }
+        self.result
+    }
+}
+
 pub(super) fn scan(
     replay: &Replay,
     branch: u64,
@@ -424,11 +818,7 @@ pub(super) fn scan_with_decode(
         TableId::ShipModels,
         TableId::LexicalTokens,
     ];
-    let mut result = ScannedNavy::default();
-    let mut tracks: HashMap<String, Track> = HashMap::new();
-    let mut countries = Countries::default();
-    let mut census = Census::default();
-    let empty = Arc::new(BTreeMap::new());
+    let mut observer = Scan::default();
     crate::blocks::scan_blocks(
         replay,
         replay.index.iter().filter(|block| block.branch == branch),
@@ -459,112 +849,66 @@ pub(super) fn scan_with_decode(
                     if validate_campaign(decoded, replay).is_err() {
                         break;
                     }
-                    let Ok(changed) = countries.update(decoded) else {
-                        result.unread += 1;
-                        census.ready = false;
-                        continue;
-                    };
-                    let exact = census.update(
-                        decoded,
-                        &frame,
-                        &countries,
-                        changed,
-                        &mut result,
-                        cancelled,
-                    )?;
-                    for (tag, identity) in &countries.tags {
-                        let Ok(tag) = std::str::from_utf8(tag) else {
-                            *result.undisplayable_tags.entry(tag.to_vec()).or_default() += 1;
-                            continue;
-                        };
-                        if !tracks.contains_key(tag) {
-                            tracks.insert(tag.to_owned(), Track::default());
-                        }
-                        let track = tracks.get_mut(tag).expect("observed country tag");
-                        let Some(identity) = *identity else {
-                            continue;
-                        };
-                        observe_identity(
-                            &mut track.segments,
-                            &mut track.last_identity,
-                            identity,
-                            frame.hour,
-                        );
-                        let identity_continuous = track.last.is_some_and(|(seen, at)| {
-                            seen == identity && at.checked_add(1) == Some(frame.hour)
-                        });
-                        for (owner, exact) in exact.into_iter().enumerate() {
-                            let summary = census.totals[owner]
-                                .entry(identity.0)
-                                .or_default()
-                                .summary(&empty);
-                            if census.ready {
-                                result.refused_strength[owner] += usize::from(summary.refused);
-                                result.maximum_overflows[owner] +=
-                                    usize::from(summary.maximum_overflow);
-                            }
-                            for (runs, total, classes, reference_total) in [
-                                (
-                                    &mut track.runs[owner],
-                                    exact.then_some(summary.count),
-                                    summary.classes,
-                                    None,
-                                ),
-                                (
-                                    &mut track.strength_runs[owner],
-                                    exact.then_some(summary.hp).flatten(),
-                                    summary.hp_classes,
-                                    exact.then_some(summary.maximum).flatten(),
-                                ),
-                            ] {
-                                let starts_segment = !(identity_continuous
-                                    && total.is_some()
-                                    && runs.last().is_some_and(|run| run.total.is_some()));
-                                let classes = if total.is_some() {
-                                    classes
-                                } else {
-                                    Arc::clone(&empty)
-                                };
-                                match runs.last_mut() {
-                                    Some(run)
-                                        if identity_continuous
-                                            && run.last_hour.checked_add(1) == Some(frame.hour)
-                                            && run.total == total
-                                            && run.classes == classes
-                                            && run.reference_total == reference_total =>
-                                    {
-                                        run.last_hour = frame.hour;
-                                    }
-                                    _ => runs.push(RawNavyRun {
-                                        first_hour: frame.hour,
-                                        last_hour: frame.hour,
-                                        starts_segment,
-                                        total,
-                                        classes,
-                                        reference_total,
-                                    }),
-                                }
-                            }
-                        }
-                        track.last = Some((identity, frame.hour));
-                    }
+                    observer.step(&frame, decoded, cancelled)?;
                 }
             }
             Ok(())
         },
     )?;
-    for (tag, track) in tracks {
-        result.segments.insert(tag.clone(), track.segments);
-        for (owner, runs) in track.runs.into_iter().enumerate() {
-            result.series[owner].insert(tag.clone(), runs);
-        }
-        for (owner, runs) in track.strength_runs.into_iter().enumerate() {
-            result.strength_series[owner].insert(tag.clone(), runs);
-        }
+    Ok(observer.finish())
+}
+
+#[cfg(test)]
+mod prepared_continuation_tests {
+    use super::*;
+    use replay::frame::{TableUpdate, TableView};
+    use replay::rows::{LexicalTokenRow, TableRows, TaskForceRow};
+    #[test]
+    fn prepared_navy_restores_class_identity_when_a_branch_returns_without_a_decoder_rejoin() {
+        let mut decoded = crate::test_fixtures::scale_frame(1, 100, 1);
+        *decoded.tables[TableId::TaskForces.index()] =
+            TableView::Complete(TableRows::TaskForces(vec![TaskForceRow {
+                id: 1,
+                roster_owner: 100_000,
+                logical_owner: 100_000,
+                ..Default::default()
+            }]));
+        *decoded.tables[TableId::Ships.index()] =
+            TableView::Complete(TableRows::Ships(vec![ShipRow {
+                id: 1,
+                task_force: 1,
+                class_id: 41,
+                ..Default::default()
+            }]));
+        *decoded.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                token: 41,
+                literal: b"modded_ship".to_vec(),
+            }]));
+        let raw = |decoded: &DecodedFrame| Frame {
+            branch: decoded.branch,
+            hour: decoded.hour,
+            keyframe: true,
+            metrics: decoded.metrics.clone(),
+            tables: std::array::from_fn(|_| TableUpdate::Unavailable {
+                reason: String::new(),
+            }),
+        };
+        let flag = AtomicBool::new(false);
+        let mut scan = Scan::default();
+        scan.step(&raw(&decoded), &decoded, &flag).unwrap();
+        assert_eq!(scan.result.classes.len(), 1);
+        let mut resumed: Scan =
+            serde_json::from_slice(&serde_json::to_vec(&scan).unwrap()).unwrap();
+        decoded.hour = 101;
+        resumed.step(&raw(&decoded), &decoded, &flag).unwrap();
+        assert_eq!(resumed.result.classes, scan.result.classes);
+        assert!(
+            resumed
+                .tracks
+                .values()
+                .flat_map(|track| &track.runs[0])
+                .all(|run| run.classes.keys().all(|&class| class == 0))
+        );
     }
-    #[cfg(test)]
-    {
-        result.updated_ships = census.updated;
-    }
-    Ok(result)
 }

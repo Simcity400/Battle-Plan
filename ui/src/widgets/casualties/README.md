@@ -2,7 +2,7 @@
 
 **What it shows:** Each country's cumulative casualties dealt/taken as a butterfly chart, or a race of losses taken. These war-relation counters cover land, sea and air together. The butterfly reads like the other country races: flag and name on the left, taken growing left and dealt growing right of one axis with exact values at their tips, then the dealt : taken ratio; rows keep their top-N height.
 
-**Product(s) it reads:** [`war-casualties`](../../../../crates/dashboard/src/products/war_casualties.rs) supplies exact hourly country totals, identities and membership. Country loss totals and unknown recovery are computed there.
+**Data it reads:** Prepared `war-casualties` series-state requests supply the reached hour's exact country totals, native identities and top membership. The [`casualty scan`](../../../../crates/dashboard/src/products/war_casualties.rs) computes country loss totals and unknown recovery once during background preparation.
 
 **Settings:** Top ten by dealt + known taken by default; manual countries and smart groups; Dealt vs taken/Race of losses taken, include losses with no recorded attacker (off), butterfly values/ratio. Campaign, Follow, Pin and Range.
 
@@ -17,5 +17,14 @@
 - Localised titles preserve authored empty text and titles equal to their keys. Missing country titles stay unavailable; missing unknown-attacker localisation uses the plain Unknown attacker label.
 
 **Files:** [CasualtiesWidget.tsx](CasualtiesWidget.tsx) renders the shared butterfly/race; [casualtiesData.ts](casualtiesData.ts) validates and indexes exact BigInt histories, with adjacent tests. `casualties.css`, `definition.ts` and `index.ts` own styling, settings and registration.
+
+[preparedCasualties.ts](preparedCasualties.ts) keeps one requested-hour reply and
+uses the shared preparation polling and cancellation boundary. Pending playback
+retains that reply at its own hour. Parity builds expose "Casualties exact values".
+
+Cumulative totals retain disappeared relation lifetimes and unknown-loss recovery
+state. Unprepared hours stay pending behind accepted coverage; the widget uses
+the shared "still being prepared" note and keeps any earlier reply at its own hour.
+One-frame samples cannot supply these totals.
 
 Shared framework conventions: [widgets](../README.md).

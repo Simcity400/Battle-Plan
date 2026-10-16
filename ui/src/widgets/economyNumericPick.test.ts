@@ -55,6 +55,7 @@ test('economy and shared race picks keep their mounted numeric owner through con
     '/widgets/resource-balance/useResourceBalance.ts', '/charts/race/CountryRaceView.tsx', '/charts/drill/BreakdownChart.tsx',
     '/dashboard/comparisonCountries.ts', '/dashboard/CountryComparisons.tsx', '/dashboard/useDiagnostics.ts'];
   const replacements: Record<string, string> = {
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => globalThis.__economyNumeric.groups;',
     '/dashboard/model.ts': `export const resolveWindow = (widget, track) => widget.time.mode === 'pin'
       ? { firstHour: track.branch.firstHour + widget.time.windows[track.id].firstOffset,
         lastHour: track.branch.firstHour + widget.time.windows[track.id].lastOffset }

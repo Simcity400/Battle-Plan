@@ -23,3 +23,5 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Securit
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+# Tests that take more than about two seconds; see AGENTS.md.
+slow-tests = []

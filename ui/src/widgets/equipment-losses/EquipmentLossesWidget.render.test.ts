@@ -6,6 +6,9 @@ import { createServer } from 'vite';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { LossesReply } from '../../generated/dashboard';
 import type { SunburstProps } from '../../charts/sunburst/Sunburst';
+import type { TimeChartProps } from '../../charts/TimeChart';
+import type { PlotFrame } from '../../charts/frame';
+import type { ChartTokens } from '../../charts/tokens';
 import { groupTree, sliceTooltip } from '../../charts/sunburst/layout.ts';
 
 const reply: LossesReply = { branchId: '1', tag: 'AAA', amountScale: 100000, landSource: 'destruction',
@@ -17,7 +20,7 @@ const reply: LossesReply = { branchId: '1', tag: 'AAA', amountScale: 100000, lan
   }] };
 
 test('the loss overview combines data availability with amount completeness and hides read metadata', async () => {
-  const host = globalThis as typeof globalThis & { __lossReply?: LossesReply; __lossSunburst?: SunburstProps };
+  const host = globalThis as typeof globalThis & { __lossReply?: LossesReply; __lossSunburst?: SunburstProps; __lossChart?: TimeChartProps };
   host.__lossReply = reply;
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__lossReply, retry() {} });',
@@ -29,6 +32,7 @@ test('the loss overview combines data availability with amount completeness and 
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['#123'], positive: '#080', warning: '#880',
       error: '#800', surface: '#000', text: '#fff' }); export const useViewportHeight = () => 1000;`,
     '/charts/sunburst/Sunburst.tsx': `export default props => { globalThis.__lossSunburst = props; return props.legendExtra; };`,
+    '/charts/TimeChart.tsx': 'export default props => { globalThis.__lossChart = props; return null; };',
     '/charts/drill/DrillHost.tsx': 'export default props => props.main;',
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
@@ -42,11 +46,16 @@ test('the loss overview combines data availability with amount completeness and 
         id: 'main', axisOffset: 0, branch: { id: '1', firstHour: 100, lastHour: 109 },
         source: { id: 'synthetic', revision: '1', metadata: { campaignKey: 'synthetic' } },
       }] }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
-    const render = (data: LossesReply) => {
-      host.__lossReply = data;
+    const render = (data?: LossesReply) => {
+      host.__lossReply = data && { ...data, preparedReads: [100, 109], preparedHeadHour: 109, preparedDetailHour: 109,
+        preparedFrom: 100, preparedTo: 109, preparedWidth: 1 } as LossesReply | undefined;
       return renderToStaticMarkup(createElement(Widget, props));
     };
+    const pending = render();
+    assert.equal((pending.match(/This range is still being prepared\./g) ?? []).length, 1);
+    assert.doesNotMatch(pending, /No equipment losses|View all losses|>Complete</);
     assert.match(render(reply), />Complete</);
+    assert.doesNotMatch(render(reply), /still being prepared/);
     assert.match(render(reply), /View all losses/);
     const chart = host.__lossSunburst!;
     const tree = groupTree(chart.items, chart.root, chart.levels, chart.authoritativeTotal);
@@ -58,8 +67,21 @@ test('the loss overview combines data availability with amount completeness and 
     const missing = { ...reply, causes: [{ ...reply.causes[0], leaves: [], unknown: 'Raw acquisition refusal' }] };
     assert.match(render(missing), />Unavailable</);
     assert.doesNotMatch(render(missing), /Raw acquisition refusal/);
+    props.widget.options = { show: 'loss-details' };
+    render(reply);
+    const history = host.__lossChart!;
+    assert.deepEqual(history.extent, [100, 110], 'the last recorded tick retains its full chart width');
+    let fills = 0;
+    const context = { beginPath() {}, moveTo() {}, lineTo() {}, closePath() {}, stroke() {}, fill() { fills++; }, fillRect() { fills++; } } as unknown as CanvasRenderingContext2D;
+    const frame = { x: [100, 110], plotWidth: 1, toX: (hour: number) => hour, toY: (value: number) => value } as unknown as PlotFrame;
+    for (const layer of history.layers) layer.draw(context, frame, { surface: '#000' } as ChartTokens, { playhead: null });
+    assert.ok(fills > 0, 'prepared data through 109 draws against the chart extent ending at 110');
+    fills = 0;
+    for (const layer of history.layers) layer.draw(context, { ...frame, x: [100, 108] }, { surface: '#000' } as ChartTokens, { playhead: null });
+    assert.equal(fills, 0, 'pending zoom never paints geometry for another viewport');
+    assert.equal(history.tooltip?.(105, frame, []), null, 'sampled chart geometry does not establish exact hover values');
   } finally {
-    delete host.__lossReply; delete host.__lossSunburst;
+    delete host.__lossReply; delete host.__lossSunburst; delete host.__lossChart;
     await vite.close();
   }
 });

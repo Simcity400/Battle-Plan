@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
-import type { DashboardClient, ProductReply, ProductRequest } from './client';
+import type { DashboardClient, ProductRequest } from './client';
 import type { WidgetMeta, WidgetRuntime } from './definitions';
 import type { BoundTrack, DashboardTemplate, WidgetSpec } from './model';
 import type { CategoryInfo, IdeaHistoryReply } from '../generated/dashboard';
@@ -58,7 +58,7 @@ test('the catalogue splits the idea timeline into a card per content category an
         if (path.endsWith('/components/Popover.tsx')) return `export const usePopover = () => ({ trigger: null, open: globalThis.__ideaPicker.open,
           close() { globalThis.__ideaPicker.open = false; } }); export const Popover = ({ children }) => children;
           export const PopoverBody = ({ children }) => children();`;
-        if (path.endsWith('/dashboard/products.ts')) return source.replace("import { useEffect, useState } from 'react';",
+        if (path.endsWith('/dashboard/products.ts') || path.endsWith('/dashboard/ideaHistory.ts')) return source.replace("import { useEffect, useState } from 'react';",
           'const { useEffect, useState } = globalThis.__ideaPicker;');
         if (path.endsWith('/idea-timeline/ideaTimelinePresets.ts')) return source.replace("import { useMemo } from 'react';",
           'const { useMemo } = globalThis.__ideaPicker;');
@@ -69,9 +69,10 @@ test('the catalogue splits the idea timeline into a card per content category an
       },
     }] });
   const calls: { request: ProductRequest; signal: AbortSignal; answer: (data: IdeaHistoryReply) => void; fail: () => void }[] = [];
-  const client = { product: (request: ProductRequest, signal: AbortSignal) => new Promise<ProductReply<IdeaHistoryReply>>((resolve, reject) => {
-    calls.push({ request, signal, answer: data => resolve({ ...request, data }), fail: () => reject(new Error('Recorded category content could not be loaded.')) });
-  }) } as unknown as DashboardClient;
+  const client = { product: () => { throw new Error('The picker must use prepared idea history.'); },
+    preparedQuery: (source: {id:string;revision:string}, product: string, params: unknown, options: {signal:AbortSignal}) => new Promise<IdeaHistoryReply>((resolve, reject) => {
+      calls.push({ request: {sourceId:source.id,revision:source.revision,product,params}, signal:options.signal, answer: resolve, fail: () => reject(new Error('Recorded category content could not be loaded.')) });
+    }) } as unknown as DashboardClient;
   try {
     const { registerWidgets } = await vite.ssrLoadModule('/ui/src/dashboard/definitions.ts') as typeof import('./definitions.ts');
     const { createWidget, addGridItem } = await vite.ssrLoadModule('/ui/src/dashboard/model.ts') as typeof import('./model.ts');

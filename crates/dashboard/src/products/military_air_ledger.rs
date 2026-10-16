@@ -5,27 +5,33 @@
 //! other callers are not aircraft bombing. A complete interval certifies an
 //! empty event list. Gaps and unavailable intervals certify nothing.
 
-use super::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, country_groups::HourSpan};
+use super::{LoadContext, Product, country_groups::HourSpan};
 use crate::{
     Source, catalogue,
-    metadata::{branch_bounds, check_cancel, tagged_countries, validate_campaign},
+    metadata::{branch_bounds, check_cancel, tagged_countries},
     ranking,
-    transport::json_len,
 };
 use replay::{
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder},
+    frame::DecodedFrame,
     rows::{BuildingBombingDamageCause, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    sync::{Arc, atomic::AtomicBool},
+    sync::atomic::AtomicBool,
 };
 use ts_rs::TS;
+#[cfg(test)]
+use {
+    crate::metadata::validate_campaign,
+    replay::{container::Replay, frame::FrameDecoder},
+    std::sync::Arc,
+};
 
 pub struct MilitaryAirLedger;
+
+pub(crate) mod prepared;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
@@ -130,7 +136,7 @@ pub struct MilitaryAirReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 struct LeafKey {
     country: Option<(String, String)>,
     dealt: bool,
@@ -141,15 +147,33 @@ struct LeafKey {
     cause: u32,
 }
 
-#[derive(Default)]
+#[derive(Default, Deserialize, Serialize)]
 struct FamilyScan {
+    available: bool,
     observed: Vec<HourSpan>,
     incomplete: Vec<HourSpan>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     countries: BTreeMap<(String, String), Vec<HourSpan>>,
     /// Publish in read order; native dates never backfill a not-yet-recorded event.
+    #[serde(skip)]
     leaves: BTreeMap<LeafKey, BTreeMap<(i32, i32), i128>>,
     warnings: BTreeMap<String, usize>,
     last_event: Option<u64>,
+    presence_through: Option<i32>,
+    #[serde(skip)]
+    identities: Option<IdentityOperands>,
+    #[serde(skip)]
+    country_keys: Option<crate::metadata::CountryKeys>,
+    #[cfg(test)]
+    #[serde(skip)]
+    work: crate::prepared::observer_tests::Work,
+}
+
+#[derive(PartialEq, Eq)]
+struct IdentityOperands {
+    by_id: BTreeMap<u32, (String, String)>,
+    present: BTreeSet<(String, String)>,
+    invalid_tags: usize,
 }
 
 impl FamilyScan {
@@ -167,7 +191,13 @@ impl FamilyScan {
         Ok(())
     }
 
-    fn add(&mut self, key: LeafKey, hour: i32, read_hour: i32, amount: i64) -> io::Result<()> {
+    fn add(
+        &mut self,
+        key: LeafKey,
+        hour: i32,
+        read_hour: i32,
+        amount: impl Into<i128>,
+    ) -> io::Result<()> {
         let entry = self
             .leaves
             .entry(key)
@@ -175,32 +205,49 @@ impl FamilyScan {
             .entry((read_hour, hour))
             .or_default();
         *entry = entry
-            .checked_add(i128::from(amount))
+            .checked_add(amount.into())
             .ok_or_else(|| crate::invalid("military air event sum overflow"))?;
         Ok(())
     }
 
+    #[cfg(test)]
     fn identity_read(
         &mut self,
         frame: &DecodedFrame,
     ) -> io::Result<BTreeMap<u32, (String, String)>> {
+        Ok(self.identity_operands(frame)?.by_id)
+    }
+
+    fn identity_operands(&mut self, frame: &DecodedFrame) -> io::Result<IdentityOperands> {
         let countries = frame.complete::<tables::Countries>()?;
         let links = frame.complete::<tables::CountryLinks>()?;
+        self.country_keys = Some(crate::metadata::CountryKeys::read(countries));
+        #[cfg(test)]
+        {
+            self.work.row_visits += countries.len() + links.len();
+        }
         let mut slots = BTreeMap::new();
+        let mut invalid_tags = 0;
         for (tag, lookup) in tagged_countries(countries, links) {
             let Some((country, slot)) = lookup.found() else {
                 continue;
             };
             let Ok(tag) = std::str::from_utf8(tag) else {
+                invalid_tags += 1;
                 self.note("country tag is not UTF-8; its events cannot be named");
                 continue;
             };
             super::validate_tag(tag).map_err(crate::invalid)?;
             let key = (tag.to_owned(), format!("{slot}:{}", country.id));
+            #[cfg(test)]
+            {
+                self.work.history_visits += 1;
+            }
             append_hour(self.countries.entry(key.clone()).or_default(), frame.hour);
             slots.insert(slot, key);
         }
-        Ok(links
+        let present = slots.values().cloned().collect();
+        let by_id = links
             .iter()
             .filter_map(|link| {
                 slots
@@ -208,7 +255,133 @@ impl FamilyScan {
                     .cloned()
                     .map(|country| (link.id, country))
             })
-            .collect())
+            .collect();
+        Ok(IdentityOperands {
+            by_id,
+            present,
+            invalid_tags,
+        })
+    }
+
+    fn seal_presence(&mut self) {
+        if let (Some(hour), Some(identities)) = (self.presence_through, &self.identities) {
+            for key in &identities.present {
+                #[cfg(test)]
+                {
+                    self.work.history_visits += 1;
+                }
+                if let Some(span) = self
+                    .countries
+                    .get_mut(key)
+                    .and_then(|spans| spans.last_mut())
+                {
+                    span.last_hour = hour;
+                }
+            }
+        }
+    }
+
+    fn observe_changed(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: &crate::prepared::frame_changes::FrameChanges,
+        bombing: bool,
+    ) -> io::Result<()> {
+        let source = if bombing {
+            TableId::BuildingBombingDamage
+        } else {
+            TableId::AirLossEvents
+        };
+        let complete = if bombing {
+            frame.complete::<tables::BuildingBombingDamage>().is_ok()
+        } else {
+            frame.complete::<tables::AirLossEvents>().is_ok()
+        };
+        if !complete
+            || frame.complete::<tables::Countries>().is_err()
+            || frame.complete::<tables::CountryLinks>().is_err()
+        {
+            self.seal_presence();
+            self.identities = None;
+            self.presence_through = None;
+            return Ok(());
+        }
+        let continuous = self
+            .presence_through
+            .is_some_and(|last| last.checked_add(1) == Some(frame.hour));
+        if !continuous {
+            self.seal_presence();
+            self.identities = None;
+        }
+        let countries_changed = changes.rows_changed[TableId::Countries.index()]
+            && self.country_keys.as_ref().is_none_or(|keys| {
+                #[cfg(test)]
+                let before = keys.row_visits();
+                let changed = !keys.same(
+                    frame
+                        .complete::<tables::Countries>()
+                        .expect("complete countries"),
+                );
+                #[cfg(test)]
+                {
+                    self.work.row_visits += keys.row_visits() - before;
+                }
+                changed
+            });
+        let refresh = self.identities.is_none()
+            || countries_changed
+            || changes.rows_changed[TableId::CountryLinks.index()];
+        if refresh {
+            self.seal_presence();
+            // Identity refusals retain the oracle's already-observed prefix and
+            // remain local to this ledger read.
+            match self.identity_operands(frame) {
+                Ok(identities) => self.identities = Some(identities),
+                Err(_) => {
+                    self.identities = None;
+                    self.presence_through = None;
+                    return Ok(());
+                }
+            }
+        }
+        let identities = self.identities.as_ref().expect("complete identity read");
+        if !refresh && identities.invalid_tags != 0 {
+            *self
+                .warnings
+                .entry("country tag is not UTF-8; its events cannot be named".into())
+                .or_default() += identities.invalid_tags;
+        }
+        self.presence_through = Some(frame.hour);
+        self.available = true;
+        append_hour(&mut self.observed, frame.hour);
+        // Reused nonempty event tables remain an ordinal error, as in the oracle.
+        // Empty equal reads establish coverage without revisiting the census.
+        if !changes.rows_changed[source.index()] {
+            let first = if bombing {
+                frame
+                    .complete::<tables::BuildingBombingDamage>()?
+                    .first()
+                    .map(|row| row.id)
+            } else {
+                frame
+                    .complete::<tables::AirLossEvents>()?
+                    .first()
+                    .map(|row| row.id)
+            };
+            if let Some(id) = first {
+                self.event(id)?;
+            }
+            return Ok(());
+        }
+        // Move the current join temporarily so the event consumer can update the scan.
+        let identities = self.identities.take().expect("complete identity read");
+        let result = if bombing {
+            bombing_events(self, frame, &identities.by_id)
+        } else {
+            air_events(self, frame, &identities.by_id)
+        };
+        self.identities = Some(identities);
+        result
     }
 }
 
@@ -234,24 +407,39 @@ fn event_country(
         .cloned()
 }
 
+#[cfg(test)]
 fn air_frame(scan: &mut FamilyScan, frame: &DecodedFrame) -> io::Result<()> {
-    let rows = match frame.complete::<tables::AirLossEvents>() {
-        Ok(rows) => rows,
-        Err(_) => return Ok(()),
-    };
+    if frame.complete::<tables::AirLossEvents>().is_err() {
+        return Ok(());
+    }
     let countries = match scan.identity_read(frame) {
         Ok(countries) => countries,
         Err(_) => return Ok(()),
     };
+    scan.available = true;
     append_hour(&mut scan.observed, frame.hour);
+    air_events(scan, frame, &countries)
+}
+
+fn air_events(
+    scan: &mut FamilyScan,
+    frame: &DecodedFrame,
+    countries: &BTreeMap<u32, (String, String)>,
+) -> io::Result<()> {
+    let rows = frame.complete::<tables::AirLossEvents>()?;
     for row in rows {
+        #[cfg(test)]
+        {
+            scan.work.row_visits += 1;
+            scan.work.emitted += 1;
+        }
         scan.event(row.id)?;
         if row.game_hour > frame.hour {
             return Err(crate::invalid(
                 "air event is dated after its supplying read",
             ));
         }
-        let country = event_country(Some(row.country), &countries);
+        let country = event_country(Some(row.country), countries);
         if country.is_none() {
             scan.note("air event endpoint is not resolved by its recorded country census");
         }
@@ -261,7 +449,7 @@ fn air_frame(scan: &mut FamilyScan, frame: &DecodedFrame) -> io::Result<()> {
                 row.native_cause
             ));
         }
-        let opponent = event_country(row.opponent, &countries).map(|country| country.0);
+        let opponent = event_country(row.opponent, countries).map(|country| country.0);
         scan.add(
             LeafKey {
                 country,
@@ -280,16 +468,26 @@ fn air_frame(scan: &mut FamilyScan, frame: &DecodedFrame) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn bombing_frame(scan: &mut FamilyScan, frame: &DecodedFrame) -> io::Result<()> {
-    let rows = match frame.complete::<tables::BuildingBombingDamage>() {
-        Ok(rows) => rows,
-        Err(_) => return Ok(()),
-    };
+    if frame.complete::<tables::BuildingBombingDamage>().is_err() {
+        return Ok(());
+    }
     let countries = match scan.identity_read(frame) {
         Ok(countries) => countries,
         Err(_) => return Ok(()),
     };
+    scan.available = true;
     append_hour(&mut scan.observed, frame.hour);
+    bombing_events(scan, frame, &countries)
+}
+
+fn bombing_events(
+    scan: &mut FamilyScan,
+    frame: &DecodedFrame,
+    countries: &BTreeMap<u32, (String, String)>,
+) -> io::Result<()> {
+    let rows = frame.complete::<tables::BuildingBombingDamage>()?;
     if rows
         .iter()
         .any(|row| row.cause == BuildingBombingDamageCause::Unknown)
@@ -298,6 +496,11 @@ fn bombing_frame(scan: &mut FamilyScan, frame: &DecodedFrame) -> io::Result<()> 
     }
     let lexical = frame.complete::<tables::LexicalTokens>().ok();
     for row in rows {
+        #[cfg(test)]
+        {
+            scan.work.row_visits += 1;
+            scan.work.emitted += 1;
+        }
         scan.event(row.id)?;
         if row.cause == BuildingBombingDamageCause::Unknown {
             scan.note("building damage has an unsupported caller; its contribution to aircraft bombing is not known");
@@ -326,7 +529,7 @@ fn bombing_frame(scan: &mut FamilyScan, frame: &DecodedFrame) -> io::Result<()> 
             scan.note("building type is not spelled by the event's recorded lexical dictionary");
         }
         for (dealt, raw) in [(true, row.attacker), (false, Some(row.victim))] {
-            let country = event_country(raw, &countries);
+            let country = event_country(raw, countries);
             if country.is_none() {
                 scan.note(if dealt {
                     "bombing attacker not recorded"
@@ -353,6 +556,7 @@ fn bombing_frame(scan: &mut FamilyScan, frame: &DecodedFrame) -> io::Result<()> 
     Ok(())
 }
 
+#[derive(Default, Deserialize, Serialize)]
 struct Scan {
     first: i32,
     last: i32,
@@ -360,6 +564,114 @@ struct Scan {
     bombing: FamilyScan,
 }
 
+impl Scan {
+    #[cfg(test)]
+    fn observe(&mut self, frame: &DecodedFrame) -> io::Result<()> {
+        air_frame(&mut self.air, frame)?;
+        bombing_frame(&mut self.bombing, frame)
+    }
+
+    fn reply(
+        &self,
+        source: &Source,
+        params: &MilitaryAirParams,
+        context: &LoadContext,
+        cancelled: &AtomicBool,
+    ) -> io::Result<MilitaryAirReply> {
+        let family = match params.family {
+            MilitaryAirFamily::AirLosses => &self.air,
+            MilitaryAirFamily::Bombing => &self.bombing,
+        };
+        let selected_leaves: Vec<_> = leaves(family, params.from_hour)?
+            .into_iter()
+            .filter(|leaf| {
+                (params.regions.is_empty()
+                    || leaf
+                        .region
+                        .is_some_and(|region| params.regions.contains(&region)))
+                    && (params.causes.is_empty() || params.causes.contains(&leaf.cause))
+            })
+            .collect();
+        let membership = params
+            .top
+            .as_ref()
+            .map(|top| {
+                ranked_membership(
+                    &family.countries,
+                    &selected_leaves,
+                    params.from_hour.unwrap_or_else(|| {
+                        family
+                            .observed
+                            .first()
+                            .map_or(self.first, |span| span.first_hour)
+                    }),
+                    top,
+                    cancelled,
+                )
+            })
+            .transpose()?;
+        let mut warnings: Vec<_> = family
+            .warnings
+            .iter()
+            .map(|(reason, count)| format!("{count} events: {reason}"))
+            .collect();
+        let (regions, buildings) = names(source, context, family, &mut warnings);
+        let countries = family
+            .countries
+            .iter()
+            .map(|((tag, identity), present)| {
+                let selected = membership
+                    .as_ref()
+                    .map(|membership| {
+                        let mut selected = Vec::new();
+                        ranking::for_each_piece(
+                            present,
+                            membership.get(tag).map_or(&[], Vec::as_slice),
+                            |span| (span.first_hour, span.last_hour),
+                            cancelled,
+                            |_, first_hour, last_hour| {
+                                selected.push(HourSpan {
+                                    first_hour,
+                                    last_hour,
+                                });
+                                Ok(())
+                            },
+                        )?;
+                        Ok::<_, io::Error>(selected)
+                    })
+                    .transpose()?;
+                Ok(MilitaryAirCountry {
+                    tag: tag.clone(),
+                    identity: identity.clone(),
+                    present: present.clone(),
+                    membership: selected,
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        let reply = MilitaryAirReply {
+            family: params.family,
+            first_hour: self.first,
+            last_hour: self.last,
+            available: family.available,
+            observed: family.observed.clone(),
+            incomplete: family.incomplete.clone(),
+            countries,
+            leaves: selected_leaves,
+            regions,
+            buildings,
+            warnings,
+        };
+        check_cancel(cancelled)?;
+        super::check_reply_budget(&reply).map_err(|_| {
+            crate::invalid(
+                "Military air ledger reply exceeds transport budget; nothing was truncated",
+            )
+        })?;
+        Ok(reply)
+    }
+}
+
+#[cfg(test)]
 fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan> {
     let declaration = replay
         .branches
@@ -395,8 +707,7 @@ fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan
                     check_cancel(cancelled)?;
                     let decoded = decoder.advance(&frame)?;
                     validate_campaign(decoded, replay)?;
-                    air_frame(&mut scan.air, decoded)?;
-                    bombing_frame(&mut scan.bombing, decoded)?;
+                    scan.observe(decoded)?;
                 }
             }
             Ok(())
@@ -405,8 +716,10 @@ fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan
     Ok(scan)
 }
 
+#[cfg(test)]
 type ScanCache = Vec<(u64, Arc<Scan>)>;
 
+#[cfg(test)]
 fn scanned(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Result<Arc<Scan>> {
     check_cancel(cancelled)?;
     let state = source.state::<ScanCache>();
@@ -741,6 +1054,7 @@ impl Product for MilitaryAirLedger {
             MilitaryAirReply::decl(),
         ]
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -752,96 +1066,7 @@ impl Product for MilitaryAirLedger {
             params.branch_id.parse().expect("validated branch"),
             cancelled,
         )?;
-        let family = match params.family {
-            MilitaryAirFamily::AirLosses => &scan.air,
-            MilitaryAirFamily::Bombing => &scan.bombing,
-        };
-        let selected_leaves: Vec<_> = leaves(family, params.from_hour)?
-            .into_iter()
-            .filter(|leaf| {
-                (params.regions.is_empty()
-                    || leaf
-                        .region
-                        .is_some_and(|region| params.regions.contains(&region)))
-                    && (params.causes.is_empty() || params.causes.contains(&leaf.cause))
-            })
-            .collect();
-        let membership = params
-            .top
-            .as_ref()
-            .map(|top| {
-                ranked_membership(
-                    &family.countries,
-                    &selected_leaves,
-                    params.from_hour.unwrap_or_else(|| {
-                        family
-                            .observed
-                            .first()
-                            .map_or(scan.first, |span| span.first_hour)
-                    }),
-                    top,
-                    cancelled,
-                )
-            })
-            .transpose()?;
-        let mut warnings: Vec<_> = family
-            .warnings
-            .iter()
-            .map(|(reason, count)| format!("{count} events: {reason}"))
-            .collect();
-        let (regions, buildings) = names(source, context, family, &mut warnings);
-        let countries = family
-            .countries
-            .iter()
-            .map(|((tag, identity), present)| {
-                let selected = membership
-                    .as_ref()
-                    .map(|membership| {
-                        let mut selected = Vec::new();
-                        ranking::for_each_piece(
-                            present,
-                            membership.get(tag).map_or(&[], Vec::as_slice),
-                            |span| (span.first_hour, span.last_hour),
-                            cancelled,
-                            |_, first_hour, last_hour| {
-                                selected.push(HourSpan {
-                                    first_hour,
-                                    last_hour,
-                                });
-                                Ok(())
-                            },
-                        )?;
-                        Ok::<_, io::Error>(selected)
-                    })
-                    .transpose()?;
-                Ok(MilitaryAirCountry {
-                    tag: tag.clone(),
-                    identity: identity.clone(),
-                    present: present.clone(),
-                    membership: selected,
-                })
-            })
-            .collect::<io::Result<Vec<_>>>()?;
-        let reply = MilitaryAirReply {
-            family: params.family,
-            first_hour: scan.first,
-            last_hour: scan.last,
-            available: !family.observed.is_empty(),
-            observed: family.observed.clone(),
-            incomplete: family.incomplete.clone(),
-            countries,
-            leaves: selected_leaves,
-            regions,
-            buildings,
-            warnings,
-        };
-        check_cancel(cancelled)?;
-        if json_len(&reply, MAX_PRODUCT_REPLY_BYTES).is_none() {
-            return Err(crate::invalid(
-                "Military air ledger reply exceeds transport budget; nothing was truncated",
-            ));
-        }
-        Ok(reply)
+        scan.reply(source, params, context, cancelled)
     }
 }
 

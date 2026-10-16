@@ -30,6 +30,7 @@ struct Prepared {
     event_feed_sequence: Option<u64>,
     event_feed_generation: Option<u64>,
     event_feed_counts: replay::event_feed_rows::EventFeedCounts,
+    map_events: (u64, u64),
     lease: File,
 }
 
@@ -43,6 +44,7 @@ pub struct PreparedCampaigns {
     event_feed_sequence: Option<u64>,
     event_feed_generation: Option<u64>,
     event_feed_counts: replay::event_feed_rows::EventFeedCounts,
+    map_events: (u64, u64),
 }
 
 impl PreparedCampaigns {
@@ -79,6 +81,7 @@ impl PreparedCampaigns {
         let mut event_feed_sequence = None;
         let mut event_feed_generation = None;
         let mut event_feed_counts = replay::event_feed_rows::EventFeedCounts::default();
+        let mut map_events = (0, 0);
         for (id, path) in paths {
             let deadline = Instant::now() + Duration::from_secs(2);
             let prepared = loop {
@@ -97,6 +100,10 @@ impl PreparedCampaigns {
             };
             if let Ok(prepared) = &prepared {
                 completion_sequence = completion_sequence.max(prepared.completion_sequence);
+                map_events = (
+                    map_events.0.max(prepared.map_events.0),
+                    map_events.1.max(prepared.map_events.1),
+                );
                 naval_result_sequence = naval_result_sequence.max(prepared.naval_result_sequence);
                 event_feed_sequence = event_feed_sequence.max(prepared.event_feed_sequence);
                 event_feed_generation = event_feed_generation.max(prepared.event_feed_generation);
@@ -121,6 +128,7 @@ impl PreparedCampaigns {
             event_feed_sequence,
             event_feed_generation,
             event_feed_counts,
+            map_events,
         })
     }
 
@@ -160,6 +168,7 @@ impl PreparedCampaigns {
         let (event_feed_sequence, event_feed_generation, event_feed_counts) =
             event_feed_history(&replay)?;
         let politics_epoch = politics_epoch(&replay)?;
+        let map_events = map_event_history(&replay)?;
         let history = replay.into_history()?;
         if !history.campaign_id.eq_ignore_ascii_case(name.as_bytes()) {
             return Err(invalid(
@@ -187,6 +196,7 @@ impl PreparedCampaigns {
             event_feed_sequence,
             event_feed_generation,
             event_feed_counts,
+            map_events,
             lease,
         })
     }
@@ -218,6 +228,12 @@ impl PreparedCampaigns {
 
     pub fn completion_sequence(&self) -> u64 {
         self.completion_sequence
+    }
+
+    /// The latest map event epoch and the last sequence number any recorded
+    /// interval reached, so a new session continues both.
+    pub fn map_events(&self) -> (u64, u64) {
+        self.map_events
     }
 
     pub fn politics_epoch(&self) -> u64 {
@@ -291,6 +307,28 @@ fn completion_sequence(replay: &Replay) -> io::Result<u64> {
         }
     }
     Ok(maximum)
+}
+
+fn map_event_history(replay: &Replay) -> io::Result<(u64, u64)> {
+    use replay::{
+        frame::FrameDecoder,
+        rows::{TableId, tables},
+    };
+    let selected = [TableId::MapEvents];
+    let mut latest = (0, 0);
+    for block in &replay.index {
+        let mut decoder = FrameDecoder::for_tables(&selected);
+        for frame in replay.read_block_selected(block, &selected)? {
+            let decoded = decoder.advance(&frame)?;
+            if let Ok([row]) = decoded.complete::<tables::MapEvents>() {
+                latest = (
+                    latest.0.max(row.epoch),
+                    latest.1.max(row.next_sequence.saturating_sub(1)),
+                );
+            }
+        }
+    }
+    Ok(latest)
 }
 
 fn politics_epoch(replay: &Replay) -> io::Result<u64> {

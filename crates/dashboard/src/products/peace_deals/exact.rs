@@ -1,9 +1,6 @@
 //! Exact finalizer observations override the derived card of the same identity.
 use super::*;
-use replay::{
-    frame::TableView,
-    rows::{PeaceSettlementRow, SettledPeaceAction},
-};
+use replay::{frame::TableView, rows::SettledPeaceAction};
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
@@ -74,30 +71,62 @@ pub struct PeaceCapturedSubject {
     pub overlord_tag: Option<String>,
     pub subject_tag: Option<String>,
 }
-struct Capture {
-    row: PeaceSettlementRow,
+/// Finalizer facts projected through the same event-hour naming and identity
+/// joins as the reply. No replay row is retained in a prepared checkpoint.
+#[derive(Serialize, Deserialize)]
+struct Settlement {
+    sequence: u64,
+    conference: Option<u64>,
+    hour: Option<i32>,
+    omitted: u64,
+    failure: Option<Vec<u8>>,
+    winners: Vec<u32>,
+    losers: Vec<u32>,
+    actions: Vec<PeaceCapturedAction>,
+    transfers: Vec<PeaceCapturedTransfer>,
+    subjects: Vec<PeaceCapturedSubject>,
+    cached_names: Vec<Option<Vec<u8>>>,
+}
+#[derive(Serialize, Deserialize)]
+pub(super) struct Capture {
+    row: Settlement,
     publication_hour: i32,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
     tags: HashMap<u32, String>,
+    #[serde(skip)]
     countries: HashMap<u32, PeaceTransferCountry>,
-    tokens: HashMap<u32, String>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_optional_map")]
     vps: Option<HashMap<u32, i64>>,
     vps_hour: Option<i32>,
     state_action_key: Option<String>,
 }
+#[derive(Serialize, Deserialize)]
 struct TagRead {
     first_hour: i32,
     last_hour: i32,
     tag: Tag,
     identity: (u32, u32),
 }
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub(super) struct Observed {
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_set")]
     seen: HashSet<u64>,
-    captures: Vec<Capture>,
+    #[serde(skip)]
+    pub(super) captures: Vec<Capture>,
     unobserved: Vec<HourSpan>,
     /// Ordered, so a reply's warnings do not depend on hashing.
     reasons: std::collections::BTreeSet<String>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
     country_tags: HashMap<u32, Vec<TagRead>>,
+    frontier: Option<i32>,
+    materialized: Option<i32>,
+    active: std::collections::BTreeSet<u32>,
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(super) row_visits: usize,
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(super) history_visits: usize,
 }
 impl Observed {
     fn missing(&mut self, hour: i32, reason: String) {
@@ -116,34 +145,85 @@ impl Observed {
         self.reasons.insert(reason);
     }
     /// `action_key` is this frame's `state_action_key`, read once per LexicalTokens view.
-    pub(super) fn observe(
+    pub(super) fn seal(&mut self) {
+        let Some((from, through)) = self
+            .materialized
+            .zip(self.frontier)
+            .filter(|(from, through)| from < through)
+        else {
+            return;
+        };
+        for raw in &self.active {
+            #[cfg(test)]
+            {
+                self.history_visits += 1;
+            }
+            if let Some(last) = self
+                .country_tags
+                .get_mut(raw)
+                .and_then(|reads| reads.last_mut())
+                .filter(|last| last.last_hour == from)
+            {
+                last.last_hour = through;
+            }
+        }
+        self.materialized = Some(through);
+    }
+    pub(super) fn observe_changed(
         &mut self,
         frame: &DecodedFrame,
         countries: Option<&CountryTags>,
         vps: Option<&HashMap<u32, i64>>,
         action_key: Option<&str>,
+        holders_changed: bool,
+        changes: &FrameChanges,
     ) {
-        if let Some(countries) = countries {
-            // Retain every observed mapping without copying an unchanged map
-            // for each hour. A missing read breaks each reference's run.
-            for (&raw, tag) in &countries.tags {
-                let identity = countries.identities[tag];
-                let reads = self.country_tags.entry(raw).or_default();
-                if let Some(last) = reads.last_mut().filter(|last| {
-                    last.last_hour.checked_add(1) == Some(frame.hour)
-                        && last.tag == *tag
-                        && last.identity == identity
-                }) {
-                    last.last_hour = frame.hour;
-                } else {
-                    reads.push(TagRead {
-                        first_hour: frame.hour,
-                        last_hour: frame.hour,
-                        tag: tag.clone(),
-                        identity,
-                    });
+        let continuous = self.frontier.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
+        if holders_changed || !continuous {
+            self.seal();
+            self.active.clear();
+            if let Some(countries) = countries {
+                // Retain every observed mapping without copying an unchanged map
+                // for each hour. A missing read breaks each reference's run.
+                for (&raw, tag) in &countries.tags {
+                    #[cfg(test)]
+                    {
+                        self.row_visits += 1;
+                    }
+                    let identity = countries.identities[tag];
+                    let reads = self.country_tags.entry(raw).or_default();
+                    if let Some(last) = reads.last_mut().filter(|last| {
+                        last.last_hour.checked_add(1) == Some(frame.hour)
+                            && last.tag == *tag
+                            && last.identity == identity
+                    }) {
+                        last.last_hour = frame.hour;
+                    } else {
+                        reads.push(TagRead {
+                            first_hour: frame.hour,
+                            last_hour: frame.hour,
+                            tag: tag.clone(),
+                            identity,
+                        });
+                    }
                 }
             }
+            self.active.extend(
+                countries
+                    .into_iter()
+                    .flat_map(|countries| countries.tags.keys())
+                    .copied(),
+            );
+            self.materialized = Some(frame.hour);
+        }
+        self.frontier = Some(frame.hour);
+        if !changes.rows_changed[TableId::PeaceSettlements.index()]
+            && matches!(
+                &*frame.tables[TableId::PeaceSettlements.index()],
+                TableView::Complete(_)
+            )
+        {
+            return;
         }
         let rows = match &*frame.tables[TableId::PeaceSettlements.index()] {
             TableView::Complete(rows) => rows.rows::<tables::PeaceSettlements>(),
@@ -164,15 +244,36 @@ impl Observed {
         let Some(rows) = rows else {
             return;
         };
+        if !changes.rows_changed[TableId::PeaceSettlements.index()] {
+            return;
+        }
+        // Late finalizer facts can name any accepted hour, including this one.
+        self.seal();
         let tokens = frame.complete::<tables::LexicalTokens>().ok();
         for row in rows {
+            #[cfg(test)]
+            {
+                self.row_visits += 1;
+            }
             if !self.seen.insert(row.sequence) {
                 continue;
             }
             // Resolve countries only through a read at the event hour. A new
             // country's tag can remain unknown while its raw reference survives.
-            self.captures.push(Capture {
-                row: row.clone(),
+            let mut capture = Capture {
+                row: Settlement {
+                    sequence: row.sequence,
+                    conference: row.conference,
+                    hour: row.hour,
+                    omitted: row.omitted,
+                    failure: row.failure.clone(),
+                    winners: row.winners.clone(),
+                    losers: row.losers.clone(),
+                    actions: Vec::new(),
+                    transfers: Vec::new(),
+                    subjects: Vec::new(),
+                    cached_names: Vec::new(),
+                },
                 publication_hour: frame.hour,
                 tags: row
                     .hour
@@ -226,17 +327,6 @@ impl Observed {
                             .collect()
                     })
                     .unwrap_or_default(),
-                // LexicalTokens rows are keyed by token: unique and ascending.
-                tokens: row
-                    .actions
-                    .iter()
-                    .filter_map(|a| {
-                        let tokens = tokens?;
-                        let index = tokens.binary_search_by_key(&a.token, |r| r.token).ok()?;
-                        let name = std::str::from_utf8(&tokens[index].literal).ok()?;
-                        Some((a.token, name.to_owned()))
-                    })
-                    .collect(),
                 vps: vps.map(|vps| {
                     row.transfers
                         .iter()
@@ -249,7 +339,82 @@ impl Observed {
                 }),
                 vps_hour: vps.map(|_| frame.hour),
                 state_action_key: action_key.map(str::to_owned),
-            });
+            };
+            let tokens: HashMap<u32, String> = row
+                .actions
+                .iter()
+                .filter_map(|a| {
+                    let tokens = tokens?;
+                    let index = tokens.binary_search_by_key(&a.token, |r| r.token).ok()?;
+                    Some((
+                        a.token,
+                        std::str::from_utf8(&tokens[index].literal).ok()?.to_owned(),
+                    ))
+                })
+                .collect();
+            capture.row.actions = row
+                .actions
+                .iter()
+                .map(|a| action(a, &tokens, &capture.tags))
+                .collect();
+            capture.row.cached_names = capture
+                .row
+                .actions
+                .iter()
+                .map(|a| a.cached_name.clone())
+                .collect();
+            let mut givers: HashMap<i32, Option<u32>> = HashMap::new();
+            for action in &capture.row.actions {
+                if let Some(state) = action.state {
+                    givers
+                        .entry(state)
+                        .and_modify(|old| {
+                            if *old != Some(action.giver) {
+                                *old = None;
+                            }
+                        })
+                        .or_insert(Some(action.giver));
+                }
+            }
+            capture.row.transfers = row
+                .transfers
+                .iter()
+                .map(|t| {
+                    let giver = if t.automatic {
+                        None
+                    } else {
+                        givers.get(&t.state).copied().flatten()
+                    };
+                    PeaceCapturedTransfer {
+                        derived: false,
+                        hour: row.hour.unwrap_or(capture.publication_hour),
+                        state: t.state,
+                        taker: t.taker,
+                        to: capture.tags.get(&t.taker).cloned(),
+                        giver,
+                        from: giver.and_then(|r| capture.tags.get(&r).cloned()),
+                        from_country: giver.and_then(|raw| capture.countries.get(&raw).cloned()),
+                        to_country: capture.countries.get(&t.taker).cloned(),
+                        automatic: t.automatic,
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            capture.row.subjects = row
+                .subjects
+                .iter()
+                .map(|s| PeaceCapturedSubject {
+                    derived: false,
+                    overlord: s.overlord,
+                    subject: s.subject,
+                    overlord_tag: capture.tags.get(&s.overlord).cloned(),
+                    subject_tag: capture.tags.get(&s.subject).cloned(),
+                })
+                .collect();
+            capture
+                .tags
+                .retain(|raw, _| row.winners.contains(raw) || row.losers.contains(raw));
+            self.captures.push(capture);
         }
     }
     pub(super) fn apply(self, reply: &mut PeaceDealsReply) {
@@ -352,42 +517,7 @@ impl Observed {
             if deal.winners.len() != row.winners.len() || deal.losers.len() != row.losers.len() {
                 deal.limitations.push("Some participant tags are not recorded at the finalizer hour; their raw references are preserved.".into());
             }
-            let mut givers: HashMap<i32, Option<u32>> = HashMap::new();
-            for action in &row.actions {
-                if let Some(state) = action.state {
-                    givers
-                        .entry(state)
-                        .and_modify(|old| {
-                            if *old != Some(action.giver) {
-                                *old = None;
-                            }
-                        })
-                        .or_insert(Some(action.giver));
-                }
-            }
-            let transfers = row
-                .transfers
-                .iter()
-                .map(|t| {
-                    let giver = if t.automatic {
-                        None
-                    } else {
-                        givers.get(&t.state).copied().flatten()
-                    };
-                    PeaceCapturedTransfer {
-                        derived: false,
-                        hour,
-                        state: t.state,
-                        taker: t.taker,
-                        to: capture.tags.get(&t.taker).cloned(),
-                        giver,
-                        from: giver.and_then(|r| capture.tags.get(&r).cloned()),
-                        from_country: giver.and_then(|raw| capture.countries.get(&raw).cloned()),
-                        to_country: capture.countries.get(&t.taker).cloned(),
-                        automatic: t.automatic,
-                    }
-                })
-                .collect::<Vec<_>>();
+            let transfers = row.transfers.clone();
             let fallback = std::mem::take(&mut deal.items);
             let undrawable = transfers
                 .iter()
@@ -474,20 +604,15 @@ impl Observed {
                 actions: row
                     .actions
                     .iter()
-                    .map(|a| action(a, &capture.tokens, &capture.tags))
-                    .collect(),
-                transfers,
-                subjects: row
-                    .subjects
-                    .iter()
-                    .map(|s| PeaceCapturedSubject {
-                        derived: false,
-                        overlord: s.overlord,
-                        subject: s.subject,
-                        overlord_tag: capture.tags.get(&s.overlord).cloned(),
-                        subject_tag: capture.tags.get(&s.subject).cloned(),
+                    .cloned()
+                    .zip(&row.cached_names)
+                    .map(|(mut action, cached)| {
+                        action.cached_name = cached.clone();
+                        action
                     })
                     .collect(),
+                transfers,
+                subjects: row.subjects.clone(),
             });
         }
         // Rebuild graphs after overrides. A derived unassigned card must not

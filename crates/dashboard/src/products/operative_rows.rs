@@ -11,14 +11,169 @@ use replay::{
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+/// Current country operands shared by the intelligence observers. It contains
+/// identity columns only, never a frame or a historical snapshot. The oracle
+/// uses the same extraction with its own runtime instance.
+#[derive(Default)]
+pub(crate) struct CountryInputs {
+    keys: Option<crate::metadata::CountryKeys>,
+    pub countries: Option<Vec<CountryRow>>,
+    pub links: Option<Vec<CountryLinkRow>>,
+    pub slots: HashMap<u32, CountryRow>,
+    pub unresolved: Vec<u32>,
+    pub tagged: BTreeMap<Vec<u8>, Option<(usize, u32)>>,
+    pub aliases: HashMap<Vec<u8>, usize>,
+    pub strict: Option<Result<BTreeMap<u32, CountryRow>, String>>,
+    pub labels: HashMap<u32, String>,
+    pub changed: bool,
+    pub text: bool,
+    country_error: Option<String>,
+    link_error: Option<String>,
+}
+impl CountryInputs {
+    pub(crate) fn update(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+    ) {
+        self.changed = false;
+        let reached = |table: TableId| {
+            changes.is_none_or(|changes| {
+                changes.rows_changed[table.index()] || changes.table_read[table.index()]
+            })
+        };
+        if reached(TableId::Countries) {
+            match frame.complete::<tables::Countries>() {
+                Ok(rows) => {
+                    if self.keys.as_ref().is_none_or(|keys| !keys.same(rows)) {
+                        self.keys = Some(crate::metadata::CountryKeys::read(rows));
+                        self.countries = Some(
+                            rows.iter()
+                                .map(|row| CountryRow {
+                                    id: row.id,
+                                    canonical_slot: row.canonical_slot,
+                                    tag: row.tag.clone(),
+                                    ..Default::default()
+                                })
+                                .collect(),
+                        );
+                        self.country_error = None;
+                        self.changed = true;
+                    }
+                }
+                Err(error) => {
+                    let error = error.to_string();
+                    self.changed |=
+                        self.country_error.as_ref() != Some(&error) || self.countries.is_some();
+                    self.country_error = Some(error);
+                    self.countries = None;
+                    self.keys = None;
+                }
+            }
+        }
+        if reached(TableId::CountryLinks) {
+            match frame.complete::<tables::CountryLinks>() {
+                Ok(rows) => {
+                    if self.links.as_deref() != Some(rows) {
+                        self.links = Some(rows.to_vec());
+                        self.link_error = None;
+                        self.changed = true;
+                    }
+                }
+                Err(error) => {
+                    let error = error.to_string();
+                    self.changed |=
+                        self.link_error.as_ref() != Some(&error) || self.links.is_some();
+                    self.link_error = Some(error);
+                    self.links = None;
+                }
+            }
+        }
+        if !self.changed && self.strict.is_some() {
+            return;
+        }
+        #[cfg(test)]
+        super::intelligence_prepared::join_rebuilt();
+        self.slots.clear();
+        self.unresolved.clear();
+        self.tagged.clear();
+        self.aliases.clear();
+        self.labels.clear();
+        let Some((countries, links)) = self.countries.as_deref().zip(self.links.as_deref()) else {
+            self.strict = Some(Err(self
+                .country_error
+                .as_ref()
+                .or(self.link_error.as_ref())
+                .cloned()
+                .unwrap_or_default()));
+            return;
+        };
+        self.text = countries
+            .iter()
+            .all(|row| std::str::from_utf8(&row.tag).is_ok());
+        let (slots, unresolved) = country_rows_partial(countries, links);
+        self.slots = slots
+            .into_iter()
+            .map(|(slot, row)| (slot, row.clone()))
+            .collect();
+        self.unresolved = unresolved;
+        self.tagged = crate::metadata::tagged_countries(countries, links)
+            .into_iter()
+            .map(|(tag, found)| {
+                (
+                    tag.to_vec(),
+                    found.found().map(|(row, slot)| {
+                        (
+                            countries
+                                .binary_search_by_key(&row.id, |row| row.id)
+                                .expect("country projection key"),
+                            slot,
+                        )
+                    }),
+                )
+            })
+            .collect();
+        for row in countries {
+            *self.aliases.entry(row.tag.clone()).or_default() += 1;
+        }
+        let slots: HashMap<_, _> = countries
+            .iter()
+            .map(|row| (row.canonical_slot, row.tag.as_slice()))
+            .collect();
+        self.labels = links
+            .iter()
+            .filter_map(|link| {
+                let tag = std::str::from_utf8(slots.get(&link.canonical_slot)?).ok()?;
+                (!tag.is_empty()).then(|| (link.id, tag.to_owned()))
+            })
+            .collect();
+        self.strict = Some(
+            countries
+                .iter()
+                .map(|row| {
+                    crate::metadata::mapped_slot(row, links)
+                        .map(|slot| (slot, row.clone()))
+                        .map_err(|error| error.to_string())
+                })
+                .collect(),
+        );
+    }
+    pub(crate) fn complete(&self) -> Option<(&[CountryRow], &[CountryLinkRow])> {
+        self.countries.as_deref().zip(self.links.as_deref())
+    }
+}
+
 /// Frozen at a read so reused links cannot reassign an operative's country.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) struct CountryIdentity {
     pub slot: u32,
     pub id: u32,
 }
 
 /// Build once on a read, validating the same links as every country product.
+#[cfg(test)]
 pub(crate) fn country_rows<'a>(
     countries: &'a [CountryRow],
     links: &[CountryLinkRow],
@@ -55,22 +210,22 @@ pub(crate) fn country_rows_partial<'a>(
     (result, unresolved)
 }
 
-pub(crate) fn identity(
+pub(crate) fn identity<T: std::borrow::Borrow<CountryRow>>(
     raw: u32,
     links: &[CountryLinkRow],
-    countries: &HashMap<u32, &CountryRow>,
+    countries: &HashMap<u32, T>,
 ) -> Option<CountryIdentity> {
     let slot = link_slot(links, raw)?;
-    let row = countries.get(&slot)?;
+    let row: &CountryRow = countries.get(&slot)?.borrow();
     Some(CountryIdentity { slot, id: row.id })
 }
 
-pub(crate) fn tag_of(
+pub(crate) fn tag_of<T: std::borrow::Borrow<CountryRow>>(
     identity: Option<CountryIdentity>,
-    countries: &HashMap<u32, &CountryRow>,
+    countries: &HashMap<u32, T>,
 ) -> Option<String> {
     let identity = identity?;
-    let row = countries.get(&identity.slot)?;
+    let row: &CountryRow = countries.get(&identity.slot)?.borrow();
     (row.id == identity.id).then(|| tag(row)).flatten()
 }
 
@@ -222,10 +377,10 @@ pub(crate) struct MembershipSnapshot {
 }
 
 impl MembershipSnapshot {
-    pub(crate) fn new(
+    pub(crate) fn new<T: std::borrow::Borrow<CountryRow>>(
         row: &OperativeMembershipRow,
         links: &[CountryLinkRow],
-        countries: &HashMap<u32, &CountryRow>,
+        countries: &HashMap<u32, T>,
     ) -> Self {
         let resolve = |raw| identity(raw, links, countries).ok_or(raw);
         let owner = resolve(row.owner_country);
@@ -253,11 +408,11 @@ impl MembershipSnapshot {
 }
 
 /// Equal duplicate memberships count once; contradictory reads stay unknown.
-pub(crate) fn admit(
+pub(crate) fn admit<T: std::borrow::Borrow<CountryRow>>(
     seen: &mut BTreeMap<u64, MembershipSnapshot>,
     row: &OperativeMembershipRow,
     links: &[CountryLinkRow],
-    countries: &HashMap<u32, &CountryRow>,
+    countries: &HashMap<u32, T>,
 ) -> Result<bool, String> {
     let snapshot = MembershipSnapshot::new(row, links, countries);
     match seen.entry(row.id) {

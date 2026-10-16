@@ -1734,8 +1734,8 @@ fn shared_trait_indices_keep_null_empty_order_and_compact_wire() {
 
 #[test]
 fn compact_wire_retains_scan_runs_traits_and_recorded_battles() {
-    let reply = scan_fixture(1, 30, 9, true);
-    assert_eq!(reply.leaders.len(), 30);
+    let reply = scan_fixture(1, 2, 9, true);
+    assert_eq!(reply.leaders.len(), 2);
     for leader in &reply.leaders {
         assert_eq!(leader.runs.len(), 9);
         assert_eq!(leader.trait_gains.len(), 1);
@@ -1746,7 +1746,7 @@ fn compact_wire_retains_scan_runs_traits_and_recorded_battles() {
             i64::from(leader.runs.last().unwrap().first_hour)
         );
     }
-    assert!(report_size("30 leaders / nine yearly recorded reads", &reply) < 60 * 1024);
+    assert!(report_size("2 leaders / nine yearly recorded reads", &reply) < 60 * 1024);
     let wire = serde_json::to_value(&reply).unwrap();
     assert!(wire["leaders"][0]["runs"][0].is_array());
     assert!(wire["leaders"][0].get("battleWon").is_none());

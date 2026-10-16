@@ -1,0 +1,24 @@
+[package]
+name = "engine-native"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+# Tests that take more than about two seconds; see AGENTS.md.
+slow-tests = []
+alloc-fault-injection = []
+batch-fallback-test-counts = []
+test-support = ["batch-fallback-test-counts"]
+
+[dependencies]
+engine-executable.workspace = true
+
+[build-dependencies]
+# The guarded native-copy helper is linked once, with the workspace cc feature set.
+cc = { version = "1", features = ["parallel"] }

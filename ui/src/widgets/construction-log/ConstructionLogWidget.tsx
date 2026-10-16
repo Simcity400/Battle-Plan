@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import { ChipSet } from '../../components/ChipSet';
@@ -21,6 +21,8 @@ import { usePlaybackHour } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
+import { useParityPreparation } from '../../dashboard/parityPreparation';
+import type { LogListProps } from '../../charts/log/LogList';
 import { OPTIONS, PROJECT_CHOICES } from './definition';
 import { buildingChoices, describeRow, jumpHours, levelsLabel, logComplete, logRows, placeTitle, projectTooltip, projectType, rowCountryRequests, rowFactories, statusLabel, statusTone, typeName } from './constructionData';
 import type { ProjectAt } from './constructionData';
@@ -67,9 +69,10 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   const rows = useMemo(() => log && hour != null && match.ready
     ? logRows(log, hour, { types: contentSet(types), projects, queue, country: match.matches, from }, order) : NO_ROWS,
   [log, hour, match, types, projects, queue, from, order]);
+  const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
   // Countries are named and flagged as recorded when each drawn row was first read.
   const [visible, setVisible] = useState<readonly LogRow<ProjectAt>[]>(NO_ROWS);
-  const onVisible = useCallback((drawn: readonly LogRow<ProjectAt>[]) => { setVisible(drawn); onDrawn(rows, drawn, from); }, [rows, onDrawn, from]);
+  const onVisible = useCallback((drawn: readonly LogRow<ProjectAt>[]) => { setVisible(drawn); if (!parity?.requested) onDrawn(rows, drawn, from); }, [rows, onDrawn, from, parity?.requested]);
   const namingActive = active && inBranch && log != null && match.ready;
   // Each drawn row names its country at its own first read: every one of those hours is asked for.
   const names = useMemo(() => rowCountryRequests(namingActive ? visible : NO_ROWS), [visible, namingActive]);
@@ -77,6 +80,18 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   const country = useCallback((at: ProjectAt) => labelAt(at.project.firstRead)(at.project.tag), [labelAt]);
   const wantedStates = useMemo(() => stateNameRequests(visible.map(row => row.item.project), namingActive ? hour : null), [visible, hour, namingActive]);
   const stateAt = useStateNamesAt(runtime.client, track, wantedStates, namingActive);
+  let paritySemantic: LogListProps<ProjectAt>['paritySemantic'];
+  if (import.meta.env.MODE === 'parity') {
+    const requested = parity!.requested;
+    const historyComplete = log != null && logComplete(log, from);
+    useEffect(() => { if (requested) onDrawn(rows, rows, from); }, [requested, onDrawn, rows, from]);
+    const complete = requested && historyComplete;
+    paritySemantic = { complete, preparation: { prepare: parity!.prepare, ready: () => complete, error: () => error },
+      content: row => { const type = log && projectType(log, row.item.project); return type ? { id: type.id, token: type.token, name: type.name } : null; },
+      reads: { current: log?.current, held: log?.held, from,
+        windows: [...log?.windows ?? []].sort(([a], [b]) => a - b).map(([index, reply]) => ({ index, interval: reply.interval,
+          outputReads: reply.outputReads, outputUnavailable: reply.outputUnavailable })) } };
+  }
   const choices = useMemo(() => buildingChoices(manifest), [manifest]);
   const warnings = useMemo(() => [...new Set([...manifest?.warnings ?? [], ...[...log?.windows.values() ?? []].flatMap(reply => reply.warnings)])],
     [manifest, log]);
@@ -140,6 +155,7 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
         onReset={() => { if (chosen.length) setOption?.('types', ''); }} onToggle={toggle} />}
     </div>}
     <LogList rows={rows} label="Construction projects" density={settings.density} months={settings.months}
+      {...import.meta.env.MODE === 'parity' ? { parityHistoryComplete: logComplete(log, from), paritySemantic } : {}}
       animate={settings.animate && live} renderRow={renderRow}
       describe={row => describeRow(log, row, country(row.item).name, hour, stateAt)}
       tooltip={row => projectTooltip(log, row.item, hour, country(row.item).name, stateAt)}

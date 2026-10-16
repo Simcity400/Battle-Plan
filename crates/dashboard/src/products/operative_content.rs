@@ -12,26 +12,41 @@ use installed_content::{
     unit_leader::{Leaders, Skills},
 };
 use replay::rows::{CharacterPortraitRow, OperativeMembershipRow, PORTRAIT_LARGE};
-use std::{
-    collections::BTreeMap,
-    io,
-    sync::{Arc, Mutex},
-};
+use std::{io, sync::Arc};
 
-type IconCache = BTreeMap<(bool, String, u32), Result<String, String>>;
+type IconCache = catalogue::KeyedResults<(bool, String, u32), String>;
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum AssignmentKey {
+    Mission(u32),
+    Operation(String),
+}
+struct FixedAssignment {
+    value: Assignment,
+    icon: Option<(bool, String, u32)>,
+}
+impl From<Assignment> for FixedAssignment {
+    fn from(value: Assignment) -> Self {
+        Self { value, icon: None }
+    }
+}
+type Cached = Option<(
+    catalogue::Binding,
+    Arc<catalogue::CachedResult<OperativeContent>>,
+)>;
 
 pub struct OperativeContent {
     pub catalogue: Arc<Catalogue>,
     politics: Arc<politics_content::PoliticsContent>,
     skills: Skills,
-    operations: installed_content::intelligence::Intelligence,
+    operations: Arc<installed_content::intelligence::Intelligence>,
     capture_duration_days: Result<i32, String>,
     pub warnings: Vec<String>,
     preparation_findings: Vec<crate::content_check::Finding>,
-    icons: Mutex<IconCache>,
+    icons: IconCache,
+    assignments: catalogue::KeyedResults<AssignmentKey, FixedAssignment>,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Assignment {
     pub name: Option<String>,
     pub missing: Option<String>,
@@ -74,25 +89,33 @@ pub fn content(
     let Some(options) = context.content.as_ref() else {
         return Ok(None);
     };
-    let politics = politics_content::politics_content(source, options)?;
-    type Cached = Option<Arc<OperativeContent>>;
     let state = source.state::<Cached>();
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some(cached) = state.as_ref()
-        && Arc::ptr_eq(&cached.catalogue, &politics.catalogue)
+    if !state
+        .as_ref()
+        .is_some_and(|(binding, _)| catalogue::binding_matches(binding, options))
     {
-        return Ok(Some(Arc::clone(cached)));
+        *state = Some((
+            catalogue::binding(options),
+            Arc::new(catalogue::CachedResult::default()),
+        ));
     }
-    let loaded = Arc::new(OperativeContent::load(politics)?);
-    *state = Some(Arc::clone(&loaded));
-    Ok(Some(loaded))
+    let result = Arc::clone(&state.as_ref().expect("operative binding").1);
+    drop(state);
+    result
+        .get_or_init(|| {
+            #[cfg(test)]
+            super::intelligence_prepared::work(|work| work.content_loads += 1);
+            OperativeContent::load(politics_content::politics_content(source, options)?)
+        })
+        .map(Some)
 }
 
 impl OperativeContent {
     pub(crate) fn load(politics: Arc<politics_content::PoliticsContent>) -> io::Result<Self> {
         let catalogue = Arc::clone(&politics.catalogue);
         let leaders = Leaders::<String>::load(&catalogue.content.layers, &|_| None)?;
-        let operations = installed_content::intelligence::read(&catalogue.content.layers)?;
+        let operations = super::intelligence_content::operations(&catalogue.content.layers)?;
         let capture_duration_days = capture_duration_days(&catalogue.content.layers);
         use crate::content_check::{Finding, Kind};
         let mut preparation_findings: Vec<_> = leaders
@@ -121,7 +144,8 @@ impl OperativeContent {
             capture_duration_days,
             warnings,
             preparation_findings,
-            icons: Mutex::default(),
+            icons: IconCache::default(),
+            assignments: Default::default(),
         })
     }
 
@@ -334,62 +358,58 @@ impl OperativeContent {
     }
 
     fn mission(&self, variant: u32) -> Assignment {
+        let fixed = self
+            .assignments
+            .get_or_init(&AssignmentKey::Mission(variant), |_| {
+                Ok(self.mission_value(variant))
+            })
+            .expect("mission classification retains its named refusal");
+        self.present_fixed(&fixed)
+    }
+    fn mission_value(&self, variant: u32) -> FixedAssignment {
         if let Err(missing) = operative_rows::mission_variant(Some(variant)) {
             return Assignment {
                 missing: Some(missing),
-                ..Assignment::default()
-            };
+                ..Default::default()
+            }
+            .into();
         }
         let Some(key) = mission_key(variant) else {
             return Assignment {
                 missing: Some(format!(
                     "Unsupported native operative mission discriminator {variant}."
                 )),
-                ..Assignment::default()
-            };
+                ..Default::default()
+            }
+            .into();
         };
-        // Mission titles append _TITLE before localisation.
-        let mut result = named(catalogue::localised_with(
+        let value = named(catalogue::localised_with(
             &self.catalogue.localisation,
             &format!("{key}_TITLE"),
             &[],
             View::Plain,
         ));
-        if variant != 0 {
-            // Mission icons use operative_mission_icons_small|<enum>.
-            // Text-icon lookup first searches the GFX_ prefix, then the bare alias,
-            // and subtracts one from the decimal frame. No GUI fallback on this path.
-            const ALIAS: &str = "operative_mission_icons_small";
-            let mut icons = self.icons.lock().unwrap_or_else(|error| error.into_inner());
-            let icon = icons
-                .entry((true, ALIAS.to_owned(), variant - 1))
-                .or_insert_with(|| {
-                    let sprite = catalogue::text_icon_sprite(&self.catalogue.sprites, ALIAS)
-                        .map_err(|error| format!("Mission text icon {ALIAS}: {error}"))?;
-                    let decode = *self
-                        .catalogue
-                        .gui_decode
-                        .as_ref()
-                        .map_err(|why| format!("Mission text icon {ALIAS}: {why}"))?;
-                    catalogue::sprite_frame_png(
-                        &self.catalogue.content.layers,
-                        sprite,
-                        decode,
-                        variant - 1,
-                        96,
-                    )
-                    .map_err(|error| format!("Mission text icon {ALIAS} frame{variant}: {error}"))
-                })
-                .clone();
-            match icon {
-                Ok(icon) => result.icon = Some(icon),
-                Err(reason) => result.icon_missing = Some(reason),
-            }
+        FixedAssignment {
+            value,
+            icon: (variant != 0).then(|| {
+                (
+                    true,
+                    "operative_mission_icons_small".to_owned(),
+                    variant - 1,
+                )
+            }),
         }
-        result
     }
-
     fn operation(&self, token: &str) -> Assignment {
+        let fixed = self
+            .assignments
+            .get_or_init(&AssignmentKey::Operation(token.to_owned()), |_| {
+                Ok(self.operation_value(token))
+            })
+            .expect("operation classification retains its named refusal");
+        self.present_fixed(&fixed)
+    }
+    fn operation_value(&self, token: &str) -> FixedAssignment {
         let metadata = match self.operations.operation(token) {
             Ok(Some(metadata)) => metadata,
             Ok(None) => {
@@ -398,55 +418,72 @@ impl OperativeContent {
                         "Recorded content does not define operation {token}."
                     )),
                     ..Assignment::default()
-                };
+                }
+                .into();
             }
             Err(reason) => {
                 return Assignment {
                     missing: Some(reason),
                     ..Assignment::default()
-                };
+                }
+                .into();
             }
         };
         // Operation names localise the stored name key, initially empty,
         // with no token fallback.
-        let mut result = named(catalogue::localised_with(
+        let value = named(catalogue::localised_with(
             &self.catalogue.localisation,
             &metadata.name,
             &[],
             View::Plain,
         ));
-        // Agency portraits use map_icon, separate from the operation card's icon.
-        if !metadata.map_icon.is_empty() {
-            match self.icon(&metadata.map_icon, 0) {
-                Ok(icon) => result.icon = Some(icon),
-                Err(reason) => result.icon_missing = Some(reason),
-            }
+        FixedAssignment {
+            value,
+            icon: (!metadata.map_icon.is_empty()).then(|| (false, metadata.map_icon.clone(), 0)),
         }
-        result
     }
 
-    fn icon(&self, name: &str, frame: u32) -> Result<String, String> {
-        let mut icons = self.icons.lock().unwrap_or_else(|error| error.into_inner());
-        icons
-            .entry((false, name.to_owned(), frame))
-            .or_insert_with(|| {
-                let sprite = catalogue::created_gui_sprite(&self.catalogue.sprites, name)
-                    .map_err(|error| format!("Operative icon {name}: {error}"))?;
+    fn present_fixed(&self, fixed: &FixedAssignment) -> Assignment {
+        let mut value = fixed.value.clone();
+        if let Some(key) = &fixed.icon {
+            match self.icons.get_or_init(key, |(mission, name, frame)| {
+                let context = if *mission {
+                    format!("Mission text icon {name}")
+                } else {
+                    format!("Operative icon {name}")
+                };
+                let sprite = if *mission {
+                    catalogue::text_icon_sprite(&self.catalogue.sprites, name)
+                } else {
+                    catalogue::created_gui_sprite(&self.catalogue.sprites, name)
+                }
+                .map_err(|error| io::Error::new(error.kind(), format!("{context}: {error}")))?;
                 let decode = *self
                     .catalogue
                     .gui_decode
                     .as_ref()
-                    .map_err(|why| format!("Operative icon {name}: {why}"))?;
+                    .map_err(|why| crate::invalid(format!("{context}: {why}")))?;
                 catalogue::sprite_frame_png(
                     &self.catalogue.content.layers,
                     sprite,
                     decode,
-                    frame,
+                    *frame,
                     96,
                 )
-                .map_err(|error| format!("Operative icon {name}: {error}"))
-            })
-            .clone()
+                .map_err(|error| {
+                    let context = if *mission {
+                        format!("{context} frame{}", *frame + 1)
+                    } else {
+                        context
+                    };
+                    io::Error::new(error.kind(), format!("{context}: {error}"))
+                })
+            }) {
+                Ok(icon) => value.icon = Some(icon.as_ref().clone()),
+                Err(error) => value.icon_missing = Some(error.to_string()),
+            }
+        }
+        value
     }
 }
 
@@ -609,7 +646,7 @@ pub(crate) fn test_content_from_catalogue(catalogue: Arc<Catalogue>) -> Arc<Oper
     let skills = Leaders::<String>::load(&catalogue.content.layers, &|_| None)
         .unwrap()
         .skills;
-    let operations = installed_content::intelligence::read(&catalogue.content.layers).unwrap();
+    let operations = super::intelligence_content::operations(&catalogue.content.layers).unwrap();
     let capture_duration_days = capture_duration_days(&catalogue.content.layers);
     Arc::new(OperativeContent {
         catalogue,
@@ -619,13 +656,42 @@ pub(crate) fn test_content_from_catalogue(catalogue: Arc<Catalogue>) -> Arc<Oper
         capture_duration_days,
         warnings: Vec::new(),
         preparation_findings: Vec::new(),
-        icons: Mutex::default(),
+        icons: IconCache::default(),
+        assignments: Default::default(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn intel_shared_driver_keyed_assignments_keep_exact_named_refusals() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for metadata tables");
+        let (content, _folder) = test_content(&[]);
+        let first = content.operation("mod/absent_operation");
+        let mission = content.mission(99);
+        for _ in 0..20 {
+            assert_eq!(content.operation("mod/absent_operation"), first);
+            assert_eq!(content.mission(99), mission);
+        }
+        assert_eq!(
+            content
+                .assignments
+                .loads(&AssignmentKey::Operation("mod/absent_operation".into())),
+            1
+        );
+        assert_eq!(content.assignments.loads(&AssignmentKey::Mission(99)), 1);
+        assert_eq!(
+            first.missing.as_deref(),
+            Some("Recorded content does not define operation mod/absent_operation.")
+        );
+        assert_eq!(
+            mission.missing.as_deref(),
+            Some("Unsupported operative mission variant 99")
+        );
+    }
 
     #[test]
     fn native_signed_progress_keeps_cap_sentinels_and_over_full_values() {

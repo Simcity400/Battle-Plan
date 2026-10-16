@@ -147,10 +147,13 @@ fn row_codings(replay: &Replay) -> BTreeMap<TableId, [u64; 2]> {
     let mut counts: BTreeMap<TableId, [u64; 2]> = BTreeMap::new();
     for block in &replay.index {
         let bytes = replay.block_bytes(block).unwrap();
-        let directory = grouped::Directory::parse(bytes, block).unwrap();
+        let directory = grouped::Directory::parse(&bytes, block).unwrap();
         assert_eq!(directory.layout, grouped::Layout::Chosen);
         for table in TableId::ALL {
-            let Some(raw) = directory.raw(bytes, grouped::later_section(table)).unwrap() else {
+            let Some(raw) = directory
+                .raw(&bytes, grouped::later_section(table))
+                .unwrap()
+            else {
                 continue;
             };
             let mut input = grouped::ColumnReader::open(&raw, table.field_count()).unwrap();

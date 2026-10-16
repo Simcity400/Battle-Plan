@@ -12,6 +12,7 @@ pub(crate) use divisions::{
     copy_divisions_inputs_refresh, copy_divisions_refresh, divisions_test_kit,
 };
 
+pub use crate::clock::qpc;
 use crate::{
     acquisition_factions, acquisition_jobs as acquisition, acquisition_states, acquisition_wars,
     decode, extended,
@@ -19,6 +20,8 @@ use crate::{
     roster::Roster,
     table_capture::grow_capacity,
 };
+pub use collector_extended_support::hourly::BUFFERS;
+use collector_extended_support::hourly::TICKING;
 use crossbeam_queue::ArrayQueue;
 #[cfg(test)]
 use engine::cunit;
@@ -44,10 +47,7 @@ use std::{
         atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU64, AtomicUsize, Ordering},
     },
 };
-use windows_sys::Win32::System::Performance::QueryPerformanceCounter;
 
-// Reuse a bounded producer/consumer pool; a burst waits rather than dropping an hour.
-pub const BUFFERS: usize = 4;
 const SUPPLY_PARTS: usize = extended::supply_trains::PARTS;
 const CHARACTER_PARTS: usize = extended::characters::PARTS;
 const AIR_RELATION_PARTS: usize = extended::air_relations::PARTS;
@@ -77,24 +77,6 @@ pub const SAMPLE_BOUNDARY: replay::identity::SampleBoundary =
 const LOSS_RUNS: usize = 64;
 pub static SHARED: AtomicPtr<Shared> = AtomicPtr::new(ptr::null_mut());
 pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
-std::thread_local! {
-    /// This thread is running the hourly original, the native tick.
-    static TICKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-/// Whether the calling thread is inside the hourly original: the native tick
-/// the hourly detour runs after its capture.
-pub(crate) fn ticking() -> bool {
-    TICKING.get()
-}
-/// Tests: run `body` as inside the hourly original.
-#[cfg(test)]
-pub(crate) fn in_tick<T>(body: impl FnOnce() -> T) -> T {
-    let ticking = TICKING.replace(true);
-    let result = body();
-    TICKING.set(ticking);
-    result
-}
-
 // Staggered cadence branch/keyframe state. Game thread only.
 #[derive(Debug, Default)]
 struct CadenceState {
@@ -1880,6 +1862,7 @@ fn lost_observer_interval() {
     crate::air_losses::lost_drain();
     crate::building_bombing::lost_drain();
     crate::nuclear_strikes::lost_drain();
+    crate::map_events::interval::lost_output();
 }
 
 /// Restore an owned frame's absorbed witnesses, record its lost hour and return
@@ -1927,14 +1910,6 @@ impl Drop for Shared {
             }
         }
     }
-}
-
-pub fn qpc() -> i64 {
-    let mut ticks = 0;
-    unsafe {
-        QueryPerformanceCounter(&mut ticks);
-    }
-    ticks
 }
 
 /// The hour's read, built at the tick's entry. `index` is None when no frame
@@ -2471,8 +2446,11 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 crate::opinion_changes::invalidate();
                 crate::operation_outcomes::invalidate();
                 crate::politics_changes::invalidate();
+                crate::map_events::interval::invalidate();
                 extended::intel::forget_relation_opinions();
             }
+            // Constant time: two counters and each family's fault bits.
+            frame.extended.seal_map_events(clock.hour);
             let acquisition = shared.acquisition.get().expect("initialized before hook");
             let mut batch = acquisition::Batch::new(acquisition);
             let boundary_request = frame.extended.take_observer_boundary_request(

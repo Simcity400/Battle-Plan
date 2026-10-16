@@ -17,13 +17,14 @@ import { resolveWindow } from './model';
 import { contentSet, resolveOptions, setToken, toggleContentSet } from './options';
 import { usePlaybackSpeed } from './playback';
 import { categoryChoices, monthLabel, spendLabel, spendingAt, spendingCostNotes, spendingCountryRequests, spendingGapNote, spendingGaps, spendingSummary,
-  spendingTableRows, unknownCosts } from './politicsSpending';
+  preparedSpendingTableRows, unknownCosts } from './politicsSpending';
 import type { PowerCurrency, SpendingTableRow } from './politicsSpending';
 import { NO_SPENDING_CATEGORIES, normalizePoliticsSpendingOptions, POLITICS_SPENDING_OPTIONS, spendingSort } from './politicsSpendingOptions';
 import { powerGain } from './powerBalance';
 import { formatPower, formatPowerChange, formatSpent, powerDecimals } from './powerDecimals';
 import { usePoliticsSpending, useSpendingIdeaTooltips } from './usePoliticsSpending';
 import './politicsSpending.css';
+import { useParityRows } from './parityRows';
 
 const NO_WARNINGS: string[] = [];
 const NO_ROWS: readonly SpendingTableRow[] = [];
@@ -35,6 +36,7 @@ const ALL = '';
  * recorded payments, with recurring daily costs folded into one row a month, and a
  * one-line summary of what was spent and gained in the shown period. */
 export default function PoliticsSpendingTable({ currency, widget, runtime, active, onDiagnostics, setOptions, setOption }: WidgetProps & { currency: PowerCurrency }) {
+  const parityRoot = useRef<HTMLDivElement>(null);
   const clockHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
   const hoursPerSecond = usePlaybackSpeed(runtime.clock);
   const viewport = useViewportHeight();
@@ -62,8 +64,12 @@ export default function PoliticsSpendingTable({ currency, widget, runtime, activ
     }
   }, [widget.id, widget.options?.filterMode, widget.options?.categories, categories, normalized.migrated, repairSelection, setOptions]);
   const chosen = useMemo(() => contentSet(categories).filter(value => value !== NO_SPENDING_CATEGORIES), [categories]);
-  const rows = useMemo(() => spendingTableRows(spends, categories), [spends, categories]);
+  const rows = useMemo(() => preparedSpendingTableRows(data ?? [], spends, categories), [data, spends, categories]);
   const summary = useMemo(() => spendingSummary(spends), [spends]);
+  useParityRows(parityRoot, () => ({ kind: 'table', label: `${currency === 'Political' ? 'Political' : 'Command'} power spending rows`,
+    complete: !!data && ready, total: rows.length, rows: rows.map(row => ({ key: row.key, tag: row.tag, hour: row.hour, month: row.month,
+      category: row.category, days: row.days, amountRaw: row.amount?.toString() ?? null, partial: row.partial, order: row.order.toString() })),
+    spentRaw: summary.spent.toString(), unknownCosts: summary.unknownCosts }));
   const tokens = useChartTokens();
   const colours = useMemo(() => {
     let index = 0;
@@ -150,7 +156,7 @@ export default function PoliticsSpendingTable({ currency, widget, runtime, activ
 
   const shownSpent = chosen.length ? rows.reduce((sum, row) => sum + (row.amount ?? 0n), 0n) : null;
   const notes = [spendingGapNote(gaps), ...spendingCostNotes(summary), ...(gain && !gain.complete ? ['Gain wasn’t recorded on some days.'] : [])].filter(Boolean);
-  return <div className="politics-spending">
+  return <div className="politics-spending" ref={parityRoot}>
     {options.chips !== false && chips.length > 0 && <div className="politics-spending-chips"><ChipSet label="Shown spending categories" max={Number.MAX_SAFE_INTEGER}
       selected={chosen.length ? chosen : [ALL]} chips={[{ value: ALL, label: 'All categories' }, ...chips.map(chip => ({ ...chip, colour: colours.get(chip.value) }))]}
       onToggle={value => {

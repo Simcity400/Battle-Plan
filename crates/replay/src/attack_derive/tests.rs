@@ -616,6 +616,7 @@ fn frame() -> DecodedFrame {
                 combat: rows::Recorded::Value(Some(RegionCombatWeather {
                     army_attack_factor: Some(-20_000),
                     breakthrough_factor: Some(-10_000),
+                    ..Default::default()
                 })),
                 ..Default::default()
             },
@@ -628,6 +629,7 @@ fn frame() -> DecodedFrame {
             region: 5,
             friendly: 0,
             enemy: 30_000,
+            impact: Default::default(),
         }]),
     );
     frame

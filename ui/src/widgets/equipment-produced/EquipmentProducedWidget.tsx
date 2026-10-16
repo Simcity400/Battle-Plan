@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import ContentSetPicker from '../../components/ContentSetPicker';
 import { Segmented } from '../../components/Segmented';
@@ -31,6 +31,11 @@ import type { Count } from './producedView';
 import ProducedDrillTable from './ProducedDrillTable';
 import { useProducedTypeList } from './useProducedTypes';
 import './equipmentProduced.css';
+import PreparedEquipmentProducedWidget from './PreparedEquipmentProducedWidget';
+import { hasPreparedProduction } from './usePreparedProduction.ts';
+import { usePreparedProducedView } from './preparedProducedView';
+import { historyProductionParity, preparedProductionParity } from './productionParity';
+import { useParityRows } from '../../dashboard/parityRows';
 
 /** Clients whose dashboard bridge predates the per-day measure and IC count: their
  * widgets show per month instead of per day (the caption says so) until it is rebuilt. */
@@ -41,6 +46,12 @@ const olderBridge = (error: string | undefined) => !!error && /unknown (variant|
  * put into equipment, as a race re-ranked every hour or as lines over time; a country's
  * breakdown lists every type it made with its models. */
 export default function EquipmentProducedWidget(props: WidgetProps) {
+  const options = resolveOptions(OPTIONS, props.widget.options);
+  return hasPreparedProduction(props.runtime.client) && options.view === 'race' && options.show !== 'breakdown'
+    ? <PreparedEquipmentProducedWidget {...props} /> : <HistoryEquipmentProducedWidget {...props} />;
+}
+
+export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?: boolean }) {
   const { widget, runtime, active, onDiagnostics, setOption } = props;
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useChartTokens();
@@ -57,7 +68,7 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const playhead = window && following ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   // The moment a race shows: the playhead, the end of a range, or the branch end.
-  const moment = Math.floor(playhead ?? extent[1]);
+  const wantedMoment = Math.floor(playhead ?? extent[1]);
   const lastHour = track?.branch.lastHour ?? 0;
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groupReply = useCountryGroups(runtime, track, active && grouped);
@@ -86,7 +97,18 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const grouping = count === 'ic' && !shownTypes.length ? 'type' : 'variant';
   const params = track && !(pickingDefault && !mostType) ? producedRequest(track.branch.id, resolved, measure, grouping, shownTypes, refits, count) : null;
   const request = productRequest(params);
-  const { data, error, retry } = useProduct<EquipmentProducedReply>(runtime.client, request, active, validateProducedReply);
+  const endpointParams = useMemo(() => params && props.prepared ? { ...params,
+    tags: params.top === null ? rankedCandidates(resolved, wantedMoment, params.tags) : params.tags } : null,
+  [params, props.prepared, resolved, wantedMoment]);
+  const endpoint = usePreparedProducedView(runtime.client, track?.source, endpointParams, wantedMoment, active);
+  // An unknown empty endpoint cannot tell an absent history from an unread
+  // current value. The existing history product keeps that distinction.
+  const preparedView = props.prepared === true && !endpoint.unavailable && !(endpoint.page?.totalCountries === 0 && !endpoint.page.known);
+  const history = useProduct<EquipmentProducedReply>(runtime.client, preparedView ? null : request, active, validateProducedReply);
+  const moment = preparedView ? endpoint.hour ?? wantedMoment : wantedMoment;
+  const data = preparedView ? endpoint.reply : history.data;
+  const error = preparedView ? endpoint.error : history.error;
+  const retry = preparedView ? endpoint.retry : history.retry;
   const [, recheck] = useReducer((value: number) => value + 1, 0);
   useEffect(() => {
     if (!olderBridge(error) || measure !== 'day' || olderBridges.has(runtime.client as object)) return;
@@ -110,12 +132,15 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
 
   // The countries at the moment, ranked by the value shown.
   const candidates = useMemo(() => model ? rankedCandidates(resolved, moment, model.tags) : [], [model, resolved, moment]);
-  const ranked = useMemo(() => model ? rankProduced(model, candidates, moment, slots, produced) : [], [model, candidates, moment, slots, produced]);
+  const ranked = useMemo(() => model ? preparedView && endpoint.page ? endpoint.page.countries.flatMap(country => {
+    const at = producedAt(model, country.tag, moment);
+    return at?.total !== null && at ? [{ tag: country.tag, at: { ...at, total: at.total } }] : [];
+  }) : rankProduced(model, candidates, moment, slots, produced) : [], [model, candidates, moment, slots, produced, preparedView, endpoint.page]);
   const lineTags = useMemo(() => resolved.top != null ? model?.tags ?? [] : resolved.tags, [resolved, model]);
   const mixTag = mixCountry(widget.countries, fallback, ranked);
   const shownTags = view === 'race' ? ranked.map(entry => entry.tag) : lineTags;
-  const entries = useMemo(() => model ? raceEntries(model, ranked, { split: false, bands: () => [], unknown: tokens.muted, decimals }) : [],
-    [model, ranked, tokens.muted, decimals]);
+  const entries = useMemo(() => preparedView ? endpoint.entries : model ? raceEntries(model, ranked, { split: false, bands: () => [], unknown: tokens.muted, decimals }) : [],
+    [model, ranked, tokens.muted, decimals, preparedView, endpoint.entries]);
   // A top-N reply's samples are already cut to its hours; a group's are cut here.
   const cutTo = (tag: string): readonly Span[] | null => resolved.membership?.get(tag) ?? null;
   const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -131,7 +156,10 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const equipment = !shownTypes.length ? count === 'ic' ? 'All equipment' : 'Equipment'
     : shownTypes.length === 1 ? typeName(shownTypes[0]) : `${shownTypes.length.toLocaleString()} types`;
   const measureLabel = (MEASURES.find(item => item.value === measure) ?? MEASURES[0]).label;
-  const since = shownReply ? countedSince(shownReply, moment) : null;
+  const captionRead = useProduct<EquipmentProducedReply>(runtime.client, track && preparedView && measure === 'total'
+    ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-produced',
+      params: requestParams(producedRequest(track.branch.id, { tags: [] }, 'total', 'type', [], true)) } : null, active, validateProducedReply);
+  const since = captionRead.data ? countedSince(captionRead.data, moment) : shownReply ? countedSince(shownReply, moment) : null;
   const caption = producedCaption(count, measure, view === 'race' ? dayLabel(moment) : null, since == null ? null : dayLabel(since));
   const what = `${count === 'ic' ? `IC, ${equipment === 'All equipment' ? 'all equipment' : equipment}` : equipment}, ${measureLabel.toLowerCase()}`;
   const typeChoices = useMemo(() => types.map(type => ({ value: setToken(type.key), label: typeLabel(type) })), [types]);
@@ -156,12 +184,13 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
     if (pickingDefault && defaultReply && !mostType) return <WidgetState kind="unavailable" message="No production data for these countries." />;
     // A group's members are not known until its history arrives; nothing is shown as empty meanwhile.
     if (!shownReply || !model || (grouped && !numericGroups)) return <WidgetState kind="loading" label="Loading equipment produced…" />;
-    if (!shownReply.reads.length) return <WidgetState kind="unavailable" message="Production data is not in this recording." />;
+    if (!shownReply.reads.length && !preparedView) return <WidgetState kind="unavailable" message="Production data is not in this recording." />;
     if (!produced && !model.tags.length) return <WidgetState kind="unavailable" message={producedWindowUnavailable(measure)} />;
     return null;
   })();
   // `name` names the country as recorded at the hour the tooltip is about.
   const tooltipAt = (tag: string, hour: number, name: string) => {
+    if (preparedView) return endpoint.tooltip(tag, hour, name, what, since);
     if (!model) return null;
     const at = isMember(membershipOf(tag) ?? undefined, hour) ? producedAt(model, tag, hour) : null;
     return at ? producedTooltips(model, tag, name, at, hour, dayLabel(hour), [], what, decimals) : null;
@@ -184,6 +213,11 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const pickDrillTag = (hour: number) => model ? mixCountry(widget.countries, fallback,
     rankProduced(model, rankedCandidates(resolved, hour, model.tags), hour, slots, produced)) : null;
 
+  const parityRoot = import.meta.env.MODE === 'parity' ? useRef<HTMLDivElement>(null) : null;
+  if (import.meta.env.MODE === 'parity') {
+    useParityRows(parityRoot!, () => preparedView ? preparedProductionParity(endpoint.fullPage, endpoint.parityComplete)
+      : historyProductionParity(model, ranked, !!model && state === null), preparedView ? endpoint.parityPreparation : undefined);
+  }
   return <CountryPartsDrill {...props} widget={widget} runtime={runtime} active={active} onDiagnostics={onDiagnostics} track={track}
     options={options} extent={extent} playhead={playhead} moment={moment} product="equipment-produced" params={drillParams}
     validate={validateProducedReply} decode={decodeDrill} numbers={producedDrillNumbers} defaultTag={mixTag} pickTag={pickDrillTag}
@@ -194,9 +228,10 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
       chartTitle={chartSpec.type == null ? `IC put into equipment ${measureLabel.toLowerCase()}, by type`
         : `${typeName(chartSpec.type)}: ${count === 'ic' ? 'IC put in' : 'units delivered'} ${measureLabel.toLowerCase()}, by model`}
       onChart={type => setDrillType({ scope: drillScope, type })} />}
-    main={(onPick, visible) => <div className="produced-main">
+    main={(onPick, visible) => <div className="produced-main" ref={parityRoot}>
       {track && controls}
       <CountryRaceView runtime={runtime} track={track} active={active && visible} options={options} view={view} extent={extent} playhead={playhead} state={state}
+        remoteRows={preparedView ? endpoint.remoteRows : undefined}
         moment={moment} slots={slots} ranked={entries} lines={lines} countryTags={shownTags} partsLabel="Equipment"
         label={`${equipment}: ${caption}`} empty={nothingYet} formatValue={value => formatProduced(value, decimals)} tooltip={tooltipAt}
         lineTooltip={(hour, _tags, labelAt, country) => [linesTooltip(hour, lines, labelAt, country, dayLabel(hour), what, value => formatProduced(value, decimals))]}

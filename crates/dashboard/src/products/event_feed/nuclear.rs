@@ -2,18 +2,19 @@
 //! which bomb on whose state, and what the impact did before the authored
 //! `on_nuke_drop` effects.
 
-use super::{Builder, EventFeedKind, EventFeedRow, EventFeedStrike, check_cancel, native::Names};
-use crate::metadata::validate_campaign;
+use super::{Builder, EventFeedKind, EventFeedRow, EventFeedStrike, check_cancel};
+#[cfg(test)]
+use crate::{metadata::validate_campaign, products::country_history::NativeNames as Names};
 use replay::{
-    container::Replay,
-    frame::{FrameDecoder, TableView},
+    frame::{DecodedFrame, TableView},
     rows::{NuclearStrikePart, NuclearStrikeRow, RowCodec, TableId, tables},
 };
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io,
-    sync::atomic::AtomicBool,
-};
+use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
+
+#[cfg(test)]
+use replay::{container::Replay, frame::FrameDecoder};
+#[cfg(test)]
+use std::collections::BTreeSet;
 
 /// A full building level's health.
 const LEVEL_HEALTH: f64 = 10_000_000.0;
@@ -92,8 +93,115 @@ fn detail(strike: &NuclearStrikeRow) -> EventFeedStrike {
     }
 }
 
+/// Retained strike facts and refusals from one supplying read.
+pub(super) fn read(
+    frame: &DecodedFrame,
+    builder: &mut Builder,
+    cancelled: &AtomicBool,
+) -> io::Result<Vec<NuclearStrikeRow>> {
+    let read = match &*frame.tables[TableId::NuclearStrikes.index()] {
+        TableView::Unavailable { reason } => Err(reason.to_string()),
+        _ => frame
+            .complete::<tables::NuclearStrikes>()
+            .map_err(|error| error.to_string()),
+    };
+    let rows = match read {
+        Ok(rows) => rows,
+        Err(reason) => {
+            builder.sampled_unavailable(
+                "nuclearStrikeCoverage",
+                "Nuclear strikes",
+                format!(
+                    "Strikes up to the read at {} are not recorded: {reason}. Missing rows do not prove no strike occurred.",
+                    frame.hour
+                ),
+                1,
+            );
+            return Ok(Vec::new());
+        }
+    };
+    let mut accepted = Vec::new();
+    for strike in rows {
+        check_cancel(cancelled)?;
+        if strike.hour > frame.hour {
+            builder.sampled_unavailable(
+                "nuclearStrikeCoverage",
+                "Nuclear strikes",
+                format!(
+                    "Strike {} is dated after its supplying read at {}.",
+                    strike.id, frame.hour
+                ),
+                1,
+            );
+            continue;
+        }
+        accepted.push(strike.try_clone()?);
+    }
+    Ok(accepted)
+}
+
+/// Naming and tooltip semantics shared by the recording oracle and prepared feed.
+pub(super) fn project(
+    read_hour: i32,
+    strike: &NuclearStrikeRow,
+    mut tag_at: impl FnMut(i32, replay::event_feed_rows::EventFeedCountry) -> Option<String>,
+    builder: &mut Builder,
+    items: &BTreeMap<u32, u32>,
+) {
+    // The reserved country a stateless strike falls on has no tag.
+    let participants = [strike.launcher, strike.owner].map(|country| tag_at(strike.hour, country));
+    for (role, tag, expected) in [
+        ("launcher", &participants[0], true),
+        ("target owner", &participants[1], strike.state != 0),
+    ] {
+        if expected && tag.is_none() {
+            builder.sampled_unavailable(
+                "nuclearStrikeCountry",
+                "Nuclear strike country",
+                format!(
+                    "The {role} of strike {} at {} has no exact country-reference, ID and instance witness.",
+                    strike.id, strike.hour
+                ),
+                1,
+            );
+        }
+    }
+    let item = items.get(&strike.nuke_type).copied();
+    if item.is_none() {
+        builder.sampled_unavailable(
+            "nuclearType",
+            "Nuclear type",
+            format!(
+                "Nuclear type {} has no native content-name mapping.",
+                strike.nuke_type
+            ),
+            1,
+        );
+    }
+    if strike.hour < builder.feed.first || strike.hour > builder.feed.last {
+        return;
+    }
+    let kind = EventFeedKind::NuclearStrike;
+    builder.feed.rows.push(EventFeedRow {
+        id: format!("nuclear:{}", strike.id),
+        hour: strike.hour,
+        read_hour,
+        name_hour: strike.hour,
+        exact: true,
+        category: kind.category(),
+        kind,
+        tags: participants.iter().flatten().cloned().collect(),
+        participants: Some(participants),
+        item,
+        amount: None,
+        cause: None,
+        strike: Some(detail(strike)),
+    });
+}
+
 /// Two selected-table passes: the strike history, then the country identity
 /// tables of only the hours a strike happened in.
+#[cfg(test)]
 pub(super) fn scan(
     replay: &Replay,
     branch: u64,
@@ -151,41 +259,8 @@ pub(super) fn scan(
                 );
                 continue;
             }
-            let read = match &*frame.tables[TableId::NuclearStrikes.index()] {
-                TableView::Unavailable { reason } => Err(reason.to_string()),
-                _ => frame
-                    .complete::<tables::NuclearStrikes>()
-                    .map_err(|error| error.to_string()),
-            };
-            let rows = match read {
-                Ok(rows) => rows,
-                Err(reason) => {
-                    builder.sampled_unavailable(
-                        "nuclearStrikeCoverage",
-                        "Nuclear strikes",
-                        format!(
-                            "Strikes up to the read at {} are not recorded: {reason}. Missing rows do not prove no strike occurred.",
-                            frame.hour
-                        ),
-                        1,
-                    );
-                    continue;
-                }
-            };
-            for strike in rows {
-                if strike.hour > frame.hour {
-                    builder.sampled_unavailable(
-                        "nuclearStrikeCoverage",
-                        "Nuclear strikes",
-                        format!(
-                            "Strike {} is dated after its supplying read at {}.",
-                            strike.id, frame.hour
-                        ),
-                        1,
-                    );
-                    continue;
-                }
-                strikes.push((frame.hour, strike.try_clone()?));
+            for strike in read(frame, builder, cancelled)? {
+                strikes.push((frame.hour, strike));
             }
         }
     }
@@ -231,57 +306,13 @@ pub(super) fn scan(
     }
     for (read_hour, strike) in strikes {
         check_cancel(cancelled)?;
-        let names = names_at.get(&strike.hour);
-        // The reserved country a stateless strike falls on has no tag.
-        let participants = [strike.launcher, strike.owner]
-            .map(|country| names.and_then(|names| names.tag(country)));
-        for (role, tag, expected) in [
-            ("launcher", &participants[0], true),
-            ("target owner", &participants[1], strike.state != 0),
-        ] {
-            if expected && tag.is_none() {
-                builder.sampled_unavailable(
-                    "nuclearStrikeCountry",
-                    "Nuclear strike country",
-                    format!(
-                        "The {role} of strike {} at {} has no exact country-reference, ID and instance witness.",
-                        strike.id, strike.hour
-                    ),
-                    1,
-                );
-            }
-        }
-        let item = items.get(&strike.nuke_type).copied();
-        if item.is_none() {
-            builder.sampled_unavailable(
-                "nuclearType",
-                "Nuclear type",
-                format!(
-                    "Nuclear type {} has no native content-name mapping.",
-                    strike.nuke_type
-                ),
-                1,
-            );
-        }
-        if strike.hour < builder.feed.first || strike.hour > builder.feed.last {
-            continue;
-        }
-        let kind = EventFeedKind::NuclearStrike;
-        builder.feed.rows.push(EventFeedRow {
-            id: format!("nuclear:{}", strike.id),
-            hour: strike.hour,
+        project(
             read_hour,
-            name_hour: strike.hour,
-            exact: true,
-            category: kind.category(),
-            kind,
-            tags: participants.iter().flatten().cloned().collect(),
-            participants: Some(participants),
-            item,
-            amount: None,
-            cause: None,
-            strike: Some(detail(&strike)),
-        });
+            &strike,
+            |hour, country| names_at.get(&hour).and_then(|names| names.tag(country)),
+            builder,
+            items,
+        );
     }
     Ok(())
 }

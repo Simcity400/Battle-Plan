@@ -7,6 +7,10 @@ use replay::{
 use std::sync::{Arc, atomic::AtomicBool};
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn resource_history_keeps_every_run_from_the_recording() {
     use crate::products::resource_balance::scan;
     const DEALS: usize = 5_000;

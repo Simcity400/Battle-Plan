@@ -7,7 +7,7 @@ import { createServer } from 'vite';
 import type CountryPicker from '../../components/CountryPicker';
 import type { CountryRaceViewProps } from '../../charts/race/CountryRaceView';
 import type { WidgetProps } from '../../dashboard/definitions';
-import type { OccupationTrendParams, OccupationTrendReply, OccupationTrendRun } from '../../generated/dashboard';
+import type { OccupationTrendReply, OccupationTrendRun } from '../../generated/dashboard';
 
 test('the actual occupation mix waits for a native country choice and keeps that holder across tag reuse', async () => {
   const identity = (firstHour: number, lastHour: number, slot: number, countryId: number) => ({ firstHour, lastHour, slot, countryId });
@@ -20,7 +20,8 @@ test('the actual occupation mix waits for a native country choice and keeps that
       identities: [identity(105, 108, 1, 11), identity(109, 110, 3, 33)], runs: [run(105, 108, '300000'), run(109, 110, '900000')] },
   ] };
   const state = { reply, hour: 108, cursor: 0, hooks: [] as unknown[], chart: undefined as CountryRaceViewProps | undefined,
-    picker: undefined as ComponentProps<typeof CountryPicker> | undefined, request: undefined as { params: OccupationTrendParams } | undefined,
+    picker: undefined as ComponentProps<typeof CountryPicker> | undefined,
+    requests: [] as { product: string; params: { tags: string[]; family: { kind: string }; reads: { hour: number }[] } }[],
     groups: { error: null as string | null }, groupsActive: false, productError: null as string | null };
   const globals = globalThis as typeof globalThis & { __occupationHolderAdapter?: typeof state };
   globals.__occupationHolderAdapter = state;
@@ -34,8 +35,10 @@ test('the actual occupation mix waits for a native country choice and keeps that
     export const useState = initial => { const saved = cell(() => ({ value: typeof initial === 'function' ? initial() : initial }));
       return [saved.value, next => { saved.value = typeof next === 'function' ? next(saved.value) : next; }]; };`;
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': `export const useProduct = (_client, request) => { globalThis.__occupationHolderAdapter.request = request;
-      return { data: request ? globalThis.__occupationHolderAdapter.reply : undefined, error: globalThis.__occupationHolderAdapter.productError }; };`,
+    '/dashboard/products.ts': `export const useProduct = (_client, request, _active, validate) => {
+      const state = globalThis.__occupationHolderAdapter;
+      if (request) state.requests.push(request);
+      return { data: request ? validate(state.reply) : undefined, error: request ? state.productError : null, retry() {} }; };`,
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = (_runtime, _track, active) => {
       const state = globalThis.__occupationHolderAdapter; state.groupsActive = active; return state.groups; };`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
@@ -50,7 +53,9 @@ test('the actual occupation mix waits for a native country choice and keeps that
       transform(source, id) {
         const path = id.replaceAll('\\', '/'), replacement = Object.entries(replacements).find(([suffix]) => path.endsWith(suffix));
         if (replacement) return replacement[1];
-        if (path.endsWith('/occupation-trend/OccupationTrendWidget.tsx')) return source.replace("from 'react'", "from 'occupation-holder-hooks'");
+        if (path.endsWith('/occupation-trend/OccupationTrendWidget.tsx') || path.endsWith('/occupation-trend/preparedOccupation.ts')) {
+          return source.replace("from 'react'", "from 'occupation-holder-hooks'");
+        }
       },
     }] });
   try {
@@ -64,10 +69,16 @@ test('the actual occupation mix waits for a native country choice and keeps that
       active: true, onDiagnostics() {} } as unknown as WidgetProps;
     const render = () => {
       state.cursor = 0; state.chart = undefined; state.picker = undefined;
-      return renderToStaticMarkup(createElement(Widget, props));
+      state.requests = [];
+      const markup = renderToStaticMarkup(createElement(Widget, props));
+      assert.ok(state.requests.length <= 5, 'one render has at most the five prepared request slots');
+      return markup;
     };
     render();
-    assert.deepEqual(state.request!.params.tags, ['root'], 'the request keeps the original literal root');
+    assert.equal(state.requests[0].product, 'series-state');
+    assert.equal(state.requests[0].params.family.kind, 'occupation-trend');
+    assert.deepEqual(state.requests[0].params.reads, [{ hour: 108 }]);
+    assert.deepEqual(state.requests[0].params.tags, ['root'], 'the request keeps the original literal root');
     assert.deepEqual(new Set(state.picker!.allowedTags), new Set(['root', 'alias']));
     assert.equal(state.chart!.mix, null, 'several native holders need a choice instead of choosing the first tag or race leader');
     const obsolete = state.picker!.onChange;
@@ -96,7 +107,7 @@ test('the actual occupation mix waits for a native country choice and keeps that
     assert.equal(state.chart!.state, null, 'manual roots bypass a retained inactive group error');
     props.widget.countries = { kind: 'all' }; render();
     assert.equal(state.chart!.state, null, 'All bypasses that same retained catalogue error');
-    assert.deepEqual(state.request!.params.tags, []);
+    assert.deepEqual(state.requests[0].params.tags, []);
     props.widget.countries = { kind: 'group', group: { type: 'faction', id: '17' }, membership: 'hour', aggregate: false }; render();
     assert.equal(state.groupsActive, true);
     assert.match(renderToStaticMarkup(state.chart!.state), /Group catalogue refused/, 'an active smart-group catalogue error stays visible');

@@ -1,4 +1,6 @@
-import { useId } from 'react';
+import { selectIndex } from './selectNavigation';
+import { VirtualListIndex } from './virtualListIndex';
+import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { Icon } from './Icons';
 import { Popover, usePopover } from './Popover';
@@ -15,26 +17,132 @@ export function Select({ id: triggerId, label, value, options, disabled = false,
   const id = useId();
   const menu = usePopover('start');
   const selected = options.find(option => option.value === value);
-  const keys = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-    event.preventDefault();
-    const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
-    const at = items.indexOf(document.activeElement as HTMLButtonElement);
-    items[(at + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus();
-  };
   return <>
     <button ref={menu.trigger} id={triggerId} type="button" className="select-trigger" popoverTarget={id} autoFocus={autoFocus} aria-haspopup="listbox" aria-expanded={menu.open}
       aria-label={label} disabled={disabled} data-tooltip={selected?.reason}>
       <span>{selected?.label ?? value}</span><Icon name="chevron-down" /></button>
     {/* Kept in place: inside another popover this keeps native light-dismiss nested. */}
     <Popover menu={menu} portal={false} id={id} className="select-menu" aria-label={label}>
-      {menu.open && <div role="listbox" aria-label={label} onKeyDown={keys}>
-        {options.map(option => <button key={option.value} type="button" role="option" className="menu-item" aria-selected={option.value === value}
-          aria-checked={option.value === value} disabled={option.disabled} data-tooltip={option.reason}
-          data-popover-autofocus={option.value === value || undefined} onClick={() => { menu.close(); if (option.value !== value) onChange(option.value); }}>
-          <span className="menu-item-label">{option.label}</span>{option.value === value && <Icon name="check" />}
-        </button>)}
-      </div>}
+      {menu.open && <SelectMenu label={label} value={value} options={options} onChoose={chosen => { menu.close(); if (chosen !== value) onChange(chosen); }} />}
+
     </Popover>
   </>;
+}
+
+const OPTION_HEIGHT = 32;
+function SelectMenu({ label, value, options, onChoose }: { label: string; value: string; options: readonly SelectOption[]; onChoose(value: string): void }) {
+  const selected = options.findIndex(option => option.value === value && !option.disabled);
+  const [activeValue, setActiveValue] = useState<string | null>(() => options[selected >= 0 ? selected : selectIndex(options, -1, 'Home') ?? -1]?.value ?? null);
+  const kept = options.findIndex(option => option.value === activeValue && !option.disabled);
+  const active = kept >= 0 ? kept : selectIndex(options, -1, 'Home') ?? -1;
+  const [top, setTop] = useState(Math.max(0, active * OPTION_HEIGHT));
+  const list = useRef<HTMLDivElement>(null);
+  const nodes = useRef(new Map<number, HTMLButtonElement>()), observer = useRef<ResizeObserver | null>(null);
+  const index = useMemo(() => new VirtualListIndex(options.length, OPTION_HEIGHT), [options]);
+  const [, update] = useState(0);
+  const height = Math.min(index.offset(options.length), 288);
+  const [start, end] = index.range(top, height, 6);
+  const visible = Array.from({ length: end - start }, (_, i) => start + i);
+  if (active >= 0 && active < options.length && !visible.includes(active)) visible.push(active);
+  visible.sort((a, b) => a - b);
+  // Scan every authored label without mounting the catalogue. Canvas uses the
+  // option's computed typography; only the drawn rows need DOM measurements.
+  useLayoutEffect(() => {
+    const scroller = list.current;
+    if (!scroller || typeof ResizeObserver === 'undefined') return;
+    let typographyKey = '';
+    const sizeWidth = () => {
+      const button = nodes.current.values().next().value;
+      if (!button) return;
+      const style = getComputedStyle(button), canvas = document.createElement('canvas').getContext('2d');
+      if (!canvas) return;
+      canvas.font = style.font;
+      canvas.letterSpacing = style.letterSpacing;
+      canvas.fontKerning = style.fontKerning as CanvasFontKerning;
+      const nextTypography = `${style.font}:${style.letterSpacing}`;
+      if (typographyKey !== nextTypography) {
+        typographyKey = nextTypography;
+        let changed = false;
+        for (let at = 0; at < options.length; at++) changed = index.set(at, OPTION_HEIGHT) || changed;
+        if (changed) update(version => version + 1);
+      }
+      let width = 0;
+      for (const option of options) {
+        const text = option.label.replace(/[ \t\n\r\f]+/g, ' ').replace(/^ | $/g, '');
+        width = Math.max(width, canvas.measureText(text).width + (option.value === value ? 16 + parseFloat(style.columnGap) : 0));
+      }
+      const gutter = scroller.offsetWidth - scroller.clientWidth;
+      scroller.style.width = `${Math.ceil(width + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) + gutter)}px`;
+    };
+    sizeWidth();
+    let width = scroller.clientWidth;
+    observer.current = new ResizeObserver(() => {
+      const focused = [...nodes.current].find(([, node]) => node === document.activeElement);
+      const wasVisible = focused && focused[1].offsetTop >= scroller.scrollTop
+        && focused[1].offsetTop < scroller.scrollTop + scroller.clientHeight;
+      let changed = false;
+      if (width !== scroller.clientWidth) {
+        width = scroller.clientWidth;
+        for (let at = 0; at < options.length; at++) changed = index.set(at, OPTION_HEIGHT) || changed;
+      }
+      for (const [at, node] of nodes.current) changed = index.set(at, node.offsetHeight) || changed;
+      if (changed) {
+        update(version => version + 1);
+        if (wasVisible) reveal(focused[0]);
+      }
+    });
+    observer.current.observe(scroller);
+    for (const node of nodes.current.values()) observer.current.observe(node);
+    window.addEventListener('resize', sizeWidth);
+    document.fonts.addEventListener('loadingdone', sizeWidth);
+    const typography = new MutationObserver(sizeWidth);
+    typography.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class'] });
+    return () => {
+      observer.current?.disconnect(); observer.current = null; typography.disconnect();
+      window.removeEventListener('resize', sizeWidth); document.fonts.removeEventListener('loadingdone', sizeWidth);
+    };
+  }, [index, options, value]);
+  const reveal = (at: number) => {
+    const scroller = list.current;
+    if (!scroller || at < 0) return;
+    const start = index.offset(at), end = index.offset(at + 1);
+    const nextTop = start < scroller.scrollTop ? start : end > scroller.scrollTop + scroller.clientHeight ? end - scroller.clientHeight : scroller.scrollTop;
+    scroller.scrollTop = nextTop; setTop(nextTop);
+  };
+  useLayoutEffect(() => {
+    const resolved = options[active]?.value ?? null;
+    if (activeValue !== resolved) setActiveValue(resolved);
+    reveal(active);
+    nodes.current.get(active)?.focus({ preventScroll: true });
+  }, [active, activeValue, index]);
+  const keys = (event: KeyboardEvent<HTMLDivElement>) => {
+    const tab = event.key === 'Tab';
+    const next = selectIndex(options, active, tab ? event.shiftKey ? 'ArrowUp' : 'ArrowDown' : event.key);
+    if (next === null) return;
+    // Native Tab visits each enabled option. Keep that complete order while
+    // windowing, and let the browser leave either edge rather than wrapping.
+    if (tab && (event.shiftKey ? next >= active : next <= active)) return;
+    event.preventDefault();
+    reveal(next); setActiveValue(options[next].value);
+  };
+  return <div ref={list} className="select-options" role="listbox" aria-label={label} onKeyDown={keys} style={{ height }}
+    onScroll={event => setTop(event.currentTarget.scrollTop)}>
+    <div style={{ height: index.offset(options.length), position: 'relative' }}>
+      {visible.map(at => {
+        const option = options[at];
+        return <button key={option.value} type="button" role="option" className="menu-item" aria-selected={option.value === value}
+          aria-checked={option.value === value} aria-posinset={at + 1} aria-setsize={options.length} tabIndex={at === active ? 0 : -1}
+          ref={node => {
+            const previous = nodes.current.get(at); if (previous) observer.current?.unobserve(previous);
+            if (node) { nodes.current.set(at, node); observer.current?.observe(node); }
+            else nodes.current.delete(at);
+          }}
+          style={{ position: 'absolute', top: index.offset(at), minHeight: OPTION_HEIGHT, left: 0, right: 0 }}
+          disabled={option.disabled} data-tooltip={option.reason ?? option.label} data-option-index={at}
+          data-popover-autofocus={at === active || undefined} onFocus={() => setActiveValue(option.value)} onClick={() => onChoose(option.value)}>
+          <span className="menu-item-label">{option.label}</span>{option.value === value && <Icon name="check" />}
+        </button>;
+      })}
+    </div>
+  </div>;
 }

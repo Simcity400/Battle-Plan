@@ -9,6 +9,7 @@ use dashboard::protocol::{
     DashboardMapView, MAX_MESSAGE_BYTES, NativeCommand, ViewBounds, ViewerState, replay_revision,
     validate_map_views,
 };
+#[cfg(test)]
 use dashboard::transport::DataCommand;
 use lifecycle::Process;
 use pending::{Pending, SeekTarget};
@@ -44,6 +45,9 @@ struct Inner {
     /// The last diagnostics choice sent with [`NativeHost::set_diagnostics`],
     /// which a viewer started afterwards takes over its launch-time read.
     diagnostics: Option<bool>,
+    /// The last folders sent with [`NativeHost::set_folders`], which a viewer
+    /// started afterwards takes over its launch-time read.
+    folders: Option<dashboard::Config>,
 }
 
 #[derive(Clone, Default)]
@@ -61,7 +65,7 @@ impl NativeHost {
         }
         inner.active_dashboard = dashboard;
         if dashboard {
-            inner.pending.standalone = false;
+            inner.pending.campaign_map = false;
             inner.pending.bounds = None;
             inner.pending.visibility = None;
             inner.pending.open = None;
@@ -69,7 +73,7 @@ impl NativeHost {
             inner.pending.maps = Some(inner.dashboard_views.clone().unwrap_or_default());
         } else {
             inner.pending.maps = None;
-            inner.pending.standalone = true;
+            inner.pending.campaign_map = true;
             inner.pending.bounds = inner.bounds;
             inner.status.visible = true;
             inner.pending.visibility = Some(true);
@@ -79,24 +83,9 @@ impl NativeHost {
         Ok(())
     }
 
-    pub(crate) fn send_data(
-        &self,
-        window: &WebviewWindow,
-        request: DataCommand,
-    ) -> Result<(), String> {
-        let cleanup = matches!(
-            request,
-            DataCommand::Cancel { .. } | DataCommand::Release { .. }
-        );
-        if !cleanup {
-            // The data runtime starts without a visible map or game assets.
-            self.ensure_started(window)?;
-        }
-        self.enqueue_data(request)
-    }
-
     /// Enqueue without creating a window/process. Request admission can hold its
     /// own small lock across this operation without an OS-window callback.
+    #[cfg(test)]
     pub(crate) fn enqueue_data(&self, request: DataCommand) -> Result<(), String> {
         let cleanup = matches!(
             request,
@@ -217,6 +206,47 @@ impl NativeHost {
             .pending
             .actions
             .push_back(MapAction::Diagnostics { enabled });
+        drop(inner);
+        self.shared.1.notify_all();
+    }
+
+    /// Tells a running viewer that map preferences were saved, once however many
+    /// saves are queued. A viewer `ensure_started` starts later reads them itself.
+    pub fn map_settings_saved(&self) {
+        use dashboard::protocol::MapAction;
+        let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.process.is_none() || inner.shutting_down {
+            return;
+        }
+        if !inner
+            .pending
+            .actions
+            .iter()
+            .any(|action| matches!(action, MapAction::MapSettingsSaved))
+        {
+            inner.pending.actions.push_back(MapAction::MapSettingsSaved);
+        }
+        drop(inner);
+        self.shared.1.notify_all();
+    }
+
+    /// Sends newly saved content folders to a running viewer, replacing any
+    /// still queued, and keeps them for a viewer `ensure_started` starts later.
+    pub fn set_folders(&self, config: &dashboard::Config) {
+        use dashboard::protocol::MapAction;
+        let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        inner.folders = Some(config.clone());
+        if inner.process.is_none() || inner.shutting_down {
+            return;
+        }
+        inner
+            .pending
+            .actions
+            .retain(|action| !matches!(action, MapAction::Folders { .. }));
+        inner.pending.actions.push_back(MapAction::Folders {
+            game: config.game_dir.to_string_lossy().into_owned(),
+            user: config.user_dir.to_string_lossy().into_owned(),
+        });
         drop(inner);
         self.shared.1.notify_all();
     }

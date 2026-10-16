@@ -5,7 +5,7 @@ import { countryMatch } from '../../dashboard/groups.ts';
 import { logCountryRequests } from '../../charts/log/logData.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { CATEGORIES, OPTIONS, definition } from './definition.ts';
-import { eventCountryName, eventDescription, eventTooltip, eventWindowCount, filteredEventRows, feedWindows, notRecorded, validateEventFeedReply } from './eventFeedData.ts';
+import { eventCountryName, eventDescription, eventTooltip, filteredEventRows, notRecorded, validateEventFeedPage, validateEventFeedReply } from './eventFeedData.ts';
 import { logPlaybackAt, logPlaybackIndex } from '../../charts/log/logPlayback.ts';
 import type { FeedFilter } from './eventFeedData';
 
@@ -190,26 +190,11 @@ test('missing captures have one explicit adapter, and bad icons do not discard n
   assert.throws(() => validateEventFeedReply({ ...data, rows: [data.rows[0], data.rows[0]] }));
 });
 
-test('country rows choose only bounded event windows without inventing gap events', () => {
+test('country rows keep every observed match and do not invent empty-capture events', () => {
   const data = reply(Array.from({ length: 8 }, (_, index) => row('nukesIncreased', 'milestones', 120,
     { id: `nuke/${index}`, tags: [`mod country ${index}`], amount: 1 })));
   assert.equal(filteredEventRows(validateEventFeedReply(data), all).length, 8);
-  const windows = Array.from({ length: 16 }, (_, index) => ({ firstHour: index * 50, lastHour: index * 50 + 10,
-    count: 8, categoryCounts: { warsPeace: 0, diplomacy: 0, politics: 0, milestones: 8 } }));
-  const selected = feedWindows(windows, 500, 400);
-  assert.deepEqual(selected.map(window => window.index), [10, 9, 8]);
-  assert.deepEqual(feedWindows(windows, 399, 411), []);
   assert.equal(filteredEventRows(reply([]), all).length, 0);
-});
-
-test('manifest category counts exclude hidden categories and malformed totals are refused', () => {
-  const data = reply([row('peace', 'warsPeace', 110), row('lawChanged', 'politics', 120),
-    row('focusCompleted', 'milestones', 130), row('projectFinished', 'milestones', 140)]);
-  assert.equal(eventWindowCount(data.windows[0], new Set(['warsPeace', 'politics'])), 2);
-  assert.equal(eventWindowCount(data.windows[0], new Set()), 0);
-  assert.equal(eventWindowCount(data.windows[0], all.categories), 4);
-  assert.throws(() => validateEventFeedReply({ ...data, windows: [{ ...data.windows[0], count: 99 }] }));
-  assert.throws(() => validateEventFeedReply({ ...data, windows: [{ ...data.windows[0], categoryCounts: { milestones: 4 } }] }));
 });
 
 test('country filtering happens once per prepared page and never on unchanged playback hours', () => {
@@ -316,4 +301,20 @@ test('kinds without game artwork have their own icon', async () => {
   assert.deepEqual([EVENT_ICONS.warDeclared, EVENT_ICONS.civilWarWarTransferred, EVENT_ICONS.peace, EVENT_ICONS.capitulated,
     EVENT_ICONS.becameSubject, EVENT_ICONS.rulingPartyChanged], ['swords', 'flag-torn', 'olive-branch', 'flag', 'link', 'ballot']);
   assert.deepEqual([EVENT_ICONS.warEnded, EVENT_ICONS.peaceConferenceStarted, EVENT_ICONS.nuclearStrike], ['olive-branch', 'handshake', 'sunburst']);
+});
+
+test('prepared cursor pages retain duplicate native occurrences and keep IDs inside the row owner', () => {
+  const first = row('warDeclared', 'warsPeace', 125, { id: 'native-99', exact: true, readHour: 150, tags: ['actor', 'target'], participants: ['actor', 'target'] });
+  const data = { ...reply([first, { ...first, readHour: 151 }]), windows: [] };
+  const page = validateEventFeedPage({ reply: data, nextCursor: 'keeps-live-200-native-125' });
+  assert.equal(page.reply.rows.length, 2);
+  const rows = filteredEventRows(page.reply, all);
+  assert.notEqual(rows[0].key, rows[1].key);
+  assert.deepEqual(rows.map(row => row.item.event.id), ['native-99', 'native-99']);
+  assert.throws(() => validateEventFeedPage({ reply: data, nextCursor: 125 }), /malformed/);
+  assert.equal(validateEventFeedPage({ reply: { ...data, rows: [] }, nextCursor: 'next' }).nextCursor, 'next',
+    'an obsolete raw project page retains its advancing continuation');
+  assert.throws(() => validateEventFeedPage({ reply: data, nextCursor: '' }), /no progress/);
+  assert.equal(validateEventFeedPage({ reply: { ...data, rows: [] }, nextCursor: null }).reply.rows.length, 0);
+  assert.throws(() => validateEventFeedPage({ reply: reply(), nextCursor: null }), /manifest/);
 });

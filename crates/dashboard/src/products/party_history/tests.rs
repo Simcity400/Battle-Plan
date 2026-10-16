@@ -1,6 +1,4 @@
-use super::{
-    PartyNaming, RecordedPortrait, leader_portrait, party_key, party_key_with_selected_tag,
-};
+use super::{RecordedPortrait, leader_portrait};
 use crate::test_fixtures::{CAMPAIGN, ownership_frame, records};
 use replay::{
     container::Replay,
@@ -8,108 +6,6 @@ use replay::{
     rows::{CharacterPortrait, CharacterPortraitRow, TableId, TableRows},
 };
 use std::sync::atomic::AtomicBool;
-
-#[test]
-fn a_party_is_named_as_the_game_names_it() {
-    let loc = crate::catalogue::tests::loaded(concat!(
-        "l_english:\n",
-        " GER_fascism_party:0 \"Copper Circle\"\n",
-        " GER_fascism_party_long:0 \"Copper Circle Assembly\"\n",
-        " SOV_x_party:0 \"Quartz League\"\n",
-        " fascism:0 \"Fixture ideology\"\n",
-        " scoped_party:0 \"[ROOT.GetAdjective] Party\"\n",
-        " gap_party:0 \"Bloc¤Ribbon\"\n",
-    ));
-    let refused = std::cell::RefCell::new(crate::catalogue::Refusals::default());
-    let name = |naming: &PartyNaming| {
-        let key = party_key(naming, |key| loc.get(key).is_some())?;
-        crate::catalogue::localised(&loc, &key, crate::catalogue::View::Plain)
-            .inspect_err(|reason| refused.borrow_mut().note(reason.clone(), &key))
-            .ok()
-    };
-    let naming =
-        |token: &str, tag: Option<&str>, original: Option<&str>, key: Option<&str>| PartyNaming {
-            token: token.to_owned(),
-            tag: tag.map(str::to_owned),
-            original_tag: original.map(str::to_owned),
-            key: key.map(str::to_owned),
-        };
-    // The tag's key; the original tag is not needed when it exists.
-    assert_eq!(
-        name(&naming("fascism", Some("GER"), None, None)).as_deref(),
-        Some("Copper Circle")
-    );
-    // A dynamic country takes its original tag's key.
-    assert_eq!(
-        name(&naming("fascism", Some("D01"), Some("GER"), None)).as_deref(),
-        Some("Copper Circle")
-    );
-    // Neither: the ideology group's own name, or its token.
-    assert_eq!(
-        name(&naming("fascism", Some("ITA"), Some(""), None)).as_deref(),
-        Some("Fixture ideology")
-    );
-    assert_eq!(
-        name(&naming("modism", Some("ITA"), Some(""), None)).as_deref(),
-        Some("modism")
-    );
-    // Not recorded: not guessed.
-    assert_eq!(name(&naming("fascism", Some("D01"), None, None)), None);
-    assert_eq!(name(&naming("fascism", None, Some(""), None)), None);
-    // set_party_name: the stored key, shown as itself when undefined.
-    assert_eq!(
-        name(&naming("x", Some("GER"), None, Some("SOV_x_party"))).as_deref(),
-        Some("Quartz League")
-    );
-    assert_eq!(
-        name(&naming("x", Some("GER"), None, Some("MOD_key"))).as_deref(),
-        Some("MOD_key")
-    );
-    // A literal name is its raw bytes: an authored `§` is not a stored colour control.
-    assert_eq!(
-        name(&naming("x", Some("GER"), None, Some("§YCustom Party§!"))).as_deref(),
-        Some("§YCustom Party§!")
-    );
-    assert!(refused.borrow().lines("x").is_empty());
-    // Party names reach their text boxes plain: brackets are glyphs.
-    assert_eq!(
-        name(&naming("x", Some("GER"), None, Some("scoped_party"))).as_deref(),
-        Some("[ROOT.GetAdjective] Party")
-    );
-    // A refused name is not shown, and why is noted by key.
-    assert_eq!(
-        name(&naming("x", Some("GER"), None, Some("gap_party"))),
-        None
-    );
-    assert_eq!(
-        refused.borrow().lines("party names are"),
-        [
-            "1 party names are not shown: localisation gap_party holds the control byte 0x14 (an authored `¤`), which plain text cannot show; gap_party",
-        ]
-    );
-}
-
-#[test]
-fn exact_selected_empty_party_tag_keeps_the_legacy_absence_contract() {
-    let naming = PartyNaming {
-        token: "mod_group".into(),
-        tag: Some("MOD_own".into()),
-        original_tag: Some(String::new()),
-        key: None,
-    };
-    let defines = |key: &str| key == "_mod_group_party";
-    // Legacy consumers' empty original still means known absence.
-    assert_eq!(party_key(&naming, defines).as_deref(), Some("mod_group"));
-    // The exact empty selection is a real prefix.
-    assert_eq!(
-        party_key_with_selected_tag(&naming, "", defines).as_deref(),
-        Some("_mod_group_party")
-    );
-    assert_eq!(
-        party_key_with_selected_tag(&naming, "MOD_original", defines).as_deref(),
-        Some("mod_group")
-    );
-}
 
 #[test]
 fn a_leader_shows_the_civilian_large_entry_or_the_first_large_one_when_set() {
@@ -165,7 +61,7 @@ fn a_leader_shows_the_civilian_large_entry_or_the_first_large_one_when_set() {
 
 /// GER (link 9001) with two parties at the given popularities (raw), one ruling,
 /// and its last election hour.
-fn party_frame(
+pub(super) fn party_frame(
     hour: i32,
     fascism: i64,
     democratic: i64,

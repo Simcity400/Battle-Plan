@@ -23,6 +23,15 @@
 .map-graphics-grid .map-option-row { min-height: 32px; font-size: 0.75rem; }
 .graphics-unavailable { color: var(--muted); font-size: 0.75rem; }
 .graphics-reset { color: var(--accent); }
+.map-option-control { display: flex; align-items: center; gap: 4px; flex: none; }
+.map-option-inherit { color: var(--accent); }
+.map-option-row[data-overridden] > span:first-child { font-weight: 600; }
+.map-graphics-group { display: grid; gap: 2px; margin-top: 6px; }
+.map-graphics-group-title { display: flex; align-items: center; gap: 4px; padding: 0 4px; color: var(--muted); font-size: 0.6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.map-option-part > span:first-child { color: var(--muted); }
+.map-volume { width: 2.5em; text-align: right; color: var(--muted); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.map-option-control input[type='range'] { width: 110px; }
+.map-counter-countries { padding: 0 4px 4px; }
 .graphics-reset:hover:not(:disabled) { background: var(--accent-softer) !important; }
 .map-visual-mods { margin-top: 6px; padding: 8px 4px 0; box-shadow: 0 -1px 0 var(--line-soft); }
 .map-visual-mods summary { display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 600; list-style: none; min-height: 28px; }
@@ -30,7 +39,8 @@
 .map-visual-mods summary::before { content: ''; width: 6px; height: 6px; margin: 0 4px 0 2px; border-right: 1.6px solid var(--muted); border-bottom: 1.6px solid var(--muted); transform: rotate(-45deg); transition: transform var(--t) var(--ease); }
 .map-visual-mods[open] summary::before { transform: rotate(45deg); }
 .map-visual-mods summary > span { margin-left: auto; color: var(--muted); font-weight: 500; font-size: 0.75rem; }
-.map-mod-search { margin-top: 8px; height: 30px !important; }
+.map-mod-tools { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+.map-mod-search { flex: 1; min-width: 0; height: 30px !important; }
 .map-mod-list { max-height: 190px; overflow: auto; margin-top: 6px; }
 .map-mod-row { display: flex; gap: 9px; align-items: flex-start; padding: 8px 4px; border-radius: var(--r-sm); }
 .map-mod-row:hover { background: var(--hover); }

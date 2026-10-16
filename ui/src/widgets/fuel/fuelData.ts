@@ -268,15 +268,18 @@ export function fuelAwardBasis(reply: Pick<FuelReply, 'branchId' | 'tag'>, read:
 /** Full and compact tooltip forms: the tank, then the day before its read, with
  * amounts written to `digits` decimals. */
 export function fuelTooltips(reply: FuelReply, reads: readonly FuelRead[], hour: number, title: string,
-  colors: { fuel: string; capacity: string; gained: string; burned: string }, digits: number): TooltipContent[] {
+  colors: { fuel: string; capacity: string; gained: string; burned: string }, digits: number,
+  amounts?: Pick<FuelRead,'fuelRaw'|'capacityRaw'>): TooltipContent[] {
   const read = runAt(reads, hour);
-  if (!read) return [{ title, rows: [{ label: 'Not recorded at this time', tone: 'muted' }] }];
-  const full = percentFull(read);
+  const level = read ?? amounts;
+  if (!level) return [{ title, rows: [{ label: 'Not recorded at this time', tone: 'muted' }] }];
+  const full = percentFull(level);
   const tank: TooltipRow[] = [
-    { label: 'Fuel', value: formatFuel(read.fuelRaw, reply.quantityScale, digits), swatch: colors.fuel },
-    { label: 'Capacity', value: formatFuel(read.capacityRaw, reply.quantityScale, digits), swatch: colors.capacity, tone: 'muted' },
+    { label: 'Fuel', value: formatFuel(level.fuelRaw, reply.quantityScale, digits), swatch: colors.fuel },
+    { label: 'Capacity', value: formatFuel(level.capacityRaw, reply.quantityScale, digits), swatch: colors.capacity, tone: 'muted' },
     { label: 'Full', value: full == null ? 'No capacity' : `${full}%` },
   ];
+  if (!read) return [{title,rows:[...tank,{label:'Gained and burned',value:'Still being prepared',tone:'muted',divider:true}]}];
   const notes: (string | undefined)[] = [];
   const day = dayAmounts(reply, read, digits);
   let rows: TooltipRow[];

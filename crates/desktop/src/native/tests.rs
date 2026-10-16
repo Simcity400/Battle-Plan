@@ -325,3 +325,18 @@ fn busy_map_controls_refuse_with_a_retryable_error() {
     assert!(refusal.starts_with(MAP_CONTROLS_BUSY));
     assert!(transient_error(&refusal));
 }
+
+#[test]
+fn folders_applied_before_a_viewer_starts_are_kept_for_its_launch() {
+    let host = NativeHost::default();
+    let config = dashboard::Config {
+        game_dir: r"C:\Game".into(),
+        user_dir: r"C:\User".into(),
+        background_preparation: None,
+    };
+    host.set_folders(&config);
+    let inner = host.shared.0.lock().unwrap();
+    assert_eq!(inner.folders.as_ref(), Some(&config));
+    // No viewer runs, so nothing is queued for one.
+    assert!(inner.pending.actions.is_empty());
+}

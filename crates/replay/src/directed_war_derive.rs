@@ -117,10 +117,6 @@ impl ReceiverWars {
         })
     }
 
-    pub fn receiver_slot(&self) -> u32 {
-        self.receiver_slot
-    }
-
     /// The canonical targets whose cell holds an active war.
     pub fn targets(&self) -> &[u32] {
         &self.targets

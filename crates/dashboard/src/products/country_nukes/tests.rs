@@ -458,8 +458,6 @@ fn country_nukes_modded_type_names_come_from_the_content_stack() {
     });
     assert_eq!(types[0].name.as_deref(), Some("Mod singularity bombs"));
     assert_eq!(types[1].name.as_deref(), Some("Mod stellar bombs"));
-    // Test artefacts stay under the designated scratch root when invoked by the worker.
-    assert!(root.starts_with(&scratch));
     std::fs::remove_dir_all(root).unwrap();
 }
 

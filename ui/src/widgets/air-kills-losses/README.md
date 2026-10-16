@@ -6,6 +6,8 @@
 
 **Settings:** Top-ten race by own losses by default; enemy losses, regions/causes, manual countries and smart groups, ratio, line/axis controls, one View selector for Race, Lines over time or Loss causes, and inline/pop-out drill. Chart controls appear in the views that use them; Loss causes keeps its future-history switch. Campaign, Follow, Pin and Range.
 
+Prepared queries load the shared ledger event pages; availability reads the saved family flag.
+
 **Notable behaviour:**
 
 - Booked counts are the native requested amounts, not necessarily aircraft actually removed. Own losses and enemy credit are separate; operational accidents and unknown opponents are not conflated. Signed corrections stay exact.

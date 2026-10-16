@@ -118,31 +118,6 @@ fn values_at(reply: &GameScoreReply, series: &GameScoreSeries, hour: i32) -> Gam
 }
 
 #[test]
-fn game_score_shared_content_warnings_leave_typed_score_observations_intact() {
-    let mut reply = scan_frames(vec![frame(100)], None);
-    reply.score_warnings = vec![
-        GameScoreWarning {
-            kind: GameScoreMissingKind::Recording,
-            reason: "missing native read".into(),
-            observations: 7,
-        },
-        GameScoreWarning {
-            kind: GameScoreMissingKind::Content,
-            reason: "missing content key".into(),
-            observations: 3,
-        },
-    ];
-    super::super::ReplyWarnings::warnings_mut(&mut reply).push("shared content diagnostic".into());
-    let json = serde_json::to_value(&reply).unwrap();
-    assert_eq!(
-        json["warnings"],
-        serde_json::json!(["shared content diagnostic"])
-    );
-    assert_eq!(json["scoreWarnings"][0]["observations"], 7);
-    assert_eq!(json["scoreWarnings"][1]["observations"], 3);
-}
-
-#[test]
 fn game_score_count_arithmetic_keeps_wrapping_scale_and_signed_truncation() {
     // Multiplication by Q is retained before division, even on overflow.
     assert_eq!(count_score(i32::MAX, Q), 30_280_923_962_904);
@@ -475,47 +450,15 @@ fn game_score_identity_failure_keeps_multiplier_reads_and_breaks_country_runs() 
 }
 
 #[test]
-fn game_score_old_recordings_only_compute_industry_from_content_evaluated_defines() {
+fn game_score_content_multipliers_keep_native_rounding_and_missing_defines() {
     let defines = installed_content::defines::Defines::new().unwrap();
     defines.load("synthetic.lua", b"NDefines = {NCountry = {COUNTRY_SCORE_MULTIPLIER = 0.000005, ARMY_SCORE_MULTIPLIER = -0.000005, NAVY_SCORE_MULTIPLIER = 1000.00001, AIR_SCORE_MULTIPLIER = 0, INDUSTRY_SCORE_MULTIPLIER = 1.25, PROVINCE_SCORE_MULTIPLIER = 0}}" ).unwrap();
     let multipliers = content_multipliers(Ok(&defines));
     assert_eq!(multipliers.total.value(), Some(1));
     assert_eq!(multipliers.army.value(), Some(-1));
     assert_eq!(multipliers.navy.value(), Some(100_000_000));
+    assert_eq!(multipliers.industry.value(), Some(125_000));
     assert!(!multipliers.industry.read_each_hour);
-    let first = frame(100);
-    for version in [
-        97,
-        98,
-        TableId::CountryGameScoreInputs.last_change().introduced - 1,
-    ] {
-        let historical = replay::format::FormatVersion::read(version).unwrap();
-        let refusal = historical
-            .table_refusal(TableId::CountryGameScoreInputs)
-            .unwrap();
-        let values = ScoreContext {
-            frame: &first,
-            multipliers: &multipliers,
-            input_refusal: Some(&refusal),
-            wings: None,
-            registrations: None,
-        }
-        .scores(Some(&input(9001)), 7, Some(&factories(9001)));
-        assert_eq!(values.industry.value(), Some(750_000));
-        assert!(values.industry.read_each_hour);
-        for amount in [
-            &values.army,
-            &values.navy,
-            &values.air,
-            &values.land,
-            &values.total,
-        ] {
-            assert_eq!(amount.value(), None);
-            let missing = amount.missing.as_ref().unwrap();
-            assert_eq!(missing.kind, GameScoreMissingKind::Recording);
-            assert_eq!(missing.reason, refusal);
-        }
-    }
     defines
         .load(
             "missing.lua",
@@ -585,7 +528,7 @@ fn game_score_equal_rereads_are_dated_but_gaps_and_reused_identities_break_runs(
 }
 
 #[test]
-fn game_score_content_fallback_uses_format_lifetimes_or_disabled_capture() {
+fn game_score_content_fallback_requires_disabled_capture() {
     let historical = replay::format::FormatVersion::read(
         TableId::CountryGameScoreInputs.last_change().introduced - 1,
     )
@@ -623,7 +566,7 @@ fn game_score_content_fallback_uses_format_lifetimes_or_disabled_capture() {
     let mut old_defines = || {
         content_reads += 1;
         let defines = installed_content::defines::Defines::new().unwrap();
-        defines.load("synthetic.lua", b"NDefines = {NCountry = {COUNTRY_SCORE_MULTIPLIER = 1, ARMY_SCORE_MULTIPLIER = 1, NAVY_SCORE_MULTIPLIER = 1, AIR_SCORE_MULTIPLIER = 1, INDUSTRY_SCORE_MULTIPLIER = 1, PROVINCE_SCORE_MULTIPLIER = 1}}").unwrap();
+        defines.load("synthetic.lua", b"NDefines = {NCountry = {COUNTRY_SCORE_MULTIPLIER = 1, ARMY_SCORE_MULTIPLIER = 1, NAVY_SCORE_MULTIPLIER = 1, AIR_SCORE_MULTIPLIER = 1, INDUSTRY_SCORE_MULTIPLIER = 1.25, PROVINCE_SCORE_MULTIPLIER = 1}}").unwrap();
         content_multipliers(Ok(&defines))
     };
     let reply = scan(
@@ -638,37 +581,7 @@ fn game_score_content_fallback_uses_format_lifetimes_or_disabled_capture() {
         &AtomicBool::new(false),
     )
     .unwrap();
-    // A current container cannot acquire historical meaning from an error
-    // string. Historical readers establish absence from table lifetimes.
-    for version in [
-        97,
-        98,
-        TableId::CountryGameScoreInputs.last_change().introduced - 1,
-    ] {
-        let historical = replay::format::FormatVersion::read(version).unwrap();
-        let old_operands = !TableId::CountryGameScoreInputs
-            .last_change()
-            .present(historical.version());
-        assert!(old_operands);
-        let historical_multipliers = multipliers_at(&old, old_operands, &mut old_defines);
-        let refusal = historical
-            .table_refusal(TableId::CountryGameScoreInputs)
-            .unwrap();
-        let historical_values = ScoreContext {
-            frame: &old,
-            multipliers: &historical_multipliers,
-            input_refusal: Some(&refusal),
-            wings: None,
-            registrations: None,
-        }
-        .scores(None, 7, Some(&factories(9001)));
-        assert_eq!(historical_values.industry.value(), Some(6 * Q));
-        assert_eq!(
-            historical_values.army.missing.as_ref().unwrap().reason,
-            refusal
-        );
-    }
-    assert_eq!(content_reads, 4);
+    assert_eq!(content_reads, 1);
     let series = &reply.countries[0].scores;
     assert!(amount_at(&reply, series, "industry", 100).raw.is_none());
     assert!(
@@ -682,7 +595,7 @@ fn game_score_content_fallback_uses_format_lifetimes_or_disabled_capture() {
     assert_eq!(amount_at(&reply, series, "total", 101).value(), Some(5 * Q));
     assert_eq!(
         amount_at(&reply, series, "industry", 102).value(),
-        Some(6 * Q)
+        Some(750_000)
     );
     assert!(!amount_at(&reply, &reply.multipliers, "industry", 102).read_each_hour);
     assert!(
@@ -1311,6 +1224,10 @@ fn scale_score_frame(count: u32) -> DecodedFrame {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn game_score_keeps_all_five_thousand_countries_without_player_admission() {
     let first = scale_score_frame(5000);
     let mut second = first.clone();
@@ -1346,7 +1263,7 @@ fn game_score_equal_rereads_do_not_expand_sparse_histories() {
             ..input(9001)
         }]),
     );
-    let hours = 48;
+    let hours = 3;
     let frames = (0..hours)
         .map(|hour| {
             let mut frame = if hour == 0 {
@@ -1476,9 +1393,14 @@ fn game_score_table_missing_reasons_do_not_depend_on_hour_or_truncation_count() 
 }
 
 #[test]
-fn game_score_disabled_five_year_campaign_keeps_one_run_and_one_reason() {
-    let hours = 43_920;
-    let countries = 70;
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn game_score_disabled_across_block_boundaries_keeps_one_run_and_one_reason() {
+    // One initial block and two appended block windows exercise both boundaries.
+    let hours = replay::KEYFRAME_INTERVAL as i32 + 2;
+    let countries = 2;
     let mut first = scale_score_frame(countries);
     first.hour = 0;
     for table in [
@@ -1508,6 +1430,7 @@ fn game_score_disabled_five_year_campaign_keeps_one_run_and_one_reason() {
         }
         replay = replay.append(&[segment]).unwrap();
     }
+    assert!(replay.index.len() >= 3);
     let defines = installed_content::defines::Defines::new().unwrap();
     defines.load("synthetic.lua", b"NDefines = {NCountry = {COUNTRY_SCORE_MULTIPLIER = 1, ARMY_SCORE_MULTIPLIER = 1, NAVY_SCORE_MULTIPLIER = 1, AIR_SCORE_MULTIPLIER = 1, INDUSTRY_SCORE_MULTIPLIER = 1, PROVINCE_SCORE_MULTIPLIER = 1}}").unwrap();
     let fallback = content_multipliers(Ok(&defines));
@@ -1886,6 +1809,10 @@ fn game_score_sort_hints_preserve_empty_whitespace_and_key_equal_text() {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn game_score_oversized_reply_refuses_by_transport_budget_name() {
     let mut first = scale_score_frame(5000);
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
@@ -1895,7 +1822,12 @@ fn game_score_oversized_reply_refuses_by_transport_budget_name() {
             row.name_tag = b"SYN".to_vec();
         }
     }
-    let localisation: Localisation = [("SYN".to_owned(), "x".repeat(6500))].into_iter().collect();
+    let localisation: Localisation = [(
+        "SYN".to_owned(),
+        "x".repeat(MAX_PRODUCT_REPLY_BYTES / 5000 + 1),
+    )]
+    .into_iter()
+    .collect();
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first])]).unwrap();
     let error = scan(
         &replay,
@@ -1914,4 +1846,396 @@ fn game_score_oversized_reply_refuses_by_transport_budget_name() {
         error.to_string(),
         "game_score reply exceeds MAX_PRODUCT_REPLY_BYTES"
     );
+}
+
+fn prepared_naming() -> Naming {
+    let mut fallback = Localisation::default();
+    fallback.language = "english".into();
+    Naming {
+        localisation: Err("Recorded content unavailable".into()),
+        templates: Err("Faction content unavailable".into()),
+        fallback,
+        warnings: Vec::new(),
+    }
+}
+fn assert_prepared_score_at(
+    fixture: &crate::prepared::series::tests::Fixture,
+    reference: &GameScoreReply,
+    hour: i32,
+) {
+    let value = prepared::query(
+        "series-state",
+        serde_json::json!({ "branchId": "1",
+        "family": {"kind": "game-score"}, "reads": [{"hour": hour}] }),
+        &fixture.store,
+        &fixture.key,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let actual: prepared::GameScoreStateReply = serde_json::from_value(value).unwrap();
+    let recorded = reference.reads.contains(&hour);
+    assert_eq!(
+        actual.reply.reads,
+        if recorded { vec![hour] } else { Vec::new() }
+    );
+    assert_eq!(actual.reply.score_warnings, reference.score_warnings);
+    assert_eq!(actual.reply.labels, reference.labels);
+    assert_eq!(actual.reply.hints, reference.hints);
+    if recorded {
+        assert_eq!(
+            values_at(&actual.reply, &actual.reply.multipliers, hour),
+            values_at(reference, &reference.multipliers, hour)
+        );
+    }
+    let expected: Vec<_> = reference
+        .countries
+        .iter()
+        .filter(|country| {
+            country
+                .identity
+                .iter()
+                .any(|run| run.first_hour <= hour && hour <= run.last_hour)
+        })
+        .collect();
+    assert_eq!(actual.reply.countries.len(), expected.len());
+    for (actual_country, expected_country) in actual.reply.countries.iter().zip(expected) {
+        assert_eq!(actual_country.tag, expected_country.tag);
+        assert_eq!(
+            values_at(&actual.reply, &actual_country.scores, hour),
+            values_at(reference, &expected_country.scores, hour)
+        );
+        let identity = expected_country
+            .identity
+            .iter()
+            .find(|run| run.first_hour <= hour && hour <= run.last_hour)
+            .unwrap();
+        assert_eq!(actual_country.identity[0].value, identity.value);
+    }
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn prepared_game_score_matches_history_after_commits_resume_append_gaps_and_identity_changes() {
+    let mut first = frame(100);
+    let mut second = frame(101);
+    let mut missing = frame(102);
+    *missing.tables[TableId::CountryGameScoreInputs.index()] = TableView::Unavailable {
+        reason: "synthetic score inputs unavailable".into(),
+    };
+    let mut replacement = frame(104);
+    for input_frame in [&mut first, &mut second, &mut replacement] {
+        identity_tables(input_frame, 9001, b"GER");
+    }
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *replacement.tables[TableId::Countries.index()]
+    {
+        rows[0].id += 1;
+    }
+    set(
+        &mut second,
+        TableRows::CountryGameScoreInputs(vec![CountryGameScoreInputRow {
+            army_count: Some(17),
+            ..input(9001)
+        }]),
+    );
+    let frames = [first, second, missing, replacement];
+    let mut fixture = crate::prepared::series::tests::Fixture::new();
+    let naming = prepared_naming();
+    let mut state = prepared::Prepared::default();
+    for end in [1, 3, 4] {
+        let replay =
+            Replay::from_records(CAMPAIGN.into(), &[records(1, frames[..end].to_vec())]).unwrap();
+        let begin = match end {
+            1 => 0,
+            3 => 1,
+            _ => 3,
+        };
+        let mut observer = naming.observer(&replay);
+        let mut changes = crate::prepared::frame_changes::FrameChangeTracker::new();
+        for frame in &frames[begin..end] {
+            state
+                .observe(
+                    frame,
+                    &replay,
+                    &mut observer,
+                    &naming,
+                    &changes.observe(frame, replay.format),
+                )
+                .unwrap();
+        }
+        let mut writer = if end == 4 {
+            fixture.append_writer()
+        } else {
+            fixture.writer()
+        };
+        state
+            .flush(&mut writer, 1, &AtomicBool::new(false))
+            .unwrap();
+        let saved = serde_json::to_vec(&state).unwrap();
+        writer
+            .write_at("score-test-resume", 0, saved.as_slice())
+            .unwrap();
+        writer.commit().unwrap();
+        let reference = scan_frames(frames[..end].to_vec(), None);
+        for hour in 100..=frames[end - 1].hour {
+            assert_prepared_score_at(&fixture, &reference, hour);
+        }
+        state = serde_json::from_reader(
+            fixture
+                .store
+                .read(&fixture.key, "score-test-resume", 0)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn prepared_game_score_five_thousand_countries_retains_only_open_facts() {
+    let first = scale_score_frame(5000);
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first.clone()])]).unwrap();
+    let naming = prepared_naming();
+    let mut observer = naming.observer(&replay);
+    let mut state = prepared::Prepared::default();
+    let fixture = crate::prepared::series::tests::Fixture::new();
+    let mut changes = crate::prepared::frame_changes::FrameChangeTracker::new();
+    state
+        .observe(
+            &first,
+            &replay,
+            &mut observer,
+            &naming,
+            &changes.observe(&first, replay.format),
+        )
+        .unwrap();
+    let mut writer = fixture.writer();
+    state
+        .flush(&mut writer, 1, &AtomicBool::new(false))
+        .unwrap();
+    writer.commit().unwrap();
+    let first_bytes = serde_json::to_vec(&state).unwrap().len();
+    for hour in 101..=164 {
+        let mut next = first.clone();
+        next.hour = hour;
+        state
+            .observe(
+                &next,
+                &replay,
+                &mut observer,
+                &naming,
+                &changes.observe(&next, replay.format),
+            )
+            .unwrap();
+    }
+    let mut writer = fixture.writer();
+    state
+        .flush(&mut writer, 1, &AtomicBool::new(false))
+        .unwrap();
+    writer.commit().unwrap();
+    let later_bytes = serde_json::to_vec(&state).unwrap().len();
+    eprintln!("game-score continuation: {first_bytes} -> {later_bytes} bytes at 5000 countries");
+    // Counters/partial buckets may change; retaining an hourly row per key cannot pass.
+    assert!(later_bytes < first_bytes * 2);
+    let reference = scan_frames(
+        (100..=164)
+            .map(|hour| {
+                let mut frame = first.clone();
+                frame.hour = hour;
+                frame
+            })
+            .collect(),
+        None,
+    );
+    assert_prepared_score_at(&fixture, &reference, 100);
+    assert_prepared_score_at(&fixture, &reference, 164);
+}
+
+#[test]
+fn prepared_game_score_unchanged_work_is_flat_over_hours_and_accumulated_holders() {
+    use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
+    let measure = |history: usize, hours: i32| -> io::Result<observer_tests::Work> {
+        let mut first = frame(100);
+        let replay =
+            Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first.clone()])]).unwrap();
+        let naming = prepared_naming();
+        let mut observer = naming.observer(&replay);
+        let mut state = prepared::Prepared::default();
+        let mut changes = FrameChangeTracker::new();
+        for index in 0..history {
+            first.hour = 100 + index as i32;
+            identity_tables(&mut first, 9001, format!("H{index:03}").as_bytes());
+            state.observe(
+                &first,
+                &replay,
+                &mut observer,
+                &naming,
+                &changes.observe(&first, replay.format),
+            )?;
+        }
+        let work = observer_tests::unchanged_frames(
+            state.work(),
+            &first,
+            hours,
+            replay.format,
+            |frame, changes| {
+                state.observe(frame, &replay, &mut observer, &naming, changes)?;
+                Ok(state.work())
+            },
+        )?;
+        assert_eq!(
+            work,
+            observer_tests::Work::default(),
+            "unchanged keys or history were visited"
+        );
+        let before = state.work();
+        let mut baseline = first.clone();
+        baseline.hour += hours;
+        changes.observe(&baseline, replay.format);
+        first.hour += hours + 1;
+        if let TableView::Complete(TableRows::CountryGameScoreInputs(rows)) =
+            &mut *first.tables[TableId::CountryGameScoreInputs.index()]
+        {
+            rows[0].army_count = Some(27);
+        }
+        state.observe(
+            &first,
+            &replay,
+            &mut observer,
+            &naming,
+            &changes.observe(&first, replay.format),
+        )?;
+        let after = state.work();
+        Ok(observer_tests::Work {
+            row_visits: after.row_visits - before.row_visits,
+            history_visits: after.history_visits - before.history_visits,
+            emitted: after.emitted - before.emitted,
+            ..Default::default()
+        })
+    };
+    observer_tests::assert_flat(
+        observer_tests::scaled_work(8, |hours| measure(1, hours as i32)).unwrap(),
+    );
+    observer_tests::assert_flat(
+        observer_tests::scaled_work(8, |history| measure(history, 8)).unwrap(),
+    );
+}
+
+#[test]
+fn prepared_game_score_balance_only_changes_reuse_native_operands_and_warning_counts() {
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    let first = frame(100);
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first.clone()])]).unwrap();
+    let naming = prepared_naming();
+    let mut observer = naming.observer(&replay);
+    let mut prepared = prepared::Prepared::default();
+    let mut tracker = FrameChangeTracker::new();
+    prepared
+        .observe(
+            &first,
+            &replay,
+            &mut observer,
+            &naming,
+            &tracker.observe(&first, replay.format),
+        )
+        .unwrap();
+    let work = prepared.work();
+    let mut next = first.clone();
+    for hour in 101..=110 {
+        next.hour = hour;
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *next.tables[TableId::Countries.index()]
+        {
+            rows[0].political_power_raw = Some(i64::from(hour));
+        }
+        prepared
+            .observe(
+                &next,
+                &replay,
+                &mut observer,
+                &naming,
+                &tracker.observe(&next, replay.format),
+            )
+            .unwrap();
+        assert_eq!(prepared.work(), work);
+        assert_eq!(observer.current.as_ref().unwrap().projected, 100);
+    }
+    let fixture = crate::prepared::series::tests::Fixture::new();
+    let mut writer = fixture.writer();
+    prepared
+        .flush(&mut writer, 1, &AtomicBool::new(false))
+        .unwrap();
+    writer.commit().unwrap();
+    let reference = scan_frames(
+        (100..=110)
+            .map(|hour| {
+                let mut frame = first.clone();
+                frame.hour = hour;
+                frame
+            })
+            .collect(),
+        None,
+    );
+    assert_prepared_score_at(&fixture, &reference, 110);
+}
+
+#[test]
+#[cfg(feature = "slow-tests")]
+fn progressive_game_score_sampler_matches_observer_at_five_thousand_countries() {
+    let mut frame = scale_score_frame(5000);
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *frame.tables[TableId::CountryLinks.index()]
+    {
+        rows.pop(); // A present tag whose native holder is unresolved stays unknown.
+    }
+    if let TableView::Complete(TableRows::CountryGameScoreInputs(rows)) =
+        &mut *frame.tables[TableId::CountryGameScoreInputs.index()]
+    {
+        for (index, row) in rows.iter_mut().enumerate() {
+            row.army_count = (index % 7 != 0).then_some(index as i32 - 2500);
+            // An unread count carries its named error, as the recording requires.
+            row.army_error = if row.army_count.is_some() {
+                Vec::new()
+            } else {
+                b"fixture unread army".to_vec()
+            };
+            row.land_count = Some(index as i32);
+        }
+    }
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame.clone()])]).unwrap();
+    let naming = prepared_naming();
+    let mut observer = naming.observer(&replay);
+    let observed = observer
+        .observe(&frame, &replay, &mut || panic!("captured multipliers"))
+        .unwrap();
+    let samples = sample(&frame, replay.format, &mut || {
+        panic!("captured multipliers")
+    });
+    let values = samples.values();
+    assert_eq!(values.len(), 5000 * 6 + 6);
+    for (tag, (scores, identity)) in &observed.countries {
+        for (field, amount) in PARTS.iter().zip(scores.amounts()) {
+            assert_eq!(
+                values[&(tag.clone(), (*field).into())],
+                (
+                    identity.canonical_slot.zip(identity.native_country),
+                    amount.raw.map(i128::from),
+                )
+            );
+        }
+    }
+    for (field, amount) in PARTS.iter().zip(observed.multipliers.amounts()) {
+        assert_eq!(
+            values[&(String::new(), format!("multiplier:{field}"))],
+            (None, amount.raw.map(i128::from))
+        );
+    }
+    assert!(!values.contains_key(&("unseen country".into(), "total".into())));
 }

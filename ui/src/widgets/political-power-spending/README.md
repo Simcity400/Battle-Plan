@@ -6,7 +6,11 @@ A compact table of recorded political-power payments: Date, Item (game artwork a
 
 ## Products it reads
 
-[`politics-ledger`](../../../../crates/dashboard/src/products/politics_ledger.rs) (`balance` view, shared with the Political power chart) through [usePoliticsSpending](../../dashboard/usePoliticsSpending.ts). [PoliticsSpendingTable.tsx](../../dashboard/PoliticsSpendingTable.tsx) renders both spending tables with the shared [table kit](../../charts/table/README.md); [politicsSpending.ts](../../dashboard/politicsSpending.ts) owns rows, folding and wording, and [powerBalance.ts](../../dashboard/powerBalance.ts) the daily gain.
+[`politics-ledger`](../../../../crates/dashboard-politics-ledger/src/products/politics_ledger.rs) (`spending` view) through [usePoliticsSpending](../../dashboard/usePoliticsSpending.ts). [PoliticsSpendingTable.tsx](../../dashboard/PoliticsSpendingTable.tsx) renders both spending tables with the shared [table kit](../../charts/table/README.md); [politicsSpending.ts](../../dashboard/politicsSpending.ts) owns rows, month folding and wording, and [powerBalance.ts](../../dashboard/powerBalance.ts) the daily gain.
+
+The widgets request only the selected native-date window. Recurring daily charges are stored as runs and folded over partial and complete game months on the server; the table receives the complete compact country/window row list and keeps local sorting and filtering.
+
+The shared browser projection also folds individual daily payment rows by country, category and game month; prepared monthly subtotals are joined without enumerating their paid days.
 
 ## Settings
 

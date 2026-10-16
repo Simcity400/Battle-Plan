@@ -234,6 +234,10 @@ pub struct Country {
     /// when empty. The state holds the same membership reciprocally;
     /// loading a save updates both sides.
     pub cores: Vec<u32>,
+    /// `claims`: the IDs of the states the country claims, omitted when
+    /// empty. The state holds the same membership reciprocally, as it does
+    /// for cores.
+    pub claims: Vec<u32>,
     /// `civil_war_target`: one tag per entry of the civil-war array, in
     /// array order, written only for a nonzero count.
     pub civil_war_targets: Vec<Vec<u8>>,
@@ -273,6 +277,10 @@ pub struct State {
     /// The pool writer emits manpower_pool.available. The state writer omits
     /// the whole pool when total <= 0, so omission cannot prove available is zero.
     pub manpower_available: Option<i32>,
+    /// The pool writer's `total`, the state's population: `None` when the
+    /// pool is omitted (which certifies only a nonpositive population),
+    /// `Some(None)` for a pool written without it.
+    pub population: Option<Option<i32>>,
     /// The set_state_name rename, emitted as `name` only when the string
     /// is nonempty.
     pub name: Option<Vec<u8>>,
@@ -618,6 +626,7 @@ fn parse_country(tag: &[u8], items: &[Item]) -> io::Result<Country> {
         naval_mines: naval_mines(items)?,
         naval_region_access: naval_region_access(items)?,
         cores: integer_list(items, b"cores")?,
+        claims: integer_list(items, b"claims")?,
         civil_war_targets: items
             .iter()
             .filter(|item| item.key.as_deref() == Some(b"civil_war_target"))
@@ -1341,6 +1350,13 @@ fn parse_items(items: &[Item], country_view: CountriesView<'_>) -> io::Result<Sa
                     name: bytes(state, b"name")?,
                     manpower_available: field(state, b"manpower_pool")?
                         .map(|value| integer(&required_bytes(block(value)?, b"available")?))
+                        .transpose()?,
+                    population: field(state, b"manpower_pool")?
+                        .map(|value| {
+                            bytes(block(value)?, b"total")?
+                                .map(|total| integer(&total))
+                                .transpose()
+                        })
                         .transpose()?,
                 },
             )

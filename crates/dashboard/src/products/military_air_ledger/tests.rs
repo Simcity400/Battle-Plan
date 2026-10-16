@@ -8,7 +8,7 @@ use replay::{
     },
 };
 
-fn frame(
+pub(super) fn frame(
     hour: i32,
     losses: Vec<AirLossEventRow>,
     damage: Vec<BuildingBombingDamageRow>,
@@ -38,9 +38,8 @@ fn frame(
     frame
 }
 
-#[test]
-fn military_air_ledger_signed_corrections_zero_gap_and_native_dates() {
-    let row = |id, hour, amount| AirLossEventRow {
+fn air_loss(id: u64, hour: i32, amount: i64) -> AirLossEventRow {
+    AirLossEventRow {
         id,
         game_hour: hour,
         country: 9,
@@ -49,10 +48,28 @@ fn military_air_ledger_signed_corrections_zero_gap_and_native_dates() {
         family_base: 3,
         amount_raw: amount,
         ..Default::default()
-    };
+    }
+}
+
+fn air_mission_damage(id: u64, hour: i32, amount: i64) -> BuildingBombingDamageRow {
+    BuildingBombingDamageRow {
+        id,
+        game_hour: hour,
+        attacker: Some(9),
+        victim: 9,
+        state: 0,
+        building_type: 9001,
+        cause: BuildingBombingDamageCause::AirMission,
+        amount_raw: amount,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn military_air_ledger_signed_corrections_zero_gap_and_native_dates() {
     let frames = vec![
-        frame(10, vec![row(0, 9, i64::MAX)], vec![]),
-        frame(11, vec![row(1, 11, -100_000)], vec![]),
+        frame(10, vec![air_loss(0, 9, i64::MAX)], vec![]),
+        frame(11, vec![air_loss(1, 11, -100_000)], vec![]),
         frame(13, vec![], vec![]),
     ];
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
@@ -212,19 +229,13 @@ fn military_air_ledger_captures_every_identity_without_a_human_predicate() {
 
 #[test]
 fn military_air_ledger_publication_order_does_not_backfill_old_native_dates() {
-    let row = |id, hour, amount| AirLossEventRow {
-        id,
-        game_hour: hour,
-        country: 9,
-        region: 40001,
-        native_cause: 1,
-        family_base: 3,
-        amount_raw: amount,
-        ..Default::default()
-    };
     let mut scan = FamilyScan::default();
-    air_frame(&mut scan, &frame(10, vec![row(0, 9, 300_000)], vec![])).unwrap();
-    air_frame(&mut scan, &frame(11, vec![row(1, 8, -100_000)], vec![])).unwrap();
+    air_frame(&mut scan, &frame(10, vec![air_loss(0, 9, 300_000)], vec![])).unwrap();
+    air_frame(
+        &mut scan,
+        &frame(11, vec![air_loss(1, 8, -100_000)], vec![]),
+    )
+    .unwrap();
     let leaves = leaves(&scan, None).unwrap();
     assert_eq!(
         leaves[0].points,
@@ -450,28 +461,11 @@ fn military_air_ledger_block_keyframes_keep_branch_census_and_missing_hours_sepa
 
 #[test]
 fn military_air_same_branch_accepts_published_events_after_refusal_and_partial_recovery() {
-    let loss = |id, hour, amount| AirLossEventRow {
-        id,
-        game_hour: hour,
-        country: 9,
-        region: 40001,
-        native_cause: 1,
-        family_base: 3,
-        amount_raw: amount,
-        ..Default::default()
-    };
-    let damage = |id, hour, amount| BuildingBombingDamageRow {
-        id,
-        game_hour: hour,
-        attacker: Some(9),
-        victim: 9,
-        state: 0,
-        building_type: 9001,
-        cause: BuildingBombingDamageCause::AirMission,
-        amount_raw: amount,
-        ..Default::default()
-    };
-    let first = frame(2, vec![loss(0, 1, 300_000)], vec![damage(0, 1, 10_000_000)]);
+    let first = frame(
+        2,
+        vec![air_loss(0, 1, 300_000)],
+        vec![air_mission_damage(0, 1, 10_000_000)],
+    );
     let mut missed = frame(3, vec![], vec![]);
     let mut partial = frame(4, vec![], vec![]);
     for (read, reason) in [
@@ -491,7 +485,11 @@ fn military_air_same_branch_accepts_published_events_after_refusal_and_partial_r
         }
     }
     // The real producer regression proves these recovered IDs remain newer.
-    let recovered = frame(5, vec![loss(1, 4, -100_000)], vec![damage(1, 4, 5_000_000)]);
+    let recovered = frame(
+        5,
+        vec![air_loss(1, 4, -100_000)],
+        vec![air_mission_damage(1, 4, 5_000_000)],
+    );
     let replay = Replay::from_records(
         CAMPAIGN.into(),
         &[records(1, vec![first, missed, partial, recovered])],
@@ -539,33 +537,12 @@ fn military_air_same_branch_accepts_published_events_after_refusal_and_partial_r
 #[test]
 fn military_air_resumed_attachment_keeps_the_existing_branch_and_prefixes() {
     use crate::test_fixtures::continuation_records;
-    let loss = |id, hour, amount| AirLossEventRow {
-        id,
-        game_hour: hour,
-        country: 9,
-        region: 40001,
-        native_cause: 1,
-        family_base: 3,
-        amount_raw: amount,
-        ..Default::default()
-    };
-    let damage = |id, hour, amount| BuildingBombingDamageRow {
-        id,
-        game_hour: hour,
-        attacker: Some(9),
-        victim: 9,
-        state: 0,
-        building_type: 9001,
-        cause: BuildingBombingDamageCause::AirMission,
-        amount_raw: amount,
-        ..Default::default()
-    };
     let first = records(
         1,
         vec![frame(
             10,
-            vec![loss(0, 9, 100_000)],
-            vec![damage(0, 9, 10_000_000)],
+            vec![air_loss(0, 9, 100_000)],
+            vec![air_mission_damage(0, 9, 10_000_000)],
         )],
     );
     let retained = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&first)).unwrap();
@@ -578,8 +555,8 @@ fn military_air_resumed_attachment_keeps_the_existing_branch_and_prefixes() {
     // The retained-history/producer fixture proves the first resumed keys are max+1.
     let next = frame(
         12,
-        vec![loss(1, 11, -25_000)],
-        vec![damage(1, 11, 5_000_000)],
+        vec![air_loss(1, 11, -25_000)],
+        vec![air_mission_damage(1, 11, 5_000_000)],
     );
     let continued = continuation_records(&retained, 1, vec![partial, next]);
     let replay = Replay::from_records(CAMPAIGN.into(), &[first, continued]).unwrap();

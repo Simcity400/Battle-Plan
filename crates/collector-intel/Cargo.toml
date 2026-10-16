@@ -1,0 +1,51 @@
+[package]
+name = "collector-intel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+test-support = ["collector-extended-support/test-support", "collector-observers/test-support"]
+default = ["opinion_changes", "flag_changes", "variable_changes"]
+flag_changes = []
+flag_verify = ["flag_changes"]
+opinion_changes = []
+opinion_verify = ["opinion_changes"]
+variable_changes = []
+variable_verify = ["variable_changes"]
+
+[dependencies]
+engine.workspace = true
+replay.workspace = true
+serde = { workspace = true, features = ["derive"] }
+collector-certificates.workspace = true
+collector-extended-support.workspace = true
+collector-hooks.workspace = true
+collector-memory.workspace = true
+collector-metadata.workspace = true
+collector-observers.workspace = true
+collector-primitives.workspace = true
+collector-projection.workspace = true
+collector-raw.workspace = true
+collector-status.workspace = true
+collector-timing.workspace = true
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[dev-dependencies]
+collector-test-support.workspace = true
+serde_json.workspace = true
+engine = { workspace = true, features = ["batch-fallback-test-counts"] }
+collector-extended-support = { workspace = true, features = ["test-support"] }
+collector-certificates = { workspace = true, features = ["test-support"] }
+collector-hooks = { workspace = true, features = ["test-support"] }
+collector-memory = { workspace = true, features = ["test-support"] }
+collector-metadata = { workspace = true, features = ["test-support"] }
+collector-observers = { workspace = true, features = ["default", "test-support"] }
+collector-primitives = { workspace = true, features = ["test-support"] }
+collector-raw = { workspace = true, features = ["test-support"] }
+collector-timing = { workspace = true, features = ["test-support"] }

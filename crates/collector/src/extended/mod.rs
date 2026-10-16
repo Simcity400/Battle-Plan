@@ -1,19 +1,21 @@
 //! Coordinated extended acquisition. Public arrays use global TableId indices;
 //! individual packs keep compact local arrays. Allocation is off-thread.
 
-mod output_continuity;
-pub(crate) mod rocket_output;
+#[cfg(test)]
+use collector_output::output_continuity;
 
 use crate::{
     division_census::UnitInputs,
     map_capture::{MapSources, Orders, ShipCensus},
     sampling::qpc,
-    table_capture::{CaptureRows, grow_capacity, grow_vec},
+    table_capture::{grow_capacity, grow_vec},
 };
+pub(crate) use collector_extended_support::outcomes::RaidReadCounts;
+use collector_extended_support::outcomes::{MISSING, elapsed, failed_capture, truncated_source};
 use engine::{
     Memory,
     allocation::{copy_vec, filled, owned_vec},
-    cair_wing, cequipment_variant,
+    cair_wing,
     cequipment_variant_pool::DivisionSource,
     walk::Outcome,
 };
@@ -24,18 +26,18 @@ use replay::{
 use std::mem::size_of;
 use std::sync::Arc;
 
+pub(crate) use collector_division_parts::division_land;
 #[cfg(test)]
-pub(crate) mod bench_world;
-pub(crate) mod daily_intel;
-pub(crate) mod division_land;
+pub(crate) use collector_extended_support::bench_world;
+pub(crate) use collector_intel::daily_intel;
 
-pub(crate) mod attack_stats;
+pub(crate) use collector_division_parts::attack_stats;
 mod border_inputs;
-mod dig_in;
+use collector_division_parts::dig_in;
 pub(crate) mod observer_boundary;
 mod packs;
-mod supply_inputs;
-pub(crate) mod unit_combat_references;
+use collector_division_parts::supply_inputs;
+pub(crate) use collector_division_parts::unit_combat_references;
 use packs::ORDINARY_TABLES;
 pub(crate) use packs::{
     CharacterInputRoles, CharacterInputsRequest, FinalInputsReport, FinalInputsRequest, GatedPacks,
@@ -43,10 +45,8 @@ pub(crate) use packs::{
     RaidLaunchPacks, RaidStatePacks, RaidStateStores, RaidTargetPacks, ScoresRailsParts, SlowPacks,
     SlowStores, StabilityPacks, WarOverviewPacks,
 };
+pub(crate) use production::registry::Registry;
 
-const MISSING: Outcome = Outcome::Unavailable {
-    reason: "acquisition source not supplied",
-};
 const DIVISION_SOURCE_TABLES: [TableId; 10] = [
     TableId::DivisionLandInputs,
     TableId::DivisionCensus,
@@ -75,27 +75,6 @@ struct ReadGroupData {
     anchor: TableId,
     members: [TableId; TABLE_COUNT],
     len: usize,
-}
-
-/// One hour's raid reads that were torn or refused (`status.json`
-/// `raid_reads`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct RaidReadCounts {
-    /// Path memo copies a game writer overlapped (`raid_path_memo`).
-    pub(crate) torn_memo_reads: u32,
-    /// Raid, cooldown and target rows refused for an unproven leader captor.
-    pub(crate) refused_leaders: u32,
-}
-
-/// A terminal job failure invalidates scheduled reads, never carried samples.
-fn failed_capture(table: TableId, hour: i32, force_full: bool, reason: &'static str) -> Outcome {
-    Outcome::Unavailable {
-        reason: if replay::cadence::should_walk(table, hour, force_full) {
-            reason
-        } else {
-            replay::cadence::SKIPPED_REASON
-        },
-    }
 }
 
 // Native conversion reuse stays within its pack's existing timing scope.
@@ -662,96 +641,95 @@ impl Captured {
         }
     };
 }
-pub(crate) mod air_reference_witness;
-pub(crate) mod air_sorties;
+pub(crate) use collector_air_sorties::air_reference_witness;
+pub(crate) use collector_air_sorties::air_sorties;
 
 pub mod active_abilities;
 pub mod air;
-pub mod air_histories;
-pub mod air_losses;
-pub mod air_records;
-pub mod air_relations;
-pub mod army_icon_inputs;
-pub mod building_bombing;
+pub use collector_air_histories::air_histories;
+pub use collector_air_records::air_records;
+pub use collector_air_relations::air_relations;
+pub use collector_army_icons::army_icon_inputs;
+pub use collector_ledger_tables::air_losses;
+pub use collector_ledger_tables::building_bombing;
 pub mod character_inputs;
 pub mod character_portraits;
 pub mod characters;
-pub mod combat_details;
-pub mod combat_log;
+pub use collector_combat::combat_details;
+pub use collector_combat_log::combat_log;
 pub mod combat_progress;
-pub mod construction;
-pub mod construction_ic;
-pub mod country_appearance;
-pub mod country_counters;
-pub mod country_factories;
-pub(crate) mod country_naval_movement_inputs;
-pub(crate) mod reserved_visibility;
+pub use collector_construction::construction;
+pub use collector_country_counters::country_appearance;
+pub use collector_country_counters::country_counters;
+pub(crate) use collector_country_counters::reserved_visibility;
+pub(crate) use collector_naval_movement::country_naval_movement_inputs;
+pub use collector_output::construction_tables as construction_ic;
+pub use collector_slow_tables::country_factories;
+pub use collector_slow_tables::country_tactic_unlocks;
+pub use collector_stability::country_stability;
 pub(crate) use country_naval_movement_inputs::{
     Capacities as PhysicalNavyCapacities, Work as PhysicalNavyWork,
 };
-pub mod country_stability;
-pub mod country_tactic_unlocks;
 pub mod division_counts;
 pub mod division_presentation;
 pub mod division_templates;
-pub mod economy;
+pub use collector_economy::economy;
 pub mod equipment_destruction;
-pub mod event_feed;
-pub mod experience_gains;
-pub mod faction_theatres;
+pub use collector_experience_gains::tables as experience_gains;
+pub use collector_ledger_tables::event_feed;
+pub use collector_slow_tables::faction_theatres;
 pub mod fog;
-pub(crate) mod fuel_awards;
-mod fuel_demand;
+pub(crate) use collector_fuel_awards::tables as fuel_awards;
 pub mod game_score;
-pub mod governance;
+pub use collector_governance::governance;
 pub mod group_counters;
-pub mod hired_advisors;
-pub mod industrial_organisations;
-pub mod intel;
+pub use collector_advisors::hired_advisors;
+pub use collector_intel::intel;
+pub use collector_production_daily::industrial_organisations;
 pub mod land_events;
-pub mod leader_paths;
-pub mod leader_portraits;
-pub mod lexical;
-pub mod line_output;
-pub mod logistics;
-pub mod map_facilities;
-pub mod map_names;
-pub mod model_inputs;
-pub mod modifier_definitions;
-pub mod naval_bases;
-pub mod naval_combat_sources;
-pub mod naval_counters;
-pub mod naval_details;
+pub use collector_leaders::leader_paths;
+pub use collector_leaders::leader_portraits;
+pub use collector_lexical::lexical;
+pub use collector_map_tables::map_facilities;
+pub use collector_map_tables::naval_bases;
+pub use collector_model_inputs::model_inputs;
+pub use collector_naval_counters::naval_counters;
+pub use collector_naval_details::naval_combat_sources;
+pub use collector_naval_details::naval_details;
+pub use collector_output::line_tables as line_output;
+pub use collector_session::map_names;
+pub use collector_slow_tables::logistics;
+pub use collector_slow_tables::modifier_definitions;
 pub mod naval_history;
 pub mod naval_mission_inputs;
-pub mod naval_result_details;
+pub use collector_naval_details::naval_result_details;
 pub mod naval_result_sources;
-mod naval_trees;
-pub mod new_divisions;
-pub mod nuclear_strikes;
+pub use collector_ledger_tables::nuclear_strikes;
+pub use collector_new_divisions::new_divisions;
+pub mod map_events;
 pub mod operation_outcomes;
-pub mod peace_bids;
-pub mod peace_settlements;
+pub use collector_peace::peace_bids;
+pub use collector_peace::tables as peace_settlements;
 pub mod plans;
-pub mod politics;
-pub mod production;
-pub mod production_modifiers;
-pub mod projects;
+pub use collector_politics::politics;
+pub use collector_production::production;
+pub use collector_production_daily::production_modifiers;
+pub use collector_projects::projects;
 pub mod province_unit_order;
-pub(crate) mod raid_intel_carry;
-pub mod raid_launch_inputs;
-pub mod raid_state_inputs;
-pub mod raid_target_statuses;
-pub mod railway_guns;
-pub mod saved_event_targets;
-pub mod session;
-pub mod ship_models;
+pub use collector_map_tables::saved_event_targets;
+pub(crate) use collector_projects::raid_intel_carry;
+pub use collector_projects::raid_target_statuses;
+pub use collector_raids::raid_launch_inputs;
+pub use collector_raids::raid_state_inputs;
+pub use collector_railway_guns::railway_guns;
+pub use collector_session::session;
+pub use collector_ship_models::ship_models;
 pub mod slice_reads;
 pub mod state_flags;
-pub mod supply_trains;
-pub mod visibility;
-pub mod war_overview;
-pub mod weather;
+pub use collector_supply_trains::supply_trains;
+pub use collector_visibility::visibility;
+pub use collector_war_overview::war_overview;
+pub use collector_weather::weather;
 
 packs!(
     air @helper,
@@ -796,6 +774,7 @@ packs!(
     governance @helper_b,
     intel @helper_cached_a,
     operation_outcomes,
+    map_events,
     lexical,
     map_names,
     naval_history @helper,
@@ -1097,6 +1076,18 @@ impl Captured {
 
     pub(crate) fn operation_outcomes(&self) -> &operation_outcomes::Captured {
         &self.operation_outcomes
+    }
+
+    pub(crate) fn map_events(&self) -> &map_events::Captured {
+        &self.map_events
+    }
+
+    /// Game thread, at the hourly cut; returns its ticks.
+    pub(crate) fn seal_map_events(&mut self, hour: i32) -> u64 {
+        let ticks = self.map_events.seal(hour);
+        self.overhead[TableId::MapEvents.index()] =
+            self.overhead[TableId::MapEvents.index()].saturating_add(ticks);
+        ticks
     }
 
     pub(crate) fn discard_event_feed(&mut self) {
@@ -3423,9 +3414,6 @@ fn scatter<T: Copy, const N: usize>(
         global[table.index()] = value;
     }
 }
-fn elapsed(begin: i64) -> u64 {
-    qpc().saturating_sub(begin).max(0) as u64
-}
 
 pub(crate) struct Divisions {
     first: Vec<DivisionSource>,
@@ -3487,72 +3475,23 @@ impl Divisions {
         self.first.capacity() * size_of::<DivisionSource>()
     }
 }
-fn truncated_source(len: usize, omitted: usize) -> Outcome {
-    match u32::try_from(omitted) {
-        Ok(unread_rows) if unread_rows > 0 => Outcome::Truncated { len, unread_rows },
-        _ => Outcome::Unavailable {
-            reason: "source omitted row count invalid or exceeds u32",
-        },
-    }
-}
 
-pub(crate) struct Registry {
-    rows: CaptureRows<cequipment_variant::RegistryRow>,
-}
-impl Registry {
-    fn new(capacity: usize) -> Self {
-        Self {
-            rows: CaptureRows::new(capacity),
-        }
-    }
-    fn reset(&mut self) {
-        self.rows.reset();
-    }
-    pub(crate) fn acquire(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
-        let _reads = crate::read_accounting::table(TableId::VariantDefinitions);
-        self.rows.outcome = bounded_registry(
-            cequipment_variant::walk_registry(memory, base, game_state, &mut self.rows.rows),
-            self.rows.rows.len(),
-        );
-    }
-    // Off-hours carry-forward hint keeps byte-identical spool output.
-    pub(crate) fn mark_skipped(&mut self) {
-        self.rows.outcome = Outcome::Unavailable {
-            reason: replay::cadence::SKIPPED_REASON,
-        };
-    }
-    pub(crate) fn sources(&self) -> production::Sources<'_, cequipment_variant::RegistryRow> {
-        production::Sources {
-            rows: &self.rows.rows,
-            outcome: self.rows.outcome,
-        }
-    }
-    fn grow(&mut self, capacity: &mut usize) {
-        *capacity = (*capacity).max(self.rows.outcome.len());
-        self.rows.grow(capacity);
-    }
-    pub(crate) fn allocated_bytes(&self) -> usize {
-        self.rows.allocated_bytes()
-    }
-    pub(crate) fn fail(&mut self, reason: &'static str) {
-        self.rows.outcome = Outcome::Unavailable { reason };
-    }
-}
-fn bounded_registry(outcome: Outcome, capacity: usize) -> Outcome {
-    if outcome.len() > capacity {
-        Outcome::Unavailable {
-            reason: "variant registry count exceeds buffer",
-        }
-    } else if matches!(outcome, Outcome::Truncated { unread_rows: 0, .. }) {
-        Outcome::Unavailable {
-            reason: "variant registry truncation has no omitted rows",
-        }
-    } else {
-        outcome
-    }
-}
 #[cfg(test)]
 mod tests;
+
+/// The naval live shape's hour, captured as production captures it.
+#[cfg(test)]
+pub(crate) fn capture_live_shape(captured: &mut Captured) {
+    use naval_details::fixtures::{IMAGE, STATE, live_shape};
+    let memory = live_shape();
+    let c = &mut captured.naval_details;
+    let mut capacity = naval_details::Capacities::default();
+    capacity.raise_for_live_details(
+        engine::naval_combat_demand::demand(&memory, IMAGE, STATE).unwrap(),
+    );
+    c.try_grow_hint(&capacity).unwrap();
+    c.capture(&memory, IMAGE, STATE);
+}
 
 #[cfg(test)]
 pub(crate) fn output_allocation_failure_exercise(arm: impl FnOnce(), disarm: impl FnOnce()) {

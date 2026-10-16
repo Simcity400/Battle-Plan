@@ -11,12 +11,12 @@ import { countryDrillTagAt, countryIdentityIndex } from '../../dashboard/country
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
+import { usePreparedOccupation } from './preparedOccupation';
+import { useParityRows } from '../../dashboard/parityRows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import type { OccupationTrendReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
 import { measureName, occupationEntries, occupationHolderMix, occupationLines, occupationLineTooltip, occupationModel, occupationRequest, occupationSegmentAt,
-  occupationTooltip, occupationTooltipTags, rankingMeasure, validateOccupationTrendReply } from './occupationTrendData';
+  occupationTooltip, occupationTooltipTags, rankingMeasure } from './occupationTrendData';
 import type { OccupationMeasure, ShownMeasure } from './occupationTrendData';
 
 const NO_WARNINGS: string[] = [];
@@ -47,7 +47,11 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
     reason: all ? null : resolved.reason };
   const request = track && requested.ready && !requested.reason ? { sourceId: track.source.id, revision: track.source.revision, product: 'occupation-trend',
     params: occupationRequest(track.branch.id, requested.tags, resolved.top, rank, collaboration) } : null;
-  const { data, error, retry } = useProduct<OccupationTrendReply>(runtime.client, request, active, validateOccupationTrendReply);
+  const prepared = usePreparedOccupation(runtime.client, track, request?.params ?? null, shown, moment, active, resolved.membership ?? undefined);
+  const { data, error, retry } = prepared;
+  const parityRoot = useRef<HTMLDivElement>(null);
+  useParityRows(parityRoot, () => ({ kind: 'chart', label: 'Occupation trend values', complete: !!data, total: data?.series.length ?? 0,
+    hour: moment, rows: data?.series ?? [] }));
   const model = useMemo(() => data ? occupationModel(data) : null, [data]);
   const identities = useMemo(() => grouped && groups.data ? countryIdentityIndex(groups.data.countryIdentities) : model?.identities ?? null,
     [grouped, groups.data, model]);
@@ -59,7 +63,7 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
     [model, all, counted, moment, rank, slots, digits]);
   const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]);
   const lines = useMemo(() => model ? occupationLines(model, all || resolved.top != null ? model.tags : counted.tags,
-    shown, range, counted.membership, digits) : [], [model, all, resolved.top, counted, shown, range, digits]);
+    shown, range, counted.membership, digits, prepared.lineSummaries) : [], [model, all, resolved.top, counted, shown, range, digits, prepared.lineSummaries]);
   const mixScopeKey = JSON.stringify([request, widget.countries, widget.time]);
   const mixScope = useMemo(() => ({ client: runtime.client, key: mixScopeKey }), [runtime.client, mixScopeKey]);
   const [choice, setChoice] = useState<{ scope: typeof mixScope; tag: string; hour: number } | null>(null);
@@ -68,8 +72,9 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
     [model, resolved.top, ranked, all, counted, moment]);
   const selected = choice?.scope === mixScope ? choice : mixCandidates.length === 1 ? { scope: mixScope, tag: mixCandidates[0], hour: moment } : null;
   const mixTag = selected?.tag, mixOriginHour = selected?.hour;
-  const mix = useMemo(() => model && mixTag && mixOriginHour !== undefined ? occupationHolderMix(model, mixTag, mixOriginHour, moment, shown, range, counted.membership, digits)
-    : null, [model, mixTag, mixOriginHour, moment, shown, range, counted.membership, digits]);
+  const mix = useMemo(() => model && mixTag && mixOriginHour !== undefined ? occupationHolderMix(model, mixTag, mixOriginHour, moment, shown, range, counted.membership, digits, prepared.lineSummaries)
+    : null, [model, mixTag, mixOriginHour, moment, shown, range, counted.membership, digits, prepared.lineSummaries]);
+  useEffect(()=>{prepared.onSummaryMembership(view==='mix' ? mix?.membership : resolved.membership ?? undefined);},[view,mix?.membership,resolved.membership,prepared.onSummaryMembership]);
   useEffect(() => {
     if (active && view === 'mix' && choice?.scope !== mixScope && mixCandidates.length === 1) {
       setChoice({ scope: mixScope, tag: mixCandidates[0], hour: moment });
@@ -99,7 +104,8 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
       if (!active || state || chooserRef.current !== chooserOwner || !tag || !mixCandidates.includes(tag) || occupationSegmentAt(model, tag, moment) === null) return;
       setChoice({ scope: mixScope, tag, hour: moment });
     }} /> : null;
-  return <CountryRaceView runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead}
+  return <div ref={parityRoot}><CountryRaceView lineSummaries={prepared.lineSummaries} onSummaryView={prepared.onSummaryView}
+    onReachHour={prepared.onReachHour} navigation={prepared.navigation} runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead}
     moment={moment} slots={slots} ranked={ranked} lines={lines} mix={mix} segmentAt={segmentAt} tooltipTags={relatedTags} state={state}
     presentation={{ exact: false, held: false }}
     label={`Average ${measureName(rank).toLowerCase()}`} empty="No occupied-state data at this time."
@@ -114,5 +120,5 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
       if (!model || !alias || !isMember(model.series.get(alias)?.membership ?? counted.membership?.get(alias), hour)) return null;
       const tip = occupationTooltip(model, alias, hour, labelAt, shown, collaboration);
       return tip ? [tip] : null;
-    }} lineTooltip={(hour, tags, labelAt, colour) => model ? [occupationLineTooltip(model, hour, tags, labelAt, colour, shown, rank, collaboration)] : []} />;
+    }} lineTooltip={(hour, tags, labelAt, colour) => model ? [occupationLineTooltip(model, hour, tags, labelAt, colour, shown, rank, collaboration)] : []} /></div>;
 }

@@ -37,6 +37,10 @@ import { armyMeasure, armyMetadataRequest, armySizeRequest, armyTooltips, armyWi
 import { normaliseArmyOptions, OPTIONS } from './definition';
 import { armyCountrySelection } from './ArmyCountryChip';
 import './armySize.css';
+import { useParityRows } from '../../dashboard/parityRows';
+import { useParityPreparation } from '../../dashboard/parityPreparation';
+import { usePreparedArmy } from './preparedArmy';
+import { overlayCountryIdentities } from '../../dashboard/countryIdentity';
 
 const NO_WARNINGS: string[] = [];
 
@@ -73,7 +77,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groupReply.data, lastHour, Number.MAX_SAFE_INTEGER),
     [widget.countries, fallback, groupReply.data, lastHour]);
   const metadataRequest = armyMetadataRequest(track);
-  const incomingMetadata = useProduct<ArmySizeReply>(runtime.client, metadataRequest, active, validateArmySizeReply);
+  const incomingMetadata = useProduct<ArmySizeReply>(runtime.client, metadataRequest, active, validateArmySizeReply, track?.source);
   const manifest = stores.manifest.update(sourceScope, incomingMetadata.data, reply => reply);
   const metadata = { ...incomingMetadata, data: manifest };
   const measure = !pinned && view === 'mix' ? 'battalions' : armyMeasure(options.measure, metadata.data?.measures);
@@ -97,18 +101,50 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const until = shownUntil(playhead, options.playback as PlaybackMode, options.afterPlayhead === true);
   const visibleRange = { firstHour: Math.max(extent[0], visible.firstHour),
     lastHour: Math.min(extent[1], visible.lastHour, until ?? extent[1]) };
-  const required = armyWindows(metadata.data, visibleRange, moment, false);
-  const wantedWindows = armyWindows(metadata.data, visibleRange, moment, following, view !== 'race');
+  const prepared = usePreparedArmy(runtime.client, track, track && metadata.data ? armySizeRequest(track.branch.id, resolved, measure, countFor, false) : null,
+    metadata.data, active && view === 'lines');
+  const [reachedHour, setReachedHour] = useState<number | null>(null);
+  const dense = view === 'lines' && prepared.dense;
+  const reached = [...prepared.summaries.values()].flatMap(summary => {
+    for (let index = summary.buckets.length - 1; index >= 0; index--) if (summary.buckets[index]) return [summary.buckets[index]!.lastHour];
+    return [];
+  });
+  const required = dense ? [...new Set([moment, ...(reachedHour === null ? [] : [reachedHour]), ...reached].flatMap(hour =>
+    armyWindows(metadata.data, { firstHour: hour, lastHour: hour }, hour, false)))].sort((a, b) => a - b)
+    : armyWindows(metadata.data, visibleRange, moment, false);
+  const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
+  const wantedWindows = parity?.requested ? metadata.data?.windows.map((_, index) => index) ?? []
+    : dense ? required : armyWindows(metadata.data, visibleRange, moment, following, view !== 'race');
   const history = useProductWindows<ArmySizeReply>(runtime.client, identity, window => ({
     sourceId: track!.source.id, revision: track!.source.revision, product: 'army-size',
     params: armySizeRequest(track!.branch.id, resolved, measure, countFor, byType, window),
   }), wantedWindows, active && metadata.data?.measures.includes(measure) === true,
-  value => validateArmyWindow(value, metadata.data!));
-  const incomingData = useMemo(() => metadata.data
-    ? mergeArmyWindows(metadata.data, history.data, wantedWindows) : undefined,
-  [metadata.data, history.data, wantedWindows.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+  value => validateArmyWindow(value, metadata.data!), track?.source);
+  const incomingData = useMemo(() => {
+    if (!metadata.data) return undefined;
+    const reply = mergeArmyWindows(metadata.data, history.data, wantedWindows);
+    const identities = overlayCountryIdentities(prepared.identities ?? [], reply.series.flatMap(series => series.identities === undefined ? [] : [{ tag: series.tag, identities: series.identities }]));
+    const series = new Map(reply.series.map(series => [series.tag, series]));
+    for (const identity of identities) {
+      const before = series.get(identity.tag);
+      series.set(identity.tag, { ...before, tag: identity.tag, runs: before?.runs ?? [],
+        segments: before?.segments ?? identity.identities.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour })),
+        identities: identity.identities, membership: before?.membership ?? null });
+    }
+    return { ...reply, series: [...series.values()] };
+  }, [metadata.data, history.data, wantedWindows.join(','), prepared.identities]); // eslint-disable-line react-hooks/exhaustive-deps
   const pending = required.some(index => !history.data.has(index));
-  const error = required.map(index => history.errors.get(index)).find(Boolean);
+  const parityRows = (incomingData?.series ?? []).flatMap(series => series.runs.map(run => ({ tag: series.tag, run, identities: series.identities, membership: series.membership })));
+  useParityRows(drillAnchor, () => ({ kind: 'windowed', label: 'Army size exact values',
+    complete: !!parity?.requested && !!metadata.data && wantedWindows.every(index => history.data.has(index)), total: parityRows.length,
+    rows: parityRows.map((row, index) => ({ index, key: `${row.tag}:${row.run[0]}:${row.run[2] ?? row.run[0]}`, ...row })), warnings: incomingData?.warnings }),
+    { prepare: parity?.prepare, ready: () => !!parity?.requested && !!metadata.data && wantedWindows.every(index => history.data.has(index)), error: () => required.map(index => history.errors.get(index)).find(Boolean) ?? null });
+  useParityRows(drillAnchor.current?.parentElement ?? null, () => {
+    const rows = (incomingData?.series ?? []).flatMap(series => (series.mix ?? []).map(run => ({ tag: series.tag, ...run })));
+    return { kind: 'windowed', label: 'Army size battalion composition', complete: !!parity?.requested && wantedWindows.every(index => history.data.has(index)),
+      total: rows.length, rows: rows.map((row, index) => ({ index, key: `${row.tag}:${row.firstHour}:${row.lastHour}`, ...row })), types: incomingData?.types };
+  }, { prepare: parity?.prepare, ready: () => !!parity?.requested && !!metadata.data && wantedWindows.every(index => history.data.has(index)) });
+  const error = prepared.error ?? required.map(index => history.errors.get(index)).find(Boolean);
   const numericScope = JSON.stringify([sourceScope, resolved.tags, resolved.top, membershipKey, measure, countFor, byType, extent]);
   const previousNumbers = stores.numbers.update(numericScope, undefined, armyDrillNumbers);
   const numbers = stores.numbers.update(numericScope, pending && previousNumbers ? undefined : incomingData, armyDrillNumbers);
@@ -122,7 +158,8 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const cutTo = (tag: string): readonly Span[] | null => resolved.membership?.get(tag) ?? null;
   const ranked = useMemo(() => model ? rankCountryValues(model, widget.countries.kind === 'tags' || widget.countries.kind === 'selected' ? model.tags : rankedCandidates(resolved, moment, model.tags), moment, slots) : [],
     [model, resolved, moment, slots]);
-  const lineTags = useMemo(() => resolved.top != null || widget.countries.kind !== 'group' ? model?.tags ?? [] : resolved.tags, [resolved, model]);
+  const lineTags = useMemo(() => dense ? [...new Set([...(model?.tags ?? []), ...prepared.summaries.keys()])]
+    : resolved.top != null || widget.countries.kind !== 'group' ? model?.tags ?? [] : resolved.tags, [resolved, model, dense, prepared.summaries]);
   const chosenMix = mixCountry(widget.countries, fallback, ranked);
   const mixTag = chosenMix && model?.series.has(chosenMix) ? chosenMix : ranked[0]?.tag ?? chosenMix;
   const resetKey = JSON.stringify([track?.source.id, track?.branch.id,
@@ -174,11 +211,11 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   const lines = useMemo(() => !model || view !== 'lines' ? [] : lineTags.flatMap(tag => {
     const runs = countryValueLines(model, tag, cutTo(tag), range);
-    return runs.length ? [{ tag, runs, endLabel: (hour: number, name: string) => {
+    return runs.length || prepared.summaries.has(tag) ? [{ tag, runs, endLabel: (hour: number, name: string) => {
       const at = countryValueAt(model, tag, hour);
       return `${name} ${at?.rawTotal !== undefined ? formatArmyRaw(at.rawTotal, measure) : at?.total == null ? '—' : formatArmyValue(at.total)}`;
     } }] : [];
-  }), [model, view, lineTags, resolved.membership, range, measure]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [model, view, lineTags, resolved.membership, range, measure, prepared.summaries]); // eslint-disable-line react-hooks/exhaustive-deps
   const badges = useMemo(() => {
     if (!model || view === 'race') return undefined;
     const tags = view === 'lines' ? lineTags : mixTag ? [mixTag] : [];
@@ -247,11 +284,14 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
         dispatchDrill({ type: 'choose', key: choices.key, tag, hour: drillAt });
       }} />
   </div> : breakdown;
-  if (pinned) return <>{neutralHeader}<div className="army-size-drill parts-race-drill">{state ?? choice}</div></>;
+  if (pinned) return <>{neutralHeader}<div ref={drillAnchor} className="army-size-drill parts-race-drill">{state ?? choice}</div></>;
   const main = <CountryRaceView runtime={runtime} track={track} state={state} active={active && (!drillOpen || options.drill === 'popout')} onPick={open} pickOwner={pickOwner} options={options} view={view} extent={extent} playhead={playhead}
     moment={moment} slots={slots} ranked={entries} lines={lines} badges={badges} parts={parts} mix={mix} segmentAt={segmentAt} countryTags={shownTags}
     label="Army size" empty={`No known army sizes on ${dayLabel(moment)}.`} formatValue={formatArmyValue}
     onViewChange={view === 'race' ? undefined : onViewChange}
+    lineSummaries={prepared.summaries.size ? prepared.summaries : undefined} onSummaryView={view === 'lines' ? prepared.onSummaryView : undefined}
+    exactLineTags={dense ? prepared.exactLineTags : undefined} onReachHour={dense ? setReachedHour : undefined}
+    navigation={dense ? prepared : undefined}
     beforeChart={pending || !incomingMetadata.data || grouped && !incomingGroups.data
       ? <WidgetState kind="loading" label="Loading army data…" />
       : view === 'race' ? undefined : view === 'mix' && model && !parts.length && mixTag && countryValueAt(model, mixTag, moment)?.total === 0

@@ -1,7 +1,9 @@
 //! Daily occupation joins frozen at their read; hourly owner/name projection.
 use super::*;
 use crate::metadata::CountryKeys;
-use replay::frame::{FrameDecoder, ViewIdentity};
+#[cfg(test)]
+use replay::frame::FrameDecoder;
+use replay::frame::ViewIdentity;
 use std::collections::{BTreeSet, HashSet};
 
 type StateKey = (u32, u32, u32);
@@ -14,30 +16,85 @@ struct CountryInputs {
     views: [ViewIdentity; 2],
 }
 
+#[derive(Serialize, Deserialize)]
 pub(super) struct Scan<'a> {
     /// The recording's format, which dates its daily tables
     /// ([`crate::metadata::slot_read`]).
+    #[serde(skip)]
     pub(crate) format: replay::format::FormatVersion,
+    #[serde(skip)]
     cat: Option<&'a Catalogue>,
+    #[serde(skip)]
     names: StateNames,
-    laws: Result<installed_content::occupation_laws::Laws, String>,
+    #[serde(skip, default = "missing_laws")]
+    laws: Result<Arc<installed_content::occupation_laws::Laws>, String>,
+    #[serde(skip)]
     red_threshold: Option<i64>,
+    #[serde(skip, default = "missing_powers")]
     strength_powers: Result<(i32, i32), String>,
-    equipment: std::sync::OnceLock<Result<installed_content::equipment::Database, String>>,
+    #[serde(skip, default = "missing_equipment")]
+    equipment: Result<Arc<installed_content::equipment::Database>, String>,
     pub(super) result: OccupiedScan,
     refused: Refusals,
+    #[serde(skip)]
     names_cached: NameCache,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
     positions: HashMap<u32, usize>,
+    law_tokens: BTreeSet<String>,
+    #[serde(skip)]
     state_slots: HashMap<u32, usize>,
     active: Vec<usize>,
+    #[serde(skip)]
     hourly: Option<[ViewIdentity; 3]>,
     last_hour: Option<i32>,
     read_hour: Option<i32>,
     complete: bool,
     countries: Arc<CountryIndex>,
+    #[serde(skip)]
     country_inputs: Option<CountryInputs>,
+    country_stamp: Option<[u8; 32]>,
     country_refused: Refusals,
-    trend: trend::TrendScan,
+    pub(super) trend: trend::TrendScan,
+    #[serde(skip)]
+    runtime_ready: bool,
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(super) work: crate::prepared::observer_tests::Work,
+}
+
+fn missing_laws() -> Result<Arc<installed_content::occupation_laws::Laws>, String> {
+    Err("Occupation laws need the recorded content stack".into())
+}
+fn missing_equipment() -> Result<Arc<installed_content::equipment::Database>, String> {
+    Err("Garrison equipment needs the recorded content stack".into())
+}
+fn missing_powers() -> Result<(i32, i32), String> {
+    Err("Garrison strength needs the recorded content defines".into())
+}
+impl Default for Scan<'_> {
+    fn default() -> Self {
+        let mut scan = Self::new(None);
+        scan.runtime_ready = false;
+        scan
+    }
+}
+
+/// The resume stamp keeps operand equality without saving prior replay rows.
+fn country_stamp(countries: &[CountryRow], links: &[CountryLinkRow]) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(&(countries.len() as u64).to_le_bytes());
+    for country in countries {
+        hash.update(&country.id.to_le_bytes());
+        hash.update(&country.canonical_slot.to_le_bytes());
+        hash.update(&(country.tag.len() as u64).to_le_bytes());
+        hash.update(&country.tag);
+    }
+    hash.update(&(links.len() as u64).to_le_bytes());
+    for link in links {
+        hash.update(&link.id.to_le_bytes());
+        hash.update(&link.canonical_slot.to_le_bytes());
+    }
+    *hash.finalize().as_bytes()
 }
 
 impl<'a> Scan<'a> {
@@ -66,10 +123,15 @@ impl<'a> Scan<'a> {
             None => None,
             Some(cat) => match cat.cached_states() {
                 Ok(content) => Some(&content.defines),
-                Err(_) => match installed_content::defines::read(&cat.content.layers) {
+                Err(_) => match cat
+                    .content
+                    .layers
+                    .derived::<catalogue::CachedResult<installed_content::defines::Defines>>()
+                    .get_or_init(|| installed_content::defines::read(&cat.content.layers))
+                {
                     Ok(defines) => {
                         fallback = defines;
-                        Some(&fallback)
+                        Some(fallback.as_ref())
                     }
                     Err(error) => {
                         result
@@ -108,7 +170,22 @@ impl<'a> Scan<'a> {
         let laws = cat
             .ok_or_else(|| "Occupation laws need the recorded content stack".to_owned())
             .and_then(|cat| {
-                installed_content::occupation_laws::read(&cat.content.layers).map_err(|e| e.to_string())
+                cat.content
+                    .layers
+                    .derived::<catalogue::CachedResult<installed_content::occupation_laws::Laws>>()
+                    .get_or_init(|| installed_content::occupation_laws::read(&cat.content.layers))
+                    .map_err(|e| e.to_string())
+            });
+        let equipment = cat
+            .ok_or_else(|| "Garrison equipment needs the recorded content stack".to_owned())
+            .and_then(|cat| {
+                cat.content
+                    .layers
+                    .derived::<catalogue::CachedResult<installed_content::equipment::Database>>()
+                    .get_or_init(|| {
+                        installed_content::equipment::Database::load_complete(&cat.content.layers)
+                    })
+                    .map_err(|error| error.to_string())
             });
         Self {
             format: replay::format::FormatVersion::default(),
@@ -117,11 +194,12 @@ impl<'a> Scan<'a> {
             laws,
             red_threshold,
             strength_powers,
-            equipment: std::sync::OnceLock::new(),
+            equipment,
             result,
             refused: Refusals::default(),
             names_cached: HashMap::new(),
             positions: HashMap::new(),
+            law_tokens: BTreeSet::new(),
             state_slots: HashMap::new(),
             active: Vec::new(),
             hourly: None,
@@ -130,15 +208,103 @@ impl<'a> Scan<'a> {
             complete: false,
             countries: Arc::default(),
             country_inputs: None,
+            country_stamp: None,
             country_refused: Refusals::default(),
             trend: trend::TrendScan::default(),
+            runtime_ready: true,
+            #[cfg(test)]
+            work: crate::prepared::observer_tests::Work {
+                content_loads: cat.map_or(0, |cat| {
+                    cat.content
+                        .layers
+                        .derived::<catalogue::CachedResult<installed_content::occupation_laws::Laws>>()
+                        .loads()
+                        + cat
+                            .content
+                            .layers
+                            .derived::<catalogue::CachedResult<installed_content::equipment::Database>>()
+                            .loads()
+                        + cat
+                            .content
+                            .layers
+                            .derived::<catalogue::CachedResult<installed_content::defines::Defines>>()
+                            .loads()
+                }),
+                ..Default::default()
+            },
+        }
+    }
+
+    pub(super) fn bind<'b>(self, cat: Option<&'b Catalogue>) -> Scan<'b> {
+        let mut scan = Scan {
+            cat,
+            format: self.format,
+            names: self.names,
+            laws: self.laws,
+            red_threshold: self.red_threshold,
+            strength_powers: self.strength_powers,
+            equipment: self.equipment,
+            result: self.result,
+            refused: self.refused,
+            names_cached: self.names_cached,
+            positions: self.positions,
+            law_tokens: self.law_tokens,
+            state_slots: self.state_slots,
+            active: self.active,
+            hourly: self.hourly,
+            last_hour: self.last_hour,
+            read_hour: self.read_hour,
+            complete: self.complete,
+            countries: self.countries,
+            country_inputs: self.country_inputs,
+            country_stamp: self.country_stamp,
+            country_refused: self.country_refused,
+            trend: self.trend,
+            runtime_ready: self.runtime_ready,
+            #[cfg(test)]
+            work: self.work,
+        };
+        if !scan.runtime_ready {
+            let runtime = Scan::new(cat);
+            scan.names = runtime.names;
+            scan.laws = runtime.laws;
+            scan.red_threshold = runtime.red_threshold;
+            scan.strength_powers = runtime.strength_powers;
+            scan.equipment = runtime.equipment;
+            #[cfg(test)]
+            {
+                scan.work.content_loads = runtime.work.content_loads;
+            }
+            for warning in runtime.result.warnings {
+                if !scan.result.warnings.contains(&warning) {
+                    scan.result.warnings.push(warning);
+                }
+            }
+            scan.runtime_ready = true;
+        }
+        scan
+    }
+
+    /// Retain the carried observation and active state value for the next window.
+    pub(super) fn finish_window(&mut self) {
+        for state in &mut self.result.states {
+            self.law_tokens
+                .extend(state.runs.iter().filter_map(|run| run.value.law.clone()));
+            if state.runs.len() > 1 {
+                state.runs.drain(..state.runs.len() - 1);
+            }
+        }
+        if self.result.observed.len() > 1 {
+            self.result.observed.drain(..self.result.observed.len() - 1);
         }
     }
 
     pub(super) fn gap(&mut self) {
+        self.seal();
         self.active.clear();
         self.hourly = None;
         self.country_inputs = None;
+        self.country_stamp = None;
         self.read_hour = None;
         self.trend.gap();
     }
@@ -174,7 +340,7 @@ impl<'a> Scan<'a> {
                 self.countries
                     .name_refusals
                     .get(&identity)
-                    .map(|&reason| (reason, identity.1))
+                    .map(|reason| (reason.as_str(), identity.1))
             });
         if let Some((reason, country)) = refused {
             self.refused
@@ -194,6 +360,10 @@ impl<'a> Scan<'a> {
         states: &[StateRow],
         links: &[CountryLinkRow],
     ) -> io::Result<()> {
+        #[cfg(test)]
+        {
+            self.work.row_visits += states.len();
+        }
         let countries = self.countries.clone();
         let tag = |raw| {
             link_slot(links, raw)
@@ -485,22 +655,7 @@ impl<'a> Scan<'a> {
             };
             let strength = garrison.and_then(|row| {
                 match strength::displayed(row, assigned_manpower, &self.strength_powers, |entry| {
-                    let equipment = self
-                        .equipment
-                        .get_or_init(|| {
-                            self.cat
-                                .ok_or_else(|| {
-                                    "Garrison equipment needs the recorded content stack".to_owned()
-                                })
-                                .and_then(|cat| {
-                                    installed_content::equipment::Database::load_complete(
-                                        &cat.content.layers,
-                                    )
-                                    .map_err(|e| e.to_string())
-                                })
-                        })
-                        .as_ref()
-                        .map_err(Clone::clone)?;
+                    let equipment = self.equipment.as_ref().map_err(Clone::clone)?;
                     let lexical = frame
                         .complete::<tables::LexicalTokens>()
                         .map_err(|e| format!("Garrison equipment dictionary unavailable: {e}"))?;
@@ -591,9 +746,15 @@ impl<'a> Scan<'a> {
         states: &[StateRow],
         links: &[CountryLinkRow],
         states_changed: bool,
+        deferred: bool,
+        previous_hour: Option<i32>,
     ) {
         let countries = self.countries.clone();
         if states_changed {
+            #[cfg(test)]
+            {
+                self.work.row_visits += states.len();
+            }
             self.state_slots = states
                 .iter()
                 .enumerate()
@@ -604,6 +765,13 @@ impl<'a> Scan<'a> {
         active.retain(|&index| {
             let id = self.result.states[index].state;
             let Some(state) = self.state_slots.get(&id).map(|&slot| &states[slot]) else {
+                if deferred && let Some(hour) = previous_hour {
+                    self.result.states[index]
+                        .runs
+                        .last_mut()
+                        .expect("held state")
+                        .last_hour = hour;
+                }
                 self.complete = false;
                 self.refused.note(
                     "read occupation state absent from hourly States",
@@ -618,35 +786,68 @@ impl<'a> Scan<'a> {
             if owner.is_none() {
                 self.note_link("owner", state.owner, id, links);
             }
-            let cached = self
+            let name_changed = self
                 .names_cached
                 .get(&id)
-                .expect("read cached every active name");
-            let name_changed = cached.0 != state.custom_name || cached.1 != state.owner_name;
+                .is_none_or(|cached| cached.0 != state.custom_name || cached.1 != state.owner_name);
             let last = self.result.states[index]
                 .runs
                 .last_mut()
                 .expect("active state has a run");
             if !name_changed && last.value.owner.as_deref() == owner {
-                last.last_hour = hour;
+                if !deferred {
+                    last.last_hour = hour;
+                }
             } else {
+                #[cfg(test)]
+                {
+                    self.work.history_visits += 1;
+                }
+                if deferred && let Some(before) = previous_hour {
+                    last.last_hour = before;
+                }
                 let mut value = last.value.clone();
                 value.owner = owner.map(str::to_owned);
                 if name_changed {
                     (value.name, value.name_missing) = self.name(state);
                 }
                 append(&mut self.result.states[index].runs, hour, value);
+                #[cfg(test)]
+                {
+                    self.work.emitted += 1;
+                }
             }
             true
         });
         self.active = active;
     }
 
-    pub(super) fn push(&mut self, frame: &DecodedFrame, hour: i32) -> io::Result<()> {
+    pub(super) fn seal(&mut self) {
+        let Some(hour) = self.last_hour else { return };
+        for &index in &self.active {
+            if let Some(run) = self.result.states[index].runs.last_mut() {
+                run.last_hour = hour;
+            }
+        }
+        if self.read_hour.is_some()
+            && let Some(span) = self.result.observed.last_mut()
+        {
+            span.last_hour = hour;
+        }
+        self.trend.seal_through(hour);
+    }
+
+    pub(super) fn push(
+        &mut self,
+        frame: &DecodedFrame,
+        hour: i32,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+    ) -> io::Result<()> {
+        let previous_hour = self.last_hour;
+        self.trend.changed.clear();
         if self.last_hour.and_then(|hour| hour.checked_add(1)) != Some(hour) {
             self.gap();
         }
-        self.last_hour = Some(hour);
         if !has_rows(frame, TableId::StateResistance) {
             self.gap();
             return Ok(());
@@ -659,27 +860,44 @@ impl<'a> Scan<'a> {
             self.gap();
             return Ok(());
         };
+        self.last_hour = Some(hour);
         let country_tables = [TableId::Countries, TableId::CountryLinks];
-        let countries_changed = self.country_inputs.as_ref().is_none_or(|inputs| {
-            let same_countries = inputs.views[0].is(&frame.tables[TableId::Countries.index()])
-                || inputs.countries.same(countries);
-            let same_links = inputs.views[1].is(&frame.tables[TableId::CountryLinks.index()])
-                || inputs.links == links;
-            !same_countries || !same_links
-        });
+        let touched = |table: TableId| {
+            changes.is_none_or(|changes| {
+                changes.rows_changed[table.index()] || changes.table_read[table.index()]
+            })
+        };
+        #[cfg(test)]
+        {
+            self.work.row_visits += usize::from(touched(TableId::Countries)) * countries.len()
+                + usize::from(touched(TableId::CountryLinks)) * links.len();
+        }
+        let countries_changed = self.country_inputs.as_ref().map_or_else(
+            || self.country_stamp != Some(country_stamp(countries, links)),
+            |inputs| {
+                let same_countries = inputs.views[0].is(&frame.tables[TableId::Countries.index()])
+                    || !touched(TableId::Countries)
+                    || inputs.countries.same(countries);
+                let same_links = inputs.views[1].is(&frame.tables[TableId::CountryLinks.index()])
+                    || !touched(TableId::CountryLinks)
+                    || inputs.links == links;
+                !same_countries || !same_links
+            },
+        );
         let views = country_tables.map(|table| frame.tables[table.index()].identity());
         if countries_changed {
             self.countries = Arc::new(country_index(countries, links, &mut self.country_refused));
-            self.country_inputs = Some(CountryInputs {
-                countries: CountryKeys::read(countries),
-                links: links.to_vec(),
-                views,
-            });
-        } else {
-            self.country_inputs
-                .as_mut()
-                .expect("unchanged inputs were saved")
-                .views = views;
+            self.country_stamp = Some(country_stamp(countries, links));
+        }
+        match &mut self.country_inputs {
+            Some(inputs) if !countries_changed => inputs.views = views,
+            inputs => {
+                *inputs = Some(CountryInputs {
+                    countries: CountryKeys::read(countries),
+                    links: links.to_vec(),
+                    views,
+                })
+            }
         }
         // Countries' hourly balances can change without changing any naming
         // operand. Compare those operands without copying their strings, then
@@ -687,6 +905,17 @@ impl<'a> Scan<'a> {
         self.trend
             .collaboration(self.format, frame, hour, &self.countries.identities, links)?;
         if slot_read(self.format, &frame.metrics, TableId::StateResistance, hour) {
+            if changes.is_some()
+                && let Some(before) = previous_hour
+            {
+                for &index in &self.active {
+                    self.result.states[index]
+                        .runs
+                        .last_mut()
+                        .expect("active state")
+                        .last_hour = before;
+                }
+            }
             self.read(frame, hour, states, links)?;
         } else if self.read_hour.is_none() {
             return Ok(());
@@ -696,23 +925,39 @@ impl<'a> Scan<'a> {
                 .zip(HOURLY)
                 .all(|(view, table)| view.is(&frame.tables[table.index()]))
         }) {
-            for &index in &self.active {
-                self.result.states[index]
-                    .runs
-                    .last_mut()
-                    .expect("active state has a run")
-                    .last_hour = hour;
+            if changes.is_none() {
+                for &index in &self.active {
+                    self.result.states[index]
+                        .runs
+                        .last_mut()
+                        .expect("active state has a run")
+                        .last_hour = hour;
+                }
             }
         } else {
             let states_changed = self
                 .hourly
                 .as_ref()
                 .is_none_or(|views| !views[0].is(&frame.tables[TableId::States.index()]));
-            self.project(hour, states, links, states_changed);
+            if states_changed || countries_changed {
+                self.project(
+                    hour,
+                    states,
+                    links,
+                    states_changed,
+                    changes.is_some(),
+                    previous_hour,
+                );
+            }
         }
         self.hourly = Some(HOURLY.map(|table| frame.tables[table.index()].identity()));
-        self.trend
-            .project(hour, &self.countries.names, countries_changed);
+        self.trend.project(
+            hour,
+            &self.countries.names,
+            countries_changed,
+            changes.is_some(),
+            previous_hour,
+        );
         let read = self.read_hour.expect("a read precedes every observation");
         if let Some(last) = self.result.observed.last_mut()
             && last.last_hour.checked_add(1) == Some(hour)
@@ -731,62 +976,73 @@ impl<'a> Scan<'a> {
         Ok(())
     }
 
-    pub(super) fn finish(mut self) -> OccupationHistory {
-        let tokens: BTreeSet<_> = self
-            .result
+    pub(super) fn snapshot(&self) -> OccupationHistory {
+        let mut result = self.result.clone();
+        if let Some(hour) = self.last_hour {
+            for &index in &self.active {
+                if let Some(run) = result.states[index].runs.last_mut() {
+                    run.last_hour = hour;
+                }
+            }
+            if self.read_hour.is_some()
+                && let Some(span) = result.observed.last_mut()
+            {
+                span.last_hour = hour;
+            }
+        }
+        let tokens: BTreeSet<_> = result
             .states
             .iter()
             .flat_map(|series| &series.runs)
             .filter_map(|run| run.value.law.as_ref())
             .cloned()
+            .chain(self.law_tokens.iter().cloned())
             .collect();
         if let Some(cat) = self.cat {
             match &self.laws {
                 Ok(laws) => {
                     if !laws.warnings.is_empty() {
-                        self.result.warnings.push(format!(
+                        result.warnings.push(format!(
                             "{} occupation-law files could not be read: {}",
                             laws.warnings.len(),
                             laws.warnings.join("; ")
                         ));
                     }
-                    self.result.laws = tokens
+                    result.laws = tokens
                         .iter()
                         .map(|token| law_content(cat, laws, token))
                         .collect();
                 }
-                Err(e) => self
-                    .result
+                Err(e) => result
                     .warnings
                     .push(format!("Occupation law content unavailable: {e}")),
             }
-            self.result
-                .warnings
-                .extend(cat.verification.iter().cloned());
-            self.result.warnings.extend(cat.warnings.iter().cloned());
-            self.result.warnings.extend(cat.refusal_lines());
+            result.warnings.extend(cat.verification.iter().cloned());
+            result.warnings.extend(cat.warnings.iter().cloned());
+            result.warnings.extend(cat.refusal_lines());
         }
-        self.result
-            .states
-            .sort_unstable_by_key(|series| series.state);
-        self.result
+        result.states.sort_unstable_by_key(|series| series.state);
+        result
             .warnings
             .extend(self.refused.lines("recorded occupation facts"));
-        let mut trend = self.trend.finish();
+        let mut trend = self.trend.history(self.last_hour);
         let country_warnings = self
             .country_refused
             .lines("recorded occupation country identities");
-        self.result
-            .warnings
-            .extend(country_warnings.iter().cloned());
+        result.warnings.extend(country_warnings.iter().cloned());
         trend.warnings.extend(country_warnings);
         OccupationHistory {
-            states: self.result,
+            states: result,
             trend,
         }
     }
+    #[cfg(test)]
+    pub(super) fn finish(self) -> OccupationHistory {
+        self.snapshot()
+    }
 }
 
+#[cfg(test)]
 pub(in crate::products) fn scan_history(
     replay: &Replay,
     branch: u64,
@@ -867,7 +1123,7 @@ pub(in crate::products) fn scan_history(
                         }
                     };
                     validate_campaign(decoded, replay)?;
-                    scan.push(decoded, frame.hour)?;
+                    scan.push(decoded, frame.hour, None)?;
                 }
             }
             Ok(())
@@ -942,7 +1198,7 @@ mod tests {
             ]));
         frame.metrics.table_ns[TableId::StateResistance.index()] = 1;
         let mut scan = Scan::new(None);
-        scan.push(&frame, 100).unwrap();
+        scan.push(&frame, 100, None).unwrap();
         assert!(scan.countries.identities.is_empty());
         assert!(scan.countries.names.is_empty());
         let history = scan.finish();
@@ -989,7 +1245,7 @@ mod tests {
             }]));
         frame.metrics.table_ns[TableId::StateResistance.index()] = 1;
         let mut scan = Scan::new(None);
-        scan.push(&frame, 100).unwrap();
+        scan.push(&frame, 100, None).unwrap();
         let indexed = scan.countries.clone();
         frame.hour = 101;
         frame.metrics.table_ns.fill(0);
@@ -998,7 +1254,7 @@ mod tests {
         {
             rows[0].political_power_raw = Some(2);
         }
-        scan.push(&frame, 101).unwrap();
+        scan.push(&frame, 101, None).unwrap();
         assert!(Arc::ptr_eq(&indexed, &scan.countries));
         frame.hour = 102;
         if let TableView::Complete(TableRows::Countries(rows)) =
@@ -1006,7 +1262,7 @@ mod tests {
         {
             rows[0].tag = b"Changed opaque tag".to_vec();
         }
-        scan.push(&frame, 102).unwrap();
+        scan.push(&frame, 102, None).unwrap();
         assert!(!Arc::ptr_eq(&indexed, &scan.countries));
         assert_eq!(
             scan.finish().trend.series["Changed opaque tag"][0].read_hour,

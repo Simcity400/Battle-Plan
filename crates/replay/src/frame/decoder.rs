@@ -6,6 +6,8 @@ use crate::{Hour, codec::invalid, rows::TableId};
 use engine::allocation;
 use std::{io, sync::LazyLock};
 
+mod resume;
+
 #[derive(Default)]
 pub struct FrameDecoder {
     current: Option<DecodedFrame>,

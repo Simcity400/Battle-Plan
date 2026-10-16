@@ -298,7 +298,7 @@ mod tests {
             + captured.fuel_awards.allocated_bytes()
             + captured.construction_ic.allocated_bytes()
             + captured.peace_settlements.allocated_bytes();
-        crate::allocation_failure_tests::with_allocations_denied(|| {
+        crate::test_support::with_allocations_denied(|| {
             let request = captured.take_observer_boundary_request(0, 41, true, false);
             assert_eq!(request.allocated_bytes(), original as u64);
             assert_eq!(captured.land_events.allocated_bytes(), 0);
@@ -440,7 +440,7 @@ mod tests {
         let lane_bytes =
             captured.operation_outcomes.allocated_bytes() + captured.politics.allocated_bytes();
         assert_eq!(lane_bytes, 0);
-        crate::allocation_failure_tests::with_allocations_denied(|| {
+        crate::test_support::with_allocations_denied(|| {
             let request = captured.take_observer_boundary_request(0, 41, true, false);
             assert_eq!(request.allocated_bytes(), (early_bytes + lane_bytes) as u64);
             assert_eq!(captured.operation_outcomes.allocated_bytes(), 0);

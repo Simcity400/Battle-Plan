@@ -1,5 +1,6 @@
 //! Passive process discovery, injection, detach and finalization.
 use crate::{
+    directories::{default_capture_directory, resolve_user_directory},
     replay_io,
     windows::{self, Event, Process},
 };
@@ -19,16 +20,9 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use windows_sys::Win32::{
-    Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW},
-    System::{
-        Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT, SetConsoleCtrlHandler},
-        Environment::ExpandEnvironmentStringsW,
-        Performance::QueryPerformanceFrequency,
-        Registry::{
-            HKEY_CURRENT_USER, RRF_NOEXPAND, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegGetValueW,
-        },
-    },
+use windows_sys::Win32::System::{
+    Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT, SetConsoleCtrlHandler},
+    Performance::QueryPerformanceFrequency,
 };
 
 /// Stop and discard requests for a capture. The command line's console
@@ -109,60 +103,8 @@ pub struct CaptureOutcome {
 /// spool already holds the campaign's hours from an earlier load.
 pub type AdmitLoad<'a> = dyn Fn(&str, bool) -> Result<(), Refusal> + 'a;
 
-/// Why a Battle Plan Recorder session does not record a load.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Refusal {
-    /// The campaign does not record automatically, and Record was not pressed for it.
-    Off,
-    /// The load belongs in another recording: its campaign's own folder, or a new file.
-    Elsewhere,
-    /// The recorder settings could not be read or updated, so neither whether
-    /// the campaign records nor its folder is known.
-    Settings,
-}
-
-impl Refusal {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Elsewhere => "elsewhere",
-            Self::Settings => "settings",
-        }
-    }
-
-    pub(crate) fn parse(text: &str) -> Option<Self> {
-        match text {
-            "off" => Some(Self::Off),
-            "elsewhere" => Some(Self::Elsewhere),
-            "settings" => Some(Self::Settings),
-            _ => None,
-        }
-    }
-}
-
-/// A load a Battle Plan Recorder session left out of its recordings.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Omission {
-    pub campaign: String,
-    /// The collector's load signal; `None` for hours whose load no clock
-    /// witness identified.
-    pub load: Option<i64>,
-    /// Hours it recorded.
-    pub hours: u64,
-    /// Why; `None` when it was never admitted (never asked about, or unidentified).
-    pub refusal: Option<Refusal>,
-}
-
-impl Omission {
-    pub(crate) fn to_json(&self) -> Value {
-        json!({
-            "campaign": self.campaign,
-            "load": self.load,
-            "hours": self.hours,
-            "reason": self.refusal.map_or("not_admitted", Refusal::as_str),
-        })
-    }
-}
+use crate::replay_io::write_json;
+pub use crate::replay_io::{Omission, Refusal};
 
 static CONSOLE: Control = Control::new();
 unsafe extern "system" fn console_control(kind: u32) -> i32 {
@@ -263,13 +205,27 @@ recorder inspect <campaign.battleplan> --characters <substring> --hour <n> --bra
 {}
 {}
 Environment: BATTLE_PLAN_WORKER_SAMPLER (comma-separated off, interval_us=<n>)
-  Forwarded verbatim to collector attach; a nonempty value requires collector feature worker_sampler.",
+  Forwarded verbatim to collector attach; a nonempty value requires collector feature worker_sampler.
+Environment: BATTLE_PLAN_MAP_EVENTS (comma-separated map event family names, or none)
+  The map event families the collector installs; every family when unset. The others record unavailable coverage.",
         crate::metrics::USAGE,
         crate::oracle::USAGE,
         crate::movement_oracle::USAGE,
         crate::sizes::USAGE,
         crate::derived::USAGE
     )
+}
+
+/// The map event families named in `families` (comma-separated; `none` for
+/// none), passed to the collector, which installs only those.
+fn map_event_config(mut config: serde_json::Value, families: &str) -> serde_json::Value {
+    let selected = families
+        .split(',')
+        .map(str::trim)
+        .filter(|family| !family.is_empty() && *family != "none")
+        .collect::<Vec<_>>();
+    config["map_events"] = json!(selected);
+    config
 }
 
 fn parse_options(command: &str, args: Vec<OsString>) -> Result<Options, String> {
@@ -310,12 +266,6 @@ fn parse_options(command: &str, args: Vec<OsString>) -> Result<Options, String> 
         }
     }
     Ok(options)
-}
-
-/// The capture root without `--out`: the recordings folder Battle Plan Recorder and
-/// Battle Plan use when none was chosen.
-pub(crate) fn default_capture_directory() -> PathBuf {
-    replay::recorder_settings::default_save_folder()
 }
 
 pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
@@ -883,6 +833,13 @@ pub(crate) fn capture(
         }
     };
     let config = worker_sampler_config(config, sampler);
+    let config = match std::env::var("BATTLE_PLAN_MAP_EVENTS").or_else(|_| std::env::var("HOI4_MAP_EVENTS")) {
+        Ok(families) => map_event_config(config, &families),
+        Err(std::env::VarError::NotPresent) => config,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err("BATTLE_PLAN_MAP_EVENTS is not valid Unicode".into());
+        }
+    };
     #[cfg(feature = "alloc-fault-injection")]
     let config = fault_config(config, alloc_fault);
     write_json(&bin.join("collector.json"), &config)?;
@@ -1943,28 +1900,6 @@ fn destruction_refusal(status: &Value) -> Option<(u64, &str)> {
     Some((refusal["site_index"].as_u64()?, refusal["reason"].as_str()?))
 }
 
-pub(crate) fn write_json(path: &Path, value: &Value) -> Result<(), String> {
-    let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    fs::write(
-        &temporary,
-        serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-    let from = windows::wide(temporary.as_os_str());
-    let to = windows::wide(path.as_os_str());
-    if unsafe {
-        MoveFileExW(
-            from.as_ptr(),
-            to.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error().to_string());
-    }
-    Ok(())
-}
-
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -2057,57 +1992,6 @@ fn finalization_lock(output: &Path) -> Result<File, String> {
             }
         }
     }
-}
-
-pub(crate) fn resolve_user_directory() -> Result<PathBuf, String> {
-    use std::os::windows::ffi::OsStringExt;
-    let key = windows::wide(OsStr::new(
-        r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
-    ));
-    let value = windows::wide(OsStr::new("Personal"));
-    let mut buffer = vec![0_u16; 32768];
-    let mut bytes = (buffer.len() * 2) as u32;
-    if unsafe {
-        RegGetValueW(
-            HKEY_CURRENT_USER,
-            key.as_ptr(),
-            value.as_ptr(),
-            RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND,
-            std::ptr::null_mut(),
-            buffer.as_mut_ptr().cast(),
-            &mut bytes,
-        )
-    } == 0
-    {
-        let mut expanded = vec![0_u16; 32768];
-        let len = unsafe {
-            ExpandEnvironmentStringsW(
-                buffer.as_ptr(),
-                expanded.as_mut_ptr(),
-                expanded.len() as u32,
-            )
-        };
-        if len > 0 && (len as usize) <= expanded.len() {
-            let path = PathBuf::from(OsString::from_wide(&expanded[..len as usize - 1]))
-                .join("Paradox Interactive")
-                .join("Hearts of Iron IV");
-            if path.is_dir() {
-                return Ok(path);
-            }
-        }
-    }
-    for variable in ["OneDrive", "USERPROFILE"] {
-        if let Some(root) = std::env::var_os(variable) {
-            let path = PathBuf::from(root)
-                .join("Documents")
-                .join("Paradox Interactive")
-                .join("Hearts of Iron IV");
-            if path.is_dir() {
-                return Ok(path);
-            }
-        }
-    }
-    Err("Paradox user directory was not found in the registry or Documents; pass --user-dir".into())
 }
 
 #[cfg(test)]

@@ -7,7 +7,8 @@ import type { CountrySelection } from '../../dashboard/model';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import type { ResourceInfo, TradeFlow, TradeFlowsReply } from '../../generated/dashboard';
 import { buildDiagram, campaignScale, coverageNote, decodeTrade, emptyMessage, flowValue, knownSpanAt, leftOutAt, measureAmount, measureRows, OTHER, resourceColours, selectFlows, selectionMessage,
-  sideRanks, tradeScope, flowCountryAt, identityCountryAt, unknownNote, unrecordedMessage, validateTradeFlowsReply, resourceName, measureNote } from './tradeData.ts';
+  sideRanks, tradeScope, flowCountryAt, identityCountryAt, unknownNote, unrecordedMessage, validateTradeFlowsReply, resourceName, measureNote, mergePreparedTrade, exactSums } from './tradeData.ts';
+import { countryTotal } from './tradeCountry.ts';
 
 const resource = (id: number, token: string): ResourceInfo => ({ id, token, ordinal: 1, name: null, icon: null });
 /** A flow from runs of [first, last, delivered raw, factories, convoys assigned, required]. */
@@ -389,4 +390,92 @@ test('five thousand native holders retain distinct histories and selected end-gr
   const chosen = selectFlows(data, { kind: 'countries', tags: [countries[4999]], membership: null, countryIds: new Set(['[4999,5000]']), between: false }, null);
   assert.deepEqual(chosen.map(each => [each.sellerIdentity, each.buyerIdentity]), [['[4998,4999]', '[4999,5000]'], ['[4999,5000]', '[0,1]']]);
   assert.equal(buildDiagram(data.flows, 'total', 0, 23, 12).total, 5000);
+});
+
+test('prepared signed prefixes retain exact small corrections after wide campaign totals and during peace', () => {
+  const native = reply(); native.flows = [flow(0, 1, 1, [])];
+  const key = JSON.stringify(['[0,1]', '[1,2]', 1]);
+  const wide = 10n ** 25n;
+  const prepared = { ...native, prefixes: { [key]: { '-1': [String(wide), '100', '200', '300', '4', '10'],
+    '59': [String(wide - 2_400_000n), '116', '220', '324', '8', '14'] } }, basis: 0, scoped: false };
+  const parsed = validateTradeFlowsReply(prepared);
+  const [recorded] = decodeTrade(parsed).flows;
+  assert.equal(measureAmount([recorded], 'total', 0, 59), -100_000n);
+  assert.equal(measureAmount([recorded], 'average', 0, 59), -600_000n);
+  assert.equal(flowValue(recorded, 'total', 0, 59), -1);
+  assert.equal(flowValue(recorded, 'average', 0, 59), -6);
+  assert.equal(flowValue(recorded, 'current', 0, 59), 0);
+});
+
+test('dense trade scale envelopes cover asynchronous peaks while exact windows retain the legacy sweep', () => {
+  const native = reply();
+  native.flows = [flow(0, 1, 1, [[0, 9, '1000000']]), flow(1, 2, 2, [[10, 19, '2000000']])];
+  const flows = decodeTrade(native).flows;
+  const truePeak = campaignScale(flows, 'current', 0, 19);
+  const dense = flows.map((flow, index) => ({ ...flow, prepared: { prefixes: {}, scoped: false, summary: { from: 0, to: 19, width: 1,
+    buckets: [{ firstHour: 0, lastHour: 19, firstValue: index ? 0 : 10, lastValue: index ? 20 : 0, lastValueHour: 10,
+      minHour: index ? 0 : 10, minValue: 0, maxHour: index ? 10 : 0, maxValue: index ? 20 : 10, firstBreak: false, hasBreak: false }] } } }));
+  assert.equal(truePeak, 20);
+  assert.ok(campaignScale(dense, 'current', 0, 19) >= truePeak);
+  assert.equal(campaignScale(dense, 'current', 0, 19), 30);
+  const exact = dense.map(flow => ({ ...flow, prepared: { ...flow.prepared, summary: { ...flow.prepared.summary,
+    runs: flow.runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour, value: run.amount, breakBefore: false })) } } }));
+  assert.equal(campaignScale(exact, 'current', 0, 19), truePeak);
+});
+
+test('point pages preserve accepted trade geometry and merge overlapping exact facts without filling gaps', () => {
+  const a = { ...reply(), exactHours: [0], summaries: {}, prefixes: {}, coverageCounts: { '0': [1, 0] as [number, number] } };
+  const b = { ...reply(), exactHours: [24], summaries: {}, prefixes: {}, coverageCounts: { '24': [25, 1] as [number, number] } };
+  a.flows[0] = flow(0, 1, 1, [[0, 47, '1000000']]);
+  b.flows[0] = flow(0, 1, 1, [[24, 47, '1000000'], [96, 100, '2000000']]);
+  a.partial = [{ firstHour: 24, lastHour: 47, deals: 2 }];
+  b.partial = [{ firstHour: 30, lastHour: 40, deals: 2 }];
+  b.known = [{ firstHour: 24, lastHour: 47 }, { firstHour: 96, lastHour: 100 }];
+  const merged = mergePreparedTrade(a, b);
+  assert.equal(merged.summaries, a.summaries, 'point summaries never replace accepted geometry');
+  assert.deepEqual(merged.exactHours, [0, 24]);
+  assert.deepEqual(merged.flows[0].firstHours, [0, 96]);
+  assert.deepEqual(merged.flows[0].lastHours, [47, 100]);
+  assert.deepEqual(merged.partial, a.partial);
+  assert.deepEqual(merged.known, a.known);
+  assert.deepEqual(merged.coverageCounts, { '0': [1, 0], '24': [25, 1] });
+  assert.doesNotThrow(() => validateTradeFlowsReply(merged));
+  assert.equal(flowValue(decodeTrade(merged).flows[0], 'current', 0, 70), 0);
+  assert.equal(a.flows[0].lastHours[0], 47, 'the accepted reply remains immutable');
+});
+
+test('progressive point pages admit new flow keys and exact aliases without replacing viewport geometry', () => {
+  const a = { ...reply(['Old', 'Seller']), flows: [flow(1, 0, 1, [[10, 10, '1000000']])], summaries: {}, cumulativePending: true };
+  const b = { ...reply(['New', 'Seller']), flows: [flow(1, 0, 1, [[11, 11, '2000000']]), flow(1, 0, 2, [[11, 11, '3000000']])], summaries: {}, cumulativePending: true };
+  a.countryIdentities = [{ tag: 'Old', runs: [{ firstHour: 10, lastHour: 12, slot: 0, countryId: 1 }] },
+    { tag: 'Seller', runs: [{ firstHour: 10, lastHour: 12, slot: 1, countryId: 2 }] }];
+  b.countryIdentities = [{ tag: 'New', runs: [{ firstHour: 11, lastHour: 11, slot: 0, countryId: 1 }] },
+    { tag: 'Seller', runs: [{ firstHour: 11, lastHour: 11, slot: 1, countryId: 2 }] }];
+  const merged = mergePreparedTrade(a, b);
+  assert.equal(merged.summaries, a.summaries);
+  assert.deepEqual(merged.countries, ['New', 'Old', 'Seller']);
+  assert.equal(merged.flows.length, 2, 'a key only found by the exact page stays in the sparse inventory');
+  assert.doesNotThrow(() => validateTradeFlowsReply(merged));
+  const data = decodeTrade(merged);
+  assert.equal(identityCountryAt(data, '[0,1]', 10)?.tag, 'Old');
+  assert.equal(identityCountryAt(data, '[0,1]', 11)?.tag, 'New');
+  assert.equal(identityCountryAt(data, '[0,1]', 12)?.tag, 'Old', 'unsampled hours keep rough provenance');
+  assert.equal(measureAmount(data.flows, 'current', 10, 11), 5_000_000n);
+});
+
+test('progressive native trade amounts stay exact while integrals and first/last dates remain pending', () => {
+  const native = reply(); native.flows = [flow(0, 1, 1, [[59, 59, '1234567', 3, 4, 5]])];
+  const key = JSON.stringify(['[0,1]', '[1,2]', 1]);
+  const summary = { from: 0, to: 59, width: 1, runs: [{ firstHour: 0, lastHour: 59, value: 10, breakBefore: true }],
+    buckets: [{ firstHour: 0, lastHour: 59, firstValue: 10, lastValue: 10, lastValueHour: 0, minHour: 0, minValue: 10, maxHour: 0, maxValue: 10, firstBreak: true, hasBreak: false }],
+    approximate: [{ firstHour: 0, lastHour: 59 }] };
+  const progressive = { ...native, summaries: { [key]: summary }, cumulativePending: true };
+  const data = decodeTrade(validateTradeFlowsReply(progressive));
+  assert.equal(data.flows[0].prepared?.summary, summary, 'summaries do not require prepared prefixes');
+  assert.equal(measureAmount(data.flows, 'current', 0, 59), 1_234_567n);
+  assert.equal(measureRows(data.flows, 'current', 0, 59, 5)[1].value, '3');
+  assert.throws(() => exactSums(data.flows, 0, 59), /still being prepared/);
+  assert.equal(countryTotal(data.flows, 'total', 0, 59, native.known), null);
+  assert.match(measureRows(data.flows, 'average', 0, 59, 5)[0].label, /still being prepared/);
+  assert.equal(campaignScale(data.flows, 'current', 0, 59), 10, 'rough runs use the conservative bucket envelope');
 });

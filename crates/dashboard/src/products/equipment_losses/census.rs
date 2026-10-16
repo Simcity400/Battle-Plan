@@ -1,6 +1,7 @@
 //! Country counts from the collector's existing authenticated division walk.
 
 use super::*;
+#[cfg(test)]
 use replay::frame::ViewIdentity;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -29,12 +30,14 @@ impl Membership {
 }
 
 #[derive(Default)]
+#[cfg(test)]
 pub(super) struct Census {
     mapping: Option<(ViewIdentity, u32)>,
     counts: Option<ViewIdentity>,
     membership: Option<Membership>,
 }
 
+#[cfg(test)]
 impl Census {
     pub(super) fn advance(
         &mut self,
@@ -62,23 +65,44 @@ impl Census {
         {
             return self.membership;
         }
-        self.membership = None;
-        let mut membership = Membership::default();
-        let mut found = false;
-        for row in rows {
-            match link_slot(links, row.country) {
-                Some(owner) if owner == slot => {
-                    found = true;
-                    membership.grouped = membership.grouped.checked_add(row.grouped)?;
-                    membership.ungrouped = membership.ungrouped.checked_add(row.ungrouped)?;
-                }
-                None if row.grouped != 0 || row.ungrouped != 0 => membership.unresolved = true,
-                _ => {}
-            }
-        }
+        self.membership = count_memberships(rows, links).get(&slot).copied().flatten();
         self.mapping = Some((links_view.identity(), slot));
         self.counts = Some(decoded.tables[TableId::DivisionCensus.index()].identity());
-        self.membership = found.then_some(membership);
         self.membership
     }
+}
+
+/// Resolve every country's division counts once for the prepared frame.
+pub(super) fn memberships(decoded: &DecodedFrame) -> Option<BTreeMap<u32, Option<Membership>>> {
+    Some(count_memberships(
+        decoded.complete::<tables::DivisionCensus>().ok()?,
+        decoded.complete::<tables::CountryLinks>().ok()?,
+    ))
+}
+fn count_memberships(
+    rows: &[replay::rows::DivisionCensusRow],
+    links: &[CountryLinkRow],
+) -> BTreeMap<u32, Option<Membership>> {
+    let mut values: BTreeMap<u32, Option<Membership>> = BTreeMap::new();
+    let mut unresolved = false;
+    for row in rows {
+        match link_slot(links, row.country) {
+            Some(slot) => {
+                let membership = values.entry(slot).or_insert(Some(Membership::default()));
+                *membership = membership.and_then(|mut value| {
+                    value.grouped = value.grouped.checked_add(row.grouped)?;
+                    value.ungrouped = value.ungrouped.checked_add(row.ungrouped)?;
+                    Some(value)
+                });
+            }
+            None if row.grouped != 0 || row.ungrouped != 0 => unresolved = true,
+            _ => {}
+        }
+    }
+    if unresolved {
+        for value in values.values_mut().flatten() {
+            value.unresolved = true;
+        }
+    }
+    values
 }

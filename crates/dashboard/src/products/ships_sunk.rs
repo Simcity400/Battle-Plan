@@ -13,7 +13,7 @@ use crate::{
     scripted_text,
     transport::json_len,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -25,13 +25,14 @@ use std::{
 use ts_rs::TS;
 
 pub(crate) mod battle_titles;
+pub(crate) mod prepared;
 pub use battle_titles::ShipsSunkBattleTitles;
 
 pub struct ShipsSunk;
 
 const ICON_EDGE: u32 = 48;
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ShipClassInfo {
     pub token: u32,
@@ -42,7 +43,7 @@ pub struct ShipClassInfo {
     pub icon: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum ShipSinkingCause {
     Hostile,
@@ -51,7 +52,7 @@ pub enum ShipSinkingCause {
     Cause,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ShipsSunkRow {
     pub sink_hour: i32,
@@ -70,7 +71,7 @@ pub struct ShipsSunkRow {
     pub assisted_kill: bool,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ShipsSunkReply {
     pub branch_id: String,
@@ -96,10 +97,28 @@ pub(crate) struct Named {
     recorded_name_indices: BTreeMap<Vec<u8>, Option<u32>>,
     places: BTreeMap<u32, String>,
     stored_names: BTreeMap<Vec<u8>, Option<String>>,
+    stored_refusals: Refusals,
+    field_refusals: Refusals,
+    refusal_start: usize,
     warnings: Vec<String>,
 }
 
 impl Named {
+    fn refuse_content(&mut self, reason: &str) {
+        self.warnings.push(format!("Ships sunk content names, artwork, retention and the language of stored ship/cause names are unavailable: {reason}; ship-history completeness is unknown."));
+    }
+
+    fn add_stored_refusals(&mut self, stored: &Refusals) {
+        let suffix = self.warnings
+            [self.refusal_start + self.field_refusals.lines("Ships sunk fields").len()..]
+            .to_vec();
+        self.warnings.truncate(self.refusal_start);
+        self.field_refusals.merge(stored);
+        self.warnings
+            .extend(self.field_refusals.lines("Ships sunk fields"));
+        self.warnings.extend(suffix);
+    }
+
     pub(crate) fn ship(&self, ship: &sinkings::ShipEvent) -> (Option<String>, Option<String>) {
         let name = self
             .stored_names
@@ -121,6 +140,7 @@ impl Named {
             });
         (name, class)
     }
+    #[cfg(test)]
     pub(crate) fn warnings(&self) -> &[String] {
         &self.warnings
     }
@@ -151,26 +171,91 @@ fn text(bytes: &[u8], what: &str, refused: &mut Refusals) -> Option<String> {
     }
 }
 
-fn named(
+pub(crate) type PreparedContent = Result<(Arc<Catalogue>, Arc<NameContent>), String>;
+
+/// Resolve fixed naming and NNavy outcomes once for the recorded content binding.
+/// The shared policy retains failures inside these operands as well as successes.
+pub(crate) fn prepared_content(source: &Source, context: &LoadContext) -> PreparedContent {
+    let cat = context
+        .content()
+        .and_then(|options| catalogue::catalogue(source, options))
+        .map_err(|error| error.to_string())?;
+    let naming = cat
+        .content
+        .layers
+        .derived::<catalogue::CachedResult<NameContent>>()
+        .get_or_init(|| Ok(NameContent::read(&cat)))
+        .map_err(|error| error.to_string())?;
+    battle_titles::configure_geography(source, &cat, &naming);
+    Ok((cat, naming))
+}
+
+pub(crate) struct NameContent {
+    units: Result<installed_content::unit_leader::SubUnits, String>,
+    regions: Result<installed_content::regions::StrategicRegions, String>,
+    pub(crate) retention: sinkings::RetentionDefines,
+    memberships: BTreeMap<u32, Vec<u32>>,
+}
+impl NameContent {
+    pub(crate) fn read(cat: &Catalogue) -> Self {
+        #[cfg(test)]
+        sinkings::work::WORK.with(|work| {
+            let mut work = work.borrow_mut();
+            work.units += 1;
+            work.regions += 1;
+        });
+        let units =
+            installed_content::unit_leader::sub_units(&cat.content.layers).map_err(|e| e.to_string());
+        let regions = installed_content::regions::read(&cat.content.layers).map_err(|e| e.to_string());
+        let mut memberships = BTreeMap::<u32, Vec<u32>>::new();
+        if let Ok(regions) = &regions {
+            for (&id, region) in &regions.regions {
+                let mut seen = BTreeSet::new();
+                for &province in &region.provinces {
+                    if seen.insert(province) {
+                        memberships.entry(province).or_default().push(id);
+                    }
+                }
+            }
+        }
+        Self {
+            units,
+            regions,
+            memberships,
+            retention: sinkings::RetentionDefines::read(Some(cat)),
+        }
+    }
+}
+
+pub(crate) fn named(
     scan: &sinkings::Scanned,
     cat: Option<&Catalogue>,
     flag: &AtomicBool,
 ) -> io::Result<Named> {
+    let content = cat.map(NameContent::read);
+    named_with(scan, &scan.ships, cat, content.as_ref(), None, flag)
+}
+pub(crate) fn named_with(
+    scan: &sinkings::Scanned,
+    ships: &[sinkings::ShipEvent],
+    cat: Option<&Catalogue>,
+    content: Option<&NameContent>,
+    retention: Option<&sinkings::Retention>,
+    flag: &AtomicBool,
+) -> io::Result<Named> {
+    #[cfg(test)]
+    sinkings::work::WORK.with(|work| work.borrow_mut().names += ships.len());
     let mut out = Named::default();
     let mut refused = Refusals::default();
-    let tokens: BTreeSet<_> = scan
-        .ships
-        .iter()
-        .map(|ship| ship.entry.class_token)
-        .collect();
-    let units = cat.and_then(|cat| match installed_content::unit_leader::sub_units(&cat.content.layers) {
+    let tokens: BTreeSet<_> = ships.iter().map(|ship| ship.entry.class_token).collect();
+    let units = content.and_then(|content| match &content.units {
         Ok(units) => Some(units),
         Err(reason) => {
             out.warnings.push(format!("Ship class content is unavailable: {reason}; classes show their recorded name or token without artwork."));
             None
         }
     });
-    if let Some(units) = &units {
+    if let Some(units) = units {
         out.warnings.extend(units.warnings().iter().cloned());
     }
     for token in tokens {
@@ -178,7 +263,7 @@ fn named(
         let mut key = scan.tokens.get(&token).cloned();
         let mut name = None;
         let mut icon = None;
-        if let (Some(cat), Some(units), Some(literal)) = (cat, &units, &key) {
+        if let (Some(cat), Some(units), Some(literal)) = (cat, units, &key) {
             // Resolve the runtime token against the unit database;
             // matching preserves its first registered spelling.
             match units.token_name(&installed_content::tokens::Token::c_str(literal.as_bytes())) {
@@ -236,7 +321,7 @@ fn named(
         });
     }
     let mut indices = BTreeMap::<String, u32>::new();
-    for ship in &scan.ships {
+    for ship in ships {
         let bytes = &ship.entry.class_name;
         if out.recorded_name_indices.contains_key(bytes) {
             continue;
@@ -253,39 +338,34 @@ fn named(
         out.recorded_name_indices.insert(bytes.clone(), index);
     }
     if let Some(cat) = cat {
-        out.warnings
-            .extend(sinkings::retention(scan, Some(cat)).warnings);
-        let regions = match installed_content::regions::read(&cat.content.layers) {
+        let content = content.expect("configured naming content");
+        out.warnings.extend(retention.map_or_else(
+            || content.retention.evaluate(scan).warnings,
+            |retention| retention.warnings.clone(),
+        ));
+        let empty_regions = installed_content::regions::StrategicRegions::default();
+        let regions = match &content.regions {
             Ok(regions) => regions,
             Err(reason) => {
                 out.warnings.push(format!(
                     "Ship sinking places are unavailable: {reason}; no place name is invented."
                 ));
-                Default::default()
+                &empty_regions
             }
         };
-        out.warnings.extend(regions.notes);
-        let wanted: BTreeSet<_> = scan
-            .ships
+        out.warnings.extend(regions.notes.iter().cloned());
+        let wanted: BTreeSet<_> = ships
             .iter()
             .filter(|ship| ship.entry.province_present != 0)
             .map(|ship| ship.entry.province)
             .collect();
-        let mut memberships = BTreeMap::<u32, Vec<&installed_content::regions::StrategicRegion>>::new();
-        for region in regions.regions.values() {
-            let mut seen = BTreeSet::new();
-            for province in &region.provinces {
-                if wanted.contains(province) && seen.insert(*province) {
-                    memberships.entry(*province).or_default().push(region);
-                }
-            }
-        }
         for province in wanted {
             cancelled(flag)?;
-            match memberships.get(&province).map(Vec::as_slice) {
+            match content.memberships.get(&province).map(Vec::as_slice) {
                 // Strategic-region names use the content template's name key;
                 // no vanilla region ID/key is assumed.
                 Some([region]) => {
+                    let region = &regions.regions[region];
                     if let Some(name) = cat.localised(&region.name_key, View::Plain) {
                         out.places.insert(province, name);
                     } else {
@@ -305,7 +385,8 @@ fn named(
         // Ship names are copied without their keys; cause records also store
         // translated cause text. The recording-language guard applies to
         // all these localised-or-literal fields.
-        for ship in &scan.ships {
+        let mut stored_refused = Refusals::default();
+        for ship in ships {
             for (bytes, what) in [
                 (&ship.entry.ship_name, "ship name"),
                 (
@@ -326,19 +407,23 @@ fn named(
                     bytes,
                     what,
                 ) {
-                    Ok(value) => text(value.as_bytes(), what, &mut refused),
+                    Ok(value) => text(value.as_bytes(), what, &mut stored_refused),
                     Err(reason) => {
-                        refused.note(reason, what);
+                        stored_refused.note(reason, what);
                         None
                     }
                 };
                 out.stored_names.insert(bytes.clone(), value);
             }
         }
+        refused.merge(&stored_refused);
+        out.stored_refusals = stored_refused;
         out.warnings
             .extend(cat.verification.iter().chain(&cat.warnings).cloned());
         out.warnings.extend(cat.refusal_lines());
     }
+    out.field_refusals = refused.clone();
+    out.refusal_start = out.warnings.len();
     out.warnings.extend(refused.lines("Ships sunk fields"));
     Ok(out)
 }
@@ -485,7 +570,7 @@ pub(crate) fn cached_names(
         }
         Err(reason) => {
             let mut names = named(scan, None, flag)?;
-            names.warnings.push(format!("Ships sunk content names, artwork, retention and the language of stored ship/cause names are unavailable: {reason}; ship-history completeness is unknown."));
+            names.refuse_content(&reason.to_string());
             Ok(Arc::new(names))
         }
     }
@@ -498,13 +583,15 @@ impl Product for ShipsSunk {
     type Reply = ShipsSunkReply;
 
     fn types() -> Vec<String> {
-        vec![
+        let mut types = vec![
             BranchParams::decl(),
             ShipClassInfo::decl(),
             ShipSinkingCause::decl(),
             ShipsSunkRow::decl(),
             ShipsSunkReply::decl(),
-        ]
+        ];
+        types.extend(prepared::types());
+        types
     }
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.validate()
@@ -527,3 +614,21 @@ impl Product for ShipsSunk {
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn prepared_names(
+    scan: &sinkings::Scanned,
+    ships: &[sinkings::ShipEvent],
+    cat: Result<&Catalogue, &str>,
+    content: Option<&NameContent>,
+    retention: Option<&sinkings::Retention>,
+    flag: &AtomicBool,
+) -> io::Result<Named> {
+    match cat {
+        Ok(cat) => named_with(scan, ships, Some(cat), content, retention, flag),
+        Err(reason) => {
+            let mut names = named_with(scan, ships, None, None, None, flag)?;
+            names.refuse_content(reason);
+            Ok(names)
+        }
+    }
+}

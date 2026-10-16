@@ -70,14 +70,11 @@
 use super::{CountryParams, LoadContext, Product};
 use crate::{
     Source,
-    metadata::{
-        IdentityTrack, TaggedCountry, link_slot, slot_read, tagged_countries, validate_campaign,
-    },
+    metadata::{IdentityTrack, link_slot, slot_read, tagged_countries, validate_campaign},
 };
 use engine::ccountry_fuel_status::{HISTORY_RING_ENTRIES, MODIFIER_SCALE, QUANTITY_SCALE};
 use replay::{
     cadence,
-    container::Replay,
     frame::FrameDecoder,
     rows::{CountryFuelRow, FuelAwardDay, TableId, tables},
 };
@@ -85,15 +82,17 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     io,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
 
 pub struct CountryFuel;
+#[cfg(test)]
+mod oracle;
+#[cfg(test)]
+use oracle::{Cache, scan, scan_branch, scanned};
 mod detail;
+pub(crate) mod prepared;
 pub use detail::{CountryFuelAwardHistory, FuelAwardHistoryReply};
 mod demand;
 pub use demand::{
@@ -170,7 +169,7 @@ pub struct FuelAwards {
 }
 
 /// [`FuelAwardTotals`] as exact integers; only replies format them.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct AwardSums {
     gains: [i128; 4],
     own_gain: i128,
@@ -414,7 +413,7 @@ pub struct FuelRead {
 }
 
 /// A [`FuelRead`] as exact integers; only replies format them.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct RawRead {
     country: u32,
     country_instance: Option<u32>,
@@ -431,7 +430,7 @@ struct RawRead {
 }
 
 /// A [`FuelDay`]: the ring sums, or the applied updates that supersede them.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 enum RawDay {
     Ring {
         gained: i64,
@@ -486,7 +485,7 @@ impl From<&RawRead> for FuelRead {
 }
 
 /// Each distinct refusal text once, shared by every read that repeats it.
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Reasons(BTreeSet<Arc<str>>);
 
 impl Reasons {
@@ -629,24 +628,28 @@ impl Product for CountryFuelAwards {
             awards: FuelAwards { totals, recipients },
             warnings,
         };
-        if crate::transport::json_len(&reply, super::MAX_PRODUCT_REPLY_BYTES).is_none() {
-            return Err(crate::invalid(
-                "Fuel award reply exceeds the product byte budget",
-            ));
-        }
+        super::check_reply_budget(&reply)
+            .map_err(|_| crate::invalid("Fuel award reply exceeds the product byte budget"))?;
         Ok(reply)
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct ScannedFuel {
     reads: Vec<RawRead>,
     consumption: Vec<demand::RawConsumption>,
+    omitted_left_out: [usize; 3],
+    has_omitted_reads: bool,
 }
 
 impl ScannedFuel {
     fn left_out(&self, reason: DayLeftOut) -> usize {
-        self.reads
+        self.omitted_left_out[match reason {
+            DayLeftOut::Overlaps => 0,
+            DayLeftOut::NotUpdated => 1,
+            DayLeftOut::OwnershipNotRecorded => 2,
+        }] + self
+            .reads
             .iter()
             .filter(|read| read.left_out == Some(reason))
             .count()
@@ -660,20 +663,55 @@ type Identity = (u32, u32);
 /// not listed) and whether it owned a state; none when the tables do not tell.
 type Holding = Option<(Option<Identity>, bool)>;
 
+fn resolved_slots(links: &[replay::rows::CountryLinkRow]) -> std::collections::HashMap<u32, u32> {
+    links
+        .iter()
+        .filter_map(|row| link_slot(links, row.id).map(|slot| (row.id, slot)))
+        .collect()
+}
+
+fn tagged_identities<'a>(
+    countries: impl Iterator<Item = (u32, u32, &'a [u8])>,
+    slots: &std::collections::HashMap<u32, u32>,
+) -> BTreeMap<&'a [u8], Option<Identity>> {
+    let mut tagged = BTreeMap::new();
+    for (id, canonical_slot, tag) in countries {
+        let identity = tagged.entry(tag).or_insert(None);
+        if identity.is_none() && slots.get(&id) == Some(&canonical_slot) {
+            *identity = Some((canonical_slot, id));
+        }
+    }
+    tagged
+}
+
+fn fuel_by_slot<T>(
+    rows: &[T],
+    raw: impl Fn(&T) -> u32,
+    slot: impl Fn(u32) -> Option<u32>,
+) -> BTreeMap<u32, &T> {
+    let mut result = BTreeMap::new();
+    for row in rows {
+        if let Some(slot) = slot(raw(row)) {
+            result.entry(slot).or_insert(row);
+        }
+    }
+    result
+}
+
 /// What an hour's complete Countries, CountryLinks and States say of the tag's
 /// country. Only resolved links are evidence: a tag no country holds is another
 /// country (none), and a resolved country owning no state is stateless, but a
 /// tag whose country the links cannot resolve, or a country owning no state whose
 /// owner some state names by a link that cannot be resolved, cannot tell.
-fn holding(lookup: TaggedCountry<'_>, owners: &(BTreeSet<u32>, bool)) -> Holding {
-    match lookup {
-        TaggedCountry::Absent => Some((None, false)),
-        TaggedCountry::Unresolved => None,
-        TaggedCountry::Found(country, slot) => {
+fn holding(identity: Option<Identity>, present: bool, owners: &(BTreeSet<u32>, bool)) -> Holding {
+    match identity {
+        None if !present => Some((None, false)),
+        None => None,
+        Some((slot, id)) => {
             if owners.0.contains(&slot) {
-                Some((Some((slot, country.id)), true))
+                Some((Some((slot, id)), true))
             } else {
-                (!owners.1).then_some((Some((slot, country.id)), false))
+                (!owners.1).then_some((Some((slot, id)), false))
             }
         }
     }
@@ -760,7 +798,7 @@ fn read_of(
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct CountryScan {
     result: ScannedFuel,
     track: IdentityTrack,
@@ -769,6 +807,8 @@ struct CountryScan {
     instance: Option<u32>,
     continuity: Option<i32>,
     recent: VecDeque<(i32, Holding)>,
+    #[serde(skip)]
+    identity: Option<Identity>,
 }
 
 #[derive(Default)]
@@ -776,6 +816,7 @@ struct ScannedBranch {
     countries: BTreeMap<String, Arc<ScannedFuel>>,
     actor_aliases: BTreeMap<(String, u32), BTreeSet<String>>,
     unnamed: BTreeSet<u32>,
+    actor_conflicts: BTreeSet<(String, u32)>,
     #[cfg(test)]
     decoded_frames: usize,
     #[cfg(test)]
@@ -791,252 +832,352 @@ impl ScannedBranch {
     }
 }
 
-/// One branch decode and one ownership walk per frame, shared by every country.
-fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<ScannedBranch> {
-    let selected = [
-        TableId::Campaign,
-        TableId::Countries,
-        TableId::CountryLinks,
-        TableId::States,
-        TableId::CountryFuel,
-        TableId::FuelDemandParts,
-    ];
-    let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Fuel request cancelled");
-    let mut result = ScannedBranch::default();
-    let mut countries: BTreeMap<String, CountryScan> = BTreeMap::new();
-    // A newly encountered tag was absent at previous complete samples; missing
-    // tables still cannot tell. Seed its governing day with that exact evidence.
-    let mut prior: VecDeque<(i32, Holding)> = VecDeque::new();
-    let mut reasons = Reasons::default();
-    crate::blocks::scan_blocks(
-        replay,
-        replay.index.iter().filter(|block| block.branch == branch),
-        &selected,
-        cancelled,
-        |blocks| {
-            for (_, frames) in blocks {
-                if cancelled.load(Ordering::Acquire) {
-                    return Err(cancel());
+/// One all-country observation owns the ownership walk and supplying-read rules.
+#[derive(Default, Serialize, Deserialize)]
+struct Scan {
+    countries: BTreeMap<String, CountryScan>,
+    active: BTreeSet<String>,
+    #[serde(skip)]
+    country_keys: Option<crate::metadata::CountryKeys>,
+    #[serde(skip)]
+    slots: Option<std::collections::HashMap<u32, u32>>,
+    #[serde(skip)]
+    state_owners: Option<Vec<u32>>,
+    #[serde(skip)]
+    owner_slots: Option<(BTreeSet<u32>, bool)>,
+    #[serde(skip)]
+    updated: BTreeSet<String>,
+    // Newly observed tags inherit exactly the preceding absent/unknown evidence.
+    prior: VecDeque<(i32, Holding)>,
+    reasons: Reasons,
+    unnamed: BTreeSet<u32>,
+    #[cfg(test)]
+    decoded_frames: usize,
+    #[cfg(test)]
+    ownership_rows: usize,
+    #[cfg(test)]
+    #[serde(skip)]
+    work: crate::prepared::observer_tests::Work,
+}
+impl Scan {
+    fn observe_changes(
+        &mut self,
+        decoded: &replay::frame::DecodedFrame,
+        format: replay::format::FormatVersion,
+        changes: &crate::prepared::frame_changes::FrameChanges,
+        cancelled: &AtomicBool,
+    ) -> io::Result<bool> {
+        self.observe_inner(decoded, format, Some(changes), cancelled)
+    }
+    fn observe_inner(
+        &mut self,
+        decoded: &replay::frame::DecodedFrame,
+        format: replay::format::FormatVersion,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<bool> {
+        crate::metadata::check_cancel(cancelled)?;
+        self.updated.clear();
+        #[cfg(test)]
+        {
+            self.decoded_frames += 1;
+        }
+        let hour = decoded.hour;
+        let countries = decoded.complete::<tables::Countries>().ok();
+        if self.slots.is_none()
+            || changes.is_none_or(|changes| changes.rows_changed[TableId::CountryLinks.index()])
+        {
+            self.slots = decoded.complete::<tables::CountryLinks>().ok().map(|rows| {
+                #[cfg(test)]
+                {
+                    self.work.row_visits += rows.len();
                 }
-                let mut decoder = FrameDecoder::for_tables(&selected);
-                let Ok(frames) = frames else {
-                    continue;
-                };
-                for frame in frames {
-                    if cancelled.load(Ordering::Acquire) {
-                        return Err(cancel());
-                    }
-                    let Ok(decoded) = decoder.advance(&frame) else {
-                        break;
-                    };
-                    if validate_campaign(decoded, replay).is_err() {
-                        break;
-                    }
-                    #[cfg(test)]
-                    {
-                        result.decoded_frames += 1;
-                    }
-                    let hour = frame.hour;
-                    let tables = decoded
-                        .complete::<tables::Countries>()
-                        .ok()
-                        .zip(decoded.complete::<tables::CountryLinks>().ok());
-                    let tagged =
-                        tables.map(|(countries, links)| tagged_countries(countries, links));
-                    let owners = tables.zip(decoded.complete::<tables::States>().ok()).map(
-                        |((_, links), states)| {
-                            let mut slots = BTreeSet::new();
-                            let mut unresolved = false;
-                            for state in states {
-                                #[cfg(test)]
-                                {
-                                    result.ownership_rows += 1;
-                                }
-                                match link_slot(links, state.owner) {
-                                    Some(slot) => {
-                                        slots.insert(slot);
-                                    }
-                                    None => unresolved = true,
-                                }
-                            }
-                            (slots, unresolved)
-                        },
-                    );
-                    while prior
-                        .front()
-                        .is_some_and(|(seen, _)| hour.saturating_sub(*seen) > DAY_HOURS)
-                    {
-                        prior.pop_front();
-                    }
-                    if let Some(tagged) = &tagged {
-                        for (tag, lookup) in tagged {
-                            match std::str::from_utf8(tag) {
-                                Ok(tag) => {
-                                    countries.entry(tag.to_owned()).or_insert_with(|| {
-                                        CountryScan {
-                                            recent: prior.clone(),
-                                            ..Default::default()
-                                        }
-                                    });
-                                }
-                                Err(_) => {
-                                    if let Some((country, _)) = lookup.found() {
-                                        result.unnamed.insert(country.id);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    let fuel = decoded.complete::<tables::CountryFuel>().ok();
-                    let read =
-                        slot_read(replay.format, &decoded.metrics, TableId::CountryFuel, hour);
-                    // A read's packs with their lists, which later formats record apart.
-                    let assembled = match fuel {
-                        Some(rows) if read => Some(replay::rows::with_demand_parts(
-                            rows,
-                            &decoded.tables[TableId::FuelDemandParts.index()],
-                            replay.format,
-                        )?),
-                        _ => None,
-                    };
-                    let mut by_slot = BTreeMap::new();
-                    if read
-                        && let Some((_, links)) = tables
-                        && let Some(rows) = &assembled
-                    {
-                        for row in rows {
-                            if let Some(slot) = link_slot(links, row.country) {
-                                by_slot.entry(slot).or_insert(row);
-                            }
-                        }
-                    }
-                    for (tag, country) in &mut countries {
-                        let lookup = tagged.as_ref().map(|tagged| {
-                            tagged
-                                .get(tag.as_bytes())
-                                .copied()
-                                .unwrap_or(TaggedCountry::Absent)
-                        });
-                        let identity = lookup
-                            .and_then(TaggedCountry::found)
-                            .map(|(country, slot)| (slot, country.id));
-                        let seen = lookup
-                            .zip(owners.as_ref())
-                            .and_then(|(lookup, owners)| holding(lookup, owners));
-                        while country
-                            .recent
-                            .front()
-                            .is_some_and(|(seen, _)| hour.saturating_sub(*seen) > DAY_HOURS)
-                        {
-                            country.recent.pop_front();
-                        }
-                        country.recent.push_back((hour, seen));
-                        let continuous = country.track.step(identity, hour);
-                        country.open &= continuous;
-                        country.demand_open &= continuous;
-                        let Some(identity) = identity.filter(|_| fuel.is_some()) else {
-                            country.open = false;
-                            country.demand_open = false;
-                            continue;
-                        };
-                        if !read {
-                            if country.open
-                                && let Some(read) = country.result.reads.last_mut()
+                resolved_slots(rows)
+            });
+        }
+        let countries_changed = self.country_keys.is_none()
+            || changes.is_none_or(|changes| {
+                changes.rows_changed[TableId::Countries.index()]
+                    && countries.is_none_or(|countries| {
+                        self.country_keys.as_ref().is_none_or(|keys| {
+                            #[cfg(test)]
+                            let before = keys.row_visits();
+                            let same = keys.same(countries);
+                            #[cfg(test)]
                             {
-                                read.last_hour = hour;
+                                self.work.row_visits += keys.row_visits() - before;
                             }
-                            if country.demand_open
-                                && let Some(read) = country.result.consumption.last_mut()
-                            {
-                                read.last_hour = hour;
-                            }
-                            continue;
-                        }
-                        let Some(row) = by_slot.get(&identity.0) else {
-                            country.open = false;
-                            country.demand_open = false;
-                            continue;
-                        };
-                        let instance = match row.country_instance {
-                            replay::rows::Recorded::Value(value) => value,
-                            _ => None,
-                        };
-                        let continuity = match &row.award_day {
-                            replay::rows::Recorded::Value(day) => day.continuity_start_hour,
-                            _ => None,
-                        };
-                        if country.instance != instance {
-                            country.demand_open = false;
-                        }
-                        if country.instance != instance || country.continuity != continuity {
-                            country.open = false;
-                        }
-                        country.instance = instance;
-                        country.continuity = continuity;
-                        let left_out = day_left_out(&country.recent, hour, identity);
-                        country.result.reads.push(read_of(
-                            row,
-                            hour,
-                            !country.open,
-                            left_out,
-                            &mut reasons,
-                        ));
-                        let segment = if country.demand_open {
-                            country
-                                .result
-                                .consumption
-                                .last()
-                                .map(|read| read.segment_start_hour)
-                                .unwrap_or(hour)
-                        } else {
-                            hour
-                        };
-                        country.result.consumption.push(demand::summary_of(
-                            row,
-                            hour,
-                            segment,
-                            !country.demand_open,
-                            &mut reasons,
-                        ));
-                        country.demand_open = true;
-                        country.open = true;
-                    }
-                    prior.push_back((hour, owners.as_ref().map(|_| (None, false))));
+                            !same
+                        })
+                    })
+            });
+        if countries_changed {
+            self.country_keys = countries.map(|countries| {
+                #[cfg(test)]
+                {
+                    self.work.row_visits += countries.len();
                 }
-            }
-            Ok(())
-        },
-    )?;
-    for (tag, mut country) in countries {
-        for read in &country.result.reads {
-            if let Some(instance) = read.country_instance {
-                result
-                    .actor_aliases
-                    .entry((read.country.to_string(), instance))
-                    .or_default()
-                    .insert(tag.clone());
+                crate::metadata::CountryKeys::read(countries)
+            });
+        }
+        let identities_changed = countries_changed
+            || self.country_keys.is_none()
+            || changes.is_none_or(|changes| changes.rows_changed[TableId::CountryLinks.index()]);
+        let ownership_changed = identities_changed
+            || changes.is_none_or(|changes| changes.rows_changed[TableId::States.index()]);
+        let tagged = identities_changed
+            .then(|| {
+                self.country_keys
+                    .as_ref()
+                    .zip(self.slots.as_ref())
+                    .map(|(countries, slots)| tagged_identities(countries.iter(), slots))
+            })
+            .flatten();
+        let states_changed =
+            changes.is_none_or(|changes| changes.rows_changed[TableId::States.index()]);
+        if states_changed {
+            self.state_owners = decoded.complete::<tables::States>().ok().map(|states| {
+                #[cfg(test)]
+                {
+                    self.ownership_rows += states.len();
+                    self.work.row_visits += states.len();
+                }
+                states.iter().map(|state| state.owner).collect()
+            });
+        }
+        if states_changed
+            || changes.is_none_or(|changes| changes.rows_changed[TableId::CountryLinks.index()])
+        {
+            self.owner_slots =
+                self.state_owners
+                    .as_ref()
+                    .zip(self.slots.as_ref())
+                    .map(|(states, links)| {
+                        let mut slots = BTreeSet::new();
+                        let mut unresolved = false;
+                        for owner in states {
+                            match links.get(owner).copied() {
+                                Some(slot) => {
+                                    slots.insert(slot);
+                                }
+                                None => unresolved = true,
+                            }
+                        }
+                        (slots, unresolved)
+                    });
+        }
+        let owners = self
+            .owner_slots
+            .as_ref()
+            .filter(|_| self.country_keys.is_some() && self.slots.is_some());
+        while self
+            .prior
+            .front()
+            .is_some_and(|(seen, _)| hour.saturating_sub(*seen) > DAY_HOURS)
+        {
+            self.prior.pop_front();
+        }
+        if let Some(tagged) = &tagged {
+            for (tag, lookup) in tagged {
+                match std::str::from_utf8(tag) {
+                    Ok(tag) => {
+                        if !self.countries.contains_key(tag) {
+                            self.updated.insert(tag.to_owned());
+                        }
+                        self.countries
+                            .entry(tag.to_owned())
+                            .or_insert_with(|| CountryScan {
+                                recent: self.prior.clone(),
+                                ..Default::default()
+                            });
+                    }
+                    Err(_) => {
+                        if let Some((_, id)) = lookup {
+                            self.unnamed.insert(*id);
+                        }
+                    }
+                }
             }
         }
-        keep_days(replay.format, &mut country.result.reads);
-        result.countries.insert(tag, Arc::new(country.result));
+        let mut removed = Vec::new();
+        if identities_changed {
+            let mut active = BTreeSet::new();
+            if let Some(tagged) = &tagged {
+                for (tag, lookup) in tagged {
+                    if let Ok(tag) = std::str::from_utf8(tag) {
+                        active.insert(tag.to_owned());
+                        self.countries.get_mut(tag).unwrap().identity = *lookup;
+                    }
+                }
+            }
+            removed.extend(self.active.difference(&active).cloned());
+            for tag in &removed {
+                self.countries.get_mut(tag).unwrap().identity = None;
+            }
+            self.active = active;
+        }
+        let fuel = decoded.complete::<tables::CountryFuel>().ok();
+        let read = changes.map_or_else(
+            || slot_read(format, &decoded.metrics, TableId::CountryFuel, hour),
+            |changes| changes.slot_read[TableId::CountryFuel.index()],
+        );
+        // A read's packs with their lists, which later formats record apart.
+        let assembled = match fuel {
+            Some(rows) if read => Some(replay::rows::with_demand_parts(
+                rows,
+                &decoded.tables[TableId::FuelDemandParts.index()],
+                format,
+            )?),
+            _ => None,
+        };
+        let by_slot = if self.country_keys.is_some()
+            && self.slots.is_some()
+            && let Some(rows) = &assembled
+        {
+            #[cfg(test)]
+            {
+                self.work.row_visits += rows.len();
+            }
+            fuel_by_slot(
+                rows,
+                |row| row.country,
+                |raw| {
+                    self.slots
+                        .as_ref()
+                        .and_then(|slots| slots.get(&raw))
+                        .copied()
+                },
+            )
+        } else {
+            BTreeMap::new()
+        };
+        for tag in self.active.iter().chain(&removed) {
+            crate::metadata::check_cancel(cancelled)?;
+            let country = self.countries.get_mut(tag).unwrap();
+            let identity = country.identity;
+            let seen = if ownership_changed {
+                owners.and_then(|owners| holding(identity, self.active.contains(tag), owners))
+            } else {
+                country.recent.back().and_then(|(_, seen)| *seen)
+            };
+            // Dormant tags share the preceding absent/unknown proof. Restore only
+            // that bounded suffix when the tag reappears, never its old history.
+            let last = country.recent.back().map(|(hour, _)| *hour);
+            if last.and_then(|last| last.checked_add(1)) != Some(hour) {
+                country.recent.extend(
+                    self.prior
+                        .iter()
+                        .filter(|(hour, _)| last.is_none_or(|last| *hour > last))
+                        .copied(),
+                );
+            }
+            while country
+                .recent
+                .front()
+                .is_some_and(|(seen, _)| hour.saturating_sub(*seen) > DAY_HOURS)
+            {
+                country.recent.pop_front();
+            }
+            country.recent.push_back((hour, seen));
+            #[cfg(test)]
+            {
+                self.work.interpreter_calls += 1;
+            }
+            let was_open = (country.open, country.demand_open);
+            let continuous =
+                if !identities_changed && last.and_then(|last| last.checked_add(1)) == Some(hour) {
+                    country.track.advance(hour);
+                    identity.is_some()
+                } else {
+                    country.track.step(identity, hour)
+                };
+            country.open &= continuous;
+            country.demand_open &= continuous;
+            let Some(identity) = identity.filter(|_| fuel.is_some()) else {
+                country.open = false;
+                country.demand_open = false;
+                if was_open != (false, false) {
+                    self.updated.insert(tag.clone());
+                }
+                continue;
+            };
+            if !read {
+                if country.open
+                    && let Some(read) = country.result.reads.last_mut()
+                {
+                    read.last_hour = hour;
+                }
+                if country.demand_open
+                    && let Some(read) = country.result.consumption.last_mut()
+                {
+                    read.last_hour = hour;
+                }
+                if was_open != (country.open, country.demand_open) {
+                    self.updated.insert(tag.clone());
+                }
+                continue;
+            }
+            let Some(row) = by_slot.get(&identity.0) else {
+                country.open = false;
+                country.demand_open = false;
+                if was_open != (false, false) {
+                    self.updated.insert(tag.clone());
+                }
+                continue;
+            };
+            let instance = match row.country_instance {
+                replay::rows::Recorded::Value(value) => value,
+                _ => None,
+            };
+            let continuity = match &row.award_day {
+                replay::rows::Recorded::Value(day) => day.continuity_start_hour,
+                _ => None,
+            };
+            if country.instance != instance {
+                country.demand_open = false;
+            }
+            if country.instance != instance || country.continuity != continuity {
+                country.open = false;
+            }
+            country.instance = instance;
+            country.continuity = continuity;
+            let left_out = day_left_out(&country.recent, hour, identity);
+            country.result.reads.push(read_of(
+                row,
+                hour,
+                !country.open,
+                left_out,
+                &mut self.reasons,
+            ));
+            let segment = if country.demand_open {
+                country
+                    .result
+                    .consumption
+                    .last()
+                    .map(|read| read.segment_start_hour)
+                    .unwrap_or(hour)
+            } else {
+                hour
+            };
+            country.result.consumption.push(demand::summary_of(
+                row,
+                hour,
+                segment,
+                !country.demand_open,
+                &mut self.reasons,
+            ));
+            country.demand_open = true;
+            country.open = true;
+            self.updated.insert(tag.clone());
+        }
+        let prior = if ownership_changed {
+            owners.map(|_| (None, false))
+        } else {
+            self.prior.back().and_then(|(_, seen)| *seen)
+        };
+        self.prior.push_back((hour, prior));
+        Ok(identities_changed)
     }
-    Ok(result)
-}
-
-/// A source-only single-country projection of the shared branch scan, as its
-/// reply shows it.
-#[cfg(test)]
-pub fn scan(
-    replay: &Replay,
-    branch: u64,
-    tag: &str,
-    cancelled: &AtomicBool,
-) -> io::Result<Vec<FuelRead>> {
-    Ok(scan_branch(replay, branch, cancelled)?
-        .countries
-        .get(tag)
-        .map(|country| country.reads.iter().map(FuelRead::from).collect())
-        .unwrap_or_default())
 }
 
 /// Leaves out the day of every read that overlaps a day kept. Reads in the fuel
@@ -1063,24 +1204,6 @@ fn keep_days(format: replay::format::FormatVersion, reads: &mut [RawRead]) {
     }
 }
 
-#[derive(Default)]
-struct Cache {
-    branches: BTreeMap<u64, Arc<ScannedBranch>>,
-}
-
-fn scanned(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Result<Arc<ScannedBranch>> {
-    let state = source.state::<Cache>();
-    // Hold the same source cache lock during the first scan: concurrent country
-    // requests share its result instead of each starting a branch decode.
-    let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some(scanned) = cache.branches.get(&branch) {
-        return Ok(Arc::clone(scanned));
-    }
-    let scanned = Arc::new(scan_branch(&source.replay(), branch, cancelled)?);
-    cache.branches.insert(branch, Arc::clone(&scanned));
-    Ok(scanned)
-}
-
 impl Product for CountryFuel {
     const KEY: &'static str = "country-fuel";
     const CONTENT_DEPENDENT: bool = true;
@@ -1097,6 +1220,10 @@ impl Product for CountryFuel {
             DayLeftOut::decl(),
             FuelRead::decl(),
             FuelReply::decl(),
+            prepared::FuelSeriesPoint::decl(),
+            prepared::FuelSeriesStateReply::decl(),
+            prepared::FuelSeriesLine::decl(),
+            prepared::FuelSeriesSummaryReply::decl(),
         ]
     }
 
@@ -1104,6 +1231,7 @@ impl Product for CountryFuel {
         params.validate()
     }
 
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -1117,104 +1245,114 @@ impl Product for CountryFuel {
             .get(&params.tag)
             .map(Arc::as_ref)
             .unwrap_or(&empty);
-        let mut warnings = Vec::new();
-        if !branch.unnamed.is_empty() {
-            warnings.push(format!(
-                "{} fuel countries have non-UTF-8 tags and cannot be selected by tag: {:?}",
-                branch.unnamed.len(),
-                branch.unnamed
-            ));
-        }
-        if scanned.reads.is_empty() {
-            warnings.push(format!("{}: no recorded fuel in this branch", params.tag));
-        }
-        let overlapping = scanned.left_out(DayLeftOut::Overlaps);
-        if overlapping > 0 {
-            warnings.push(format!(
+        reply(source, params, context, branch.as_ref(), scanned)
+    }
+}
+
+fn reply(
+    source: &Source,
+    params: &CountryParams,
+    context: &LoadContext,
+    branch: &ScannedBranch,
+    scanned: &ScannedFuel,
+) -> io::Result<FuelReply> {
+    let mut warnings = Vec::new();
+    if !branch.unnamed.is_empty() {
+        warnings.push(format!(
+            "{} fuel countries have non-UTF-8 tags and cannot be selected by tag: {:?}",
+            branch.unnamed.len(),
+            branch.unnamed
+        ));
+    }
+    if scanned.reads.is_empty() && !scanned.has_omitted_reads {
+        warnings.push(format!("{}: no recorded fuel in this branch", params.tag));
+    }
+    let overlapping = scanned.left_out(DayLeftOut::Overlaps);
+    if overlapping > 0 {
+        warnings.push(format!(
                 "Fuel reads less than a day from another: {overlapping}. Their gain and burn overlap a day already shown and are left out."
             ));
-        }
-        let not_updated = scanned.left_out(DayLeftOut::NotUpdated);
-        if not_updated > 0 {
-            warnings.push(format!(
+    }
+    let not_updated = scanned.left_out(DayLeftOut::NotUpdated);
+    if not_updated > 0 {
+        warnings.push(format!(
                 "Fuel reads after a day the country held no state: {not_updated}. The game did not update its fuel then, so their gain and burn are left out."
             ));
-        }
-        let unknown = scanned.left_out(DayLeftOut::OwnershipNotRecorded);
-        if unknown > 0 {
-            warnings.push(format!(
+    }
+    let unknown = scanned.left_out(DayLeftOut::OwnershipNotRecorded);
+    if unknown > 0 {
+        warnings.push(format!(
                 "Fuel reads after a day recorded without state ownership: {unknown}. Whether the game updated the fuel then is unknown, so their gain and burn are left out."
             ));
-        }
-        let catalogue = match context
-            .content()
-            .and_then(|options| crate::catalogue::catalogue(source, options))
-        {
-            Ok(catalogue) => {
-                warnings.extend(catalogue.verification.iter().cloned());
-                warnings.extend(catalogue.warnings.iter().cloned());
-                Some(catalogue)
-            }
-            Err(why) => {
-                warnings.push(format!("10 fuel labels cannot be resolved: {why}"));
-                None
-            }
-        };
-        let consumer_names = ["TOPBAR_ARMY", "TOPBAR_AIR", "TOPBAR_NAVY"].map(|key| {
-            let name = catalogue.as_ref().and_then(|catalogue| {
-                catalogue
-                    .localisation
-                    .get(key)
-                    .is_some()
-                    .then(|| catalogue.localised(key, crate::catalogue::View::Plain))
-                    .flatten()
-            });
-            if name.is_none() {
-                warnings.push(format!(
-                    "Fuel consumer label {key} is absent or refused by the recorded content"
-                ));
-            }
-            name
-        });
-        let localisation = catalogue
-            .as_ref()
-            .map(|catalogue| catalogue.localisation.as_ref());
-        // Category templates retain their NUM/OIL operands.
-        let gain_labels = [
-            "FUEL_DAILY_GAIN_BASE",
-            "FUEL_DAILY_GAIN_FROM_STATES",
-            "FUEL_DAILY_GAIN_FROM_OIL",
-            "FUEL_DAILY_GAIN_FROM_OTHER",
-        ]
-        .map(|key| fuel_label(localisation, key, key == "FUEL_DAILY_GAIN_FROM_OIL"));
-        let transfer_labels = [
-            "FUEL_DAILY_GAIN_FROM_LEND_LEASE",
-            "FUEL_DAILY_REQUIRED_FROM_LEND_LEASE",
-            "FUEL_DAILY_REQUIRED_FROM_OTHER",
-        ]
-        .map(|key| fuel_label(localisation, key, false));
-        for label in gain_labels.iter().chain(&transfer_labels) {
-            if let Some(reason) = &label.reason {
-                warnings.push(format!("1 fuel label {}: {reason}", label.key));
-            }
-        }
-        if let Some(catalogue) = catalogue {
-            warnings.extend(catalogue.refusal_lines());
-        }
-        Ok(FuelReply {
-            branch_id: params.branch_id.clone(),
-            tag: params.tag.clone(),
-            quantity_scale: QUANTITY_UNITS,
-            gain_scale: GAIN_UNITS,
-            day_hours: DAY_HOURS,
-            consumer_names,
-            gain_labels,
-            transfer_labels,
-            detail_hours: detail::DETAIL_HOURS,
-            reads: scanned.reads.iter().map(FuelRead::from).collect(),
-            warnings,
-        })
     }
+    let catalogue = match context
+        .content()
+        .and_then(|options| crate::catalogue::catalogue(source, options))
+    {
+        Ok(catalogue) => {
+            warnings.extend(catalogue.verification.iter().cloned());
+            warnings.extend(catalogue.warnings.iter().cloned());
+            Some(catalogue)
+        }
+        Err(why) => {
+            warnings.push(format!("10 fuel labels cannot be resolved: {why}"));
+            None
+        }
+    };
+    let consumer_names = ["TOPBAR_ARMY", "TOPBAR_AIR", "TOPBAR_NAVY"].map(|key| {
+        let name = catalogue.as_ref().and_then(|catalogue| {
+            catalogue
+                .localisation
+                .get(key)
+                .is_some()
+                .then(|| catalogue.localised(key, crate::catalogue::View::Plain))
+                .flatten()
+        });
+        if name.is_none() {
+            warnings.push(format!(
+                "Fuel consumer label {key} is absent or refused by the recorded content"
+            ));
+        }
+        name
+    });
+    let localisation = catalogue
+        .as_ref()
+        .map(|catalogue| catalogue.localisation.as_ref());
+    // Category templates retain their NUM/OIL operands.
+    let gain_labels = [
+        "FUEL_DAILY_GAIN_BASE",
+        "FUEL_DAILY_GAIN_FROM_STATES",
+        "FUEL_DAILY_GAIN_FROM_OIL",
+        "FUEL_DAILY_GAIN_FROM_OTHER",
+    ]
+    .map(|key| fuel_label(localisation, key, key == "FUEL_DAILY_GAIN_FROM_OIL"));
+    let transfer_labels = [
+        "FUEL_DAILY_GAIN_FROM_LEND_LEASE",
+        "FUEL_DAILY_REQUIRED_FROM_LEND_LEASE",
+        "FUEL_DAILY_REQUIRED_FROM_OTHER",
+    ]
+    .map(|key| fuel_label(localisation, key, false));
+    for label in gain_labels.iter().chain(&transfer_labels) {
+        if let Some(reason) = &label.reason {
+            warnings.push(format!("1 fuel label {}: {reason}", label.key));
+        }
+    }
+    if let Some(catalogue) = catalogue {
+        warnings.extend(catalogue.refusal_lines());
+    }
+    Ok(FuelReply {
+        branch_id: params.branch_id.clone(),
+        tag: params.tag.clone(),
+        quantity_scale: QUANTITY_UNITS,
+        gain_scale: GAIN_UNITS,
+        day_hours: DAY_HOURS,
+        consumer_names,
+        gain_labels,
+        transfer_labels,
+        detail_hours: detail::DETAIL_HOURS,
+        reads: scanned.reads.iter().map(FuelRead::from).collect(),
+        warnings,
+    })
 }
 
 #[cfg(test)]

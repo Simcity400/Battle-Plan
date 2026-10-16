@@ -20,13 +20,15 @@ const count = (value: unknown) => value === null || int(value);
 const reads = (value: unknown): value is number[] => Array.isArray(value)
   && value.every((hour, index) => int(hour) && (index === 0 || value[index - 1] < hour));
 
-export function validateNavalLossesReply(data: unknown): NavalLossesReply {
+export function validateNavalLossesReply(data: unknown, window = false): NavalLossesReply {
   const reply = data as NavalLossesReply;
   const ok = object(reply) && typeof reply.branchId === 'string' && typeof reply.available === 'boolean'
     && [reply.firstRead, reply.shipFirstRead, reply.convoyFirstRead, reply.shipLastRead, reply.convoyLastRead].every(value => value === null || int(value))
     && reads(reply.shipReads) && reads(reply.convoyReads)
-    && reply.shipReads[0] === (reply.shipFirstRead ?? undefined) && reply.shipReads.at(-1) === (reply.shipLastRead ?? undefined)
-    && reply.convoyReads[0] === (reply.convoyFirstRead ?? undefined) && reply.convoyReads.at(-1) === (reply.convoyLastRead ?? undefined)
+    && (window ? reply.shipReads.every(hour => reply.shipFirstRead !== null && reply.shipLastRead !== null && hour >= reply.shipFirstRead && hour <= reply.shipLastRead)
+      && reply.convoyReads.every(hour => reply.convoyFirstRead !== null && reply.convoyLastRead !== null && hour >= reply.convoyFirstRead && hour <= reply.convoyLastRead)
+      : reply.shipReads[0] === (reply.shipFirstRead ?? undefined) && reply.shipReads.at(-1) === (reply.shipLastRead ?? undefined)
+        && reply.convoyReads[0] === (reply.convoyFirstRead ?? undefined) && reply.convoyReads.at(-1) === (reply.convoyLastRead ?? undefined))
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
     && Array.isArray(reply.series) && new Set(reply.series.map(series => series?.tag)).size === reply.series.length
     && reply.series.every(series => object(series) && typeof series.tag === 'string' && isOrderedSpans(series.segments)
@@ -181,4 +183,40 @@ export function navalHolderBands(model: NavalModel, membership: ReadonlyMap<stri
   const byTag = [...membership].map(([tag, spans]) => navalBands(model, tag, range, spans));
   return NAVAL_PARTS.map((_, index) => byTag.flatMap(bands => bands[index]).sort((a, b) => a.firstHour - b.firstHour)
     .map(run => ({ ...run, value: Math.max(0, run.value) })));
+}
+
+export interface NavalManifest extends NavalLossesReply { windows: { firstHour: number; lastHour: number }[] }
+export const validateNavalWindow = (value: unknown) => validateNavalLossesReply(value, true);
+export function validateNavalManifest(value: unknown): NavalManifest {
+  const reply = validateNavalWindow(value) as NavalManifest;
+  if (!isOrderedSpans(reply.windows)) throw Error('The naval loss windows are malformed.');
+  return reply;
+}
+export function mergeNavalWindows(manifest: NavalLossesReply, pages: Iterable<NavalLossesReply>): NavalLossesReply {
+  const series = new Map(manifest.series.map(series => [series.tag, { ...series, runs: [] as NavalLossRun[] }]));
+  const shipReads = new Set(manifest.shipReads), convoyReads = new Set(manifest.convoyReads);
+  const warnings = new Set(manifest.warnings);
+  for (const page of pages) {
+    for (const read of page.shipReads) shipReads.add(read);
+    for (const read of page.convoyReads) convoyReads.add(read);
+    for (const warning of page.warnings) warnings.add(warning);
+    for (const row of page.series) {
+      let prior = series.get(row.tag);
+      if (!prior) { prior = { ...row, runs: [] }; series.set(row.tag, prior); }
+      prior.runs.push(...row.runs);
+      if (row.membership) prior.membership = [...prior.membership ?? [], ...row.membership];
+    }
+  }
+  for (const row of series.values()) {
+    const ordered = [...new Map(row.runs.map(run => [JSON.stringify(run), run])).values()].sort((a,b) => a.firstHour-b.firstHour);
+    const joined: NavalLossRun[] = [];
+    for (const run of ordered) {
+      const prior = joined.at(-1);
+      if (prior && !run.startsSegment && prior.lastHour+1 === run.firstHour && prior.ships === run.ships && prior.convoys === run.convoys) prior.lastHour = run.lastHour;
+      else joined.push({ ...run });
+    }
+    row.runs = joined;
+    if (row.membership) row.membership = [...new Map(row.membership.map(span => [JSON.stringify(span),span])).values()].sort((a,b) => a.firstHour-b.firstHour);
+  }
+  return { ...manifest, series: [...series.values()], shipReads: [...shipReads].sort((a,b)=>a-b), convoyReads: [...convoyReads].sort((a,b)=>a-b), warnings: [...warnings] };
 }

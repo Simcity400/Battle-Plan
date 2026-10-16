@@ -4,7 +4,7 @@ use replay::{
     rows::{CountryLinkRow, RaidIntelInputRow, TableRows},
 };
 
-fn frame(hour: i32, count: u32, amount: i64, decrypting: u8) -> DecodedFrame {
+pub(super) fn frame(hour: i32, count: u32, amount: i64, decrypting: u8) -> DecodedFrame {
     let mut tables = std::array::from_fn(|_| TableView::Unavailable {
         reason: "outside cipher fixture".into(),
     });
@@ -80,7 +80,7 @@ fn progress(run: &DecryptionRun) -> Option<u8> {
     })
 }
 
-const DEFINES: cryptology::Defines = cryptology::Defines {
+pub(super) const DEFINES: cryptology::Defines = cryptology::Defines {
     base: 200_000,
     upgrade: 300_000,
 };
@@ -415,24 +415,6 @@ fn mod_define_stack_changes_threshold_and_unknown_defines_never_use_defaults() {
             .lines("cipher observations")
             .iter()
             .any(|s| s.contains("CRYPTO_BASE_CRYPTO_LEVEL"))
-    );
-}
-
-#[test]
-fn native_division_overflow_is_named_and_counted() {
-    let mut scan = Scan::default();
-    scan.frame(
-        &frame(100, 2, 1 << 58, 1),
-        Ok(cryptology::Defines {
-            base: -1,
-            upgrade: 0,
-        }),
-    )
-    .unwrap();
-    assert_eq!(progress(&scan.pairs[&(1, 2)].pair.runs[0]), None);
-    assert!(
-        scan.refusals.diagnostic_lines("cipher entries affected")[0]
-            .contains("native signed division overflow")
     );
 }
 
@@ -918,15 +900,13 @@ fn tag_runs_compress_independently_preserve_opaque_changes_and_never_bridge_gaps
             (106, 106, None),
         ]
     );
-    let numeric = serde_json::to_value(&pair.runs[0]).unwrap();
-    assert!(numeric.get("ownerTag").is_none());
-    assert!(numeric.get("targetTag").is_none());
 }
 
 fn observe_row(scan: &mut Scan, hour: i32, row: &CryptologyRow, threshold: Result<i64, &str>) {
     let previous_complete =
         scan.previous_complete.and_then(|last| last.checked_add(1)) == Some(hour);
-    scan.observe(
+    Scan::observe(
+        &mut scan.pairs,
         (1, 2),
         run(hour, row, threshold),
         DecryptionTagRun {

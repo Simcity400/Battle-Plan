@@ -20,14 +20,13 @@ fn root(name: &str) -> PathBuf {
 }
 
 fn reopen(source: &Source, path: &str) -> Source {
-    let bytes = source.replay_ref().bytes().to_vec();
     Source::from_replay(
         SourceKey {
             source_id: path.into(),
             revision: path.into(),
         },
         path.into(),
-        Arc::new(Replay::open(bytes).unwrap()),
+        source.replay(),
         &AtomicBool::new(false),
     )
     .unwrap()
@@ -44,7 +43,7 @@ fn load_product(
     params: &Value,
     context: &LoadContext,
 ) -> Value {
-    let product = crate::products::find(key).unwrap();
+    let product = crate::products::oracle_route(key).unwrap();
     let reply = (product.load)(
         source,
         lease,
@@ -425,4 +424,45 @@ fn pruning_keeps_the_most_recently_used_entries() {
     assert!(folder.join("used").exists() && folder.join("new").exists());
     clear(&root).unwrap();
     assert_eq!(size(&root), 0);
+}
+
+#[test]
+fn file_backed_reference_cache_uses_recording_path_and_opened_metadata_revision() {
+    let directory = std::env::temp_dir().join(format!("reply-cache-file-{}", uuid::Uuid::new_v4()));
+    fs::create_dir(&directory).unwrap();
+    let replay = Replay::from_records(
+        crate::test_fixtures::CAMPAIGN.into(),
+        &[crate::test_fixtures::records(
+            1,
+            vec![source(1, 100, Some(1))],
+        )],
+    )
+    .unwrap();
+    let left = directory.join("left.battleplan");
+    let right = directory.join("right.battleplan");
+    fs::write(&left, replay.bytes()).unwrap();
+    fs::write(&right, replay.bytes()).unwrap();
+    let make = |path: PathBuf, revision: &str| {
+        Source::from_replay(
+            SourceKey {
+                source_id: revision.into(),
+                revision: revision.into(),
+            },
+            path.clone(),
+            Arc::new(Replay::open_path(&path).unwrap()),
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    };
+    let one = make(left.clone(), "1");
+    let two = make(right, "1");
+    let changed = make(left, "2");
+    assert!(one.replay_ref().is_file_backed());
+    let reopened = reopen(&one, one.path().to_str().unwrap());
+    assert!(reopened.replay_ref().is_file_backed());
+    assert!(Arc::ptr_eq(&one.replay(), &reopened.replay()));
+    assert_ne!(recording(&one), recording(&two));
+    assert_ne!(recording(&one), recording(&changed));
+    drop((one, two, changed, reopened));
+    fs::remove_dir_all(directory).unwrap();
 }

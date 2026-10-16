@@ -1,27 +1,16 @@
 //! Exact-hour playback through the shared replay decoder, with one cached block.
 
-use std::{collections::BTreeMap, io, sync::Arc};
+use std::{io, sync::Arc};
 
 use crate::blocks::BlockReader;
 use replay::{
     BranchId, Hour, SessionId,
-    branches::Parentage,
-    container::{Replay, SeekResult},
+    container::Replay,
     frame::{DecodedFrame, Frame, FrameDecoder, TableView},
     rows::{TableId, tables},
 };
 
-/// What a playback holds for its hour: the decoded frame, shared so the
-/// window can hand it between threads without a copy, or the gap it falls in.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Current {
-    Frame(Arc<DecodedFrame>),
-    Gap {
-        branch: BranchId,
-        hour: Hour,
-        reason: String,
-    },
-}
+pub use dashboard::prepared_map::Current;
 
 struct CachedBlock {
     index: usize,
@@ -51,7 +40,8 @@ pub struct Playback {
     /// Reads blocks ahead of this playback and frees passed ones elsewhere;
     /// without one, blocks are read and freed on the calling thread.
     reader: Option<Arc<BlockReader>>,
-    parent_support: BTreeMap<BranchId, Option<bool>>,
+    checkpoints: Option<crate::map_checkpoints::PreparedMap>,
+    checkpoint_source: Option<Arc<crate::map_checkpoints::CheckpointSource>>,
     #[cfg(test)]
     block_loads: usize,
 }
@@ -84,7 +74,8 @@ impl Playback {
             current: gap(branch, hour, "hour has not been decoded".into()),
             cache: None,
             reader: None,
-            parent_support: BTreeMap::new(),
+            checkpoints: None,
+            checkpoint_source: None,
             #[cfg(test)]
             block_loads: 0,
         })
@@ -100,6 +91,61 @@ impl Playback {
         debug_assert!(Arc::ptr_eq(reader.replay(), &self.replay));
         self.reader = Some(reader);
         self
+    }
+
+    /// Uses prepared selected-table checkpoints on the hour-builder thread.
+    /// Hours outside the accepted prefix retain the ordinary replay reader.
+    pub fn with_checkpoints(mut self, checkpoints: crate::map_checkpoints::PreparedMap) -> Self {
+        debug_assert!(Arc::ptr_eq(checkpoints.replay_handle(), &self.replay));
+        self.checkpoints = Some(checkpoints);
+        self
+    }
+
+    pub fn with_checkpoint_source(
+        mut self,
+        source: Arc<crate::map_checkpoints::CheckpointSource>,
+    ) -> Self {
+        self.bind_checkpoint_source(source);
+        self
+    }
+
+    pub fn bind_checkpoint_source(
+        &mut self,
+        source: Arc<crate::map_checkpoints::CheckpointSource>,
+    ) {
+        debug_assert!(Arc::ptr_eq(&source.replay_handle(), &self.replay));
+        self.checkpoint_source = Some(source);
+    }
+
+    pub fn checkpoint_source(&self) -> Option<Arc<crate::map_checkpoints::CheckpointSource>> {
+        self.checkpoint_source.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn checkpoint_metrics(&self) -> Option<(u64, u64, u64)> {
+        self.checkpoints
+            .as_ref()
+            .map(|map| (map.applied_frames, map.checkpoint_reads, map.source_reads))
+    }
+
+    fn refresh_checkpoints(&mut self, branch: BranchId, hour: Hour) {
+        if self
+            .checkpoints
+            .as_ref()
+            .is_some_and(|map| map.covers(branch, hour))
+        {
+            return;
+        }
+        let Some(source) = &self.checkpoint_source else {
+            return;
+        };
+        match source.open() {
+            Ok(Some(checkpoints)) => self.checkpoints = Some(checkpoints),
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("Map checkpoint binding unavailable: {error}; using the replay reader")
+            }
+        }
     }
 
     /// A handle to the same replay for a worker thread.
@@ -128,6 +174,7 @@ impl Playback {
         &self.current
     }
 
+    #[cfg(test)]
     pub fn frame(&self) -> Option<&DecodedFrame> {
         match &self.current {
             Current::Frame(frame) => Some(frame),
@@ -149,6 +196,9 @@ impl Playback {
 
     /// The timeline includes explicitly lost hours at either end of a branch.
     pub fn range(&self, branch: BranchId) -> Option<(Hour, Hour)> {
+        if let Some(range) = self.checkpoints.as_ref().and_then(|map| map.range(branch)) {
+            return Some(range);
+        }
         let start = self
             .replay
             .branches
@@ -183,6 +233,11 @@ impl Playback {
     /// or when the block failed at or before `hour`: that seek is a gap with no
     /// walk at all.
     pub fn walk_start(&self, branch: BranchId, hour: Hour) -> Option<Hour> {
+        if let Some(checkpoints) = &self.checkpoints
+            && checkpoints.covers(branch, hour)
+        {
+            return checkpoints.walk_start(branch, hour).ok().flatten();
+        }
         let index = self.replay.index.iter().position(|index| {
             index.branch == branch && index.first_hour <= hour && hour <= index.last_hour
         })?;
@@ -223,6 +278,36 @@ impl Playback {
     ) -> io::Result<()> {
         if !self.replay.branches.iter().any(|entry| entry.id == branch) {
             return Err(unknown_branch(branch));
+        }
+        self.refresh_checkpoints(branch, hour);
+        if self.checkpoints.is_some() && self.branch == branch && self.hour < hour {
+            // This decode lane's old output is no longer needed. Displayed
+            // hours retained by other owners stay immutable; without one the
+            // prepared decoder can apply deltas in its existing row storage.
+            self.current = gap(branch, hour, "hour has not been decoded".into());
+        }
+        if let Some(checkpoints) = &mut self.checkpoints {
+            let prepared = if self.branch == branch && self.hour < hour {
+                checkpoints.advance(branch, hour, &mut passed)
+            } else {
+                checkpoints.seek_with(branch, hour, &mut passed)
+            };
+            match prepared {
+                Ok(Some(current)) => {
+                    self.branch = branch;
+                    self.hour = hour;
+                    self.current = current;
+                    self.cache = None;
+                    return Ok(());
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    // Prepared files are disposable. Their disappearance or a
+                    // rejected cache page cannot refuse a readable recording.
+                    eprintln!("Map checkpoint unavailable: {error}; using the replay reader");
+                    self.checkpoints = None;
+                }
+            }
         }
         if self.branch == branch && self.hour == hour && self.cache.is_some() {
             return Ok(());
@@ -344,30 +429,6 @@ impl Playback {
         Ok(true)
     }
 
-    /// Check a probable parent's supporting hour separately from timeline seeks.
-    /// Missing or damaged support does not turn a recorded claim into certainty.
-    /// None means parentage is unknown; false means support is unavailable here.
-    pub fn parent_support(&mut self, branch: BranchId) -> io::Result<Option<bool>> {
-        if let Some(support) = self.parent_support.get(&branch) {
-            return Ok(*support);
-        }
-        let start = self
-            .replay
-            .branches
-            .iter()
-            .find(|entry| entry.id == branch)
-            .ok_or_else(|| unknown_branch(branch))?;
-        let support = match start.parent {
-            Parentage::Unknown => None,
-            Parentage::Probable { branch, hour } => Some(matches!(
-                self.replay.seek(branch, hour),
-                Ok(SeekResult::Frame(_))
-            )),
-        };
-        self.parent_support.insert(branch, support);
-        Ok(support)
-    }
-
     fn gap_reason(&self, branch: BranchId, hour: Hour) -> String {
         let reason = self
             .replay
@@ -404,7 +465,8 @@ fn unknown_branch(branch: BranchId) -> io::Error {
 pub(crate) mod tests {
     use super::*;
     use replay::{
-        branches::{BranchReason, BranchStart, Gap},
+        branches::{BranchReason, BranchStart, Gap, Parentage},
+        container::SeekResult,
         frame::{FrameEncoder, Metrics, TableUpdate},
         identity::{Identity, Roster, SessionStart, Verification},
         rows::{
@@ -616,6 +678,19 @@ pub(crate) mod tests {
                 for (table, rows) in tables.iter_mut().zip(map_tables) {
                     *table = rows;
                 }
+                // Hourly nuclear impacts: one strike at hour 105, none otherwise.
+                tables[TableId::NuclearStrikes.index()] =
+                    TableView::Complete(TableRows::NuclearStrikes(if hour == 105 {
+                        vec![replay::rows::NuclearStrikeRow {
+                            id: 7,
+                            hour,
+                            province: 1,
+                            nuke_type: 1,
+                            ..Default::default()
+                        }]
+                    } else {
+                        Vec::new()
+                    }));
                 tables.map(Into::into)
             },
         }
@@ -864,7 +939,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn parentage_stays_probable_when_its_support_is_missing() {
+    fn parentage_stays_probable_and_its_branch_selects_its_own_range() {
         let first = records(1, &[100, 101]);
         let mut second = records(2, &[101, 102]);
         let mut third = records(3, &[201]);
@@ -882,10 +957,6 @@ pub(crate) mod tests {
         }
         let replay = Replay::from_records(b"campaign".to_vec(), &[first, second, third]).unwrap();
         let mut playback = Playback::new(replay).unwrap();
-        assert_eq!(playback.parent_support(1).unwrap(), None);
-        assert_eq!(playback.parent_support(2).unwrap(), Some(true));
-        assert_eq!(playback.parent_support(3).unwrap(), Some(false));
-        assert_eq!(playback.parent_support(3).unwrap(), Some(false));
         assert!(matches!(
             playback.replay().branches[2].parent,
             Parentage::Probable { branch: 999, .. }
@@ -928,6 +999,7 @@ pub(crate) mod tests {
 #[cfg(test)]
 mod damaged_recording_tests {
     use super::*;
+    use replay::container::SeekResult;
 
     #[test]
     fn modified_trailer_and_damaged_blocks_open_and_keep_later_playback_exact() {

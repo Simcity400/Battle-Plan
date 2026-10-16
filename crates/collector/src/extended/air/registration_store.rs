@@ -23,6 +23,7 @@
 //! or read afresh and held); a fresh read that a comparison found equal to
 //! the held segment keeps its id. The decode worker keeps each base's walked
 //! output under its segment's id ([`super::DecodedRegistrations`]).
+pub(crate) use crate::air_base_carry_changes::registration::{Counts, Difference};
 use crate::raw::Span;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -46,15 +47,6 @@ struct Held {
     /// The pass that last visited the base.
     pass: u64,
     segment: u64,
-}
-
-/// What one pass did with its state bases.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Counts {
-    pub carried: u64,
-    pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
 }
 
 #[derive(Debug, Default)]
@@ -136,19 +128,6 @@ impl Fresh<'_> {
             kept[8..engine::cair_wing::SECONDARY].fill(0);
         }
     }
-}
-
-/// Where a fresh read first differed from its held segment.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Difference {
-    /// What differed: the demand, the links, the span list, or a span or its
-    /// bytes.
-    pub what: &'static str,
-    /// The span's address and length, for a span.
-    pub address: usize,
-    pub len: u32,
-    /// The first differing byte within the span.
-    pub byte: usize,
 }
 
 impl RegistrationStore {

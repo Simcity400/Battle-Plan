@@ -94,7 +94,7 @@ export function scoreboardRequest(branchId: string, resolved: ResolvedCountries,
     top: resolved.top == null ? null : { count: resolved.top, sort: rank, descending: direction === 'descending' } };
 }
 
-export function scoreboardRows(model: ScoreboardModel, tags: readonly string[], hour: number, rank: ScoreboardColumnKey, direction: Sort['direction'], top?: number): ScoreboardRow[] {
+export function scoreboardRows(model: ScoreboardModel, tags: readonly string[], hour: number, rank: ScoreboardColumnKey, direction: Sort['direction'], top?: number, amountsOnly = false): ScoreboardRow[] {
   const rows: ScoreboardRow[] = [];
   for (const tag of tags) {
     const series = model.series.get(tag);
@@ -105,7 +105,7 @@ export function scoreboardRows(model: ScoreboardModel, tags: readonly string[], 
     for (const [key, column] of series.columns) {
       const run = runAt(column.runs, hour);
       const readHour = readRunAt(column.readRuns, hour);
-      cells.set(key, { amount: readHour === null ? null : run?.amount ?? null, readHour, atLeast: readHour !== null && run?.atLeast === true });
+      cells.set(key, { amount: readHour === null && !amountsOnly ? null : run?.amount ?? null, readHour, atLeast: readHour !== null && run?.atLeast === true });
     }
     rows.push({ key: countryIdentityKey(identity), tag, hour, cells });
   }
@@ -124,9 +124,10 @@ export function scoreboardTooltip(row: ScoreboardRow, columns: readonly Scoreboa
     title: name, subtitle: formatDateTime(row.hour),
     rows: columns.flatMap(column => {
       const cell = row.cells.get(column.key);
-      const value = formatCell(column, cell?.amount ?? null, cell?.atLeast);
+      const pending = !cell || cell.amount !== null && cell.readHour === null;
+      const value = pending ? '\u2026' : formatCell(column, cell.amount, cell.atLeast);
       const note = !column.available ? 'Unavailable'
-        : cell?.amount == null ? 'Not available at this time' : undefined;
+        : pending ? 'Loading value' : cell?.amount == null ? 'Not available at this time' : undefined;
       const description = column.available ? scoreboardColumnNote(column) : undefined;
       return [{ label: column.label, value }, ...(note ? [{ label: note, tone: 'muted' as const }] : []),
         ...(cell?.amount != null && cell.atLeast ? [{ label: '† Partial total; some losses or corrections may be missing.', tone: 'muted' as const }] : []),

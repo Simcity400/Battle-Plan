@@ -1063,6 +1063,7 @@ impl Captured {
                     region: r.region,
                     friendly: r.friendly,
                     enemy: r.enemy,
+                    impact: rows::Recorded::Value(r.impact),
                 }
             }),
         ]
@@ -1747,9 +1748,9 @@ pub(crate) use mission_store::{MissionReuse, MissionStore};
 #[cfg(test)]
 pub(crate) use registration_reuse::DecodedCounts;
 pub(crate) use registration_reuse::DecodedRegistrations;
-pub(crate) use registration_store::{
-    Counts as RegistrationCounts, Difference as RegistrationDifference, RegistrationStore,
-};
+#[cfg(test)]
+pub(crate) use registration_store::Counts as RegistrationCounts;
+pub(crate) use registration_store::RegistrationStore;
 #[cfg(test)]
 use wing::WING_PACK_N;
 #[cfg(test)]

@@ -9,13 +9,17 @@ use super::{
     character_portraits::{portrait_png, recorded_portrait},
     country_groups::HourSpan,
     country_history::{self, CountryIdentityRun},
-    identity::character_script_token,
     politics_content::{PoliticsContent, politics_content},
 };
+#[cfg(test)]
+use crate::metadata::link_slot;
+#[cfg(test)]
+use crate::metadata::tagged_country;
 use crate::{
     Source,
     catalogue::{self, Catalogue, View},
-    metadata::{link_slot, slot_read, tagged_countries, tagged_country, validate_campaign},
+    identity::character_script_token,
+    metadata::{slot_read, tagged_countries, validate_campaign},
 };
 use installed_content::{localisation::Argument, special_projects::Catalog};
 use replay::{
@@ -23,8 +27,10 @@ use replay::{
     rows::{CountryLinkRow, ProjectHistoryRow, ProjectRow, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::collections::VecDeque;
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     io,
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
@@ -32,8 +38,10 @@ use ts_rs::TS;
 
 pub struct SpecialProjects;
 mod history;
+pub(crate) mod prepared;
 
 mod completions;
+#[cfg(test)]
 pub(crate) use completions::completion_events;
 
 // Project localisation keys and history sentinels.
@@ -60,7 +68,7 @@ impl SpecialProjectsParams {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectDate {
     pub hour: i32,
@@ -68,7 +76,7 @@ pub struct ProjectDate {
     pub exact: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectPerson {
     /// None when the recorded reference cannot establish an assignment.
@@ -79,7 +87,7 @@ pub struct ProjectPerson {
     pub missing: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectPresentation {
     pub name: String,
@@ -92,7 +100,7 @@ pub struct ProjectPresentation {
     pub scientist_as_of: Option<i32>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum ProjectState {
     Running,
@@ -102,7 +110,7 @@ pub enum ProjectState {
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SpecialProjectRun {
     pub first_hour: i32,
@@ -117,7 +125,7 @@ pub struct SpecialProjectRun {
     pub iterations: Option<i32>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectEpisode {
     pub id: String,
@@ -125,7 +133,7 @@ pub struct ProjectEpisode {
     pub runs: Vec<SpecialProjectRun>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SpecialProjectsReply {
     pub branch_id: String,
@@ -181,29 +189,39 @@ fn progress(project: &ProjectRow) -> i32 {
     }
 }
 
+#[cfg(test)]
 fn completion_date(
     history: &[&ProjectHistoryRow],
     observed: i32,
     campaign_start: i32,
 ) -> ProjectDate {
+    completion_date_inputs(
+        history.iter().map(|row| history_operand(row)),
+        observed,
+        campaign_start,
+    )
+}
+fn history_operand(row: &ProjectHistoryRow) -> (u32, bool, i32) {
+    (
+        row.ordinal,
+        row.prototype_reward_handle == COMPLETION_MARKER && row.option_handle == COMPLETION_MARKER,
+        row.date,
+    )
+}
+fn completion_date_inputs(
+    history: impl Iterator<Item = (u32, bool, i32)>,
+    observed: i32,
+    campaign_start: i32,
+) -> ProjectDate {
     history
-        .iter()
-        .filter(|event| {
-            event.prototype_reward_handle == COMPLETION_MARKER
-                && event.option_handle == COMPLETION_MARKER
-                && event.date <= observed
-                && event.date >= campaign_start
-        })
-        .max_by_key(|event| event.ordinal)
+        .filter(|(_, completion, date)| *completion && *date <= observed && *date >= campaign_start)
+        .max_by_key(|(ordinal, _, _)| *ordinal)
         .map_or(
             ProjectDate {
                 hour: observed,
                 exact: false,
             },
-            |event| ProjectDate {
-                hour: event.date,
-                exact: true,
-            },
+            |(_, _, hour)| ProjectDate { hour, exact: true },
         )
 }
 
@@ -477,21 +495,408 @@ pub(crate) fn check_content(
     Ok(findings)
 }
 
+/// Episode inputs projected once from recorded rows, independent of selection.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct ProjectFacts {
+    local_id: u32,
+    definition_id: u32,
+    visible: bool,
+    state: ProjectState,
+    progress: i32,
+    completion: Option<ProjectDate>,
+    iterations: Option<i32>,
+    warning: Option<String>,
+}
+impl ProjectFacts {
+    fn project(
+        project: &ProjectRow,
+        history: Option<&[&ProjectHistoryRow]>,
+        hour: i32,
+        start: i32,
+    ) -> Self {
+        let state = project_state(project);
+        let mut facts = Self {
+            local_id: project.local_id,
+            definition_id: project.definition_id,
+            visible: visible(project, false),
+            state,
+            progress: progress(project),
+            completion: None,
+            iterations: None,
+            warning: (state == ProjectState::Unknown).then(|| {
+                format!(
+                    "Project {} has unsupported native state offset {:#x}",
+                    project.local_id, project.state.current_offset
+                )
+            }),
+        };
+        let history = history.map(|rows| {
+            rows.iter()
+                .map(|row| history_operand(row))
+                .collect::<Vec<_>>()
+        });
+        facts.observe_history(history.as_deref(), hour, start);
+        facts
+    }
+    fn observe_history(&mut self, history: Option<&[(u32, bool, i32)]>, hour: i32, start: i32) {
+        let done = self.state == ProjectState::Completed;
+        self.completion = done
+            .then(|| {
+                completion_date_inputs(history.unwrap_or_default().iter().copied(), hour, start)
+            })
+            .filter(|date| date.exact);
+        self.iterations = history.map(|rows| rows.len() as i32 - i32::from(done));
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Look {
+    needs_scope: bool,
+    program_reference: u64,
+    person: Arc<ProjectPerson>,
+    info: Arc<ProjectPresentation>,
+    warnings: BTreeMap<String, usize>,
+    refusals: catalogue::Refusals,
+    iteration_text: Option<String>,
+    iteration_refusals: catalogue::Refusals,
+}
+fn resolve_person(
+    frame: &DecodedFrame,
+    project: &ProjectRow,
+    content: Option<&Content>,
+) -> ProjectPerson {
+    // Scientist assignment uses the full character reference.
+    // The low reference type is 73; program reference type is 83.
+    let mut assigned = None;
+
+    (|| {
+        if project.program_reference == 0 {
+            assigned = Some(false);
+            return Err("No scientist assigned.".to_owned());
+        }
+        if project.program_reference as u32 != 83 {
+            return Err("Project program reference has an unknown native type.".into());
+        }
+        let programs = frame
+            .complete::<tables::ProjectPrograms>()
+            .map_err(|_| "ProjectPrograms not recorded.".to_owned())?;
+        let id = (project.program_reference >> 32) as u32;
+        let program = programs
+            .binary_search_by_key(&id, |row| row.id)
+            .ok()
+            .map(|i| &programs[i])
+            .ok_or_else(|| format!("Program {id} was not recorded."))?;
+        if program.scientist == 0 {
+            assigned = Some(false);
+            return Err("No scientist assigned.".into());
+        }
+        if program.scientist as u32 != 73 {
+            return Err("Scientist reference has an unknown native type.".into());
+        }
+        assigned = Some(true);
+        let id = (program.scientist >> 32) as u32;
+        let characters = frame
+            .complete::<tables::Characters>()
+            .map_err(|_| "Characters not recorded.".to_owned())?;
+        let character = characters
+            .binary_search_by_key(&id, |row| row.id)
+            .ok()
+            .map(|i| &characters[i])
+            .ok_or_else(|| format!("Character {id} was not recorded."))?;
+        let lexical = frame
+            .complete::<tables::LexicalTokens>()
+            .unwrap_or_default();
+        let script = character_script_token(character, lexical);
+        let saved = String::from_utf8_lossy(&character.token);
+        let name = content.and_then(|content| {
+            content
+                .politics
+                .character_name_with_refusals(script, &saved, &content.refusals)
+        });
+        // Scientist portraits request role 4, size 1.
+        // Use shared holder selection, including its fallback.
+        let portrait = recorded_portrait(
+            frame.complete::<tables::CharacterPortraits>().ok(),
+            id,
+            4,
+            replay::rows::PORTRAIT_LARGE,
+        );
+        let art = content.map_or_else(
+            || Err("Content is unavailable.".into()),
+            |content| portrait_png(&content.politics, &portrait),
+        );
+        Ok(ProjectPerson {
+            assigned,
+            id: Some(id),
+            name,
+            portrait: art.as_ref().ok().cloned(),
+            missing: art.err(),
+        })
+    })()
+    .unwrap_or_else(|reason| ProjectPerson {
+        assigned,
+        id: None,
+        name: None,
+        portrait: None,
+        missing: Some(reason),
+    })
+}
+
+fn resolve_definition(
+    frame: &DecodedFrame,
+    project: &ProjectRow,
+    tag: &str,
+    slot: u32,
+    mut content: Option<&mut Content>,
+) -> DefinitionLook {
+    take_refusals(content.as_deref());
+    let mut warnings = BTreeMap::new();
+    let mut warn = |reason: String| {
+        *warnings.entry(reason).or_default() += 1;
+    };
+    let mut scoped = None;
+    let scientist = 0;
+    let scientist_as_of = None;
+    // Project construction copies the template token.
+    let token = frame
+        .complete::<tables::LexicalTokens>()
+        .ok()
+        .and_then(|rows| {
+            rows.binary_search_by_key(&project.definition_id, |row| row.token)
+                .ok()
+                .and_then(|i| std::str::from_utf8(&rows[i].literal).ok())
+        })
+        .map(str::to_owned);
+    let token = token.unwrap_or_else(|| {
+        warn(format!(
+            "Definition token {} is not recorded",
+            project.definition_id
+        ));
+        format!("Project definition {}", project.definition_id)
+    });
+    let mut info = ProjectPresentation {
+        name: "Project name unavailable".into(),
+        specialization: None,
+        specialization_name: None,
+        icon: None,
+        icon_missing: Some("Content is unavailable.".into()),
+        scientist,
+        scientist_as_of,
+    };
+    if let Some(content) = content.as_mut() {
+        if let Some(reason) = content.definitions.unsettled.as_ref().or_else(|| {
+            content
+                .definitions
+                .projects
+                .get(&token)
+                .and_then(|project| project.refusal.as_ref())
+        }) {
+            info.icon_missing = Some(reason.clone());
+            warn(reason.clone());
+        } else if let Some(definition) = content.definitions.projects.get(&token).cloned() {
+            let key = country_key(
+                &content.catalogue,
+                tag,
+                definition
+                    .name
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(&token),
+            );
+            if needs_scope(&content.catalogue.localisation, &key) {
+                scoped = Some((definition.clone(), token.clone()));
+            }
+            info.name = content
+                .name(&definition, &token, tag, slot, frame, project.definition_id)
+                .unwrap_or_else(|| {
+                    warn(format!("Project name {token} could not be resolved"));
+                    "Project name unavailable".into()
+                });
+            info.specialization = definition.specialization.clone();
+            // Use the specialization token, not blueprint_image
+            // or a vanilla type enumeration.
+            if let Some(kind) = &definition.specialization {
+                if content.definitions.specializations.contains(kind) {
+                    info.specialization_name = content.specialization_name(kind, Some(tag));
+                } else {
+                    warn(format!(
+                        "Project {token}: specialization {kind} is absent from content"
+                    ));
+                }
+            }
+            let art = icon_key(&definition, &token, Some(tag), |key| {
+                content
+                    .catalogue
+                    .sprites
+                    .find(key)
+                    .map(|sprite| sprite.is_some())
+                    .map_err(|e| format!("Sprite {key}: {e}"))
+            })
+            .and_then(|key| content.icon(&key));
+            match art {
+                Ok(icon) => {
+                    info.icon = Some(icon);
+                    info.icon_missing = None;
+                }
+                Err(reason) => {
+                    warn(reason.clone());
+                    info.icon_missing = Some(reason);
+                }
+            }
+        } else {
+            warn(format!("Project definition {token} is absent from content"));
+            info.icon_missing = Some(format!("Definition {token} is absent from content."));
+        }
+    }
+    if let Some((_, token)) = &scoped {
+        warnings.remove(&format!("Project name {token} could not be resolved"));
+    }
+    DefinitionLook {
+        info: Arc::new(info),
+        warnings,
+        refusals: take_refusals(content.as_deref()),
+        scoped,
+    }
+}
+
+struct DefinitionLook {
+    info: Arc<ProjectPresentation>,
+    warnings: BTreeMap<String, usize>,
+    refusals: catalogue::Refusals,
+    scoped: Option<(installed_content::special_projects::Project, String)>,
+}
+#[derive(Default)]
+struct Naming {
+    definitions: BTreeMap<(String, u32), DefinitionLook>,
+    people: BTreeMap<u64, (Arc<ProjectPerson>, catalogue::Refusals)>,
+    iterations: BTreeMap<i32, (Option<String>, catalogue::Refusals)>,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read only by the recording oracle in tests")
+    )]
+    views: Option<[ViewIdentity; 4]>,
+}
+
+fn take_refusals(content: Option<&Content>) -> catalogue::Refusals {
+    content.map_or_else(Default::default, |content| {
+        std::mem::take(
+            &mut *content
+                .refusals
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        )
+    })
+}
+impl Naming {
+    #[cfg(test)]
+    fn observe_views(&mut self, frame: &DecodedFrame) {
+        let tables = [
+            TableId::ProjectPrograms,
+            TableId::Characters,
+            TableId::CharacterPortraits,
+            TableId::LexicalTokens,
+        ];
+        if self.views.as_ref().is_none_or(|views| {
+            tables
+                .iter()
+                .zip(views)
+                .any(|(table, view)| !view.is(&frame.tables[table.index()]))
+        }) {
+            self.people.clear();
+            self.views = Some(tables.map(|table| frame.tables[table.index()].identity()));
+        }
+    }
+    fn look(
+        &mut self,
+        frame: &DecodedFrame,
+        tag: &str,
+        slot: u32,
+        row: &ProjectRow,
+        count: Option<i32>,
+        mut content: Option<&mut Content>,
+    ) -> Look {
+        let key = (tag.to_owned(), row.definition_id);
+        self.people.entry(row.program_reference).or_insert_with(|| {
+            take_refusals(content.as_deref());
+            let person = resolve_person(frame, row, content.as_deref());
+            (Arc::new(person), take_refusals(content.as_deref()))
+        });
+        if !self.definitions.contains_key(&key) {
+            let definition = resolve_definition(frame, row, tag, slot, content.as_deref_mut());
+            self.definitions.insert(key.clone(), definition);
+        }
+        let definition = self.definitions.get_mut(&key).expect("resolved definition");
+        let mut warnings = definition.warnings.clone();
+        if let Some((authored, token)) = &definition.scoped {
+            let name = content
+                .as_ref()
+                .and_then(|content| {
+                    content.name(authored, token, tag, slot, frame, row.definition_id)
+                })
+                .unwrap_or_else(|| {
+                    *warnings
+                        .entry(format!("Project name {token} could not be resolved"))
+                        .or_default() += 1;
+                    "Project name unavailable".into()
+                });
+            if definition.info.name != name {
+                Arc::make_mut(&mut definition.info).name = name;
+            }
+        }
+        let (person, person_refusals) = &self.people[&row.program_reference];
+        let mut refusals = definition.refusals.clone();
+        refusals.merge(person_refusals);
+        let (iteration_text, iteration_refusals) = count.map_or_else(
+            || (None, Default::default()),
+            |count| {
+                self.iterations
+                    .entry(count)
+                    .or_insert_with(|| {
+                        take_refusals(content.as_deref());
+                        let text = content
+                            .as_ref()
+                            .and_then(|content| content.iterations(Some(count)));
+                        (text, take_refusals(content.as_deref()))
+                    })
+                    .clone()
+            },
+        );
+        Look {
+            needs_scope: definition.scoped.is_some(),
+            program_reference: row.program_reference,
+            person: Arc::clone(person),
+            info: Arc::clone(&definition.info),
+            warnings,
+            refusals,
+            iteration_text,
+            iteration_refusals,
+        }
+    }
+}
+
 #[derive(Default)]
 struct Builder {
     /// The recording's format, which dates its daily tables
     /// ([`crate::metadata::slot_read`]).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read only by the recording oracle in tests")
+    )]
     format: replay::format::FormatVersion,
     episodes: Vec<ProjectEpisode>,
     /// Matching episodes survive unrecorded hours, but their runs do not.
     open: BTreeMap<(u32, u32), usize>,
     identity: Option<(u32, u32)>,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read only by the recording oracle in tests")
+    )]
     campaign_start: Option<i32>,
     content_ids: BTreeMap<(u32, String), u32>,
-    scoped_names: BTreeMap<u32, (installed_content::special_projects::Project, String)>,
-    person_views: Vec<ViewIdentity>,
+    naming: Naming,
+    person_cache: BTreeMap<u64, (Arc<ProjectPerson>, u32)>,
+    #[cfg(test)]
     lexical_view: Option<ViewIdentity>,
-    person_cache: BTreeMap<u64, u32>,
     presentations: Vec<ProjectPresentation>,
     people: Vec<ProjectPerson>,
     presentation_ids: BTreeMap<ProjectPresentation, u32>,
@@ -506,6 +911,10 @@ struct Builder {
     /// The feed needs dates and episode identity, not every progress change.
     compact: bool,
     last_iterations: BTreeMap<usize, i32>,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read only by the recording oracle in tests")
+    )]
     completions: BTreeMap<usize, CompletionObservation>,
 }
 
@@ -517,7 +926,7 @@ struct CompletionObservation {
     observed_hour: i32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ProjectCompletion {
     pub tag: String,
     pub date: ProjectDate,
@@ -529,6 +938,7 @@ pub(crate) struct ProjectCompletion {
     pub icon_missing: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct ProjectCompletions {
     pub events: Vec<ProjectCompletion>,
@@ -537,6 +947,7 @@ pub(crate) struct ProjectCompletions {
     pub refusals: Vec<(String, usize)>,
 }
 
+#[cfg(test)]
 fn mark(spans: &mut Vec<HourSpan>, hour: i32) {
     if let Some(span) = spans.last_mut()
         && span.last_hour.checked_add(1) == Some(hour)
@@ -572,97 +983,13 @@ impl Builder {
         *self.warnings.entry(reason.into()).or_default() += 1;
     }
 
-    fn person(
-        &mut self,
-        frame: &DecodedFrame,
-        project: &ProjectRow,
-        content: Option<&Content>,
-    ) -> u32 {
-        if let Some(id) = self.person_cache.get(&project.program_reference) {
-            return *id;
-        }
-        // Scientist assignment uses the full character reference.
-        // The low reference type is 73; program reference type is 83.
-        let mut assigned = None;
-        let person = (|| {
-            if project.program_reference == 0 {
-                assigned = Some(false);
-                return Err("No scientist assigned.".to_owned());
-            }
-            if project.program_reference as u32 != 83 {
-                return Err("Project program reference has an unknown native type.".into());
-            }
-            let programs = frame
-                .complete::<tables::ProjectPrograms>()
-                .map_err(|_| "ProjectPrograms not recorded.".to_owned())?;
-            let id = (project.program_reference >> 32) as u32;
-            let program = programs
-                .binary_search_by_key(&id, |row| row.id)
-                .ok()
-                .map(|i| &programs[i])
-                .ok_or_else(|| format!("Program {id} was not recorded."))?;
-            if program.scientist == 0 {
-                assigned = Some(false);
-                return Err("No scientist assigned.".into());
-            }
-            if program.scientist as u32 != 73 {
-                return Err("Scientist reference has an unknown native type.".into());
-            }
-            assigned = Some(true);
-            let id = (program.scientist >> 32) as u32;
-            let characters = frame
-                .complete::<tables::Characters>()
-                .map_err(|_| "Characters not recorded.".to_owned())?;
-            let character = characters
-                .binary_search_by_key(&id, |row| row.id)
-                .ok()
-                .map(|i| &characters[i])
-                .ok_or_else(|| format!("Character {id} was not recorded."))?;
-            let lexical = frame
-                .complete::<tables::LexicalTokens>()
-                .unwrap_or_default();
-            let script = character_script_token(character, lexical);
-            let saved = String::from_utf8_lossy(&character.token);
-            let name = content.and_then(|content| {
-                content
-                    .politics
-                    .character_name_with_refusals(script, &saved, &content.refusals)
-            });
-            // Scientist portraits request role 4, size 1.
-            // Use shared holder selection, including its fallback.
-            let portrait = recorded_portrait(
-                frame.complete::<tables::CharacterPortraits>().ok(),
-                id,
-                4,
-                replay::rows::PORTRAIT_LARGE,
-            );
-            let art = content.map_or_else(
-                || Err("Content is unavailable.".into()),
-                |content| portrait_png(&content.politics, &portrait),
-            );
-            Ok(ProjectPerson {
-                assigned,
-                id: Some(id),
-                name,
-                portrait: art.as_ref().ok().cloned(),
-                missing: art.err(),
-            })
-        })()
-        .unwrap_or_else(|reason| ProjectPerson {
-            assigned,
-            id: None,
-            name: None,
-            portrait: None,
-            missing: Some(reason),
-        });
+    fn intern_person(&mut self, person: ProjectPerson) -> u32 {
         if let Some(id) = self.person_ids.get(&person) {
-            self.person_cache.insert(project.program_reference, *id);
             return *id;
         }
         let id = self.people.len() as u32;
         self.person_ids.insert(person.clone(), id);
         self.people.push(person);
-        self.person_cache.insert(project.program_reference, id);
         id
     }
 
@@ -675,142 +1002,95 @@ impl Builder {
         previous: Option<&SpecialProjectRun>,
         mut content: Option<&mut Content>,
     ) -> u32 {
-        let mut scientist = self.person(frame, project, content.as_deref());
-        let mut scientist_as_of = None;
-        // Completion clears the program. Retain a dated last assignment only
-        // within this episode, never claim a current one.
-        if completed(project)
+        let mut refusals = take_refusals(content.as_deref());
+        let look = self
+            .naming
+            .look(frame, tag, slot, project, None, content.as_deref_mut());
+        let id = self.present_look(
+            &look,
+            project.definition_id,
+            tag,
+            completed(project),
+            frame.hour,
+            previous,
+            &mut refusals,
+        );
+        if let Some(content) = content {
+            content
+                .refusals
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .merge(&refusals);
+        }
+        id
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn present_look(
+        &mut self,
+        look: &Look,
+        definition: u32,
+        tag: &str,
+        completed: bool,
+        hour: i32,
+        previous: Option<&SpecialProjectRun>,
+        refusals: &mut catalogue::Refusals,
+    ) -> u32 {
+        let person = match self.person_cache.get(&look.program_reference) {
+            Some((seen, id)) if Arc::ptr_eq(seen, &look.person) => *id,
+            _ => {
+                let id = self.intern_person((*look.person).clone());
+                self.person_cache
+                    .insert(look.program_reference, (Arc::clone(&look.person), id));
+                id
+            }
+        };
+        let (scientist, scientist_as_of) =
+            self.scientist_attribution(person, completed, hour, previous);
+        let key = (definition, tag.to_owned());
+        if !self.content_ids.contains_key(&key) {
+            self.needs_scope |= look.needs_scope;
+            for (reason, count) in &look.warnings {
+                *self.warnings.entry(reason.clone()).or_default() += count;
+            }
+        }
+        refusals.merge(&look.refusals);
+        if let Some(&id) = self.content_ids.get(&key) {
+            let old = &self.presentations[id as usize];
+            if old.scientist == scientist
+                && old.scientist_as_of == scientist_as_of
+                && old.name == look.info.name
+            {
+                return id;
+            }
+        }
+        let mut info = (*look.info).clone();
+        info.scientist = scientist;
+        info.scientist_as_of = scientist_as_of;
+        let id = self.intern_presentation(info);
+        self.content_ids.insert(key, id);
+        id
+    }
+
+    fn scientist_attribution(
+        &self,
+        mut scientist: u32,
+        completed: bool,
+        hour: i32,
+        previous: Option<&SpecialProjectRun>,
+    ) -> (u32, Option<i32>) {
+        let mut as_of = None;
+        if completed
             && let Some(previous) =
-                previous.filter(|run| run.last_hour.checked_add(1) == Some(frame.hour))
+                previous.filter(|run| run.last_hour.checked_add(1) == Some(hour))
         {
             let old = &self.presentations[previous.presentation as usize];
             if self.people[old.scientist as usize].id.is_some() {
                 scientist = old.scientist;
-                scientist_as_of = Some(old.scientist_as_of.unwrap_or(previous.last_hour));
+                as_of = Some(old.scientist_as_of.unwrap_or(previous.last_hour));
             }
         }
-        let key = (project.definition_id, tag.to_owned());
-        if let Some(id) = self.content_ids.get(&key).copied() {
-            let old = &self.presentations[id as usize];
-            let name = match self.scoped_names.get(&project.definition_id) {
-                Some((definition, token)) => content
-                    .as_ref()
-                    .and_then(|content| {
-                        content.name(definition, token, tag, slot, frame, project.definition_id)
-                    })
-                    .unwrap_or_else(|| "Project name unavailable".into()),
-                None => old.name.clone(),
-            };
-            if old.scientist == scientist
-                && old.scientist_as_of == scientist_as_of
-                && old.name == name
-            {
-                return id;
-            }
-            let mut info = old.clone();
-            info.name = name;
-            info.scientist = scientist;
-            info.scientist_as_of = scientist_as_of;
-            let id = self.intern_presentation(info);
-            self.content_ids.insert(key, id);
-            return id;
-        }
-        // Project construction copies the template token.
-        let token = frame
-            .complete::<tables::LexicalTokens>()
-            .ok()
-            .and_then(|rows| {
-                rows.binary_search_by_key(&project.definition_id, |row| row.token)
-                    .ok()
-                    .and_then(|i| std::str::from_utf8(&rows[i].literal).ok())
-            })
-            .map(str::to_owned);
-        let token = token.unwrap_or_else(|| {
-            self.warn(format!(
-                "Definition token {} is not recorded",
-                project.definition_id
-            ));
-            format!("Project definition {}", project.definition_id)
-        });
-        let mut info = ProjectPresentation {
-            name: "Project name unavailable".into(),
-            specialization: None,
-            specialization_name: None,
-            icon: None,
-            icon_missing: Some("Content is unavailable.".into()),
-            scientist,
-            scientist_as_of,
-        };
-        if let Some(content) = content.as_mut() {
-            if let Some(reason) = content.definitions.unsettled.as_ref().or_else(|| {
-                content
-                    .definitions
-                    .projects
-                    .get(&token)
-                    .and_then(|project| project.refusal.as_ref())
-            }) {
-                info.icon_missing = Some(reason.clone());
-                self.warn(reason.clone());
-            } else if let Some(definition) = content.definitions.projects.get(&token).cloned() {
-                let key = country_key(
-                    &content.catalogue,
-                    tag,
-                    definition
-                        .name
-                        .as_deref()
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or(&token),
-                );
-                if needs_scope(&content.catalogue.localisation, &key) {
-                    self.needs_scope = true;
-                    self.scoped_names
-                        .insert(project.definition_id, (definition.clone(), token.clone()));
-                }
-                info.name = content
-                    .name(&definition, &token, tag, slot, frame, project.definition_id)
-                    .unwrap_or_else(|| {
-                        self.warn(format!("Project name {token} could not be resolved"));
-                        "Project name unavailable".into()
-                    });
-                info.specialization = definition.specialization.clone();
-                // Use the specialization token, not blueprint_image
-                // or a vanilla type enumeration.
-                if let Some(kind) = &definition.specialization {
-                    if content.definitions.specializations.contains(kind) {
-                        info.specialization_name = content.specialization_name(kind, Some(tag));
-                    } else {
-                        self.warn(format!(
-                            "Project {token}: specialization {kind} is absent from content"
-                        ));
-                    }
-                }
-                let art = icon_key(&definition, &token, Some(tag), |key| {
-                    content
-                        .catalogue
-                        .sprites
-                        .find(key)
-                        .map(|sprite| sprite.is_some())
-                        .map_err(|e| format!("Sprite {key}: {e}"))
-                })
-                .and_then(|key| content.icon(&key));
-                match art {
-                    Ok(icon) => {
-                        info.icon = Some(icon);
-                        info.icon_missing = None;
-                    }
-                    Err(reason) => {
-                        self.warn(reason.clone());
-                        info.icon_missing = Some(reason);
-                    }
-                }
-            } else {
-                self.warn(format!("Project definition {token} is absent from content"));
-                info.icon_missing = Some(format!("Definition {token} is absent from content."));
-            }
-        }
-        let id = self.intern_presentation(info);
-        self.content_ids.insert(key, id);
-        id
+        (scientist, as_of)
     }
 
     fn intern_presentation(&mut self, info: ProjectPresentation) -> u32 {
@@ -831,6 +1111,7 @@ impl Builder {
 
     /// `lexical` names the recorded LexicalTokens read. A span's projected
     /// frame holds only the tokens it reads; presentations follow each read.
+    #[cfg(test)]
     fn observe_span(
         &mut self,
         frame: &DecodedFrame,
@@ -851,7 +1132,7 @@ impl Builder {
         // identified; the world feed's compact builders present nothing.
         if identity.is_some() && self.lexical_view.as_ref() != Some(lexical) {
             self.content_ids.clear();
-            self.scoped_names.clear();
+            self.naming.definitions.clear();
             self.lexical_view = Some(lexical.clone());
         }
         let projects = frame.complete::<tables::Projects>().ok();
@@ -876,6 +1157,7 @@ impl Builder {
 
     /// Both country history and the world feed use this admission/episode path.
     /// The world caller resolves identities and groups raw owners once per frame.
+    #[cfg(test)]
     fn observe_rows(
         &mut self,
         frame: &DecodedFrame,
@@ -902,24 +1184,7 @@ impl Builder {
         }
         self.identity = Some((slot, country));
         self.campaign_start.get_or_insert(hour);
-        let person_tables = [
-            TableId::ProjectPrograms,
-            TableId::Characters,
-            TableId::CharacterPortraits,
-            TableId::LexicalTokens,
-        ];
-        if self.person_views.len() != person_tables.len()
-            || person_tables
-                .iter()
-                .zip(&self.person_views)
-                .any(|(table, seen)| !seen.is(&frame.tables[table.index()]))
-        {
-            self.person_cache.clear();
-            self.person_views = person_tables
-                .iter()
-                .map(|table| frame.tables[table.index()].identity())
-                .collect();
-        }
+        self.naming.observe_views(frame);
         let Some(projects) = projects else {
             self.admitted = false;
             return;
@@ -944,24 +1209,91 @@ impl Builder {
                 histories.entry(event.project).or_default().push(event);
             }
         }
+        let facts: Vec<_> = projects
+            .iter()
+            .map(|project| {
+                let history = histories
+                    .get(&project.local_id)
+                    .map_or(&[][..], Vec::as_slice);
+                ProjectFacts::project(
+                    project,
+                    history_available.then_some(history),
+                    hour,
+                    self.campaign_start.unwrap_or(hour),
+                )
+            })
+            .collect();
+        self.observe_projects(
+            hour,
+            &facts,
+            |builder, ordinal, index, fact, previous, completion| {
+                let project = projects[ordinal];
+                let presentation = if builder.compact {
+                    if let Some(date) = completion {
+                        builder
+                            .completions
+                            .entry(index)
+                            .and_modify(|event| {
+                                if event.date != *date {
+                                    event.date = date.clone();
+                                    event.observed_hour = hour;
+                                }
+                            })
+                            .or_insert_with(|| CompletionObservation {
+                                project: project.clone(),
+                                identity: (slot, country),
+                                date: date.clone(),
+                                observed_hour: hour,
+                            });
+                    }
+                    0
+                } else {
+                    builder.presentation(
+                        frame,
+                        project,
+                        tag,
+                        slot,
+                        previous,
+                        content.as_deref_mut(),
+                    )
+                };
+                if let Some(count) = fact.iterations
+                    && !builder.compact
+                {
+                    builder.iteration_texts.entry(count).or_insert_with(|| {
+                        content
+                            .as_ref()
+                            .and_then(|content| content.iterations(Some(count)))
+                    });
+                }
+                presentation
+            },
+        );
+    }
+
+    /// Shared selected-episode step. Its caller has already admitted the read.
+    fn observe_projects(
+        &mut self,
+        hour: i32,
+        projects: &[ProjectFacts],
+        mut presentation: impl FnMut(
+            &mut Self,
+            usize,
+            usize,
+            &ProjectFacts,
+            Option<&SpecialProjectRun>,
+            Option<&ProjectDate>,
+        ) -> u32,
+    ) {
         let mut next = BTreeMap::new();
-        for &project in projects {
-            let state = project_state(project);
+        for (ordinal, project) in projects.iter().enumerate() {
+            let state = project.state;
             let done = state == ProjectState::Completed;
-            // A never-started project also rests at 0x18; only a machine
-            // cancellation (0x1e8) or an open episode makes it a lane.
-            if !visible(
-                project,
-                self.open
-                    .contains_key(&(project.local_id, project.definition_id)),
-            ) {
+            let key = (project.local_id, project.definition_id);
+            if !project.visible && !self.open.contains_key(&key) {
                 continue;
             }
-            let key = (project.local_id, project.definition_id);
-            let history = histories
-                .get(&project.local_id)
-                .map_or(&[][..], Vec::as_slice);
-            let count = history_available.then(|| history.len() as i32 - i32::from(done));
+            let count = project.iterations;
             if self.open.get(&key).is_some_and(|index| {
                 self.episodes[*index].runs.last().is_some_and(|run| {
                     matches!(run.state, ProjectState::Completed | ProjectState::Cancelled)
@@ -994,7 +1326,10 @@ impl Builder {
             // Acceptance shows count minus the completion entry;
             // do not substitute state.iterations or saturate at zero.
             let completion = done.then(|| {
-                let date = completion_date(history, hour, self.campaign_start.unwrap_or(hour));
+                let date = project
+                    .completion
+                    .clone()
+                    .unwrap_or(ProjectDate { hour, exact: false });
                 if !date.exact {
                     self.episodes[index]
                         .runs
@@ -1006,53 +1341,19 @@ impl Builder {
                 }
             });
             let previous = self.episodes[index].runs.last().cloned();
-            let presentation = if self.compact {
-                // Presentation is resolved only for actual completion rows,
-                // at the event's own hour, after this shared episode scan.
-                0
-            } else {
-                self.presentation(
-                    frame,
-                    project,
-                    tag,
-                    slot,
-                    previous.as_ref(),
-                    content.as_deref_mut(),
-                )
-            };
-            if self.compact
-                && let Some(date) = &completion
-            {
-                self.completions
-                    .entry(index)
-                    .and_modify(|event| {
-                        if event.date != *date {
-                            event.date = date.clone();
-                            event.observed_hour = hour;
-                        }
-                    })
-                    .or_insert_with(|| CompletionObservation {
-                        project: project.clone(),
-                        identity: (slot, country),
-                        date: date.clone(),
-                        observed_hour: hour,
-                    });
-            }
+            let presentation = presentation(
+                self,
+                ordinal,
+                index,
+                project,
+                previous.as_ref(),
+                completion.as_ref(),
+            );
             if let Some(count) = count {
                 self.last_iterations.insert(index, count);
-                if !self.compact {
-                    self.iteration_texts.entry(count).or_insert_with(|| {
-                        content
-                            .as_ref()
-                            .and_then(|content| content.iterations(Some(count)))
-                    });
-                }
             }
-            if state == ProjectState::Unknown {
-                self.warn(format!(
-                    "Project {} has unsupported native state offset {:#x}",
-                    project.local_id, project.state.current_offset
-                ));
+            if let Some(reason) = &project.warning {
+                self.warn(reason.clone());
             }
             let cancellation = (state == ProjectState::Cancelled).then(|| {
                 previous
@@ -1064,7 +1365,7 @@ impl Builder {
                 first_hour: hour,
                 last_hour: hour,
                 presentation,
-                progress: progress(project),
+                progress: project.progress,
                 state,
                 completion,
                 cancellation,
@@ -1096,6 +1397,7 @@ fn needs_scope(loc: &installed_content::localisation::Localisation, key: &str) -
         .is_ok_and(|text| text.contains('['))
 }
 
+#[cfg(test)]
 fn project(
     scan: &history::BranchScan,
     params: &CountryParams,
@@ -1150,7 +1452,7 @@ fn project(
             );
         }
     }
-    let mut warnings = content.as_ref().map_or_else(Vec::new, |content| {
+    let warnings = content.as_ref().map_or_else(Vec::new, |content| {
         let mut warnings = content.definitions.warnings.clone();
         warnings.extend(content.catalogue.verification.iter().cloned());
         warnings.extend(content.catalogue.warnings.iter().cloned());
@@ -1171,6 +1473,22 @@ fn project(
         }
         warnings
     });
+    Ok(build_reply(
+        result,
+        params,
+        content
+            .as_ref()
+            .is_some_and(|content| content.definitions.projects.is_empty()),
+        warnings,
+    ))
+}
+
+fn build_reply(
+    result: Builder,
+    params: &CountryParams,
+    definitions_empty: bool,
+    mut warnings: Vec<String>,
+) -> (SpecialProjectsReply, bool) {
     warnings.extend(
         result
             .warnings
@@ -1179,16 +1497,13 @@ fn project(
     );
     let unavailable = if result.available.is_empty() {
         Some("Projects was unavailable, incomplete, or never read for this country.".into())
-    } else if content
-        .as_ref()
-        .is_some_and(|content| content.definitions.projects.is_empty())
-    {
+    } else if definitions_empty {
         Some("The recorded content has no readable special-project definitions.".into())
     } else {
         None
     };
     let needs_scope = result.needs_scope;
-    Ok((
+    (
         SpecialProjectsReply {
             branch_id: params.branch_id.clone(),
             tag: params.tag.clone(),
@@ -1203,7 +1518,7 @@ fn project(
             warnings,
         },
         needs_scope,
-    ))
+    )
 }
 
 fn append_identities(
@@ -1226,17 +1541,21 @@ fn append_identities(
     super::check_reply_budget(reply)
 }
 
+#[cfg(test)]
 type ReplyKey = (u64, String, Vec<String>);
 
+#[cfg(test)]
 #[derive(Default)]
 struct Cache {
     catalogue: Option<Arc<Catalogue>>,
     content: Option<Content>,
+    #[cfg(test)]
     replies: VecDeque<(ReplyKey, SpecialProjectsReply)>,
     completions: VecDeque<(u64, Arc<ProjectCompletions>)>,
     content_error: Option<String>,
 }
 
+#[cfg(test)]
 fn prepare_cache(cache: &mut Cache, politics: &io::Result<Arc<PoliticsContent>>) {
     let catalogue = politics
         .as_ref()
@@ -1250,6 +1569,7 @@ fn prepare_cache(cache: &mut Cache, politics: &io::Result<Arc<PoliticsContent>>)
     if same {
         return;
     }
+    #[cfg(test)]
     cache.replies.clear();
     cache.completions.clear();
     cache.content_error = None;
@@ -1290,6 +1610,7 @@ impl Product for SpecialProjects {
         }
         Ok(())
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -1387,6 +1708,9 @@ mod tests {
         frame::{Metrics, SharedView, TableView},
         rows::{CountryLinkRow, CountryRow, TableRows},
     };
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
 
     pub(super) struct TempRoot(pub(super) std::path::PathBuf);
     impl TempRoot {
@@ -1396,8 +1720,9 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let path = std::env::temp_dir().join(format!(
-                "dashboard-projects-{label}-{}-{nonce}",
-                std::process::id()
+                "dashboard-projects-{label}-{}-{nonce}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
             ));
             std::fs::create_dir(&path).unwrap();
             Self(path)
@@ -1411,8 +1736,6 @@ mod tests {
 
     #[test]
     fn scripted_cancel_leaves_offset_0x18_but_ends_the_episode_cancelled() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sample = frame(100, true, 1);
         let mut project = sample.complete::<tables::Projects>().unwrap()[0].clone();
         let mut builder = Builder::default();
@@ -1446,8 +1769,6 @@ mod tests {
     }
     #[test]
     fn native_states_pause_cancel_and_unset_completion_dates_are_explicit() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sample = frame(100, true, 1);
         let mut project = sample.complete::<tables::Projects>().unwrap()[0].clone();
         let mut builder = Builder::default();
@@ -1502,8 +1823,6 @@ mod tests {
 
     #[test]
     fn gaps_keep_an_episode_but_resets_and_changed_owners_do_not() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut builder = Builder::default();
         let mut sample = frame(100, true, 1);
         builder.observe(&sample, "mod tag", None);
@@ -1584,8 +1903,6 @@ mod tests {
 
     #[test]
     fn every_recorded_hour_is_read_and_runs_break_at_gaps_and_incomplete_tables() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         // The sliced projects family records every hour's rows exactly: a
         // country is read when a hooked writer marks it or after the daily
         // pass, and carried otherwise. No hour waits for a daily slot.
@@ -1630,37 +1947,7 @@ mod tests {
     }
 
     #[test]
-    fn an_older_recording_reads_projects_only_at_their_daily_slot() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let day = 1000 * replay::cadence::STAGGER_PERIOD;
-        let mut builder = Builder {
-            format: replay::format::FormatVersion::read(
-                replay::format::FormatVersion::CURRENT.version() - 1,
-            )
-            .unwrap(),
-            ..Builder::default()
-        };
-        // The previous format read Projects daily at hour 4 and carried them.
-        for hour in day + 2..day + 7 {
-            builder.observe(&frame(hour, false, 1), "mod tag", None);
-        }
-        assert_eq!(builder.reads, [day + 4]);
-        assert_eq!(
-            builder
-                .available
-                .iter()
-                .map(|s| (s.first_hour, s.last_hour))
-                .collect::<Vec<_>>(),
-            [(day + 4, day + 6)]
-        );
-        assert_eq!(builder.episodes[0].start.hour, day + 4);
-    }
-
-    #[test]
     fn all_recorded_projects_are_kept_at_five_thousand_without_player_inputs() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut builder = Builder::default();
         builder.observe(&frame(100, true, 5000), "mod tag", None);
         assert_eq!(builder.episodes.len(), 5000);
@@ -1670,8 +1957,6 @@ mod tests {
 
     #[test]
     fn completion_keeps_only_a_dated_last_assignment_and_a_gap_cannot_supply_it() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sample = frame(100, true, 1);
         let mut project = ProjectRow {
             owner: 5,
@@ -1725,8 +2010,6 @@ mod tests {
 
     #[test]
     fn person_cache_tracks_program_and_character_views() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sample = frame(100, true, 1);
         let mut project = sample.complete::<tables::Projects>().unwrap()[0].clone();
         project.program_reference = (12_u64 << 32) | 83;
@@ -1750,7 +2033,7 @@ mod tests {
         sample.hour = 101;
         builder.observe(&sample, "mod tag", None);
         assert_eq!(builder.people.len(), 1);
-        assert_eq!(builder.person_cache.len(), 1);
+        assert_eq!(builder.naming.people.len(), 1);
         *sample.tables[TableId::Characters.index()] = TableView::Unavailable {
             reason: "missing".into(),
         };
@@ -1780,8 +2063,6 @@ mod tests {
 
     #[test]
     fn country_roster_at_five_thousand_keeps_the_requested_ai_or_human_country() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sample = frame(100, true, 1);
         *sample.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
             (1..=5000)
@@ -1821,8 +2102,6 @@ mod tests {
 
     #[test]
     fn history_count_uses_native_vector_length_missing_is_unknown_and_reset_is_a_new_episode() {
-        engine::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sample = frame(100, true, 1);
         let mut project = ProjectRow {
             owner: 5,
@@ -2031,7 +2310,7 @@ mod tests {
         sample.hour = 101;
         builder.observe(&sample, "mod tag", Some(&mut content));
         assert_eq!(builder.content_ids.len(), 1);
-        assert_eq!(builder.person_cache.len(), 1);
+        assert_eq!(builder.naming.people.len(), 1);
         assert_eq!(builder.presentations[0].name, "Renamed by mod");
         assert_eq!(builder.iteration_texts.len(), 1);
         assert_eq!(builder.iteration_texts[&0].as_deref(), Some("Mod count 0"));

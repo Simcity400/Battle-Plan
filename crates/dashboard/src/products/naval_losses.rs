@@ -21,6 +21,7 @@ use ts_rs::TS;
 use sinkings::{month, month_start};
 
 pub struct NavalLosses;
+pub(crate) mod prepared;
 
 const JS_MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 
@@ -55,7 +56,7 @@ pub struct NavalLossesParams {
     pub period: NavalPeriod,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct NavalLossRun {
     pub first_hour: i32,
@@ -94,7 +95,7 @@ pub struct NavalLossesReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct Events {
     ships: Vec<(i32, i64)>,
     ship_months: BTreeMap<i32, Vec<(i32, i64)>>,
@@ -105,6 +106,11 @@ struct Events {
     unknown_convoy_months: BTreeMap<i32, i32>,
     unknown_ship_months: BTreeMap<i32, i32>,
     unknown_ships: Vec<i32>,
+    // Prepared continuation uses the same uncertainty discoveries as the oracle.
+    ship_unknown_points: Vec<(i32, i32)>,
+    convoy_unknown_points: Vec<(i32, i32)>,
+    convoy_running_unknown: Vec<i32>,
+    baseline_unknown: Option<i32>,
 }
 
 fn baseline(scanned: &sinkings::Scanned, kind: NavalKind) -> Option<i32> {
@@ -196,15 +202,7 @@ fn value(
             .and_then(|m| events.unknown_ship_months.get(&m))
             .is_none_or(|&read| read > hour),
     })
-    .then(|| {
-        if params.period == NavalPeriod::Running {
-            at(&events.ships, hour) - at(&events.ships, first.unwrap_or(hour).saturating_sub(1))
-        } else {
-            bucket
-                .and_then(|m| events.ship_months.get(&m))
-                .map_or(0, |points| at(points, hour))
-        }
-    });
+    .then(|| amounts(events, scanned, params, hour).0);
     let convoys = (known(
         if params.period == NavalPeriod::Running {
             first
@@ -221,7 +219,28 @@ fn value(
             .and_then(|m| events.unknown_convoy_months.get(&m))
             .is_none_or(|&read| read > hour),
     })
-    .then(|| {
+    .then(|| amounts(events, scanned, params, hour).1);
+    (ships, convoys)
+}
+
+fn amounts(
+    events: &Events,
+    scanned: &sinkings::Scanned,
+    params: &NavalLossesParams,
+    hour: i32,
+) -> (i64, i64) {
+    let bucket = month(hour);
+    let first = baseline(scanned, params.kind);
+    let ships = {
+        if params.period == NavalPeriod::Running {
+            at(&events.ships, hour) - at(&events.ships, first.unwrap_or(hour).saturating_sub(1))
+        } else {
+            bucket
+                .and_then(|m| events.ship_months.get(&m))
+                .map_or(0, |points| at(points, hour))
+        }
+    };
+    let convoys = {
         if params.period == NavalPeriod::Running {
             at(&events.convoy_running, hour)
         } else {
@@ -231,7 +250,7 @@ fn value(
                 .and_then(|m| events.convoy_months.get(&m))
                 .map_or(0, |points| at(points, hour))
         }
-    });
+    };
     (ships, convoys)
 }
 
@@ -262,25 +281,52 @@ fn reply_with_retention(
     )
 }
 
-fn reply_with_histories(
+struct Tallies {
+    events: BTreeMap<Identity, Events>,
+    warnings: Vec<String>,
+    unresolved: usize,
+    baseline_crossings: usize,
+    error: Option<String>,
+}
+fn collect(
     scanned: &sinkings::Scanned,
     params: &NavalLossesParams,
     cancelled: &AtomicBool,
-    safe: (bool, bool),
-    loss: (&[sinkings::HistoryLoss], &[sinkings::HistoryLoss]),
     retention_warnings: Vec<String>,
-    histories: Option<&RecordedHistories>,
-) -> io::Result<NavalLossesReply> {
+    events: BTreeMap<Identity, Events>,
+) -> io::Result<Tallies> {
+    collect_parts(
+        scanned,
+        scanned.ships.iter(),
+        scanned.convoys.iter(),
+        Some(uncertainties(scanned, params)),
+        params,
+        cancelled,
+        retention_warnings,
+        events,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn collect_parts<'a>(
+    scanned: &sinkings::Scanned,
+    ships: impl Iterator<Item = &'a sinkings::ShipEvent>,
+    convoys: impl Iterator<Item = &'a sinkings::ConvoyEvent>,
+    uncertainty: Option<Uncertainty<'_>>,
+    params: &NavalLossesParams,
+    cancelled: &AtomicBool,
+    retention_warnings: Vec<String>,
+    mut events: BTreeMap<Identity, Events>,
+) -> io::Result<Tallies> {
     // A native country retains its amounts across tag changes. A tag reused
     // by another native country never inherits its preceding holder's tally.
-    let mut events = BTreeMap::<Identity, Events>::new();
-    let mut bounds = BTreeSet::from([scanned.first_hour, scanned.last_hour.saturating_add(1)]);
-    let mut warnings = scanned.warnings.clone();
-    warnings.extend(retention_warnings);
     let mut unresolved = 0usize;
+    let mut error = None;
     let mut baseline_crossings = 0usize;
     let first_read = baseline(scanned, params.kind);
-    for event in &scanned.ships {
+    for event in ships {
+        #[cfg(test)]
+        sinkings::work::WORK.with(|work| work.borrow_mut().events += 1);
+        crate::metadata::check_cancel(cancelled)?;
         if params.kind == NavalKind::Convoys {
             continue;
         }
@@ -333,18 +379,14 @@ fn reply_with_histories(
                     .get(&raw)
                     .is_none_or(BTreeSet::is_empty)
             {
-                return Err(io::Error::other(format!(
-                    "Naval losses cannot identify possible holders of ship country reference {raw}"
-                )));
+                error.get_or_insert_with(|| format!("Naval losses cannot identify possible holders of ship country reference {raw}"));
             }
             unresolved += 1;
         }
     }
-    let uncertain = match params.attribution {
-        NavalAttribution::Lost => &scanned.uncertain_victims,
-        NavalAttribution::SunkBy => &scanned.uncertain_attackers,
-    };
-    if params.kind != NavalKind::Convoys {
+    if let Some((uncertain, _)) = uncertainty
+        && params.kind != NavalKind::Convoys
+    {
         for (identity, hours) in uncertain {
             let values = events.entry(*identity).or_default();
             for &(sink, read) in hours {
@@ -352,12 +394,16 @@ fn reply_with_histories(
                     values.unknown_ships.push(read);
                 }
                 if let Some(bucket) = month(sink) {
+                    values.ship_unknown_points.push((bucket, read));
                     note_unknown_month(&mut values.unknown_ship_months, bucket, read);
                 }
             }
         }
     }
-    for event in &scanned.convoys {
+    for event in convoys {
+        #[cfg(test)]
+        sinkings::work::WORK.with(|work| work.borrow_mut().events += 1);
+        crate::metadata::check_cancel(cancelled)?;
         if params.kind == NavalKind::Ships {
             continue;
         }
@@ -389,6 +435,11 @@ fn reply_with_histories(
                 .convoys
                 .push((event.read_hour, event.month, event.count));
             if crosses_baseline {
+                values.baseline_unknown = Some(
+                    values
+                        .baseline_unknown
+                        .map_or(event.read_hour, |h| h.min(event.read_hour)),
+                );
                 values.unknown_convoys = Some(
                     values
                         .unknown_convoys
@@ -407,23 +458,20 @@ fn reply_with_histories(
                     .get(&raw)
                     .is_none_or(BTreeSet::is_empty)
             {
-                return Err(io::Error::other(format!(
-                    "Naval losses cannot identify possible holders of convoy country reference {raw}"
-                )));
+                error.get_or_insert_with(|| format!("Naval losses cannot identify possible holders of convoy country reference {raw}"));
             }
             unresolved += 1;
         }
     }
-    let uncertain = if params.attribution == NavalAttribution::Lost {
-        &scanned.uncertain_convoy_owners
-    } else {
-        &scanned.uncertain_convoy_killers
-    };
-    if params.kind != NavalKind::Ships {
+    if let Some((_, uncertain)) = uncertainty
+        && params.kind != NavalKind::Ships
+    {
         for (identity, points) in uncertain {
             let values = events.entry(*identity).or_default();
             for &(bucket, read) in points {
+                values.convoy_unknown_points.push((bucket, read));
                 if first_read.is_some_and(|first| read > first) {
+                    values.convoy_running_unknown.push(read);
                     values.unknown_convoys =
                         Some(values.unknown_convoys.map_or(read, |first| first.min(read)));
                 }
@@ -431,6 +479,15 @@ fn reply_with_histories(
             }
         }
     }
+    // The oracle refuses unidentified operands before doing arithmetic. Keep
+    // that error precedence while preparation retains the pending attribution.
+    let prefix = |points: &mut Vec<(i32, i64)>| {
+        prefix(points).map_err(|failure| {
+            error
+                .as_ref()
+                .map_or(failure, |message| io::Error::other(message.clone()))
+        })
+    };
     for values in events.values_mut() {
         for &(hour, bucket, count) in &values.convoys {
             values.convoy_running.push((hour, count));
@@ -450,12 +507,76 @@ fn reply_with_histories(
             prefix(points)?;
         }
     }
+    let warnings = tally_warnings(scanned, retention_warnings, unresolved, baseline_crossings);
+    Ok(Tallies {
+        events,
+        warnings,
+        unresolved,
+        baseline_crossings,
+        error,
+    })
+}
+
+type Uncertainty<'a> = (
+    &'a BTreeMap<Identity, Vec<(i32, i32)>>,
+    &'a BTreeMap<Identity, Vec<(i32, i32)>>,
+);
+fn uncertainties<'a>(
+    scanned: &'a sinkings::Scanned,
+    params: &NavalLossesParams,
+) -> Uncertainty<'a> {
+    if params.attribution == NavalAttribution::Lost {
+        (&scanned.uncertain_victims, &scanned.uncertain_convoy_owners)
+    } else {
+        (
+            &scanned.uncertain_attackers,
+            &scanned.uncertain_convoy_killers,
+        )
+    }
+}
+
+fn tally_warnings(
+    scanned: &sinkings::Scanned,
+    retention: Vec<String>,
+    unresolved: usize,
+    baseline_crossings: usize,
+) -> Vec<String> {
+    let mut warnings = scanned.warnings.clone();
+    warnings.extend(retention);
     if unresolved > 0 {
         warnings.push(format!("{unresolved} naval changes lack a country identity; only identified possible holders have unknown tallies."));
     }
     if baseline_crossings > 0 {
         warnings.push(format!("{baseline_crossings} convoy changes straddle the common running baseline; the affected convoy total is unknown."));
     }
+    warnings
+}
+
+fn reply_with_histories(
+    scanned: &sinkings::Scanned,
+    params: &NavalLossesParams,
+    cancelled: &AtomicBool,
+    safe: (bool, bool),
+    loss: (&[sinkings::HistoryLoss], &[sinkings::HistoryLoss]),
+    retention_warnings: Vec<String>,
+    histories: Option<&RecordedHistories>,
+) -> io::Result<NavalLossesReply> {
+    let Tallies {
+        events,
+        warnings,
+        error,
+        ..
+    } = collect(
+        scanned,
+        params,
+        cancelled,
+        retention_warnings,
+        BTreeMap::new(),
+    )?;
+    if let Some(error) = error {
+        return Err(io::Error::other(error));
+    }
+    let mut bounds = BTreeSet::from([scanned.first_hour, scanned.last_hour.saturating_add(1)]);
     for spans in [&scanned.ship_unread, &scanned.convoy_unread] {
         for span in spans {
             bounds.insert(span.first_hour);
@@ -478,20 +599,7 @@ fn reply_with_histories(
             m += 1;
         }
     }
-    let selected_ids: Option<BTreeSet<_>> = params.top.is_none().then(|| {
-        histories.map_or_else(
-            || {
-                params
-                    .tags
-                    .iter()
-                    .filter_map(|tag| scanned.country_identities.get(tag))
-                    .flatten()
-                    .map(|span| span.identity)
-                    .collect()
-            },
-            |histories| country_history::selected_identities(histories, &params.tags),
-        )
-    });
+    let selected_ids = selected_ids(scanned, params, histories);
     let mut series = BTreeMap::new();
     for (tag, segments) in &scanned.segments {
         let identities = histories.and_then(|histories| histories.countries.get(tag));
@@ -623,6 +731,40 @@ fn reply_with_histories(
         }
         series.insert(tag.clone(), runs);
     }
+    project_reply(scanned, params, cancelled, warnings, histories, series)
+}
+
+fn selected_ids(
+    scanned: &sinkings::Scanned,
+    params: &NavalLossesParams,
+    histories: Option<&RecordedHistories>,
+) -> Option<BTreeSet<Identity>> {
+    params.top.is_none().then(|| {
+        histories.map_or_else(
+            || {
+                params
+                    .tags
+                    .iter()
+                    .filter_map(|tag| scanned.country_identities.get(tag))
+                    .flatten()
+                    .map(|span| span.identity)
+                    .collect()
+            },
+            |histories| country_history::selected_identities(histories, &params.tags),
+        )
+    })
+}
+
+fn project_reply(
+    scanned: &sinkings::Scanned,
+    params: &NavalLossesParams,
+    cancelled: &AtomicBool,
+    warnings: Vec<String>,
+    histories: Option<&RecordedHistories>,
+    series: BTreeMap<String, Vec<NavalLossRun>>,
+) -> io::Result<NavalLossesReply> {
+    let first_read = baseline(scanned, params.kind);
+    let selected_ids = selected_ids(scanned, params, histories);
     let memberships = params
         .top
         .map(|top| {
@@ -773,6 +915,24 @@ fn reply_with_histories(
     Ok(reply)
 }
 
+pub(crate) fn retention(
+    scanned: &sinkings::Scanned,
+    catalogue: Result<&catalogue::Catalogue, String>,
+) -> sinkings::Retention {
+    match catalogue {
+        Ok(cat) => sinkings::retention(scanned, Some(cat)),
+        Err(error) => sinkings::Retention {
+            ships: false,
+            convoys: false,
+            ship_loss: Vec::new(),
+            convoy_loss: Vec::new(),
+            warnings: vec![format!(
+                "Naval retention defines are unavailable: {error}; completeness of country tallies is unknown."
+            )],
+        },
+    }
+}
+
 impl Product for NavalLosses {
     const KEY: &'static str = "naval-losses";
     const CONTENT_DEPENDENT: bool = true;
@@ -815,18 +975,7 @@ impl Product for NavalLosses {
         let cat = context
             .content()
             .and_then(|content| catalogue::catalogue(source, content));
-        let retention = match cat {
-            Ok(cat) => sinkings::retention(&scanned, Some(&cat)),
-            Err(error) => sinkings::Retention {
-                ships: false,
-                convoys: false,
-                ship_loss: Vec::new(),
-                convoy_loss: Vec::new(),
-                warnings: vec![format!(
-                    "Naval retention defines are unavailable: {error}; completeness of country tallies is unknown."
-                )],
-            },
-        };
+        let retention = retention(&scanned, cat.as_deref().map_err(ToString::to_string));
         reply_with_histories(
             &scanned,
             params,

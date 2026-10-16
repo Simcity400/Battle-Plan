@@ -1,7 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod dashboard_service;
+mod game_process;
 mod native;
+mod preparation;
 mod recorder;
 mod replay_library;
 mod video;
@@ -39,6 +41,10 @@ fn map_action(
     host: State<'_, NativeHost>,
     action: dashboard::protocol::MapAction,
 ) -> Result<(), String> {
+    // The host saves folders first and sends the viewer what it saved.
+    if matches!(action, dashboard::protocol::MapAction::Folders { .. }) {
+        return Err("Set the content folders in Settings".into());
+    }
     host.map_action(action)
 }
 
@@ -140,12 +146,13 @@ fn seek_map(
 fn main() {
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "battle-plan\n\nreplay-desktop [recording.battleplan] [viewer options]\n\nMap keeps the existing native viewer. Analytics opens in its own side tab.\nViewer options such as --game-dir, --user-dir, --branch, --hour and --camera\nare forwarded to the native viewer. --diagnostics shows the maps' technical\nstats and data limitations for this run; F3 or Settings > Diagnostics toggles\nand saves them. Run viewer --help for the full list.\n\nDevelopment: npm run dev\nProduction: npm run build:desktop"
+            "battle-plan\n\nreplay-desktop [recording.battleplan] [viewer options]\n\nMap keeps the existing native viewer. Analytics opens in its own side tab.\n--game-dir and --user-dir override the saved content folders for this run.\nViewer options such as --branch, --hour and --camera are forwarded to the\nnative viewer. --diagnostics shows the maps' technical\nstats and data limitations for this run; F3 or Settings > Diagnostics toggles\nand saves them. Run viewer --help for the full list.\n\nDevelopment: npm run dev\nProduction: npm run build:desktop"
         );
         return;
     }
     let app = tauri::Builder::default()
         .manage(video::VideoState::default())
+        .manage(preparation::PreparationMonitor::default())
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main")
                 && let Err(error) = video::restore(&window)
@@ -156,6 +163,8 @@ fn main() {
                     .map_err(|e| std::io::Error::other(e.to_string()))? = Err(error);
             }
             recorder::start_recorder();
+            app.state::<preparation::PreparationMonitor>()
+                .start(app.handle())?;
             Ok(())
         })
         .manage(NativeHost::default())
@@ -171,6 +180,8 @@ fn main() {
             map_action,
             export_map,
             choose_content_folder,
+            dashboard_service::content_folders,
+            dashboard_service::set_content_folders,
             set_dashboard_maps,
             replay_library::replay_library,
             replay_library::set_replay_folder,
@@ -184,6 +195,12 @@ fn main() {
             seek_map,
             dashboard_service::dashboard_open_source,
             dashboard_service::dashboard_product,
+            dashboard_service::dashboard_prepared_query,
+            dashboard_service::dashboard_preparation_preferences,
+            dashboard_service::dashboard_preparation_status,
+            dashboard_service::dashboard_prepare_source,
+            dashboard_service::dashboard_cancel_preparation,
+            dashboard_service::dashboard_clear_preparation,
             dashboard_service::dashboard_map_settings,
             dashboard_service::dashboard_history_cache,
             dashboard_service::dashboard_cancel,
@@ -196,6 +213,7 @@ fn main() {
             event,
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
         ) {
+            app.state::<preparation::PreparationMonitor>().shutdown(app);
             app.state::<DashboardService>().shutdown();
             app.state::<NativeHost>().shutdown();
         }

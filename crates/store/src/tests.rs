@@ -1,6 +1,263 @@
 use super::*;
 use std::{fs::FileTimes, time::Duration};
 
+thread_local! {
+    pub(super) static VALIDATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static MANIFEST_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static INPUT_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static KEY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[test]
+fn bound_pages_do_not_check_content_or_reread_stamps_and_commits_reuse_the_stamp_file() {
+    let fixture = Fixture::new();
+    let inputs = vec![fixture.content[0].clone(); 64];
+    let key = SourceKey::capture(&fixture.recording, &inputs).unwrap();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("pages", &b"page"[..]).unwrap();
+    writer.commit().unwrap();
+    assert!(fixture.store.is_reusable(&key).unwrap());
+    let source = fixture.store.catalog().unwrap().unwrap().header.source;
+    let stamps = fixture.store.directory.join(source_name(source));
+    let stamp_time = fs::metadata(&stamps).unwrap().modified().unwrap();
+    INPUT_CHECKS.set(0);
+    KEY_READS.set(0);
+    for _ in 0..20 {
+        assert_eq!(
+            bytes(
+                fixture
+                    .store
+                    .read(&key.clone(), "pages", 0)
+                    .unwrap()
+                    .unwrap()
+            ),
+            b"page"
+        );
+    }
+    assert_eq!((INPUT_CHECKS.get(), KEY_READS.get()), (20, 0)); // recording only
+    let mut writer = fixture.store.extend(&key).unwrap();
+    writer.write_at("pages", 0, &b"updated"[..]).unwrap();
+    writer.commit().unwrap();
+    assert_eq!(
+        fixture.store.catalog().unwrap().unwrap().header.source,
+        source
+    );
+    assert_eq!(
+        fs::metadata(stamps).unwrap().modified().unwrap(),
+        stamp_time
+    );
+    assert!(
+        fs::metadata(fixture.store.directory.join(MANIFEST))
+            .unwrap()
+            .len()
+            < 256
+    );
+    // A new content binding refuses the published key; the prior binding and
+    // held handles remain valid until a validated replacement is published.
+    fs::write(&fixture.content[0], b"changed source").unwrap();
+    let changed = SourceKey::capture(&fixture.recording, &inputs).unwrap();
+    assert!(!fixture.store.is_reusable(&changed).unwrap());
+    KEY_READS.set(0);
+    for _ in 0..20 {
+        assert!(fixture.store.read(&changed, "pages", 0).unwrap().is_none());
+    }
+    assert_eq!(KEY_READS.get(), 0);
+    assert!(fixture.store.extend(&key).unwrap().commit().is_err());
+    assert!(!fixture.store.is_reusable(&key).unwrap());
+    assert!(fixture.store.read(&key, "pages", 0).unwrap().is_none());
+}
+
+#[test]
+#[ignore = "40,000 physical files: content binding/reopen timing"]
+fn forty_thousand_inputs_bind_once_then_pages_are_constant_cost() {
+    let fixture = Fixture::new();
+    let inputs: Vec<_> = (0..40_000)
+        .map(|index| fixture.root.join(format!("input-{index}")))
+        .collect();
+    for path in &inputs {
+        fs::write(path, b"synthetic content").unwrap();
+    }
+    let key = SourceKey::capture(&fixture.recording, &inputs).unwrap();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("pages", &b"page"[..]).unwrap();
+    writer.commit().unwrap();
+    // Reproduce the former query path's full stamp recapture + embedded JSON.
+    let old_header = serde_json::to_vec(&key).unwrap();
+    INPUT_CHECKS.set(0);
+    let before = std::time::Instant::now();
+    for _ in 0..9 {
+        for stamp in std::iter::once(&key.recording).chain(key.content.iter()) {
+            INPUT_CHECKS.set(INPUT_CHECKS.get() + 1);
+            let path = std::path::absolute(&stamp.path).unwrap();
+            let metadata = fs::metadata(path).unwrap();
+            assert_eq!(
+                (metadata.len(), metadata.modified().unwrap()),
+                (stamp.size, stamp.modified)
+            );
+        }
+        assert_eq!(
+            serde_json::from_reader::<_, SourceKey>(io::BufReader::new(old_header.as_slice()))
+                .unwrap(),
+            key
+        );
+    }
+    eprintln!(
+        "old 9 reads: {:?}, input_checks={}, embedded_stamp_bytes={}",
+        before.elapsed(),
+        INPUT_CHECKS.get(),
+        old_header.len()
+    );
+    INPUT_CHECKS.set(0);
+    KEY_READS.set(0);
+    let reopen = std::time::Instant::now();
+    let saved = fixture.store.saved_key().unwrap().unwrap();
+    let decode_time = reopen.elapsed();
+    let reopened = saved.recapture().unwrap();
+    assert!(fixture.store.is_reusable(&reopened).unwrap());
+    eprintln!(
+        "reopen+binding: {:?} (decode {:?}), input_checks={}, stamp_reads={}",
+        reopen.elapsed(),
+        decode_time,
+        INPUT_CHECKS.get(),
+        KEY_READS.get()
+    );
+    INPUT_CHECKS.set(0);
+    KEY_READS.set(0);
+    let pages = std::time::Instant::now();
+    for _ in 0..100 {
+        assert!(
+            fixture
+                .store
+                .read(&reopened.clone(), "pages", 0)
+                .unwrap()
+                .is_some()
+        );
+    }
+    eprintln!(
+        "100 pages: {:?}, input_checks={}, stamp_reads={}, manifest_bytes={}",
+        pages.elapsed(),
+        INPUT_CHECKS.get(),
+        KEY_READS.get(),
+        fs::metadata(fixture.store.directory.join(MANIFEST))
+            .unwrap()
+            .len()
+    );
+    assert_eq!((INPUT_CHECKS.get(), KEY_READS.get()), (100, 0));
+}
+
+#[test]
+fn reacquired_file_uses_its_current_section_count() {
+    let fixture = Fixture::new();
+    let key = fixture.save(b"old bytes");
+    let mut old = fixture.store.catalog().unwrap().unwrap();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("countries", &b"new bytes"[..]).unwrap();
+    writer.write("countries", &b"next range"[..]).unwrap();
+    writer.commit().unwrap();
+    drop(fixture.store.extend(&key).unwrap());
+    assert_eq!(
+        fixture
+            .store
+            .read_catalog(&mut old, "countries", 0)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::NotFound
+    );
+    let (count, file) = fixture
+        .store
+        .read_named_counted(&key, "countries", 0)
+        .unwrap();
+    assert_eq!(count, 2);
+    assert_eq!(bytes(file.unwrap()), b"new bytes");
+}
+
+#[test]
+fn series_metadata_and_first_files_use_the_bound_key() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("catalogue", &b"catalogue"[..]).unwrap();
+    for index in 0..5 {
+        writer.write("series", &[index][..]).unwrap();
+    }
+    writer.commit().unwrap();
+    VALIDATIONS.set(0);
+    MANIFEST_READS.set(0);
+    assert_eq!(fixture.store.range_count(&key, "series").unwrap(), Some(5));
+    assert!(fixture.store.read(&key, "catalogue", 0).unwrap().is_some());
+    assert!(fixture.store.read(&key, "series", 0).unwrap().is_some());
+    assert_eq!((VALIDATIONS.get(), MANIFEST_READS.get()), (0, 3));
+    VALIDATIONS.set(0);
+    MANIFEST_READS.set(0);
+    let mut ranges = fixture
+        .store
+        .read_many_counted(&key, &[("catalogue", 0), ("series", 0), ("missing", 0)])
+        .unwrap();
+    assert_eq!((VALIDATIONS.get(), MANIFEST_READS.get()), (0, 1));
+    assert_eq!(ranges.pop().unwrap().0, 0);
+    let (count, file) = ranges.pop().unwrap();
+    assert_eq!(count, 5);
+    fixture.store.clear().unwrap();
+    assert_eq!(bytes(file.unwrap()), [0]);
+    assert_eq!(bytes(ranges.pop().unwrap().1.unwrap()), b"catalogue");
+}
+
+#[test]
+fn requested_ranges_share_one_manifest_without_losing_order_or_held_reads() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let sections: Vec<_> = (0..48)
+        .map(|index| format!("synthetic-text-{index}"))
+        .collect();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    for section in &sections {
+        writer.write(section, section.as_bytes()).unwrap();
+    }
+    writer.commit().unwrap();
+    let mut ranges: Vec<_> = sections
+        .iter()
+        .map(|section| (section.as_str(), 0))
+        .collect();
+    VALIDATIONS.set(0);
+    MANIFEST_READS.set(0);
+    let old: Vec<_> = ranges
+        .iter()
+        .map(|&(section, range)| bytes(fixture.store.read(&key, section, range).unwrap().unwrap()))
+        .collect();
+    assert_eq!((VALIDATIONS.get(), MANIFEST_READS.get()), (0, 48));
+    ranges.extend([
+        ("synthetic-text-0", 0),
+        ("absent", 0),
+        ("synthetic-text-0", 1),
+    ]);
+    VALIDATIONS.set(0);
+    MANIFEST_READS.set(0);
+    let mut files = fixture.store.read_many(&key, &ranges).unwrap();
+    assert_eq!((VALIDATIONS.get(), MANIFEST_READS.get()), (0, 1));
+    assert_eq!(files.len(), ranges.len());
+    assert!(files.pop().unwrap().is_none());
+    assert!(files.pop().unwrap().is_none());
+    fs::write(&fixture.content[0], b"changed content").unwrap();
+    assert!(
+        fixture
+            .store
+            .read_many(&fixture.key(), &ranges)
+            .unwrap()
+            .iter()
+            .all(Option::is_none)
+    );
+    fixture.store.clear().unwrap();
+    let duplicate = files.pop().unwrap().unwrap();
+    assert_eq!(bytes(duplicate), old[0]);
+    assert_eq!(
+        files
+            .into_iter()
+            .map(|file| bytes(file.unwrap()))
+            .collect::<Vec<_>>(),
+        old
+    );
+}
+
 struct Fixture {
     root: PathBuf,
     store: Store,
@@ -131,6 +388,163 @@ fn held_reader_keeps_old_file_through_replacement_and_cleanup() {
 }
 
 #[test]
+fn unchanged_preparation_resumes_without_rewriting_accepted_ranges() {
+    let fixture = Fixture::new();
+    let key = fixture.save(b"accepted prefix");
+    let prefix_path = fixture.range_path(0, 0);
+    let held = fixture.store.read(&key, "countries", 0).unwrap().unwrap();
+    assert_eq!(fixture.store.saved_key().unwrap(), Some(key.clone()));
+    assert_eq!(
+        fixture.store.range_count(&key, "countries").unwrap(),
+        Some(1)
+    );
+    assert_eq!(fixture.store.range_count(&key, "absent").unwrap(), None);
+    let mut writer = fixture.store.extend(&key).unwrap();
+    assert_eq!(writer.bytes_written(), 0);
+    assert_eq!(writer.write("countries", &b"accepted tail"[..]).unwrap(), 1);
+    assert_eq!(writer.bytes_written(), b"accepted tail".len() as u64);
+    assert_eq!(
+        fixture.store.range_count(&key, "countries").unwrap(),
+        Some(1)
+    );
+    writer.commit().unwrap();
+    assert_eq!(fixture.range_path(0, 0), prefix_path);
+    assert_eq!(
+        fixture.store.range_count(&key, "countries").unwrap(),
+        Some(2)
+    );
+    assert_eq!(
+        bytes(fixture.store.read(&key, "countries", 1).unwrap().unwrap()),
+        b"accepted tail"
+    );
+    assert_eq!(bytes(held), b"accepted prefix");
+}
+
+#[test]
+fn resume_refuses_changed_inputs_and_retains_prior_key_for_prefix_decisions() {
+    let fixture = Fixture::new();
+    let key = fixture.save(b"accepted prefix");
+    fs::write(&fixture.recording, b"synthetic appended bytes").unwrap();
+    assert!(fixture.store.extend(&key).is_err());
+    assert_eq!(fixture.store.range_count(&key, "countries").unwrap(), None);
+    assert_eq!(fixture.store.saved_key().unwrap(), Some(key));
+}
+
+#[test]
+fn a_verified_appended_prefix_can_restore_its_accepted_accumulator() {
+    let fixture = Fixture::new();
+    let previous = fixture.save(b"accepted accumulator");
+    fs::write(&fixture.recording, b"synthetic appended tail").unwrap();
+    let current = fixture.key();
+    assert_eq!(previous.recording_size(), b"synthetic".len() as u64);
+    assert!(
+        fixture
+            .store
+            .read(&previous, "countries", 0)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        fixture
+            .store
+            .prefix_range_count(&previous, &current, "countries")
+            .unwrap(),
+        Some(1)
+    );
+    assert_eq!(
+        bytes(
+            fixture
+                .store
+                .read_prefix(&previous, &current, "countries", 0)
+                .unwrap()
+                .unwrap()
+        ),
+        b"accepted accumulator"
+    );
+    fs::write(&fixture.content[0], b"changed base content").unwrap();
+    let changed = fixture.key();
+    assert!(
+        fixture
+            .store
+            .read_prefix(&previous, &changed, "countries", 0)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        fixture
+            .store
+            .prefix_range_count(&previous, &changed, "countries")
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn partial_tail_replacement_preserves_logical_ranges_and_held_readers() {
+    let fixture = Fixture::new();
+    let key = fixture.save(b"old tail");
+    let held = fixture.store.read(&key, "countries", 0).unwrap().unwrap();
+    let mut writer = fixture.store.extend(&key).unwrap();
+    writer
+        .write_at("countries", 0, &b"extended tail"[..])
+        .unwrap();
+    writer.write_at("countries", 1, &b"next"[..]).unwrap();
+    writer
+        .write_at("countries", 1, &b"next completed"[..])
+        .unwrap();
+    assert!(writer.write_at("countries", 3, &b"hole"[..]).is_err());
+    assert_eq!(
+        bytes(writer.read_at("countries", 0).unwrap().unwrap()),
+        b"extended tail"
+    );
+    assert_eq!(
+        bytes(writer.read_at("countries", 1).unwrap().unwrap()),
+        b"next completed"
+    );
+    assert!(writer.read_at("countries", 2).unwrap().is_none());
+    assert!(writer.read_at("unknown", 0).unwrap().is_none());
+    assert_eq!(
+        writer.payload_bytes_change(),
+        (b"extended tail".len() + b"next completed".len() - b"old tail".len()) as i128
+    );
+    assert_eq!(
+        bytes(fixture.store.read(&key, "countries", 0).unwrap().unwrap()),
+        b"old tail"
+    );
+    writer.commit().unwrap();
+    assert_eq!(
+        fixture.store.range_count(&key, "countries").unwrap(),
+        Some(2)
+    );
+    assert_eq!(
+        bytes(fixture.store.read(&key, "countries", 0).unwrap().unwrap()),
+        b"extended tail"
+    );
+    assert_eq!(
+        bytes(fixture.store.read(&key, "countries", 1).unwrap().unwrap()),
+        b"next completed"
+    );
+    assert_eq!(bytes(held), b"old tail");
+}
+
+#[test]
+fn abandoned_tail_replacement_keeps_the_published_tail() {
+    let fixture = Fixture::new();
+    let key = fixture.save(b"published tail");
+    let mut writer = fixture.store.extend(&key).unwrap();
+    writer
+        .write_at("countries", 0, &b"unaccepted partial"[..])
+        .unwrap();
+    drop(writer);
+    let writer = fixture.store.extend(&key).unwrap();
+    drop(writer);
+    assert_eq!(
+        bytes(fixture.store.read(&key, "countries", 0).unwrap().unwrap()),
+        b"published tail"
+    );
+}
+
+#[test]
 fn clear_removes_names_while_held_reader_finishes_and_new_writes_work() {
     let fixture = Fixture::new();
     let key = fixture.save(b"held through clear");
@@ -141,7 +555,13 @@ fn clear_removes_names_while_held_reader_finishes_and_new_writes_work() {
     assert!(fixture.store.read(&key, "countries", 0).unwrap().is_none());
     fixture.save(b"after clear");
     assert_eq!(
-        bytes(fixture.store.read(&key, "countries", 0).unwrap().unwrap()),
+        bytes(
+            fixture
+                .store
+                .read(&fixture.key(), "countries", 0)
+                .unwrap()
+                .unwrap()
+        ),
         b"after clear"
     );
     assert_eq!(bytes(held), b"held through clear");
@@ -171,7 +591,7 @@ fn crash_between_data_and_manifest_recovers_previous_complete_state() {
     );
     assert!(fixture.store.read(&key, "wars", 0).unwrap().is_none());
     let recovered = fixture.store.replace(key).unwrap();
-    assert_eq!(fixture.names().len(), 3); // manifest, old range, lock
+    assert_eq!(fixture.names().len(), 4); // manifest, source stamps, old range, lock
     assert!(old_path.exists());
     drop(recovered);
 }
@@ -209,9 +629,12 @@ fn source_size_or_modified_time_alone_prevents_reuse() {
             assert_eq!(after.len() == before.len(), !change_size);
             assert_eq!(after.modified().unwrap() == modified, change_size);
             assert!(!fixture.store.is_reusable(&now).unwrap());
-            assert!(!fixture.store.is_reusable(&old).unwrap());
+            assert_eq!(fixture.store.is_reusable(&old).unwrap(), content);
             assert!(fixture.store.read(&now, "countries", 0).unwrap().is_none());
-            assert!(fixture.store.read(&old, "countries", 0).unwrap().is_none());
+            assert_eq!(
+                fixture.store.read(&old, "countries", 0).unwrap().is_some(),
+                content
+            );
         }
     }
 }
@@ -275,10 +698,11 @@ fn append_refuses_unchanged_recording_changed_content_or_wrong_prefix() {
     let grown = fixture.key();
     let mut wrong_prefix = old.clone();
     wrong_prefix.recording.size -= 1;
+    wrong_prefix.binding = Arc::default();
     assert!(fixture.store.append(&wrong_prefix, grown).is_err());
     fs::write(&fixture.content[1], b"changed mod archive").unwrap();
     assert!(fixture.store.append(&old, fixture.key()).is_err());
-    assert_eq!(fixture.names().len(), 3);
+    assert_eq!(fixture.names().len(), 4);
 }
 
 #[test]
@@ -306,7 +730,7 @@ fn hundred_year_file_count_opens_only_the_manifest_header_and_one_entry() {
     let id = Uuid::new_v4();
     let header = Header {
         version: VERSION,
-        key: key.clone(),
+        source: fixture.store.catalog().unwrap().unwrap().header.source,
         sections: vec![
             Section {
                 name: "countries".into(),
@@ -375,4 +799,21 @@ fn malformed_manifest_is_refused_without_cleanup() {
     // Clear can discard an invalid store without parsing its manifest.
     fixture.store.clear().unwrap();
     assert_eq!(fixture.names(), [LOCK]);
+}
+
+#[test]
+fn recapture_checks_same_ordered_paths_and_current_stamps() {
+    let fixture = Fixture::new();
+    let initial = fixture.key();
+    assert_eq!(initial.recapture().unwrap(), initial);
+    fs::write(&fixture.recording, b"synthetic appended recording").unwrap();
+    let grown = initial.recapture().unwrap();
+    assert_eq!(grown, fixture.key());
+    assert!(grown.recording_size() > initial.recording_size());
+    fs::write(&fixture.content[1], b"changed mod archive length").unwrap();
+    let changed = initial.recapture().unwrap();
+    assert_eq!(changed, fixture.key());
+    assert_ne!(changed, grown);
+    assert_eq!(changed.content[0], initial.content[0]);
+    assert_eq!(changed.content[1].path, initial.content[1].path);
 }

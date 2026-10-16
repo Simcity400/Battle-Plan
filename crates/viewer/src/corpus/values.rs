@@ -10,26 +10,8 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
-
-pub(crate) fn sorted_set<T: Ord>(set: &std::collections::HashSet<T>) -> BTreeSet<&T> {
-    set.iter().collect()
-}
-
-// Owned content fields only; input handles and runtime caches are left out.
-macro_rules! debug_fields {
-    ($ty:ident($this:ident) { $($field:ident),* $(,)? } { $($name:ident => $value:expr),* $(,)? }) => {
-        impl std::fmt::Debug for $ty {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                let $this = self;
-                f.debug_struct(stringify!($ty))
-                    $(.field(stringify!($field), &$this.$field))*
-                    $(.field(stringify!($name), &$value))*
-                    .finish()
-            }
-        }
-    };
-}
-pub(crate) use debug_fields;
+#[cfg(test)]
+use viewer_foundation::debug_fields::sorted_set;
 
 pub(super) type Error = Arc<Mutex<Option<io::Error>>>;
 

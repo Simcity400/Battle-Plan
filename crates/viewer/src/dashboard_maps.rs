@@ -6,7 +6,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -15,6 +15,10 @@ use std::{
     thread,
     time::Duration,
 };
+use viewer_foundation::map::gpu_contract::SOFTWARE_RENDERER_NOTICE;
+use viewer_foundation::map::gpu_contract::is_software;
+use viewer_foundation::map::ui_scale::Setting;
+use viewer_foundation::worker_priority::background_priority;
 
 use dashboard::protocol::{DashboardMapState, DashboardMapView, ViewBounds};
 use dashboard::{Service, Source, SourceKey};
@@ -25,24 +29,55 @@ use crate::{
     app::{Viewer, date, load_scene, map_overlay, partial_notice},
     document::{Content, Document, InitialHour},
     hours::{Resources, SharedDecoder},
-    map::scene::Scene,
 };
+use viewer_world::map::scene::Scene;
 
 // Immutable artwork can be shared only when the recording and visual choices match.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct MapSourceKey {
     recording: SourceKey,
     texture_quality: u8,
-    visual_mods: Option<Vec<String>>,
+    visual_mods: Option<Vec<installed_content::content::visual::Choice>>,
 }
 
 struct MapSource {
     texture_quality: u8,
-    visual_mods: Option<Vec<String>>,
+    visual_mods: Option<Vec<installed_content::content::visual::Choice>>,
     source: Arc<Source>,
     decoder: Arc<SharedDecoder>,
     content: Option<Arc<Content>>,
     error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct RequestedSource {
+    path: PathBuf,
+    revision: String,
+}
+
+impl RequestedSource {
+    fn target(target: &DashboardMapView) -> Self {
+        Self {
+            path: target.path.clone().into(),
+            revision: target.revision.clone(),
+        }
+    }
+
+    fn open(&self, service: &Service) -> Result<Arc<Source>, String> {
+        service.open_map(&self.path, Some(&self.revision))
+    }
+}
+
+struct OpeningSource {
+    requested: RequestedSource,
+    result: mpsc::Receiver<Result<Arc<Source>, String>>,
+    alive: Arc<AtomicBool>,
+}
+
+impl Drop for OpeningSource {
+    fn drop(&mut self) {
+        self.alive.store(false, Ordering::Release);
+    }
 }
 
 struct MapView {
@@ -91,7 +126,7 @@ struct LoadingSource {
     texture_quality: u8,
     key: MapSourceKey,
     config: Config,
-    visual_mods: Option<Vec<String>>,
+    visual_mods: Option<Vec<installed_content::content::visual::Choice>>,
     result: mpsc::Receiver<Result<Arc<Content>, String>>,
     alive: Arc<AtomicBool>,
 }
@@ -185,13 +220,15 @@ impl Drop for ScenePermit {
 
 pub struct DashboardMaps {
     /// The process-wide interface scale setting every map view draws at.
-    pub(crate) ui_scale: crate::map::ui_scale::Setting,
+    pub(crate) ui_scale: Setting,
     config: Config,
     options: Options,
     service: Arc<Service>,
     gpu: Option<(wgpu::Device, wgpu::Queue)>,
     resources: Arc<Resources>,
     sources: BTreeMap<MapSourceKey, MapSource>,
+    source_bindings: BTreeMap<RequestedSource, Result<Arc<Source>, String>>,
+    opening_source: Option<OpeningSource>,
     views: BTreeMap<String, MapView>,
     order: Vec<String>,
     // Content::load has its own scoped asset waves. Admit only one cold source
@@ -282,6 +319,8 @@ impl DashboardMaps {
             gpu,
             resources,
             sources: BTreeMap::new(),
+            source_bindings: BTreeMap::new(),
+            opening_source: None,
             views: BTreeMap::new(),
             order: Vec::new(),
             loading: None,
@@ -425,41 +464,9 @@ impl DashboardMaps {
         }
         self.order = views.iter().map(|view| view.id.clone()).collect();
         for target in views {
-            let resolved = self.service.source(&target.source_id).and_then(|source| {
-                if source.key().revision != target.revision
-                    || source.path() != Path::new(&target.path)
-                {
-                    return Err("The map source does not match its recording snapshot".into());
-                }
-                let settings = self
-                    .service
-                    .widget_map_settings(&source.replay(), &target.id);
-                let key = MapSourceKey {
-                    recording: source.key().clone(),
-                    texture_quality: settings.graphics.texture_quality,
-                    visual_mods: settings.visual_mods.clone(),
-                };
-                if !self.sources.contains_key(&key) {
-                    let decoder = self
-                        .resources
-                        .decoder(source.replay())
-                        .map_err(|error| error.to_string())?;
-                    self.sources.insert(
-                        key.clone(),
-                        MapSource {
-                            visual_mods: settings.visual_mods,
-                            texture_quality: settings.graphics.texture_quality,
-                            source,
-                            decoder,
-                            content: None,
-                            error: None,
-                        },
-                    );
-                }
-                Ok(key)
-            });
+            let resolved = self.resolved_source(&target);
             let (source, error) = match resolved {
-                Ok(source) => (Some(source), None),
+                Ok(source) => (source, None),
                 Err(error) => (None, Some(error)),
             };
 
@@ -515,6 +522,18 @@ impl DashboardMaps {
             if let Some(view) = self.views.get_mut(&target_id) {
                 view.viewer.diagnostics = self.diagnostics;
             }
+        }
+        let requested: BTreeSet<_> = self
+            .views
+            .values()
+            .map(|view| RequestedSource::target(&view.target))
+            .collect();
+        self.source_bindings
+            .retain(|key, _| requested.contains(key));
+        if let Some(opening) = &self.opening_source
+            && !requested.contains(&opening.requested)
+        {
+            opening.alive.store(false, Ordering::Release);
         }
         let live: BTreeSet<_> = self
             .views
@@ -591,7 +610,141 @@ impl DashboardMaps {
         }
     }
 
+    fn resolved_source(
+        &mut self,
+        target: &DashboardMapView,
+    ) -> Result<Option<MapSourceKey>, String> {
+        let Some(binding) = self.source_bindings.get(&RequestedSource::target(target)) else {
+            return Ok(None);
+        };
+        let source = binding.clone()?;
+        let settings = self
+            .service
+            .widget_map_settings(&source.replay(), &target.id);
+        let key = MapSourceKey {
+            recording: source.key().clone(),
+            texture_quality: settings.graphics.texture_quality,
+            visual_mods: settings.visual_mods.clone(),
+        };
+        if !self.sources.contains_key(&key) {
+            let decoder = self
+                .resources
+                .decoder(source.replay())
+                .map_err(|error| error.to_string())?;
+            self.sources.insert(
+                key.clone(),
+                MapSource {
+                    visual_mods: settings.visual_mods,
+                    texture_quality: settings.graphics.texture_quality,
+                    source,
+                    decoder,
+                    content: None,
+                    error: None,
+                },
+            );
+        }
+        Ok(Some(key))
+    }
+
+    fn poll_sources(&mut self, ctx: &egui::Context) {
+        let finished =
+            self.opening_source
+                .as_ref()
+                .and_then(|opening| match opening.result.try_recv() {
+                    Ok(result) => Some((
+                        opening.requested.clone(),
+                        opening.alive.load(Ordering::Acquire),
+                        result,
+                    )),
+                    Err(mpsc::TryRecvError::Empty) => None,
+                    Err(mpsc::TryRecvError::Disconnected) => Some((
+                        opening.requested.clone(),
+                        opening.alive.load(Ordering::Acquire),
+                        Err("Native map source loader stopped".into()),
+                    )),
+                });
+        if let Some((requested, alive, result)) = finished {
+            self.opening_source = None;
+            if alive
+                && self
+                    .views
+                    .values()
+                    .any(|view| RequestedSource::target(&view.target) == requested)
+            {
+                self.source_bindings.insert(requested, result);
+            }
+        }
+        let pending: Vec<_> = self
+            .views
+            .values()
+            .filter(|view| view.source.is_none() && view.error.is_none())
+            .map(|view| view.target.clone())
+            .collect();
+        for target in pending {
+            let resolved = self.resolved_source(&target);
+            if let Some(view) = self.views.get_mut(&target.id) {
+                match resolved {
+                    Ok(source) => view.source = source,
+                    Err(error) => view.error = Some(error),
+                }
+            }
+        }
+        if self.opening_source.is_none() {
+            let requested = self
+                .order
+                .iter()
+                .filter_map(|id| self.views.get(id))
+                .filter(|view| {
+                    view.target.visible
+                        && view.target.clip.width > 0
+                        && view.target.clip.height > 0
+                        && view.admission_error.is_none()
+                        && view.error.is_none()
+                })
+                .map(|view| RequestedSource::target(&view.target))
+                .find(|requested| !self.source_bindings.contains_key(requested));
+            if let Some(requested) = requested {
+                let service = Arc::clone(&self.service);
+                let load = requested.clone();
+                let alive = Arc::new(AtomicBool::new(true));
+                let job_alive = Arc::clone(&alive);
+                let (sender, result) = mpsc::sync_channel(1);
+                let wake = ctx.clone();
+                match thread::Builder::new()
+                    .name("native map source".into())
+                    .spawn(move || {
+                        background_priority();
+                        if !job_alive.load(Ordering::Acquire) {
+                            return;
+                        }
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            load.open(&service)
+                        }))
+                        .unwrap_or_else(|_| Err("Native map source loader panicked".into()));
+                        if job_alive.load(Ordering::Acquire) {
+                            let _ = sender.send(result);
+                        }
+                        wake.request_repaint();
+                    }) {
+                    Ok(_) => {
+                        self.opening_source = Some(OpeningSource {
+                            requested,
+                            result,
+                            alive,
+                        })
+                    }
+                    Err(error) => {
+                        self.source_bindings
+                            .insert(requested, Err(error.to_string()));
+                        ctx.request_repaint();
+                    }
+                }
+            }
+        }
+    }
+
     pub fn poll(&mut self, ctx: &egui::Context) {
+        self.poll_sources(ctx);
         let finished = self
             .loading
             .as_ref()
@@ -783,7 +936,7 @@ impl DashboardMaps {
                     hour_fraction: 0.0,
                 };
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let document = Document::load_shared(
+                    let mut document = Document::load_shared(
                         source_handle.path(),
                         &resolve,
                         allow,
@@ -793,6 +946,7 @@ impl DashboardMaps {
                         texture_quality,
                     )
                     .map_err(|error| error.to_string())?;
+                    document.bind_source(Arc::clone(&source_handle), resolve.clone(), allow);
                     if !job_alive.load(Ordering::Acquire) {
                         return Err("Map asset loading was cancelled".into());
                     }
@@ -862,11 +1016,11 @@ impl DashboardMaps {
                 });
             } else if view.viewer.has_map() {
                 if let Some(source) = view.source.as_ref().and_then(|key| self.sources.get(key)) {
-                    let graphics = self
-                        .service
-                        .widget_map_settings(&source.source.replay(), &view.target.id)
-                        .graphics;
-                    view.viewer.set_embedded_graphics(graphics);
+                    let scope = dashboard::map_settings::widget_key(
+                        &dashboard::map_settings::campaign_key(&source.source.replay()),
+                        &view.target.id,
+                    );
+                    view.viewer.follow_map_settings(&self.service, scope);
                 }
                 view.viewer.ui_scale = self.ui_scale;
                 view.viewer.map_ui(&mut map_ui, frame, &view.target);
@@ -893,12 +1047,9 @@ impl DashboardMaps {
                         partial_notice(ui, replay.expect("partial recording has a source"));
                         if frame
                             .wgpu_render_state()
-                            .is_some_and(|state| crate::render::is_software(&state.adapter))
+                            .is_some_and(|state| is_software(&state.adapter))
                         {
-                            ui.colored_label(
-                                egui::Color32::YELLOW,
-                                crate::render::SOFTWARE_RENDERER_NOTICE,
-                            );
+                            ui.colored_label(egui::Color32::YELLOW, SOFTWARE_RENDERER_NOTICE);
                         }
                     }
                     if state.loading {
@@ -934,6 +1085,56 @@ fn same_config(left: &Config, right: &Config) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_foreign_lease_binds_by_path_revision_and_keeps_owner_only_in_target() {
+        let path = std::env::temp_dir().join(format!(
+            "native-map-binding-{}.battleplan",
+            uuid::Uuid::new_v4()
+        ));
+        let replay = crate::playback::tests::fixture();
+        std::fs::write(&path, replay.bytes()).unwrap();
+        let revision = dashboard::protocol::replay_revision(&path).unwrap();
+        let service = Service::new(Arc::new(|_| true)).unwrap();
+        let mut target = DashboardMapView {
+            options: Default::default(),
+            id: "synthetic-widget".into(),
+            source_id: "host-only-lease".into(),
+            path: path.to_string_lossy().into_owned(),
+            revision: revision.clone(),
+            branch_id: "1".into(),
+            playing: false,
+            hour: 105,
+            fraction: 0.0,
+            sequence: 7,
+            seek_sequence: Some(2),
+            bounds: ViewBounds {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 100,
+            },
+            clip: ViewBounds {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 100,
+            },
+            visible: true,
+        };
+        assert!(service.source(&target.source_id).is_err());
+        let requested = RequestedSource::target(&target);
+        let source = requested.open(&service).unwrap();
+        assert_eq!(source.key().revision, revision);
+        target.source_id = "different-host-owner".into();
+        assert_eq!(RequestedSource::target(&target), requested);
+        assert!(Arc::ptr_eq(&source, &requested.open(&service).unwrap()));
+        target.revision = "released-or-stale-revision".into();
+        assert!(RequestedSource::target(&target).open(&service).is_err());
+        drop(source);
+        drop(service);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn map_registry_entries_do_not_move_renderers_on_the_ui_stack() {

@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
+import { useParityRows } from '../../dashboard/parityRows';
 import { useContextMenu } from '../../components/ContextMenu';
 import ChordChart from '../../charts/chord/ChordChart';
 import type { ChordFrame } from '../../charts/chord/ChordChart';
@@ -110,7 +111,7 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
   const filter = worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, hour, track?.branch.lastHour ?? hour);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'casualty-pairs',
     params: { branchId: track.branch.id, tags: [], between: false, window: null } } : null;
-  const manifest = useProduct<CasualtyPairsReply>(runtime.client, request, active, validateCasualtyPairs);
+  const manifest = useProduct<CasualtyPairsReply>(runtime.client, request, active, validateCasualtyPairs, track?.source);
   const currentWindows = casualtyPairWindows(manifest.data, hour, widget.time.mode === 'follow');
   const detailWindows = open ? casualtyPairWindows(manifest.data, detailHour, effectiveDrill.follow) : [];
   const chartWindows = open && manifest.data ? viewWindows(manifest.data.windows, chartRange) : [];
@@ -120,13 +121,16 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
   const identity = track && selection.ready ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, selection.tags, between]) : null;
   const histories = useProductWindows<CasualtyPairsReply>(runtime.client, identity, index => ({ ...request!,
     params: { branchId: track!.branch.id, tags: selection.tags, between, window: index } }), wanted, active && manifest.data?.available === true,
-    validateCasualtyPairs);
+    validateCasualtyPairs, track?.source);
   const data = currentWindows.length ? histories.data.get(currentWindows[0]) : undefined;
   const error = currentWindows.length ? histories.errors.get(currentWindows[0]) : undefined;
   const detailData = detailWindows.length ? histories.data.get(detailWindows[0]) : undefined;
   const detailError = detailWindows.length ? histories.errors.get(detailWindows[0]) : undefined;
   const snapshot = useMemo(() => data ? casualtyPairsAt(data, hour, tag => !grouped || filter.tags === null || filter.tags.has(tag), between)
     : { countries: [], flows: [] }, [data, hour, filter.tags, grouped, between]);
+  useParityRows(anchor, () => ({ kind: 'windowed', label: 'Casualty pairs exact values', complete: !!data,
+    total: snapshot.flows.length, rows: snapshot.flows.map(flow => ({ ...flow, value: flow.value.toString() })),
+    countries: snapshot.countries, window: data?.window, observed: data?.observed, warnings: data?.warnings }));
   const chartReplies = useMemo(() => chartWindows.flatMap(index => histories.data.has(index) ? [histories.data.get(index)!] : []),
     [chartWindows.join(','), histories.data]); // eslint-disable-line react-hooks/exhaustive-deps
   const selectedIds = useMemo(() => pinned ? savedSelection ?? casualtyPairIds([...histories.data.values()]) : detail ?? [],

@@ -266,6 +266,7 @@ test('native focus details request only opened dated rows and preserve static de
   const host = globalThis as typeof globalThis & { __focusDetails?: typeof fixture };
   host.__focusDetails = fixture;
   const replacements: Record<string, string> = {
+    '/components/VirtualList.tsx': 'export const VirtualList = ({ items, rowProps, children }) => items.map((item, index) => ({ type: "li", props: { ...rowProps?.(item, index), children: children(item, index) } }));',
     '/dashboard/products.ts': `export const useProduct = () => ({ data: {
       history: { segments: [{ firstHour: 100, lastHour: 200, order: { current: null, continuous: null, paused: false,
         completed: [{ ordinal: 0, token: 'scoped', completedByHour: 101 }, { ordinal: 1, token: 'plain', completedByHour: 102 }] } }], progress: [] },
@@ -296,10 +297,11 @@ test('native focus details request only opened dated rows and preserve static de
     if (Array.isArray(root)) return root.flatMap(elements);
     if (!root || typeof root !== 'object' || !('props' in root)) return [];
     const element = root as Element;
+    if (typeof element.type === 'function' && ['VirtualList', 'FocusCompletion'].includes(element.type.name)) return elements((element.type as Function)(element.props));
     return [element, ...elements(element.props.children)];
   };
   try {
-    const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
+    const { LegacyNationalFocusWidget: Widget } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
     const { FAILED_FACT, nameKey } = await vite.ssrLoadModule('/ui/src/dashboard/countryFacts.ts') as typeof import('../../dashboard/countryFacts');
     const props = { widget: { id: 'details', kind: 'national-focus', trackIds: ['track'], countries: { kind: 'tags', tags: ['M0'] }, time: { mode: 'campaign' } },
       runtime: { client: {}, tracks: [{ id: 'track', axisOffset: 0, branch: { id: '1', firstHour: 100, lastHour: 200 },
@@ -359,6 +361,7 @@ test('a closing row keeps the description it showed while its demand is released
   const host = globalThis as typeof globalThis & { __focusShown?: typeof fixture };
   host.__focusShown = fixture;
   const replacements: Record<string, string> = {
+    '/components/VirtualList.tsx': 'export const VirtualList = ({ items, rowProps, children }) => items.map((item, index) => ({ type: "li", props: { ...rowProps?.(item, index), children: children(item, index) } }));',
     '/dashboard/products.ts': `export const useProduct = () => ({ data: {
       history: { segments: [{ firstHour: 100, lastHour: 200, order: { current: null, continuous: null, paused: false,
         completed: [{ ordinal: 0, token: 'scoped', completedByHour: 101 }] } }], progress: [] },
@@ -387,10 +390,15 @@ test('a closing row keeps the description it showed while its demand is released
       },
     }] });
   type Element = { type: unknown; props: { children?: unknown; className?: string; onToggle?: (event: { currentTarget: { open: boolean } }) => void } };
-  const elements = (root: unknown): Element[] => Array.isArray(root) ? root.flatMap(elements)
-    : root && typeof root === 'object' && 'props' in root ? [root as Element, ...elements((root as Element).props.children)] : [];
+  const elements = (root: unknown): Element[] => {
+    if (Array.isArray(root)) return root.flatMap(elements);
+    if (!root || typeof root !== 'object' || !('props' in root)) return [];
+    const element = root as Element;
+    if (typeof element.type === 'function' && ['VirtualList', 'FocusCompletion'].includes(element.type.name)) return elements((element.type as Function)(element.props));
+    return [element, ...elements(element.props.children)];
+  };
   try {
-    const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
+    const { LegacyNationalFocusWidget: Widget } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
     const { FAILED_FACT, nameKey } = await vite.ssrLoadModule('/ui/src/dashboard/countryFacts.ts') as typeof import('../../dashboard/countryFacts');
     const props = { widget: { id: 'shown', kind: 'national-focus', trackIds: ['track'], countries: { kind: 'tags', tags: ['M0'] }, time: { mode: 'campaign' } },
       runtime: { client: {}, tracks: [{ id: 'track', axisOffset: 0, branch: { id: '1', firstHour: 100, lastHour: 200 },

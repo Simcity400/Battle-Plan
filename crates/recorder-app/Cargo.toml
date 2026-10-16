@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 recorder = { path = "../recorder" }
 replay.workspace = true
 installed-content.workspace = true
+installed-content-image.workspace = true
 tauri = { version = "2", features = ["tray-icon"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

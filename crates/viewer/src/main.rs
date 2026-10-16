@@ -1,30 +1,42 @@
+use std::time::Instant;
+use viewer_foundation::map::camera::MapSize;
+use viewer_foundation::map::camera::Placement;
+use viewer_foundation::map::frame::shadow_fade_factor;
+use viewer_foundation::map::layers::Omissions;
+use viewer_foundation::map::perspective::Choice;
+use viewer_foundation::map::perspective::Country;
+use viewer_foundation::map::perspective::Resolution;
+use viewer_foundation::map::ui_scale::extent;
+use viewer_foundation::map::ui_scale::valid;
+// Removed when the in-flight playback import is updated.
+pub use viewer_foundation::blocks;
+use viewer_foundation::profile_writer::profile_flush;
 mod app;
-mod blocks;
-mod combat;
+use viewer_combat as combat;
+#[cfg(test)]
+mod combat_integration_tests;
 mod compare;
 mod corpus;
+#[cfg(test)]
+mod counter_integration_tests;
 mod dashboard_maps;
 mod document;
+#[cfg(test)]
+mod raid_integration_tests;
+use viewer_foundation::errors::invalid;
 mod embedded;
 mod engaged_index;
 mod hours;
 mod map;
-mod parallel;
+mod map_assets;
+mod map_checkpoints;
+mod map_icons;
+mod map_views;
 mod playback;
-mod profiling;
 mod raid_lane;
 mod render;
-mod state_resources;
-mod table_access;
 #[cfg(test)]
 mod unit_scale_tests;
-mod worker_priority;
-
-/// How long a test waits on another thread before failing instead of hanging.
-/// Only a hang guard, never a timing check: a full build saturates every core,
-/// and a below-normal-priority worker can then be starved for many seconds.
-#[cfg(test)]
-const TEST_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(120);
 
 use dashboard::Config;
 
@@ -33,12 +45,11 @@ use dashboard::Config;
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-use map::{camera::Camera, frame::DayNight, political};
-// names
-use map::{
-    name_pass::LayerFade,
-    scene::{Overlay, Request},
+use {
+    viewer_foundation::map::camera::Camera, viewer_foundation::map::frame::DayNight,
+    viewer_world::map::political,
 };
+// names
 use replay::{BranchId, Hour};
 use std::{
     collections::BTreeSet,
@@ -47,17 +58,59 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
+use {
+    viewer_world::map::name_pass::LayerFade, viewer_world::map::scene::Overlay,
+    viewer_world::map::scene::Request,
+};
 
-const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is; a moving
+/// The tooling the viewer runs on its own. Interactive maps belong to the
+/// desktop app, which starts this process for them.
+const USAGE: &str = "viewer is the battle-plan app's map renderer; replay-desktop.exe starts it.
+On its own it runs tooling:
+viewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>
+viewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>
+viewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]
+Folders: --game-dir <directory> --user-dir <directory>, default the desktop app's saved folders
+Options: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is; a moving
          division's counter stands at its settled route point all hour, as the game draws it
-         --allow-unverified-content\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded, the viewing country (default recorded)\n         --fog on|off, the game's fog-of-war switch (default on)\n         --allied-plans on|off, viewer-local allied battle-plan visibility\n         --counter-colors allegiance|country --nato-counters on|off, the game's counter\n           options (default: the user folder's settings.txt)\n         --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result\nWindow: --diagnostics shows technical stats and data limitations for this run; F3 or the\n        header's Diagnostics checkbox toggles and saves them (off by default)\n        --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, zero in a dump:\n             the fog-of-war noise, the entity animation and the map-icon windows' GUI clock\n           --map-time <seconds>, the map scene's own second clock: the selection\n             pulse, the river flow and the waves\n           --settle <seconds>, play that many seconds before the frame so entity events\n             (damaged fire and smoke) and particles are under way; renders at the clock plus it\n           --building-camera <x,z,height>, repeatable: earlier views whose map buildings the frame keeps\n           --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with interface rectangles\n             (device pixels at --ui-scale 1), sprite frames and text\n           --ui-scale <0.5..3>, --dump and --window-dump: device pixels per map-interface pixel\n             (counters, icons, labels, combat window); default 1.0, the game's frame at gui_scale 1\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+         --allow-unverified-content
+         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off
+         --perspective <TAG>|recorded, the viewing country (default recorded)
+         --fog on|off, the game's fog-of-war switch (default on)
+         --allied-plans on|off, viewer-local allied battle-plan visibility (default off)
+         --day-night on|off, the map's day/night lighting (default on)
+         --counter-colors allegiance|country --nato-counters on|off, the game's counter
+           options (default: the user folder's settings.txt)
+         --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result
+         --diagnostics, technical stats and data limitations; dumps and captures report the
+           limitations either way
+Window dump: --window-dump opens a window, renders through the windowed path at --width/--height
+             and --camera, writes the frame to --out and exits
+             --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>
+             sample a deterministic sequence; default is one frame at time zero
+Dump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, zero in a dump:
+             the fog-of-war noise, the entity animation and the map-icon windows' GUI clock
+           --map-time <seconds>, the map scene's own second clock: the selection
+             pulse, the river flow and the waves
+           --settle <seconds>, play that many seconds before the frame so entity events
+             (damaged fire and smoke) and particles are under way; renders at the clock plus it
+           --building-camera <x,z,height>, repeatable: earlier views whose map buildings the frame keeps
+           --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states
+           --debug-borders, the game's console toggle: no gradient fill and no border strips
+           --no-water, a verification aid that skips the water plane as the game's debug_water does
+           --no-trees, a verification aid that skips the canopy as the game's debug_trees does
+           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,
+             rivers,weather,orders,models,sprawl,buildings,rails
+             labels include VP/capital sprites; counters include bases/combat; borders include straits;
+             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud
+           --counters-json <out.json>, submitted plates with interface rectangles
+             (device pixels at --ui-scale 1), sprite frames and text
+           --ui-scale <0.5..3>, --dump and --window-dump: device pixels per map-interface pixel
+             (counters, icons, labels, combat window); default 1.0, the game's frame at gui_scale 1
+Compare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
-fn invalid(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
-}
-
-fn parse_placement(value: &str) -> io::Result<map::camera::Placement> {
+fn parse_placement(value: &str) -> io::Result<Placement> {
     let values = value
         .split(',')
         .map(str::parse::<f32>)
@@ -66,7 +119,7 @@ fn parse_placement(value: &str) -> io::Result<map::camera::Placement> {
     if values.len() != 3 || !values.iter().all(|value| value.is_finite()) {
         return Err(invalid("camera requires finite world-x,world-z,height"));
     }
-    Ok(map::camera::Placement {
+    Ok(Placement {
         center: [values[0], values[1]],
         height: values[2],
     })
@@ -115,8 +168,7 @@ fn parse_fraction(value: &str) -> io::Result<f32> {
 struct Options {
     combat: Option<combat::Selector>,
     replay: Option<PathBuf>,
-    /// Where a rendered frame is written: `--dump`'s and `--window-dump`'s
-    /// output, and the destination of the window's own F12 capture.
+    /// Where a rendered frame is written: `--dump`'s and `--window-dump`'s output.
     out: Option<PathBuf>,
     /// `--dump`: render one frame without opening a window.
     headless_dump: bool,
@@ -169,15 +221,18 @@ struct Options {
     /// `--perspective` and `--fog`: the game's two map controls. `recorded`
     /// (the default) views the map as the recording client's viewpoint at that hour and a tag as
     /// that country; `--fog off` is the game's `fow` console switch. See
-    /// `map::perspective`.
-    perspective: map::perspective::Choice,
-    /// Viewer-local allied-plan switch for the window and headless comparisons.
+    /// `viewer_foundation::map::perspective`.
+    perspective: Choice,
+    /// Viewer-local allied-plan switch for dumps and window dumps.
     allied_plans: Option<bool>,
-    camera: Option<map::camera::Placement>,
+    /// `--day-night`: the map's day/night lighting for dumps and window dumps;
+    /// the desktop app's maps take its graphics preferences.
+    day_night: Option<bool>,
+    camera: Option<Placement>,
     /// `--dump --building-camera <x,z,height>`, repeatable: cameras the map
     /// visited before this frame, in order. Map buildings keep what those views
     /// created, as a live session does.
-    building_cameras: Vec<map::camera::Placement>,
+    building_cameras: Vec<Placement>,
     size: [u32; 2],
     game_dir: Option<PathBuf>,
     user_dir: Option<PathBuf>,
@@ -194,31 +249,31 @@ struct Options {
     /// `--postfx off` renders without the engine's colour grading.
     postfx: bool,
     /// `--dump --no-water` skips the water plane, which is what the game's
-    /// `debug_water` console toggle does; see `map::scene::Request::no_water`.
+    /// `debug_water` console toggle does; see `viewer_world::map::scene::Request::no_water`.
     no_water: bool,
     /// `--dump --no-shadows` skips the cast-shadow chain, which is what the
     /// game's `Draw.Shadows` console toggle does; see
-    /// `map::scene::Request::no_shadows`.
+    /// `viewer_world::map::scene::Request::no_shadows`.
     no_shadows: bool,
     // trees
     /// `--dump --no-trees` skips the canopy, which is what the game's
-    /// `debug_trees` console toggle does; see `map::scene::Request::no_trees`.
+    /// `debug_trees` console toggle does; see `viewer_world::map::scene::Request::no_trees`.
     no_trees: bool,
     /// Dump-only comma-separated pass omissions, for residual attribution.
-    layers: map::layers::Omissions,
+    layers: Omissions,
     /// Write the actual rendered counter quads, grouped into plates.
     counters_json: Option<PathBuf>,
     /// `--ui-scale`: device pixels per interface pixel of the screen-space map
     /// interface. A dump renders at the game's frame size, where the verified
-    /// comparison pipeline uses 1.0, so that is the default; the window
-    /// otherwise uses its setting ([`map::ui_scale`]).
+    /// comparison pipeline uses 1.0, so that is the default; the desktop app's
+    /// maps take its setting ([`viewer_foundation::map::ui_scale`]).
     ui_scale: Option<f32>,
     /// `--counter-colors` and `--nato-counters`: the game's counter options
-    /// ([`map::counters::CounterSettings`]) in place of `settings.txt`'s.
-    counter_colors: Option<map::counters::CounterColorMode>,
+    /// ([`viewer_counters::map::counters::CounterSettings`]) in place of `settings.txt`'s.
+    counter_colors: Option<viewer_counters::map::counters::CounterColorMode>,
     nato_counters: Option<bool>,
-    /// `--diagnostics`: show the window's technical stats and data
-    /// limitations for this run without changing the saved choice.
+    /// `--diagnostics`: show the map's technical stats and data limitations
+    /// for this run without changing the desktop app's saved choice.
     diagnostics: bool,
     // borders
     /// `--dump --demilitarized <ids>`: state ids to treat as demilitarised **in addition to** the
@@ -228,7 +283,7 @@ struct Options {
     demilitarized: BTreeSet<u32>,
     /// `--dump --debug-borders`: the game's own console toggle, which removes the gradient
     /// political fill and the border strips and leaves bare terrain. Pairing a frame with and
-    /// without it permits direct fill comparison; `map::gradient` owns the fill law.
+    /// without it permits direct fill comparison; `viewer_world::map::gradient` owns the fill law.
     debug_borders: bool,
 }
 
@@ -236,9 +291,9 @@ impl Options {
     /// `settings`, the user's counter options, with the command line's overrides.
     pub(crate) fn counter_settings(
         &self,
-        settings: map::counters::CounterSettings,
-    ) -> map::counters::CounterSettings {
-        map::counters::CounterSettings {
+        settings: viewer_counters::map::counters::CounterSettings,
+    ) -> viewer_counters::map::counters::CounterSettings {
+        viewer_counters::map::counters::CounterSettings {
             color_mode: self.counter_colors.unwrap_or(settings.color_mode),
             nato: self.nato_counters.unwrap_or(settings.nato),
         }
@@ -322,7 +377,7 @@ impl Options {
                         .next()
                         .and_then(|value| value.into_string().ok())
                         .ok_or_else(|| invalid(USAGE))?;
-                    options.layers = map::layers::Omissions::parse(&value)?;
+                    options.layers = Omissions::parse(&value)?;
                 }
                 Some("--postfx") => {
                     let value = args
@@ -341,7 +396,7 @@ impl Options {
                         .next()
                         .and_then(|value| value.into_string().ok())
                         .ok_or_else(|| invalid(USAGE))?;
-                    options.demilitarized = map::demilitarized::parse_states(&value)?;
+                    options.demilitarized = viewer_world::map::demilitarized::parse_states(&value)?;
                 }
                 Some("--debug-borders") => options.debug_borders = true,
                 Some("--exclude-game-ui") => options.exclude_game_ui = true,
@@ -393,7 +448,7 @@ impl Options {
                     let scale = value
                         .parse::<f32>()
                         .ok()
-                        .filter(|scale| map::ui_scale::valid(*scale))
+                        .filter(|scale| valid(*scale))
                         .ok_or_else(|| {
                             let range = dashboard::protocol::MAP_UI_SCALE_RANGE;
                             invalid(format!(
@@ -428,6 +483,7 @@ impl Options {
                     | "--perspective"
                     | "--fog"
                     | "--allied-plans"
+                    | "--day-night"
                     | "--counter-colors"
                     | "--nato-counters"
                     | "--animation-time"
@@ -503,26 +559,32 @@ impl Options {
                             options.building_cameras.push(parse_placement(&value)?)
                         }
                         // counters
-                        "--perspective" => {
-                            options.perspective.country = map::perspective::Country::parse(&value)?
-                        }
-                        "--fog" => {
-                            options.perspective.fog = map::perspective::Choice::parse_fog(&value)?
-                        }
-                        "--allied-plans" => {
-                            options.allied_plans = Some(match value.trim() {
+                        "--perspective" => options.perspective.country = Country::parse(&value)?,
+                        "--fog" => options.perspective.fog = Choice::parse_fog(&value)?,
+                        "--allied-plans" | "--day-night" => {
+                            let enabled = match value.trim() {
                                 value if value.eq_ignore_ascii_case("on") => true,
                                 value if value.eq_ignore_ascii_case("off") => false,
-                                _ => return Err(invalid("--allied-plans takes on or off")),
-                            });
+                                _ => {
+                                    return Err(invalid(format!(
+                                        "{} takes on or off",
+                                        arg.to_string_lossy()
+                                    )));
+                                }
+                            };
+                            if arg == "--allied-plans" {
+                                options.allied_plans = Some(enabled);
+                            } else {
+                                options.day_night = Some(enabled);
+                            }
                         }
                         "--counter-colors" => {
                             options.counter_colors = Some(match value.trim() {
                                 value if value.eq_ignore_ascii_case("allegiance") => {
-                                    map::counters::CounterColorMode::Allegiance
+                                    viewer_counters::map::counters::CounterColorMode::Allegiance
                                 }
                                 value if value.eq_ignore_ascii_case("country") => {
-                                    map::counters::CounterColorMode::Country
+                                    viewer_counters::map::counters::CounterColorMode::Country
                                 }
                                 _ => {
                                     return Err(invalid(
@@ -550,7 +612,7 @@ impl Options {
         if options.size.iter().any(|size| !(1..=16384).contains(size)) {
             return Err(invalid("image dimensions must be 1 through 16384"));
         }
-        if options.layers != map::layers::Omissions::default() && !options.headless_dump {
+        if options.layers != Omissions::default() && !options.headless_dump {
             return Err(invalid("--layers omits named passes and requires --dump"));
         }
         if !options.building_cameras.is_empty() && !options.headless_dump {
@@ -562,7 +624,7 @@ impl Options {
         if options.ui_scale.is_some() && !(options.headless_dump || options.window_dump) {
             return Err(invalid(
                 "--ui-scale sets a dump's map interface scale and requires --dump or --window-dump; \
-                 the window uses its UI scale setting",
+                 the desktop app sends its maps their UI scale",
             ));
         }
         if options.compare.is_some() {
@@ -610,10 +672,8 @@ impl Options {
                 "the hour fraction is how far past a recorded hour the frame is and needs --hour",
             ));
         }
-        // capture: `--out` is the destination of the window's F12 capture too,
-        // so it names a file for all three paths and selects none of them. Only
-        // `--dump` renders without a window; `--window-dump` needs a destination
-        // because it closes the window as soon as it has written one.
+        // capture: `--window-dump` needs a destination because it closes the
+        // window as soon as it has written one.
         if options.window_dump && options.out.is_none() {
             return Err(invalid("--window-dump writes one frame and needs --out"));
         }
@@ -629,11 +689,13 @@ impl Options {
         {
             return Err(invalid(
                 "--presentation-time, --map-time and --settle set the clocks a dump otherwise renders \
-                 at zero; the window runs its own, and --window-dump samples it with --animation-time",
+                 at zero; a window runs its own, and --window-dump samples it with --animation-time",
             ));
         }
-        if options.out.is_some() && options.replay.is_none() {
-            return Err(invalid(USAGE));
+        if options.out.is_some() && !(options.headless_dump || options.window_dump) {
+            return Err(invalid(
+                "--out names the frame --dump or --window-dump writes",
+            ));
         }
         if options.no_water && !options.headless_dump {
             return Err(invalid(
@@ -802,9 +864,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         run_compare(&options, paths)?;
         return Ok(());
     }
-    let (mut config, mut config_error) = match Config::load() {
-        Ok(config) => (config, None),
-        Err(error) => (Config::default(), Some(error.to_string())),
+    if parent.is_none() && !options.headless_dump && !options.window_dump {
+        return Err(invalid(
+            "The battle-plan app (replay-desktop.exe) shows maps and starts this \
+             renderer itself. On its own the viewer runs --dump, --window-dump, --compare, \
+             --mod-corpus and --mod-corpus-diff; see --help.",
+        )
+        .into());
+    }
+    // The desktop host passes its folders on the command line. Tooling reads
+    // the host's saved folders as defaults for its own folder options.
+    let (mut config, mut config_error) = if parent.is_some() {
+        (Config::default(), None)
+    } else {
+        match Config::load() {
+            Ok(config) => (config, None),
+            Err(error) => (Config::default(), Some(error.to_string())),
+        }
     };
     if let Some(path) = &options.game_dir {
         config.game_dir = path.clone();
@@ -819,7 +895,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let (Some(output), true) = (&options.out, options.headless_dump) {
         if let Some(error) = config_error {
-            return Err(invalid(format!("viewer.json: {error}")).into());
+            return Err(invalid(format!("Content preferences: {error}")).into());
         }
         // The GUI textures load with the document, for the device the dump renders on.
         render::probe_dump_device()?;
@@ -853,9 +929,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         // counters: a dump names its hour, so a viewing country that hour does not hold is an
         // error here rather than the window's stated fallback to the recorded player.
-        if let map::perspective::Resolution::Absent(tag) =
-            document.vision(&options.perspective)?.resolution()
-        {
+        if let Resolution::Absent(tag) = document.vision(&options.perspective)?.resolution() {
             return Err(Box::new(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
@@ -903,9 +977,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("{line}");
         }
         // orders: the recorded player's battle plan
-        let show_allied = options
-            .allied_plans
-            .unwrap_or(config.show_allied_plans.unwrap_or(false));
+        let show_allied = options.allied_plans.unwrap_or(false);
         let order_field = if show_allied {
             document.order_field_with_allied(&options.perspective, true)?
         } else {
@@ -918,9 +990,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for warning in &warnings {
             eprintln!("Warning: {warning}");
         }
-        let map_size = map::camera::MapSize::of(&document.map);
+        let map_size = MapSize::of(&document.map);
         let defines = document.map_defines;
-        let place = |placement: map::camera::Placement| {
+        let place = |placement: Placement| {
             let [min, max] = defines.heights;
             if !(min..=max).contains(&placement.height) {
                 return Err(invalid(format!(
@@ -975,14 +1047,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut combat_warnings = Vec::new();
         if let Some(selector) = options.combat {
             let mut window = combat::Window::default();
-            let selection = selector.resolve(&document)?;
+            let selection = selector.resolve(document.frame()?)?;
             window.open(selection);
             // Draw until every flag and portrait the window asked for is decoded.
             let drawn = loop {
                 let before = document.icons.lazy.version();
                 let drawn = window.draw(
-                    &document,
-                    map::ui_scale::extent(options.size, ui_scale),
+                    &document.combat,
+                    document.playback.branch(),
+                    document.playback.hour(),
+                    document.frame(),
+                    extent(options.size, ui_scale),
                     &options.perspective,
                     None,
                     options.counter_settings(document.game_counters).nato,
@@ -1029,11 +1104,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .join(", ")
             );
         }
+        let nuclear_impacts = document.nuclear_impacts()?;
+        let map_text = document
+            .hour()?
+            .map_text(&*document.vision(&options.perspective)?);
         let report = render::dump_png(
             &document.assets,
             // political fill + borders
             render::MapLayers {
                 content: &document.content,
+                at: (document.frame()?.branch, document.frame()?.hour),
+                map_text: &map_text,
                 omitted,
                 political: &layers,
                 border_assets: &document.border_assets,
@@ -1050,6 +1131,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 intel_map: &intel_map,
                 // the map's table frame
                 frame_assets: &document.frame_assets,
+                nuclear_impacts: &nuclear_impacts,
                 // close zoom
                 sprawl: &document.sprawl,
                 map_buildings: &document.map_buildings,
@@ -1068,7 +1150,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 order_assets: &document.orders,
                 order_field: &order_field,
                 weather_assets: document.weather_effects.clone(),
-                weather_field: crate::map::weather_effects::field(document.frame()?)?,
+                weather_field: viewer_world::map::weather_effects::field(document.frame()?)?,
                 // trees
                 tree_assets: &document.tree_assets,
                 tree_geometry: &document.tree_geometry,
@@ -1081,7 +1163,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Request {
                 size: options.size,
                 camera,
-                day_night: DayNight::at_hour(hour).with_cycle(config.day_night.unwrap_or(true)),
+                day_night: DayNight::at_hour(hour).with_cycle(options.day_night.unwrap_or(true)),
                 // `vGlobalTime`: zero unless `--presentation-time` names one, so
                 // a headless dump is deterministic either way.
                 animation_time: options.presentation_time,
@@ -1117,8 +1199,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Warning: {warning}");
         }
         let frame = document.frame()?;
-        let batch = map::counter_tooltips::Batch::new(
-            &document.content,
+        let batch = viewer_counter_products::map::counter_tooltips::Batch::new(
+            &document.counter_content,
+            document.icons.raids.movement_reads(),
             frame,
             &counter_report.perspective,
             options.counter_settings(document.game_counters).nato,
@@ -1141,8 +1224,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .filter(|hover| hover.supported && hover.has_tooltip())
                 .map(|hover| batch.build_task_force_port(hover)),
         );
-        let tooltip_refused = map::counter_tooltips::count_refusals(tooltips);
-        for warning in app::tooltip_warning_lines(&tooltip_refused) {
+        let tooltip_refused =
+            viewer_counter_products::map::counter_tooltips::count_refusals(tooltips);
+        for warning in viewer_foundation::diagnostics_panel::tooltip_warning_lines(&tooltip_refused)
+        {
             eprintln!("Warning: {warning}");
         }
         if let Some(path) = &options.counters_json {
@@ -1251,7 +1336,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if report.shadows { "drawn" } else { "skipped" },
             camera.height,
             camera.defines.shadows[0],
-            map::frame::shadow_fade_factor(&camera.defines, camera.height),
+            shadow_fade_factor(&camera.defines, camera.height),
         );
         // colour
         if let Some(grading) = &report.grading {
@@ -1264,7 +1349,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             document.tree_field.buckets.len(),
             document.tree_assets.meshes.len(),
             document.tree_geometry.vertices.len(),
-            map::trees::tree_fade(&camera.defines, camera.height),
+            viewer_world::map::trees::tree_fade(&camera.defines, camera.height),
             camera.height,
             report.tree_instances,
             report.tree_draw_calls,
@@ -1374,7 +1459,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             summary.entities,
             summary.meshes,
             camera.height,
-            map::models::draws_city_sprawl(&camera),
+            viewer_world::map::models::draws_city_sprawl(&camera),
             report.sprawl_drawn,
             document.sprawl_build.as_secs_f64() * 1000.0
         );
@@ -1422,7 +1507,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             rail_mesh.unanchored,
             rail_mesh.samples,
             rail_mesh.native_vertices.len(),
-            map::railways::RailFade::default().update(&camera, 0.0),
+            viewer_world::map::railways::RailFade::default().update(&camera, 0.0),
             camera.height,
             document.rail_build.as_secs_f64() * 1000.0
         );
@@ -1454,12 +1539,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         if let Some(reason) = &unit_report.disabled {
             println!("  the unit-model layer is off: {reason}");
-        }
-        if unit_report.label_ordering > 0 {
-            println!(
-                "  no model for {}: the no-pair fallback's order needs unrecorded variant labels",
-                unit_report.label_ordering
-            );
         }
         for (reason, count) in &unit_report.selection_errors {
             println!("  no model for {count}: {reason}");
@@ -1502,7 +1581,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             document.names.graph.edge_count(),
             report.icon_pages
         );
-        let mut placed: Vec<&map::name_pass::WorldName> = placements.country.iter().collect();
+        let mut placed: Vec<&viewer_foundation::map::name_draw::WorldName> =
+            placements.country.iter().collect();
         placed.sort_by(|a, b| {
             b.font_size
                 .partial_cmp(&a.font_size)
@@ -1596,7 +1676,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         // The recorded naval engaged bytes against the flag derived for the recording's
         // player, over every recorded hour: the count offline runs read.
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let check = engaged_index::check_recorded_bytes(document.playback.replay());
         let lines = check.lines();
         if lines.is_empty() {
@@ -1705,6 +1785,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let viewport = eframe::egui::ViewportBuilder::default()
         .with_inner_size([1400.0, 900.0])
         .with_min_inner_size([800.0, 500.0]);
+    // Only a `--window-dump` opens a window of its own.
     let viewport = if parent.is_some() {
         viewport
             .with_visible(false)
@@ -1735,7 +1816,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(Box::new(viewer))
         }),
     )?;
-    map::counter_move::profile_flush();
+    profile_flush();
     let failure = failure.lock().map_err(|error| error.to_string())?.take();
     match failure {
         Some(error) => Err(invalid(error).into()),
@@ -1747,7 +1828,7 @@ fn main() -> std::process::ExitCode {
     let result = run();
     // Profiling lines are written by a thread of their own; every mode waits
     // for them, a headless dump included.
-    map::counter_move::profile_flush();
+    profile_flush();
     match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
@@ -1785,7 +1866,7 @@ mod tests {
     #[test]
     fn perspective_and_fog_are_the_two_view_options() {
         let default = parse(&["campaign.battleplan"]).unwrap();
-        assert_eq!(default.perspective, map::perspective::Choice::default());
+        assert_eq!(default.perspective, Choice::default());
         assert!(default.perspective.fog);
         let options = parse(&[
             "campaign.battleplan",
@@ -1797,8 +1878,8 @@ mod tests {
         .unwrap();
         assert_eq!(
             options.perspective,
-            map::perspective::Choice {
-                country: map::perspective::Country::Tag("SOV".into()),
+            Choice {
+                country: Country::Tag("SOV".into()),
                 fog: false,
             }
         );
@@ -1810,7 +1891,7 @@ mod tests {
     /// The counter options default to `settings.txt`'s and take the command line's overrides.
     #[test]
     fn counter_options_override_the_users_settings() {
-        use map::counters::{CounterColorMode, CounterSettings};
+        use viewer_counters::map::counters::{CounterColorMode, CounterSettings};
         let from_file = CounterSettings {
             color_mode: CounterColorMode::Country,
             nato: true,
@@ -2035,10 +2116,11 @@ mod tests {
         assert_eq!(dump.camera.unwrap().height, 300.0);
         assert_eq!(dump.size, [2048, 1152]);
 
-        let window = parse(&["campaign.battleplan", "--branch", "2"]).unwrap();
-        assert_eq!(window.replay, Some(PathBuf::from("campaign.battleplan")));
-        assert!(window.out.is_none() && window.compare.is_none());
-        assert!(!window.headless_dump && !window.window_dump);
+        // The desktop app forwards a recording and its options to the map.
+        let hosted = parse(&["campaign.battleplan", "--branch", "2"]).unwrap();
+        assert_eq!(hosted.replay, Some(PathBuf::from("campaign.battleplan")));
+        assert!(hosted.out.is_none() && hosted.compare.is_none());
+        assert!(!hosted.headless_dump && !hosted.window_dump);
 
         assert!(parse(&["--dump", "campaign.battleplan", "--hour", "1"]).is_err());
         assert!(parse(&["--dump", "campaign.battleplan", "--out", "f.png"]).is_err());
@@ -2078,7 +2160,7 @@ mod tests {
         assert!(dump.layers.labels && dump.layers.counters && dump.layers.gradient);
         assert!(!dump.layers.borders);
         for value in ["unknown", "labels,", ""] {
-            assert!(map::layers::Omissions::parse(value).is_err());
+            assert!(Omissions::parse(value).is_err());
         }
         assert!(parse(&["c.battleplan", "--layers", "trees"]).is_err());
         assert!(parse(&["--compare", "g.png", "v.png", "--layers", "trees"]).is_err());
@@ -2224,16 +2306,38 @@ mod tests {
         );
     }
 
-    // capture
     #[test]
-    fn the_window_takes_out_as_the_destination_of_its_own_capture() {
-        let options = parse(&["campaign.battleplan", "--out", "capture.png"]).unwrap();
-        assert!(!options.window_dump);
-        // `--out` alone still opens a window; it only names where F12 writes.
-        assert!(!options.headless_dump);
-        assert_eq!(options.out, Some(PathBuf::from("capture.png")));
-        // A destination with nothing to render into it is still a mistake.
+    fn out_names_only_a_dump_or_window_dump_frame() {
+        assert!(parse(&["campaign.battleplan", "--out", "capture.png"]).is_err());
         assert!(parse(&["--out", "capture.png"]).is_err());
+        let dump = parse(&[
+            "--window-dump",
+            "campaign.battleplan",
+            "--hour",
+            "1",
+            "--out",
+            "frame.png",
+        ])
+        .unwrap();
+        assert_eq!(dump.out, Some(PathBuf::from("frame.png")));
+    }
+
+    #[test]
+    fn dumps_choose_day_night_and_allied_plans_explicitly() {
+        let dump = |extra: &[&str]| {
+            let mut args = vec!["--dump", "c.battleplan", "--hour", "1", "--out", "f.png"];
+            args.extend_from_slice(extra);
+            parse(&args)
+        };
+        let plain = dump(&[]).unwrap();
+        assert_eq!((plain.day_night, plain.allied_plans), (None, None));
+        let chosen = dump(&["--day-night", "OFF", "--allied-plans", "on"]).unwrap();
+        assert_eq!(
+            (chosen.day_night, chosen.allied_plans),
+            (Some(false), Some(true))
+        );
+        assert!(dump(&["--day-night", "maybe"]).is_err());
+        assert!(dump(&["--day-night"]).is_err());
     }
 
     #[test]

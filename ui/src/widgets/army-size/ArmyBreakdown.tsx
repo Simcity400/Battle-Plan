@@ -56,7 +56,7 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
   const history = useProductWindows<ArmySizeReply>(runtime.client, identity, window => ({
     sourceId: track!.source.id, revision: track!.source.revision, product: 'army-size',
     params: armySizeRequest(track!.branch.id, { tags: [tag!] }, measure, countFor, measure === 'battalions', window),
-  }), wanted, active && !!tag, value => validateArmyWindow(value, manifest!));
+  }), wanted, active && !!tag, value => validateArmyWindow(value, manifest!), track?.source);
   const incomingData = useMemo(() => manifest ? mergeArmyWindows(manifest, history.data, wanted) : undefined,
     [manifest, history.data, wanted.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
   const pending = required.some(index => !history.data.has(index));

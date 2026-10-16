@@ -79,6 +79,22 @@ export const wingName = (row: AceRow) => row.run.wing === null ? 'No wing' : run
 export const aircraftName = (row: AceRow) => row.run.wing === null ? '' : row.run.aircraft === null ? 'Aircraft not recorded' : row.run.aircraft.length ? row.run.aircraft.map(id => variantNameAt(row.data.variants[id] ?? [], row.hour, 'Unknown aircraft')).join(' · ') : 'No aircraft recorded';
 export const aceStatus = (row: AceRow) => row.run.alive ? `Ace by ${date(row.ace.firstSeen)}` : row.run.death?.byHour != null ? `Killed by ${date(row.run.death.byHour)}` : 'Killed, date not recorded';
 export const aceJump = (row: AceRow) => row.run.death?.byHour ?? row.ace.firstSeen;
+
+/** Exact row operands and their referenced text/design inputs. Whole replies
+ * and process-wide content diagnostics are not operands of one ace row. */
+export function aceRowModel(row: AceRow) {
+  const killerIds = [...new Set(row.ace.runs.flatMap(run => run.death?.killerAce ? [run.death.killerAce] : []))].sort();
+  const killers = killerIds.map(id => ({ id, ace: row.roster.get(id) ?? null }));
+  const entries = [row.ace, ...killers.flatMap(killer => killer.ace ? [killer.ace] : [])];
+  const indices = [...new Set(entries.flatMap(ace => ace.runs.flatMap(run => [run.name, run.callsign, run.wingName]
+    .filter((index): index is number => index !== null))))].sort((a, b) => a - b);
+  const variants = [...new Set(entries.flatMap(ace => ace.runs.flatMap(run => run.aircraft ?? [])))].sort();
+  return { key: row.key, ace: row.ace, run: row.run, hour: row.hour, killers,
+    coverage: { branchId: row.data.branchId, firstHour: row.data.firstHour, lastHour: row.data.lastHour,
+      observed: runAt(row.data.observed, row.hour), window: { index: row.window.window, firstHour: row.window.firstHour, lastHour: row.window.lastHour } },
+    texts: indices.map(index => ({ index, value: row.window.texts[index] })),
+    variants: variants.map(id => ({ id, runs: row.data.variants[id] ?? [] })) };
+}
 export function aceTooltip(row: AceRow, name: (tag: string) => string): TooltipContent {
   const rows: TooltipRow[] = [
     { label: row.run.tag === null ? 'Country not recorded' : name(row.run.tag) },

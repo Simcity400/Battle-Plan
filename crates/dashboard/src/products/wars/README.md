@@ -1,6 +1,6 @@
 # Wars product
 
-`wars` returns a whole branch's native war overview groups for one viewpoint.
+Prepared `wars` queries return a branch's native war overview groups for one viewpoint.
 The default follows recorded LocalPlayer, including observer choices;
 `viewpointTag` selects another recorded country. Groups can differ by viewpoint
 and overlap: this is not a global war census. Factions prune candidates but
@@ -11,7 +11,8 @@ including retired occurrences and swap removals.
 
 | File | Responsibility |
 |---|---|
-| [../wars.rs](../wars.rs) | Product, branch/viewpoint cache, dated projection, app continuity and casualty membership shared with breakdowns. |
+| [../wars.rs](../wars.rs) | Product metadata, dated projection, app continuity and casualty membership; the recording loader is a test oracle and the shared branch/viewpoint cache also serves casualty breakdowns. |
+| [prepared.rs](prepared.rs) | One branch-global change observer, shared relation casualty series and reached-hour reply assembly. |
 | [native.rs](native.rs) | Grouping, representative selection and indexed deduplication. |
 | [naming.rs](naming.rs) | Recorded native name operands and content-resolved war names. |
 | [labels.rs](labels.rs) | Historical country names for label measurement. |
@@ -53,6 +54,43 @@ total. Capitulations use recorded flag/hour evidence and require a continuously
 observed identity whose participant run contains the event; unresolved identities
 warn, and missing capitulation coverage has its own spans.
 
+## Prepared queries
+
+The pipeline observes native inputs once for the branch. Shared events retain
+changed topology/naming tables and capitulation evidence, using the existing
+prepared decoder checkpoint encoding compressed before JSON event publication.
+Semantic name operands ignore unrelated hourly balances; casualty-only hours add
+no input event. One small catalogue keeps relation-lifetime keys, their first
+supplying read and the latest inputs for resume. Four shared series hold exact
+counters in canonical endpoint order, with unknown spans preserved.
+
+The shared frame fact guards native relation normalisation and semantic input
+comparisons. Unchanged hours advance the accumulator frontier; balance-only
+country changes preserve resolved operands. Changed casualties refresh the held
+native join and observe only changed, new or removed counters. Naming-only
+changes publish their event without revisiting unchanged relation counters. A stored future
+capitulation date still becomes usable when the accepted clock reaches it.
+
+A query applies its viewpoint or LocalPlayer through the same native observation,
+continuity and reply builder as the branch scan. Work grows with structural
+changes; topology inputs decode one change at a time. Casualty counters read
+contiguous requested `reads: [{hour}]` windows through the series reader, keeping
+only reached values and preserving canonical run bounds across commits. Open
+counter runs come from the accumulator. Two adjacent runs prove the earlier
+bounds; a run count equal to elapsed hours proves hourly closed runs. One shared
+`values_at` call per reached hour supplies all missing amounts, retaining one
+amount per counter. Other history uses the requested windows once per key,
+including when overlapping groups share that counter. Replies keep the ordinary
+shape. The widget requests its displayed and hovered hours
+independently of its structural timeline.
+
+`prepared::projection` returns the typed whole-branch `WarsReply`, including
+Rust relation memberships and native lifetime keys, dated names, app IDs,
+observed bounds, availability and warnings. A selected native-holder set uses
+the same dated holder lookup as the branch scan, follows its aliases and never
+falls back to LocalPlayer or a replacement holder. Exact casualty hours affect
+only numeric hydration; earlier memberships and names remain in the projection.
+
 ## Names and cost
 
 Names use recorded prefix/first-goal operands, recorded content and shared
@@ -64,8 +102,8 @@ an invented title. Stored text keeps the shared recording-language guard.
 `countryNames` is only a catalogue for measuring historical labels; it never
 fills a name, flag, roster or value at a missing hour.
 
-Cache the most recently requested replies by branch, viewpoint/native selection
-and content catalogue. Reuse unchanged structural inputs when only casualties
+The shared casualty-breakdown scan caches the most recently requested replies by
+branch, viewpoint/native selection and content catalogue. Reuse unchanged structural inputs when only casualties
 change. The Rust-only relation membership feeds casualty breakdowns without
 another grouping algorithm. Counts
 have no chosen ceiling; measure the complete reply against the shared

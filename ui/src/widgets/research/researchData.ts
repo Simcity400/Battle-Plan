@@ -1,3 +1,4 @@
+import { runAt } from '../../charts/series.ts';
 import type { ProductRequest } from '../../dashboard/client';
 import type { CountryParams, ResearchReply } from '../../generated/dashboard';
 import { artworkEntry, keepDrawableIcons } from '../../dashboard/artwork.ts';
@@ -28,6 +29,18 @@ export function researchAt(history: ResearchHistory, hour: number): ResearchSlot
   }));
 }
 
+/** Resolve one assignment without visiting the slot's full history. */
+export function researchEntryAt(slot: ResearchSlotHistory, state: ResearchSlotState, hour: number) {
+  let low = 0, high = slot.entries.length;
+  while (low < high) { const mid = (low + high) >>> 1; if (slot.entries[mid].firstObservedHour < (state.entryFirstObservedHour ?? -Infinity)) low = mid + 1; else high = mid; }
+  for (; low < slot.entries.length && slot.entries[low].firstObservedHour === state.entryFirstObservedHour; low++) {
+    const entry = slot.entries[low];
+    if (entry.token === state.token && entry.firstObservedHour <= hour && (entry.endedByHour === null || entry.endedByHour > hour))
+      return { ...entry, lastObservedHour: Math.min(entry.lastObservedHour, hour), endedByHour: null, outcome: 'active' as const };
+  }
+  return null;
+}
+
 /** A slot state naming a technology that no assignment joins: the recording
  * did not identify which occurrence of it the slot held. It is shown, but its
  * progress and completion stay unknown. */
@@ -36,8 +49,9 @@ export function isUnjoinedResearch(state: ResearchSlotState | null): state is Re
 }
 
 export function researchStateAt(slot: ResearchSlotHistory, hour: number): ResearchSlotState | null {
-  if (!slot.availability.some(span => span.firstHour <= hour && hour <= span.lastHour)) return null;
-  const state = slot.states?.find(s => s.firstHour <= hour && hour <= s.lastHour);
+  if (Number.isNaN(hour)) return null;
+  if (!runAt(slot.availability, hour)) return null;
+  const state = runAt(slot.states ?? [], hour);
   if (!state) return null;
   return state.details?.remainingDays == null ? state : { ...state, details: { ...state.details,
     remainingDays: Math.max(0, state.details.remainingDays - Math.floor((hour - state.firstHour) / 24)),
@@ -48,8 +62,9 @@ export function researchStateAt(slot: ResearchSlotHistory, hour: number): Resear
  * 0-1 fraction. Null without a sample at that hour or a known positive cost;
  * never carried across hours that were not recorded. */
 export function researchProgressAt(slot: ResearchSlotHistory, entryFirstObservedHour: number, hour: number): number | null {
-  const sample = slot.progress?.find(p => p.entryFirstObservedHour === entryFirstObservedHour && p.firstHour <= hour && hour <= p.lastHour);
-  if (!sample?.baseDaysRaw) return null;
+  if (Number.isNaN(hour)) return null;
+  const sample = runAt(slot.progress ?? [], hour);
+  if (!sample?.baseDaysRaw || sample.entryFirstObservedHour !== entryFirstObservedHour) return null;
   const base = BigInt(sample.baseDaysRaw), done = BigInt(sample.progressRaw);
   if (base <= 0n || done < 0n) return null;
   return done >= base ? 1 : Number(done * 10_000n / base) / 10_000;
@@ -74,10 +89,13 @@ export function researchRateAt(state: ResearchSlotState, hour: number): { rateRa
  * the slot; null when the run ends at a gap or the slot closing, where the
  * recording does not say. */
 export interface ResearchHeldRun { token: string; firstHour: number; lastHour: number; endedByHour: number | null }
+const heldIndexes = new WeakMap<ResearchSlotHistory, ResearchHeldRun[]>();
 
 /** Consecutive slot states holding the same technology without a joined
  * assignment, one run each. Never joined across a break in the slot's states. */
 export function researchHeldRuns(slot: ResearchSlotHistory): ResearchHeldRun[] {
+  const indexed = heldIndexes.get(slot);
+  if (indexed) return indexed;
   const runs: ResearchHeldRun[] = [];
   let open: ResearchHeldRun | null = null;
   for (const state of slot.states ?? []) {
@@ -87,8 +105,11 @@ export function researchHeldRuns(slot: ResearchSlotHistory): ResearchHeldRun[] {
     if (isUnjoinedResearch(state)) open = { token: state.token, firstHour: state.firstHour, lastHour: state.lastHour, endedByHour: null };
   }
   if (open) runs.push(open);
+  heldIndexes.set(slot, runs);
   return runs;
 }
+
+const progressIndexes = new WeakMap<ResearchSlotHistory, Map<number | null, ResearchSlotHistory['progress']>>();
 
 /** The latest recorded progress of what `state` holds, at or before `hour`, with
  * the hour of the read it came from: the assignment's own samples, or for a
@@ -99,12 +120,25 @@ export function researchLatestProgress(slot: ResearchSlotHistory, state: Researc
   let since = -Infinity;
   if (state.entryFirstObservedHour === null) {
     if (!state.token) return null;
-    const run = researchHeldRuns(slot).find(run => run.token === state.token && run.firstHour <= hour && hour <= run.lastHour);
+    const run = runAt(researchHeldRuns(slot), hour);
+    if (run?.token !== state.token) return null;
     if (!run) return null;
     since = run.firstHour;
   }
-  const sample = (slot.progress ?? []).filter(p => p.entryFirstObservedHour === state.entryFirstObservedHour
-    && p.firstHour <= hour && p.lastHour >= since).at(-1);
+  let index = progressIndexes.get(slot);
+  if (!index) {
+    index = new Map();
+    for (const sample of slot.progress ?? []) {
+      const samples = index.get(sample.entryFirstObservedHour) ?? [];
+      samples.push(sample); index.set(sample.entryFirstObservedHour, samples);
+    }
+    progressIndexes.set(slot, index);
+  }
+  const samples = index.get(state.entryFirstObservedHour) ?? [];
+  let low = 0, high = samples.length;
+  while (low < high) { const mid = (low + high) >>> 1; if (samples[mid].firstHour <= hour) low = mid + 1; else high = mid; }
+  const sample = samples[low - 1];
+  if (sample && sample.lastHour < since) return null;
   if (!sample?.baseDaysRaw) return null;
   const base = BigInt(sample.baseDaysRaw), done = BigInt(sample.progressRaw);
   if (base <= 0n || done < 0n) return null;

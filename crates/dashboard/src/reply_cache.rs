@@ -175,8 +175,8 @@ fn build() -> Option<&'static str> {
         .as_deref()
 }
 
-/// Every recording byte, independent of its path. Hash the resident bytes once
-/// per source; this needs no disk read, block inflation or frame decoding.
+/// Held files use the canonical path and opened metadata revision. Synthetic
+/// resident recordings retain their byte identity without a recording file read.
 fn recording(source: &Source) -> String {
     #[derive(Default)]
     struct Fingerprint(Option<String>);
@@ -185,7 +185,19 @@ fn recording(source: &Source) -> String {
     let replay = source.replay_ref();
     state
         .0
-        .get_or_insert_with(|| blake3::hash(replay.bytes()).to_hex().to_string())
+        .get_or_insert_with(|| {
+            if replay.is_file_backed() {
+                let path = std::fs::canonicalize(source.path())
+                    .unwrap_or_else(|_| source.path().to_owned());
+                let mut hash = blake3::Hasher::new();
+                hash.update(path.as_os_str().as_encoded_bytes());
+                hash.update(&[0]);
+                hash.update(source.key().revision.as_bytes());
+                hash.finalize().to_hex().to_string()
+            } else {
+                blake3::hash(replay.bytes()).to_hex().to_string()
+            }
+        })
         .clone()
 }
 

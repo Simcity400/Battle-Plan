@@ -2,10 +2,11 @@ import { useCallback, useMemo } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import type { MenuItem } from '../../components/ContextMenu';
 import LogList from '../../charts/log/LogList';
+import type { LogListProps } from '../../charts/log/LogList';
 import type { LogRow } from '../../charts/log/logData';
 import type { LogSettings } from '../../charts/log/logOptions';
 import Table from '../../charts/table/Table';
-import type { TableColumn } from '../../charts/table/Table';
+import type { TableColumn, TableProps } from '../../charts/table/Table';
 import type { Sort } from '../../charts/table/logic';
 import { fitTooltip, tooltipText } from '../../charts/tooltip';
 import type { TooltipRow } from '../../charts/tooltip';
@@ -15,9 +16,18 @@ import type { BattleCountry, BattleSide, BattleValue } from '../../generated/das
 import { battleDate, battleDateMoment, battleShortDate, battleLogRows, battleTooltip, battleValueText, battleWinner } from './battleRows.ts';
 import type { BattleCountryLabel, BattleLabels, BattleLossFormatter, BattleMeasure, BattleRow, BattleSideSummary } from './battleRows';
 import BattleSides from './BattleSides';
+import type { ParityPreparation } from '../../dashboard/parityRows';
 import './battles.css';
 
 const rowKey = (row: BattleRow) => row.id;
+
+export interface BattleSemantic<T extends BattleRow> {
+  rows: readonly T[];
+  complete: boolean;
+  historyComplete: boolean;
+  preparation: ParityPreparation;
+  reads: unknown;
+}
 
 export interface BattleLogProps<T extends BattleRow> {
   rows: readonly T[];
@@ -42,6 +52,7 @@ export interface BattleLogProps<T extends BattleRow> {
   description?: (row: T) => string | null;
   tooltipRows?: (row: T) => readonly TooltipRow[];
   onVisibleRows: (rows: readonly T[]) => void;
+  paritySemantic?: BattleSemantic<T>;
   /** A place name still loading reads Loading…, never the unnamed label. */
   placePending?: (row: T) => boolean;
 }
@@ -61,7 +72,7 @@ function Side<T extends BattleRow>({ row, index, country, formatLoss }: { row: T
 
 /** The caller supplies every measure and word; no battle-domain facts live here. */
 export default function BattleLog<T extends BattleRow>({ rows, label, labels, country, live, view, log, measures, resultMeasure, sort,
-  setOption, cellBars, rankMarkers, hoursPerSecond, menu, empty, note, formatLoss, compactSides, description, tooltipRows, onVisibleRows, placePending }: BattleLogProps<T>) {
+  setOption, cellBars, rankMarkers, hoursPerSecond, menu, empty, note, formatLoss, compactSides, description, tooltipRows, onVisibleRows, placePending, paritySemantic }: BattleLogProps<T>) {
   const viewportHeight = useViewportHeight();
   const logs = useMemo(() => view === 'log' ? battleLogRows(rows, live) : [], [rows, live, view]);
   const tooltip = useCallback((row: T) => {
@@ -92,11 +103,22 @@ export default function BattleLog<T extends BattleRow>({ rows, label, labels, co
     { key: 'winner', header: labels.winner, label: labels.winner, value: row => 'unknown' in row.winner ? null : battleWinner(row), width: 'max-content',
       renderMissing: true, render: row => <span title={battleWinner(row)}>{'unknown' in row.winner ? '—' : battleWinner(row)}</span> },
   ], [labels, measures, country, label, compactSides, view, live, formatLoss, description]);
+  let tableParity: TableProps<T>['parity'];
+  let logParity: LogListProps<T>['paritySemantic'];
+  if (import.meta.env.MODE === 'parity') {
+    if (paritySemantic) {
+      tableParity = { complete: paritySemantic.complete, preparation: paritySemantic.preparation, reads: paritySemantic.reads };
+      logParity = { complete: paritySemantic.complete, preparation: paritySemantic.preparation,
+        rows: battleLogRows(paritySemantic.rows, live), reads: paritySemantic.reads };
+    }
+  }
   if (view === 'biggest') return <div className="battle-view"><Table label={label} rows={rows} columns={columns} rowKey={rowKey}
     sort={sort} setOption={setOption} cellBars={cellBars} rank rankMarkers={rankMarkers} density={log.density}
-    menu={menu} tooltip={row => fitTooltip([tooltip(row)], viewportHeight)} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} /></div>;
+    menu={menu} tooltip={row => fitTooltip([tooltip(row)], viewportHeight)} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond}
+    {...(import.meta.env.MODE === 'parity' ? { parity: tableParity } : {})} /></div>;
   return <div className="battle-view"><LogList anchorRows rows={logs} label={label} density={log.density} months={log.months} animate={live && log.animate}
     columns="minmax(0, 1fr) auto" onVisible={visibleLogs} menu={row => menu(row.item)} empty={empty}
+    {...(import.meta.env.MODE === 'parity' ? { parityHistoryComplete: paritySemantic?.historyComplete, paritySemantic: logParity } : {})}
     describe={row => tooltipText(tooltip(row.item))} tooltip={row => [tooltip(row.item)]}
     renderRow={row => <>
       <span className={compactSides ? 'battle-log-primary' : 'battle-log-content'}>{place(row.item, true)}

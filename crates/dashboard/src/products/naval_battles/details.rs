@@ -1,47 +1,53 @@
 //! Drawn-row enrichment through full recorded references, never roster guesses.
-use super::{Kind, branch_id, census};
+use super::Kind;
+#[cfg(test)]
+use super::{branch_id, census};
 use crate::{
-    Source, catalogue,
-    metadata::{check_cancel, validate_campaign},
-    products::{
-        LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, ReplyWarnings, ships_sunk, sinkings,
-    },
+    catalogue,
+    products::{Product, ReplyWarnings},
     scripted_text,
-    transport::json_len,
 };
 use replay::{
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder},
-    rows::{Recorded, TableId, tables},
+    frame::DecodedFrame,
+    rows::{Recorded, tables},
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    io,
-    sync::atomic::AtomicBool,
-};
+use std::{collections::BTreeSet, io};
 use ts_rs::TS;
+#[cfg(test)]
+use {
+    crate::{
+        Source,
+        metadata::{check_cancel, validate_campaign},
+        products::{LoadContext, ships_sunk, sinkings},
+    },
+    replay::{container::Replay, frame::FrameDecoder, rows::TableId},
+    std::{
+        collections::{BTreeMap, HashMap},
+        sync::atomic::AtomicBool,
+    },
+};
 
 pub struct NavalBattleDetails;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavalBattleDetailRequest {
     pub id: String,
     pub hour: i32,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavalBattleDetailsParams {
     pub branch_id: String,
     pub battles: Vec<NavalBattleDetailRequest>,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
 pub struct NavalBattleFleetNames {
     pub names: Vec<String>,
     pub unknown: Option<String>,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct NavalBattleNamedShip {
     pub sink_hour: i32,
@@ -49,7 +55,7 @@ pub struct NavalBattleNamedShip {
     pub name: Option<String>,
     pub class_name: Option<String>,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct NavalBattleDetail {
     pub id: String,
@@ -61,7 +67,7 @@ pub struct NavalBattleDetail {
     pub ship_read: Option<i32>,
     pub unavailable: Option<String>,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
 pub struct NavalBattleDetailsReply {
     pub rows: Vec<NavalBattleDetail>,
     pub warnings: Vec<String>,
@@ -72,6 +78,7 @@ impl ReplyWarnings for NavalBattleDetailsReply {
     }
 }
 
+#[cfg(test)]
 const ROSTER_TABLES: [TableId; 4] = [
     TableId::Campaign,
     TableId::NavalCombatDetails,
@@ -80,6 +87,7 @@ const ROSTER_TABLES: [TableId; 4] = [
 ];
 
 /// Read only supplying frames requested by drawn rows; a gap never seeks nearby.
+#[cfg(test)]
 fn roster_frames(
     replay: &Replay,
     branch: u64,
@@ -116,7 +124,7 @@ fn roster_frames(
     Ok(out)
 }
 
-fn fleet_names(
+pub(super) fn fleet_names(
     frame: Option<&DecodedFrame>,
     combat: u64,
     province: u32,
@@ -200,17 +208,69 @@ fn fleet_names(
     out
 }
 
+#[cfg(test)]
 fn matching_ships<'a>(
     ships: &'a [&'a sinkings::ShipEvent],
     event_through: i32,
     read_through: i32,
 ) -> impl Iterator<Item = &'a sinkings::ShipEvent> {
-    ships
-        .iter()
-        .copied()
-        .filter(move |ship| ship.entry.sink_hour <= event_through && ship.read_hour <= read_through)
+    ships.iter().copied().filter(move |ship| {
+        visible(
+            ship.entry.sink_hour,
+            ship.read_hour,
+            event_through,
+            read_through,
+        )
+    })
 }
 
+pub(super) fn visible(
+    sink_hour: i32,
+    known_at: i32,
+    event_through: i32,
+    read_through: i32,
+) -> bool {
+    sink_hour <= event_through && known_at <= read_through
+}
+pub(super) fn selection(
+    episode: &super::Episode,
+    hour: i32,
+) -> io::Result<(&super::Run, Option<(u64, i32)>)> {
+    let at = episode.runs.partition_point(|run| run.first <= hour);
+    let run = at
+        .checked_sub(1)
+        .map(|index| &episode.runs[index])
+        .filter(|run| hour <= run.last)
+        .ok_or_else(|| crate::invalid("Naval battle has no supplying read at requested hour"))?;
+    let roster = if episode.kind == Kind::Combat {
+        Some((episode.reference, hour))
+    } else {
+        run.sample
+            .observed
+            .as_ref()
+            .map(|observed| (observed.combat, observed.last))
+    };
+    Ok((run, roster))
+}
+pub(super) fn detail_row(
+    request: &NavalBattleDetailRequest,
+    roster: Option<(u64, i32)>,
+    fleets: [NavalBattleFleetNames; 2],
+    named_ships: Vec<NavalBattleNamedShip>,
+    ship_read: Option<i32>,
+) -> NavalBattleDetail {
+    NavalBattleDetail {
+        id: request.id.clone(),
+        hour: request.hour,
+        roster_hour: roster.map(|(_, hour)| hour),
+        fleets,
+        named_ships,
+        ship_read,
+        unavailable: roster
+            .is_none()
+            .then(|| "Named ships require the recorded combat identity".into()),
+    }
+}
 impl Product for NavalBattleDetails {
     const KEY: &'static str = "naval-battle-details";
     const CONTENT_DEPENDENT: bool = true;
@@ -241,6 +301,7 @@ impl Product for NavalBattleDetails {
         }
         Ok(())
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -275,24 +336,7 @@ impl Product for NavalBattleDetails {
             let episode = episodes
                 .get(request.id.as_str())
                 .ok_or_else(|| crate::invalid("Unknown naval battle"))?;
-            let at = episode
-                .runs
-                .partition_point(|run| run.first <= request.hour);
-            let run = at
-                .checked_sub(1)
-                .map(|index| &episode.runs[index])
-                .filter(|run| request.hour <= run.last)
-                .ok_or_else(|| {
-                    crate::invalid("Naval battle has no supplying read at requested hour")
-                })?;
-            let roster = if episode.kind == Kind::Combat {
-                Some((episode.reference, request.hour))
-            } else {
-                run.sample
-                    .observed
-                    .as_ref()
-                    .map(|observed| (observed.combat, observed.last))
-            };
+            let (run, roster) = selection(episode, request.hour)?;
             if let Some((_, hour)) = roster {
                 hours.insert(hour);
             }
@@ -341,26 +385,19 @@ impl Product for NavalBattleDetails {
             let read = ships
                 .ship_reads
                 .partition_point(|hour| *hour <= request.hour);
-            reply.rows.push(NavalBattleDetail {
-                id: request.id.clone(),
-                hour: request.hour,
-                roster_hour: roster.map(|(_, hour)| hour),
+            reply.rows.push(detail_row(
+                request,
+                roster,
                 fleets,
                 named_ships,
-                ship_read: read.checked_sub(1).map(|index| ships.ship_reads[index]),
-                unavailable: roster
-                    .is_none()
-                    .then(|| "Named ships require the recorded combat identity".into()),
-            });
+                read.checked_sub(1).map(|index| ships.ship_reads[index]),
+            ));
         }
         reply
             .warnings
             .extend(refused.lines("Naval battle fleet names"));
-        if json_len(&reply, MAX_PRODUCT_REPLY_BYTES).is_none() {
-            return Err(io::Error::other(
-                "Naval battle details exceed their reply budget",
-            ));
-        }
+        super::super::check_reply_budget(&reply)
+            .map_err(|_| io::Error::other("Naval battle details exceed their reply budget"))?;
         Ok(reply)
     }
 }

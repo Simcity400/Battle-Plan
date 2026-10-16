@@ -10,8 +10,10 @@ use std::{
     sync::{Arc, Weak},
 };
 
+pub(crate) mod checkpoint;
 mod decoder;
 mod encoder;
+mod provenance;
 mod wire;
 
 pub(crate) use self::wire::decode_update;

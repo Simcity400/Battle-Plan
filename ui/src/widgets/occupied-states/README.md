@@ -2,7 +2,7 @@
 
 **What it shows:** A table of recorded occupied states, legal owners, occupiers, resistance, compliance, garrison requirement/strength and effective occupation laws.
 
-**Product(s) it reads:** [`occupied-states-manifest` and `occupied-states`](../../../../crates/dashboard/src/products/occupied_states.rs) share one cached branch scan. The manifest supplies the branch's replay-block windows, content-derived law facts and warnings; each `occupied-states` reply is one window, so no reply grows with the campaign. Its scan/strength modules own native membership, formatting and law evaluation.
+**Product(s) it reads:** [`occupied-states-manifest` and `occupied-states`](../../../../crates/dashboard/src/products/occupied_states.rs) share one preparation observer. The manifest supplies the branch's replay-block windows, content-derived law facts and warnings; each `occupied-states` reply is one window, so no reply grows with the campaign. Its scan/strength modules own native membership, formatting and law evaluation.
 
 **Settings:** Countries match occupiers by default or original occupied countries; manual/smart-group choices, exact sort (resistance descending initially) and shared table density/bars/ranks; Campaign, Follow or Pin.
 
@@ -20,3 +20,5 @@
 **Files:** [OccupiedStatesWidget.tsx](OccupiedStatesWidget.tsx) renders the shared table and chooses windows; [occupiedStatesData.ts](occupiedStatesData.ts) validates, decodes windows, selects rows and formats cells, with adjacent tests. `occupiedStates.css`, `definition.ts` and `index.ts` own styling, settings and registration.
 
 Shared framework conventions: [widgets](../README.md).
+
+The preparation observer writes each replay-block reply through the shared window store. Its continuation retains the latest state values and supplying observation; law tokens and refusal identities survive resume. The registered products share the same scan and remain the parity reference. The table exposes "Occupied states values" in parity builds.

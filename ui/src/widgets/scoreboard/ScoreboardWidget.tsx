@@ -9,7 +9,6 @@ import { useViewportHeight } from '../../charts/useChartTokens';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import { selectedTags } from '../../dashboard/countrySelection';
-import { countryAliasesAt } from '../../dashboard/countryIdentity';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { rankedCandidates, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
@@ -17,10 +16,11 @@ import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboar
 import { usePlaybackSpeed } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import type { ScoreboardReply } from '../../generated/dashboard';
 import { DEFAULT_SORT, OPTIONS } from './definition';
-import { formatCell, rankingSort, scoreboardModel, scoreboardRequest, scoreboardRows, scoreboardSort, scoreboardTooltip, scoreboardColumnNote, selectedColumns, validateScoreboardReply } from './scoreboardData';
+import { formatCell, rankingSort, scoreboardRequest, scoreboardSort, scoreboardTooltip, scoreboardColumnNote, selectedColumns } from './scoreboardData';
 import type { ScoreboardRow } from './scoreboardData';
+import { preparedScoreboardRows, scoreboardRegistryRequest, usePreparedScoreboard, validatePreparedScoreboard } from './preparedScoreboard';
+import type { ScoreboardPreparedParams, ScoreboardPreparedReply } from '../../generated/dashboard';
 import './scoreboard.css';
 
 const NO_WARNINGS: string[] = [];
@@ -35,12 +35,13 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
   const registryRequest = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard',
-    params: { branchId: track.branch.id, columns: [], tags: [], top: null } } : null;
-  const registryResult = useProduct<ScoreboardReply>(runtime.client, registryRequest, active, validateScoreboardReply);
-  const registry = registryResult.data?.columns ?? [];
-  const shown = useMemo(() => selectedColumns(registry, options.columns, registryResult.data?.defaultColumns ?? []), [registryResult.data, options.columns]);
-  const sort = scoreboardSort(registry, shown, tableSortOf(options.tableSort, DEFAULT_SORT), registryResult.data?.defaultSort ?? '');
-  const ranking = rankingSort(registry, sort, options.topMeasure, registryResult.data?.defaultSort ?? '');
+    params: scoreboardRegistryRequest(track.branch.id) } : null;
+  const registryResult = useProduct<ScoreboardPreparedReply>(runtime.client, registryRequest, active, validatePreparedScoreboard, track?.source);
+  const registryData = registryResult.data?.data;
+  const registry = registryData?.columns ?? [];
+  const shown = useMemo(() => selectedColumns(registry, options.columns, registryData?.defaultColumns ?? []), [registryResult.data, options.columns]);
+  const sort = scoreboardSort(registry, shown, tableSortOf(options.tableSort, DEFAULT_SORT), registryData?.defaultSort ?? '');
+  const ranking = rankingSort(registry, sort, options.topMeasure, registryData?.defaultSort ?? '');
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
@@ -49,19 +50,18 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const fallbackKey = JSON.stringify(fallback);
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0, Number.MAX_SAFE_INTEGER),
     [widget.countries, fallbackKey, groups.data, track?.branch.lastHour]);
-  const request = track && registryResult.data && shown.length && !resolved.reason && (resolved.top != null || resolved.tags.length)
-    ? { sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard',
-      params: scoreboardRequest(track.branch.id, resolved, shown, ranking.column, ranking.direction) } : null;
-  const { data, error, retry } = useProduct<ScoreboardReply>(runtime.client, request, active, validateScoreboardReply);
-  const model = useMemo(() => data ? scoreboardModel(data) : null, [data]);
-  const rows = useMemo(() => {
-    if (!model || (grouped && !groups.data)) return NO_ROWS;
-    const candidates = resolved.top == null && resolved.membership === null
-      ? countryAliasesAt(model.reply.series, resolved.tags, hour) : rankedCandidates(resolved, hour, model.tags);
-    return scoreboardRows(model, candidates, hour, ranking.column, ranking.direction, resolved.top);
-  }, [model, grouped, groups.data, resolved, hour, ranking.column, ranking.direction]);
   const [visible, setVisible] = useState<readonly ScoreboardRow[]>(NO_ROWS);
   const onVisibleRows = useCallback((rows: readonly ScoreboardRow[]) => setVisible(rows), []);
+  const selection = track ? scoreboardRequest(track.branch.id, resolved, shown, ranking.column, ranking.direction) : null;
+  if (selection && resolved.top == null && resolved.membership !== null) selection.tags = rankedCandidates(resolved, hour, resolved.tags);
+  const request: ScoreboardPreparedParams | null = track && registryData && shown.length && !resolved.reason && selection
+    && (resolved.top != null || selection.tags.length) ? { selection, hour, sort: ranking.column,
+      descending: ranking.direction === 'descending', index: true, bars: options.cellBars === true } : null;
+  const result = usePreparedScoreboard(runtime.client, track?.source, request, visible, active);
+  const data = result.index?.data;
+  const { error, retry } = result;
+  const rows = useMemo(() => result.index ? preparedScoreboardRows(result.index, result.page, ranking.column, ranking.direction === 'descending') : NO_ROWS,
+    [result.index, result.page, ranking.column, ranking.direction]);
   const wanted = useMemo(() => visible.map(row => ({ hour: row.hour, tag: row.tag })), [visible]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const nameWanted = useMemo(() => sort.column === 'country' ? rows.map(row => ({ hour: row.hour, tag: row.tag })) : [], [rows, sort.column]);
@@ -71,13 +71,13 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
       hint: resolved.top != null ? 'Top countries, sorted by name.' : undefined,
       value: row => names.get(nameKey(row.hour, row.tag)) ?? null, renderMissing: true,
       render: row => <CountryCell {...labelAt(row.hour)(row.tag)} /> },
-    ...shown.map(column => ({ key: column.key, header: column.label, label: column.label, numeric: true, width: 'max-content', bar: 'visible' as const,
+    ...shown.map(column => ({ key: column.key, header: column.label, label: column.label, numeric: true, renderMissing: true, width: 'max-content', bar: BigInt(result.index?.maxima[column.key] ?? '0'),
       hint: scoreboardColumnNote(column), value: (row: ScoreboardRow) => row.cells.get(column.key)?.amount,
       render: (row: ScoreboardRow) => {
         const cell = row.cells.get(column.key);
-        return formatCell(column, cell?.amount ?? null, cell?.atLeast);
+        return cell && (cell.amount === null || cell.readHour !== null) ? formatCell(column, cell.amount, cell.atLeast) : '\u2026';
       } })),
-  ], [shown, names, labelAt, resolved.top]);
+  ], [shown, names, labelAt, resolved.top, result.index]);
   const tooltip = useCallback((row: ScoreboardRow) => fitTooltip([scoreboardTooltip(row, shown, labelAt(row.hour)(row.tag).name)], viewport), [shown, labelAt, viewport]);
   const setTableOption = useCallback<NonNullable<WidgetProps['setOption']>>((key, value) => {
     if (key === 'tableSort') {
@@ -91,10 +91,10 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     const absent = contentSet(options.columns).map(contentKey).filter(key => !registry.some(column => column.key === key));
     const unknown = registryResult.data && absent.length
       ? [`${absent.length} selected ${absent.length === 1 ? 'column is' : 'columns are'} not in this recording: ${absent.join(', ')}.`] : [];
-    const warnings = [...(data?.warnings ?? registryResult.data?.warnings ?? []), ...(groups.data?.warnings ?? []), ...unknown];
+    const warnings = [...(data?.warnings ?? registryData?.warnings ?? []), ...(result.page?.data.warnings ?? []), ...(groups.data?.warnings ?? []), ...unknown];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, registryResult.data, groups.data, options.columns, onDiagnostics]);
+  }, [data, registryResult.data, result.page, groups.data, options.columns, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="grid" message="Load a campaign to compare its countries." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
@@ -109,6 +109,8 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     <Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Scoreboard" rows={rows} columns={columns}
       rowKey={rowKey} tieKey={tieKey} sort={sort} setOption={setOption ? setTableOption : undefined} sortOptionValue={tableSortToken}
       cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
-      density={options.density === 'compact' ? 'compact' : 'comfortable'} tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />
+      density={options.density === 'compact' ? 'compact' : 'comfortable'} tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond}
+      parity={{ complete: result.complete && !result.pending, item: row => ({ key: row.key, tag: row.tag, hour: row.hour, cells: [...row.cells].map(([key, cell]) => [key, { ...cell, amount: cell.amount?.toString() ?? null }]) }),
+        preparation: { prepare: result.prepare, ready: () => result.complete && !result.pending, error: () => result.error ?? null } }} />
   </div>;
 }

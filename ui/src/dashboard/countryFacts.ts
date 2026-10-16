@@ -5,7 +5,7 @@
  * transient product path, so these many small per-hour replies never push a
  * widget's full-branch data out of the shared product cache. */
 import { TRANSIENT_ERRORS } from '../generated/dashboard.ts';
-import type { DashboardClient } from './client';
+import type { DashboardClient, DashboardSource } from './client';
 import { loadTransientProduct } from './products.ts';
 
 /** A country at an hour. */
@@ -190,7 +190,7 @@ const REAL_CLOCK: FactClock = {
  *   country being read is not asked for again.
  * - Only a read that completed decides a fact: a country its answer lacks is read
  *   with nothing. A read that failed (the desktop out of room, a transport error)
- *   decides nothing: it is tried again while its hour is wanted, after a wait that
+ *   decides nothing: it is tried again while its fact is wanted, after a wait that
  *   doubles each time ([`retryDelay`]). Product errors wait for `retry` or new content.
  * - Each read that ends starts the next queued, so nothing waits for a re-render.
  * - Reads ending in the same frame are told as one change, so many small replies
@@ -203,11 +203,16 @@ export class FactRequests<V> {
   /** The countries they read, by `nameKey`. */
   private readonly keys = new Set<string>();
   /** Failures in a row, and when each may be tried again, by `nameKey`. */
-  private readonly failures = new Map<string, { hour: number; count: number; at: number }>();
+  private readonly failures = new Map<string, { count: number; at: number }>();
+  private wantedKeys = new Set<string>();
   private wanted: readonly NameAt[] = [];
   private maxHours = MAX_NAME_HOURS;
   private perRequest = 1;
   private order: FactRequestOrder = 'time';
+  /** Exact pending chunks survive successful replies. Demand and retry changes
+   * rebuild the plan; a completed chunk only frees a slot for the next one. */
+  private queue: [number, string[]][] = [];
+  private queuedIndex = 0;
   private nextId = 0;
   /** The wait for the next retry, and when it is due. */
   private waiting: { at: number; stop: () => void } | null = null;
@@ -251,18 +256,19 @@ export class FactRequests<V> {
     this.perRequest = perRequest;
     this.order = order;
     const hours = new Set(wantedHours(wanted, maxHours));
+    this.wantedKeys = new Set(wanted.filter(item => hours.has(item.hour)).map(item => nameKey(item.hour, item.tag)));
     this.store.want(hours);
-    // Configuration failures wait for retry only while their hours are wanted;
-    // playback must not keep a failure for every hour it has passed.
-    for (const [key, failure] of this.failures) if (!hours.has(failure.hour)) this.failures.delete(key);
+    // Failures belong to exact demand: another country keeping the hour active
+    // must not retain a departed country's refusals.
+    for (const key of this.failures.keys()) if (!this.wantedKeys.has(key)) this.failures.delete(key);
     for (const [id, read] of [...this.reading]) if (!hours.has(read.hour)) this.stop(id);
-    return this.pump();
+    return this.pump(true);
   }
 
   /** Tries again at once what failed, without waiting. */
   retry(): number {
     this.failures.clear();
-    return this.pump();
+    return this.pump(true);
   }
 
   /** Stops every read going; what they would have answered is asked for again when wanted. */
@@ -272,29 +278,41 @@ export class FactRequests<V> {
     this.waiting?.stop();
     this.waiting = null;
     this.wanted = [];
+    this.queue = [];
+    this.queuedIndex = 0;
+    this.wantedKeys.clear();
   }
 
-  private pump(): number {
-    const now = this.clock.now();
-    let next = Infinity;
-    const missing = this.wanted.filter(item => {
-      const key = nameKey(item.hour, item.tag);
-      if (this.keys.has(key)) return false;
-      const failed = this.failures.get(key);
-      if (failed && failed.at > now) { next = Math.min(next, failed.at); return false; }
-      return true;
-    });
+  private pump(rebuild = false): number {
+    if (rebuild) {
+      const now = this.clock.now();
+      let next = Infinity;
+      const missing = this.wanted.filter(item => {
+        const key = nameKey(item.hour, item.tag);
+        if (this.keys.has(key)) return false;
+        const failed = this.failures.get(key);
+        if (failed && failed.at > now) { next = Math.min(next, failed.at); return false; }
+        return true;
+      });
+      this.queue = planRequests(this.store, missing, this.maxHours, this.perRequest, this.order);
+      this.queuedIndex = 0;
+      // A failed read still wanted is tried again when its wait is over.
+      if (next < Infinity && (!this.waiting || this.waiting.at > next)) {
+        this.waiting?.stop();
+        const at = next;
+        this.waiting = { at, stop: this.clock.after(Math.max(0, at - now), () => {
+          if (this.waiting?.at === at) this.waiting = null;
+          this.pump(true);
+        }) };
+      }
+    }
     let started = 0;
-    for (const [hour, tags] of planRequests(this.store, missing, this.maxHours, this.perRequest, this.order)) {
-      if (this.reading.size >= MAX_READING) break;
+    while (this.queuedIndex < this.queue.length && this.reading.size < MAX_READING) {
+      const [hour, planned] = this.queue[this.queuedIndex++];
+      const tags = planned.filter(tag => !this.keys.has(nameKey(hour, tag)) && !this.store.answered(hour, tag));
+      if (!tags.length) continue;
       this.start(hour, tags);
       started++;
-    }
-    // A failed read still wanted is tried again when its wait is over.
-    if (next < Infinity && (!this.waiting || this.waiting.at > next)) {
-      this.waiting?.stop();
-      const at = next;
-      this.waiting = { at, stop: this.clock.after(Math.max(0, at - now), () => { if (this.waiting?.at === at) this.waiting = null; this.pump(); }) };
     }
     return started;
   }
@@ -319,12 +337,13 @@ export class FactRequests<V> {
         const at = this.clock.now();
         for (const tag of tags) {
           const key = nameKey(hour, tag);
+          if (!this.wantedKeys.has(key)) continue;
           const count = (this.failures.get(key)?.count ?? 0) + 1;
-          this.failures.set(key, { hour, count, at: retryable ? at + retryDelay(count) : Infinity });
+          this.failures.set(key, { count, at: retryable ? at + retryDelay(count) : Infinity });
         }
       }
       this.tell();
-      this.pump();
+      this.pump(found === null);
     };
     // A read that ends without reporting its chunk failed.
     void this.read([[hour, tags]], controller.signal, (_hour, _tags, found, retryable) => done(found, retryable)).then(() => done(null), () => done(null));
@@ -368,13 +387,13 @@ export interface FactSpec<V, Found extends FactsFound<V> = ReadonlyMap<string, V
 /** Reads a plan on the transient path, one request at a time, reporting each
  * chunk's values (null when its read failed: a gap or an error). Stops when aborted. */
 export async function readFacts<V>(client: DashboardClient, source: FactSource, spec: FactSpec<V, FactsFound<V>>,
-  plan: readonly (readonly [number, readonly string[]])[], signal: AbortSignal, onChunk: (hour: number, tags: readonly string[], found: ReadonlyMap<string, V> | null, retryable?: boolean) => void): Promise<void> {
+  plan: readonly (readonly [number, readonly string[]])[], signal: AbortSignal, onChunk: (hour: number, tags: readonly string[], found: ReadonlyMap<string, V> | null, retryable?: boolean) => void, recording?: DashboardSource): Promise<void> {
   for (const [hour, tags] of plan) {
     let found: ReadonlyMap<string, V> | null = null;
     let retryable = false;
     try {
       const params = spec.params(source.branchId, hour, tags);
-      const data = await loadTransientProduct<unknown>(client, { sourceId: source.sourceId, revision: source.revision, product: spec.product, params }, signal);
+      const data = await loadTransientProduct<unknown>(client, { sourceId: source.sourceId, revision: source.revision, product: spec.product, params }, signal, recording);
       found = await spec.extract(data, params, source);
     } catch (error) {
       retryable = transientError(error);

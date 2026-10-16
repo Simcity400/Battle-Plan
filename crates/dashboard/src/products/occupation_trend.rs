@@ -1,4 +1,4 @@
-//! Occupier means from Occupied states' single cached branch scan.
+//! Occupier means from Occupied states' shared preparation observer.
 //! Garrisons select controlled states with a positive original occupied link
 //! and active occupation, including annexed non-cores. Ownership is not
 //! the admission test.
@@ -9,13 +9,17 @@
 //! This whole-occupier scope is the widget definition. Cached group means
 //! refresh before state scalars update; those means are not recorded.
 //! Our mean is explicitly of the supplying state read.
+#[cfg(test)]
+use super::{LoadContext, occupied_states};
 use super::{
-    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
+    MAX_PRODUCT_REPLY_BYTES, Product,
     country_groups::HourSpan,
     country_history::{self, CountryIdentityRun, RecordedHistories},
-    occupied_states, validate_tag,
+    validate_tag,
 };
-use crate::{Source, ranking, transport::json_len};
+#[cfg(test)]
+use crate::Source;
+use crate::{ranking, transport::json_len};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -112,7 +116,7 @@ pub struct OccupationTrendReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub(super) struct History {
     pub series: BTreeMap<String, Vec<OccupationTrendRun>>,
     pub segments: BTreeMap<String, Vec<HourSpan>>,
@@ -141,7 +145,7 @@ pub(super) fn reply(
     reply_with_histories(branch, history, params, warnings, cancelled, None)
 }
 
-fn reply_with_histories(
+pub(in crate::products) fn reply_with_histories(
     branch: &str,
     history: &History,
     params: &OccupationTrendParams,
@@ -416,6 +420,7 @@ impl Product for OccupationTrend {
             OccupationTrendReply::decl(),
         ]
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,

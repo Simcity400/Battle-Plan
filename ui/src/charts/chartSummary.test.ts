@@ -1,0 +1,326 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { mergeSummaries, drawApproximateSpans, drawGapSummary, drawLineSummary, pickSummaryLines } from './chartSummary.ts';
+import { drawBands, drawGapFill, drawLine } from './draw.ts';
+import { pickLines } from './linePick.ts';
+import { extentOf } from './series.ts';
+import type { Run } from './series.ts';
+import type { ChartBucket, ChartSummary } from './chartSummary.ts';
+import { plotFrame } from './frame.ts';
+import type { ChartTokens } from './tokens.ts';
+
+const frame = plotFrame(120, 100, { left: 10, right: 10, top: 10, bottom: 10 }, [0, 50_000], [-10, 10], false);
+const tokens = { lineWidth: { series: 2 } } as ChartTokens;
+const bucket: ChartBucket = { firstHour: 0, lastHour: 49_999, firstValue: 2, lastValue: 1, lastValueHour: 30_000,
+  minHour: 20_000, minValue: -9, maxHour: 10_000, maxValue: 8, firstBreak: false, hasBreak: false };
+function canvas() {
+  const paths: number[][][] = [], dots: number[][] = [];
+  let current: number[][] = [];
+  return { paths, dots, context: {
+    save() {}, restore() {}, beginPath() { current = []; },
+    moveTo(x: number, y: number) { current.push([x, y]); }, lineTo(x: number, y: number) { current.push([x, y]); },
+    stroke() { if (current.length) paths.push(current); }, arc(x: number, y: number) { dots.push([x, y]); }, fill() {},
+  } as unknown as CanvasRenderingContext2D };
+}
+const summary: ChartSummary = { from: 0, to: 50_000, width: 100, buckets: [bucket] };
+
+test('summary picks require exact known actors and preserve overlaps and gaps', () => {
+  const lines = ['A', 'B'].map(key => ({ key, summary }));
+  const context = { frame, until: null, point: { x: frame.toX(40_000), y: frame.toY(1) } };
+  assert.deepEqual(pickSummaryLines(lines, 40_000, new Set(), context), []);
+  assert.deepEqual(pickSummaryLines(lines, 40_000, new Set(['A']), context), ['A']);
+  assert.deepEqual(pickSummaryLines(lines, 40_000, new Set(['A', 'B']), context), ['A', 'B']);
+  const broken = { ...summary, buckets: [{ ...bucket, hasBreak: true }] };
+  assert.deepEqual(pickSummaryLines([{ key: 'A', summary: broken }], 40_000, new Set(['A']), context), []);
+  assert.deepEqual(pickSummaryLines(lines, 40_000, new Set(['A']), { ...context, until: 30_000 }), []);
+});
+
+test('summary draws chronological extrema with held direction using width-sized geometry', () => {
+  const { context, paths } = canvas();
+  const end = drawLineSummary(context, frame, tokens, summary, '#123', true);
+  assert.deepEqual(end, { x: frame.toX(50_000), y: frame.toY(1) });
+  const path = paths[0];
+  const peak = path.findIndex(point => point[0] === frame.toX(10_000) && point[1] === frame.toY(8));
+  const dip = path.findIndex(point => point[0] === frame.toX(20_000) && point[1] === frame.toY(-9));
+  assert.ok(peak > 0 && dip > peak);
+  assert.deepEqual(path[peak - 1], [frame.toX(10_000), frame.toY(2)], 'rise is vertical at its recorded change');
+  assert.deepEqual(path[dip - 1], [frame.toX(20_000), frame.toY(8)], 'fall is vertical at its recorded change');
+  assert.ok(path.some(point => point[0] === frame.toX(30_000) && point[1] === frame.toY(1)), 'last held change keeps its start hour');
+  assert.ok(path.length <= 10, '50,000 hours never become 50,000 visible steps');
+});
+
+function recordingCanvas() {
+  const commands: unknown[][] = [];
+  const context = new Proxy({}, {
+    get: (_target, key) => (...args: unknown[]) => commands.push([key, ...args]),
+    set: (_target, key, value) => { commands.push([key, value]); return true; },
+  }) as CanvasRenderingContext2D;
+  return { context, commands };
+}
+
+const exactSource: Run[] = [
+  { firstHour: -5, lastHour: 3, value: 20, breakBefore: true },
+  { firstHour: 4, lastHour: 6, value: 8, breakBefore: false },
+  { firstHour: 7, lastHour: 8, value: 8, breakBefore: true },
+  { firstHour: 10, lastHour: 10, value: -3, breakBefore: true },
+  { firstHour: 12, lastHour: 40, value: 4, breakBefore: true },
+];
+function hourlySummary(runs: readonly Run[], from: number, to: number, width: number): ChartSummary {
+  const visible = runs.filter(run => run.lastHour >= Math.floor(from) && run.firstHour <= to);
+  return { from, to, width, runs: visible, buckets: Array.from({ length: Math.floor(to) - Math.floor(from) + 1 }, (_, index) => {
+    const hour = Math.floor(from) + index, run = visible.find(run => run.firstHour <= hour && hour <= run.lastHour);
+    return run ? { firstHour: hour, lastHour: hour, firstValue: run.value, lastValue: run.value, lastValueHour: hour,
+      minHour: hour, minValue: run.value, maxHour: hour, maxValue: run.value,
+      firstBreak: hour === run.firstHour && !!run.breakBefore, hasBreak: false } : null;
+  }) };
+}
+
+test('exact summaries paint the identical legacy canvas stream including gaps, breaks and fractional edges', () => {
+  for (const log of [false, true]) for (const held of [false, true]) for (const until of [null, 5.5, 9.25, 10, 18.5]) {
+    const frame = plotFrame(360, 200, { left: 10, right: 10, top: 10, bottom: 10 }, [1.25, 20.5], log ? [1, 30] : [-5, 30], log);
+    const summary = hourlySummary(exactSource, frame.x[0], until ?? frame.x[1], Math.ceil(frame.plotWidth));
+    for (const options of [{}, { area: true }, { area: true, dash: [6, 3], endDot: false }]) {
+      const legacy = recordingCanvas(), prepared = recordingCanvas();
+      const expected = drawLine(legacy.context, frame, tokens, exactSource, '#123', { ...options, held, until: until ?? undefined });
+      const actual = drawLineSummary(prepared.context, frame, tokens, summary, '#123', held, until, options);
+      assert.deepEqual(actual, expected, `end at ${until}, held=${held}`);
+      assert.deepEqual(prepared.commands, legacy.commands, `commands at ${until}, held=${held}, log=${log}`);
+    }
+  }
+});
+
+test('exact summary extents use the same inclusive hour bounds as legacy runs', async () => {
+  const { exactRuns, extentOfSummary } = await import('./chartSummary.ts');
+  const summary = hourlySummary(exactSource, 1.25, 18.5, 340);
+  assert.deepEqual(exactRuns(summary), exactSource);
+  for (const [from, to] of [[1.25, 18.5], [4.25, 6.5], [9, 9.5], [10.1, 10.9]])
+    assert.deepEqual(extentOfSummary(summary, from, to), extentOf(exactSource, from, to));
+  assert.equal(exactRuns({ ...summary, runs: undefined }), null, 'dense summaries do not claim supplying runs');
+});
+
+test('exact summary picks follow legacy curves and held paths with overlaps, gaps and clipping', () => {
+  const frame = plotFrame(360, 200, { left: 10, right: 10, top: 10, bottom: 10 }, [1.25, 20.5], [-5, 30], false);
+  for (const held of [false, true]) for (const until of [null, 5.5, 9.25, 18.5]) {
+    const lines = [exactSource, exactSource.map(run => ({ ...run, value: run.value + 2 })), exactSource].map((runs, index) => ({ key: String(index), runs, held }));
+    const summaries = lines.map(line => ({ ...line, summary: hourlySummary(line.runs, frame.x[0], until ?? frame.x[1], Math.ceil(frame.plotWidth)) }));
+    for (const hour of [2, 3, 4, 5, 7, 9, 10, 12, 18]) for (const point of [undefined, { x: frame.toX(hour + 0.4), y: frame.toY(18) }, { x: frame.toX(hour), y: frame.toY(8) }]) {
+      const context = { frame, until, point };
+      assert.deepEqual(pickSummaryLines(summaries, hour, new Set(lines.map(line => line.key)), context), pickLines(lines, hour, context));
+      assert.deepEqual(pickSummaryLines(summaries, hour, new Set(), context), []);
+    }
+  }
+});
+
+test('gaps and identity breaks never become a connecting summary stroke', () => {
+  const { context, paths, dots } = canvas();
+  drawLineSummary(context, frame, tokens, { ...summary, buckets: [{ ...bucket, hasBreak: true }] }, '#123');
+  assert.deepEqual(paths, []);
+  assert.ok(dots.some(point => point[1] === frame.toY(-9)));
+  assert.ok(dots.some(point => point[1] === frame.toY(8)));
+});
+
+test('late viewport, resize or playback replies cannot paint geometry at a new owner range', () => {
+  const { context, paths, dots } = canvas();
+  assert.equal(drawLineSummary(context, frame, tokens, { ...summary, from: 1 }, '#123'), null);
+  assert.equal(drawLineSummary(context, frame, tokens, { ...summary, width: 99 }, '#123'), null);
+  assert.equal(drawLineSummary(context, frame, tokens, summary, '#123', true, 100), null);
+  assert.deepEqual(paths, []); assert.deepEqual(dots, []);
+});
+
+import { compactStackExtent, forEachCompactStackSegment } from "./stack.ts";
+import { heldStackSegment } from "./race/countryRace.ts";
+import { summaryStack } from "./chartSummary.ts";
+
+const stackBucket: ChartBucket = { firstHour: 0,lastHour: 31,firstValue: 2,lastValue: 3,lastValueHour: 30,
+  minHour: 9,minValue: -7,maxHour: 21,maxValue: 11,firstBreak: false,hasBreak: false };
+const stackSummary = (bucket: ChartBucket | null): ChartSummary => ({ from: 0,to: 31,width: 1,buckets: [bucket] });
+const stackTotal = stackSummary({ ...stackBucket,firstValue: 5,lastValue: 5,minValue: 5,maxValue: 5 });
+test('D-12 retains all 5000 series extrema on a shared bounded grid through the existing signed renderer', () => {
+  const parts=Array.from({length:5000},(_,index)=>stackSummary({...stackBucket,minHour:1+index%14,maxHour:16+index%14}));
+  const dense=summaryStack(parts,stackTotal);
+  assert.ok(dense.model.hours.length<=15,'grid size is independent of the number of extrema dates');
+  assert.equal(dense.model.bands.length,0,'edges are allocated only for emitted screen points');
+  const values=parts.map(()=>new Set<number>());
+  forEachCompactStackSegment(dense.model,0,31,0,segment=> {
+    assert.equal(segment.bands.length,5001);
+    segment.bands.slice(0,-1).forEach((band,index)=> {
+      band.low.forEach((low,point)=>values[index].add(band.high[point]<=0 && low<0 ? low-band.high[point] : band.high[point]-low));
+    });
+  },dense.sample);
+  for (const kept of values) assert.deepEqual(kept,new Set([2,-7,11,3]));
+  const one=summaryStack([stackSummary(stackBucket)],stackTotal);
+  assert.deepEqual(compactStackExtent(one.model,0,31),[-7,12]);
+});
+
+test('the landed stack renderer isolates broken buckets and never connects a missing column', () => {
+  const frame=plotFrame(320,200,{left:0,right:0,top:0,bottom:0},[0,31],[-10,20],false);
+  const calls:unknown[][]=[];
+  const ctx=new Proxy({},{get:(_target,key)=>(...args:unknown[])=>calls.push([key,...args]),set:()=>true}) as CanvasRenderingContext2D;
+  const broken=summaryStack([stackSummary({...stackBucket,hasBreak:true})],stackTotal);
+  let pieces=0;
+  forEachCompactStackSegment(broken.model,0,31,0,piece=> {
+    pieces++;assert.ok(piece.hours.at(-1)!-piece.hours[0]<=1);
+    const segment=heldStackSegment(piece);
+    drawBands(ctx,frame,{lineWidth:{series:2}} as ChartTokens,segment.hours,segment.bands,['#123','#456'],segment);
+  },broken.sample);
+  assert.equal(pieces,5);assert.ok(calls.some(call=>call[0]==='fill'));
+  const shift=(value:ChartBucket,offset:number):ChartBucket=>({...value,firstHour:value.firstHour+offset,lastHour:value.lastHour+offset,
+    minHour:value.minHour+offset,maxHour:value.maxHour+offset,lastValueHour:value.lastValueHour+offset});
+  const view:ChartSummary={from:0,to:95,width:3,buckets:[stackBucket,null,shift(stackBucket,64)]};
+  const dense=summaryStack([view],{...view,buckets:[stackTotal.buckets[0],shift(stackTotal.buckets[0]!,32),shift(stackTotal.buckets[0]!,64)]});
+  forEachCompactStackSegment(dense.model,0,95,0,piece=>assert.ok(piece.hours.at(-1)!<=32 || piece.hours[0]>=64),dense.sample);
+});
+
+
+test('approximate regions draw faded dashed strokes and restore the exact stroke', () => {
+  const styles: { dash: number[]; alpha: number }[] = [];
+  let dash: number[] = [], alpha = 1;
+  const stack: { dash: number[]; alpha: number }[] = [];
+  const context = { save() { stack.push({ dash, alpha }); }, restore() { const saved = stack.pop()!; dash = saved.dash; alpha = saved.alpha; },
+    get globalAlpha() { return alpha; }, set globalAlpha(value: number) { alpha = value; },
+    beginPath() {}, rect() {}, clip() {}, moveTo() {}, lineTo() {}, arc() {}, fill() {},
+    setLineDash(value: number[]) { dash = value; }, stroke() { styles.push({ dash, alpha }); },
+  } as unknown as CanvasRenderingContext2D;
+  drawLineSummary(context, frame, tokens, { ...summary, approximate: [{ firstHour: 25_000, lastHour: 49_999 }] }, '#f00', false, null, { endDot: false });
+  assert.ok(styles.some(style => style.dash.length === 0 && style.alpha === 1));
+  assert.ok(styles.some(style => style.dash.join(',') === '4,4' && style.alpha === .55));
+  assert.equal(alpha, 1);
+});
+
+test('signed bands share approximate clipping, merge overlaps, and restore caller styling', () => {
+  const styles: { dash: number[]; alpha: number }[] = [], clips: number[][][] = [];
+  let dash = [2, 3], alpha = .8, rectangles: number[][] = [];
+  const saved: { dash: number[]; alpha: number }[] = [];
+  const context = {
+    save() { saved.push({ dash, alpha }); }, restore() { ({ dash, alpha } = saved.pop()!); },
+    get globalAlpha() { return alpha; }, set globalAlpha(value: number) { alpha = value; },
+    beginPath() { rectangles = []; }, rect(...rectangle: number[]) { rectangles.push(rectangle); }, clip() { clips.push(rectangles); },
+    moveTo() {}, lineTo() {}, closePath() {}, fill() {},
+    setLineDash(value: number[]) { dash = value; }, stroke() { styles.push({ dash, alpha }); },
+  } as unknown as CanvasRenderingContext2D;
+  drawApproximateSpans(context, frame, [{ firstHour: 20_000, lastHour: 29_999 }, { firstHour: 10_000, lastHour: 24_999 }], 40_000,
+    () => drawBands(context, frame, tokens, [0, 50_000], [{ low: [0, -2], high: [3, 0] }], ['#123']));
+  assert.deepEqual(clips, [
+    [[frame.toX(0), frame.plotTop, frame.toX(10_000) - frame.toX(0), frame.plotHeight],
+      [frame.toX(30_000), frame.plotTop, frame.toX(40_000) - frame.toX(30_000), frame.plotHeight]],
+    [[frame.toX(10_000), frame.plotTop, frame.toX(30_000) - frame.toX(10_000), frame.plotHeight]],
+  ]);
+  assert.deepEqual(styles, [{ dash: [2, 3], alpha: .8 }, { dash: [4, 4], alpha: .8 * .55 }]);
+  assert.deepEqual(dash, [2, 3]); assert.equal(alpha, .8);
+  let passes = 0;
+  drawApproximateSpans(context, frame, Array.from({ length: 5_000 }, (_,hour) => ({ firstHour: hour, lastHour: hour })), null, () => { passes++; });
+  assert.equal(passes, 2, 'one exact and one approximate pass, regardless of span count');
+  assert.throws(() => drawApproximateSpans(context, frame, [{ firstHour: 0, lastHour: 50_000 }], null, () => { throw Error('draw failed'); }), /draw failed/);
+  assert.deepEqual(dash, [2, 3]); assert.equal(alpha, .8);
+});
+
+test('an exact stack keeps the identical legacy draw stream through the shared helper', () => {
+  const direct = recordingCanvas(), shared = recordingCanvas();
+  const paint = (ctx: CanvasRenderingContext2D) => drawBands(ctx, frame, tokens, [0, 50_000], [{ low: [0, -2], high: [3, 0] }], ['#123']);
+  paint(direct.context);
+  drawApproximateSpans(shared.context, frame, [], null, approximate => { assert.equal(approximate, false); paint(shared.context); });
+  assert.deepEqual(shared.commands, direct.commands);
+});
+
+test('a stack without a total retains named percentages and signed extrema without a residual band', () => {
+  const constant=stackSummary({...stackBucket,firstValue:35,lastValue:35,minValue:35,maxValue:35});
+  const dense=summaryStack([stackSummary(stackBucket),constant]);
+  const kept=new Set<number>();
+  forEachCompactStackSegment(dense.model,0,31,0,piece=> {
+    assert.equal(piece.bands.length,2,'every band is a supplied series');
+    piece.bands[0].low.forEach((low,index)=> {const high=piece.bands[0].high[index];kept.add(low<0 ? low-high : high-low);});
+  },dense.sample);
+  assert.deepEqual(kept,new Set([2,-7,11,3]));
+  assert.deepEqual(compactStackExtent(dense.model,0,31),[-7,46]);
+  const percentages=summaryStack([stackSummary({...stackBucket,firstValue:40,lastValue:40,minValue:40,maxValue:40}),constant]);
+  for (const hour of percentages.model.hours) if (percentages.model.bounds[percentages.model.hours.indexOf(hour)]) {
+    assert.equal(percentages.sample(hour).at(-1)!.high,75,'recorded percentages are never normalized');
+  }
+  const unknown=summaryStack([stackSummary(null),constant]);
+  assert.deepEqual(unknown.model.hours,[]);
+});
+
+test('stack summaries carry the union of part and total approximate spans without changing geometry', () => {
+  const a = stackSummary(stackBucket), b = stackSummary({ ...stackBucket, firstValue: 3, lastValue: 3, minValue: 3, maxValue: 3 });
+  const exact = summaryStack([a,b],stackTotal);
+  const spans = [{ firstHour: 8, lastHour: 12 }, { firstHour: 2, lastHour: 5 }];
+  const stacked = summaryStack([{ ...a, approximate: spans }, { ...b, approximate: [{ firstHour: 5, lastHour: 9 }, { firstHour: 20, lastHour: 21 }] }],
+    { ...stackTotal, approximate: [{ firstHour: 13, lastHour: 15 }] });
+  assert.deepEqual(stacked.approximate,[{ firstHour: 2, lastHour: 15 }, { firstHour: 20, lastHour: 21 }]);
+  assert.deepEqual(stacked.model,exact.model);
+  for (const hour of exact.model.hours) if (exact.model.bounds[exact.model.hours.indexOf(hour)]) assert.deepEqual(stacked.sample(hour),exact.sample(hour));
+  assert.deepEqual(spans,[{ firstHour: 8, lastHour: 12 }, { firstHour: 2, lastHour: 5 }], 'a summary owned by another chart is not mutated');
+  assert.deepEqual(exact.approximate,[]);
+});
+
+test('exact gap summaries paint the identical legacy stream at fractional cutoffs and gaps', () => {
+  const other = exactSource.map(run => ({ ...run, value: 5 - run.value }));
+  for (const until of [null, 5.5, 9.25, 10, 18.5]) {
+    const frame = plotFrame(360, 200, { left: 10, right: 10, top: 10, bottom: 10 }, [1.25, 20.5], [-25, 30], false);
+    const end = until ?? frame.x[1], width = Math.ceil(frame.plotWidth);
+    const a = hourlySummary(exactSource, frame.x[0], end, width), b = hourlySummary(other, frame.x[0], end, width);
+    const legacy = recordingCanvas(), prepared = recordingCanvas();
+    drawGapFill(legacy.context, frame, exactSource, other, '#positive', '#negative', { until: until ?? undefined, alpha: 0.2 });
+    drawGapSummary(prepared.context, frame, tokens, a, b, '#positive', '#negative', until, { alpha: 0.2 });
+    assert.deepEqual(prepared.commands, legacy.commands);
+  }
+});
+
+test('dense gap summaries fill bounded envelopes and leave broken or missing columns empty', () => {
+  const a = { ...summary, buckets: [bucket, { ...bucket, hasBreak: true }, null] };
+  const b = { ...summary, buckets: [{ ...bucket, minValue: -2, maxValue: 3 }, bucket, bucket] };
+  const painted = recordingCanvas();
+  drawGapSummary(painted.context, frame, tokens, a, b, '#positive', '#negative');
+  assert.equal(painted.commands.filter(command => command[0] === 'fillRect').length, 2);
+  assert.deepEqual(painted.commands.filter(command => command[0] === 'fillStyle'), [['fillStyle', '#positive'], ['fillStyle', '#negative']]);
+  const stale = recordingCanvas();
+  drawGapSummary(stale.context, frame, tokens, { ...a, width: 99 }, b, '#positive', '#negative');
+  assert.deepEqual(stale.commands, []);
+});
+
+test('dated alias summary joins retain later extrema, chronology and real gaps', () => {
+  const earlier = { ...summary, buckets: [{ ...bucket, firstHour: 0, lastHour: 9, firstValue: 1, lastValue: 1, lastValueHour: 0, minValue: 1, minHour: 0, maxValue: 1, maxHour: 0 }, null] };
+  const later = { ...summary, buckets: [{ ...bucket, firstHour: 10, lastHour: 19, firstValue: 1, lastValue: 7, lastValueHour: 15, minValue: -4, minHour: 11, maxValue: 9, maxHour: 14 }, null] };
+  const merged = mergeSummaries([later, earlier]);
+  assert.equal(merged.buckets[0]!.firstHour, 0); assert.equal(merged.buckets[0]!.lastHour, 19);
+  assert.equal(merged.buckets[0]!.maxValue, 9); assert.equal(merged.buckets[0]!.minValue, -4);
+  assert.equal(merged.buckets[0]!.hasBreak, false); assert.equal(merged.buckets[1], null);
+  const gap = mergeSummaries([earlier, { ...later, buckets: [{ ...later.buckets[0]!, firstHour: 12 }, null] }]);
+  assert.equal(gap.buckets[0]!.hasBreak, true);
+  const exact = mergeSummaries([{ ...earlier, runs: [{ firstHour: 0, lastHour: 9, value: 1 }] }, { ...later, runs: [{ firstHour: 10, lastHour: 19, value: 7, breakBefore: true }] }]);
+  assert.equal(exact.runs!.length, 2); assert.equal(exact.runs![1].value, 7);
+  assert.equal(mergeSummaries([earlier, { ...later, runs: [] }]).runs, undefined);
+});
+
+test('dated aliases preserve approximate provenance from every alias and clip it to the viewport', () => {
+  const earlier = { ...summary, buckets: [{ ...bucket, firstHour: 0, lastHour: 9 }],
+    approximate: [{ firstHour: -20, lastHour: 4 }] };
+  const later = { ...summary, buckets: [{ ...bucket, firstHour: 10, lastHour: 19 }],
+    approximate: [{ firstHour: 13, lastHour: 17 }, { firstHour: 16, lastHour: 60_000 }] };
+  assert.deepEqual(mergeSummaries([later, earlier]).approximate, [
+    { firstHour: 0, lastHour: 4 }, { firstHour: 13, lastHour: 50_000 },
+  ]);
+  assert.equal(mergeSummaries([{ ...earlier, approximate: [] }, { ...later, approximate: [] }]).approximate, undefined);
+  assert.deepEqual(earlier.approximate, [{ firstHour: -20, lastHour: 4 }]);
+});
+
+test('exact and dense gap summaries share faded approximate passes from either series', () => {
+  const other = { ...summary, buckets: [{ ...bucket, minValue: -2, maxValue: 3 }] };
+  const exact = hourlySummary([{ firstHour: 0, lastHour: 49_999, value: 2 }], 0, 50_000, 100);
+  for (const [a, b] of [[summary, other], [exact, { ...exact, runs: exact.runs!.map(run => ({ ...run, value: -2 })) }]]) {
+    let alpha = 1, fills: number[] = [], clips = 0, rectangle = false;
+    const saved: number[] = [];
+    const ctx = {
+      save() { saved.push(alpha); }, restore() { alpha = saved.pop()!; },
+      get globalAlpha() { return alpha; }, set globalAlpha(value: number) { alpha = value; },
+      beginPath() { rectangle = false; }, rect() { rectangle = true; }, clip() { if (rectangle) clips++; }, setLineDash() {},
+      moveTo() {}, lineTo() {}, bezierCurveTo() {}, closePath() {}, fill() { fills.push(alpha); }, fillRect() { fills.push(alpha); },
+    } as unknown as CanvasRenderingContext2D;
+    drawGapSummary(ctx, frame, tokens, { ...a, approximate: [{ firstHour: 10_000, lastHour: 19_999 }] },
+      { ...b, approximate: [{ firstHour: 15_000, lastHour: 29_999 }] }, '#positive', '#negative', null, { alpha: 0.2 });
+    assert.equal(clips, 2, 'the shared helper combines overlapping provenance into two drawing passes');
+    assert.ok(fills.includes(0.2));
+    assert.ok(fills.includes(0.2 * 0.55));
+    assert.equal(alpha, 1);
+  }
+});

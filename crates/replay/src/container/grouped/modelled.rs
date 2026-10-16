@@ -340,6 +340,28 @@ pub(super) struct Model {
     field: Vec<u16>,
     encoder: Encoder,
     decoder: RangeDecoder,
+    spare_hot: Vec<Hot>,
+    hot_places: Vec<(Hot, usize)>,
+    inserted_keys: Vec<u128>,
+    places: Vec<usize>,
+    stored_rows: Vec<(u128, u64)>,
+    run: Vec<(u128, u64, bool)>,
+    held_masks: Vec<u64>,
+    held_changes: Option<u64>,
+}
+
+/// Advance an ordered merge cursor, using exponential skips for cold spans.
+fn held_at_or_after(held: &[u128], mut at: usize, key: u128) -> usize {
+    if held.get(at).is_none_or(|held| *held >= key) {
+        return at;
+    }
+    let mut span = 1;
+    while span < held.len() - at && held[at + span] < key {
+        at += span;
+        span = span.saturating_mul(2);
+    }
+    let end = at + span.min(held.len() - at);
+    at + held[at..end].partition_point(|held| *held < key)
 }
 
 fn gap_bucket(previous: Option<u64>) -> usize {
@@ -396,6 +418,14 @@ impl Model {
             field: vec![EVEN; fields * FIELD_CONTEXTS],
             encoder: Encoder::default(),
             decoder: RangeDecoder::default(),
+            spare_hot: Vec::new(),
+            hot_places: Vec::new(),
+            inserted_keys: Vec::new(),
+            places: Vec::new(),
+            stored_rows: Vec::new(),
+            run: Vec::new(),
+            held_masks: Vec::new(),
+            held_changes: None,
         }
     }
 
@@ -405,6 +435,38 @@ impl Model {
             .iter()
             .filter_map(|hot| held.binary_search(&hot.key).ok().map(|at| (*hot, at)))
             .collect()
+    }
+
+    /// Return a consumed reader run's allocation for the next entry.
+    pub(super) fn recycle_run(&mut self, mut rows: Vec<(u128, u64, bool)>) {
+        rows.clear();
+        self.run = rows;
+    }
+
+    fn index_held(&mut self, held: &KeySet) {
+        if self.held_changes != Some(held.changes()) {
+            self.held_masks.clear();
+            self.held_masks.extend(
+                held.keys()
+                    .iter()
+                    .map(|key| self.last.get(key).copied().unwrap_or(0)),
+            );
+            self.held_changes = Some(held.changes());
+        }
+    }
+
+    /// Merge both ordered sets. Galloping over a long cold span avoids
+    /// scanning a large static inventory for a small set of hot rows.
+    fn hot_into(&self, held: &[u128], out: &mut Vec<(Hot, usize)>) {
+        out.clear();
+        let mut at = 0;
+        for &hot in &self.hot {
+            at = held_at_or_after(held, at, hot.key);
+            if held.get(at) == Some(&hot.key) {
+                out.push((hot, at));
+                at += 1;
+            }
+        }
     }
 
     fn seen(&self, key: u128) -> Seen {
@@ -461,7 +523,8 @@ impl Model {
 
     /// Follow an entry that stored `rows`, in key order.
     fn age(&mut self, rows: &[(u128, u64)]) {
-        let mut next = Vec::with_capacity(rows.len() + self.hot.len());
+        let mut next = std::mem::take(&mut self.spare_hot);
+        next.clear();
         let (mut row, mut hot) = (0, 0);
         loop {
             match (rows.get(row), self.hot.get(hot)) {
@@ -494,7 +557,9 @@ impl Model {
                 (Some(_), None) => unreachable!("a row with no hot row after it is stored first"),
             }
         }
-        self.hot = next;
+        std::mem::swap(&mut self.hot, &mut next);
+        next.clear();
+        self.spare_hot = next;
     }
 
     /// Bytes the writer still owes the masks column.
@@ -638,6 +703,7 @@ impl Model {
             self.age(&[]);
             return Ok(Vec::new());
         }
+        self.index_held(held);
         let held = held.keys();
         let inserted_count =
             self.inserted
@@ -646,7 +712,8 @@ impl Model {
         if inserted_count > keys.remaining() {
             return Err(invalid("modelled inserted rows exceed their keys"));
         }
-        let mut inserted = Vec::with_capacity(inserted_count);
+        let mut inserted = std::mem::take(&mut self.inserted_keys);
+        inserted.clear();
         let mut previous: Option<u128> = None;
         for _ in 0..inserted_count {
             let distance = keys.varint()?;
@@ -665,8 +732,10 @@ impl Model {
             previous = Some(key);
         }
         let need = count - inserted_count;
-        let hot = self.hot_in(held);
-        let mut places = Vec::with_capacity(need);
+        let mut hot = std::mem::take(&mut self.hot_places);
+        self.hot_into(held, &mut hot);
+        let mut places = std::mem::take(&mut self.places);
+        places.clear();
         let (mut found, mut before) = (0, false);
         for (row, at) in &hot {
             if found == need {
@@ -705,42 +774,57 @@ impl Model {
             cold_next = cold + 1;
         }
         places.sort_unstable();
-        let mut rows = Vec::with_capacity(count);
-        let mut held_rows = places.into_iter().map(|at| held[at]).peekable();
-        let mut inserted_rows = inserted.into_iter().peekable();
-        loop {
-            let (key, new) = match (held_rows.peek(), inserted_rows.peek()) {
-                (None, None) => break,
-                (Some(&key), None) => (key, false),
-                (None, Some(&key)) => (key, true),
-                (Some(&kept), Some(&new)) => {
-                    if kept < new {
-                        (kept, false)
-                    } else {
-                        (new, true)
+        let mut out = std::mem::take(&mut self.run);
+        out.clear();
+        let mut stored = std::mem::take(&mut self.stored_rows);
+        stored.clear();
+        let (mut kept_at, mut new_at, mut hot_at) = (0, 0, 0);
+        while kept_at < places.len() || new_at < inserted.len() {
+            let kept = places.get(kept_at).map(|&at| (held[at], at));
+            let new = inserted.get(new_at).copied();
+            let (key, position) = match (kept, new) {
+                (Some((key, at)), new) if new.is_none_or(|new| key < new) => {
+                    kept_at += 1;
+                    (key, Some(at))
+                }
+                (_, Some(key)) => {
+                    new_at += 1;
+                    (key, None)
+                }
+                _ => unreachable!("one ordered row remains"),
+            };
+            while hot.get(hot_at).is_some_and(|(row, _)| row.key < key) {
+                hot_at += 1;
+            }
+            let seen = match position {
+                Some(at) => {
+                    let row = hot.get(hot_at).filter(|(row, _)| row.key == key);
+                    Seen {
+                        last: row.map_or(0, |(row, _)| row.last),
+                        before: row.map_or(0, |(row, _)| row.before),
+                        stored: self.held_masks[at],
                     }
                 }
+                // A reinserted key retains its historical last mask, and
+                // can still belong to either of the preceding two entries.
+                None => self.seen(key),
             };
-            if new {
-                inserted_rows.next();
-            } else {
-                held_rows.next();
+            let mask = self.take_mask(key, seen, coded)?;
+            if let Some(at) = position {
+                self.held_masks[at] = mask;
             }
-            rows.push((key, new));
-        }
-        let mut out = Vec::with_capacity(count);
-        let mut stored = Vec::with_capacity(count);
-        for (key, new) in rows {
-            let mask = self.take_mask(key, coded)?;
             stored.push((key, mask));
-            out.push((key, mask, new));
+            out.push((key, mask, position.is_none()));
         }
         self.age(&stored);
+        self.hot_places = hot;
+        self.places = places;
+        self.inserted_keys = inserted;
+        self.stored_rows = stored;
         Ok(out)
     }
 
-    fn take_mask(&mut self, key: u128, coded: &mut Decoder<'_>) -> io::Result<u64> {
-        let seen = self.seen(key);
+    fn take_mask(&mut self, key: u128, seen: Seen, coded: &mut Decoder<'_>) -> io::Result<u64> {
         // No mask is zero: only the list's length.
         let (length, _) = self.place(seen.stored, 0);
         for at in 0..length.min(RANKS) {
@@ -788,6 +872,91 @@ impl Model {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn modelled_reader_reuses_runs_and_indexes_each_held_mask() {
+        let mut held = KeySet::of(vec![4, 8]);
+        let entries = [
+            vec![(4, 1), (8, 2)],
+            vec![(4, 4), (8, 16)],
+            vec![(4, 1), (8, 2)],
+        ];
+        let mut writer = Model::new(FIELDS);
+        let (mut keys, mut coded) = (Vec::new(), Vec::new());
+        for rows in &entries {
+            writer.put(&held, rows, &mut keys, &mut coded).unwrap();
+        }
+        writer.finish(&mut coded);
+        let (mut keys, mut coded) = (Decoder::new(&keys), Decoder::new(&coded));
+        let mut reader = Model::new(FIELDS);
+        for expected in &entries {
+            let rows = reader
+                .take(TableId::Divisions, &held, 2, &mut keys, &mut coded)
+                .unwrap();
+            assert_eq!(
+                rows,
+                expected
+                    .iter()
+                    .map(|&(key, mask)| (key, mask, false))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                reader.held_masks,
+                expected.iter().map(|&(_, mask)| mask).collect::<Vec<_>>()
+            );
+            let capacity = rows.capacity();
+            reader.recycle_run(rows);
+            assert!(reader.run.is_empty() && reader.run.capacity() >= capacity);
+            assert!(reader.places.capacity() >= 2 && reader.stored_rows.capacity() >= 2);
+        }
+        keys.finish().unwrap();
+        coded.finish().unwrap();
+        // Replacing membership with an equal-sized table automatically gives
+        // every position its own key's history.
+        held.apply(&mut super::super::keyed::KeyChanges {
+            inserted: vec![12],
+            deleted: vec![4],
+        });
+        reader.index_held(&held);
+        assert_eq!(reader.held_masks, [2, 0]);
+        assert_eq!(reader.held_changes, Some(held.changes()));
+        // A clear and reinsertion preserve historical masks by key without
+        // any manual notification to the model.
+        held.clear();
+        held.apply(&mut super::super::keyed::KeyChanges {
+            inserted: vec![4, 8],
+            deleted: Vec::new(),
+        });
+        reader.index_held(&held);
+        assert_eq!(reader.held_masks, [1, 2]);
+    }
+
+    #[test]
+    fn ordered_hot_merge_skips_large_cold_spans_exactly() {
+        let held: Vec<u128> = (0..5_000).map(|n| n * 3).collect();
+        let mut model = Model::new(FIELDS);
+        model.hot = [0, 1, 12, 1_501, 14_997, 15_001]
+            .map(|key| Hot {
+                key,
+                last: 1,
+                before: 2,
+            })
+            .to_vec();
+        let mut merged = Vec::new();
+        model.hot_into(&held, &mut merged);
+        let expected: Vec<_> = model
+            .hot
+            .iter()
+            .filter_map(|hot| held.binary_search(&hot.key).ok().map(|at| (*hot, at)))
+            .collect();
+        assert_eq!(merged, expected);
+        for key in 0..15_005 {
+            assert_eq!(
+                held_at_or_after(&held, 0, key),
+                held.partition_point(|held| *held < key)
+            );
+        }
+    }
+
     use super::*;
 
     const FIELDS: usize = 5;
@@ -932,11 +1101,19 @@ mod tests {
     ) -> io::Result<Vec<Vec<(u128, u64, bool)>>> {
         let mut model = Model::new(fields);
         let (mut keys, mut coded) = (Decoder::new(keys), Decoder::new(coded));
+        let mut live = KeySet::default();
         let rows = helds
             .iter()
             .zip(counts)
             .map(|(held, &count)| {
-                model.take(TableId::Divisions, held, count, &mut keys, &mut coded)
+                if live.keys() != held.keys() {
+                    live.clear();
+                    live.apply(&mut super::super::keyed::KeyChanges {
+                        inserted: held.keys().to_vec(),
+                        deleted: Vec::new(),
+                    });
+                }
+                model.take(TableId::Divisions, &live, count, &mut keys, &mut coded)
             })
             .collect::<io::Result<Vec<_>>>()?;
         keys.finish()?;

@@ -2,19 +2,34 @@
 //! Targets follow the mission country link or the operation target,
 //! as selected for status text.
 
-use super::{LoadContext, Product, operative_rows};
-use crate::{Source, metadata::validate_campaign};
+use super::{Product, operative_rows};
 use replay::{
-    frame::{DecodedFrame, FrameDecoder},
+    frame::DecodedFrame,
     rows::{CountryLinkRow, CountryRow, OperativeMembershipRow, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
     io,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::AtomicBool,
 };
 use ts_rs::TS;
+
+#[cfg(test)]
+use super::LoadContext;
+#[cfg(test)]
+use crate::{Source, metadata::validate_campaign};
+#[cfg(test)]
+use replay::frame::FrameDecoder;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
+
+pub(crate) mod prepared;
+
+#[cfg(test)]
+mod oracle;
+#[cfg(test)]
+use oracle::{identities, scan};
 
 pub struct OperativePlacements;
 
@@ -24,7 +39,7 @@ pub struct OperativePlacementParams {
     pub branch_id: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum PlacementAvailability {
     Recorded,
@@ -32,7 +47,7 @@ pub enum PlacementAvailability {
     TablesNotRecorded,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PlacementPeriod {
     pub first_hour: i32,
@@ -40,7 +55,7 @@ pub struct PlacementPeriod {
     pub availability: PlacementAvailability,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct OperativePlacementRun {
     pub first_hour: i32,
@@ -50,7 +65,7 @@ pub struct OperativePlacementRun {
     pub operatives: Vec<PlacedOperative>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PlacedOperative {
     pub id: String,
@@ -59,7 +74,7 @@ pub struct PlacedOperative {
     pub unnamed: bool,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct OperativePlacementPair {
     /// Numeric country identities; independent of opaque tag spelling.
@@ -69,7 +84,7 @@ pub struct OperativePlacementPair {
     pub runs: Vec<OperativePlacementRun>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct OperativePlacementReply {
     pub branch_id: String,
@@ -88,27 +103,15 @@ fn recorded_operatives(frame: &DecodedFrame) -> Option<&[OperativeMembershipRow]
     frame.complete::<tables::OperativeMemberships>().ok()
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 struct PairKey {
     owner: (u32, u32, String),
     target: (u32, u32, String),
 }
 
-/// Canonical identities in O(countries log links), as tagged_country's
-/// mapped_slot rule does; tags remain whole opaque byte strings.
-fn identities<'a>(
-    countries: &'a [CountryRow],
-    links: &[CountryLinkRow],
-) -> Option<HashMap<u32, &'a CountryRow>> {
-    for country in countries {
-        std::str::from_utf8(&country.tag).ok()?;
-    }
-    operative_rows::country_rows(countries, links)
-}
-
-fn resolve_rows(
+fn resolve_rows<T: std::borrow::Borrow<CountryRow>>(
     rows: &[OperativeMembershipRow],
-    countries: &HashMap<u32, &CountryRow>,
+    countries: &HashMap<u32, T>,
     links: &[CountryLinkRow],
     localisation: Option<&installed_content::localisation::Localisation>,
     warnings: &mut std::collections::BTreeSet<String>,
@@ -169,8 +172,8 @@ fn resolve_rows(
                 .ok_or_else(|| "Target not recorded".to_owned())?;
             let target_id = operative_rows::identity(target, links, countries)
                 .ok_or_else(|| format!("Unresolved operative target {target}"))?;
-            let owner = countries[&owner_id.slot];
-            let target = countries[&target_id.slot];
+            let owner: &CountryRow = countries[&owner_id.slot].borrow();
+            let target: &CountryRow = countries[&target_id.slot].borrow();
             Ok::<_, String>(PairKey {
                 owner: (
                     owner_id.slot,
@@ -227,13 +230,14 @@ fn resolve_rows(
     Ok(result)
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct History {
+    #[serde(with = "crate::prepared_production::map_pairs")]
     pairs: BTreeMap<PairKey, OperativePlacementPair>,
     periods: Vec<PlacementPeriod>,
     reads: Vec<i32>,
     last_hour: Option<i32>,
-    held: Option<BTreeMap<PairKey, Vec<PlacedOperative>>>,
+    held: Option<Vec<(PairKey, Vec<PlacedOperative>)>>,
 }
 
 enum Observation {
@@ -243,13 +247,17 @@ enum Observation {
 }
 
 impl History {
-    fn project(&mut self, countries: &HashMap<u32, &CountryRow>) -> Result<(), String> {
+    fn project<T: std::borrow::Borrow<CountryRow>>(
+        &mut self,
+        countries: &HashMap<u32, T>,
+    ) -> Result<(), String> {
         let Some(held) = self.held.as_ref() else {
             return Ok(());
         };
         let current = |identity: &(u32, u32, String)| {
             let row = countries
                 .get(&identity.0)
+                .map(|row| std::borrow::Borrow::<CountryRow>::borrow(row))
                 .filter(|row| row.id == identity.1)
                 .ok_or_else(|| {
                     format!(
@@ -278,7 +286,7 @@ impl History {
                     value.clone(),
                 ))
             })
-            .collect::<Result<BTreeMap<_, _>, String>>()?;
+            .collect::<Result<Vec<_>, String>>()?;
         self.held = Some(projected);
         Ok(())
     }
@@ -292,7 +300,7 @@ impl History {
         let availability = match observation {
             Observation::Read(rows) => {
                 self.reads.push(hour);
-                self.held = Some(rows);
+                self.held = Some(rows.into_iter().collect());
                 PlacementAvailability::Recorded
             }
             Observation::Hold if self.held.is_some() => PlacementAvailability::Recorded,
@@ -346,127 +354,108 @@ impl History {
     }
 }
 
-fn scan(
-    source: &Source,
-    branch: u64,
-    context: &LoadContext,
-    cancelled: &AtomicBool,
-) -> io::Result<OperativePlacementReply> {
-    let replay = source.replay();
-    let mut catalogue = None;
-    let mut warnings = std::collections::BTreeSet::new();
-    let selected = [
-        TableId::Campaign,
-        TableId::Countries,
-        TableId::CountryLinks,
-        TableId::SimulationFeatures,
-        TableId::OperativeMemberships,
-    ];
-    let mut history = History::default();
-    crate::blocks::scan_blocks(
-        &replay,
-        replay.index.iter().filter(|block| block.branch == branch),
-        &selected,
-        cancelled,
-        |blocks| {
-            for (_, frames) in blocks {
-                let mut decoder = FrameDecoder::for_tables(&selected);
-                let Ok(frames) = frames else {
-                    continue;
-                };
-                for frame in frames {
-                    if cancelled.load(Ordering::Acquire) {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Interrupted,
-                            "Operative placement request cancelled",
-                        ));
+#[derive(Default, Serialize, Deserialize)]
+struct Scan {
+    history: History,
+    warnings: std::collections::BTreeSet<String>,
+    #[serde(skip)]
+    catalogue: Option<std::sync::Arc<crate::catalogue::Catalogue>>,
+    #[cfg(test)]
+    #[serde(skip)]
+    native_countries: operative_rows::CountryInputs,
+}
+impl Scan {
+    fn observe_bound(
+        &mut self,
+        decoded: &DecodedFrame,
+        inputs: &operative_rows::CountryInputs,
+        bound: &Result<
+            Option<std::sync::Arc<crate::catalogue::Catalogue>>,
+            crate::catalogue::ContentError,
+        >,
+    ) -> io::Result<()> {
+        let Self {
+            history,
+            warnings,
+            catalogue,
+            ..
+        } = self;
+        let mut observation = Observation::Unavailable(PlacementAvailability::TablesNotRecorded);
+        let is_read = operative_rows::membership_read(decoded);
+        if let Some(feature) = operative_rows::agency_feature(decoded) {
+            if !feature {
+                observation = Observation::Unavailable(PlacementAvailability::FeatureAbsent);
+            } else if is_read
+                && let (Some((_, links)), Some(captured)) =
+                    (inputs.complete(), recorded_operatives(decoded))
+            {
+                if catalogue.is_none() && !captured.is_empty() {
+                    *catalogue = bound
+                        .as_ref()
+                        .map_err(crate::catalogue::ContentError::error)?
+                        .clone();
+                }
+                #[cfg(test)]
+                super::intelligence_prepared::work(|work| work.row_visits += captured.len());
+                let resolved = (inputs.unresolved.is_empty() && inputs.text)
+                    .then_some(&inputs.slots)
+                    .ok_or_else(|| "Unresolved operative country catalogue".to_owned())
+                    .and_then(|countries| {
+                        resolve_rows(
+                            captured,
+                            countries,
+                            links,
+                            catalogue
+                                .as_ref()
+                                .map(|catalogue| catalogue.localisation.as_ref()),
+                            warnings,
+                        )
+                    });
+                match resolved {
+                    Ok(resolved) => {
+                        observation = Observation::Read(resolved);
                     }
-                    let Ok(decoded) = decoder.advance(&frame) else {
-                        break;
-                    };
-                    if validate_campaign(decoded, &replay).is_err() {
-                        break;
+                    Err(reason) => {
+                        warnings.insert(reason);
                     }
-                    let mut observation =
-                        Observation::Unavailable(PlacementAvailability::TablesNotRecorded);
-                    let is_read = operative_rows::membership_read(decoded);
-                    if let Some(feature) = operative_rows::agency_feature(decoded) {
-                        if !feature {
-                            observation =
-                                Observation::Unavailable(PlacementAvailability::FeatureAbsent);
-                        } else if is_read
-                            && let (Ok(countries), Ok(links), Some(captured)) = (
-                                decoded.complete::<tables::Countries>(),
-                                decoded.complete::<tables::CountryLinks>(),
-                                recorded_operatives(decoded),
-                            )
-                        {
-                            if catalogue.is_none()
-                                && !captured.is_empty()
-                                && let Some(content) = &context.content
-                            {
-                                catalogue = Some(crate::catalogue::catalogue(source, content)?);
-                            }
-                            let resolved = identities(countries, links)
-                                .ok_or_else(|| "Unresolved operative country catalogue".to_owned())
-                                .and_then(|countries| {
-                                    resolve_rows(
-                                        captured,
-                                        &countries,
-                                        links,
-                                        catalogue.as_ref().map(|c| c.localisation.as_ref()),
-                                        &mut warnings,
-                                    )
-                                });
-                            match resolved {
-                                Ok(resolved) => {
-                                    observation = Observation::Read(resolved);
-                                }
-                                Err(reason) => {
-                                    warnings.insert(reason);
-                                }
-                            }
-                        } else if !is_read
-                            && decoded.complete::<tables::OperativeMemberships>().is_ok()
-                        {
-                            // Complete held rows (including keyframes) retain the last
-                            // read's date. An unavailable/truncated table ends the hold,
-                            // including a scheduled failure with no measured walk.
-                            let projected = (|| {
-                                let countries =
-                                    decoded.complete::<tables::Countries>().map_err(|_| {
-                                        "Held operative country catalogue is unavailable".to_owned()
-                                    })?;
-                                let links =
-                                    decoded.complete::<tables::CountryLinks>().map_err(|_| {
-                                        "Held operative country links are unavailable".to_owned()
-                                    })?;
-                                let countries = identities(countries, links).ok_or_else(|| {
-                                    "Held operative country identities are unresolved".to_owned()
-                                })?;
-                                history.project(&countries)
-                            })();
-                            match projected {
-                                Ok(()) => observation = Observation::Hold,
-                                Err(reason) => {
-                                    warnings.insert(reason);
-                                }
-                            }
-                        }
+                }
+            } else if !is_read && decoded.complete::<tables::OperativeMemberships>().is_ok() {
+                // Complete held rows (including keyframes) retain the last
+                // read's date. An unavailable/truncated table ends the hold,
+                // including a scheduled failure with no measured walk.
+                let projected = (|| {
+                    inputs.countries.as_deref().ok_or_else(|| {
+                        "Held operative country catalogue is unavailable".to_owned()
+                    })?;
+                    inputs
+                        .links
+                        .as_deref()
+                        .ok_or_else(|| "Held operative country links are unavailable".to_owned())?;
+                    if !inputs.unresolved.is_empty() || !inputs.text {
+                        return Err("Held operative country identities are unresolved".to_owned());
                     }
-                    history.update(frame.hour, observation);
+                    history.project(&inputs.slots)
+                })();
+                match projected {
+                    Ok(()) => observation = Observation::Hold,
+                    Err(reason) => {
+                        warnings.insert(reason);
+                    }
                 }
             }
-            Ok(())
-        },
-    )?;
-    Ok(OperativePlacementReply {
-        branch_id: branch.to_string(),
-        pairs: history.pairs.into_values().collect(),
-        periods: history.periods,
-        read_hours: history.reads,
-        warnings: warnings.into_iter().collect(),
-    })
+        }
+        history.update(decoded.hour, observation);
+        Ok(())
+    }
+    fn reply(&self, branch: u64) -> OperativePlacementReply {
+        OperativePlacementReply {
+            branch_id: branch.to_string(),
+            pairs: self.history.pairs.values().cloned().collect(),
+            periods: self.history.periods.clone(),
+            read_hours: self.history.reads.clone(),
+            warnings: self.warnings.iter().cloned().collect(),
+        }
+    }
 }
 
 impl Product for OperativePlacements {
@@ -492,6 +481,7 @@ impl Product for OperativePlacements {
             OperativePlacementReply::decl(),
         ]
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,

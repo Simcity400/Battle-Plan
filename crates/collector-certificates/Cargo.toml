@@ -1,0 +1,23 @@
+[package]
+name = "collector-certificates"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+test-support = []
+
+[dependencies]
+engine.workspace = true
+replay.workspace = true
+serde = { workspace = true, features = ["derive"] }
+collector-primitives.workspace = true
+collector-status.workspace = true
+
+[dev-dependencies]
+collector-test-support.workspace = true

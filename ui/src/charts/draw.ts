@@ -47,6 +47,16 @@ export function drawRecordedGap(ctx: CanvasRenderingContext2D, frame: PlotFrame,
   ctx.fillRect(frame.toX(first), frame.plotTop, frame.toX(last) - frame.toX(first), frame.plotHeight); ctx.restore();
 }
 
+/** Committed preparation extent, distinct from recording gaps and direct exact zooms. */
+export function drawPreparedCoverage(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens,
+  coverage: { firstHour: number; lastHour: number; complete: boolean } | null, until: number | null = null): void {
+  if (!coverage) return;
+  const first = Math.max(frame.x[0], coverage.firstHour), last = Math.min(frame.x[1], coverage.lastHour + 1, until === null ? Infinity : until + 1);
+  if (first >= last) return;
+  ctx.save(); ctx.fillStyle = tokens.accent; ctx.globalAlpha = 0.65;
+  ctx.fillRect(frame.toX(first), frame.plotTop + frame.plotHeight - 2, frame.toX(last) - frame.toX(first), 2); ctx.restore();
+}
+
 /** The widest value label of a frame's axis, in pixels. */
 export function valueLabelWidth(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, formatValue: (value: number, ticks: readonly number[]) => string): number {
   ctx.save();

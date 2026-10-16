@@ -9,7 +9,7 @@ use replay::{
 };
 use std::time::Instant;
 
-fn ace(id: u64, alive: bool) -> AirAceRow {
+pub(super) fn ace(id: u64, alive: bool) -> AirAceRow {
     AirAceRow {
         id,
         country: 11,
@@ -20,7 +20,7 @@ fn ace(id: u64, alive: bool) -> AirAceRow {
         ..Default::default()
     }
 }
-fn frame(hour: i32, rows: Vec<AirAceRow>) -> DecodedFrame {
+pub(super) fn frame(hour: i32, rows: Vec<AirAceRow>) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1));
     frame.metrics.table_ns[TableId::AirAces.index()] = 1;
     frame.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
@@ -416,7 +416,7 @@ fn air_aces_mod_content_portrait_name_and_opaque_tag_override_through_stack() {
             .any(|why| why.contains("ACE_FULL_NAME absent"))
     );
     assert!(
-        portrait(&scan.aces[0].runs[0].facts, &cat)
+        portrait(&PortraitOperands::from(&scan.aces[0].runs[0].facts), &cat)
             .unwrap()
             .starts_with("data:image/png;base64,")
     );
@@ -426,7 +426,7 @@ fn air_aces_mod_content_portrait_name_and_opaque_tag_override_through_stack() {
         ..(*unknown.row).clone()
     }));
     assert!(
-        portrait(&unknown, &cat)
+        portrait(&PortraitOperands::from(&unknown), &cat)
             .unwrap_err()
             .contains("Ace presentation capture failed")
     );
@@ -661,89 +661,13 @@ fn air_aces_killer_changes_do_not_split_the_victim_run() {
 }
 
 #[test]
-fn air_aces_recorded_raid_wing_names_join_the_full_wing_handle() {
-    use engine::raid_tooltip_operands::{
-        ARMY_RESOLVED, NAME, REFERENCES, WING_NAME, WING_RESOLVED,
-    };
-    use replay::rows::{RaidRow, RaidTooltipOperandRow};
+fn air_aces_recorded_wing_names_preserve_cached_text_and_capture_refusals() {
     let mut sample = frame(
         100,
         vec![AirAceRow {
             assigned_wing: 70,
             ..ace(1, true)
         }],
-    );
-    // A decoded older recording has no ordinary-name suffix.
-    let TableView::Complete(TableRows::AirWings(wings)) =
-        &mut *sample.tables[TableId::AirWings.index()]
-    else {
-        unreachable!()
-    };
-    wings[0].name = replay::rows::Recorded::NotRecorded;
-    *sample.tables[TableId::Raids.index()] = TableView::Complete(TableRows::Raids(vec![RaidRow {
-        id: 5,
-        reference_type: 4,
-        air_wing: 70,
-        ..Default::default()
-    }]));
-    *sample.tables[TableId::RaidTooltipOperands.index()] =
-        TableView::Complete(TableRows::RaidTooltipOperands(vec![
-            RaidTooltipOperandRow {
-                raid: (5_u64 << 32) | 4,
-                ordinal: 0,
-                kind: REFERENCES,
-                key: 0,
-                raw: 0,
-            },
-            RaidTooltipOperandRow {
-                raid: (5_u64 << 32) | 4,
-                ordinal: 1,
-                kind: REFERENCES,
-                key: 1,
-                raw: 70,
-            },
-            RaidTooltipOperandRow {
-                raid: (5_u64 << 32) | 4,
-                ordinal: 2,
-                kind: NAME,
-                key: ARMY_RESOLVED,
-                raw: 0,
-            },
-            RaidTooltipOperandRow {
-                raid: (5_u64 << 32) | 4,
-                ordinal: 3,
-                kind: NAME,
-                key: WING_RESOLVED,
-                raw: 1,
-            },
-            RaidTooltipOperandRow {
-                raid: (5_u64 << 32) | 4,
-                ordinal: 4,
-                kind: WING_NAME,
-                key: u32::MAX,
-                raw: 8,
-            },
-            RaidTooltipOperandRow {
-                raid: (5_u64 << 32) | 4,
-                ordinal: 5,
-                kind: WING_NAME,
-                key: 0,
-                raw: i64::from_le_bytes(*b"Mod Wing"),
-            },
-        ]));
-    let mut scan = Scan {
-        first: 100,
-        last: 100,
-        ..Default::default()
-    };
-    scan.observe(&sample);
-    finish(&mut scan);
-    let reply = history(&scan);
-    assert_eq!(
-        reply.aces[0].runs[0]
-            .wing_name
-            .map(|index| reply.texts[index].as_str()),
-        Some("Mod Wing")
     );
     let TableView::Complete(TableRows::AirWings(wings)) =
         &mut *sample.tables[TableId::AirWings.index()]
@@ -753,7 +677,7 @@ fn air_aces_recorded_raid_wing_names_join_the_full_wing_handle() {
     wings[0].name = replay::rows::Recorded::Value(Some(b"Ordinary cached wing".to_vec()));
     let mut warnings = Refusals::default();
     assert_eq!(
-        super::super::air_wings::recorded_names(&sample, &HashSet::from([70]), &mut warnings)[&70],
+        crate::air_wing_names::recorded_names(&sample, &HashSet::from([70]), &mut warnings)[&70],
         b"Ordinary cached wing"
     );
     let TableView::Complete(TableRows::AirWings(wings)) =
@@ -763,7 +687,7 @@ fn air_aces_recorded_raid_wing_names_join_the_full_wing_handle() {
     };
     wings[0].name = replay::rows::Recorded::Value(None);
     assert!(
-        super::super::air_wings::recorded_names(&sample, &HashSet::from([70]), &mut warnings)
+        crate::air_wing_names::recorded_names(&sample, &HashSet::from([70]), &mut warnings)
             .is_empty()
     );
     assert!(
@@ -771,30 +695,6 @@ fn air_aces_recorded_raid_wing_names_join_the_full_wing_handle() {
             .counts("wing names")
             .iter()
             .any(|why| why.contains("capture failed"))
-    );
-    let TableView::Complete(TableRows::AirWings(wings)) =
-        &mut *sample.tables[TableId::AirWings.index()]
-    else {
-        unreachable!()
-    };
-    wings[0].name = replay::rows::Recorded::NotRecorded;
-    let TableView::Complete(TableRows::RaidTooltipOperands(operands)) =
-        &mut *sample.tables[TableId::RaidTooltipOperands.index()]
-    else {
-        unreachable!()
-    };
-    operands.retain(|row| row.kind != WING_NAME || row.key == u32::MAX);
-    operands.last_mut().unwrap().raw = -2;
-    let mut warnings = Refusals::default();
-    assert!(
-        super::super::air_wings::recorded_names(&sample, &HashSet::from([70]), &mut warnings)
-            .is_empty()
-    );
-    assert!(
-        warnings
-            .counts("wing names")
-            .iter()
-            .any(|why| why.contains("pointer is null"))
     );
 }
 
@@ -1004,57 +904,19 @@ fn air_aces_large_missing_country_links_and_names_have_counted_diagnostics() {
 
 #[test]
 fn air_aces_refusal_counts_only_assigned_wing_names() {
-    use engine::raid_tooltip_operands::{
-        ARMY_RESOLVED, NAME, REFERENCES, WING_NAME, WING_RESOLVED,
-    };
-    use replay::rows::{RaidRow, RaidTooltipOperandRow};
     let mut row = ace(1, true);
     row.assigned_wing = 70;
     let mut sample = frame(100, vec![row]);
-    // A decoded older recording has no ordinary-name suffix.
-    let TableView::Complete(TableRows::AirWings(wings)) =
-        &mut *sample.tables[TableId::AirWings.index()]
-    else {
-        unreachable!()
-    };
-    wings[0].name = replay::rows::Recorded::NotRecorded;
-    *sample.tables[TableId::Raids.index()] = TableView::Complete(TableRows::Raids(
-        [(5, 70), (6, 71), (7, 72), (8, 73), (9, 73)]
+    *sample.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(
+        [70, 71]
             .into_iter()
-            .map(|(id, air_wing)| RaidRow {
+            .map(|id| AirWingRow {
                 id,
-                reference_type: 4,
-                air_wing,
+                name: replay::rows::Recorded::Value(None),
                 ..Default::default()
             })
             .collect(),
     ));
-    *sample.tables[TableId::RaidTooltipOperands.index()] =
-        TableView::Complete(TableRows::RaidTooltipOperands(
-            [
-                (5_u64, 0, REFERENCES, 0, 0),
-                (5, 1, REFERENCES, 1, 70),
-                (5, 2, NAME, ARMY_RESOLVED, 0),
-                (5, 3, NAME, WING_RESOLVED, 1),
-                (5, 4, WING_NAME, u32::MAX, -2),
-                (6, 0, WING_NAME, u32::MAX, -2),
-                (7, 0, NAME, ARMY_RESOLVED, 0),
-                (7, 1, NAME, WING_RESOLVED, 1),
-                (8, 0, WING_NAME, u32::MAX, 8),
-                (8, 1, WING_NAME, 0, i64::from_le_bytes(*b"Wing one")),
-                (9, 0, WING_NAME, u32::MAX, 8),
-                (9, 1, WING_NAME, 0, i64::from_le_bytes(*b"Wing two")),
-            ]
-            .into_iter()
-            .map(|(id, ordinal, kind, key, raw)| RaidTooltipOperandRow {
-                raid: (id << 32) | 4,
-                ordinal,
-                kind,
-                key,
-                raw,
-            })
-            .collect(),
-        ));
     let mut scan = Scan {
         first: 100,
         last: 101,
@@ -1074,7 +936,7 @@ fn air_aces_refusal_counts_only_assigned_wing_names() {
     let warnings = info(&scan).warnings;
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].contains("1 ace wing names not shown"));
-    assert!(warnings[0].contains("native string data pointer is null"));
+    assert!(warnings[0].contains("capture failed"));
     assert!(scan.refusals.counts("ace fields/reads").is_empty());
 }
 
@@ -1437,7 +1299,7 @@ fn air_aces_generic_portrait_preserves_retained_pool_and_native_culture_holes() 
     row.presentation = Recorded::Value(Some(fields.clone()));
     facts.row = RecordedAce::Changed(Box::new(row.clone()));
     assert_eq!(
-        portrait(&facts, &cat).unwrap(),
+        portrait(&PortraitOperands::from(&facts), &cat).unwrap(),
         expected("GFX_retained_ace")
     );
     fields.portrait.as_mut().unwrap().cached = None;
@@ -1446,19 +1308,22 @@ fn air_aces_generic_portrait_preserves_retained_pool_and_native_culture_holes() 
     facts.row = RecordedAce::Changed(Box::new(row.clone()));
     // The missing f_1 ends the pool, so native 1 % 1 selects f_0, not f_2.
     assert_eq!(
-        portrait(&facts, &cat).unwrap(),
+        portrait(&PortraitOperands::from(&facts), &cat).unwrap(),
         expected("GFX_modculture_ace_f_0")
     );
     fields.gender = 0; // No male culture entries: use the recorded global pool.
     fields.portrait.as_mut().unwrap().fallback = Some(b"GFX_global_ace".to_vec());
     row.presentation = Recorded::Value(Some(fields.clone()));
     facts.row = RecordedAce::Changed(Box::new(row.clone()));
-    assert_eq!(portrait(&facts, &cat).unwrap(), expected("GFX_global_ace"));
+    assert_eq!(
+        portrait(&PortraitOperands::from(&facts), &cat).unwrap(),
+        expected("GFX_global_ace")
+    );
     fields.portrait.as_mut().unwrap().fallback = Some(b"GFX_undefined_ace".to_vec());
     row.presentation = Recorded::Value(Some(fields));
     facts.row = RecordedAce::Changed(Box::new(row));
     assert!(
-        portrait(&facts, &cat)
+        portrait(&PortraitOperands::from(&facts), &cat)
             .unwrap_err()
             .contains("absent from recorded content")
     );

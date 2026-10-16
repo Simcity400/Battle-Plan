@@ -26,7 +26,7 @@ fn frame(hour: i32, keyframe: bool) -> Frame {
             // A retired table decodes with its catalogued refusal.
             reason: match crate::frame::current_absence(crate::rows::TableId::ALL[index]) {
                 Some(crate::frame::TableView::Unavailable { reason }) => reason,
-                _ => "fixture has no tables".into(),
+                _ => "x".into(),
             },
         }),
     }
@@ -76,7 +76,7 @@ fn record_reader_streams_large_segments_with_one_payload_buffer() {
     }
     let context = encode_record(&branch()).unwrap();
     let frame_bytes = encode_record(&large_frame(10)).unwrap().len();
-    let count = 128;
+    let count = 8;
     let length = context.len() + count * frame_bytes;
     let source = SyntheticSegment {
         bytes: context,

@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import { ChipSet } from '../../components/ChipSet';
 import ContentSetPicker from '../../components/ContentSetPicker';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import WidgetState from '../../components/WidgetState';
 import LogList from '../../charts/log/LogList';
+import type { LogListProps } from '../../charts/log/LogList';
 import { logCountryRequests } from '../../charts/log/logData';
 import type { LogRow } from '../../charts/log/logData';
 import { logSettings } from '../../charts/log/logOptions';
@@ -21,11 +22,13 @@ import { contentSet, resolveOptions, toggleContentSet } from '../../dashboard/op
 import { useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useParityRows } from '../../dashboard/parityRows';
+import { parityWindowCoverage, parityWindowIndices, useParityPreparation } from '../../dashboard/parityPreparation';
 import type { DivisionLogManifestReply, DivisionLogReply, DivisionLogTotalsReply, PlaceNamesReply } from '../../generated/dashboard';
 import { battleWindowIndex, battleWindows } from '../land-battles/landBattlesData';
 import { placeKey, validatePlaceNamesReply } from '../../dashboard/placeNamesData';
 import { OPTIONS } from './definition';
-import { divisionName, divisionRows, divisionStatus, divisionTooltip, selectedTemplates, templateToken,
+import { divisionName, divisionStatus, divisionRows, divisionTooltip, selectedTemplates, templateToken,
   validateDivisionLog, validateDivisionManifest, validateDivisionTotals } from './divisionLogData';
 import type { DivisionLogItem } from './divisionLogData';
 import './divisionLog.css';
@@ -43,6 +46,7 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const hour = window ? Math.floor(window.lastHour) : null;
   const first = widget.time.mode === 'range' && window ? Math.floor(window.firstHour) : track?.branch.firstHour ?? 0;
+  const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
   const groups = useCountryGroups(runtime, track, active && widget.countries.kind !== 'all');
   const fallbackKey = JSON.stringify(selectedTags(widget.countries, track));
   const fallback = useMemo<string[]>(() => JSON.parse(fallbackKey), [fallbackKey]);
@@ -53,11 +57,13 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, contentRevision]) : null;
   const playheadWindow = battleWindowIndex(manifest.data?.windows ?? [], hour ?? first);
   const [browse, setBrowse] = useState<{ identity: string | null; hour: number | null }>({ identity: null, hour: null });
-  const shownHour = browse.identity === identity && browse.hour !== null ? Math.min(browse.hour, hour ?? browse.hour) : hour;
+  const shownHour = !parity?.requested && browse.identity === identity && browse.hour !== null ? Math.min(browse.hour, hour ?? browse.hour) : hour;
   const browseIndex = battleWindowIndex(manifest.data?.windows ?? [], shownHour ?? first);
   const [visibleWindows, setVisibleWindows] = useState<{ identity: string | null; at: number; windows: number[] }>({ identity: null, at: -1, windows: [] });
   const visibleIndices = visibleWindows.identity === identity && visibleWindows.at === playheadWindow ? visibleWindows.windows : [];
-  const wantedWindows = battleWindows(manifest.data, hour ?? first, live, [...visibleIndices, ...(browse.identity === identity && browse.hour !== null ? [browseIndex] : [])], first);
+  const parityWindows = import.meta.env.MODE === 'parity' ? parityWindowIndices(manifest.data?.windows, first, hour ?? first) : [];
+  const wantedWindows = parity?.requested ? parityWindows
+    : battleWindows(manifest.data, hour ?? first, live, [...visibleIndices, ...(browse.identity === identity && browse.hour !== null ? [browseIndex] : [])], first);
   const history = useProductWindows<DivisionLogReply>(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision,
     product: 'division-log', params: { branchId: track!.branch.id, window: index } }), wantedWindows,
   active && manifest.data?.available === true, validateDivisionLog);
@@ -97,12 +103,41 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
         : namedPlaces.get(placeKey(row.province, row.placeHour))?.name ?? 'Unnamed province',
     };
   }, [labelAt, namedPlaces]);
+  const parityTotalsRoot = import.meta.env.MODE === 'parity' ? useRef<HTMLDivElement>(null) : null;
+  if (import.meta.env.MODE === 'parity') {
+    const complete = parity!.requested && totals.data !== undefined && match.ready && manifest.data?.available === true;
+    useParityRows(parityTotalsRoot!, () => ({ kind: 'table', label: 'Division totals', complete,
+      total: events === 'created' ? 1 : events === 'lost' ? 2 : 3,
+      rows: [
+        ...(events !== 'lost' ? [{ label: 'Created', value: totals.data?.created ?? null }] : []),
+        ...(events !== 'created' ? [
+          { label: 'Lost / removed', value: manifest.data?.lossesAvailable ? totals.data?.lost ?? null : null },
+          { label: 'Transferred / merged', value: manifest.data?.lossesAvailable ? totals.data?.transferred ?? null : null },
+        ] : []),
+      ],
+    }), { prepare: parity!.prepare, ready: () => complete, error: () => totals.error ?? manifest.error ?? null });
+  }
+  let parityHistoryComplete = false;
+  let paritySemantic: LogListProps<DivisionLogItem>['paritySemantic'];
+  if (import.meta.env.MODE === 'parity') {
+    const requested = parity!.requested;
+    const coverage = parityWindowCoverage(parityWindows, history.data, history.errors);
+    parityHistoryComplete = manifest.data !== undefined && manifest.data.available && coverage.complete;
+    const fullRows = useMemo(() => hour === null || !match.ready ? NO_ROWS : divisionRows(history.data, hour, first, events,
+      templates, match.matches, widget.countries.kind === 'all'), [history.data, hour, first, events, templates, match, widget.countries.kind]);
+    const complete = requested && parityHistoryComplete && match.ready;
+    paritySemantic = { rows: fullRows, complete,
+      preparation: { prepare: parity!.prepare, ready: () => complete, error: () => manifest.error ?? coverage.error },
+      item: ({ item: row }) => { const { icon: _icon, ...operands } = row; return operands; },
+      reads: { windows: coverage.outcomes } };
+  }
   const onVisible = useCallback((drawn: readonly LogRow<DivisionLogItem>[]) => {
     setVisible(previous => previous.length === drawn.length && previous.every((row, index) => row === drawn[index]) ? previous : drawn);
+    if (parity?.requested) return;
     const windows = [...new Set(drawn.map(row => row.item.windowIndex))].sort((a, b) => a - b);
     setVisibleWindows(previous => previous.identity === identity && previous.at === playheadWindow && JSON.stringify(previous.windows) === JSON.stringify(windows)
       ? previous : { identity, at: playheadWindow, windows });
-  }, [identity, playheadWindow]);
+  }, [identity, playheadWindow, parity?.requested]);
   const warnings = useMemo(() => [...new Set([...(manifest.data?.contentWarnings ?? NO_WARNINGS),
     ...[...history.data.values()].flatMap(reply => [...reply.contentWarnings, ...reply.warnings.filter(w => w.hour >= first && w.hour <= (hour ?? first)).map(w => `${w.reason} (${w.count})`)]),
     ...[...history.errors].filter(([index]) => index <= playheadWindow).map(([, reason]) => `Division log window: ${reason}`),
@@ -132,7 +167,7 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
       </span><span className="log-tag">{divisionStatus(row)}</span></>;
   };
   return <div className="log-widget division-log">
-    {options.totals === true && <div className="division-log-summary" aria-live="polite">
+    {options.totals === true && <div ref={parityTotalsRoot} className="division-log-summary" aria-live="polite">
       {totals.error ? <WidgetState kind="error" what="division totals" detail={totals.error} onRetry={totals.retry} /> : !totals.data ? 'Loading totals…' : <>
         {events !== 'lost' && <span><b>{totals.data.created.toLocaleString()}</b> created</span>}
         {events !== 'created' && <><span><b>{manifest.data.lossesAvailable ? totals.data.lost.toLocaleString() : 'Not recorded'}</b> lost / removed</span>
@@ -151,6 +186,7 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
       {shownHour !== hour && <button type="button" onClick={() => { setBrowse({ identity, hour: null }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Latest divisions</button>}
     </div>}
     <LogList rows={rows} label="Division log" density={log.density} months={log.months} animate={log.animate && live && shownHour === hour}
+      {...import.meta.env.MODE === 'parity' ? { parityHistoryComplete, paritySemantic } : {}}
       columns="var(--space-6) minmax(0, 1fr) auto" renderRow={renderRow} anchorRows onVisible={onVisible}
       describe={({ item: row }) => { const named = labels(row); return `${named.country.name}: ${divisionName(row)}, ${divisionStatus(row)}, ${row.templateName ?? 'template not recorded'}, ${named.place}, ${named.killer.name}.`; }}
       tooltip={({ item: row }) => { const named = labels(row); return [divisionTooltip(row, named.country, named.killer, named.place)]; }}

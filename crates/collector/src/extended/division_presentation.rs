@@ -82,7 +82,7 @@ macro_rules! compare_status_fields {
 }
 
 macro_rules! project_status_fields {
-    ([$row:expr, $supply_grace:expr, $naming:expr, $supply:expr, $dig_in:expr, $name:expr, $attack_stats:expr, $witness:expr], {$($field:ident: $value:expr),* $(,)?}) => {
+    ([$row:expr, $supply_grace:expr, $naming:expr, $supply:expr, $dig_in:expr, $block:expr, $name:expr, $attack_stats:expr, $witness:expr, $movement:expr], {$($field:ident: $value:expr),* $(,)?}) => {
         DivisionStatusRow {
             $($field: $value,)*
             acclimatization_maximum: None,
@@ -94,6 +94,7 @@ macro_rules! project_status_fields {
                 $row.supply_grace_remaining,
                 $supply_grace,
             )),
+            name_template: Recorded::Value(name_template($row.naming)),
             naming: Recorded::Value($naming),
             country_ordinal: Recorded::Value($row.country_ordinal),
             invalid_orders_reason: Recorded::Value($row.invalid_orders_reason),
@@ -105,7 +106,26 @@ macro_rules! project_status_fields {
             name: Recorded::Value($name),
             attack: Recorded::Value(Witnessed($witness)),
             attack_stats: Recorded::Value($attack_stats),
+            movement_stats: Recorded::Value($movement),
             weather_factor: Recorded::Value($row.weather_factor),
+            out_of_supply_days: Recorded::Value($row.out_of_supply_days),
+            commander_modifiers: Recorded::Value($block),
+            supply_ratio_exact: Recorded::Value(
+                DivisionStatusRow::exact_supply(
+                    $row.out_of_supply_days,
+                    $row.supply_ratio,
+                    $row.supply_grace_remaining,
+                )
+                .map(|[ratio, _]| ratio),
+            ),
+            supply_grace_exact: Recorded::Value(
+                DivisionStatusRow::exact_supply(
+                    $row.out_of_supply_days,
+                    $row.supply_ratio,
+                    $row.supply_grace_remaining,
+                )
+                .map(|[_, grace]| grace),
+            ),
         }
     };
 }
@@ -116,6 +136,20 @@ fn camouflage(camouflage: Option<carmy::Camouflage>) -> Option<DivisionCamouflag
     camouflage.map(|camouflage| DivisionCamouflage {
         category: camouflage.category,
     })
+}
+
+/// Whether this build records the name member's template reference, which only
+/// the fresh-save oracle reads (`name_template_witness`).
+const NAME_TEMPLATE_WITNESS: bool = cfg!(feature = "name_template_witness");
+
+/// The recorded name member template reference: empty unless this is a
+/// `name_template_witness` build and the naming operands were read.
+fn name_template(naming: Option<cname_group_member::Inputs>) -> Witnessed<u64> {
+    Witnessed(
+        naming
+            .filter(|_| NAME_TEMPLATE_WITNESS)
+            .map(|naming| naming.template),
+    )
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1534,7 +1568,17 @@ impl Captured {
                     && previous.attack == Recorded::Value(Witnessed(None))
                     && self.attack.witness(r.division, r.weather_factor).is_none()
                     && self.attack.same(r.division, &previous.attack_stats)
+                    && self
+                        .attack
+                        .same_movement(r.division, &previous.movement_stats)
                     && Recorded::Value(r.weather_factor) == previous.weather_factor
+                    && Recorded::Value(r.out_of_supply_days) == previous.out_of_supply_days
+                    && DivisionStatusRow::exact_supply(
+                        r.out_of_supply_days,
+                        r.supply_ratio,
+                        r.supply_grace_remaining,
+                    ) == previous.supply_exact()
+                    && matches!(previous.supply_ratio_exact, Recorded::Value(_))
                     && previous.attrition_inputs == Recorded::Value(Retired)
                     && super::supply_inputs::matches_division(
                         r.supply,
@@ -1547,6 +1591,8 @@ impl Captured {
                         self.dig_in
                             .factor(r.division, self.status_index(r.division)),
                     ) == previous.dig_in_factor
+                    && Recorded::Value(self.commander_modifiers(r.division))
+                        == previous.commander_modifiers
                     && match &previous.name {
                         Recorded::Value(name) => cached_name(r) == name.as_deref(),
                         Recorded::NotRecorded => false,
@@ -1572,6 +1618,7 @@ impl Captured {
                         }
                         _ => false,
                     }
+                    && Recorded::Value(name_template(r.naming)) == previous.name_template
             },
             |r| {
                 status_fields!(
@@ -1594,9 +1641,11 @@ impl Captured {
                         ),
                         self.dig_in
                             .factor(r.division, self.status_index(r.division)),
+                        self.commander_modifiers(r.division),
                         cached_name(r).map(|name| owned_vec(copy_vec(name))),
                         self.attack.stats(r.division),
                         self.attack.witness(r.division, r.weather_factor),
+                        self.attack.movement(r.division),
                     ],
                 )
             },
@@ -1641,6 +1690,7 @@ impl Captured {
                         )
                         && previous.fresh == Recorded::Value(Retired)
                         && Recorded::Value(r.base_speed) == previous.base_speed
+                        && Recorded::Value(r.fuel) == previous.fuel
                         && r.source == previous.source
                         && r.target == previous.target
                         && r.numerator == previous.numerator
@@ -1695,6 +1745,7 @@ impl Captured {
                         span(r.alternate_start, r.alternate_len).unwrap(),
                     )),
                     base_speed: Recorded::Value(r.base_speed),
+                    fuel: Recorded::Value(r.fuel),
                 },
             ),
             status,
@@ -1702,6 +1753,16 @@ impl Captured {
             self.land.table().into(),
         ]
     }
+    /// The division's selected commander block's movement entries: the block from the
+    /// dig-in factor's selection, its entries from the hour's retreat-ban read of the
+    /// same commander ([`carmy::StatusPacket::commander_movement`]).
+    fn commander_modifiers(&self, division: u64) -> Option<[Option<i64>; 5]> {
+        let block = self
+            .dig_in
+            .commander_block(division, self.status_index(division))?;
+        self.status_packet.commander_movement(division, block)
+    }
+
     fn status_index(&self, division: u64) -> usize {
         self.status_packet
             .status_index(division)
@@ -2708,6 +2769,7 @@ mod tests {
             programmatic: 1,
             custom: (0, 0),
             group: (0, 5),
+            template: 3029 << 32 | 52,
         };
         captured.status.rows[0] = carmy::StatusRow {
             division: 7,
@@ -2765,6 +2827,26 @@ mod tests {
             assert_eq!(indices, [0]);
             assert_eq!(TableView::Complete(rows), captured.tables()[1]);
         }
+        // The member's template reference is recorded only by a
+        // name_template_witness build, where a changed one defeats reuse.
+        let moved = 3005 << 32 | 52;
+        captured.status.rows[0].naming = Some(cname_group_member::Inputs {
+            template: moved,
+            ..naming
+        });
+        let input = captured.table_inputs(Some(&mut projection), None);
+        assert_eq!(
+            matches!(input[1], TableInput::ComparedChanges { .. }),
+            NAME_TEMPLATE_WITNESS
+        );
+        let TableView::Complete(TableRows::DivisionStatus(rows)) = captured.tables()[1].clone()
+        else {
+            panic!("the naming fixture's status rows are complete");
+        };
+        assert_eq!(
+            rows[0].name_template,
+            Recorded::Value(Witnessed(NAME_TEMPLATE_WITNESS.then_some(moved)))
+        );
         captured.status.rows[0].naming = Some(naming);
         captured.names.first[0] ^= 1;
         assert!(matches!(

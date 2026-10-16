@@ -10,6 +10,12 @@ export const LEVELS = ['domainLevel', 'typeLevel', 'variantLevel'] as const;
 export const UNIT = 'IC';
 const ATTRIBUTION_NOTE = 'Equipment type unknown.';
 
+export interface PreparedProductionSpendingReply extends ProductionSpendingReply {
+  continuity?: Record<string, readonly [boolean, boolean]>;
+  peaks?: Record<string, string>;
+  exactHours?: readonly number[];
+}
+
 export const UNKNOWN_LABELS: Readonly<Record<ProductionSpendingUnknown, string>> = {
   notRecorded: 'Spending not recorded.',
   spendingUnavailable: 'Spending unavailable at this time.',
@@ -40,7 +46,7 @@ const runs = (value: unknown): value is ProductionSpendingRun[] => Array.isArray
 
 /** Fixed-point totals and missing values keep their distinct meanings. */
 export function validateProductionSpendingReply(data: unknown): ProductionSpendingReply {
-  const reply = data as ProductionSpendingReply;
+  const reply = data as PreparedProductionSpendingReply;
   const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && typeof reply.tag === 'string'
     && reply.decimals === 5 && hours(reply.reads) && hours(reply.observations) && runs(reply.total) && runs(reply.rocketTotal)
     && hours(reply.equipmentReads) && hours(reply.rocketReads) && hours(reply.equipmentObservations) && hours(reply.rocketObservations)
@@ -57,7 +63,12 @@ export function validateProductionSpendingReply(data: unknown): ProductionSpendi
       && (leaf.domain === null || DOMAINS.includes(leaf.domain)) && typeof leaf.rocket === 'boolean' && runs(leaf.runs)
       && Array.isArray(leaf.names) && leaf.names.every((name, index) => typeof name === 'object' && name != null && int(name.firstHour)
         && text(name.name) && text(name.design) && typeof name.known === 'boolean' && (index === 0 || leaf.names[index - 1].firstHour < name.firstHour)))
-    && new Set(reply.leaves.map(leaf => JSON.stringify([leaf.variant, leaf.rocket]))).size === reply.leaves.length;
+    && new Set(reply.leaves.map(leaf => JSON.stringify([leaf.variant, leaf.rocket]))).size === reply.leaves.length
+    && (reply.continuity === undefined || reply.continuity !== null && typeof reply.continuity === 'object'
+      && Object.values(reply.continuity).every(pair => Array.isArray(pair) && pair.length === 2 && pair.every(value => typeof value === 'boolean')))
+    && (reply.peaks === undefined || reply.peaks !== null && typeof reply.peaks === 'object'
+      && Object.values(reply.peaks).every(value => typeof value === 'string' && RAW.test(value)))
+    && (reply.exactHours === undefined || hours(reply.exactHours));
   if (!ok) throw new Error('The production spending reply is malformed.');
   return reply;
 }
@@ -87,7 +98,7 @@ export function spendingEmptyLabel(reply: ProductionSpendingReply, hour: number,
 }
 
 function amountIn(reply: ProductionSpendingReply, values: readonly ProductionSpendingRun[], from: number | null, hour: number,
-  observations: readonly number[] = reply.observations): SpendingAmount {
+  observations: readonly number[] = reply.observations, source: 'equipment' | 'rocket' | 'combined' = 'combined'): SpendingAmount {
   const amount = spendingAt(values, hour);
   if (from == null || amount.exact == null) return amount;
   const observation = readAt(observations, hour);
@@ -95,7 +106,9 @@ function amountIn(reply: ProductionSpendingReply, values: readonly ProductionSpe
   if (from === observation) return amount;
   const before = spendingAt(values, from - 1);
   if (before.exact == null) return before;
-  if (!sameStretch(values, from - 1, hour)) return { exact: null, reason: 'outsideRead' };
+  const covered = (reply as PreparedProductionSpendingReply).continuity?.[hour];
+  if (covered ? source === 'combined' ? !covered.every(Boolean) : !covered[source === 'rocket' ? 1 : 0]
+    : !sameStretch(values, from - 1, hour)) return { exact: null, reason: 'outsideRead' };
   const exact = amount.exact - before.exact;
   return { exact, reason: null };
 }
@@ -107,10 +120,15 @@ export interface SpendingFinal { exact: bigint | null; geometry: number }
 export function spendingFinals(reply: ProductionSpendingReply, from: number | null, end: number): SpendingFinal[] {
   return reply.leaves.map(leaf => {
     const observations = leaf.rocket ? reply.rocketObservations : reply.equipmentObservations;
-    const amount = amountIn(reply, leaf.runs, from, end, observations);
+    const amount = amountIn(reply, leaf.runs, from, end, observations, leaf.rocket ? 'rocket' : 'equipment');
     if (amount.exact != null) return { exact: amount.exact, geometry: Number(amount.exact) };
     let maximum = 0n;
     const baseline = from == null || observations.includes(from) ? 0n : spendingAt(leaf.runs, from - 1).exact;
+    const peak = (reply as PreparedProductionSpendingReply).peaks?.[JSON.stringify([leaf.variant, leaf.rocket])];
+    if (peak !== undefined) {
+      const candidate = baseline === null ? 0n : BigInt(peak) - baseline;
+      return { exact: null, geometry: Number(candidate > 0n ? candidate : 0n) };
+    }
     for (const run of leaf.runs) {
       if (run.firstHour > end) break;
       if (baseline == null || run.totalRaw == null || (from != null && run.lastHour < from)) continue;
@@ -125,7 +143,7 @@ export function spendingFinals(reply: ProductionSpendingReply, from: number | nu
 export function productionSpendingItems(reply: ProductionSpendingReply, window: SpendingWindow,
   finals = spendingFinals(reply, window.from, window.end)): SunburstItem[] {
   const amounts = reply.leaves.map(leaf => amountIn(reply, leaf.runs, window.from, window.hour,
-    leaf.rocket ? reply.rocketObservations : reply.equipmentObservations));
+    leaf.rocket ? reply.rocketObservations : reply.equipmentObservations, leaf.rocket ? 'rocket' : 'equipment'));
   const unresolved = reply.leaves.some((leaf, index) => !leaf.rocket && leaf.domain == null && amounts[index].exact !== 0n);
   const unresolvedAtEnd = reply.leaves.some((leaf, index) => !leaf.rocket && leaf.domain == null && finals[index].exact !== 0n);
   const unresolvedRocket = reply.leaves.some((leaf, index) => leaf.rocket && leaf.domain == null && amounts[index].exact !== 0n);

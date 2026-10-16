@@ -27,8 +27,19 @@ Every table widget declares `TABLE_OPTIONS` and `tableSortOptions(columns, defau
 
 Heights and width measurements use layout pixels under Size zoom. `rowHeight` specifies comfortable density and scales for compact density; CSS and windowing share it. Text uses the Tables font (the interface font unless one is chosen) at the interface's small size. Cells use the bar charts' weights: 500 for names and text, 600 for numeric cells; ranks stay muted at 400. Word wrapping measures each mounted row without a line limit; prefix offsets keep windowing, motion and keyboard scrolling aligned. Unmounted rows use their last measured height or the density minimum, and resizing or font changes invalidate measurements. Turning wrapping off restores fixed rows and ellipsis. Use `minmax(var(--table-name-min), 1fr)` for names, so a narrow table scrolls before names collapse, and `max-content` for natural numeric widths. Keep full names available in titles/tooltips. `muted` changes appearance without hiding, disabling or reordering rows.
 
+Resize observers collect natural column widths and wrapped row heights, then commit their measurements together in an animation frame before paint. Layout writes run outside observer delivery, so growing a numeric track or reaching new rows cannot feed back into that delivery cycle. Changing the measurement scope or unmounting cancels pending writes; disconnected rows supply no measurements.
+
 `onRowClick` handles click/Enter/Space. `menu` handles right-click, the menu key or Shift+F10; add [jumpItem](../jump.ts) only when a recorded hour exists. Arrow keys and Home/End reveal rows below the sticky header, retaining focus through reorders.
 
 Tooltip builders run lazily and refresh the current stable row without reclaiming another owner's tooltip. `CountryCell` takes the dated name, flag, `flagPending` and `flagReason`, retaining the grey missing/decode-failed placeholder. Use `onVisibleRows` to request mounted flags only; it reports only when the mounted rows change, so columns rebuilt from the reported rows settle. Use `useTableHour` for playback and `usePlaybackSpeed` for speed-sensitive motion. Row motion follows committed renders; large tables retain only viewport and moving rows. Reduced motion removes departed rows immediately.
+
+`onVisibleRows` reports changes to the mounted row objects and their order, or a changed callback. Recreating a column accessor or the sorted array with the same row objects does not report the same rows again, so artwork state updates settle without causing a parent/table render cycle.
+
+Parity builds expose every ordered row identity, exact column operand and sort.
+An optional item projection retains referenced inputs without repeating whole
+replies. History preparation uses the original recording reader and certifies
+its exact boundary. Preparation identity survives an empty view gaining a table;
+readiness waits without serializing the history. Visible screenshots cover
+mounted cell text and artwork. Ordinary builds expose no row hook.
 
 Keep synthetic tests beside the pure helpers, including large inventories; shared development checks are in [AGENTS.md](../../../../AGENTS.md).

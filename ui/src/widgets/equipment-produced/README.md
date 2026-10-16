@@ -11,7 +11,8 @@ A caption line says what is counted, over which window and to which date. A coun
 
 ## Products it reads
 
-- [`equipment-produced`](../../../../crates/dashboard/src/products/equipment_produced.rs) counts each model's units delivered by production ticks, including deleted lines' final publications. With `count: ic` it counts the exact factory IC applied to the lines instead: the input Production spending shows, excluding instant progress. It also ranks the top N.
+- [`equipment-produced`](../../../../crates/dashboard-base/src/products/equipment_produced.rs) counts each model's units delivered by production ticks, including deleted lines' final publications. With `count: ic` it counts the exact factory IC applied to the lines instead: the input Production spending shows, excluding instant progress. It also ranks the top N.
+- Prepared race views read exact endpoint pages through `production-select`; only the visible country range is requested. Type choices use the prepared branch catalogue. Lines, opened and pinned breakdowns use the whole-history product. The default units type retains the all-types total query so it stays the type delivered most; running-total captions keep the catalogue's global observation. An unknown empty endpoint uses the history view to preserve absent history and unread-current-value states.
 - [Equipment helpers](../../dashboard/equipment.ts) supply content naming rules.
 - The breakdown's pictures come from `stockpile-artwork`, through [useStockpileArtwork](../equipment-stockpile/useStockpileArtwork.ts): the drilled country's best design for each type.
 
@@ -57,11 +58,13 @@ A caption line says what is counted, over which window and to which date. A coun
 - A row picks what the chart below stacks: that type's models. In IC, until a row is picked, the chart stacks every type: the largest six, then Other types.
 - The chart's key with exact values follows the table.
 - A picked day holds; Follow resumes playback. Pin binds the clicked native holder and date through aliases, excluding replacement holders.
+- Parity builds prepare every ranked endpoint through the real reader after visible captures. Exact total and keyed amounts, including equipment-line subtotals where the combined amount is unknown, match the history view's canonical model. Ordinary builds request only visible endpoint rows and expose no model.
 
 ## Files
 
 | File | Responsibility |
 |---|---|
 | [EquipmentProducedWidget.tsx](EquipmentProducedWidget.tsx), [ProducedDrillTable.tsx](ProducedDrillTable.tsx) | Caption line, race/lines, and the breakdown's table and key. |
+| [PreparedEquipmentProducedWidget.tsx](PreparedEquipmentProducedWidget.tsx), [preparedProducedView.ts](preparedProducedView.ts), [usePreparedProduction.ts](usePreparedProduction.ts), [preparedProducedData.ts](preparedProducedData.ts) | Shared rendering, endpoint paging, preparation, cancellation and exact units/IC presentation. |
 | [producedData.ts](producedData.ts), [producedView.ts](producedView.ts), [producedDrill.ts](producedDrill.ts) | Compressed exact values, ranking, captions, the default type, type rows and the breakdown chart; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [useProducedTypes.ts](useProducedTypes.ts), [equipmentProduced.css](equipmentProduced.css) | Options, the type list, registration and layout. |

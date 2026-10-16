@@ -1,0 +1,22 @@
+[package]
+name = "replay-data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+slow-tests = []
+# Shared synthetic row fixtures and decode observations for replay integration tests.
+test-support = []
+
+[dependencies]
+engine.workspace = true
+
+[dev-dependencies]
+# Compression-size assertions for synthetic row encodings.
+zstd = "0.13"

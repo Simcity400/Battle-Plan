@@ -1,3 +1,5 @@
+import type { PreparedCoverage } from '../../shell/preparation/contract';
+import { dayLabel } from '../draw';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -10,12 +12,29 @@ import { anchoredScrollTop, cardHeightsAt, cardPageTarget, hasLogPartTip, keyTar
 import type { CardMeasurements, LogColumns, LogDensity, LogItem, LogPage, LogRow, LogTip } from './logData';
 import { logPageItems, logPageRange, logPageTarget, logPixelTarget, logRowOrdinals, logRowTarget, wantedLogPages } from './logPages.ts';
 import type { LogRowTarget } from './logPages';
+import { useParityRows } from '../../dashboard/parityRows';
+import type { ParityPreparation } from '../../dashboard/parityRows';
 import { EMPTY_LOG_REVEALS, logReveals, logVisibleEntries } from './logReveal.ts';
 import { logicalScroll, physicalScroll, scrollGeometry, scrollItemTop, wheelScrollDelta } from '../scrollGeometry.ts';
 import '../charts.css';
 import './log.css';
 
+/** One status above a log, including its empty state. */
+export function PreparedLogCoverage({ coverage }: { coverage: PreparedCoverage | null | undefined }) {
+  if (coverage === undefined || coverage?.complete) return null;
+  return <p className="chart-line-key" role="status">{coverage
+    ? `Prepared ${dayLabel(coverage.firstHour)} to ${dayLabel(coverage.lastHour)}; the rest is still being prepared.`
+    : 'This range is still being prepared.'}</p>;
+}
+
 export interface LogListProps<T> {
+  preparedCoverage?: PreparedCoverage | null;
+  /** Parity builds report whether demand-loaded recording windows cover the
+   * requested history. It has no presentation or production behavior. */
+  parityHistoryComplete?: boolean;
+  /** Parity-only preparation retains the real complete ordered row model after
+   * the visible capture. Deferred labels remain restricted to visible rows. */
+  paritySemantic?: { preparation: ParityPreparation; complete: boolean; rows?: readonly LogRow<T>[]; item?: (row: LogRow<T>) => unknown; content?: (row: LogRow<T>) => unknown; reads: unknown };
   /** The rows, newest first (`newestFirst`). The same array while unchanged. */
   rows?: readonly LogRow<T>[];
   /** Instead of eagerly loading every row, stable server windows with their
@@ -75,9 +94,10 @@ const viewAt = (top: number, height: number, width: number, outerHeight: number)
  * between pointer and keys), and it follows what its row is about (`rowId`) across
  * the row's keys, kept current or hidden as playback changes the rows. Right-click,
  * the context-menu key or Enter opens the row's menu. */
-export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, label, density, months, animate, playhead, layout = 'row', rowHeight, renderRow, columns, describe, tooltip, onTooltip, menu, empty, onVisible, anchorRows = false }: LogListProps<T>) {
+export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, label, density, months, animate, playhead, layout = 'row', rowHeight, renderRow, columns, describe, tooltip, onTooltip, menu, empty, onVisible, anchorRows = false, parityHistoryComplete = true, paritySemantic, preparedCoverage }: LogListProps<T>) {
   const owner = useId();
   const listId = useId();
+  const parityEmptyRoot = import.meta.env.MODE === 'parity' ? useRef<HTMLDivElement>(null) : null;
   const viewportHeight = useViewportHeight();
   const { font, fontSize, reducedMotion } = useChartTokens();
   const cardFont = JSON.stringify([font, fontSize.small, fontSize.body, fontSize.title]);
@@ -109,6 +129,21 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
   const rowSlots = useMemo(() => items.flatMap((item, index) => item.kind === 'row' ? [index] : []), [items]);
   const byId = useMemo(() => new Map(items.flatMap(item => item.kind === 'row' ? [[rowId(item.row), item.row] as const] : [])), [items]);
   const ordinals = useMemo(() => logRowOrdinals(items), [items]);
+  if (import.meta.env.MODE === 'parity') {
+  const parityTotal = paritySemantic?.rows?.length ?? ordinals[items.length];
+  const parityRow = (row: LogRow<T>, index: number) => ({ key: row.key, id: rowId(row), index, hour: row.hour,
+    item: paritySemantic?.item ? paritySemantic.item(row) : row.item,
+    ...(paritySemantic?.content ? { content: paritySemantic.content(row) } : {}) });
+  const preparation = paritySemantic?.preparation;
+  useParityRows(scroller ?? parityEmptyRoot!, () => ({ kind: 'log', label,
+    complete: (paritySemantic?.complete ?? true) && parityHistoryComplete && (!pages || pages.every(page => page.count === 0 || page.rows !== undefined)),
+    historyComplete: parityHistoryComplete,
+    readOutcomes: paritySemantic?.reads,
+    total: parityTotal,
+    pages: pages?.map(page => ({ key: page.key, start: page.start, end: page.end, count: page.count, loaded: page.rows !== undefined, error: page.error })),
+    rows: paritySemantic?.rows ? paritySemantic.rows.map(parityRow)
+      : items.flatMap((item, index) => item.kind === 'row' ? [parityRow(item.row, ordinals[index])] : []) }), preparation);
+  }
   const pendingTarget = useMemo(() => pending ? logPageTarget(items, ordinals, pending.pageKey, pending.offset) : null, [items, ordinals, pending]);
   const pagesByKey = useMemo(() => new Map(pages?.map(page => [page.key, page])), [pages]);
   const revealHistory = useRef(EMPTY_LOG_REVEALS);
@@ -360,10 +395,11 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
   const topMonth = months && view.top > 0 ? monthStarts.filter(month => month.top <= view.top).at(-1) : undefined;
   const optionId = (id: string) => `${listId}-${encodeURIComponent(JSON.stringify(id))}`;
 
-  if (!ordinals[items.length]) return <div className="log-empty">{empty}</div>;
+  if (!ordinals[items.length]) return <div className="log-empty" {...(import.meta.env.MODE === 'parity' ? { ref: parityEmptyRoot } : {})}><PreparedLogCoverage coverage={preparedCoverage} />{empty}</div>;
   return <div className={`log${pages ? ' is-paged' : ''}${geometry.compressed ? ' is-compressed' : ''}${layout === 'card' ? ' is-card-log' : ''}${density === 'compact' ? ' is-compact' : ''}${animate ? '' : ' no-motion'}`}
     style={{ '--log-columns': typeof columns === 'string' ? columns : undefined } as React.CSSProperties}>
     {topMonth?.label && <div className="log-month is-sticky" aria-hidden="true">{topMonth.label}</div>}
+    <PreparedLogCoverage coverage={preparedCoverage} />
     <div ref={setScroller} className="log-scroll" role="listbox" aria-label={label} tabIndex={0}
       aria-activedescendant={current ? optionId(current) : undefined}
       onScroll={event => readScroll(event.currentTarget)}

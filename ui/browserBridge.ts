@@ -34,24 +34,35 @@ export function bridgeCommand(command: Record<string, unknown>): string {
 export function browserBridge(root: string, recordingsRoot: string, gameDir: string, userDir: string): Plugin {
   const libraryRoot = savedReplayFolder(recordingsRoot).then(folder => { recordingsRoot = folder; });
   let contentConfig: Promise<void> | null = null;
-  const loadContentConfig = () => contentConfig ??= readFile(path.join(root, '.cargo-target/debug/viewer.json'), 'utf8').then(bytes => {
+  // The desktop host's saved folders, which the bridge's own Apply updates too.
+  const loadContentConfig = () => contentConfig ??= (async () => {
+    if (!process.env.APPDATA) return;
+    const bytes = await readFile(path.join(process.env.APPDATA, 'battle-plan', 'content.json'), 'utf8')
+      .catch(error => { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; });
+    if (bytes === null) return;
     const saved: { game_dir?: string; user_dir?: string } = JSON.parse(bytes);
     gameDir = saved.game_dir || gameDir;
     userDir = saved.user_dir || userDir;
-  }).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
+  })();
   const importedPaths = new Set<string>();
   let child: ChildProcessWithoutNullStreams | null = null;
   let picker: AbortController | null = null;
   const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; parts: string[]; bytes: number; sequence: number; timer: ReturnType<typeof setTimeout> }>();
   let next = 0;
+  const exits = new Set<Promise<void>>();
   const fail = (message: string) => {
     for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error(message)); }
-    pending.clear(); child?.kill(); child = null;
+    pending.clear();
+    const owned = child; child = null;
+    // ChildProcess.kill uses the retained native handle on Windows.
+    if (owned) { owned.stdin.end(); if (owned.exitCode === null && owned.signalCode === null) owned.kill(); }
   };
   const start = () => {
     if (child) return child;
     const args = [...(gameDir ? ['--game-dir', gameDir] : []), ...(userDir ? ['--user-dir', userDir] : [])];
     const process = spawn(path.join(root, '.cargo-target/debug/dashboard-bridge.exe'), args, { cwd: root, windowsHide: true });
+    const closed = new Promise<void>(resolve => process.once('close', () => resolve()));
+    exits.add(closed); void closed.then(() => exits.delete(closed));
     child = process;
     process.on('error', () => { if (child === process) fail('Build the browser bridge with cargo build -p dashboard --bin dashboard-bridge.'); });
     process.on('exit', () => { if (child === process) fail('The recording bridge stopped. Reopen the recording to reconnect.'); });
@@ -81,7 +92,8 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     // Match the desktop service and native loader admission budget. A saved
     // dashboard can have more concurrent consumers than the old browser limit.
     if (pending.size >= 64) { reject(new Error(BROWSER_BRIDGE_BUSY)); return; }
-    const id = `browser-${++next}`;
+    const id = typeof command.id === 'string' ? command.id : `browser-${++next}`;
+    if (pending.has(id)) { reject(new Error('Duplicate recording request')); return; }
     let line: string;
     try { line = bridgeCommand({ ...command, id }); }
     catch (error) { reject(error); return; }
@@ -131,6 +143,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
   };
   return {
     name: 'battle-plan-browser-recordings', apply: 'serve',
+    async closeBundle() { picker?.abort(); fail('Development server stopped'); await Promise.all(exits); },
     configureServer(server) {
       server.httpServer?.once('close', () => { picker?.abort(); fail('Development server stopped'); });
       server.middlewares.use('/api/recordings', async (request, response) => {
@@ -211,12 +224,20 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
             if (!(/\.(?:battleplan|hoi4replay)$/i.test(location.target)) || !(await stat(location.target)).isFile()) throw new Error('Choose a .battleplan recording');
             command = { type: 'open', path: location.target, revision: '' };
           } else if (input.type === 'mapSettings') {
-            await requireBridge('crates/dashboard/src/map_settings.rs', 'Map settings are unavailable in this server version. The local data bridge needs updating.');
+            await requireBridge('crates/dashboard-core/src/map_settings.rs', 'Map settings are unavailable in this server version. The local data bridge needs updating.');
             command = { type: 'mapSettings', sourceId: input.sourceId, revision: input.revision, settings: input.settings ?? null, target: input.target ?? { scope: 'campaign' } };
           } else if (input.type === 'historyCache') {
             if (typeof input.clear !== 'boolean') throw new Error('Invalid history cache request');
             await requireBridge('crates/dashboard/src/reply_cache.rs', 'Widget history is unavailable in this server version. The local data bridge needs updating.');
             command = { type: 'historyCache', clear: input.clear };
+          } else if (input.type === 'preparationPreferences') {
+            if (typeof input.id !== 'string' || !(input.enabled == null || typeof input.enabled === 'boolean')) throw new Error('Invalid preparation preference request');
+            command = { type: 'preparationPreferences', id: input.id, enabled: input.enabled ?? null };
+          } else if (input.type === 'preparation') {
+            if (typeof input.id !== 'string' || typeof input.sourceId !== 'string' || typeof input.revision !== 'string' || !['status', 'start', 'cancel', 'clear'].includes(input.action)) throw new Error('Invalid preparation request');
+            command = { type: 'preparation', id: input.id, sourceId: input.sourceId, revision: input.revision, action: input.action };
+          } else if (input.type === 'preparedQuery') {
+            command = { type: 'preparedQuery', request: input.request };
           } else if (input.type === 'product') {
             command = { type: 'product', request: input.request };
           } else if (input.type === 'release') {

@@ -1,0 +1,19 @@
+[package]
+name = "recorder-oracle-support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+test-support = ["dep:engine", "installed-content/test-support"]
+
+[dependencies]
+installed-content.workspace = true
+installed-content-save.workspace = true
+replay.workspace = true
+engine = { workspace = true, optional = true }

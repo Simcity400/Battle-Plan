@@ -10,13 +10,13 @@
 
 use super::{
     LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, air_force, army_size,
-    country_factories::{self, FactoryCount, FactoryGroupKey},
+    country_factories::{self, FactoryCount},
     country_groups::HourSpan,
     country_history::{self, CountryIdentityRun, RecordedHistories},
-    country_measure::FixedRun,
-    country_nukes, country_stability, equipment, equipment_produced, navy, validate_tag,
-    war_casualties,
+    country_nukes, equipment_produced, navy, validate_tag, war_casualties,
 };
+#[cfg(test)]
+use crate::products::country_factories::FactoryGroupKey;
 use crate::{
     Source,
     catalogue::{self, Catalogue},
@@ -27,11 +27,17 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::AtomicBool,
 };
 use ts_rs::TS;
+#[cfg(test)]
+use {
+    super::{country_measure::FixedRun, country_stability, equipment},
+    std::sync::atomic::Ordering,
+};
 
 pub struct Scoreboard;
+pub(crate) mod prepared;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
 #[serde(rename_all = "camelCase")]
@@ -348,6 +354,7 @@ impl ColumnData {
     }
 }
 
+#[cfg(test)]
 fn numeric_fixed_runs(runs: &[FixedRun]) -> io::Result<Vec<ValueRun>> {
     runs.iter()
         .map(|run| {
@@ -366,6 +373,7 @@ fn numeric_fixed_runs(runs: &[FixedRun]) -> io::Result<Vec<ValueRun>> {
 
 /// Merge sorted value coverage and held-read intervals in one forward walk.
 /// The read cursor stays on a carried interval spanning several value runs.
+#[cfg(test)]
 fn stability_reads(
     runs: &[ValueRun],
     carried: &[country_stability::ReadRun],
@@ -415,6 +423,7 @@ fn stability_reads(
     out
 }
 
+#[cfg(test)]
 fn hourly_reads(runs: &[ValueRun]) -> Vec<ScoreboardReadRun> {
     let mut out: Vec<ScoreboardReadRun> = Vec::new();
     for run in runs {
@@ -435,6 +444,7 @@ fn hourly_reads(runs: &[ValueRun]) -> Vec<ScoreboardReadRun> {
     out
 }
 
+#[cfg(test)]
 fn read_spans(runs: &[ValueRun], reads: &[i32]) -> Vec<ScoreboardReadRun> {
     let mut out = Vec::new();
     for run in runs {
@@ -464,8 +474,28 @@ fn read_spans(runs: &[ValueRun], reads: &[i32]) -> Vec<ScoreboardReadRun> {
     out
 }
 
+#[cfg(test)]
 type ColumnValues = BTreeMap<String, ColumnData>;
 
+fn factory_warnings(scanned: &country_factories::ScannedFactories, warnings: &mut Vec<String>) {
+    if scanned.unreadable > 0 {
+        warnings.push(format!("{} factory rows were unresolved, ambiguous or outside the game's displayed whole-count domain", scanned.unreadable));
+    }
+}
+fn nuke_warnings(scanned: &country_nukes::ScannedNukes, warnings: &mut Vec<String>) {
+    for (kind, count) in &scanned.refused {
+        warnings.push(format!(
+            "{count} unsupported nuclear array entries of recorded ordinal {kind}"
+        ));
+    }
+}
+fn casualty_warnings(incomplete: bool, warnings: &mut Vec<String>) {
+    if incomplete {
+        warnings.push("Casualty history has gaps; wars entirely inside a gap may be missing. Partial recorded subtotals are marked †. Missing history may omit positive losses or negative corrections.".into());
+    }
+}
+
+#[cfg(test)]
 fn values(
     source: &Source,
     branch: u64,
@@ -550,9 +580,7 @@ fn values(
     }
     if let Some(mode) = key.factory_count() {
         let scanned = country_factories::scanned_branch(source, branch, cancelled)?;
-        if scanned.unreadable > 0 {
-            warnings.push(format!("{} factory rows were unresolved, ambiguous or outside the game's displayed whole-count domain", scanned.unreadable));
-        }
+        factory_warnings(&scanned, warnings);
         for tag in tags {
             let runs: Vec<_> = scanned
                 .series
@@ -665,11 +693,7 @@ fn values(
                     },
                 );
             }
-            for (kind, count) in &scanned.refused {
-                warnings.push(format!(
-                    "{count} unsupported nuclear array entries of recorded ordinal {kind}"
-                ));
-            }
+            nuke_warnings(&scanned, warnings);
         }
         ScoreboardColumnKey::EquipmentProduced => {
             let scanned = equipment::production::scanned(source, branch, cancelled)?;
@@ -698,9 +722,7 @@ fn values(
         }
         ScoreboardColumnKey::CasualtiesDealt | ScoreboardColumnKey::CasualtiesTaken => {
             let scanned = war_casualties::scanned_branch(source, branch, cancelled)?;
-            if scanned.has_gap() {
-                warnings.push("Casualty history has gaps; wars entirely inside a gap may be missing. Partial recorded subtotals are marked †. Missing history may omit positive losses or negative corrections.".into());
-            }
+            casualty_warnings(scanned.has_gap(), warnings);
             for tag in tags {
                 let mut runs: Vec<ValueRun> = Vec::new();
                 scanned.for_each_country_run(tag, cancelled, |run| {
@@ -744,6 +766,7 @@ fn values(
 
 /// Supplying dates are needed only for countries returned to the table, never
 /// for the whole ranking universe. Shared scans/cache lookups do not re-read data.
+#[cfg(test)]
 fn fill_read_runs(
     source: &Source,
     branch: u64,
@@ -798,6 +821,7 @@ fn fill_read_runs(
 
 /// Rank identity-present countries, inserting explicit unknown pieces where the
 /// sort measure has no value. Values stay exact signed integers throughout.
+#[cfg(test)]
 fn ranking_runs(
     history: &RecordedHistories,
     values: &ColumnValues,
@@ -838,6 +862,7 @@ fn ranking_runs(
         .collect()
 }
 
+#[cfg(test)]
 fn clip_column(
     column: ColumnData,
     spans: &[HourSpan],
@@ -887,6 +912,72 @@ fn clip_column(
     })
 }
 
+fn history_warnings(history: &RecordedHistories, warnings: &mut Vec<String>) {
+    if history.unreadable_territory > 0 {
+        warnings.push(format!(
+            "{} owned-state count rows were unresolved or ambiguous; their totals are unknown",
+            history.unreadable_territory
+        ));
+    }
+    if history.unnamed > 0 {
+        warnings.push(format!(
+            "{} country-hours have non-UTF-8 tags and cannot be named",
+            history.unnamed
+        ));
+    }
+    if history.unresolved_countries > 0 {
+        warnings.push(format!(
+            "{} country-hours have unresolved country links; their identity and values are unknown",
+            history.unresolved_countries
+        ));
+    }
+}
+
+fn metadata(
+    source: &Source,
+    branch_id: &str,
+    context: &LoadContext,
+) -> (ScoreboardReply, Option<std::sync::Arc<Catalogue>>) {
+    let mut warnings = Vec::new();
+    let cat =
+        context
+            .content
+            .as_ref()
+            .and_then(|options| match catalogue::catalogue(source, options) {
+                Ok(cat) => Some(cat),
+                Err(error) => {
+                    warnings.push(format!(
+                        "Column labels cannot read recorded content: {error}"
+                    ));
+                    None
+                }
+            });
+    if cat.is_none() {
+        warnings.push("Game label translations are unavailable without the recorded content stack; plain column names are UI descriptions".into());
+    }
+    let columns = registry(cat.as_deref());
+    let default_columns = vec![
+        ScoreboardColumnKey::Factories,
+        ScoreboardColumnKey::ArmySize,
+        ScoreboardColumnKey::Territory,
+        ScoreboardColumnKey::CasualtiesDealt,
+        ScoreboardColumnKey::CasualtiesTaken,
+        ScoreboardColumnKey::Planes,
+        ScoreboardColumnKey::Ships,
+    ];
+    (
+        ScoreboardReply {
+            branch_id: branch_id.into(),
+            default_columns,
+            default_sort: ScoreboardColumnKey::Factories,
+            columns,
+            series: Vec::new(),
+            warnings,
+        },
+        cat,
+    )
+}
+
 impl Product for Scoreboard {
     const KEY: &'static str = "scoreboard";
     const CONTENT_DEPENDENT: bool = true;
@@ -905,6 +996,8 @@ impl Product for Scoreboard {
             ScoreboardColumnSeries::decl(),
             ScoreboardSeries::decl(),
             ScoreboardReply::decl(),
+            prepared::ScoreboardPreparedParams::decl(),
+            prepared::ScoreboardPreparedReply::decl(),
         ]
     }
 
@@ -931,6 +1024,7 @@ impl Product for Scoreboard {
         Ok(())
     }
 
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -938,41 +1032,16 @@ impl Product for Scoreboard {
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
         let branch = params.branch_id.parse::<u64>().expect("validated branch");
-        let mut warnings = Vec::new();
-        let cat = context.content.as_ref().and_then(|options| {
-            match catalogue::catalogue(source, options) {
-                Ok(cat) => Some(cat),
-                Err(error) => {
-                    warnings.push(format!(
-                        "Column labels cannot read recorded content: {error}"
-                    ));
-                    None
-                }
-            }
-        });
-        if cat.is_none() {
-            warnings.push("Game label translations are unavailable without the recorded content stack; plain column names are UI descriptions".into());
-        }
-        let columns = registry(cat.as_deref());
-        let default_columns = vec![
-            ScoreboardColumnKey::Factories,
-            ScoreboardColumnKey::ArmySize,
-            ScoreboardColumnKey::Territory,
-            ScoreboardColumnKey::CasualtiesDealt,
-            ScoreboardColumnKey::CasualtiesTaken,
-            ScoreboardColumnKey::Planes,
-            ScoreboardColumnKey::Ships,
-        ];
+        let (metadata, cat) = metadata(source, &params.branch_id, context);
         if params.tags.is_empty() && params.top.is_none() {
-            return checked_reply(ScoreboardReply {
-                branch_id: params.branch_id.clone(),
-                default_columns,
-                default_sort: ScoreboardColumnKey::Factories,
-                columns,
-                series: Vec::new(),
-                warnings,
-            });
+            return checked_reply(metadata);
         }
+        let ScoreboardReply {
+            columns,
+            default_columns,
+            mut warnings,
+            ..
+        } = metadata;
         if cancelled.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
@@ -999,21 +1068,7 @@ impl Product for Scoreboard {
             &measures,
             cancelled,
         )?;
-        if history.unreadable_territory > 0 {
-            warnings.push(format!(
-                "{} owned-state count rows were unresolved or ambiguous; their totals are unknown",
-                history.unreadable_territory
-            ));
-        }
-        if history.unnamed > 0 {
-            warnings.push(format!(
-                "{} country-hours have non-UTF-8 tags and cannot be named",
-                history.unnamed
-            ));
-        }
-        if history.unresolved_countries > 0 {
-            warnings.push(format!("{} country-hours have unresolved country links; their identity and values are unknown", history.unresolved_countries));
-        }
+        history_warnings(&history, &mut warnings);
         let mut values_by_key = BTreeMap::new();
         let membership = if let Some(top) = &params.top {
             let tags: Vec<_> = history.countries.keys().cloned().collect();

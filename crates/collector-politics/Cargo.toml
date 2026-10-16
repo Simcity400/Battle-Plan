@@ -1,0 +1,38 @@
+[package]
+name = "collector-politics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+test-support = ["collector-extended-support/test-support", "collector-hooks/test-support", "collector-observers/test-support", "collector-primitives/test-support", "collector-timing/test-support"]
+default = ["politics_capture"]
+politics_capture = []
+
+[dependencies]
+engine.workspace = true
+replay.workspace = true
+serde = { workspace = true, features = ["derive"] }
+collector-extended-support.workspace = true
+collector-hooks.workspace = true
+collector-observers.workspace = true
+collector-primitives.workspace = true
+collector-projection.workspace = true
+collector-status.workspace = true
+collector-timing.workspace = true
+windows-sys = { workspace = true, features = ["Win32_System_Diagnostics_Debug", "Win32_System_Memory", "Win32_System_Threading"] }
+
+[dev-dependencies]
+collector-test-support.workspace = true
+serde_json.workspace = true
+engine = { workspace = true, features = ["batch-fallback-test-counts"] }
+collector-extended-support = { workspace = true, features = ["test-support"] }
+collector-hooks = { workspace = true, features = ["test-support"] }
+collector-observers = { workspace = true, features = ["default", "test-support"] }
+collector-primitives = { workspace = true, features = ["test-support"] }
+collector-timing = { workspace = true, features = ["test-support"] }

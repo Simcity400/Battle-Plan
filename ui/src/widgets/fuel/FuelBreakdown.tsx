@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import BreakdownChart from '../../charts/drill/BreakdownChart';
 import type { BreakdownSeries } from '../../charts/drill/BreakdownChart';
@@ -14,6 +14,7 @@ import { NumericReply } from '../../dashboard/numericReply';
 import { useProductWindows } from '../../dashboard/productWindows';
 import type { FuelAwardHistoryReply, FuelAwardPart, FuelAwardRun, FuelAwardsReply, FuelReply } from '../../generated/dashboard';
 import { formatFuelPart, fuelAwardNumbers, fuelHistoryRow, fuelParts, fuelPartShare, fuelRecipientAmount, validateFuelAwardHistory, validateFuelAwardsReply } from './fuelData';
+import { usePreparedFuel, fuelSummaryRuns, useFuelSeriesParity } from './preparedFuel';
 import { fuelCountryHistory, fuelCountryRead } from './fuelCountry';
 import { fuelRecipientBasis, fuelRecipientForReply, sameFuelActor, selectFuelRecipient } from './fuelDrill';
 import type { FuelRecipientSelection } from './fuelDrill';
@@ -33,12 +34,18 @@ export function useDetailView(start: number, end: number, detailHours: number) {
 
 /** Country amounts are written to `digits` decimals; a single recipient's receipts
  * stay exact, since a fraction of one fuel would read as 0 or 1. */
-export default function FuelBreakdown({ reply, history, actorSpans, identitySpans, measure, hour, tokens, within, runtime, track, selection: retainedSelection, onSelection, digits, ...chart }: {
+export default function FuelBreakdown({ reply: suppliedReply, history: suppliedHistory, actorSpans, identitySpans, measure, hour, tokens, within, runtime, track, selection: retainedSelection, onSelection, digits, ...chart }: {
   reply: FuelReply; measure: 'gain' | 'burn'; hour: number | null; tokens: ReturnType<typeof useChartTokens>; digits: number;
   history?: readonly FuelReply[]; actorSpans?: ReadonlyMap<string, readonly Span[]>; identitySpans?: ReadonlyMap<string, readonly Span[]>;
   runtime: WidgetRuntime; track: BoundTrack; selection: FuelRecipientSelection | null;
   onSelection: (selection: FuelRecipientSelection | null) => void;
 } & HistoryChart) {
+  const prepared = usePreparedFuel(runtime.client, track, [...((actorSpans ?? identitySpans)?.keys() ?? [suppliedReply.tag])], Math.floor(hour ?? chart.extent[1]), chart.active,
+    measure === 'gain' ? ['gain-0','gain-1','gain-2','gain-3','unidentified','incoming'] : ['consumer-0','consumer-1','consumer-2','outgoing','flat','other','conversion'], actorSpans);
+  const reply = prepared.enabled ? prepared.data?.find(reply=>reply.tag===suppliedReply.tag) ?? suppliedReply : suppliedReply;
+  const history = prepared.enabled ? prepared.data ?? suppliedHistory : suppliedHistory;
+  const parity = useRef<HTMLDivElement>(null);
+  useFuelSeriesParity(parity, runtime.client, track, [...((actorSpans ?? identitySpans)?.keys() ?? [reply.tag])], chart.extent, actorSpans, 'Fuel accounting values', history ?? [reply]);
   const selection = fuelRecipientForReply(retainedSelection, reply, track.source.metadata.campaignKey, identitySpans ?? actorSpans);
   const [pickedConsumer, setConsumer] = useState<number | null>(null);
   useEffect(() => { setConsumer(null); }, [chart.pickOwner]);
@@ -46,7 +53,19 @@ export default function FuelBreakdown({ reply, history, actorSpans, identitySpan
   const read = hour !== null && isMember(within ?? undefined, hour) ? runAt(reply.reads, hour) : null;
   const values = read && fuelParts(reply, read, measure, reply, digits);
   const sources = useMemo(() => history ?? [reply], [history, reply]);
-  const histories = useMemo(() => fuelCountryHistory(sources, actorSpans, measure, digits), [sources, actorSpans, measure, digits]);
+  const histories = useMemo(() => {
+    const legacy = fuelCountryHistory(sources, actorSpans, measure, digits);
+    if (!prepared.enabled) return legacy;
+    const parts = new Map<string, typeof legacy[number]>();
+    for (const line of prepared.summaries?.series ?? []) {
+      if (!line.summary.buckets.some(bucket=>bucket!==null) && !line.summary.runs?.length) continue;
+      const scale = line.measure === 'incoming' ? reply.quantityScale : measure === 'gain' ? reply.gainScale : reply.quantityScale * reply.gainScale;
+      const named = legacy.find(part=>part.id===line.measure);
+      const part = parts.get(line.measure) ?? {id:line.measure,label:named?.label ?? 'Other',runs:[],transfer:line.measure==='incoming'};
+      part.runs.push(...fuelSummaryRuns(line.summary,scale));parts.set(line.measure,part);
+    }
+    return [...parts.values()].map(part=>({...part,runs:part.runs.sort((a,b)=>a.firstHour-b.firstHour)}));
+  }, [sources, actorSpans, measure, digits, prepared.summaries, reply.gainScale, reply.quantityScale]);
   const series = useMemo(() => histories.map((part, i): BreakdownSeries => ({ id: part.id, label: part.label,
     color: tokens.categories[i % tokens.categories.length], runs: part.runs,
     labelAt: at => {
@@ -84,7 +103,7 @@ export default function FuelBreakdown({ reply, history, actorSpans, identitySpan
     raw: recipientTotal - assigned, value: Number(recipientTotal - assigned) / reply.gainScale,
     text: formatFuelPart(recipientTotal - assigned, BigInt(reply.gainScale)), shareText: fuelPartShare(recipientTotal - assigned, recipientTotal) }
     : undefined, [recipientTotal, assigned, reply.gainScale]);
-  return <>
+  return <div ref={parity}>
     {retainedSelection && !selection && <p className="drill-empty">Choose a recipient again.</p>}
     {selection ? <>
       <button type="button" className="button small quiet" onClick={() => { setConsumer(selection.consumer); onSelection(null); }}>All consumer recipients</button>
@@ -123,16 +142,16 @@ export default function FuelBreakdown({ reply, history, actorSpans, identitySpan
           text: formatFuelPart(values.transfer.raw, BigInt(reply.quantityScale), digits), color: color(values.transfer.id), muted: values.transfer.muted }]} format={String} />
         {values.transfer.reason && <p className="drill-empty">Incoming lend-lease unavailable.</p>}
       </>}
-      <BreakdownChart {...chart} within={within} series={series.filter(part => part.id !== 'incoming')} selectedHour={hour}
+      <BreakdownChart {...chart} onSummaryView={prepared.enabled ? prepared.onSummaryView : undefined} onHover={prepared.enabled ? prepared.onHover : undefined} onNavigateHour={prepared.enabled ? prepared.onNavigateHour : undefined} keyboardHour={prepared.keyboardHour} keyboardRevision={prepared.keyboardRevision} within={within} series={series.filter(part => part.id !== 'incoming')} selectedHour={hour}
         label={`${reply.tag}: ${measure === 'gain' ? 'own fuel production' : 'fuel burned'} over time`}
         axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} />
-      {series.some(part => part.id === 'incoming') && <BreakdownChart {...chart} within={within} series={series.filter(part => part.id === 'incoming')}
+      {series.some(part => part.id === 'incoming') && <BreakdownChart {...chart} onSummaryView={prepared.enabled ? prepared.onSummaryView : undefined} onHover={prepared.enabled ? prepared.onHover : undefined} onNavigateHour={prepared.enabled ? prepared.onNavigateHour : undefined} keyboardHour={prepared.keyboardHour} keyboardRevision={prepared.keyboardRevision} within={within} series={series.filter(part => part.id === 'incoming')}
         selectedHour={hour} label={`${reply.tag}: incoming lend-lease fuel over time`}
         axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} />}
     </>}
     {selection && recipients.error && <WidgetState kind="error" what="recipients" detail={recipients.error} onRetry={recipients.retry} />}
     {selection && !selected && !recipients.error && <p className="drill-empty">{awards ? 'Recipient unavailable.' : 'Loading recipient…'}</p>}
-  </>;
+  </div>;
 }
 
 function RecipientFacts({ part, reply }: { part: FuelAwardPart; reply: FuelReply }) {

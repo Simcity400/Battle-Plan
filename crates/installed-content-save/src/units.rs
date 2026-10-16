@@ -107,6 +107,10 @@ pub struct DivisionPresentation {
     /// Disrupted supply is written only when positive.
     /// Absence proves nonpositive only.
     pub disrupted_supply: Option<Decimal>,
+    /// Days out of supply; absent at zero.
+    pub out_of_supply_days: Option<i32>,
+    /// The division's fuel; absent at zero.
+    pub fuel: Option<Decimal>,
     pub strategic_redeployment: bool,
     /// The army's name-group member is written under `division_name`.
     pub division_name: Option<DivisionName>,
@@ -511,6 +515,10 @@ pub(super) fn parse_division(roster_owner: &[u8], items: &[Item]) -> io::Result<
             max_supply: decimal(items, b"max_supply")?,
             army_current_supply_ratio: decimal(items, b"army_current_supply_ratio")?,
             disrupted_supply,
+            out_of_supply_days: bytes(items, b"out_of_supply_days")?
+                .map(|value| integer(&value))
+                .transpose()?,
+            fuel: decimal(items, b"fuel")?,
             strategic_redeployment: field(items, b"strategic_redeployment")?
                 .map(boolean)
                 .transpose()?

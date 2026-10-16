@@ -47,6 +47,8 @@ function fixture(tag: string, hour: number): Fixture {
     built: [], unaccounted: [], possible: [], added: [], end: null, firstRepairTick: null };
   const sunk = { sinkHour: hour - 1, knownAt: hour, name: 'Vessel', classIndex: 0, recordedNameIndex: null,
     victim: tag, attacker: null, victimAsOf: hour, attackerAsOf: null, placeIndex: 0, cause: 'hostile', attributionName: null, assistedKill: false };
+  const ships = { branchId: '1', available: true, ...interval, firstRead: hour, unread: [], warnings: [], places: ['Sea'], recordedNames: [],
+    classes: [{ token: 1, key: 'mod/ship', name: 'Ship', icon: null }], rows: [sunk] };
   const ace = { id: '1', firstSeen: 90, runs: [{ ...interval, tag, name: 0, callsign: null,
     wing: null, wingName: null, aircraft: [], alive: true, death: null }] };
   const raid = { ...interval, firstHour: hour, raider: tag, victim: null, type: 'mod/raid', province: 1, state: null,
@@ -56,8 +58,7 @@ function fixture(tag: string, hour: number): Fixture {
     'synthetic-manifest': { windows: [interval], available: true, unavailable: null, contentWarnings: [] },
     'construction-log-manifest': { costScale: 100000, windows: [interval], recorded: true, repairIcon: null, warnings: [],
       types: [{ id: 1, token: 'mod/building', name: 'Building', icon: null }] },
-    'ships-sunk': { branchId: '1', available: true, ...interval, firstRead: hour, unread: [], warnings: [], places: ['Sea'], recordedNames: [],
-      classes: [{ token: 1, key: 'mod/ship', name: 'Ship', icon: null }], rows: [sunk] },
+    'ships-sunk-manifest': { windows: [interval], classes: ships },
     'air-aces': { branchId: '1', ...interval, available: true, unavailable: null, observed: [interval], readHours: [hour], warnings: [],
       windows: [interval], aces: [{ id: '1', firstSeen: 90 }], variants: {} },
     'raids': { branchId: '1', available: true, unavailable: null, types: [{ token: 'mod/raid', name: 'Raid', missing: null }],
@@ -71,6 +72,7 @@ function fixture(tag: string, hour: number): Fixture {
   }, windows: {
     synthetic: { observed: [[90, 159]], warnings: [], contentWarnings: [] },
     'construction-log': { window: 0, interval, outputReads: [], outputUnavailable: [], projects: [project], outputs: [], warnings: [] },
+    'ships-sunk': { window: 0, indices: [0], reply: ships },
     'air-aces': { branchId: '1', window: 0, ...interval, warnings: [], texts: ['Ace'], aces: [ace] },
     'division-log': { window: 0, interval, contentWarnings: [], warnings: [], rows: [{ id: '1', division: '1', readHour: 159,
       hour: hour - 1, by: false, afterHour: null, kind: 'lost', status: 'division_destroyed', tag, countryHour: hour,

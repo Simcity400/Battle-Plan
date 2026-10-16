@@ -60,7 +60,7 @@ export function powerBalanceIndex(reply: PoliticsLedgerReply, currency: PowerCur
   if (!index) {
     index = { reply, currency, days: byDay(reply.daily ?? [], day => day.dayHour),
       changes: byDay((reply.balanceChanges ?? []).filter(change => change.currency === currency), change => change.hour),
-      spends: byDay(reply.spending.filter(spend => spend.currency === currency && spend.category !== 'dailyDeficit'), spend => spend.hour),
+      spends: byDay([...reply.spending, ...(reply.recurring ?? []).map(row => row.spend)].filter(spend => spend.currency === currency && spend.category !== 'dailyDeficit'), spend => spend.hour),
       items: new Map(reply.spendItems.map(item => [item.id, item])),
       categories: new Map(reply.spendCategories.map(category => [category.id, category])),
       coverage: reply.spendingCoverage.map(value => ({ firstHour: value.sinceHour ?? value.readHour,
@@ -137,6 +137,11 @@ export interface PowerGain { gained: bigint; lost: bigint; complete: boolean }
  * null when the reply has no daily figures in the period. */
 export function powerGain(replies: readonly PoliticsLedgerReply[], currency: PowerCurrency, window: Pick<SpendingWindow, 'from' | 'hour'>,
   selection?: Pick<SpendingSelection, 'matches'>): PowerGain | null {
+  if (replies.some(reply => reply.gains !== undefined)) {
+    const gains = replies.flatMap(reply => reply.gains?.filter(gain => gain.currency === currency) ?? []);
+    return gains.length ? { gained: gains.reduce((total, gain) => total + BigInt(gain.gainedRaw), 0n),
+      lost: gains.reduce((total, gain) => total + BigInt(gain.lostRaw), 0n), complete: gains.every(gain => gain.complete) } : null;
+  }
   let gained = 0n, lost = 0n, complete = true, any = false;
   for (const reply of replies) for (const day of reply.daily ?? []) {
     if (day.dayHour > window.hour || (window.from !== null && day.dayHour < window.from)) continue;

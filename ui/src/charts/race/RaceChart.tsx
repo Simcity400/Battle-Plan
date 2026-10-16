@@ -19,16 +19,27 @@ import { keyedEntry, paintOrder, raceHeight, raceLayout, raceMoving, raceText, r
 import type { RaceItem, RaceLayout, RaceRow, RaceState } from './race';
 import '../charts.css';
 
+/** A real loaded slice of one global ranking; missing rows stay pending. */
+export interface RemoteRaceRows {
+  total: number; offset: number; min: number; max: number;
+  onRange: (first: number, count: number) => void;
+  /** Source, selection and numeric snapshot; stable across page and label reads. */
+  owner: unknown;
+}
+
 export interface RaceChartProps {
   /** Names the chart for screen readers. */
   label: string;
   /** The entries at the moment shown, ranked highest first (`rankItems`). Pass the
    * same array while the moment is unchanged: a new array is a new moment. */
   items: readonly RaceItem[];
+  remoteRows?: RemoteRaceRows;
   /** How many rows to make room for (the top N), so rows keep their height as
    * entries come and go. Rows that need more room than the chart has scroll. */
   slots: number;
   name: (key: string, item?: RaceItem) => string;
+  /** Names that must fit even when asynchronous labels are already available. */
+  nameSamples?: readonly string[];
   /** An entry's flag as an image URL; nothing is drawn without one. */
   flag?: (key: string, item?: RaceItem) => string | undefined;
   /** Present only for genuine countries, even when their flag is unavailable. */
@@ -55,7 +66,7 @@ export interface RaceChartProps {
 
 /** Rows are sized for the top N, so they keep their height while entries come and go;
  * the scroll reaches only the entries there are. */
-const raceSlots = (props: Pick<RaceChartProps, 'items' | 'slots'>) => Math.max(1, props.slots, props.items.length);
+const raceSlots = (props: Pick<RaceChartProps, 'items' | 'slots' | 'remoteRows'>) => Math.max(1, props.slots, props.remoteRows?.total ?? props.items.length);
 
 /** The name column's largest share of the chart. */
 const MAX_LABEL_SHARE = 0.4;
@@ -81,6 +92,14 @@ export default function RaceChart(props: RaceChartProps) {
   const shown = useRef<{ layout: RaceLayout; rows: readonly RaceRow[]; items: readonly RaceItem[]; min: number; max: number; height: number;
     owner: unknown; resetKey?: string } | null>(null);
   const keyIntent = useRef(false);
+  const pendingKey = useRef<{ index: number; owner: unknown; resetKey?: string } | null>(null);
+  const demand = useRef<{ owner: unknown; first: number; count: number; callback: RemoteRaceRows['onRange'] } | null>(null);
+  const requestRange = (remote: RemoteRaceRows, first: number, count: number) => {
+    const before = demand.current;
+    if (before && before.owner === remote.owner && before.first === first && before.count === count && before.callback === remote.onRange) return;
+    demand.current = { owner: remote.owner, first, count, callback: remote.onRange };
+    remote.onRange(first, count);
+  };
   const [spoken, setSpoken] = useState('');
   const spokenText = useRef('');
 
@@ -90,18 +109,24 @@ export default function RaceChart(props: RaceChartProps) {
     let tokens: ChartTokens = readTokens();
     let state: RaceState | null = null;
     let stateKey = props.resetKey;
+    let remoteOffset = props.remoteRows?.offset, remoteOwner = props.remoteRows?.owner;
     const surface = watchCanvasSize(element, () => wake());
     // The widest name and value seen, so the columns only grow.
     let columns = { key: '', label: MIN_LABEL, value: 0 };
     // The moment the columns were measured at, and each name's width in the current
     // font: a long list is measured once per moment, not in every frame.
-    let measured: { items: readonly RaceItem[]; name: RaceChartProps['name']; tokens: ChartTokens } | null = null;
+    let measured: { items: readonly RaceItem[]; name: RaceChartProps['name']; nameSamples: RaceChartProps['nameSamples']; tokens: ChartTokens } | null = null;
     const nameWidths = new Map<string, number>();
     let tooltipFor: { key: string; item: RaceItem; props: RaceChartProps; content: TooltipContent | null } | null = null;
 
     const draw = (info: FrameInfo): boolean => {
       const p = latest.current;
       if (stateKey !== p.resetKey) { state = null; stateKey = p.resetKey; }
+      if (remoteOffset !== p.remoteRows?.offset || remoteOwner !== p.remoteRows?.owner) {
+        if (remoteOwner !== p.remoteRows?.owner) { pendingKey.current = null; hover.current = { ...hover.current, keyed: null, menuKey: false }; }
+        if (remoteOffset !== p.remoteRows?.offset) state = null;
+        remoteOffset = p.remoteRows?.offset; remoteOwner = p.remoteRows?.owner;
+      }
       const { layoutWidth, layoutHeight, backing: size } = surface.read();
       if (!layoutWidth || !layoutHeight) return false;
       if (element.width !== size.width) element.width = size.width;
@@ -112,9 +137,14 @@ export default function RaceChart(props: RaceChartProps) {
       state = stepRace(state, p.items, info.now, info.dt, tau);
       // Columns fitted to the widest name and value seen.
       if (columns.key !== (p.resetKey ?? '')) { columns = { key: p.resetKey ?? '', label: MIN_LABEL, value: 0 }; measured = null; }
-      if (!measured || measured.items !== p.items || measured.name !== p.name || measured.tokens !== tokens) {
-        if (measured && measured.tokens !== tokens) nameWidths.clear();
+      if (!measured || measured.items !== p.items || measured.name !== p.name || measured.nameSamples !== p.nameSamples || measured.tokens !== tokens) {
+        if (p.remoteRows || measured && measured.tokens !== tokens) nameWidths.clear();
         context.font = font(tokens, tokens.fontSize.body, LABEL_WEIGHT);
+        if (p.items.length) for (const name of p.nameSamples ?? []) {
+          let width = nameWidths.get(name);
+          if (width === undefined) nameWidths.set(name, width = context.measureText(name).width);
+          columns.label = Math.max(columns.label, NAME_X + width + NAME_PAD);
+        }
         for (const item of p.items) {
           const name = p.name(item.key, item);
           let width = nameWidths.get(name);
@@ -123,17 +153,32 @@ export default function RaceChart(props: RaceChartProps) {
         }
         context.font = font(tokens, tokens.fontSize.body, VALUE_WEIGHT);
         for (const item of p.items) columns.value = Math.max(columns.value, context.measureText(item.label).width + VALUE_GAP + VALUE_PAD);
-        measured = { items: p.items, name: p.name, tokens };
+        measured = { items: p.items, name: p.name, nameSamples: p.nameSamples, tokens };
       }
       const labelWidth = Math.min(columns.label, Math.max(MIN_LABEL, layoutWidth * MAX_LABEL_SHARE));
-      const layout = raceLayout(layoutWidth, layoutHeight, raceSlots(p), labelWidth, Math.max(columns.value, 24), scrollTop.current, p.items.length);
-      shown.current = { layout, rows: state.rows, items: p.items, min: state.min, max: state.max, height: layoutHeight,
-        owner: p.pickOwner, resetKey: p.resetKey };
+      const remote = p.remoteRows;
+      const layout = raceLayout(layoutWidth, layoutHeight, raceSlots(p), labelWidth, Math.max(columns.value, 24), scrollTop.current, remote?.total ?? p.items.length);
+      const rows = remote ? state.rows.map(row => ({ ...row, y: row.y + remote.offset, target: row.target + remote.offset })) : state.rows;
+      const min = remote ? Math.min(0, remote.min) * 1.06 : state.min;
+      const max = remote ? Math.max(1, remote.max) * 1.06 : state.max;
+      if (remote && p.active) {
+        const first = Math.max(0, Math.floor((layout.view.top - layout.top) / layout.slot));
+        const end = Math.min(remote.total, Math.ceil((layout.view.bottom - layout.top) / layout.slot) + 1);
+        requestRange(remote, first, Math.max(0, end - first));
+        const pending = pendingKey.current;
+        if (pending && (pending.owner !== remote.owner || pending.resetKey !== p.resetKey)) pendingKey.current = null;
+        else if (pending) {
+          const item = p.items[pending.index - remote.offset];
+          if (item) { hover.current = { pointer: null, keyed: item.key, menuKey: false }; pendingKey.current = null; keyIntent.current = true; }
+        }
+      }
+      shown.current = { layout, rows, items: p.items, min, max, height: layoutHeight,
+        owner: remote?.owner ?? p.pickOwner, resetKey: p.resetKey };
 
       context.clearRect(0, 0, layoutWidth, layoutHeight);
       if (p.dateOverlay) drawDateOverlay(context, layout, tokens, p.dateOverlay);
-      drawRaceGrid(context, layout, tokens, state.min, state.max, p.formatTick ?? formatAxisValue);
-      if (!p.items.length && p.empty) {
+      drawRaceGrid(context, layout, tokens, min, max, p.formatTick ?? formatAxisValue);
+      if (!p.items.length && (!remote || remote.total === 0) && p.empty) {
         context.save();
         context.font = font(tokens, tokens.fontSize.body);
         context.fillStyle = tokens.muted;
@@ -146,10 +191,10 @@ export default function RaceChart(props: RaceChartProps) {
       // The row the hover is about: under the pointer, else the one the keys reached.
       // The keys let go of a row scrolled out of view, so its tooltip goes and the keys
       // act only on rows that are seen.
-      const reached = hover.current.pointer ? null : state.rows.find(row => row.key === hover.current.keyed && row.phase !== 'leaving');
+      const reached = hover.current.pointer ? null : rows.find(row => row.key === hover.current.keyed && row.phase !== 'leaving');
       if (reached && !rowSeen(layout, reached)) { hover.current = { ...hover.current, keyed: null }; spokenText.current = ''; setSpoken(''); }
       const { pointer, keyed } = hover.current;
-      const hovered = pointer ? rowAt(state.rows, layout, pointer, state.min, state.max) : keyed ? state.rows.find(row => row.key === keyed && row.phase !== 'leaving') ?? null : null;
+      const hovered = pointer ? rowAt(rows, layout, pointer, min, max) : keyed ? rows.find(row => row.key === keyed && row.phase !== 'leaving') ?? null : null;
 
       context.save();
       context.beginPath();
@@ -159,7 +204,7 @@ export default function RaceChart(props: RaceChartProps) {
       const ends = new Map<string, number>();
       // Lower rows first, so a row moving up passes over the others; hovering reads
       // the same order backwards (`rowAt`).
-      for (const row of paintOrder(state.rows)) {
+      for (const row of paintOrder(rows)) {
         const centre = rowCentre(layout, row.y);
         if (!rowInView(layout, centre)) continue;
         context.globalAlpha = Math.max(0, Math.min(1, row.alpha));
@@ -181,7 +226,7 @@ export default function RaceChart(props: RaceChartProps) {
         context.textAlign = 'left';
         context.textBaseline = 'middle';
         context.fillText(p.name(row.key, row.item), NAME_X, centre, Math.max(1, layout.left - NAME_X - NAME_PAD));
-        const tip = drawRaceBar(context, layout, tokens, row, state.min, state.max);
+        const tip = drawRaceBar(context, layout, tokens, row, min, max);
         context.fillStyle = tokens.text;
         context.font = font(tokens, tokens.fontSize.body, VALUE_WEIGHT);
         context.fillText(row.item.label, tip + VALUE_GAP, centre);
@@ -223,12 +268,12 @@ export default function RaceChart(props: RaceChartProps) {
     const local = (event: PointerEvent | MouseEvent): Pointer => ({
       ...toLocal(event.clientX, event.clientY, element.getBoundingClientRect(), element.clientWidth, element.clientHeight), clientX: event.clientX, clientY: event.clientY });
     // The pointer takes the hover back from the keyboard.
-    const move = (event: PointerEvent) => { hover.current = { ...hover.current, pointer: local(event), keyed: null }; wake(); };
-    const leave = () => { hover.current = { ...hover.current, pointer: null }; hideTooltip(owner); wake(); };
-    const down = () => { hover.current = { ...hover.current, menuKey: false }; };
+    const move = (event: PointerEvent) => { pendingKey.current = null; hover.current = { ...hover.current, pointer: local(event), keyed: null }; wake(); };
+    const leave = () => { pendingKey.current = null; hover.current = { ...hover.current, pointer: null }; hideTooltip(owner); wake(); };
+    const down = () => { pendingKey.current = null; hover.current = { ...hover.current, menuKey: false }; };
     const select = (event: MouseEvent) => {
       const at = shown.current;
-      if (!at || !latest.current.active || !latest.current.onPick || at.owner !== latest.current.pickOwner || at.resetKey !== latest.current.resetKey) return;
+      if (!at || !latest.current.active || !latest.current.onPick || at.owner !== (latest.current.remoteRows?.owner ?? latest.current.pickOwner) || at.resetKey !== latest.current.resetKey) return;
       const row = rowAt(at.rows, at.layout, local(event), at.min, at.max);
       selectRaceRow(row?.key ?? null, 'click', key => latest.current.onPick?.(key, row?.item));
     };
@@ -238,7 +283,7 @@ export default function RaceChart(props: RaceChartProps) {
       if (hover.current.menuKey) { hover.current = { ...hover.current, menuKey: false }; event.preventDefault(); return; }
       const handler = latest.current.onContextMenu;
       const at = shown.current;
-      if (!handler || !at || !latest.current.active || at.owner !== latest.current.pickOwner || at.resetKey !== latest.current.resetKey) return;
+      if (!handler || !at || !latest.current.active || at.owner !== (latest.current.remoteRows?.owner ?? latest.current.pickOwner) || at.resetKey !== latest.current.resetKey) return;
       const row = rowAt(at.rows, at.layout, local(event), at.min, at.max);
       if (!row) return;
       event.preventDefault();
@@ -269,16 +314,37 @@ export default function RaceChart(props: RaceChartProps) {
 
   const wake = () => { if (task.current) scheduler.wake(task.current); };
   const clearKeyed = () => {
+    pendingKey.current = null;
     hover.current = { ...hover.current, keyed: null };
     spokenText.current = '';
     setSpoken('');
     wake();
   };
   const keyDown = (event: ReactKeyboardEvent) => {
+    if (!props.active) return;
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown' || event.key === 'Home' || event.key === 'End') {
       event.preventDefault();
       // The keyboard takes the hover from the pointer, stepping on from the row shown.
       const from = hover.current.keyed ?? (hover.current.pointer && shown.current ? rowAt(shown.current.rows, shown.current.layout, hover.current.pointer, shown.current.min, shown.current.max)?.key ?? null : null);
+      const remote = props.remoteRows;
+      if (remote) {
+        const local = props.items.findIndex(item => item.key === from);
+        const pending = pendingKey.current;
+        const previous = pending && pending.owner === remote.owner ? pending.index : local < 0 ? -1 : remote.offset + local;
+        const index = remote.total === 0 ? -1 : event.key === 'Home' ? 0 : event.key === 'End' ? remote.total - 1
+          : previous < 0 ? 0 : event.key === 'ArrowDown' ? Math.min(remote.total - 1, previous + 1) : Math.max(0, previous - 1);
+        const item = props.items[index - remote.offset];
+        hover.current = { pointer: null, keyed: item?.key ?? null, menuKey: false };
+        pendingKey.current = index < 0 || item ? null : { index, owner: remote.owner, resetKey: props.resetKey };
+        const layout = shown.current?.layout, box = scroller.current;
+        if (box && layout && index >= 0) {
+          box.scrollTop = scrollTop.current = Math.max(0, revealRow(index, scrollTop.current, layout.view.bottom - layout.view.top, layout.slot));
+          const first = Math.max(0, Math.floor(scrollTop.current / layout.slot));
+          const count = Math.min(remote.total - first, Math.ceil((layout.view.bottom - layout.view.top) / layout.slot) + 1);
+          requestRange(remote, first, count);
+        } else if (index >= 0) requestRange(remote, index, 1);
+        keyIntent.current = true; wake(); return;
+      }
       const items = shown.current?.items ?? props.items;
       const keyed = keyedEntry(event.key, from, items);
       hover.current = { ...hover.current, pointer: null, keyed };
@@ -293,12 +359,12 @@ export default function RaceChart(props: RaceChartProps) {
       wake();
       return;
     }
-    if (event.key === 'Escape' && hover.current.keyed != null) { event.preventDefault(); clearKeyed(); return; }
+    if (event.key === 'Escape' && (hover.current.keyed != null || pendingKey.current)) { event.preventDefault(); clearKeyed(); return; }
     const keyed = hover.current.keyed;
     const drawn = shown.current;
     const row = drawn?.rows.find(item => item.key === keyed && item.phase !== 'leaving');
     const current = latest.current;
-    if (!current.active || drawn?.owner !== current.pickOwner || drawn?.resetKey !== current.resetKey || !row || !drawn || !rowSeen(drawn.layout, row)) return;
+    if (!current.active || drawn?.owner !== (current.remoteRows?.owner ?? current.pickOwner) || drawn?.resetKey !== current.resetKey || !row || !drawn || !rowSeen(drawn.layout, row)) return;
     if (selectRaceRow(keyed, event.key, current.onPick ? key => current.onPick?.(key, row.item) : undefined)) {
       event.preventDefault();
       return;
@@ -312,15 +378,18 @@ export default function RaceChart(props: RaceChartProps) {
       current.onContextMenu(keyed, rect.left + rect.width / 2, y, row.item);
     }
   };
-  const ranking = raceText(props.items, props.name);
+  const ranking = raceText(props.items, props.name, props.remoteRows?.offset ?? 0);
   return <div className="race-chart">
-    <div ref={scroller} className="race-scroll themed-scrollbar" onScroll={event => { scrollTop.current = event.currentTarget.scrollTop; wake(); }}>
+    <div ref={scroller} className="race-scroll themed-scrollbar" onScroll={event => {
+      if (event.currentTarget.scrollTop !== scrollTop.current) pendingKey.current = null;
+      scrollTop.current = event.currentTarget.scrollTop; wake();
+    }}>
       <canvas ref={canvas} tabIndex={0} role="img" aria-label={props.label} aria-describedby={`${owner}-ranking`}
         aria-keyshortcuts={`ArrowUp ArrowDown Home End${props.onPick ? ' Enter Space' : ''}`} onKeyDown={keyDown} onBlur={clearKeyed} />
       {/* The entries' height past the chart's own: the canvas stays in view while this scrolls. */}
-      <div className="race-extent" style={{ height: `calc(${raceHeight(props.items.length)}px - 100%)` }} />
+      <div className="race-extent" style={{ height: `calc(${raceHeight(props.remoteRows?.total ?? props.items.length)}px - 100%)` }} />
     </div>
-    <p id={`${owner}-ranking`} className="sr-only">{ranking || props.empty || ''}</p>
+    <p id={`${owner}-ranking`} className="sr-only">{props.remoteRows ? `${props.remoteRows.total} ranked entries. ${ranking || 'Requested rows are loading.'}` : ranking || props.empty || ''}</p>
     <p className="sr-only" aria-live="polite">{spoken}</p>
   </div>;
 }

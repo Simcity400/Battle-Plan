@@ -1,0 +1,1039 @@
+//! Country leader roles and advisors with parsed effect operands.
+
+use super::*;
+use installed_content::gui::native::{BoundLocalization, BoundValue, FormattedLocalization};
+use installed_content::{characters::Authored, modifiers::Modifiers};
+use replay::rows::{CharacterRoleTraitRow, CountryLeaderRoleRow, PartyLeaderRow};
+
+#[cfg(test)]
+mod tests;
+
+fn operand<'a>(item: &'a Item, name: &str) -> Option<&'a [u8]> {
+    field(children(item), name).and_then(|field| field.value.scalar())
+}
+
+fn boolean(item: &Item, name: &str) -> bool {
+    operand(item, name)
+        .and_then(installed_content::parser::read_bool)
+        .unwrap_or(false)
+}
+
+enum BoundResult {
+    Text(String),
+    Token(i32),
+}
+
+impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
+    pub(in crate::effect_description) fn bound_localisation(
+        &mut self,
+        bound: &BoundLocalization,
+        scopes: Scopes,
+        scoped: bool,
+    ) -> Result<String, String> {
+        if bound.is_empty() {
+            return Ok(String::new());
+        }
+        match self.bound_node(bound, 0, scopes, scoped)? {
+            BoundResult::Text(text) => Ok(text),
+            BoundResult::Token(_) => Err(
+                "bound localisation root returns a token integer, not the string variant".into(),
+            ),
+        }
+    }
+
+    // Evaluate arguments in authored order with the original supplied array
+    // (empty here), then the key with its own argument array.
+    // Use scoped localisation for every key; faction names use unscoped localisation.
+    fn bound_node(
+        &mut self,
+        bound: &BoundLocalization,
+        index: usize,
+        scopes: Scopes,
+        scoped: bool,
+    ) -> Result<BoundResult, String> {
+        let node = bound
+            .nodes
+            .get(index)
+            .ok_or("bound localisation node is absent")?;
+        let mut arguments = Vec::with_capacity(node.arguments.len());
+        for argument in &node.arguments {
+            let value = match &argument.value {
+                BoundValue::Localization(value) => {
+                    self.bound_formatted(value, &[], scopes, scoped)?
+                }
+                BoundValue::Node(child) => self.bound_node(bound, *child, scopes, scoped)?,
+            };
+            let name = std::str::from_utf8(&argument.name)
+                .map_err(|_| "bound argument name is not UTF-8")?;
+            arguments.push((name, value));
+        }
+        let arguments = arguments
+            .iter()
+            .map(|(name, value)| {
+                (
+                    *name,
+                    match value {
+                        BoundResult::Text(text) => Argument::Text(text),
+                        BoundResult::Token(token) => Argument::Int32(*token),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        self.bound_formatted(&node.key, &arguments, scopes, scoped)
+    }
+
+    fn bound_formatted(
+        &mut self,
+        value: &FormattedLocalization,
+        arguments: &[(&str, Argument<'_>)],
+        scopes: Scopes,
+        scoped: bool,
+    ) -> Result<BoundResult, String> {
+        match value {
+            FormattedLocalization::Key(key) => self
+                .localised(key, arguments, scopes, scoped)
+                .map(BoundResult::Text),
+            // Intern token: payloads and return the integer variant
+            // for the containing localiser to format.
+            FormattedLocalization::Token(token) => self
+                .context
+                .world()?
+                .token_of(token)?
+                .map(|token| BoundResult::Token(token as i32))
+                .ok_or_else(|| {
+                    format!(
+                        "bound localisation token {} is absent from LexicalTokens",
+                        String::from_utf8_lossy(token)
+                    )
+                }),
+            FormattedLocalization::Formatter { formatter, token } => {
+                let token =
+                    std::str::from_utf8(token).map_err(|_| "bound formatter token is not UTF-8")?;
+                let text = match formatter.as_slice() {
+                    // The registry's no-context callbacks return literal NULL.
+                    // A scoped callback keeps the caller's event scope carrier.
+                    b"idea_desc" if scoped => self.bound_idea_description(token, scopes)?,
+                    b"tech_effect" if scoped => self.bound_technology_effect(token, scopes)?,
+                    b"idea_desc" | b"tech_effect" => "NULL".to_owned(),
+                    _ => {
+                        return Err(format!(
+                            "bound localisation formatter {} requires core registry callback",
+                            String::from_utf8_lossy(formatter)
+                        ));
+                    }
+                };
+                Ok(BoundResult::Text(text))
+            }
+        }
+    }
+
+    fn char_token_text(&self, token: u32) -> Result<&'f [u8], String> {
+        self.character_table::<tables::LexicalTokens>()?
+            .iter()
+            .find(|row| row.token == token)
+            .map(|row| row.literal.as_slice())
+            .ok_or_else(|| format!("LexicalTokens lacks token {token}"))
+    }
+    // Search the signed ideology-token map; an empty selector chooses its
+    // sole entry rather than the first of several. The ideology token
+    // is the lexical token recorded for its authored name.
+    pub(super) fn char_country_leader_scope(
+        &self,
+        character: &CharacterRow,
+        ideology: Option<&[u8]>,
+    ) -> Result<Option<&'f CountryLeaderRoleRow>, String> {
+        let roles = self.character_table::<tables::CountryLeaderRoles>()?;
+        let mut found = roles.iter().filter(|role| role.character == character.id);
+        let Some(ideology) = ideology.filter(|ideology| !ideology.is_empty()) else {
+            let first = found.next();
+            return Ok(if found.next().is_none() { first } else { None });
+        };
+        let literal = String::from_utf8_lossy(ideology).to_ascii_lowercase();
+        if self
+            .politics_ideologies()?
+            .group_of(&literal)
+            .map_err(ToString::to_string)?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let Some(token) = self.context.world()?.token_of(ideology)? else {
+            return Ok(None);
+        };
+        Ok(found.find(|role| role.ideology as u32 == token))
+    }
+
+    // Select the first entry of the political status's party vector.
+    pub(super) fn char_ruling_leader(
+        &self,
+        country: u32,
+    ) -> Result<Option<&'f CharacterRow>, String> {
+        self.char_party_leader(country, None)
+    }
+
+    fn char_party_leader(
+        &self,
+        country: u32,
+        ideology: Option<&[u8]>,
+    ) -> Result<Option<&'f CharacterRow>, String> {
+        let Some(leader) = self.char_party_leader_row(country, ideology)? else {
+            return Ok(None);
+        };
+        let Some(character) = leader.character else {
+            return Ok(None);
+        };
+        self.character_table::<tables::Characters>()?
+            .iter()
+            .find(|row| row.id == character)
+            .map(Some)
+            .ok_or_else(|| format!("PartyLeaders references missing character {character}"))
+    }
+
+    fn char_party_leader_row(
+        &self,
+        country: u32,
+        ideology: Option<&[u8]>,
+    ) -> Result<Option<&'f PartyLeaderRow>, String> {
+        let world = self.context.world()?;
+        let parties = self.character_table::<tables::PoliticalParties>()?;
+        let mut selected = parties.iter().filter(|party| {
+            world.slot(party.country) == Some(country)
+                && match ideology {
+                    Some(token) => party.token.eq_ignore_ascii_case(token),
+                    None => party.is_ruling != 0,
+                }
+        });
+        let Some(party) = selected.next() else {
+            return Ok(None);
+        };
+        if selected.next().is_some() {
+            return Err("country has multiple selected political parties".into());
+        }
+        let leaders = self.character_table::<tables::PartyLeaders>()?;
+        let Some(leader) = leaders
+            .iter()
+            .filter(|leader| {
+                world.slot(leader.country) == Some(country) && leader.party == party.id
+            })
+            .min_by_key(|leader| leader.ordinal)
+        else {
+            return Ok(None);
+        };
+        if leader.ordinal != 0 {
+            return Err("PartyLeaders lacks first native vector entry".into());
+        }
+        Ok(Some(leader))
+    }
+
+    // Use the stored name, otherwise localise the original name string.
+    pub(super) fn char_country_leader_display_name(
+        &self,
+        character: &CharacterRow,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        if character.name.is_empty() {
+            self.localised(&character.token, &[], scopes, false)
+        } else {
+            self.effect_character_name(character)
+        }
+    }
+
+    fn char_role_header(
+        &self,
+        key: &[u8],
+        name: &str,
+        ideology: &[u8],
+        traits: &[String],
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        // Use the ideology subgroup's localised group name.
+        let token = String::from_utf8_lossy(ideology).to_ascii_lowercase();
+        let db = self.politics_ideologies()?;
+        let group = db.group_of(&token).map_err(ToString::to_string)?;
+        let ideology = match group {
+            Some(group) => self.localised(group.token.as_bytes(), &[], scopes, false)?,
+            // An empty template-promote selector reaches the shared null ideology.
+            // Its null group has an empty name; this default needs no runtime input.
+            None if token.is_empty() => self.localised(b"", &[], scopes, false)?,
+            None => {
+                return Err(format!(
+                    "country-leader ideology {token} is absent from recorded content"
+                ));
+            }
+        };
+        let mut text = self.char_native_text(
+            key,
+            &[
+                ("NAME", Argument::Text(name)),
+                ("IDEOLOGY", Argument::Text(&ideology)),
+            ],
+            scopes,
+            false,
+        )?;
+        text.push('\n');
+        for token in traits {
+            // Use four-space indentation with highlight controls;
+            // use a LF and six-space bullet as the nested numeric separator.
+            let Some(body) = self.char_country_trait_description_with_prefix(
+                token.as_bytes(),
+                scopes,
+                "\n      - ",
+            )?
+            else {
+                return Err(format!(
+                    "country-leader trait {token} is absent from recorded content"
+                ));
+            };
+            text.push_str("    \u{11}H");
+            text.push_str(&self.localised(token.as_bytes(), &[], scopes, false)?);
+            text.push_str("\u{11}!");
+            if !body.is_empty() {
+                text.push_str("\n      - ");
+                text.push_str(&body);
+            }
+            text.push('\n');
+        }
+        Ok(text)
+    }
+
+    // Describe legacy country-leader creation.
+    pub(in crate::effect_description) fn char_create_country_leader(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let raw = operand(item, "name").unwrap_or_default();
+        let country = self.current_country(scopes)?;
+        // Add a country prefix unless the fourth byte is an underscore. Lowercase ASCII,
+        // turn spaces into underscores, and remove hyphens/apostrophes.
+        let key = if !raw.is_empty() && raw.get(3) != Some(&b'_') {
+            let mut key = self.tag(country)?.as_bytes().to_vec();
+            key.push(b'_');
+            key.extend(
+                raw.iter()
+                    .filter(|byte| !matches!(byte, b'-' | b'\''))
+                    .map(|byte| {
+                        if *byte == b' ' {
+                            b'_'
+                        } else {
+                            byte.to_ascii_lowercase()
+                        }
+                    }),
+            );
+            key
+        } else {
+            raw.to_vec()
+        };
+        let mut name = self.localised(&key, &[], scopes, false)?;
+        if name.is_empty() {
+            // Search only the active roster, without a current-character fallback.
+            if let Some(token) = operand(item, "token")
+                && let Some(token) = self.context.world()?.token_of(token)?
+            {
+                let world = self.context.world()?;
+                let characters = self.character_table::<tables::Characters>()?;
+                let character = self
+                    .character_table::<tables::CountryCharacters>()?
+                    .iter()
+                    .filter(|row| world.slot(row.country) == Some(country))
+                    .filter_map(|row| {
+                        row.character.and_then(|id| {
+                            characters
+                                .iter()
+                                .find(|character| {
+                                    character.id == id && character.name_token_id as u32 == token
+                                })
+                                .map(|character| (row.ordinal, character))
+                        })
+                    })
+                    .min_by_key(|(ordinal, _)| *ordinal)
+                    .map(|(_, character)| character);
+                if let Some(character) = character {
+                    name = self.effect_character_name(character)?;
+                }
+            }
+        }
+        if name.as_bytes().get(3) == Some(&b'_') {
+            name = String::from_utf8_lossy(raw).into_owned();
+        }
+        let role = installed_content::characters::country_leader_role("", children(item))?;
+        self.char_role_header(
+            b"EFFECT_ADD_COUNTRY_LEADER_ROLE_PROMOTE",
+            &name,
+            role.ideology.as_bytes(),
+            &role.traits,
+            scopes,
+        )
+    }
+
+    // Describe the authored country-leader role, with a promotion-specific wrapper.
+    pub(in crate::effect_description) fn char_add_country_leader_role(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let Some(character) = self.effect_character_target(operand(item, "character"), scopes)?
+        else {
+            return Ok(String::new());
+        };
+        let role = installed_content::characters::country_leader_role(
+            "",
+            field(children(item), "country_leader")
+                .map(children)
+                .unwrap_or_default(),
+        )?;
+        let name = self.effect_character_name(character)?;
+        self.char_role_header(
+            if boolean(item, "promote_leader") {
+                b"EFFECT_ADD_COUNTRY_LEADER_ROLE_PROMOTE"
+            } else {
+                b"EFFECT_ADD_COUNTRY_LEADER_ROLE"
+            },
+            &name,
+            role.ideology.as_bytes(),
+            &role.traits,
+            scopes,
+        )
+    }
+
+    // Use the recorded role before template fallback; traits keep runtime order.
+    // Accept empty ideology only for a single role.
+    pub(in crate::effect_description) fn char_promote_character(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        // A character scope reads a scalar as ideology (exact yes means empty).
+        // Its block accepts ideology but not character.
+        let character_scope = matches!(
+            scopes.this,
+            Scope::Character(_) | Scope::Leader(_) | Scope::CountryLeader { .. }
+        );
+        let selector = if character_scope {
+            None
+        } else {
+            item.value.scalar().or_else(|| operand(item, "character"))
+        };
+        let ideology = if character_scope {
+            item.value
+                .scalar()
+                .filter(|value| installed_content::parser::c_string(value) != b"yes")
+                .or_else(|| operand(item, "ideology"))
+        } else {
+            operand(item, "ideology")
+        }
+        .filter(|value| !value.is_empty());
+        if let Some(character) = self.effect_character_target(selector, scopes)? {
+            let Some(role) = self.char_country_leader_scope(character, ideology)? else {
+                return Ok(String::new());
+            };
+            let ideology = match ideology {
+                Some(value) => value.to_vec(),
+                None => self.char_token_text(role.ideology as u32)?.to_vec(),
+            };
+            let traits = self
+                .character_table::<tables::CharacterRoleTraits>()?
+                .iter()
+                .find(|row| {
+                    row.character == character.id
+                        && row.kind == CharacterRoleTraitRow::COUNTRY_LEADER
+                        && row.role == role.ideology as u32
+                })
+                .map(|row| row.tokens.as_slice())
+                .unwrap_or_default()
+                .iter()
+                .map(|token| {
+                    self.char_token_text(*token)
+                        .map(|text| String::from_utf8_lossy(text).into_owned())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            return self.char_role_header(
+                b"EFFECT_ADD_COUNTRY_LEADER_ROLE_PROMOTE",
+                &self.effect_character_name(character)?,
+                &ideology,
+                &traits,
+                scopes,
+            );
+        }
+        let Some(token) = selector.filter(|token| !token.is_empty()) else {
+            return Ok(String::new());
+        };
+        let token = String::from_utf8_lossy(token).to_ascii_lowercase();
+        let catalogue = self
+            .character_content()?
+            .catalogue
+            .as_ref()
+            .map_err(Clone::clone)?;
+        let roles = catalogue.leader_roles(&token)?;
+        // Only startup-allowed templates are registered after clearing the maps.
+        // Agreement cannot prove presence: absent authored entries
+        // may also fall through to generated templates.
+        if !catalogue.template_has_unconditional_startup(&token) {
+            return Err(format!(
+                "character template {token} selected identity/presence is unrecorded"
+            ));
+        }
+        let Some(roles) = roles else {
+            return Ok(String::new());
+        };
+        let role = match ideology {
+            Some(ideology) => roles
+                .iter()
+                .find(|role| role.ideology.as_bytes().eq_ignore_ascii_case(ideology)),
+            None if roles.len() == 1 => roles.first(),
+            None => None,
+        };
+        let Some(role) = role else {
+            return Ok(String::new());
+        };
+        let name = match catalogue.name(&token).map_err(ToString::to_string)? {
+            // Localise the authored template name without an event scope.
+            // Promotion copies that stored name without event-scope expansion.
+            Some(Authored::Asset(key)) => self.localised(key.as_bytes(), &[], scopes, false)?,
+            Some(Authored::Ambiguous(_)) => {
+                return Err(format!(
+                    "character template {token} selected identity is unrecorded: names differ across instances"
+                ));
+            }
+            Some(Authored::Unknown(why)) => return Err(why.clone()),
+            _ => String::new(),
+        };
+        self.char_role_header(
+            b"EFFECT_ADD_COUNTRY_LEADER_ROLE_PROMOTE",
+            &name,
+            ideology.unwrap_or_default(),
+            &role.traits,
+            scopes,
+        )
+    }
+
+    // Resolve the character and its country, expand, then append LF.
+    pub(in crate::effect_description) fn char_retire_character(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let Some(character) = self.effect_character_target(item.value.scalar(), scopes)? else {
+            return Ok(String::new());
+        };
+        let name = self.effect_character_name(character)?;
+        let country = if character.country as i32 > 0 {
+            self.country_name(
+                self.context
+                    .world()?
+                    .slot(character.country)
+                    .ok_or("Character country is absent from CountryLinks")?,
+                false,
+            )?
+        } else {
+            String::new()
+        };
+        self.char_native_line(
+            b"EFFECT_RETIRE_CHARACTER",
+            &[
+                ("NAME", Argument::Text(&name)),
+                ("COUNTRY", Argument::Text(&country)),
+            ],
+            scopes,
+            true,
+        )
+    }
+
+    // Resolve the ruling or selected ideology leader, then expand and append LF.
+    pub(in crate::effect_description) fn char_remove_party_leader(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+        ideology: bool,
+        kill: bool,
+    ) -> Result<String, String> {
+        let country = self.current_country(scopes)?;
+        let ideology = ideology
+            .then(|| self.politics_ideology(item.value.scalar(), scopes))
+            .transpose()?;
+        let Some(leader) = self.char_party_leader_row(country, ideology.as_deref())? else {
+            return Ok(String::new());
+        };
+        let name = match leader.character {
+            Some(id) => {
+                let character = self
+                    .character_table::<tables::Characters>()?
+                    .iter()
+                    .find(|row| row.id == id)
+                    .ok_or_else(|| format!("PartyLeaders references missing character {id}"))?;
+                self.char_country_leader_display_name(character, scopes)?
+            }
+            None => String::new(),
+        };
+        self.char_native_line(
+            if kill {
+                b"EFFECT_KILL_COUNTRY_LEADER"
+            } else {
+                b"EFFECT_RETIRE_COUNTRY_LEADER"
+            },
+            &[("NAME", Argument::Text(&name))],
+            scopes,
+            true,
+        )
+    }
+
+    // A missing character or undefined ideology returns empty.
+    // IDEOLOGY is the subgroup's group name; append no LF.
+    pub(in crate::effect_description) fn char_remove_country_leader_role(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let Some(character) = self.effect_character_target(operand(item, "character"), scopes)?
+        else {
+            return Ok(String::new());
+        };
+        let token = String::from_utf8_lossy(operand(item, "ideology").unwrap_or_default())
+            .to_ascii_lowercase();
+        let db = self.politics_ideologies()?;
+        let Some(group) = db.group_of(&token).map_err(ToString::to_string)? else {
+            return Ok(String::new());
+        };
+        let ideology = self.localised(group.token.as_bytes(), &[], scopes, false)?;
+        let name = self.effect_character_name(character)?;
+        self.char_native_text(
+            b"EFFECT_REMOVE_COUNTRY_LEADER_ROLE",
+            &[
+                ("NAME", Argument::Text(&name)),
+                ("IDEOLOGY", Argument::Text(&ideology)),
+            ],
+            scopes,
+            true,
+        )
+    }
+
+    // Localise and expand SLOT first, then the containing line.
+    pub(in crate::effect_description) fn char_remove_advisor_role(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let Some(character) = self.effect_character_target(operand(item, "character"), scopes)?
+        else {
+            return Ok(String::new());
+        };
+        let name = self.effect_character_name(character)?;
+        let slot = self.localised(operand(item, "slot").unwrap_or_default(), &[], scopes, true)?;
+        self.char_native_text(
+            b"EFFECT_REMOVE_ADVISOR_ROLE",
+            &[
+                ("NAME", Argument::Text(&name)),
+                ("SLOT", Argument::Text(&slot)),
+            ],
+            scopes,
+            true,
+        )
+    }
+
+    // A temporary accumulator sums each trait modifier, then the template modifier.
+    // It supplies no trait names or bonuses.
+    pub(in crate::effect_description) fn char_add_advisor_role(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let Some(character) = self.effect_character_target(operand(item, "character"), scopes)?
+        else {
+            return Ok(String::new());
+        };
+        let role = installed_content::characters::advisor_role(
+            "",
+            field(children(item), "advisor")
+                .map(children)
+                .unwrap_or_default(),
+        )?;
+        let name = self.effect_character_name(character)?;
+        let slot = self.localised(role.slot.as_bytes(), &[], scopes, true)?;
+        let traits = self.char_country_traits()?;
+        let mut modifiers = Modifiers::default();
+        for source in role
+            .traits
+            .iter()
+            .map(|name| {
+                traits
+                    .get(name)
+                    .map_err(ToString::to_string)?
+                    .ok_or_else(|| {
+                        format!("country-leader trait {name} is absent from recorded content")
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|trait_| &trait_.modifiers)
+            .chain(std::iter::once(&role.modifiers))
+        {
+            if let Some(why) = source.unheld.cause() {
+                return Err(why.to_owned());
+            }
+            for value in &source.values {
+                // Multiply in signed 64-bit arithmetic before dividing by fixed5,
+                // even at the unit scale.
+                let contribution = value.value.wrapping_mul(100_000) / 100_000;
+                if let Some(previous) = modifiers
+                    .values
+                    .iter_mut()
+                    .find(|previous| previous.name == value.name)
+                {
+                    previous.value = previous.value.wrapping_add(contribution);
+                } else {
+                    let mut value = value.clone();
+                    value.value = contribution;
+                    modifiers.values.push(value)
+                }
+            }
+        }
+        // Format plain modifiers with the full category mask and precision 2,
+        // then expand only the containing line.
+        let modifiers = self.modifier_description_with(
+            &modifiers,
+            "",
+            ModifierListOptions {
+                category_mask: u32::MAX,
+                ..Default::default()
+            },
+        )?;
+        self.char_native_text(
+            if boolean(item, "activate") {
+                b"EFFECT_ADD_ADVISOR_ROLE_APPOINT"
+            } else {
+                b"EFFECT_ADD_ADVISOR_ROLE"
+            },
+            &[
+                ("NAME", Argument::Text(&name)),
+                ("SLOT", Argument::Text(&slot)),
+                ("MODIFIER", Argument::Text(&modifiers)),
+            ],
+            scopes,
+            true,
+        )
+    }
+
+    // Search exact primary names in roster order, then retired names and advisor
+    // maps without case. Format 98 keeps the raw accumulator numbers;
+    // never rebuild them from current traits.
+    pub(in crate::effect_description) fn char_activate_advisor(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let idea = std::str::from_utf8(installed_content::parser::c_string(
+            item.value.scalar().unwrap_or_default(),
+        ))
+        .map_err(|_| "advisor idea token is not UTF-8")?;
+        let Some(character_id) = self.advisor_idea_character(idea, scopes)? else {
+            return Ok(String::new()); // Native diagnostic only when lookup is null.
+        };
+        // Retain the selected advisor's exact cache without looking up its role again.
+        // Retired lookup selects the first folded match in recorded tree order.
+        // A unique exact match at that same ordinal is safe for the primary path.
+        // Other exact matches lose role identity in the character-only result;
+        // do not rescan the roster.
+        let matching: Vec<_> = self
+            .character_table::<tables::AdvisorRoles>()?
+            .iter()
+            .filter(|role| {
+                role.character == character_id && role.idea.eq_ignore_ascii_case(idea.as_bytes())
+            })
+            .collect();
+        let advisor = matching
+            .iter()
+            .copied()
+            .min_by_key(|role| role.ordinal)
+            .ok_or_else(|| format!("AdvisorRoles lacks character {character_id} idea {idea}"))?;
+        let mut exact = matching
+            .iter()
+            .copied()
+            .filter(|role| role.idea == idea.as_bytes());
+        let first_exact = exact.next();
+        if exact.next().is_some() || first_exact.is_some_and(|role| role.ordinal != advisor.ordinal)
+        {
+            return Err(format!(
+                "advisor {character_id} / {idea} has ambiguous role identity after character-only lookup"
+            ));
+        }
+        let cache = advisor
+            .modifier_cache
+            .require("advisor modifier cache")?
+            .as_ref()
+            .ok_or("advisor modifier cache capture unavailable")?;
+        let character = self
+            .effect_character(Scope::Character(advisor.character))?
+            .ok_or("AdvisorRoles references missing character")?;
+        let description = if matches!(advisor.tooltip_keys, replay::rows::Recorded::NotRecorded) {
+            // Older recordings can prove zero/one trait key only when the own
+            // block has no tooltips. Recorded keys always supersede this fallback.
+            let catalogue = self
+                .character_content()?
+                .catalogue
+                .as_ref()
+                .map_err(Clone::clone)?;
+            let idea_token = std::str::from_utf8(&advisor.idea)
+                .map_err(|_| "advisor idea token is not UTF-8")?;
+            let built = crate::identity::built_template(
+                character,
+                self.character_table::<tables::LexicalTokens>().ok(),
+            );
+            let role = catalogue
+                .held_advisor(idea_token, built.as_ref().map_err(String::as_str))?
+                .ok_or_else(|| format!("advisor role {idea_token} is absent from content"))?;
+            // Construction and loading add the own block after rebuilding, which omits it.
+            // Its cached tooltip membership therefore depends on refresh history.
+            let mut own_blocks = vec![&role.modifiers];
+            while let Some(block) = own_blocks.pop() {
+                if let Some(why) = block.unheld.cause() {
+                    return Err(why.to_owned());
+                }
+                if !block.tooltips().is_empty() {
+                    return Err(
+                        "advisor own-block custom tooltip presence depends on refresh history"
+                            .into(),
+                    );
+                }
+                own_blocks.extend(&block.children);
+            }
+            // With no own-block tooltips, rebuilding copies current trait tooltip keys.
+            // Clearing retains table capacity and therefore slot order.
+            // Zero or one distinct key is independent of that order; two or more
+            // need the unrecorded order. Reuse the catalogue's set.
+            let mut modifiers = Modifiers::default();
+            let mut tooltip_key: Option<String> = None;
+            for row in self
+                .character_table::<tables::CharacterRoleTraits>()?
+                .iter()
+                .filter(|row| {
+                    row.character == advisor.character
+                        && row.kind == CharacterRoleTraitRow::ADVISOR
+                        && row.role == advisor.ordinal
+                })
+            {
+                let traits = self.char_country_traits()?;
+                for &definition in &row.definitions {
+                    let trait_ = traits.by_ordinal(definition).ok_or_else(|| {
+                        format!("advisor trait definition {definition} is absent from content")
+                    })?;
+                    if let Some(why) = trait_.modifiers.unheld.cause() {
+                        return Err(why.to_owned());
+                    }
+                    for key in trait_.modifiers.tooltips() {
+                        if tooltip_key
+                            .as_ref()
+                            .is_some_and(|previous| previous != &key)
+                        {
+                            return Err(
+                                "advisor cached tooltip keys/slot order not recorded".into()
+                            );
+                        }
+                        if tooltip_key.is_none() {
+                            modifiers = trait_.modifiers.clone();
+                            tooltip_key = Some(key);
+                        }
+                    }
+                }
+            }
+            modifiers.values.clear();
+            modifiers.hidden.clear();
+            modifiers.children.clear();
+            // Format raw modifiers with the full category mask and no prefix.
+            // Recorded numeric order and definition IDs need no lexer lookup.
+            // DESC expands only after substitution into the wrapper.
+            let options = ModifierListOptions {
+                category_mask: u32::MAX,
+                ..Default::default()
+            };
+            let mut description =
+                self.cached_modifier_description_with(&cache.entries, "", options)?;
+            if tooltip_key.is_some() {
+                let tooltip = self.modifier_description_with(&modifiers, "", options)?;
+                // Add one LF before a nonempty tooltip only when the numeric text
+                // is nonempty and does not already end in LF.
+                if !tooltip.is_empty() {
+                    if !description.is_empty() && !description.ends_with('\n') {
+                        description.push('\n');
+                    }
+                    description.push_str(&tooltip);
+                }
+            }
+            description
+        } else {
+            self.advisor_cache_description(advisor)?
+        };
+        let name = self.effect_character_name(character)?;
+        self.char_native_text(
+            if item.keyword_is("deactivate_advisor") {
+                b"EFFECT_DEACTIVATE_ADVISOR"
+            } else {
+                b"EFFECT_ASSIGN_ADVISOR"
+            },
+            &[
+                ("NAME", Argument::Text(&name)),
+                ("DESC", Argument::Text(&description)),
+            ],
+            scopes,
+            true,
+        )
+    }
+
+    // A THIS character omits its name; a resolved explicit character
+    // without a THIS character adds a trailing space.
+    // Wrap nonempty SLOT text in parentheses followed by a space.
+    pub(in crate::effect_description) fn char_set_can_be_fired(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let mut name = String::new();
+        if self.effect_character(scopes.this)?.is_none()
+            && let Some(character) =
+                self.effect_character_target(operand(item, "character"), scopes)?
+        {
+            name = self.effect_character_name(character)?;
+            name.push(' ');
+        }
+        let slot = match operand(item, "slot").filter(|value| !value.is_empty()) {
+            Some(slot) => format!("({}) ", self.localised(slot, &[], scopes, true)?),
+            None => String::new(),
+        };
+        self.char_native_text(
+            if boolean(item, "value") {
+                b"EFFECT_SET_CAN_BE_FIRED"
+            } else {
+                b"EFFECT_SET_CANNOT_BE_FIRED"
+            },
+            &[
+                ("CHARACTER", Argument::Text(&name)),
+                ("SLOT", Argument::Text(&slot)),
+            ],
+            scopes,
+            true,
+        )
+    }
+
+    // Look up the copied lexer-token ID in the registry rather than the country
+    // roster. Substitute the character name, expand and append LF.
+    pub(in crate::effect_description) fn char_recruit_character(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let Some(token) = self
+            .context
+            .world()?
+            .token_of(item.value.scalar().unwrap_or_default())?
+        else {
+            return Ok(String::new());
+        };
+        let mut matching = self
+            .character_table::<tables::Characters>()?
+            .iter()
+            .filter(|row| row.name_token_id as u32 == token);
+        let Some(character) = matching.next() else {
+            return Ok(String::new());
+        };
+        if matching.next().is_some() {
+            return Err("character registry token resolves multiple recorded rows".into());
+        }
+        self.char_native_line(
+            b"EFFECT_RECRUIT_CHARACTER",
+            &[(
+                "NAME",
+                Argument::Text(&self.effect_character_name(character)?),
+            )],
+            scopes,
+            true,
+        )
+    }
+
+    // Copy the authored name, surname and callsign without a naming lookup or LF.
+    pub(in crate::effect_description) fn char_add_ace(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let name = String::from_utf8_lossy(operand(item, "name").unwrap_or_default());
+        let surname = String::from_utf8_lossy(operand(item, "surname").unwrap_or_default());
+        let callsign = String::from_utf8_lossy(operand(item, "callsign").unwrap_or_default());
+        self.char_native_text(
+            b"EFFECT_ADD_ACE",
+            &[
+                ("NAME", Argument::Text(&name)),
+                ("SURNAME", Argument::Text(&surname)),
+                ("CALLSIGN", Argument::Text(&callsign)),
+            ],
+            scopes,
+            true,
+        )
+    }
+
+    // Require a positive country in a faction, excluding its first member.
+    // Expand the faction display name and append LF.
+    pub(in crate::effect_description) fn char_set_faction_leader(
+        &mut self,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let (Scope::Country(country) | Scope::CountryLeader { country, .. }) = scopes.this else {
+            return Ok(String::new());
+        };
+        if country == 0 {
+            return Ok(String::new());
+        }
+        let world = self.context.world()?;
+        let members = self.character_table::<tables::FactionMembers>()?;
+        let Some(member) = members
+            .iter()
+            .find(|member| world.slot(member.country) == Some(country))
+        else {
+            return Ok(String::new());
+        };
+        let Some(first) = members
+            .iter()
+            .filter(|other| other.faction == member.faction)
+            .min_by_key(|member| member.ordinal)
+        else {
+            return Ok(String::new());
+        };
+        if first.ordinal != 0 {
+            return Err("FactionMembers lacks first native member".into());
+        }
+        if world.slot(first.country) == Some(country) {
+            return Ok(String::new());
+        }
+        let faction = self
+            .character_table::<tables::Factions>()?
+            .iter()
+            .find(|row| row.id == member.faction)
+            .ok_or("Factions lacks member's faction")?;
+        let name = if !faction.name.is_empty() {
+            crate::scripted_text::stored_text(
+                self.context.localisation,
+                self.context.text.recorded_language(),
+                &faction.name,
+                "faction name",
+            )?
+        } else if let Some(token) = faction.template_token {
+            let token = std::str::from_utf8(self.char_token_text(token)?)
+                .map_err(|_| "faction template token is not UTF-8")?;
+            let bound = self
+                .character_content()?
+                .factions
+                .as_ref()
+                .map_err(Clone::clone)?
+                .get(token)?
+                .ok_or_else(|| format!("faction template {token} is absent from recorded content"))?
+                .clone();
+            self.bound_localisation(&bound, scopes, false)?
+        } else {
+            String::new()
+        };
+        self.char_native_line(
+            b"EFFECT_SET_FACTION_LEADER",
+            &[("NAME", Argument::Text(&name))],
+            scopes,
+            true,
+        )
+    }
+}

@@ -9,7 +9,7 @@ use replay::{
     },
 };
 
-fn frame(hour: i32, read: bool, countries: u32) -> DecodedFrame {
+pub(super) fn frame(hour: i32, read: bool, countries: u32) -> DecodedFrame {
     let mut frame = crate::test_fixtures::source(1, hour, None);
     for table in [
         TableId::ProjectHistory,
@@ -79,7 +79,7 @@ fn frame(hour: i32, read: bool, countries: u32) -> DecodedFrame {
     frame.metrics.table_ns[TableId::Projects.index()] = u64::from(read);
     frame
 }
-fn source(replay: Replay, revision: &str) -> Source {
+pub(super) fn source(replay: Replay, revision: &str) -> Source {
     Source::from_replay(
         crate::SourceKey {
             source_id: "projects-shared".into(),
@@ -271,7 +271,7 @@ fn verified_append_shares_prior_inputs_and_decodes_only_new_blocks() {
     );
 }
 
-fn content(root: &std::path::Path, project_name: &str) {
+pub(super) fn content(root: &std::path::Path, project_name: &str) {
     for (path, body) in [
         ("hoi4.exe", "test".to_owned()),
         ("user/settings.txt", "language=l_english force_pow2_textures=no".to_owned()),
@@ -291,6 +291,10 @@ fn content(root: &std::path::Path, project_name: &str) {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn scoped_world_variable_names_share_one_pass_and_failures_belong_only_to_the_requested_actor() {
     engine::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

@@ -1,11 +1,9 @@
 //! Bounded faction-pin preparation on the existing hour builders.
 
 use std::sync::{Arc, mpsc};
+use viewer_foundation::retirement::Dropper;
 
-use crate::{
-    hours,
-    map::{perspective, scene::FactionHighlight},
-};
+use {viewer_foundation::map::perspective, viewer_world::map::scene::FactionHighlight};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Key {
@@ -40,7 +38,7 @@ impl Lane {
         key: Key,
         submit: impl FnOnce(Box<dyn FnOnce() + Send>) -> bool,
         build: impl FnOnce() -> FactionHighlight + Send + 'static,
-        dropper: &hours::Dropper,
+        dropper: &Dropper,
     ) -> Option<FactionHighlight> {
         if self.requested.as_ref() != Some(&key) {
             self.requested = Some(key.clone());

@@ -1,8 +1,8 @@
 # desktop
 
-Tauri host for the replay app. **Campaign map** embeds the native viewer; **Overview** hosts the dashboard. The host owns folder selection, replay library, native-process lifecycle and an asynchronous data proxy. Replay decoding/products remain in the viewer process, shared with map consumers.
+Tauri host for the replay app. **Campaign map** embeds the native viewer; **Overview** hosts the dashboard. The host owns folder selection, replay library, native-process lifecycle and the dashboard data runtime. Dashboard queries use the shared data library directly in the host, independently of the map process.
 
-Game-derived display preferences initialize executable metadata in the host from the selected game folder. The viewer's dashboard service validates that folder and initializes its own process-wide tables before exposing content-dependent products. Missing or incompatible installation metadata reports a folder/content error; recording metadata remains accessible.
+Game-derived display preferences and content products initialize executable metadata in their process from the selected game folder. The host owns the game/user folders and the background-preparation choice in `APPDATA/battle-plan/content.json` ([config.rs](../dashboard-core/src/config.rs)); this run's `--game-dir`/`--user-dir` override them without saving. Folder Apply, the preparation choice and the development bridge update that file under an exclusive `content.lock`, so overlapping saves keep each other's choices. The host data runtime, the video settings and the viewer all use those effective folders: the viewer starts with them on its command line (or with the last folders Apply sent, if a launch races it), and an applied change reaches a running viewer as a `Folders` map action. The viewer saves no settings. Missing or incompatible installation metadata refuses dependent content; recording metadata remains accessible.
 
 ## Develop
 
@@ -38,6 +38,8 @@ The build also produces [Battle Plan Recorder](../recorder-app/README.md) (`batt
 | [native.rs](src/native.rs), [native/](src/native/) | Geometry owner, bounded commands, pipe/process/job lifecycle. |
 | [dashboard_service.rs](src/dashboard_service.rs) | Asynchronous requests, cancellation and fragmented reply assembly. |
 | [replay_library.rs](src/replay_library.rs) | The replay folder shared with Battle Plan Recorder, recursive listing and validated trailer metadata. |
+| [preparation.rs](src/preparation.rs) | Startup and idle library preparation, with independent game-presence polling and cancellation. |
+| [game_process.rs](src/game_process.rs) | Passive game-process presence check for automatic preparation. |
 | [recorder.rs](src/recorder.rs) | Starting Battle Plan Recorder with the app, reading its settings, and sharing recording names and campaign flags. |
 | [video.rs](src/video.rs) | UI/map scale, VSync and diagnostics preferences and application. |
 
@@ -47,13 +49,35 @@ The build also produces [Battle Plan Recorder](../recorder-app/README.md) (`batt
 
 The sibling viewer belongs to a Windows job object. Shutdown requests graceful exit before bounded forced reap; never leave an owned child after app/dev closure. Host and child require per-monitor-v2 DPI awareness.
 
-Select the active geometry owner before frontend tabs mount/unmount. Late cleanup from Overview cannot hide Campaign map or vice versa. The standalone map retains camera across tab switches and follows the shared clock while active. Clock coalescing must retain playing state and the seek counter; an unstamped seek is explicit. Preserve the [viewer continuity rules](../viewer/README.md#playback-threading-and-frame-budgets).
+Select the active geometry owner before frontend tabs mount/unmount. Late cleanup from Overview cannot hide Campaign map or vice versa. The Campaign map retains its camera across tab switches and follows the shared clock while active. Clock coalescing must retain playing state and the seek counter; an unstamped seek is explicit. Preserve the [viewer continuity rules](../viewer/README.md#playback-threading-and-frame-budgets).
 
 Unloading retires the cached map and clears matching open/restart targets before releasing the frontend lease. A running load finishes within its worker slot, then discards its obsolete result; it cannot reopen an unloaded source. Unloading the default selects another loaded campaign or hides the map when none remain. Queries may run before map assets load.
 
-Sources share canonical path/revision but return independently releasable bindings. Closing one widget must not cancel another consumer's query. Process failure terminates pending requests. Restart requires reopening sources; lease IDs include a fresh service namespace so delayed releases cannot close new sources. See [dashboard architecture](../../docs/dashboard.md).
+Sources share canonical path/revision but return independently releasable bindings. Closing one widget must not cancel another consumer's query. Host data-runtime failure terminates pending requests. Reopening uses a fresh service namespace so delayed releases cannot close new sources; a viewer restart leaves host dashboard bindings available. See [dashboard architecture](../../docs/dashboard.md).
 
-The host assembles bounded reply fragments and forwards raw JSON bytes without parsing recording/product data. Cancellation/admission ordering must prevent a cancelled open from later creating a leaked binding. Map layouts replace snapshots; data commands have a separate bounded count/byte queue. Preserve canonical retryable refusals from [transport.rs](../dashboard/src/transport.rs) and the shared [message budget](../dashboard/src/protocol.rs); never truncate requests naming many countries.
+The host assembles bounded library reply fragments and returns raw JSON bytes to the WebView. Dashboard replies do not cross the native map pipe. Cancellation/admission ordering prevents a cancelled open from later creating a leaked binding. Map layouts replace snapshots and retain their bounded control queue. Preserve canonical retryable refusals from [transport.rs](../dashboard-core/src/transport.rs); never truncate requests naming many countries.
+
+Preparation and prepared-page queries also run host-direct. Opening a recording
+admits background preparation; the library and preparation controls query real
+progress, start or cancel work, and Clear its stored data. The commands validate
+the current source binding and revision. Progress counts and stored byte totals
+are decimal strings, preserving values beyond JavaScript's exact-number range.
+
+At startup, an idle monitor scans the shared library without opening a campaign
+in the UI. It observes newly published recording revisions and admits unfinished
+recordings in most-recently-modified order through the dashboard's existing queue.
+The library scan retries busy admission and checks cancellation between entries
+and trailer metadata reads. Game presence is polled independently every 250 ms,
+so a slow scan or source open cannot delay observing a game start. While any
+`hoi4.exe` process runs, automatic admission stops and automatic jobs yield at
+their next block boundary. The idle monitor retries after game exit; manual Prepare
+stays available. Library scans watch for changed recordings once per idle second.
+Unchanged or busy replies stop admission retries until a recording revision,
+worker completion, preference/content binding or game state changes. No additional
+scheduler or persisted queue is used. Shutdown signals both monitor threads before closing the
+shared dashboard service. Library admission uses the dashboard's shared 2 MiB
+worker-thread constructor, so its source opening and preparation restoration have
+the same stack budget as the production preparation workers and service loaders.
 
 ## Folders, settings and exports
 
@@ -61,13 +85,13 @@ The replay folder is the recorder's save folder in the shared `RecorderSettings`
 
 When the app opens and the recorder's **With Battle Plan** setting is on (the default), it starts the sibling `battle-plan-recorder.exe` detached, with no console or inherited pipes and outside any job this app belongs to, so closing the app never stops a recording; the recorder's one-instance rule makes a second start a no-op. Recording display names and sidebar campaign flags live in the recorder's shared settings, so the recorder shows the same ones: `recording_preferences` reads them (flags by the frontend's campaign key), `set_recording_names` sets or clears only the names a change touches, by normalized path, and `set_campaign_flag` sets or clears one campaign's flag, each inside one `RecorderSettings::update`, so neither program's names or flags are lost to the other's save.
 
-Native dialogs run off the UI thread, belong to the app window, identify their purpose and start in the current valid directory. Cancellation preserves the field. Game/user folder choices stay drafts until Apply; replay-folder choices save immediately.
+Native dialogs run off the UI thread, belong to the app window, identify their purpose and start in the current valid directory. Cancellation preserves the field. Game/user folder choices stay drafts until Apply, which `set_content_folders` checks against the installation before saving; replay-folder choices save immediately.
 
 `video.rs` stores preferences in APPDATA/battle-plan/video.json. UI scale, map scale and VSync initially inherit HOI4; Revert restores inheritance. *Match game* is the inherited map scale. Apply webview zoom/native presentation with rollback on failure and send applied values to existing/new viewers. These settings do not resize windows/widgets or change fullscreen/monitor modes; dashboard Edit handles own widget size.
 
-The host owns embedded controls and hides the viewer's egui header/timeline. Map actions update the existing native controls and rendering path. Map diagnostics default off; Settings > Diagnostics or F3 toggles/saves `mapDiagnostics`. Native F3 requests the host toggle; `--diagnostics` enables one run without saving. `MapDetails` is requested on demand.
+The viewer has no interface of its own: the host owns every control, setting and dialog, and map actions change the map's state and rendering. `viewer.exe` started outside the host runs only its headless tooling ([viewer guide](../viewer/README.md#use-and-export)). Map diagnostics default off; Settings > Diagnostics or F3 toggles/saves `mapDiagnostics`. Native F3 requests the host toggle; `--diagnostics` enables one run without saving. `MapDetails` is requested on demand.
 
-Export carries an optional map-view ID through the native action. Widget exports target that view; standalone exports omit the ID. Global map-settings requests need no source; campaign/widget targets retain source/revision validation. Appearance inheritance and content reload rules belong in the [viewer guide](../viewer/README.md#campaign-appearance).
+The host saves map appearance preferences; after each save request, even one whose reply failed, it sends the running viewer `MapSettingsSaved`, once however many are queued, and the viewer reads them again and reloads any map they change. Export carries an optional map-view ID through the native action. Widget exports target that view; Campaign map exports omit the ID. Global map-settings requests need no source; campaign/widget targets retain source/revision validation. Appearance inheritance and content reload rules belong in the [viewer guide](../viewer/README.md#campaign-appearance).
 
 ## Test without taking over the screen
 
@@ -86,6 +110,7 @@ python tools/desktop_ui.py --session $sessionDir list
 ```
 
 [desktop_cdp.mjs](../../tools/desktop_cdp.mjs) targets the real Tauri WebView2 using the session's local debugging port. Use mouse/key commands to exercise controls and expressions to inspect state. WebView screenshots exclude native dialogs/map windows; use the Python helper's `capture`, `children`, `resize`, `choose`, `cancel-dialog` and `close` commands for those. `capture` requires Pillow. Native input commands are confined to the isolated desktop.
+
 
 Settings checks cover Apply, Cancel, Revert, restart persistence, all three folder dialogs and a loaded map; inspect saved session preferences too. Closing the host must reap its viewer: check launcher exit/processes. Ctrl+C requests closure with a bounded fallback. Use a matched smoke replay; this does not replace the [recorder fresh-save oracle](../recorder/README.md). Inactive-desktop checks cannot establish visible-monitor VSync/tearing.
 

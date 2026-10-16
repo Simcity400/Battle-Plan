@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { dayLabel } from '../../charts/draw';
 import CountryRaceView from '../../charts/race/CountryRaceView';
@@ -15,7 +15,9 @@ import { isMember, rankedCandidates, resolveCountries } from '../../dashboard/gr
 import { resolveWindow } from '../../dashboard/model';
 import { contentSet, resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
+import { usePreparedRace } from '../../charts/race/PartsRaceView';
+import { mergeFactories, factoriesGeometry } from './preparedFactories';
+import { useParityRows } from '../../dashboard/parityRows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { NumericReply } from '../../dashboard/numericReply';
 import { groupNumbers } from '../../dashboard/groupsReply';
@@ -51,8 +53,9 @@ export default function FactoriesWidget(props: WidgetProps) {
     [widget.countries, fallback, numericGroups, lastHour]);
   const params = track ? factoriesRequest(track.branch.id, resolved, mode, chosen) : null;
   const request = track && params && (params.top || params.tags.length)
-    ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-factories', params } : null;
-  const { data, error, retry } = useProduct<CountryFactoriesReply>(runtime.client, request, active, validateFactoriesReply);
+    ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-factories', params: runtime.client.preparedQuery ? { ...params, mode, groups: chosen.filter(key => ['military', 'naval', 'civilian'].includes(key)) } : params } : null;
+  const prepared = usePreparedRace(runtime.client, track, request, moment, active, validateFactoriesReply, mergeFactories, factoriesGeometry, view !== 'race', resolved.membership ?? undefined);
+  const { data, error, retry } = prepared;
   const numeric = useMemo(() => new NumericReply<CountryFactoriesReply>(), [runtime.client]);
   const pickScope = JSON.stringify([track?.source.id, track?.branch.id, view, widget.countries, params]);
   const pickNumbers = numeric.update(pickScope, data, factoryDrillNumbers);
@@ -70,7 +73,8 @@ export default function FactoriesWidget(props: WidgetProps) {
   const mixTag = mixCountry(widget.countries, fallback, ranked);
   const shownTags = view === 'race' ? ranked.map(entry => entry.tag) : view === 'lines' ? lineTags : mixTag ? [mixTag] : [];
   const warnings = useMemo(() => [...(data?.warnings ?? []), ...(groupReply.data?.warnings ?? [])], [data, groupReply.data]);
-  const drillParams = useCallback((tag: string) => factoriesRequest(track!.branch.id, { tags: [tag] }, mode, chosen), [track, mode, chosen]);
+  const drillParams = useCallback((tag: string) => ({ ...factoriesRequest(track!.branch.id, { tags: [tag] }, mode, chosen),
+    ...(runtime.client.preparedQuery ? { mode, groups: chosen.filter(key => ['military', 'naval', 'civilian'].includes(key)) } : {}) }), [track, mode, chosen, runtime.client]);
   const decodeDrill = useCallback((reply: CountryFactoriesReply) => {
     const native = reply === data && model ? model : factoryModel(reply);
     return factoryDrillData(native, chosenGroups(native, chosen), mode);
@@ -82,16 +86,17 @@ export default function FactoriesWidget(props: WidgetProps) {
   const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   const lines = useMemo(() => !model || view !== 'lines' ? [] : lineTags.flatMap(tag => {
     const runs = lineRuns(model, tag, groups, mode, cutTo(tag), range);
-    return runs.length ? [{ tag, runs }] : [];
-  }), [model, view, lineTags, groups, mode, resolved.membership, range]); // eslint-disable-line react-hooks/exhaustive-deps
+    return runs.length || prepared.summaries.has(tag) ? [{ tag, runs }] : [];
+  }), [model, view, lineTags, groups, mode, resolved.membership, range, prepared.summaries]); // eslint-disable-line react-hooks/exhaustive-deps
   const segmentAt = useCallback((tag: string, hour: number) => factorySegmentAt(model, tag, hour), [model]);
   const parts = useMemo<CountryRacePart[]>(() => (model?.reply.groups ?? []).map(group => ({ id: group.key, label: groupName(group) })), [model]);
   const chosenParts = useMemo(() => parts.filter(part => groups.includes(part.id as typeof groups[number])), [parts, groups]);
   const entries = useMemo(() => raceEntries(ranked, { mode, split }), [ranked, mode, split]);
   const mixCut = mixTag ? cutTo(mixTag) : null;
   const mixMembership = mixTag ? membershipOf(mixTag) : null;
-  const bands = useMemo(() => model && view === 'mix' && mixTag ? mixBands(model, mixTag, groups, mode, mixCut, range) : null,
-    [model, view, mixTag, groups, mode, mixCut, range]);
+  const geometry = useMemo(() => prepared.geometry ? factoryModel(prepared.geometry) : model, [prepared.geometry, model]);
+  const bands = useMemo(() => geometry && view === 'mix' && mixTag ? mixBands(geometry, mixTag, groups, mode, mixCut, range) : null,
+    [geometry, view, mixTag, groups, mode, mixCut, range]);
   const mix = useMemo(() => {
     if (!model || !mixTag || !bands) return null;
     const at = isMember(mixMembership ?? undefined, moment) ? factoriesAt(model, mixTag, moment, groups, mode) : null;
@@ -112,14 +117,22 @@ export default function FactoriesWidget(props: WidgetProps) {
     return undefined;
   })();
 
+  const parityAnchor = useRef<HTMLDivElement>(null);
+  useParityRows(parityAnchor, () => {
+    const page = prepared.parity?.data;
+    const rows = page?.series.flatMap(series => series.runs.map(run => ({ tag: series.tag, run, reads: series.reads,
+      identities: series.identities, membership: series.membership }))) ?? [];
+    return { kind: 'chart', label: 'Factories exact values', complete: !!prepared.parity?.complete, total: rows.length, rows,
+      fields: page?.fields, groups: page?.groups, warnings: page?.warnings };
+  }, { prepare: prepared.parity?.prepare, ready: () => !!prepared.parity?.complete, error: () => prepared.error ?? null });
   const modeLabel = OPTIONS.find(field => field.key === 'count')!;
   const countName = modeLabel.kind === 'choice' ? modeLabel.choices.find(choice => choice.value === mode)?.label ?? mode : mode;
-  return <CountryPartsDrill {...props} widget={widget} runtime={runtime} active={active} onDiagnostics={onDiagnostics} track={track}
+  return <div ref={parityAnchor} className="parts-race"><CountryPartsDrill {...props} widget={widget} runtime={runtime} active={active} onDiagnostics={onDiagnostics} track={track}
     options={options} extent={extent} playhead={playhead} moment={moment} product="country-factories" params={drillParams}
     validate={validateFactoriesReply} decode={decodeDrill} numbers={factoryDrillNumbers} defaultTag={mixTag} pickTag={pickDrillTag} title="Factory types" measure={countName}
     warnings={warnings} state={state} resetKey={JSON.stringify([track?.source.id, track?.branch.id, mode, chosen, widget.countries])}
     main={(onPick, visible) => <CountryRaceView runtime={runtime} track={track} state={state} active={active && visible} options={options} view={view} extent={extent} playhead={playhead}
-    moment={moment} slots={slots} ranked={entries} lines={lines} parts={parts} mix={mix} segmentAt={segmentAt} countryTags={shownTags}
+    moment={moment} slots={slots} ranked={entries} lines={lines} parts={parts} mix={mix && {...mix,approximate:prepared.summaries.get(mix.tag)?.approximate}} segmentAt={segmentAt} countryTags={shownTags}
     label="Factories" empty={`No factories recorded on ${dayLabel(moment)}.`} formatValue={formatCount}
     labels={{ race: `Factories, ${countName}, ${dayLabel(moment)}`, lines: `Factories over time, ${countName}`,
       mix: name => `Factories of ${name} by type, ${countName}`, actions: 'Factory actions' }}
@@ -127,6 +140,8 @@ export default function FactoriesWidget(props: WidgetProps) {
     presentation={{ exact: false, held: false, lineColourHours: 'labels',
       tooltipKeep: groups.length > 1 ? 1 : 0, linePadding: CHART_LAYOUT.countryEndLabels, strongMixName: true,
       mixKeyHours: 'starts', raceEmptyState: false, resetTimeView: true }}
+    lineSummaries={prepared.summaries} onSummaryView={prepared.onSummaryView}
+    onReachHour={prepared.onReachHour} navigation={prepared.navigation} exactLineTags={prepared.exactLineTags}
     pickOwner={pickOwner} lineEmpty={{ icon: 'factory', message: 'No countries to draw. Choose countries in the widget settings.' }}
     mixEmpty={{ icon: 'factory', message: widget.countries.kind === 'group'
       ? `No country of this group was recorded on ${dayLabel(moment)}.` : 'Choose a country in the widget settings.',
@@ -135,5 +150,5 @@ export default function FactoriesWidget(props: WidgetProps) {
       if (!model) return null;
       const at = isMember(membershipOf(tag) ?? undefined, hour) ? factoriesAt(model, tag, hour, groups, mode) : null;
       return at ? factoryTooltips(model, name, at, dayLabel(hour), mode, colours) : null;
-    }} lineTooltip={(hour, _tags, labelAt, country) => [linesTooltip(hour, lines, labelAt, country, dayLabel(hour), countName, formatCount)]} onPick={onPick} />} />;
+    }} lineTooltip={(hour, _tags, labelAt, country) => [linesTooltip(hour, lines, labelAt, country, dayLabel(hour), countName, formatCount)]} onPick={onPick} />} /></div>;
 }

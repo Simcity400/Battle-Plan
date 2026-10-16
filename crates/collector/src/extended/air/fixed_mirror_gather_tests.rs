@@ -310,7 +310,7 @@ fn registration_backlink_acquisition_uses_only_prepared_storage() {
     );
     let spans = job.log.spans.clone();
     let payload = job.log.bytes.to_vec();
-    crate::allocation_failure_tests::with_allocations_denied(|| {
+    crate::test_support::with_allocations_denied(|| {
         copy_air_bases_pass(
             &mut job,
             &memory,

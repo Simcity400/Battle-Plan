@@ -45,7 +45,7 @@ fn status(division: u64, received: i64, remaining_grace: i64) -> DivisionStatusR
         ..Default::default()
     }
 }
-fn frame(hour: i32) -> DecodedFrame {
+pub(crate) fn frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, None);
     *frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(vec![
         DivisionRow {

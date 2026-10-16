@@ -11,16 +11,186 @@ publish = false
 license = "MIT"
 
 [workspace.dependencies]
+recorder-oracle-weather = { path = "crates/recorder-oracle-weather" }
+recorder-oracle-wars = { path = "crates/recorder-oracle-wars" }
+recorder-oracle-visibility = { path = "crates/recorder-oracle-visibility" }
+recorder-oracle-unit-combat-references = { path = "crates/recorder-oracle-unit-combat-references" }
+recorder-oracle-stability = { path = "crates/recorder-oracle-stability" }
+recorder-oracle-session = { path = "crates/recorder-oracle-session" }
+recorder-oracle-selected-routes = { path = "crates/recorder-oracle-selected-routes" }
+recorder-oracle-saved-event-targets = { path = "crates/recorder-oracle-saved-event-targets" }
+recorder-oracle-rocket-output = { path = "crates/recorder-oracle-rocket-output" }
+recorder-oracle-railway-guns = { path = "crates/recorder-oracle-railway-guns" }
+recorder-oracle-power-ledger = { path = "crates/recorder-oracle-power-ledger" }
+recorder-oracle-politics = { path = "crates/recorder-oracle-politics" }
+recorder-oracle-plans = { path = "crates/recorder-oracle-plans" }
+recorder-oracle-peace = { path = "crates/recorder-oracle-peace" }
+recorder-oracle-projects = { path = "crates/recorder-oracle-projects" }
+recorder-oracle-pass-inputs = { path = "crates/recorder-oracle-pass-inputs" }
+recorder-oracle-supply-trains = { path = "crates/recorder-oracle-supply-trains" }
+recorder-oracle-naval-result-sources = { path = "crates/recorder-oracle-naval-result-sources" }
+recorder-oracle-naval-missions = { path = "crates/recorder-oracle-naval-missions" }
+recorder-oracle-modifiers = { path = "crates/recorder-oracle-modifiers" }
+recorder-oracle-modifier-breakdowns = { path = "crates/recorder-oracle-modifier-breakdowns" }
+recorder-oracle-map-inputs = { path = "crates/recorder-oracle-map-inputs" }
+recorder-oracle-land = { path = "crates/recorder-oracle-land" }
+recorder-oracle-military = { path = "crates/recorder-oracle-military" }
+recorder-oracle-governance = { path = "crates/recorder-oracle-governance" }
+recorder-oracle-game-score = { path = "crates/recorder-oracle-game-score" }
+recorder-oracle-fog = { path = "crates/recorder-oracle-fog" }
+recorder-oracle-factories = { path = "crates/recorder-oracle-factories" }
+recorder-oracle-faction-theatres = { path = "crates/recorder-oracle-faction-theatres" }
+recorder-oracle-event-feed = { path = "crates/recorder-oracle-event-feed" }
+recorder-oracle-equipment-destruction = { path = "crates/recorder-oracle-equipment-destruction" }
+recorder-oracle-economy = { path = "crates/recorder-oracle-economy" }
+recorder-oracle-fuel-demand = { path = "crates/recorder-oracle-fuel-demand" }
+recorder-oracle-country-rosters = { path = "crates/recorder-oracle-country-rosters" }
+recorder-oracle-counters = { path = "crates/recorder-oracle-counters" }
+recorder-oracle-construction = { path = "crates/recorder-oracle-construction" }
+recorder-oracle-combat-log = { path = "crates/recorder-oracle-combat-log" }
+recorder-oracle-production = { path = "crates/recorder-oracle-production" }
+recorder-oracle-naval-history = { path = "crates/recorder-oracle-naval-history" }
+recorder-oracle-core = { path = "crates/recorder-oracle-core" }
+recorder-oracle-combat-details = { path = "crates/recorder-oracle-combat-details" }
+recorder-oracle-characters = { path = "crates/recorder-oracle-characters" }
+recorder-oracle-intel = { path = "crates/recorder-oracle-intel" }
+recorder-oracle-air-missions = { path = "crates/recorder-oracle-air-missions" }
+recorder-oracle-relations = { path = "crates/recorder-oracle-relations" }
+recorder-oracle-air-ledger = { path = "crates/recorder-oracle-air-ledger" }
+recorder-oracle-air = { path = "crates/recorder-oracle-air" }
+recorder-oracle-support = { path = "crates/recorder-oracle-support" }
+recorder-oracle = { path = "crates/recorder-oracle" }
+recorder-movement-oracle = { path = "crates/recorder-movement-oracle" }
+recorder-derived = { path = "crates/recorder-derived" }
+recorder-replay = { path = "crates/recorder-replay" }
+recorder-sizes = { path = "crates/recorder-sizes" }
+recorder-metrics = { path = "crates/recorder-metrics" }
+recorder-test-support = { path = "crates/recorder-test-support" }
+recorder-platform = { path = "crates/recorder-platform" }
+collector-politics = { path = "crates/collector-politics", default-features = false }
+collector-construction = { path = "crates/collector-construction", default-features = false }
+collector-railway-guns = { path = "crates/collector-railway-guns", default-features = false }
+collector-country-counters = { path = "crates/collector-country-counters", default-features = false }
+collector-naval-details = { path = "crates/collector-naval-details", default-features = false }
+collector-air-histories = { path = "crates/collector-air-histories", default-features = false }
+collector-air-relations = { path = "crates/collector-air-relations", default-features = false }
+collector-air-records = { path = "crates/collector-air-records", default-features = false }
+collector-air-sorties = { path = "crates/collector-air-sorties", default-features = false }
+collector-output = { path = "crates/collector-output", default-features = false }
+collector-new-divisions = { path = "crates/collector-new-divisions", default-features = false }
+collector-naval-counters = { path = "crates/collector-naval-counters", default-features = false }
+collector-division-parts = { path = "crates/collector-division-parts", default-features = false }
+collector-naval-movement = { path = "crates/collector-naval-movement", default-features = false }
+collector-army-icons = { path = "crates/collector-army-icons", default-features = false }
+collector-war-overview = { path = "crates/collector-war-overview", default-features = false }
+collector-map-tables = { path = "crates/collector-map-tables", default-features = false }
+collector-slow-tables = { path = "crates/collector-slow-tables", default-features = false }
+collector-ledger-tables = { path = "crates/collector-ledger-tables", default-features = false }
+collector-map-events = { path = "crates/collector-map-events", default-features = false }
+collector-fuel-awards = { path = "crates/collector-fuel-awards", default-features = false }
+collector-peace = { path = "crates/collector-peace", default-features = false }
+collector-experience-gains = { path = "crates/collector-experience-gains", default-features = false }
+collector-leaders = { path = "crates/collector-leaders", default-features = false }
+collector-production-daily = { path = "crates/collector-production-daily", default-features = false }
+collector-visibility = { path = "crates/collector-visibility", default-features = false }
+collector-session = { path = "crates/collector-session", default-features = false }
+collector-raids = { path = "crates/collector-raids", default-features = false }
+collector-combat-log = { path = "crates/collector-combat-log", default-features = false }
+collector-supply-trains = { path = "crates/collector-supply-trains", default-features = false }
+collector-projects = { path = "crates/collector-projects", default-features = false }
+collector-stability = { path = "crates/collector-stability", default-features = false }
+collector-model-inputs = { path = "crates/collector-model-inputs", default-features = false }
+collector-ship-models = { path = "crates/collector-ship-models", default-features = false }
+collector-advisors = { path = "crates/collector-advisors", default-features = false }
+collector-lexical = { path = "crates/collector-lexical", default-features = false }
+collector-weather = { path = "crates/collector-weather", default-features = false }
+collector-governance = { path = "crates/collector-governance", default-features = false }
+collector-intel = { path = "crates/collector-intel", default-features = false }
+collector-observers = { path = "crates/collector-observers", default-features = false }
+collector-extended-support = { path = "crates/collector-extended-support" }
+collector-production = { path = "crates/collector-production" }
+collector-economy = { path = "crates/collector-economy" }
+collector-combat = { path = "crates/collector-combat" }
+collector-projection = { path = "crates/collector-projection" }
+collector-raw = { path = "crates/collector-raw" }
+collector-memory = { path = "crates/collector-memory" }
+collector-logistics = { path = "crates/collector-logistics" }
+collector-lifetime = { path = "crates/collector-lifetime" }
+collector-metadata = { path = "crates/collector-metadata" }
+collector-snapshots = { path = "crates/collector-snapshots" }
+collector-certificates = { path = "crates/collector-certificates" }
+collector-timing = { path = "crates/collector-timing" }
+collector-hooks = { path = "crates/collector-hooks" }
+collector-primitives = { path = "crates/collector-primitives" }
+collector-status = { path = "crates/collector-status" }
+collector-test-support = { path = "crates/collector-test-support" }
 blake3 = "1"
 bytemuck = "1"
 dashboard = { path = "crates/dashboard" }
+dashboard-base = { path = "crates/dashboard-base" }
+dashboard-politics-ledger = { path = "crates/dashboard-politics-ledger" }
+dashboard-core = { path = "crates/dashboard-core" }
+dashboard-text = { path = "crates/dashboard-text" }
 engine = { path = "crates/engine" }
+engine-mutations = { path = "crates/engine-mutations" }
+engine-focus = { path = "crates/engine-focus" }
+engine-events = { path = "crates/engine-events" }
+engine-visibility = { path = "crates/engine-visibility" }
+engine-research = { path = "crates/engine-research" }
+engine-railways = { path = "crates/engine-railways" }
+engine-raid-inputs = { path = "crates/engine-raid-inputs" }
+engine-production = { path = "crates/engine-production" }
+engine-occupation = { path = "crates/engine-occupation" }
+engine-land-inputs = { path = "crates/engine-land-inputs" }
+engine-stability = { path = "crates/engine-stability" }
+engine-scripts = { path = "crates/engine-scripts" }
+engine-resources = { path = "crates/engine-resources" }
+engine-projects = { path = "crates/engine-projects" }
+engine-power-balance = { path = "crates/engine-power-balance" }
+engine-peace = { path = "crates/engine-peace" }
+engine-naval-history = { path = "crates/engine-naval-history" }
+engine-map-air = { path = "crates/engine-map-air" }
+engine-intelligence = { path = "crates/engine-intelligence" }
+engine-fuel = { path = "crates/engine-fuel" }
+engine-fixed-layout = { path = "crates/engine-fixed-layout" }
+engine-equipment = { path = "crates/engine-equipment" }
+engine-dlc = { path = "crates/engine-dlc" }
+engine-deployment = { path = "crates/engine-deployment" }
+engine-decisions = { path = "crates/engine-decisions" }
+engine-characters = { path = "crates/engine-characters" }
+engine-air-history = { path = "crates/engine-air-history" }
+engine-governance-tests = { path = "crates/engine-governance-tests" }
+engine-native = { path = "crates/engine-native" }
+engine-executable = { path = "crates/engine-executable" }
 installed-content = { path = "crates/installed-content" }
+installed-content-raids = { path = "crates/installed-content-raids" }
+installed-content-weather = { path = "crates/installed-content-weather" }
+installed-content-equipment-graphics = { path = "crates/installed-content-equipment-graphics" }
+installed-content-country-names = { path = "crates/installed-content-country-names" }
+installed-content-wargoals = { path = "crates/installed-content-wargoals" }
+installed-content-unit-path = { path = "crates/installed-content-unit-path" }
+installed-content-states = { path = "crates/installed-content-states" }
+installed-content-state-categories = { path = "crates/installed-content-state-categories" }
+installed-content-settings = { path = "crates/installed-content-settings" }
+installed-content-scripted-localisation = { path = "crates/installed-content-scripted-localisation" }
+installed-content-regions = { path = "crates/installed-content-regions" }
+installed-content-province-area = { path = "crates/installed-content-province-area" }
+installed-content-naval-path = { path = "crates/installed-content-naval-path" }
+installed-content-naval-combat-defines = { path = "crates/installed-content-naval-combat-defines" }
+installed-content-localisation = { path = "crates/installed-content-localisation" }
+installed-content-gfx = { path = "crates/installed-content-gfx" }
+installed-content-focus = { path = "crates/installed-content-focus" }
+installed-content-events = { path = "crates/installed-content-events" }
+installed-content-division-names = { path = "crates/installed-content-division-names" }
+installed-content-abilities = { path = "crates/installed-content-abilities" }
+installed-content-core = { path = "crates/installed-content-core" }
+installed-content-image = { path = "crates/installed-content-image" }
 installed-content-save = { path = "crates/installed-content-save" }
 mimalloc = { version = "0.1", default-features = false }
 png = "0.18"
 pollster = "0.4"
 replay = { path = "crates/replay" }
+replay-data = { path = "crates/replay-data" }
 rfd = "0.17"
 serde = "1"
 serde_json = "1"

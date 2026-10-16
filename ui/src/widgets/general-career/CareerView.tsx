@@ -1,5 +1,6 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
+import { useParityRows } from '../../dashboard/parityRows';
 import { useContextMenu } from '../../components/ContextMenu';
 import Timeline from '../../charts/timeline/Timeline';
 import { playbackDomain } from '../../charts/view';
@@ -61,12 +62,16 @@ export default function CareerView({ reference, hour, onPick, widget, runtime, a
         : lane.id === 'commands' && hovered?.value.kind === 2 ? data.navyCommandsMissing ? 'Fleet command history is incomplete.' : undefined : undefined };
     return fitTooltip([content], viewportHeight);
   }, [data, leader, labelAt, viewportHeight]);
+  const parityRoot = useRef<HTMLDivElement>(null);
+  useParityRows(parityRoot, () => ({ kind: 'chart', label: 'General career values', complete: !!data,
+    total: lanes.length, rows: [...lanes], hour, leader: leader ?? null, current: row ?? null }),
+    { ready: () => !!data, error: () => error ?? null });
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see a leader career." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading leader career…" />;
   if (!leader) return <WidgetState kind="unavailable" message="Career unavailable for this leader." />;
   const country = row?.value.owner ? labelAt(hour)(row.value.owner) : { name: 'Owner not recorded' };
-  return <div className="general-career">
+  return <div className="general-career" ref={parityRoot}>
     {row ? <div className="career-top"><LeaderIdentity art={portraits.at(row)} row={row} country={country} showCountry />
       <div className="career-stats">
         <span><strong>{row.fought}</strong>fought</span>

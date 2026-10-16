@@ -1,0 +1,610 @@
+//! A moment index and visible cells composed from the existing prepared suppliers.
+use super::*;
+use crate::products::parts_race_prepared::Family;
+use crate::{
+    metadata::check_cancel,
+    prepared::series::{self, Reader},
+};
+use serde_json::{Value, json};
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScoreboardPreparedParams {
+    pub selection: ScoreboardParams,
+    pub hour: i32,
+    pub sort: ScoreboardColumnKey,
+    pub descending: bool,
+    /// The index contains identities and the sorting column. Other cells are paged by tag.
+    pub index: bool,
+    pub bars: bool,
+}
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ScoreboardPreparedReply {
+    pub hour: i32,
+    pub data: ScoreboardReply,
+    /// Exact positive maxima over the selected table, independent of its mounted rows.
+    pub maxima: BTreeMap<ScoreboardColumnKey, String>,
+}
+#[derive(Clone, Default)]
+struct Cell {
+    amount: Option<i128>,
+    read_hour: Option<i32>,
+    at_least: bool,
+}
+impl Cell {
+    fn reply(
+        self,
+        key: ScoreboardColumnKey,
+        hour: i32,
+        with_reads: bool,
+    ) -> ScoreboardColumnSeries {
+        let recorded = self.read_hour.is_some() || !with_reads && self.amount.is_some();
+        ColumnData {
+            key,
+            runs: recorded
+                .then_some(ValueRun {
+                    first_hour: hour,
+                    last_hour: hour,
+                    amount: self.amount,
+                    starts_segment: false,
+                    at_least: self.at_least,
+                })
+                .into_iter()
+                .collect(),
+            read_runs: self
+                .read_hour
+                .filter(|_| with_reads)
+                .map(|read_hour| ScoreboardReadRun {
+                    first_hour: hour,
+                    last_hour: hour,
+                    read_hour,
+                    hourly: read_hour == hour,
+                })
+                .into_iter()
+                .collect(),
+        }
+        .reply()
+    }
+}
+
+struct Binding {
+    family: &'static str,
+    section: String,
+    field: Option<&'static str>,
+    coverage: Option<String>,
+}
+fn binding(column: ScoreboardColumnKey, branch: u64) -> io::Result<Binding> {
+    use ScoreboardColumnKey::*;
+    let (family, section, field, coverage) = if let Some(mode) = column.factory_count() {
+        let index = country_factories::prepared::channel(&country_factories::FactoryTop {
+            count: 1,
+            mode,
+            groups: Vec::new(),
+        });
+        (
+            "factories",
+            format!("factories-values-{branch}-{index}"),
+            Some(""),
+            None,
+        )
+    } else {
+        match column {
+            ArmySize => {
+                let index = army_size::channel(
+                    army_size::ArmyMeasure::Manpower,
+                    army_size::ArmyAttribution::Owner,
+                );
+                (
+                    "army",
+                    format!("army-values-{branch}-{index}"),
+                    None,
+                    Some(format!("army-coverage-{branch}")),
+                )
+            }
+            Planes => {
+                let selection = air_force::prepared::Air::selection(
+                    json!({"branchId":branch.to_string(),"tags":[],"top":null,"measure":"planes","ownership":"roster"}),
+                )?;
+                (
+                    "air",
+                    format!("air-values-{branch}-{}", selection.channel),
+                    Some(""),
+                    Some(format!("air-mixes-{branch}")),
+                )
+            }
+            Ships => {
+                let selection = navy::prepared::Navy::selection(
+                    json!({"branchId":branch.to_string(),"tags":[],"top":null,"measure":"ships","ownership":"roster","grouping":"class"}),
+                )?;
+                (
+                    "navy",
+                    format!("navy-values-{branch}-{}", selection.channel),
+                    Some(""),
+                    Some(format!("navy-mixes-{branch}-{}", selection.channel)),
+                )
+            }
+            PoliticalPower => (
+                "measure",
+                format!("measure-pp-{branch}"),
+                Some("politicalPower"),
+                None,
+            ),
+            CommandPower => (
+                "measure",
+                format!("measure-cp-{branch}"),
+                Some("commandPower"),
+                None,
+            ),
+            Stability => (
+                "stability",
+                format!("stability-{branch}"),
+                Some("stability"),
+                None,
+            ),
+            WarSupport => (
+                "stability",
+                format!("stability-{branch}"),
+                Some("warSupport"),
+                None,
+            ),
+            Nukes => (
+                "nukes",
+                format!("nukes-values-{branch}"),
+                Some(""),
+                Some(format!("nukes-mixes-{branch}")),
+            ),
+            Territory => (
+                "territory",
+                format!(
+                    "territory-values-{branch}-{}",
+                    crate::products::territory::prepared::NATIVE_OWNED_STATES
+                ),
+                None,
+                None,
+            ),
+            _ => return Err(crate::invalid("Missing prepared scoreboard supplier")),
+        }
+    };
+    Ok(Binding {
+        family,
+        section,
+        field,
+        coverage,
+    })
+}
+
+fn amounts(
+    reader: &mut Reader<'_>,
+    keys: &[Option<u64>],
+    hour: i32,
+) -> io::Result<Vec<Option<i128>>> {
+    let values = reader.values_at(
+        &keys
+            .iter()
+            .map(|key| key.unwrap_or(u64::MAX))
+            .collect::<Vec<_>>(),
+        hour,
+    )?;
+    Ok(values
+        .into_iter()
+        .zip(keys)
+        .map(|(value, key)| key.and(value))
+        .collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cells(
+    store: &store::Store,
+    source_key: &store::SourceKey,
+    branch: u64,
+    column: ScoreboardColumnKey,
+    rows: &[(String, CountryIdentityRun)],
+    hour: i32,
+    with_reads: bool,
+    warnings: &mut Vec<String>,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Vec<Cell>>> {
+    use ScoreboardColumnKey::*;
+    check_cancel(cancelled)?;
+    if rows.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    if column == Casualties {
+        return Ok(Some(vec![Cell::default(); rows.len()]));
+    }
+    if column == EquipmentProduced {
+        let selection = equipment_produced::ProducedParams {
+            branch_id: branch.to_string(),
+            tags: rows.iter().map(|row| row.0.clone()).collect(),
+            top: None,
+            measure: equipment_produced::ProducedMeasure::Total,
+            count: equipment_produced::ProducedCount::Units,
+            grouping: equipment_produced::ProducedGrouping::Variant,
+            included: Vec::new(),
+            refits: false,
+        };
+        let mut page = crate::prepared_production::select_at(
+            store,
+            source_key,
+            hour,
+            &selection,
+            0,
+            rows.len(),
+            cancelled,
+        )?;
+        if page.is_none() {
+            // A gap has no endpoint. The prepared catalogue still supplies the
+            // native recording-wide diagnostics without scanning or inventing cells.
+            let metadata = equipment_produced::ProducedParams {
+                tags: Vec::new(),
+                ..selection
+            };
+            page = crate::prepared_production::select_at(
+                store, source_key, hour, &metadata, 0, 0, cancelled,
+            )?;
+        }
+        let found: BTreeMap<_, _> = page
+            .into_iter()
+            .flat_map(|page| {
+                warnings.extend(page.warnings);
+                page.countries
+            })
+            .map(|country| {
+                (
+                    (country.tag.clone(), country.slot, country.country_id),
+                    country,
+                )
+            })
+            .collect();
+        return rows
+            .iter()
+            .map(|(tag, identity)| {
+                let country = found.get(&(tag.clone(), identity.slot, identity.country_id));
+                Ok(Cell {
+                    amount: country
+                        .and_then(|country| country.total.as_deref())
+                        .map(str::parse::<i128>)
+                        .transpose()
+                        .map_err(|error| crate::invalid(error.to_string()))?,
+                    read_hour: country
+                        .filter(|_| with_reads)
+                        .map(|country| country.read_hour),
+                    at_least: false,
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()
+            .map(Some);
+    }
+    if matches!(column, CasualtiesDealt | CasualtiesTaken) {
+        let Some((keys, metadata)) =
+            series::read_catalogue::<Value>(store, source_key, "casualty", branch)?
+        else {
+            return Ok(None);
+        };
+        casualty_warnings(metadata["incomplete"].as_bool().unwrap_or(false), warnings);
+        let selected: Vec<_> = rows
+            .iter()
+            .map(|(tag, identity)| {
+                war_casualties::prepared::actor_key(tag, (identity.slot, identity.country_id))
+                    .map(|name| keys.get(&name).copied())
+            })
+            .collect::<io::Result<_>>()?;
+        if with_reads {
+            let reached = war_casualties::prepared::read_measures(
+                store,
+                source_key,
+                branch,
+                &selected
+                    .iter()
+                    .map(|key| key.unwrap_or(u64::MAX))
+                    .collect::<Vec<_>>(),
+                hour,
+                cancelled,
+            )?;
+            return Ok(Some(
+                reached
+                    .into_iter()
+                    .zip(selected)
+                    .map(|(value, key)| match value.filter(|_| key.is_some()) {
+                        Some(value) => Cell {
+                            amount: Some(if column == CasualtiesDealt {
+                                value.dealt
+                            } else {
+                                value.taken
+                            }),
+                            read_hour: Some(value.read_hour),
+                            at_least: value.at_least,
+                        },
+                        None => Cell::default(),
+                    })
+                    .collect(),
+            ));
+        }
+        let channel = usize::from(column == CasualtiesTaken);
+        let mut values = Reader::new(
+            store,
+            source_key,
+            format!("casualty-values-{branch}-{channel}"),
+            cancelled,
+        )?;
+        return Ok(Some(
+            amounts(&mut values, &selected, hour)?
+                .into_iter()
+                .map(|amount| Cell {
+                    amount,
+                    read_hour: None,
+                    at_least: false,
+                })
+                .collect(),
+        ));
+    }
+    let binding = binding(column, branch)?;
+    let Some((keys, metadata)) =
+        series::read_catalogue::<Value>(store, source_key, binding.family, branch)?
+    else {
+        return Ok(None);
+    };
+    match column {
+        Planes => {
+            let scanned: air_force::ScannedAir = serde_json::from_value(metadata[0].clone())?;
+            crate::products::require_displayable_tags(&scanned.undisplayable_tags)?;
+        }
+        Ships => {
+            let scanned: navy::ScannedNavy = serde_json::from_value(metadata[0].clone())?;
+            crate::products::require_displayable_tags(&scanned.undisplayable_tags)?;
+        }
+        Factories | FactoriesBuilt | FactoriesTopbar => {
+            factory_warnings(&serde_json::from_value(metadata)?, warnings)
+        }
+        Nukes => nuke_warnings(&serde_json::from_value(metadata)?, warnings),
+        _ => {}
+    }
+    let selected: Vec<_> = rows
+        .iter()
+        .map(|(tag, _)| {
+            keys.get(
+                &binding
+                    .field
+                    .map_or_else(|| tag.clone(), |field| series::field_key(tag, field)),
+            )
+            .copied()
+        })
+        .collect();
+    let mut reader = Reader::new(store, source_key, binding.section, cancelled)?;
+    let values = amounts(&mut reader, &selected, hour)?;
+    let reads = if !with_reads {
+        vec![None; values.len()]
+    } else if matches!(column, Stability | WarSupport) {
+        amounts(
+            &mut reader,
+            &rows
+                .iter()
+                .map(|row| keys.get(&series::field_key(&row.0, "readHour")).copied())
+                .collect::<Vec<_>>(),
+            hour,
+        )?
+    } else if let Some(section) = binding.coverage {
+        amounts(
+            &mut Reader::new(store, source_key, section, cancelled)?,
+            &selected,
+            hour,
+        )?
+        .into_iter()
+        .map(|covered| covered.map(|_| i128::from(hour)))
+        .collect()
+    } else {
+        values
+            .iter()
+            .map(|value| value.map(|_| i128::from(hour)))
+            .collect()
+    };
+    Ok(Some(
+        values
+            .into_iter()
+            .zip(reads)
+            .map(|(amount, read)| Cell {
+                amount,
+                read_hour: read
+                    .filter(|_| !matches!(column, Stability | WarSupport) || amount.is_some())
+                    .map(|hour| hour as i32),
+                at_least: false,
+            })
+            .collect(),
+    ))
+}
+
+pub(crate) fn query(
+    source: &Source,
+    value: Value,
+    context: &LoadContext,
+    store: &store::Store,
+    source_key: &store::SourceKey,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    let params: ScoreboardPreparedParams = serde_json::from_value(value)?;
+    Scoreboard::validate(&params.selection).map_err(|error| crate::invalid(error.to_string()))?;
+    let branch: u64 = params
+        .selection
+        .branch_id
+        .parse::<u64>()
+        .map_err(|error| crate::invalid(error.to_string()))?;
+    if !source
+        .replay_ref()
+        .branches
+        .iter()
+        .any(|item| item.id == branch)
+    {
+        return Err(crate::invalid(
+            "Prepared scoreboard branch is not in this recording",
+        ));
+    }
+    let (mut reply, catalogue) = metadata(source, &params.selection.branch_id, context);
+    let mut maxima = BTreeMap::new();
+    if !params.selection.tags.is_empty() || params.selection.top.is_some() {
+        check_cancel(cancelled)?;
+        if params.sort.unavailable_reason().is_some() {
+            return Err(crate::invalid("Invalid scoreboard ranking column"));
+        }
+        if let Some(top) = &params.selection.top
+            && (top.sort != params.sort || top.descending != params.descending || !params.index)
+        {
+            return Err(crate::invalid("Invalid scoreboard index selection"));
+        }
+        let Some(history) = country_history::prepared_branch_histories(
+            source,
+            branch,
+            context.content.as_ref(),
+            cancelled,
+        )?
+        else {
+            return Ok(Value::Null);
+        };
+        let selected = (params.selection.top.is_none() && params.index)
+            .then(|| country_history::selected_identities(&history, &params.selection.tags));
+        let current = |(tag, country): (&String, &country_history::RecordedCountry)| {
+            let index = country
+                .identities
+                .partition_point(|identity| identity.first_hour <= params.hour)
+                .checked_sub(1)?;
+            let identity = &country.identities[index];
+            (identity.last_hour >= params.hour
+                && selected
+                    .as_ref()
+                    .is_none_or(|ids| ids.contains(&(identity.slot, identity.country_id))))
+            .then(|| (tag.clone(), identity.clone()))
+        };
+        let mut rows: Vec<_> = if params.index {
+            history.countries.iter().filter_map(current).collect()
+        } else {
+            params
+                .selection
+                .tags
+                .iter()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .filter_map(|tag| {
+                    history
+                        .countries
+                        .get(tag)
+                        .and_then(|country| current((tag, country)))
+                })
+                .collect()
+        };
+        let mut reached = BTreeMap::new();
+        if params.index {
+            let Some(sort) = cells(
+                store,
+                source_key,
+                branch,
+                params.sort,
+                &rows,
+                params.hour,
+                false,
+                &mut reply.warnings,
+                cancelled,
+            )?
+            else {
+                return Ok(Value::Null);
+            };
+            let mut ranked: Vec<_> = rows.into_iter().zip(sort).collect();
+            ranked.sort_by(|left, right| {
+                ranking::compare(left.1.amount, right.1.amount, params.descending)
+                    .then_with(|| left.0.0.cmp(&right.0.0))
+            });
+            if let Some(top) = &params.selection.top {
+                ranked.truncate(top.count as usize);
+            }
+            let (selected_rows, sort): (Vec<_>, Vec<_>) = ranked.into_iter().unzip();
+            rows = selected_rows;
+            // Sort values need only amounts; supplying metadata is fetched with visible cells.
+            reached.insert(params.sort, sort);
+            if params.bars {
+                for column in &params.selection.columns {
+                    let values = if *column == params.sort {
+                        reached.get(column).cloned()
+                    } else {
+                        cells(
+                            store,
+                            source_key,
+                            branch,
+                            *column,
+                            &rows,
+                            params.hour,
+                            false,
+                            &mut reply.warnings,
+                            cancelled,
+                        )?
+                    };
+                    let Some(values) = values else {
+                        return Ok(Value::Null);
+                    };
+                    maxima.insert(
+                        *column,
+                        values
+                            .iter()
+                            .filter_map(|cell| cell.amount)
+                            .max()
+                            .unwrap_or(0)
+                            .max(0)
+                            .to_string(),
+                    );
+                }
+            }
+        } else {
+            for column in &params.selection.columns {
+                let Some(values) = cells(
+                    store,
+                    source_key,
+                    branch,
+                    *column,
+                    &rows,
+                    params.hour,
+                    true,
+                    &mut reply.warnings,
+                    cancelled,
+                )?
+                else {
+                    return Ok(Value::Null);
+                };
+                reached.insert(*column, values);
+            }
+        }
+        let span = HourSpan {
+            first_hour: params.hour,
+            last_hour: params.hour,
+        };
+        reply.series = rows
+            .into_iter()
+            .enumerate()
+            .map(|(index, (tag, identity))| ScoreboardSeries {
+                tag,
+                segments: vec![span],
+                identities: vec![CountryIdentityRun {
+                    first_hour: params.hour,
+                    last_hour: params.hour,
+                    ..identity
+                }],
+                membership: params.selection.top.as_ref().map(|_| vec![span]),
+                columns: reached
+                    .iter()
+                    .map(|(&key, cells)| {
+                        cells[index].clone().reply(key, params.hour, !params.index)
+                    })
+                    .collect(),
+            })
+            .collect();
+        history_warnings(&history, &mut reply.warnings);
+    }
+    reply.warnings.sort();
+    reply.warnings.dedup();
+    if let Some(catalogue) = catalogue {
+        reply.warnings.extend(catalogue.refusal_lines());
+    }
+    serde_json::to_value(ScoreboardPreparedReply {
+        hour: params.hour,
+        data: checked_reply(reply)?,
+        maxima,
+    })
+    .map_err(io::Error::from)
+}

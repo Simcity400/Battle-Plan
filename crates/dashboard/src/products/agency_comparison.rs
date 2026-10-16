@@ -19,16 +19,15 @@ use super::{
 use crate::{
     Source,
     catalogue::plain_text,
-    metadata::{IdentityTrack, TaggedCountry, link_slot, tagged_countries, validate_campaign},
+    metadata::{IdentityTrack, link_slot},
 };
 use replay::{
     container::Replay,
-    frame::FrameDecoder,
     rows::{IntelligenceAgencyRow, OperativeMembershipRow, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{
         Arc,
@@ -37,8 +36,23 @@ use std::{
 };
 use ts_rs::TS;
 
+#[cfg(test)]
+use crate::metadata::validate_campaign;
+#[cfg(test)]
+use replay::frame::FrameDecoder;
+#[cfg(test)]
+use std::collections::VecDeque;
+
+pub(crate) mod prepared;
+
+#[cfg(test)]
+mod oracle;
+#[cfg(test)]
+use oracle::scan;
+
 pub struct AgencyComparison;
 
+#[cfg(test)]
 const CACHED_BRANCHES: usize = 2;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -106,7 +120,7 @@ pub struct AgencyUpgrades {
 
 /// [`AgencyUpgrades`] as scanned. A run whose acquired list did not change
 /// shares the previous run's items instead of copying them.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct ScannedUpgrades {
     read_hour: Option<i32>,
     unavailable: Option<String>,
@@ -264,7 +278,7 @@ pub struct AgencyComparisonReply {
 /// Only agency-screen values participate in run identity. Daily updates change
 /// work progress and recruitment admission independently; neither appears in
 /// the active/maximum display and neither is stored here.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct AgencyProjection {
     created: bool,
     name: Vec<u8>,
@@ -304,7 +318,7 @@ impl AgencyProjection {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct RawEntry {
     first_hour: i32,
     last_hour: i32,
@@ -312,7 +326,7 @@ struct RawEntry {
     row: AgencyProjection,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct Track {
     entries: Vec<RawEntry>,
     segments: Vec<HourSpan>,
@@ -322,16 +336,17 @@ struct Track {
     rosters: Vec<AgencyRosterRun>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 struct HeldRoster {
     hour: i32,
     read_hour: i32,
     count: u32,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct ScannedAgencies {
     tracks: BTreeMap<String, Track>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     held_rosters: HashMap<Identity, HeldRoster>,
     available: bool,
     observed: Vec<HourSpan>,
@@ -339,11 +354,30 @@ struct ScannedAgencies {
     unresolved_rows: usize,
     untext_tags: usize,
     unsupported_rosters: BTreeMap<u8, usize>,
-    warnings: BTreeMap<&'static str, usize>,
+    warnings: BTreeMap<String, usize>,
+    #[cfg(test)]
+    #[serde(skip)]
+    native_countries: super::operative_rows::CountryInputs,
+    #[serde(skip)]
+    agency_slots: Option<(HashMap<u32, Option<usize>>, usize)>,
+    #[serde(skip)]
+    acquired: Option<(HashMap<u32, ScannedUpgrades>, ScannedUpgrades)>,
+}
+
+impl From<AgencyUpgrades> for ScannedUpgrades {
+    fn from(read: AgencyUpgrades) -> Self {
+        Self {
+            read_hour: read.read_hour,
+            unavailable: read.unavailable,
+            nonnegative_level_sum: read.nonnegative_level_sum,
+            items: read.items.into(),
+        }
+    }
 }
 
 impl ScannedAgencies {
-    fn observe_upgrades(&mut self, hour: i32, tag: &str, upgrades: AgencyUpgrades) {
+    fn observe_upgrades(&mut self, hour: i32, tag: &str, upgrades: impl Into<ScannedUpgrades>) {
+        let upgrades = upgrades.into();
         let Some(track) = self.tracks.get_mut(tag) else {
             return;
         };
@@ -357,7 +391,8 @@ impl ScannedAgencies {
         if entry.row.upgrades.as_ref().is_some_and(|previous| {
             previous.unavailable == upgrades.unavailable
                 && previous.nonnegative_level_sum == upgrades.nonnegative_level_sum
-                && *previous.items == upgrades.items
+                && (Arc::ptr_eq(&previous.items, &upgrades.items)
+                    || previous.items == upgrades.items)
         }) {
             return;
         }
@@ -368,8 +403,13 @@ impl ScannedAgencies {
             .as_ref()
             .or_else(|| earlier.last()?.row.upgrades.as_ref())
         {
-            Some(previous) if *previous.items == upgrades.items => Arc::clone(&previous.items),
-            _ => upgrades.items.into(),
+            Some(previous)
+                if Arc::ptr_eq(&previous.items, &upgrades.items)
+                    || previous.items == upgrades.items =>
+            {
+                Arc::clone(&previous.items)
+            }
+            _ => upgrades.items,
         };
         let upgrades = ScannedUpgrades {
             read_hour: upgrades.read_hour,
@@ -510,165 +550,182 @@ fn roster_counts(
     (counts, unresolved, unsupported)
 }
 
-fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<ScannedAgencies> {
-    let selected = [
-        TableId::Campaign,
-        TableId::Countries,
-        TableId::CountryLinks,
-        TableId::IntelligenceAgencies,
-        TableId::AgencyUpgradeLevels,
-        TableId::LexicalTokens,
-        TableId::OperativeMemberships,
-    ];
-    let mut scanned = ScannedAgencies::default();
-    crate::blocks::scan_blocks(
-        replay,
-        replay.index.iter().filter(|block| block.branch == branch),
-        &selected,
-        cancelled,
-        |blocks| {
-            for (_, frames) in blocks {
-                check_cancelled(cancelled)?;
-                let mut decoder = FrameDecoder::for_tables(&selected);
-                let Ok(frames) = frames else {
-                    *scanned
-                        .warnings
-                        .entry("Unread replay block; agency history has a gap")
-                        .or_default() += 1;
-                    continue;
-                };
-                for frame in frames {
-                    check_cancelled(cancelled)?;
-                    let Ok(decoded) = decoder.advance(&frame) else {
-                        *scanned
-                            .warnings
-                            .entry("Unread replay frame; agency history has a gap")
-                            .or_default() += 1;
-                        break;
-                    };
-                    if validate_campaign(decoded, replay).is_err() {
-                        *scanned
-                            .warnings
-                            .entry("Replay campaign identity mismatch; agency history has a gap")
-                            .or_default() += 1;
-                        break;
-                    }
-                    let roster_read = membership_read(decoded);
-                    let memberships = decoded.complete::<tables::OperativeMemberships>().ok();
-                    if roster_read && memberships.is_some() {
-                        scanned.note_roster_read(frame.hour);
-                    }
-                    let (Ok(countries), Ok(links)) = (
-                        decoded.complete::<tables::Countries>(),
-                        decoded.complete::<tables::CountryLinks>(),
-                    ) else {
-                        continue;
-                    };
-                    scanned
-                        .held_rosters
-                        .retain(|_, held| held.hour.checked_add(1) == Some(frame.hour));
-                    let (country_slots, _) =
-                        super::operative_rows::country_rows_partial(countries, links);
-                    let mut aliases = HashMap::new();
-                    for country in countries {
-                        *aliases.entry(country.tag.as_slice()).or_insert(0usize) += 1;
-                    }
-                    let rows = decoded.complete::<tables::IntelligenceAgencies>().ok();
-                    scanned.available |= rows.is_some();
-                    if rows.is_some() {
-                        match scanned.observed.last_mut() {
-                            Some(span) if span.last_hour.checked_add(1) == Some(frame.hour) => {
-                                span.last_hour = frame.hour
-                            }
-                            _ => scanned.observed.push(HourSpan {
-                                first_hour: frame.hour,
-                                last_hour: frame.hour,
-                            }),
-                        }
-                    }
-                    let by_slot =
-                        unique_by_slot(rows.into_iter().flatten(), links, |row| row.country);
-                    scanned.unresolved_rows +=
-                        by_slot.unresolved_rows + by_slot.duplicate_rows + by_slot.ambiguous_slots;
-                    let roster = if roster_read {
-                        memberships.map(|rows| roster_counts(rows, links))
-                    } else {
-                        None
-                    };
-                    if let Some((_, unresolved, unsupported)) = &roster {
-                        scanned.unresolved_rows += unresolved;
-                        for (kind, count) in unsupported {
-                            *scanned.unsupported_rosters.entry(*kind).or_default() += count;
-                        }
-                    }
-                    let mut acquired: HashMap<u32, Vec<&replay::rows::AgencyUpgradeLevelRow>> =
-                        HashMap::new();
-                    let mut acquired_unavailable = decoded
-                        .complete::<tables::AgencyUpgradeLevels>()
-                        .err()
-                        .map(|error| {
-                            format!("Acquired agency levels incomplete or unavailable: {error:?}")
-                        });
-                    for row in super::recorded_rows::<tables::AgencyUpgradeLevels>(decoded)? {
-                        if let Some(slot) = link_slot(links, row.country) {
-                            acquired.entry(slot).or_default().push(row);
-                        } else {
-                            acquired_unavailable.get_or_insert_with(|| {
-                                "Acquired agency entry has an unresolved country link".into()
-                            });
-                        }
-                    }
-                    for (tag, lookup) in tagged_countries(countries, links) {
-                        let TaggedCountry::Found(country, slot) = lookup else {
-                            continue;
-                        };
-                        let Ok(tag) = std::str::from_utf8(tag) else {
-                            scanned.untext_tags += 1;
-                            continue;
-                        };
-                        let known_identity = aliases.get(tag.as_bytes()) == Some(&1)
-                            && country_slots
-                                .get(&slot)
-                                .is_some_and(|row| row.id == country.id);
-                        let count = if !known_identity || memberships.is_none() {
-                            Some(None)
-                        } else if let Some((counts, unresolved, _)) = &roster {
-                            // A complete world roster proves an empty active list, except
-                            // when a nonempty raw country reference could name this slot.
-                            Some(
-                                (*unresolved == 0).then(|| counts.get(&slot).copied().unwrap_or(0)),
-                            )
-                        } else {
-                            None
-                        };
-                        scanned.observe(
-                            frame.hour,
-                            tag,
-                            (slot, country.id),
-                            by_slot.rows.get(&slot).copied().flatten(),
-                            count,
-                        );
-                        if TableId::AgencyUpgradeLevels
-                            .last_change()
-                            .present(replay.format.version())
-                        {
-                            scanned.observe_upgrades(
-                                frame.hour,
-                                tag,
-                                acquired_read(
-                                    decoded,
-                                    acquired.get(&slot).map(Vec::as_slice).unwrap_or_default(),
-                                    acquired_unavailable.clone(),
-                                ),
-                            );
-                        }
-                    }
+impl ScannedAgencies {
+    #[allow(clippy::type_complexity)]
+    fn observe_frame_countries(
+        &mut self,
+        frame: &replay::frame::DecodedFrame,
+        replay: &Replay,
+        inputs: &super::operative_rows::CountryInputs,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+    ) -> io::Result<(BTreeMap<String, Identity>, usize, BTreeMap<u8, usize>)> {
+        let mut active = BTreeMap::new();
+        let mut roster_unresolved = 0;
+        let mut roster_unsupported = BTreeMap::new();
+        let roster_read = membership_read(frame);
+        let memberships = frame.complete::<tables::OperativeMemberships>().ok();
+        if roster_read && memberships.is_some() {
+            self.note_roster_read(frame.hour);
+        }
+        let Some((countries, links)) = inputs.complete() else {
+            return Ok((active, roster_unresolved, roster_unsupported));
+        };
+        self.held_rosters
+            .retain(|_, held| held.hour.checked_add(1) == Some(frame.hour));
+        let rows = frame.complete::<tables::IntelligenceAgencies>().ok();
+        self.available |= rows.is_some();
+        if rows.is_some() {
+            match self.observed.last_mut() {
+                Some(span) if span.last_hour.checked_add(1) == Some(frame.hour) => {
+                    span.last_hour = frame.hour
+                }
+                _ => self.observed.push(HourSpan {
+                    first_hour: frame.hour,
+                    last_hour: frame.hour,
+                }),
+            }
+        }
+        if self.agency_slots.is_none()
+            || inputs.changed
+            || changes
+                .is_none_or(|changes| changes.rows_changed[TableId::IntelligenceAgencies.index()])
+        {
+            #[cfg(test)]
+            super::intelligence_prepared::work(|work| {
+                work.row_visits += rows.map_or(0, |rows| rows.len())
+            });
+            let by_slot = unique_by_slot(rows.into_iter().flatten(), links, |row| row.country);
+            let slots = by_slot
+                .rows
+                .into_iter()
+                .map(|(slot, row)| {
+                    (
+                        slot,
+                        row.map(|row| {
+                            rows.expect("complete agency rows")
+                                .binary_search_by_key(&row.country, |row| row.country)
+                                .expect("agency native row key")
+                        }),
+                    )
+                })
+                .collect();
+            self.agency_slots = Some((
+                slots,
+                by_slot.unresolved_rows + by_slot.duplicate_rows + by_slot.ambiguous_slots,
+            ));
+        }
+        self.unresolved_rows += self.agency_slots.as_ref().expect("agency current slots").1;
+        let roster = if roster_read {
+            #[cfg(test)]
+            super::intelligence_prepared::work(|work| {
+                work.row_visits += memberships.map_or(0, |rows| rows.len())
+            });
+            memberships.map(|rows| roster_counts(rows, links))
+        } else {
+            None
+        };
+        if let Some((_, unresolved, unsupported)) = &roster {
+            self.unresolved_rows += unresolved;
+            roster_unresolved = *unresolved;
+            roster_unsupported = unsupported.clone();
+            for (kind, count) in unsupported {
+                *self.unsupported_rosters.entry(*kind).or_default() += count;
+            }
+        }
+        if self.acquired.is_none()
+            || inputs.changed
+            || changes.is_none_or(|changes| {
+                [TableId::AgencyUpgradeLevels, TableId::LexicalTokens]
+                    .iter()
+                    .any(|table| changes.rows_changed[table.index()])
+            })
+        {
+            let mut acquired: HashMap<u32, Vec<&replay::rows::AgencyUpgradeLevelRow>> =
+                HashMap::new();
+            let mut acquired_unavailable = frame
+                .complete::<tables::AgencyUpgradeLevels>()
+                .err()
+                .map(|error| {
+                    format!("Acquired agency levels incomplete or unavailable: {error:?}")
+                });
+            let levels = super::recorded_rows::<tables::AgencyUpgradeLevels>(frame)?;
+            #[cfg(test)]
+            super::intelligence_prepared::work(|work| work.row_visits += levels.len());
+            for row in levels {
+                if let Some(slot) = link_slot(links, row.country) {
+                    acquired.entry(slot).or_default().push(row);
+                } else {
+                    acquired_unavailable.get_or_insert_with(|| {
+                        "Acquired agency entry has an unresolved country link".into()
+                    });
                 }
             }
-            Ok(())
-        },
-    )?;
-    Ok(scanned)
+            let project = |rows: &[&replay::rows::AgencyUpgradeLevelRow]| {
+                let read = acquired_read(frame, rows, acquired_unavailable.clone());
+                ScannedUpgrades {
+                    read_hour: read.read_hour,
+                    unavailable: read.unavailable,
+                    nonnegative_level_sum: read.nonnegative_level_sum,
+                    items: read.items.into(),
+                }
+            };
+            let default = project(&[]);
+            let acquired = acquired
+                .into_iter()
+                .map(|(slot, rows)| (slot, project(&rows)))
+                .collect();
+            self.acquired = Some((acquired, default));
+        }
+        for (tag, lookup) in &inputs.tagged {
+            let Some((index, slot)) = *lookup else {
+                continue;
+            };
+            let country = &countries[index];
+            let Ok(tag) = std::str::from_utf8(tag) else {
+                self.untext_tags += 1;
+                continue;
+            };
+            let known_identity = inputs.aliases.get(tag.as_bytes()) == Some(&1)
+                && inputs
+                    .slots
+                    .get(&slot)
+                    .is_some_and(|row| row.id == country.id);
+            let count = if !known_identity || memberships.is_none() {
+                Some(None)
+            } else if let Some((counts, unresolved, _)) = &roster {
+                // A complete world roster proves an empty active list, except
+                // when a nonempty raw country reference could name this slot.
+                Some((*unresolved == 0).then(|| counts.get(&slot).copied().unwrap_or(0)))
+            } else {
+                None
+            };
+            active.insert(tag.to_owned(), (slot, country.id));
+            self.observe(
+                frame.hour,
+                tag,
+                (slot, country.id),
+                self.agency_slots
+                    .as_ref()
+                    .expect("agency current slots")
+                    .0
+                    .get(&slot)
+                    .copied()
+                    .flatten()
+                    .map(|index| &rows.expect("complete agency rows")[index]),
+                count,
+            );
+            if TableId::AgencyUpgradeLevels
+                .last_change()
+                .present(replay.format.version())
+            {
+                let (acquired, default) = self.acquired.as_ref().expect("current acquired levels");
+                let mut read = acquired.get(&slot).unwrap_or(default).clone();
+                read.read_hour = Some(frame.hour);
+                self.observe_upgrades(frame.hour, tag, read);
+            }
+        }
+        Ok((active, roster_unresolved, roster_unsupported))
+    }
 }
 
 fn check_cancelled(cancelled: &AtomicBool) -> io::Result<()> {
@@ -722,11 +779,13 @@ fn rank(entry: &RawEntry, field: AgencyRankField) -> i64 {
     }
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct Scans {
     entries: VecDeque<(u64, Arc<ScannedAgencies>)>,
 }
 
+#[cfg(test)]
 fn scanned_branch(
     source: &Source,
     branch: u64,
@@ -916,6 +975,140 @@ fn clip_runs<T: Clone>(
     Ok(clipped)
 }
 
+fn reply(
+    source: &Source,
+    params: &AgencyComparisonParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+    scanned: &ScannedAgencies,
+    history: Option<&RecordedHistories>,
+) -> io::Result<AgencyComparisonReply> {
+    let mut projection = params.clone();
+    if let Some(history) = &history {
+        projection.tags = country_history::selected_aliases(history, &params.tags);
+        if projection.tags.is_empty() {
+            projection.tags.clone_from(&params.tags);
+        }
+    }
+    let mut warnings: Vec<_> = scanned
+        .warnings
+        .iter()
+        .map(|(warning, count)| format!("{warning} ({count})"))
+        .collect();
+    let content = match context
+        .content()
+        .and_then(|options| super::intelligence_content::agency_content(source, options))
+    {
+        Ok(content) => Some(content),
+        Err(error) => {
+            warnings.push(format!("Agency localisation is unavailable: {error}"));
+            None
+        }
+    };
+    if scanned.unresolved_rows > 0 {
+        warnings.push(format!("{} agency or operative membership rows do not name one resolved country; their values are unknown.", scanned.unresolved_rows));
+    }
+    if scanned.untext_tags > 0 {
+        warnings.push(format!(
+            "{} country-hours have non-text tags; they cannot be named.",
+            scanned.untext_tags
+        ));
+    }
+    for (kind, count) in &scanned.unsupported_rosters {
+        warnings.push(format!("{count} operative memberships use unsupported roster_kind {kind}; their roster counts are unknown."));
+    }
+    let mut series = project_series(
+        scanned,
+        &projection,
+        history.map(|history| (history, params.tags.as_slice())),
+        || {
+            content
+                .as_ref()
+                .and_then(|content| content.default_agency_name())
+        },
+        |raw| {
+            let text = content
+                .as_ref()
+                .and_then(|content| content.defense_text(raw));
+            let value = content
+                .as_ref()
+                .zip(text.as_deref())
+                .and_then(|(content, text)| content.defense_value(text));
+            (text, value)
+        },
+        cancelled,
+    )?;
+    for item in series
+        .iter_mut()
+        .flat_map(|series| &mut series.entries)
+        .flat_map(|entry| &mut entry.value.upgrades.items)
+    {
+        let name = match (
+            content.as_ref(),
+            item.branch_token.as_deref(),
+            item.token.as_deref(),
+        ) {
+            (_, _, _) if item.identity_refusal.is_some() => {
+                Err("Acquired upgrade identity refused".into())
+            }
+            (Some(content), Some(branch), Some(token)) => content.upgrade_name(branch, token),
+            (None, _, _) => Err("Acquired upgrade content unavailable".into()),
+            _ => Err("Acquired upgrade branch or definition lexical name not recorded".into()),
+        };
+        match name {
+            Ok(name) => item.name = Some(name),
+            Err(reason) => item.content_reason = Some(reason),
+        }
+    }
+    let mut upgrade_refusals = BTreeMap::new();
+    for item in series
+        .iter()
+        .flat_map(|series| &series.entries)
+        .flat_map(|entry| &entry.value.upgrades.items)
+    {
+        for reason in [&item.identity_refusal, &item.content_reason]
+            .into_iter()
+            .flatten()
+        {
+            *upgrade_refusals.entry(reason).or_insert(0_usize) += 1;
+        }
+    }
+    warnings.extend(
+        upgrade_refusals
+            .into_iter()
+            .map(|(reason, count)| format!("{reason} ({count} acquired-upgrade observations).")),
+    );
+    let unnamed = series
+        .iter()
+        .flat_map(|series| &series.entries)
+        .filter(|entry| entry.value.created && entry.value.name.is_none())
+        .count();
+    if unnamed > 0 {
+        warnings.push(format!("{unnamed} agency name runs have unsupported non-text bytes or controls; their names are unknown."));
+    }
+    let defense_label = content.as_ref().and_then(|content| content.defense_label());
+    if let Some(content) = content {
+        warnings.extend(content.warnings.iter().cloned());
+        warnings.extend(content.agency_refusal_lines());
+    }
+    let reply = AgencyComparisonReply {
+        branch_id: params.branch_id.clone(),
+        available: scanned.available,
+        observed: scanned.observed.clone(),
+        operative_read_hours: scanned.operative_read_hours.clone(),
+        series,
+        defense_label,
+        upgrades_unrecorded: (!TableId::AgencyUpgradeLevels
+            .last_change()
+            .present(source.replay().format.version()))
+        .then(upgrades_unrecorded)
+        .flatten(),
+        warnings,
+    };
+    measured(&reply)?;
+    Ok(reply)
+}
+
 impl Product for AgencyComparison {
     const KEY: &'static str = "agency-comparison";
     const CONTENT_DEPENDENT: bool = true;
@@ -954,6 +1147,7 @@ impl Product for AgencyComparison {
         Ok(())
     }
 
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -964,133 +1158,15 @@ impl Product for AgencyComparison {
         let history = (!params.tags.is_empty())
             .then(|| country_history::branch_histories(source, branch, false, &[], cancelled))
             .transpose()?;
-        let mut projection = params.clone();
-        if let Some(history) = &history {
-            projection.tags = country_history::selected_aliases(history, &params.tags);
-            if projection.tags.is_empty() {
-                projection.tags.clone_from(&params.tags);
-            }
-        }
         let scanned = scanned_branch(source, branch, cancelled)?;
-        let mut warnings: Vec<_> = scanned
-            .warnings
-            .iter()
-            .map(|(warning, count)| format!("{warning} ({count})"))
-            .collect();
-        let content = match context
-            .content()
-            .and_then(|options| super::intelligence_content::agency_content(source, options))
-        {
-            Ok(content) => Some(content),
-            Err(error) => {
-                warnings.push(format!("Agency localisation is unavailable: {error}"));
-                None
-            }
-        };
-        if scanned.unresolved_rows > 0 {
-            warnings.push(format!("{} agency or operative membership rows do not name one resolved country; their values are unknown.", scanned.unresolved_rows));
-        }
-        if scanned.untext_tags > 0 {
-            warnings.push(format!(
-                "{} country-hours have non-text tags; they cannot be named.",
-                scanned.untext_tags
-            ));
-        }
-        for (kind, count) in &scanned.unsupported_rosters {
-            warnings.push(format!("{count} operative memberships use unsupported roster_kind {kind}; their roster counts are unknown."));
-        }
-        let mut series = project_series(
-            &scanned,
-            &projection,
-            history
-                .as_deref()
-                .map(|history| (history, params.tags.as_slice())),
-            || {
-                content
-                    .as_ref()
-                    .and_then(|content| content.default_agency_name())
-            },
-            |raw| {
-                let text = content
-                    .as_ref()
-                    .and_then(|content| content.defense_text(raw));
-                let value = content
-                    .as_ref()
-                    .zip(text.as_deref())
-                    .and_then(|(content, text)| content.defense_value(text));
-                (text, value)
-            },
+        reply(
+            source,
+            params,
+            context,
             cancelled,
-        )?;
-        for item in series
-            .iter_mut()
-            .flat_map(|series| &mut series.entries)
-            .flat_map(|entry| &mut entry.value.upgrades.items)
-        {
-            let name = match (
-                content.as_ref(),
-                item.branch_token.as_deref(),
-                item.token.as_deref(),
-            ) {
-                (_, _, _) if item.identity_refusal.is_some() => {
-                    Err("Acquired upgrade identity refused".into())
-                }
-                (Some(content), Some(branch), Some(token)) => content.upgrade_name(branch, token),
-                (None, _, _) => Err("Acquired upgrade content unavailable".into()),
-                _ => Err("Acquired upgrade branch or definition lexical name not recorded".into()),
-            };
-            match name {
-                Ok(name) => item.name = Some(name),
-                Err(reason) => item.content_reason = Some(reason),
-            }
-        }
-        let mut upgrade_refusals = BTreeMap::new();
-        for item in series
-            .iter()
-            .flat_map(|series| &series.entries)
-            .flat_map(|entry| &entry.value.upgrades.items)
-        {
-            for reason in [&item.identity_refusal, &item.content_reason]
-                .into_iter()
-                .flatten()
-            {
-                *upgrade_refusals.entry(reason).or_insert(0_usize) += 1;
-            }
-        }
-        warnings.extend(
-            upgrade_refusals.into_iter().map(|(reason, count)| {
-                format!("{reason} ({count} acquired-upgrade observations).")
-            }),
-        );
-        let unnamed = series
-            .iter()
-            .flat_map(|series| &series.entries)
-            .filter(|entry| entry.value.created && entry.value.name.is_none())
-            .count();
-        if unnamed > 0 {
-            warnings.push(format!("{unnamed} agency name runs have unsupported non-text bytes or controls; their names are unknown."));
-        }
-        let defense_label = content.as_ref().and_then(|content| content.defense_label());
-        if let Some(content) = content {
-            warnings.extend(content.warnings.iter().cloned());
-            warnings.extend(content.agency_refusal_lines());
-        }
-        let reply = AgencyComparisonReply {
-            branch_id: params.branch_id.clone(),
-            available: scanned.available,
-            observed: scanned.observed.clone(),
-            operative_read_hours: scanned.operative_read_hours.clone(),
-            series,
-            defense_label,
-            upgrades_unrecorded: (!TableId::AgencyUpgradeLevels
-                .last_change()
-                .present(source.replay().format.version()))
-            .then(upgrades_unrecorded)
-            .flatten(),
-            warnings,
-        };
-        measured(&reply)?;
-        Ok(reply)
+            &scanned,
+            history.as_deref(),
+        )
     }
 }
 
@@ -1456,6 +1532,26 @@ mod tests {
         let malformed =
             AgencyComparison::load(&bad, &agency_params, &bad_context, &cancelled).unwrap();
         assert_eq!(serde_json::to_value(&malformed).unwrap(), expected);
+        let agency = super::super::intelligence_content::agency_content(
+            &bad,
+            bad_context.content().unwrap(),
+        )
+        .unwrap();
+        assert!(agency.definitions.operations.is_empty());
+        assert_eq!(
+            agency
+                .catalogue
+                .content
+                .layers
+                .derived::<crate::catalogue::CachedResult<installed_content::intelligence::Intelligence>>()
+                .loads(),
+            0,
+            "agency comparison must not read operation definitions"
+        );
+        // The explicit operation read below classifies on_start effects through
+        // the installation's effect registry; agency comparison above needs none.
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let content = intelligence_content(&bad, bad_context.content().unwrap()).unwrap();
         for kind in [
             installed_content::DiagnosticKind::Misread,
@@ -1487,7 +1583,9 @@ mod tests {
         }
         // Keep the inventory, but make a file unreadable and replace the
         // catalogue so a cached full intelligence read cannot mask an I/O error.
-        let layers = content.catalogue.content.layers.clone();
+        // A cloned resolved stack shares its immutable derived databases. Bind a
+        // fresh inventory before removing the file so the new read reaches I/O.
+        let layers = installed_content::ResolvedLayers::from_folders(&[(&bad_folder.0, &[][..])]).unwrap();
         std::fs::remove_file(bad_folder.0.join("common/operations/unreadable.txt")).unwrap();
         let catalogue = crate::catalogue::tests::layers_catalogue(layers);
         crate::catalogue::set_test_catalogue(
@@ -1498,6 +1596,12 @@ mod tests {
         let unreadable =
             AgencyComparison::load(&bad, &agency_params, &bad_context, &cancelled).unwrap();
         assert_eq!(serde_json::to_value(&unreadable).unwrap(), expected);
+        let rebound_agency = super::super::intelligence_content::agency_content(
+            &bad,
+            bad_context.content().unwrap(),
+        )
+        .unwrap();
+        assert!(!Arc::ptr_eq(&agency, &rebound_agency));
         assert!(intelligence_content(&bad, bad_context.content().unwrap()).is_err());
     }
 

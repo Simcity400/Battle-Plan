@@ -368,7 +368,7 @@ impl Product for CountryFuelAwardHistory {
     fn load(
         source: &Source,
         params: &Self::Params,
-        _context: &LoadContext,
+        context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
         let branch = params
@@ -394,7 +394,7 @@ impl Product for CountryFuelAwardHistory {
                 "Fuel recipient key is absent from the selected supplying read",
             ));
         }
-        let summary = scanned(source, branch, cancelled)?;
+        let summary = prepared::window_summary(source, branch, params.window, context, cancelled)?;
         let aliases: Vec<_> = summary
             .actor_tags(&params.country, params.country_instance)
             .collect();
@@ -411,10 +411,13 @@ impl Product for CountryFuelAwardHistory {
             ..Default::default()
         };
         country.reads.sort_by_key(|read| read.first_hour);
-        if country
-            .reads
-            .windows(2)
-            .any(|reads| reads[0].last_hour >= reads[1].first_hour)
+        if summary
+            .actor_conflicts
+            .contains(&(params.country.clone(), params.country_instance))
+            || country
+                .reads
+                .windows(2)
+                .any(|reads| reads[0].last_hour >= reads[1].first_hour)
         {
             return Err(crate::invalid(
                 "Conflicting aliases for the selected native fuel recipient",
@@ -456,14 +459,17 @@ impl Product for CountryFuelAwardHistory {
             runs,
             warnings,
         };
-        if crate::transport::json_len(&reply, super::super::MAX_PRODUCT_REPLY_BYTES).is_none() {
-            return Err(crate::invalid(
+        super::super::check_reply_budget(&reply).map_err(|_| {
+            crate::invalid(
                 "Fuel receipt history exceeds the product byte budget; this receipt cannot be shown",
-            ));
-        }
+            )
+        })?;
         Ok(reply)
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(super) mod oracle;

@@ -12,9 +12,12 @@
     "dev:ui": "vite --config ui/vite.config.ts",
     "build:ui": "tsc -p ui/tsconfig.json && vite build --config ui/vite.config.ts",
     "check:ui": "tsc --noEmit -p ui/tsconfig.json",
-    "test:ui": "node --experimental-strip-types --test \"ui/src/**/*.test.ts\"",
+    "test:ui": "node tools/test-ui.mjs",
+    "test:ui:tab-full": "node tools/test-ui.mjs --tab-full",
     "audit:ui": "npm audit",
-    "build:desktop": "node tools/desktop.mjs build"
+    "build:desktop": "node tools/desktop.mjs build",
+    "parity:compare": "python ui/e2e/owned_job.py node ui/e2e/run.mjs compare",
+    "test:parity": "python ui/e2e/owned_job.py node --test ui/e2e/review.test.mjs"
   },
   "dependencies": {
     "@fontsource-variable/cascadia-code": "5.3.0",
@@ -28,11 +31,13 @@
     "react-grid-layout": "2.2.4"
   },
   "devDependencies": {
+    "playwright-core": "1.64.0",
     "@tauri-apps/cli": "2.11.4",
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "6.1.1",
+    "pngjs": "7.0.0",
     "typescript": "7.0.2",
     "vite": "8.3.0"
   }

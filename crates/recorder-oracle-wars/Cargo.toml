@@ -1,0 +1,18 @@
+[package]
+name = "recorder-oracle-wars"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+installed-content-save.workspace = true
+recorder-oracle-support.workspace = true
+replay.workspace = true
+
+[dev-dependencies]
+recorder-oracle-support = { workspace = true, features = ["test-support"] }

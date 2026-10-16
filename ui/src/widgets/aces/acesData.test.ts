@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aceRows, aceName, aceNameValue, aceStatus, aceJump, aceTooltip, aircraftName, wingName, validateAces, validateAcesWindow, validatePortraits } from './acesData.ts';
+import { aceRows, aceRowModel, aceName, aceNameValue, aceStatus, aceJump, aceTooltip, aircraftName, wingName, validateAces, validateAcesWindow, validatePortraits } from './acesData.ts';
 import { DEFAULT_SORT, OPTIONS, definition } from './definition.ts';
 import { sortRows } from '../../charts/table/logic.ts';
 import { availabilityRequest, availabilityReason, validateWidgetAvailability } from '../../dashboard/widgetAvailability.ts';
@@ -27,6 +27,33 @@ function reply(): AirAcesManifestReply {
       { firstHour: 140, name: null, known: false, design: null },
     ] } };
 }
+
+test('ace parity operands retain referenced names, designs, killers and coverage without whole contextual replies', () => {
+  const data = reply(), detail = window();
+  detail.aces[0].runs[1] = { ...structuredClone(dead), wing: '7', wingName: 2, aircraft: ['80'] };
+  const read = () => aceRowModel(aceRows(data, detail, 124)[0]);
+  const model = structuredClone(read());
+  assert.deepEqual(model.ace, detail.aces[0]);
+  assert.deepEqual(model.run, detail.aces[0].runs[1]);
+  assert.equal(model.hour, 124);
+  assert.deepEqual(model.killers, [{ id: '3', ace: detail.aces[2] }]);
+  assert.deepEqual(model.texts.map(text => text.index), [0, 1, 2, 3, 4]);
+  assert.deepEqual(model.variants, [{ id: '80', runs: data.variants['80'] }]);
+  assert.deepEqual(model.coverage, { branchId: '1', firstHour: 100, lastHour: 147,
+    observed: { firstHour: 100, lastHour: 147 }, window: { index: 0, firstHour: 100, lastHour: 147 } });
+  data.warnings.push('Synthetic process content warning'); detail.warnings.push('Synthetic contextual warning');
+  data.variants['99'] = [{ firstHour: 100, name: 'Unreferenced design', known: true, design: 'unrelated' }];
+  detail.texts.push('Unreferenced text'); detail.aces[1].runs[0].tag = 'Unrelated roster change';
+  assert.deepEqual(read(), model, 'Other rows and process-wide diagnostics are retained separately');
+  detail.texts[0] = 'Changed exact name'; assert.notDeepEqual(read(), model);
+  detail.texts[0] = model.texts[0].value!;
+  data.variants['80']![0].name = 'Changed referenced design'; assert.notDeepEqual(read(), model);
+  data.variants['80'] = structuredClone(model.variants[0].runs);
+  detail.aces[2].runs[0].name = 2; assert.notDeepEqual(read(), model, 'Killer operands remain exact');
+  detail.aces[2].runs[0].name = model.killers[0].ace!.runs[0].name;
+  assert.deepEqual(read(), model);
+  detail.aces[0].runs[1].death!.byHour = 125; assert.notDeepEqual(read(), model, 'Native death bounds remain exact');
+});
 test('Aces defaults to all countries and filters chosen owners and smart groups at each supplying read', () => {
   assert.deepEqual(definition.countries, { max: Number.MAX_SAFE_INTEGER, all: true });
   assert.deepEqual(createWidget('aces', 'main', 'aces-test').countries, { kind: 'all' });

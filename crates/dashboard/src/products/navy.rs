@@ -116,8 +116,8 @@ pub struct NavyReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct RawNavyRun {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RawNavyRun {
     first_hour: i32,
     last_hour: i32,
     starts_segment: bool,
@@ -127,15 +127,25 @@ struct RawNavyRun {
     reference_total: Option<i64>,
 }
 
-#[derive(Clone, Debug, Default)]
-struct ScannedNavy {
-    classes: Vec<ClassKey>,
+impl RawNavyRun {
+    fn displayable(&self) -> bool {
+        self.total
+            .into_iter()
+            .chain(self.reference_total)
+            .all(|value| value <= MAX_EXACT)
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub(crate) struct ScannedNavy {
+    classes: Arc<Vec<ClassKey>>,
     series: [BTreeMap<String, Vec<RawNavyRun>>; 2],
     strength_series: [BTreeMap<String, Vec<RawNavyRun>>; 2],
     segments: BTreeMap<String, Vec<HourSpan>>,
     unattributed: [usize; 2],
     unread: usize,
-    undisplayable_tags: BTreeMap<Vec<u8>, usize>,
+    #[serde(with = "super::air_force::map_rows")]
+    pub(crate) undisplayable_tags: BTreeMap<Vec<u8>, usize>,
     refused_strength: [usize; 2],
     maximum_overflows: [usize; 2],
     #[cfg(test)]
@@ -151,7 +161,7 @@ impl ScannedNavy {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Track {
     runs: [Vec<RawNavyRun>; 2],
     strength_runs: [Vec<RawNavyRun>; 2],
@@ -171,6 +181,7 @@ fn check_cancel(cancelled: &AtomicBool) -> io::Result<()> {
     }
 }
 
+pub(crate) mod prepared;
 mod scan;
 use scan::scan;
 
@@ -209,37 +220,11 @@ fn scans_run(source: &Source) -> usize {
         .runs
 }
 
-/// Every tag observed in the branch and its roster-owned ship count at `hour`.
-/// Missing hours, absent countries and incomplete joins stay None. Uses the
-/// widget's same per-source branch scan and needs no game-content context.
-/// Tags that cannot be represented as UTF-8 refuse the map by name and count.
-pub fn ships_at(
-    source: &Source,
-    branch: u64,
-    hour: i32,
-    cancelled: &AtomicBool,
-) -> io::Result<BTreeMap<String, Option<i64>>> {
-    let scanned = scanned_branch(source, branch, cancelled)?;
-    super::require_displayable_tags(&scanned.undisplayable_tags)?;
-    scanned.series[0]
-        .iter()
-        .map(|(tag, runs)| {
-            let index = runs.partition_point(|run| run.first_hour <= hour);
-            let value = index
-                .checked_sub(1)
-                .and_then(|index| runs.get(index))
-                .filter(|run| hour <= run.last_hour)
-                .and_then(|run| run.total);
-            check_cancel(cancelled)?;
-            Ok((tag.clone(), value))
-        })
-        .collect::<io::Result<_>>()
-}
-
 /// Visit requested tags' roster-ship runs from the widget's cached branch scan.
 /// Bounds, breaks and explicit unknowns are copied without coalescing; gaps and
 /// unobserved tags emit nothing. Inputs are hourly censuses, not daily carries.
 /// Callback errors and cancellation abort the visit; discard any partial result.
+#[cfg(test)]
 pub fn visit_ship_runs(
     source: &Source,
     branch: u64,
@@ -265,9 +250,35 @@ pub fn visit_ship_runs(
     check_cancel(cancelled)
 }
 
+type PartResults = catalogue::KeyedResults<(ClassKey, usize), (NavyPart, Vec<String>)>;
 #[derive(Default)]
 struct UnitContent {
-    catalogue: Option<(Arc<Catalogue>, Arc<installed_content::unit_leader::SubUnits>)>,
+    binding: Option<(Option<Arc<Catalogue>>, Arc<PartResults>)>,
+}
+fn part_content(source: &Source, catalogue: Option<&Arc<Catalogue>>) -> Arc<PartResults> {
+    let state = source.state::<UnitContent>();
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    if !state
+        .binding
+        .as_ref()
+        .is_some_and(|(old, _)| match (old.as_ref(), catalogue) {
+            (Some(old), Some(current)) => Arc::ptr_eq(old, current),
+            (None, None) => true,
+            _ => false,
+        })
+    {
+        state.binding = Some((catalogue.cloned(), Arc::default()));
+    }
+    Arc::clone(&state.binding.as_ref().expect("navy part binding").1)
+}
+fn configure(source: &Source, context: &LoadContext) {
+    if let Ok(catalogue) = context
+        .content()
+        .and_then(|options| catalogue::catalogue(source, options))
+    {
+        content_units(&catalogue, &mut Vec::new());
+        part_content(source, Some(&catalogue));
+    }
 }
 
 /// Project recorded sub-unit tokens through the shared native content reader.
@@ -278,73 +289,100 @@ fn parts(
     units: Option<&installed_content::unit_leader::SubUnits>,
     grouping: NavyGrouping,
     localise: impl Fn(&str) -> Option<String>,
+    cache: Option<&PartResults>,
 ) -> (Vec<NavyPart>, BTreeMap<u32, usize>, Vec<String>) {
     let mut definitions: BTreeMap<String, NavyPart> = BTreeMap::new();
     let mut tokens = BTreeMap::new();
     let mut warnings = Vec::new();
     for &class in classes {
-        let (token, spelling) = &catalogue[class as usize];
-        let mut refusal = None;
-        let resolved = spelling.as_ref().zip(units).and_then(|(spelling, units)| {
-            let registered = match units.get(spelling) {
-                installed_content::unit_leader::SubUnit::Index(index) => {
-                    units.name(index).and_then(Result::ok)
-                }
-                _ => None,
-            }?;
-            match grouping {
-                NavyGrouping::Class => Some((format!("class:{registered}"), localise(registered))),
-                NavyGrouping::Type => {
-                    let mask = units.category(registered.as_bytes()).ok()?;
-                    let types = match installed_content::equipment::category_names(mask) {
-                        Ok(types) => types,
-                        Err(bits) => {
-                            refusal = Some(format!("unknown native category bits {bits:#x}"));
+        let class_key = &catalogue[class as usize];
+        let resolve = |class_key: &ClassKey| {
+            let (token, spelling) = class_key;
+            let mut warnings = Vec::new();
+            let mut refusal = None;
+            let resolved = spelling.as_ref().zip(units).and_then(|(spelling, units)| {
+                let registered = match units.get(spelling) {
+                    installed_content::unit_leader::SubUnit::Index(index) => {
+                        units.name(index).and_then(Result::ok)
+                    }
+                    _ => None,
+                }?;
+                match grouping {
+                    NavyGrouping::Class => {
+                        Some((format!("class:{registered}"), localise(registered)))
+                    }
+                    NavyGrouping::Type => {
+                        let mask = units.category(registered.as_bytes()).ok()?;
+                        let types = match installed_content::equipment::category_names(mask) {
+                            Ok(types) => types,
+                            Err(bits) => {
+                                refusal = Some(format!("unknown native category bits {bits:#x}"));
+                                return None;
+                            }
+                        };
+                        if types.is_empty() {
                             return None;
                         }
-                    };
-                    if types.is_empty() {
-                        return None;
+                        let name = types
+                            .iter()
+                            .map(|key| localise(key))
+                            .collect::<Option<Vec<_>>>()
+                            .map(|names| names.join(" / "));
+                        Some((format!("type:{mask}"), name))
                     }
-                    let name = types
-                        .iter()
-                        .map(|key| localise(key))
-                        .collect::<Option<Vec<_>>>()
-                        .map(|names| names.join(" / "));
-                    Some((format!("type:{mask}"), name))
                 }
-            }
-        });
-        let (key, name, unresolved) = match resolved {
-            Some((key, name)) => (key, name, false),
-            None => {
-                let visible = spelling
-                    .as_deref()
-                    .filter(|name| !name.is_empty())
-                    .map_or_else(
-                        || format!("Other / not identified (Sub-unit {token})"),
-                        str::to_owned,
+            });
+            let (key, name, unresolved) = match resolved {
+                Some((key, name)) => (key, name, false),
+                None => {
+                    let visible = spelling
+                        .as_deref()
+                        .filter(|name| !name.is_empty())
+                        .map_or_else(
+                            || format!("Other / not identified (Sub-unit {token})"),
+                            str::to_owned,
+                        );
+                    let reason = refusal.as_deref().unwrap_or(
+                        "the recorded content does not resolve this ship class or broad role",
                     );
-                let reason = refusal.as_deref().unwrap_or(
-                    "the recorded content does not resolve this ship class or broad role",
-                );
-                warnings.push(format!("{visible}: {reason}; kept as its own part."));
-                (
-                    format!(
-                        "{}ship:{}",
-                        super::equipment::UNRESOLVED_MARK,
-                        serde_json::to_string(&(token, spelling)).expect("class identity")
-                    ),
-                    Some("Ship class name unavailable".into()),
-                    true,
-                )
-            }
+                    warnings.push(format!("{visible}: {reason}; kept as its own part."));
+                    (
+                        format!(
+                            "{}ship:{}",
+                            super::equipment::UNRESOLVED_MARK,
+                            serde_json::to_string(&(token, spelling)).expect("class identity")
+                        ),
+                        Some("Ship class name unavailable".into()),
+                        true,
+                    )
+                }
+            };
+            (
+                NavyPart {
+                    key,
+                    name,
+                    unresolved,
+                },
+                warnings,
+            )
         };
-        definitions.entry(key.clone()).or_insert(NavyPart {
-            key: key.clone(),
-            name,
-            unresolved,
-        });
+        let resolved = match cache {
+            Some(cache) => cache
+                .get_or_init(
+                    &(
+                        class_key.clone(),
+                        usize::from(grouping == NavyGrouping::Type),
+                    ),
+                    |(key, _)| Ok(resolve(key)),
+                )
+                .expect("native class projection is infallible"),
+            None => Arc::new(resolve(class_key)),
+        };
+        let key = resolved.0.key.clone();
+        warnings.extend(resolved.1.iter().cloned());
+        definitions
+            .entry(key.clone())
+            .or_insert_with(|| resolved.0.clone());
         tokens.insert(class, key);
     }
     let parts: Vec<_> = definitions.into_values().collect();
@@ -360,14 +398,27 @@ fn parts(
     (parts, tokens, warnings)
 }
 
-/// Rank and project the cached scan, then enforce the serialized reply budget.
+#[cfg(test)]
 fn reply(
     scanned: &ScannedNavy,
     params: &NavyParams,
     units: Option<&installed_content::unit_leader::SubUnits>,
     localise: impl Fn(&str) -> Option<String>,
-    mut warnings: Vec<String>,
+    warnings: Vec<String>,
     cancelled: &AtomicBool,
+) -> io::Result<NavyReply> {
+    reply_cached(scanned, params, units, localise, warnings, cancelled, None)
+}
+
+/// Rank and project the cached scan, then enforce the serialized reply budget.
+fn reply_cached(
+    scanned: &ScannedNavy,
+    params: &NavyParams,
+    units: Option<&installed_content::unit_leader::SubUnits>,
+    localise: impl Fn(&str) -> Option<String>,
+    warnings: Vec<String>,
+    cancelled: &AtomicBool,
+    cache: Option<&PartResults>,
 ) -> io::Result<NavyReply> {
     check_cancel(cancelled)?;
     let source = scanned.series(params);
@@ -381,6 +432,22 @@ fn reply(
         )?),
         None => None,
     };
+    selected(
+        scanned, params, units, localise, warnings, cancelled, membership, cache,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn selected(
+    scanned: &ScannedNavy,
+    params: &NavyParams,
+    units: Option<&installed_content::unit_leader::SubUnits>,
+    localise: impl Fn(&str) -> Option<String>,
+    mut warnings: Vec<String>,
+    cancelled: &AtomicBool,
+    membership: Option<BTreeMap<String, Vec<HourSpan>>>,
+    cache: Option<&PartResults>,
+) -> io::Result<NavyReply> {
+    let source = scanned.series(params);
     let tags: Vec<&str> = match &membership {
         Some(membership) => membership.keys().map(String::as_str).collect(),
         None => {
@@ -395,8 +462,14 @@ fn reply(
         .flat_map(|tag| source.get(*tag).into_iter().flatten())
         .flat_map(|run| run.classes.keys().copied())
         .collect();
-    let (parts, positions, notes) =
-        parts(&classes, &scanned.classes, units, params.grouping, localise);
+    let (parts, positions, notes) = parts(
+        &classes,
+        &scanned.classes,
+        units,
+        params.grouping,
+        localise,
+        cache,
+    );
     warnings.extend(notes);
     let mut series = Vec::with_capacity(tags.len());
     for tag in tags {
@@ -414,12 +487,7 @@ fn reply(
             .and_then(|membership| membership.get(tag));
         let mut runs = Vec::new();
         let mut project = |run: &RawNavyRun, first_hour: i32, last_hour: i32| {
-            if run
-                .total
-                .into_iter()
-                .chain(run.reference_total)
-                .any(|value| value > MAX_EXACT)
-            {
+            if !run.displayable() {
                 return Err(io::Error::other(
                     "Navy reply value exceeds JavaScript's exact integer range",
                 ));
@@ -554,70 +622,113 @@ impl Product for NavySize {
         let branch = params.branch_id.parse::<u64>().expect("validated branch");
         let scanned = scanned_branch(source, branch, cancelled)?;
         let history = country_history::branch_histories(source, branch, false, &[], cancelled)?;
-        let mut selection = params.clone();
-        if selection.top.is_none() {
-            selection.tags = country_history::selected_aliases(&history, &params.tags);
-        }
-        let mut warnings = Vec::new();
-        let catalogue = context
-            .content()
-            .and_then(|options| catalogue::catalogue(source, options));
-        let mut result = match catalogue {
-            Ok(catalogue) => {
-                warnings.extend(catalogue.verification.iter().cloned());
-                warnings.extend(catalogue.warnings.iter().cloned());
-                let state = source.state::<UnitContent>();
-                let mut content = state.lock().unwrap_or_else(|error| error.into_inner());
-                if !content
-                    .catalogue
-                    .as_ref()
-                    .is_some_and(|(old, _)| Arc::ptr_eq(old, &catalogue))
-                {
-                    match installed_content::unit_leader::sub_units(&catalogue.content.layers) {
-                        Ok(units) => {
-                            content.catalogue = Some((Arc::clone(&catalogue), Arc::new(units)))
-                        }
-                        Err(error) => {
-                            warnings.push(format!("Ship class content is unavailable: {error}"));
-                            content.catalogue = None;
-                        }
-                    }
-                }
-                let units = content
-                    .catalogue
-                    .as_ref()
-                    .map(|(_, units)| Arc::clone(units));
-                drop(content);
-                if let Some(units) = &units {
-                    warnings.extend(units.warnings().iter().cloned());
-                }
-                let mut result = reply(
-                    &scanned,
-                    &selection,
-                    units.as_deref(),
-                    |key| {
-                        catalogue.localisation.get(key)?;
-                        catalogue.localised(key, catalogue::View::Plain)
-                    },
-                    warnings,
-                    cancelled,
-                )?;
-                result.warnings.extend(catalogue.refusal_lines());
-                Ok(result)
-            }
-            Err(error) => {
-                warnings.push(format!("Ship class names are unavailable: {error}"));
-                reply(&scanned, &selection, None, |_| None, warnings, cancelled)
-            }
-        }?;
-        for series in &mut result.series {
-            if let Some(country) = history.countries.get(&series.tag) {
-                series.identities = country.identities.as_ref().clone();
-            }
-        }
-        checked_reply(result)
+        present(
+            source,
+            params,
+            context,
+            cancelled,
+            &scanned,
+            Some(&history),
+            None,
+        )
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+fn content_units(
+    catalogue: &Arc<Catalogue>,
+    warnings: &mut Vec<String>,
+) -> Option<Arc<installed_content::unit_leader::SubUnits>> {
+    let database = catalogue
+        .content
+        .layers
+        .derived::<catalogue::CachedResult<installed_content::unit_leader::SubUnits>>();
+    match database.get_or_init(|| installed_content::unit_leader::sub_units(&catalogue.content.layers)) {
+        Ok(units) => {
+            warnings.extend(units.warnings().iter().cloned());
+            Some(units)
+        }
+        Err(error) => {
+            warnings.push(format!("Ship class content is unavailable: {error}"));
+            None
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn present(
+    source: &Source,
+    params: &NavyParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+    scanned: &ScannedNavy,
+    history: Option<&country_history::RecordedHistories>,
+    membership: Option<BTreeMap<String, Vec<HourSpan>>>,
+) -> io::Result<NavyReply> {
+    let build = |selection: &NavyParams,
+                 units: Option<&installed_content::unit_leader::SubUnits>,
+                 localise: &dyn Fn(&str) -> Option<String>,
+                 warnings,
+                 cache: Option<&PartResults>| match membership {
+        Some(membership) => selected(
+            scanned,
+            selection,
+            units,
+            localise,
+            warnings,
+            cancelled,
+            Some(membership),
+            cache,
+        ),
+        None => reply_cached(
+            scanned, selection, units, localise, warnings, cancelled, cache,
+        ),
+    };
+    let mut selection = params.clone();
+    if selection.top.is_none()
+        && let Some(history) = history
+    {
+        selection.tags = country_history::selected_aliases(history, &params.tags);
+    }
+    let mut warnings = Vec::new();
+    let catalogue = context
+        .content()
+        .and_then(|options| catalogue::catalogue(source, options));
+    let mut result = match catalogue {
+        Ok(catalogue) => {
+            warnings.extend(catalogue.verification.iter().cloned());
+            warnings.extend(catalogue.warnings.iter().cloned());
+            let units = content_units(&catalogue, &mut warnings);
+            let mut result = build(
+                &selection,
+                units.as_deref(),
+                &|key| {
+                    catalogue.localisation.get(key)?;
+                    catalogue.localised(key, catalogue::View::Plain)
+                },
+                warnings,
+                Some(&part_content(source, Some(&catalogue))),
+            )?;
+            result.warnings.extend(catalogue.refusal_lines());
+            Ok(result)
+        }
+        Err(error) => {
+            warnings.push(format!("Ship class names are unavailable: {error}"));
+            build(
+                &selection,
+                None,
+                &|_| None,
+                warnings,
+                Some(&part_content(source, None)),
+            )
+        }
+    }?;
+    for series in &mut result.series {
+        if let Some(country) = history.and_then(|history| history.countries.get(&series.tag)) {
+            series.identities = country.identities.as_ref().clone();
+        }
+    }
+    checked_reply(result)
+}

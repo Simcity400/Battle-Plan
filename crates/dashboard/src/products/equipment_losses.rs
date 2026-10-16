@@ -1,8 +1,9 @@
 //! One country's equipment losses over a branch, for the Equipment losses
 //! widget: a tree of cause, equipment type and exact design, each leaf a
 //! running total over the branch's hours. `landSource` selects destruction
-//! writers (default) or the game's Combat Log. Each bounded cache entry scans
-//! only that land source, plus the shared air and non-land records. Complete
+//! writers (default) or the game's Combat Log. Background preparation observes
+//! every native holder once; queries select the land source and shared air and
+//! non-land records. Complete
 //! replies are bounded by the shared transport budget. Air uses destruction.
 //!
 //! Causes and their records:
@@ -103,34 +104,44 @@
 
 use super::equipment::{Domain, StockVariantName, Texts, VariantCatalogue, archetype_of};
 use super::{CountryParams, LoadContext, Product};
+#[cfg(test)]
+use crate::metadata::{slot_read, tagged_country};
 use crate::{
     Source,
     catalogue::{self, View},
-    metadata::{
-        TaggedCountry, branch_bounds, link_slot, mapped_slot, slot_read, tagged_country,
-        validate_campaign,
-    },
+    metadata::{TaggedCountry, branch_bounds, link_slot, mapped_slot, validate_campaign},
 };
+#[cfg(test)]
+use replay::frame::FrameDecoder;
 use replay::{
     container::Replay,
-    frame::{DecodedFrame, FrameDecoder},
+    frame::DecodedFrame,
     rows::{
         CountryLinkRow, EQUIPMENT_DESTRUCTION_PARTIAL_REASON, EquipmentDestructionCause, RowCodec,
         TableId, tables,
     },
 };
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    collections::VecDeque,
+    sync::{Arc, atomic::Ordering},
+};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::atomic::AtomicBool,
 };
 use ts_rs::TS;
 
 mod census;
+#[cfg(test)]
+mod oracle;
+pub(crate) mod prepared;
+#[cfg(test)]
+pub use oracle::scan;
+#[cfg(test)]
+use oracle::{observe, selected, selected_country};
 
 pub struct EquipmentLosses;
 
@@ -228,10 +239,11 @@ fn destruction_label(cause: EquipmentDestructionCause) -> &'static str {
 
 /// Units per equipment of every amount (fixed5).
 pub const AMOUNT_SCALE: i64 = 100_000;
+#[cfg(test)]
 const CACHED_SCANS: usize = 8;
 
 /// Where a cause's amounts come from.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, TS)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "reason")]
 pub enum LossSource {
     /// A Combat Log reason (0 to 3) of land equipment.
@@ -242,11 +254,8 @@ pub enum LossSource {
     SunkConvoys,
     LendLeaseSunk,
     LendLeaseSent,
-    Destruction(
-        #[serde(with = "destruction_cause_export")]
-        #[ts(type = "EquipmentDestructionCause")]
-        EquipmentDestructionCause,
-    ),
+    #[serde(with = "destruction_cause_export")]
+    Destruction(#[ts(type = "EquipmentDestructionCause")] EquipmentDestructionCause),
 }
 
 // The recording enum stays independent of JSON/TypeScript. Its names have one
@@ -260,6 +269,17 @@ mod destruction_cause_export {
     ) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(cause.as_str())
     }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<EquipmentDestructionCause, D::Error> {
+        let name = <String as serde::Deserialize>::deserialize(deserializer)?;
+        EquipmentDestructionCause::ALL
+            .into_iter()
+            .find(|cause| cause.as_str() == name)
+            .ok_or_else(|| {
+                serde::de::Error::custom(format!("Unknown equipment destruction cause: {name}"))
+            })
+    }
 }
 
 fn destruction_cause_typescript() -> String {
@@ -271,7 +291,7 @@ fn destruction_cause_typescript() -> String {
 }
 
 /// A cause's writer domain; mixed or unrecognised callers are Other.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum LossDomain {
     Land,
@@ -283,7 +303,7 @@ pub enum LossDomain {
 /// A cause's localisation: the key (null when the content does not name one),
 /// its text with colour codes removed (may hold the game's `$NAME$` amount
 /// placeholders), and the text when it needs no substitution.
-#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LossName {
     pub key: Option<String>,
@@ -292,7 +312,7 @@ pub struct LossName {
 }
 
 /// Why a cause's amounts are unknown over a span of hours.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash, TS)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum UnknownReason {
     /// The cause's record was not read completely at these hours (not
@@ -309,7 +329,7 @@ pub enum UnknownReason {
     DestructionDomain,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct UnknownSpan {
     pub first_hour: i32,
@@ -318,7 +338,7 @@ pub struct UnknownSpan {
     pub detail: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LossCause {
     pub source: LossSource,
@@ -338,7 +358,7 @@ pub struct LossCause {
 }
 
 /// One design (or, when the record has none, no design) under a cause.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LossLeaf {
     /// Index into [`LossesReply::designs`]; null when the record names none.
@@ -350,7 +370,7 @@ pub struct LossLeaf {
     pub lower_bound_from: Option<i32>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LossPoint {
     pub hour: i32,
@@ -373,7 +393,7 @@ pub struct LossDesign {
     pub archetype_name: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum Coverage {
     Logged,
@@ -383,7 +403,7 @@ pub enum Coverage {
     PruneUnobserved,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CoverageSpan {
     pub first_hour: i32,
@@ -392,7 +412,7 @@ pub struct CoverageSpan {
 }
 
 /// Actual drain availability at an hour; earlier missing events do not recover.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DestructionCoverageSpan {
     pub first_hour: i32,
@@ -428,7 +448,7 @@ pub struct LossesReply {
 pub type LeafKey = (LossSource, Option<u32>);
 
 /// The recorded table a cause's amounts come from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum LossRecord {
     CombatLog,
     SunkShips,
@@ -463,7 +483,7 @@ impl LossSource {
 }
 
 /// A lend-lease exchange of the country that ended after its last read.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndedExchange {
     /// The first hour after the last read that showed it.
     pub from: i32,
@@ -472,52 +492,94 @@ pub struct EndedExchange {
 }
 
 /// What one branch recorded of one country, before naming.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Scanned {
     /// The recording's format, which dates its daily tables
     /// ([`crate::metadata::slot_read`]).
+    #[serde(skip)]
     pub(crate) format: replay::format::FormatVersion,
     /// (source, variant) to (hour, delta) events, in scan order.
+    #[serde(with = "crate::prepared_production::map_pairs")]
     pub events: BTreeMap<LeafKey, Vec<(i32, i128)>>,
     pub coverage: Vec<CoverageSpan>,
     pub destruction_coverage: Vec<DestructionCoverageSpan>,
     pub destruction_unknown: Vec<UnknownSpan>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     destruction_unknown_index: HashMap<(UnknownReason, String), usize>,
     pub destruction_counted_from: Option<i32>,
     /// Hours each record was not read completely, as [`UnknownReason::Unread`] spans.
     pub unread: BTreeMap<LossRecord, Vec<UnknownSpan>>,
+    unread_active: BTreeSet<LossRecord>,
+    destruction_active: BTreeSet<usize>,
     pub ended: Vec<EndedExchange>,
     /// The branch's last recorded hour.
     pub last_hour: Option<i32>,
     /// SunkConvoys entries whose count fell, each counted as a new entry.
     pub convoy_drops: usize,
     /// Shared read-dated names and design identities of every variant.
+    #[serde(skip)]
     pub variants: VariantCatalogue,
     /// Raw country references of loss rows the recorded links did not resolve.
     pub unresolved: BTreeSet<u32>,
+    combat_unresolved: BTreeSet<u32>,
 }
 
 /// A (group, kind, month, variant) key of the Combat Log.
 type LogKey = (u32, u8, u16, u32);
 type ShipKey = (Vec<u8>, i32, u64, u64, u64, u8);
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct State {
     land_source: LandSource,
+    #[cfg(test)]
     country: Option<LossCountry>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     log: BTreeMap<LogKey, i64>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     convoys: BTreeMap<(u32, i32, u32), i32>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     lend_lease: BTreeMap<(u32, u8, u32), i64>,
     /// Each exchange of the country the last complete read showed: that
     /// hour and its (kind, variant) pools.
     exchanges: BTreeMap<u32, (i32, BTreeSet<(u8, u32)>)>,
+    exchanges_read: Option<i32>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     ships: BTreeMap<ShipKey, usize>,
+    #[serde(skip)]
+    #[cfg(test)]
     division_census: census::Census,
+    include_all_destruction: bool,
     destruction_withheld: Option<String>,
     destruction_coverage_not_recorded: bool,
 }
 
 impl Scanned {
+    /// Materialise the open coverage only through authenticated, unchanged hours.
+    /// Closed record spans and old loss operands are never visited.
+    fn advance(&mut self, hour: i32) {
+        if self.last_hour.is_none_or(|last| hour <= last) {
+            return;
+        }
+        if let Some(last) = self.coverage.last_mut() {
+            last.last_hour = hour;
+        }
+        if let Some(last) = self.destruction_coverage.last_mut() {
+            last.last_hour = hour;
+        }
+        for record in &self.unread_active {
+            self.unread
+                .get_mut(record)
+                .unwrap()
+                .last_mut()
+                .unwrap()
+                .last_hour = hour;
+        }
+        for &index in &self.destruction_active {
+            self.destruction_unknown[index].last_hour = hour;
+        }
+        self.last_hour = Some(hour);
+    }
+
     fn event(&mut self, key: LeafKey, hour: i32, delta: impl Into<i128>) {
         let delta = delta.into();
         if delta != 0 {
@@ -529,12 +591,14 @@ impl Scanned {
     /// the record's unread spans.
     fn read(&mut self, record: LossRecord, hour: i32, complete: bool) {
         if complete {
+            self.unread_active.remove(&record);
             return;
         }
         self.unread_range(record, hour, hour);
     }
 
     fn unread_range(&mut self, record: LossRecord, first: i32, last_hour: i32) {
+        self.unread_active.insert(record);
         let spans = self.unread.entry(record).or_default();
         if let Some(last) = spans.last_mut()
             && i64::from(last.last_hour) + 1 >= i64::from(first)
@@ -591,6 +655,8 @@ impl Scanned {
             self.destruction_unknown(first, UnknownReason::DestructionGap, reason.to_owned());
         }
         self.last_hour = Some(last);
+        // The missing interval's uncertainty is dated at its first hour.
+        self.destruction_active.clear();
     }
 
     fn destruction_cover(&mut self, first: i32, last_hour: i32, reason: Option<String>) {
@@ -616,8 +682,11 @@ impl Scanned {
             // Each missing destruction event affects the remainder of this
             // branch, so equal reason/details overlap regardless of recovery hours.
             self.destruction_unknown[index].last_hour = hour;
+            self.destruction_active.insert(index);
             return;
         }
+        self.destruction_active
+            .insert(self.destruction_unknown.len());
         self.destruction_unknown_index
             .insert(key, self.destruction_unknown.len());
         self.destruction_unknown.push(UnknownSpan {
@@ -629,327 +698,160 @@ impl Scanned {
     }
 }
 
-const SELECTED: [TableId; 18] = [
-    TableId::Campaign,
-    TableId::Countries,
-    TableId::CountryLinks,
-    TableId::Players,
-    TableId::DivisionCensus,
-    TableId::SimulationFeatures,
-    TableId::CombatLogEquipment,
-    TableId::CombatLogState,
-    TableId::SliceReads,
-    TableId::SunkShips,
-    TableId::SunkConvoys,
-    TableId::LendLeaseEquipment,
-    TableId::VariantDefinitions,
-    TableId::LexicalTokens,
-    TableId::CountryAppearance,
-    TableId::VariantModules,
-    TableId::VariantUpgrades,
-    TableId::EquipmentDestruction,
-];
-
-fn selected(land_source: LandSource) -> Vec<TableId> {
-    SELECTED
-        .into_iter()
-        .filter(|table| {
-            land_source == LandSource::CombatLog
-                || !matches!(
-                    table,
-                    TableId::Players
-                        | TableId::DivisionCensus
-                        | TableId::SimulationFeatures
-                        | TableId::CombatLogEquipment
-                        | TableId::CombatLogState
-                        | TableId::SliceReads
-                )
-        })
-        .collect()
-}
-
-/// Scans one branch for one country's losses.
-pub fn scan(
-    replay: &Replay,
-    branch: u64,
-    tag: &str,
-    land_source: LandSource,
-    country: Option<LossCountry>,
-    cancelled: &AtomicBool,
-) -> io::Result<Scanned> {
-    let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Equipment losses cancelled");
-    let mut scanned = Scanned {
-        format: replay.format,
-        ..Scanned::default()
-    };
-    let mut state = State {
-        land_source,
-        country,
-        destruction_coverage_not_recorded: replay
-            .format
-            .field_gaps(TableId::EquipmentDestruction)
-            .next()
-            .is_some(),
-        ..State::default()
-    };
-    let selected = selected(land_source);
-    let start = replay
-        .branches
-        .iter()
-        .find(|start| start.id == branch)
-        .ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "Equipment losses branch not found")
-        })?;
-    let (first, last) = branch_bounds(replay, start);
-    let mut next = i64::from(first);
-    let mut blocks: Vec<_> = replay
-        .index
-        .iter()
-        .filter(|block| block.branch == branch)
-        .collect();
-    blocks.sort_unstable_by_key(|block| block.first_hour);
-    let mut gaps: Vec<_> = replay
-        .gaps
-        .iter()
-        .filter(|gap| gap.branch == branch)
-        .collect();
-    gaps.sort_unstable_by_key(|gap| gap.first_hour);
-    let mut gap = 0;
-    crate::blocks::scan_blocks(replay, blocks, &selected, cancelled, |blocks| {
-        for (_, frames) in blocks {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancel());
-            }
-            let mut decoder = FrameDecoder::for_tables(&selected);
-            let Ok(frames) = frames else {
-                continue;
-            };
-            for frame in frames {
-                if cancelled.load(Ordering::Acquire) {
-                    return Err(cancel());
-                }
-                let Ok(decoded) = decoder.advance(&frame) else {
-                    break;
-                };
-                if validate_campaign(decoded, replay).is_err() {
-                    break;
-                }
-                // Failed blocks/frames leave the cursor here. The next readable
-                // hour (or branch end) marks the entire missing interval once.
-                if i64::from(decoded.hour) < next {
-                    continue;
-                }
-                while gap < gaps.len() && gaps[gap].last_hour < decoded.hour {
-                    gap += 1;
-                }
-                if gaps
-                    .get(gap)
-                    .is_some_and(|gap| gap.first_hour <= decoded.hour)
-                {
-                    continue;
-                }
-                if next < i64::from(decoded.hour) {
-                    scanned.missing(next as i32, decoded.hour - 1, land_source);
-                }
-                observe(&mut scanned, &mut state, decoded, tag)?;
-                next = i64::from(decoded.hour) + 1;
-            }
-        }
-        Ok(())
-    })?;
-    if next <= i64::from(last) {
-        scanned.missing(next as i32, last, land_source);
-    }
-    Ok(scanned)
-}
-
-/// Native identity comes from the origin read, never from a later holder of its tag.
-fn selected_country<'a>(
-    countries: &'a [replay::rows::CountryRow],
-    links: &[CountryLinkRow],
-    tag: &str,
-    selected: Option<LossCountry>,
-) -> TaggedCountry<'a> {
-    let Some(selected) = selected else {
-        return tagged_country(countries, links, tag);
-    };
-    let mut candidates = countries
-        .iter()
-        .filter(|row| row.canonical_slot == selected.slot && row.id == selected.country_id);
-    let Some(row) = candidates.next() else {
-        return TaggedCountry::Absent;
-    };
-    if candidates.next().is_some() || mapped_slot(row, links).ok() != Some(selected.slot) {
-        return TaggedCountry::Unresolved;
-    }
-    TaggedCountry::Found(row, selected.slot)
-}
-
-/// Adds one recorded hour.
-fn observe(
+#[allow(clippy::too_many_arguments)]
+fn country_metadata(
     scanned: &mut Scanned,
     state: &mut State,
     decoded: &DecodedFrame,
-    tag: &str,
+    links: Option<&[CountryLinkRow]>,
+    country: TaggedCountry<'_>,
+    land: bool,
+    land_coverage: Option<Coverage>,
+    inputs: &DestructionInputs,
 ) -> io::Result<()> {
     let hour = decoded.hour;
-    scanned.variants.observe(scanned.format, decoded);
-    let links = decoded.complete::<tables::CountryLinks>().ok();
-    let country = decoded
-        .complete::<tables::Countries>()
-        .ok()
-        .zip(links)
-        .map(|(countries, links)| selected_country(countries, links, tag, state.country))
-        .unwrap_or(TaggedCountry::Unresolved);
-    let slot = country.found().map(|(_, slot)| slot);
-    let membership = (state.land_source == LandSource::CombatLog)
-        .then(|| state.division_census.advance(decoded, slot));
-    destruction(scanned, state, decoded, links, country)?;
-    scanned.last_hour = Some(hour);
-    let (Some(slot), Some(links)) = (slot, links) else {
-        if state.land_source == LandSource::CombatLog {
-            scanned.cover(hour, Coverage::Unknown);
-            scanned.read(LossRecord::CombatLog, hour, false);
-        }
-        for record in [
-            LossRecord::SunkShips,
-            LossRecord::SunkConvoys,
-            LossRecord::LendLease,
-        ] {
-            scanned.read(record, hour, false);
-        }
-        return Ok(());
-    };
-    let mut unresolved = BTreeSet::new();
-    let mut ours = |raw: u32| match link_slot(links, raw) {
-        Some(owner) => owner == slot,
-        None => {
-            unresolved.insert(raw);
-            false
-        }
-    };
-    if let Some(membership) = membership {
-        let land = land_read(decoded);
-        scanned.read(LossRecord::CombatLog, hour, land);
+    scanned.destruction_active.clear();
+    destruction_from(scanned, state, decoded, links, country, inputs)?;
+    if state.destruction_withheld.is_some() {
+        scanned.destruction_active.clear();
+    }
+    let found = country.found().is_some() && links.is_some();
+    if land {
+        let complete = found && land_read(decoded);
+        scanned.read(LossRecord::CombatLog, hour, complete);
         scanned.cover(
             hour,
-            if land {
-                coverage(decoded, links, slot, membership)
+            if complete {
+                land_coverage.unwrap_or(Coverage::Unknown)
             } else {
                 Coverage::Unknown
             },
         );
-        combat_log(scanned, state, decoded, links, slot)?;
     }
-    let ships = decoded.complete::<tables::SunkShips>();
     scanned.read(
         LossRecord::SunkShips,
         hour,
-        matches!(&ships, Ok(rows) if rows.len() == 1),
+        found && matches!(decoded.complete::<tables::SunkShips>(), Ok([_])),
     );
-    if let Ok([ships]) = ships {
-        let mut counts: BTreeMap<ShipKey, (usize, i32, u64)> = BTreeMap::new();
-        for entry in ships
-            .entries
-            .iter()
-            .filter(|entry| ours(entry.victim_country))
-        {
-            let key = (
-                entry.ship_name.clone(),
-                entry.sink_hour,
-                entry.victim_equipment_variant,
-                entry.battle,
-                entry.damage_source_reference,
-                entry.cause_record,
-            );
-            counts
-                .entry(key)
-                .or_insert((0, entry.sink_hour, entry.victim_equipment_variant))
-                .0 += 1;
-        }
-        for (key, (count, sunk, variant)) in counts {
-            let seen = state.ships.entry(key).or_default();
-            if count > *seen {
-                let added = (count - *seen) as i64;
-                *seen = count;
-                let variant = (variant as u32 == VARIANT_TYPE).then_some((variant >> 32) as u32);
-                scanned.event((LossSource::SunkShips, variant), sunk, added * AMOUNT_SCALE);
-            }
-        }
-    }
-    let convoys = decoded.complete::<tables::SunkConvoys>();
-    scanned.read(LossRecord::SunkConvoys, hour, convoys.is_ok());
-    if slot_read(scanned.format, &decoded.metrics, TableId::SunkConvoys, hour)
-        && let Ok(rows) = convoys
-    {
-        for row in rows.iter().filter(|row| ours(row.owner_country)) {
-            let last = state
-                .convoys
-                .entry((row.owner_country, row.month, row.killer_country))
-                .or_default();
-            let delta = if row.convoys < *last {
-                scanned.convoy_drops += 1;
-                i64::from(row.convoys)
-            } else {
-                i64::from(row.convoys) - i64::from(*last)
-            };
-            *last = row.convoys;
-            scanned.event((LossSource::SunkConvoys, None), hour, delta * AMOUNT_SCALE);
-        }
-    }
-    let lend_lease = decoded.complete::<tables::LendLeaseEquipment>();
-    scanned.read(LossRecord::LendLease, hour, lend_lease.is_ok());
-    if slot_read(
-        scanned.format,
-        &decoded.metrics,
-        TableId::LendLeaseEquipment,
+    scanned.read(
+        LossRecord::SunkConvoys,
         hour,
-    ) && let Ok(rows) = lend_lease
-    {
-        // The game deletes an ended exchange with its totals: an exchange
-        // the last complete read showed and this one does not ended after
-        // that read, and what it moved since is lost.
-        let mut present: BTreeMap<u32, BTreeSet<(u8, u32)>> = BTreeMap::new();
-        for row in rows.iter().filter(|row| ours(row.giver)) {
-            present
-                .entry(row.exchange)
-                .or_default()
-                .insert((row.kind, row.variant));
-        }
-        let ended: Vec<u32> = state
-            .exchanges
-            .keys()
-            .filter(|exchange| !present.contains_key(exchange))
-            .copied()
-            .collect();
-        for exchange in ended {
-            if let Some((seen, designs)) = state.exchanges.remove(&exchange) {
-                scanned.ended.push(EndedExchange {
-                    from: seen.saturating_add(1),
-                    designs,
-                });
-            }
-        }
-        for (exchange, designs) in present {
-            state.exchanges.insert(exchange, (hour, designs));
-        }
-        for row in rows.iter().filter(|row| ours(row.giver)) {
-            let last = state
-                .lend_lease
-                .entry((row.exchange, row.kind, row.variant))
-                .or_default();
-            let delta = i128::from(row.amount_raw) - i128::from(*last);
-            *last = row.amount_raw;
-            let source = if row.kind == engine::clend_lease_exchange::SUNK_KIND {
-                LossSource::LendLeaseSunk
-            } else {
-                LossSource::LendLeaseSent
-            };
-            scanned.event((source, Some(row.variant)), hour, delta);
+        found && decoded.complete::<tables::SunkConvoys>().is_ok(),
+    );
+    scanned.read(
+        LossRecord::LendLease,
+        hour,
+        found && decoded.complete::<tables::LendLeaseEquipment>().is_ok(),
+    );
+    scanned.advance(hour);
+    scanned.last_hour = Some(hour);
+    Ok(())
+}
+
+fn ship_rows<'a>(
+    scanned: &mut Scanned,
+    state: &mut State,
+    entries: impl Iterator<Item = &'a replay::rows::SunkShipEntry>,
+) {
+    let mut counts: BTreeMap<ShipKey, (usize, i32, u64)> = BTreeMap::new();
+    for entry in entries {
+        let key = (
+            entry.ship_name.clone(),
+            entry.sink_hour,
+            entry.victim_equipment_variant,
+            entry.battle,
+            entry.damage_source_reference,
+            entry.cause_record,
+        );
+        counts
+            .entry(key)
+            .or_insert((0, entry.sink_hour, entry.victim_equipment_variant))
+            .0 += 1;
+    }
+    for (key, (count, sunk, variant)) in counts {
+        let seen = state.ships.entry(key).or_default();
+        if count > *seen {
+            let added = (count - *seen) as i64;
+            *seen = count;
+            let variant = (variant as u32 == VARIANT_TYPE).then_some((variant >> 32) as u32);
+            scanned.event((LossSource::SunkShips, variant), sunk, added * AMOUNT_SCALE);
         }
     }
-    scanned.unresolved.extend(unresolved);
-    Ok(())
+}
+
+fn convoy_rows<'a>(
+    scanned: &mut Scanned,
+    state: &mut State,
+    hour: i32,
+    rows: impl Iterator<Item = &'a replay::rows::SunkConvoyRow>,
+) {
+    for row in rows {
+        let last = state
+            .convoys
+            .entry((row.owner_country, row.month, row.killer_country))
+            .or_default();
+        let delta = if row.convoys < *last {
+            scanned.convoy_drops += 1;
+            i64::from(row.convoys)
+        } else {
+            i64::from(row.convoys) - i64::from(*last)
+        };
+        *last = row.convoys;
+        scanned.event((LossSource::SunkConvoys, None), hour, delta * AMOUNT_SCALE);
+    }
+}
+
+fn lend_lease_rows<'a>(
+    scanned: &mut Scanned,
+    state: &mut State,
+    hour: i32,
+    rows: impl Iterator<Item = &'a replay::rows::LendLeaseEquipmentRow> + Clone,
+) {
+    // The game deletes an ended exchange with its totals: an exchange
+    // the last complete read showed and this one does not ended after
+    // that read, and what it moved since is lost.
+    let mut present: BTreeMap<u32, BTreeSet<(u8, u32)>> = BTreeMap::new();
+    for row in rows.clone() {
+        present
+            .entry(row.exchange)
+            .or_default()
+            .insert((row.kind, row.variant));
+    }
+    let ended: Vec<u32> = state
+        .exchanges
+        .keys()
+        .filter(|exchange| !present.contains_key(exchange))
+        .copied()
+        .collect();
+    for exchange in ended {
+        if let Some((seen, designs)) = state.exchanges.remove(&exchange) {
+            scanned.ended.push(EndedExchange {
+                from: state
+                    .exchanges_read
+                    .map_or(seen, |read| seen.max(read))
+                    .saturating_add(1),
+                designs,
+            });
+        }
+    }
+    for (exchange, designs) in present {
+        state.exchanges.insert(exchange, (hour, designs));
+    }
+    for row in rows {
+        let last = state
+            .lend_lease
+            .entry((row.exchange, row.kind, row.variant))
+            .or_default();
+        let delta = i128::from(row.amount_raw) - i128::from(*last);
+        *last = row.amount_raw;
+        let source = if row.kind == engine::clend_lease_exchange::SUNK_KIND {
+            LossSource::LendLeaseSunk
+        } else {
+            LossSource::LendLeaseSent
+        };
+        scanned.event((source, Some(row.variant)), hour, delta);
+    }
+    state.exchanges_read = Some(hour);
 }
 
 /// The variant reference type (low word of a variant handle).
@@ -957,13 +859,103 @@ const VARIANT_TYPE: u32 = engine::cequipment_variant::REFERENCE_TYPE;
 
 const DESTRUCTION_TRUNCATED: &str = "Equipment destruction drain is truncated; branch unavailable";
 
-/// Each complete frame is a fresh hourly drain, even when the wire was Unchanged.
+#[derive(Default)]
+struct DestructionInputs {
+    supplemental: Option<String>,
+    unresolved: BTreeSet<u32>,
+    by_slot: BTreeMap<u32, Vec<usize>>,
+    nonempty: bool,
+    #[cfg(test)]
+    row_visits: usize,
+}
+
+/// The native drain's owner and availability operands, shared with the oracle.
+fn destruction_inputs(
+    decoded: &DecodedFrame,
+    links: Option<&[CountryLinkRow]>,
+    format: replay::format::FormatVersion,
+) -> io::Result<DestructionInputs> {
+    let Ok(rows) = decoded.complete::<tables::EquipmentDestruction>() else {
+        return Ok(DestructionInputs::default());
+    };
+    let marker = rows.first().filter(|row| {
+        row.coverage
+            == replay::rows::Recorded::Value(
+                replay::rows::EquipmentDestructionCoverage::SupplementalUnavailable,
+            )
+    });
+    #[cfg(test)]
+    let mut row_visits = 0;
+    let supplemental = if format
+        .field_gaps(TableId::EquipmentDestruction)
+        .next()
+        .is_some()
+        || rows.iter().any(|row| {
+            #[cfg(test)]
+            {
+                row_visits += 1;
+            }
+            row.not_recorded_fields() != 0
+        }) {
+        Some("EquipmentDestruction supplemental coverage not recorded".to_owned())
+    } else if let Some(marker) = marker {
+        Some(
+            marker
+                .unavailable_reason
+                .require("EquipmentDestruction.unavailable_reason")
+                .map_err(io::Error::other)?
+                .clone(),
+        )
+    } else {
+        None
+    };
+    let mut inputs = DestructionInputs {
+        supplemental,
+        nonempty: rows.len() > usize::from(marker.is_some()),
+        ..Default::default()
+    };
+    for (index, row) in rows.iter().enumerate().skip(usize::from(marker.is_some())) {
+        #[cfg(test)]
+        {
+            row_visits += 1;
+        }
+        if let Some(slot) = links.and_then(|links| link_slot(links, row.country)) {
+            inputs.by_slot.entry(slot).or_default().push(index);
+        } else {
+            inputs.unresolved.insert(row.country);
+        }
+    }
+    #[cfg(test)]
+    {
+        inputs.row_visits = row_visits;
+    }
+    Ok(inputs)
+}
+
+#[cfg(test)]
 fn destruction(
     scanned: &mut Scanned,
     state: &mut State,
     decoded: &DecodedFrame,
     links: Option<&[CountryLinkRow]>,
     country: TaggedCountry<'_>,
+) -> io::Result<()> {
+    let inputs = if country == TaggedCountry::Absent || state.destruction_withheld.is_some() {
+        DestructionInputs::default()
+    } else {
+        destruction_inputs(decoded, links, scanned.format)?
+    };
+    destruction_from(scanned, state, decoded, links, country, &inputs)
+}
+
+/// Each complete frame is a fresh hourly drain, even when the wire was Unchanged.
+fn destruction_from(
+    scanned: &mut Scanned,
+    state: &mut State,
+    decoded: &DecodedFrame,
+    links: Option<&[CountryLinkRow]>,
+    country: TaggedCountry<'_>,
+    inputs: &DestructionInputs,
 ) -> io::Result<()> {
     let hour = decoded.hour;
     let table = &*decoded.tables[TableId::EquipmentDestruction.index()];
@@ -1016,53 +1008,28 @@ fn destruction(
         scanned.destruction_cover(hour, hour, None);
         return Ok(());
     }
-    // The reserved availability row is not an owner/design event. It names
-    // missing supplemental writers even in an otherwise empty hourly drain.
-    let supplemental = rows.first().filter(|row| {
-        row.coverage
-            == replay::rows::Recorded::Value(
-                replay::rows::EquipmentDestructionCoverage::SupplementalUnavailable,
-            )
-    });
-    let supplemental_reason = if state.destruction_coverage_not_recorded
-        || rows.iter().any(|row| row.not_recorded_fields() != 0)
-    {
+    let supplemental_reason = if state.destruction_coverage_not_recorded {
         Some("EquipmentDestruction supplemental coverage not recorded".to_owned())
-    } else if let Some(marker) = supplemental {
-        Some(
-            marker
-                .unavailable_reason
-                .require("EquipmentDestruction.unavailable_reason")
-                .map_err(io::Error::other)?
-                .clone(),
-        )
     } else {
-        None
+        inputs.supplemental.clone()
     };
     if let Some(reason) = &supplemental_reason {
         scanned.destruction_unknown(hour, UnknownReason::DestructionWithheld, reason.clone());
     }
-    let rows = &rows[usize::from(supplemental.is_some())..];
+
     // An empty complete drain proves no hooked removals for any country;
     // there is no raw owner whose identity could make that zero uncertain.
-    if rows.is_empty() {
+    if !inputs.nonempty {
         scanned.destruction_cover(hour, hour, supplemental_reason);
         return Ok(());
     }
-    let (Some(links), TaggedCountry::Found(_, slot)) = (links, country) else {
+    let (Some(_), TaggedCountry::Found(_, slot)) = (links, country) else {
         let reason = "Equipment destruction ownership is unknown: country identity or CountryLinks unavailable".to_owned();
         scanned.destruction_cover(hour, hour, Some(reason.clone()));
         scanned.destruction_unknown(hour, UnknownReason::DestructionUnresolved, reason);
         return Ok(());
     };
-    let mut unresolved = BTreeSet::new();
-    let mut cursor = 0;
-    while let Some(row) = rows.get(cursor) {
-        if link_slot(links, row.country).is_none() {
-            unresolved.insert(row.country);
-        }
-        cursor += rows[cursor..].partition_point(|other| other.country == row.country);
-    }
+    let unresolved = inputs.unresolved.clone();
     let owner_reason = (!unresolved.is_empty()).then(|| {
         "Equipment destruction ownership is unknown: raw country references have no CountryLink"
             .to_owned()
@@ -1076,42 +1043,36 @@ fn destruction(
     }
     scanned.destruction_cover(hour, hour, reason);
     scanned.unresolved.extend(unresolved);
-    for country in links
-        .iter()
-        .filter(|link| link.canonical_slot == slot)
-        .map(|link| link.id)
-    {
-        let first = rows.partition_point(|row| row.country < country);
-        let last = rows.partition_point(|row| row.country <= country);
-        for row in &rows[first..last] {
-            if state.land_source == LandSource::CombatLog
-                && !row.cause.is_air()
-                && !matches!(
-                    row.cause,
-                    EquipmentDestructionCause::Unknown
-                        | EquipmentDestructionCause::ScriptedStockpileFraction
-                )
-            {
-                continue;
-            }
-            if row.variant as u32 != VARIANT_TYPE {
-                return Err(io::Error::other(format!(
-                    "Equipment destruction design {:#x} has an unsupported reference type",
-                    row.variant
-                )));
-            }
-            if row.amount_raw == 0 {
-                return Err(io::Error::other(
-                    "Equipment destruction contains a zero event amount",
-                ));
-            }
-            let source = LossSource::Destruction(row.cause);
-            scanned.event(
-                (source, Some((row.variant >> 32) as u32)),
-                hour,
-                row.amount_raw,
-            );
+    for &index in inputs.by_slot.get(&slot).into_iter().flatten() {
+        let row = &rows[index];
+        if state.land_source == LandSource::CombatLog
+            && !state.include_all_destruction
+            && !row.cause.is_air()
+            && !matches!(
+                row.cause,
+                EquipmentDestructionCause::Unknown
+                    | EquipmentDestructionCause::ScriptedStockpileFraction
+            )
+        {
+            continue;
         }
+        if row.variant as u32 != VARIANT_TYPE {
+            return Err(io::Error::other(format!(
+                "Equipment destruction design {:#x} has an unsupported reference type",
+                row.variant
+            )));
+        }
+        if row.amount_raw == 0 {
+            return Err(io::Error::other(
+                "Equipment destruction contains a zero event amount",
+            ));
+        }
+        let source = LossSource::Destruction(row.cause);
+        scanned.event(
+            (source, Some((row.variant >> 32) as u32)),
+            hour,
+            row.amount_raw,
+        );
     }
     Ok(())
 }
@@ -1122,52 +1083,79 @@ fn destruction(
 /// owner or the roster owner. Mixed group membership has incomplete coverage.
 /// Logging also requires feature 3 in the runtime mask recorded by
 /// SimulationFeatures. Missing inputs stay unknown.
+#[derive(Default, PartialEq, Eq)]
+struct CoverageInputs {
+    gate_known: bool,
+    all: bool,
+    players: BTreeSet<u32>,
+    unresolved: bool,
+    features: Option<bool>,
+    prune_observed: bool,
+}
+impl CoverageInputs {
+    fn country(&self, slot: u32, membership: Option<census::Membership>) -> Coverage {
+        if !self.gate_known {
+            return Coverage::Unknown;
+        }
+        if !self.all && !self.players.contains(&slot) {
+            return if self.unresolved {
+                Coverage::Unknown
+            } else {
+                Coverage::NotLogged
+            };
+        }
+        match self.features {
+            None => Coverage::Unknown,
+            Some(false) => Coverage::NotLogged,
+            Some(true) => membership.map_or(Coverage::Unknown, |membership| {
+                membership.coverage(self.prune_observed)
+            }),
+        }
+    }
+}
+fn coverage_inputs(decoded: &DecodedFrame, links: &[CountryLinkRow]) -> CoverageInputs {
+    let Ok([state]) = decoded
+        .complete::<tables::CombatLogState>()
+        .map(<[_]>::as_ref)
+    else {
+        return CoverageInputs::default();
+    };
+    let all = state.viewing_country_raw < 1;
+    let mut inputs = CoverageInputs {
+        all,
+        prune_observed: state.prune_observed != 0,
+        ..Default::default()
+    };
+    if !all {
+        let Ok(players) = decoded.complete::<tables::Players>() else {
+            return inputs;
+        };
+        for player in players {
+            if let Some(slot) = link_slot(links, player.country) {
+                inputs.players.insert(slot);
+            } else {
+                inputs.unresolved = true;
+            }
+        }
+    }
+    inputs.gate_known = true;
+    if let Ok([features]) = decoded
+        .complete::<tables::SimulationFeatures>()
+        .map(<[_]>::as_ref)
+    {
+        inputs.features =
+            Some(features.dlc_mask & engine::dlc_feature_state::EQUIPMENT_LOSSES_MASK != 0);
+    }
+    inputs
+}
+#[cfg(test)]
 fn coverage(
     decoded: &DecodedFrame,
     links: &[CountryLinkRow],
     slot: u32,
     membership: Option<census::Membership>,
 ) -> Coverage {
-    let Ok([state]) = decoded
-        .complete::<tables::CombatLogState>()
-        .map(<[_]>::as_ref)
-    else {
-        return Coverage::Unknown;
-    };
-    let logged = if state.viewing_country_raw < 1 {
-        true
-    } else {
-        let Ok(players) = decoded.complete::<tables::Players>() else {
-            return Coverage::Unknown;
-        };
-        let mut unknown = false;
-        let mut found = false;
-        for player in players {
-            match link_slot(links, player.country) {
-                Some(player_slot) => found |= player_slot == slot,
-                None => unknown = true,
-            }
-        }
-        if !found && unknown {
-            return Coverage::Unknown;
-        }
-        found
-    };
-    if !logged {
-        return Coverage::NotLogged;
-    }
-    let Ok([features]) = decoded
-        .complete::<tables::SimulationFeatures>()
-        .map(<[_]>::as_ref)
-    else {
-        return Coverage::Unknown;
-    };
-    if features.dlc_mask & engine::dlc_feature_state::EQUIPMENT_LOSSES_MASK == 0 {
-        return Coverage::NotLogged;
-    }
-    membership.map_or(Coverage::Unknown, |membership| {
-        membership.coverage(state.prune_observed != 0)
-    })
+    coverage_inputs(decoded, links).country(slot, membership)
 }
 
 /// Whether the Combat Log was read completely at this hour: its rows, and the
@@ -1185,67 +1173,24 @@ fn land_read(decoded: &DecodedFrame) -> bool {
 /// Equipment losses add signed pre-minus-post pool differences. A fall within
 /// the same monthly key is a correction; a new month is already a different
 /// key. Never count the falling value anew.
-fn combat_log(
+fn combat_rows<'a>(
     scanned: &mut Scanned,
     state: &mut State,
-    decoded: &DecodedFrame,
-    links: &[CountryLinkRow],
-    slot: u32,
-) -> io::Result<()> {
-    let Ok(reads) = decoded.complete::<tables::SliceReads>() else {
-        return Ok(());
-    };
-    let hour = decoded.hour;
-    let table = TableId::CombatLogEquipment.index() as u32;
-    let first_read = reads.partition_point(|read| read.table < table);
-    let last_read = reads.partition_point(|read| read.table <= table);
-    let countries = links
-        .iter()
-        .filter(|link| link.canonical_slot == slot)
-        .map(|link| link.id)
-        .filter(|&raw| {
-            replay::sliced::read_hour(reads, TableId::CombatLogEquipment, raw) == Some(hour)
-        });
-    let unresolved = &reads[first_read..last_read];
-    let unresolved = unresolved
-        .iter()
-        .filter(|read| read.sample_hour == hour && link_slot(links, read.owner).is_none());
-    if !countries.clone().any(|_| true) && !unresolved.clone().any(|_| true) {
-        return Ok(());
+    hour: i32,
+    rows: impl Iterator<Item = &'a replay::rows::CombatLogEquipmentRow>,
+) {
+    for row in rows {
+        let key = (row.group, row.kind, row.month, row.variant);
+        let last = state.log.entry(key).or_default();
+        let delta = i128::from(row.amount_raw) - i128::from(*last);
+        *last = row.amount_raw;
+        let source = if row.kind == engine::ncombat_log_cmanager::RECOVERED_KIND {
+            LossSource::Recovered
+        } else {
+            LossSource::CombatLog(row.kind)
+        };
+        scanned.event((source, Some(row.variant)), hour, delta);
     }
-    let rows = match &*decoded.tables[TableId::CombatLogEquipment.index()] {
-        replay::frame::TableView::Complete(rows)
-        | replay::frame::TableView::Truncated { rows, .. } => {
-            rows.rows::<tables::CombatLogEquipment>().unwrap_or(&[])
-        }
-        replay::frame::TableView::Unavailable { .. } => return Ok(()),
-    };
-    for read in unresolved {
-        let first = rows.partition_point(|row| row.country < read.owner);
-        if rows.get(first).is_some_and(|row| row.country == read.owner) {
-            scanned.unresolved.insert(read.owner);
-        }
-    }
-    // Decoding validates strictly ascending keys, including after delta/slice
-    // merges. Country is the key's high prefix (replay::rows), so only visit
-    // the selected country's ranges, never the observer's entire merged log.
-    for country in countries {
-        let first = rows.partition_point(|row| row.country < country);
-        let last = rows.partition_point(|row| row.country <= country);
-        for row in &rows[first..last] {
-            let key = (row.group, row.kind, row.month, row.variant);
-            let last = state.log.entry(key).or_default();
-            let delta = i128::from(row.amount_raw) - i128::from(*last);
-            *last = row.amount_raw;
-            let source = if row.kind == engine::ncombat_log_cmanager::RECOVERED_KIND {
-                LossSource::Recovered
-            } else {
-                LossSource::CombatLog(row.kind)
-            };
-            scanned.event((source, Some(row.variant)), hour, delta);
-        }
-    }
-    Ok(())
 }
 
 /// Running totals from events: sorted by hour, one point per changed hour.
@@ -1746,10 +1691,15 @@ pub fn reply(
     {
         warnings.push("Some hours have recorded gaps, failed blocks/frames, unread division census, unresolved owners or missing writer inputs; land-loss coverage is unknown there.".to_owned());
     }
-    if !scanned.unresolved.is_empty() {
+    let unresolved = scanned
+        .unresolved
+        .union(&scanned.combat_unresolved)
+        .filter(|raw| combat_log || scanned.unresolved.contains(*raw))
+        .count();
+    if unresolved != 0 {
         warnings.push(format!(
             "Recorded loss data name {} country references the recorded links do not resolve; they are left out.",
-            scanned.unresolved.len()
+            unresolved
         ));
     }
     if let Some(catalogue) = catalogue {
@@ -1775,9 +1725,11 @@ pub fn reply(
     }
 }
 
+#[cfg(test)]
 type ScanKey = (u64, String, LandSource, Option<LossCountry>);
 
 #[derive(Default)]
+#[cfg(test)]
 struct Cache {
     entries: VecDeque<(ScanKey, Arc<Scanned>)>,
 }
@@ -1808,6 +1760,7 @@ impl Product for EquipmentLosses {
             CoverageSpan::decl(),
             DestructionCoverageSpan::decl(),
             LossesReply::decl(),
+            prepared::PreparedLossesReply::decl(),
         ]
     }
 
@@ -1815,6 +1768,7 @@ impl Product for EquipmentLosses {
         params.country_params().validate()
     }
 
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -1878,65 +1832,74 @@ impl Product for EquipmentLosses {
                 scanned
             }
         };
-        let mut warnings = Vec::new();
-        let catalogue = match context
-            .content()
-            .and_then(|content| catalogue::catalogue(source, content))
-        {
-            Ok(catalogue) => Some(catalogue),
-            Err(error) => {
-                warnings.push(format!(
-                    "Cause, type and design names are unavailable: {error}"
-                ));
-                None
-            }
-        };
-        let archetypes = catalogue.as_ref().and_then(|catalogue| {
-            installed_content::equipment::Database::load_complete(&catalogue.content.layers)
-                .inspect(|database| warnings.extend(database.misreads.iter().cloned()))
-                .map_err(|error| warnings.push(format!("Equipment types are unavailable: {error}")))
-                .ok()
-        });
-        // NDefines.NGame.COMBAT_LOG_MAX_MONTHS controls daily pruning.
-        let retained_months = (params.land_source == LandSource::CombatLog)
-            .then_some(catalogue.as_ref())
-            .flatten()
-            .and_then(|catalogue| {
-                installed_content::defines::read(&catalogue.content.layers)
-                    .and_then(|defines| defines.int32("NGame", "COMBAT_LOG_MAX_MONTHS"))
-                    .map_err(|error| {
-                        warnings.push(format!(
-                            "The Combat Log's retention is unavailable: {error}"
-                        ))
-                    })
-                    .ok()
-            });
-        let keys = catalogue.as_ref().and_then(|catalogue| {
-            catalogue
-                .guis()
-                .map(|guis| InterfaceKeys::read(guis, &mut warnings))
+        reply_with_content(source, params, context, &scanned)
+    }
+}
+
+fn reply_with_content(
+    source: &Source,
+    params: &LossesParams,
+    context: &LoadContext,
+    scanned: &Scanned,
+) -> io::Result<LossesReply> {
+    let mut warnings = Vec::new();
+    let catalogue = match context
+        .content()
+        .and_then(|content| catalogue::catalogue(source, content))
+    {
+        Ok(catalogue) => Some(catalogue),
+        Err(error) => {
+            warnings.push(format!(
+                "Cause, type and design names are unavailable: {error}"
+            ));
+            None
+        }
+    };
+    let archetypes = catalogue.as_ref().and_then(|catalogue| {
+        installed_content::equipment::Database::load_complete(&catalogue.content.layers)
+            .inspect(|database| warnings.extend(database.misreads.iter().cloned()))
+            .map_err(|error| warnings.push(format!("Equipment types are unavailable: {error}")))
+            .ok()
+    });
+    // NDefines.NGame.COMBAT_LOG_MAX_MONTHS controls daily pruning.
+    let retained_months = (params.land_source == LandSource::CombatLog)
+        .then_some(catalogue.as_ref())
+        .flatten()
+        .and_then(|catalogue| {
+            installed_content::defines::read(&catalogue.content.layers)
+                .and_then(|defines| defines.int32("NGame", "COMBAT_LOG_MAX_MONTHS"))
                 .map_err(|error| {
                     warnings.push(format!(
-                        "Equipment loss interface names are unavailable: {error}"
+                        "The Combat Log's retention is unavailable: {error}"
                     ))
                 })
                 .ok()
         });
-        if let Some(catalogue) = &catalogue {
-            warnings.extend(catalogue.verification.iter().cloned());
-        }
-        Ok(reply(
-            params,
-            &scanned,
-            Content {
-                catalogue: catalogue.as_deref(),
-                archetypes: archetypes.as_ref(),
-                keys: keys.as_ref(),
-                retained_months,
-            },
-            warnings,
-        ))
+    let keys = catalogue.as_ref().and_then(|catalogue| {
+        catalogue
+            .guis()
+            .map(|guis| InterfaceKeys::read(guis, &mut warnings))
+            .map_err(|error| {
+                warnings.push(format!(
+                    "Equipment loss interface names are unavailable: {error}"
+                ))
+            })
+            .ok()
+    });
+    if let Some(catalogue) = &catalogue {
+        warnings.extend(catalogue.verification.iter().cloned());
     }
+    Ok(reply(
+        params,
+        scanned,
+        Content {
+            catalogue: catalogue.as_deref(),
+            archetypes: archetypes.as_ref(),
+            keys: keys.as_ref(),
+            retained_months,
+        },
+        warnings,
+    ))
 }
 
 #[cfg(test)]

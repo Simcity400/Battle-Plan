@@ -14,6 +14,11 @@ Top 10 by default, manual/groups; campaign/follow/pin/range, race/lines/mix, dat
 
 ## Notable behaviour
 
+- Values, supplying dates and type composition come from prepared series. Race, hover and keyboard use exact reached hours; charts query their viewport and use width summaries only when dense. Top N reads prepared rank positions.
+- Unprepared totals and types use the shared block-keyframe sampler and become exact within thirteen blocks. Top ranks use the same native stockpile value transiently. Shared line/mix drawing marks approximate spans; missing rows and array holes retain their unknown values.
+- A drill reads its original holder even outside the viewport. Transient complete reads retain supplying dates independently of value changes, including complete empty censuses.
+
+
 - Uses native whole-counter arithmetic, not ready queued drops. Content/dictionary names identify types. Top N ranks nonzero existing countries; manual known zero stays zero.
 - Read dates stay independent of compressed values. Missing rows/tables/identity and unknown totals break history and easing; no gap becomes zero.
 - Picks bind the native holder at the opening date through its aliases, excluding replacement holders. Overlap/keyboard choices hold the clicked hour until selection.

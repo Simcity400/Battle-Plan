@@ -13,14 +13,15 @@ crate-type = ["cdylib"]
 # Change-certified families reuse unchanged data and compare a rotating hourly slice of it
 # (src/sampled_verify.rs); each `*_verify` feature compares every carried entry, for diagnosis.
 # A new family keeps its `*_verify` feature in this list until its hooks' live burn-in passes
-# (owner rule: verify stays on during burn-in); weather, visibility and raid_intel are in theirs.
-default = ["politics_capture", "portrait_changes", "advisor_changes", "relation_changes", "opinion_changes", "history_changes", "character_changes", "flag_changes", "building_changes", "advisor_pool_changes", "party_leader_changes", "variable_changes", "party_changes", "wing_changes", "roster_changes", "political_status_changes", "mission_changes", "rail_changes", "territory_changes", "navy_ledger_changes", "air_base_changes", "army_stat_changes", "country_input_changes", "raid_changes", "appointment_changes", "naval_tree_changes", "area_changes", "air_record_changes", "world_input_changes", "retreat_ban_changes", "local_subunit_changes", "template_changes", "ship_model_changes", "technology_changes", "focus_changes", "projects_changes", "character_record_changes", "appearance_changes", "counter_changes", "war_changes", "province_unit_changes", "air_base_carry_changes", "unit_leader_changes", "census_changes", "unit_leader_trait_changes", "province_changes", "weather_changes", "weather_verify", "visibility_changes", "visibility_verify", "raid_intel_changes", "raid_intel_verify"]
-politics_capture = []
+# (owner rule: verify stays on during burn-in); visibility and raid_intel are in theirs. Weather's
+# burn-in passed, so weather_verify is off by default (owner decision 2026-10-15).
+default = ["politics_capture", "portrait_changes", "advisor_changes", "relation_changes", "opinion_changes", "history_changes", "character_changes", "flag_changes", "building_changes", "advisor_pool_changes", "party_leader_changes", "variable_changes", "party_changes", "wing_changes", "roster_changes", "political_status_changes", "mission_changes", "rail_changes", "territory_changes", "navy_ledger_changes", "air_base_changes", "army_stat_changes", "country_input_changes", "raid_changes", "appointment_changes", "naval_tree_changes", "area_changes", "air_record_changes", "world_input_changes", "retreat_ban_changes", "local_subunit_changes", "template_changes", "ship_model_changes", "technology_changes", "focus_changes", "projects_changes", "character_record_changes", "appearance_changes", "counter_changes", "war_changes", "province_unit_changes", "air_base_carry_changes", "unit_leader_changes", "census_changes", "unit_leader_trait_changes", "province_changes", "weather_changes", "visibility_changes", "visibility_verify", "raid_intel_changes", "raid_intel_verify"]
+politics_capture = ["collector-politics/politics_capture"]
 advisor_changes = []
 # Bounded per-section wall/cycle measurements for diagnosing slow captures.
 advisor_profile = ["advisor_changes"]
 # Bounded per-hour slow-callback phase and thread-cycle diagnostics.
-callback_profile = []
+callback_profile = ["collector-fuel-awards/callback_profile"]
 # Diagnostic in-process CPU instruction sampling; off by default.
 worker_sampler = []
 # A/B, off by default: try-only help, four attempts and half the first predicted
@@ -34,94 +35,98 @@ executor_spin_until_pool_busy = []
 # Diagnostic oracle, off by default: also record the native values playback derives a breakdown
 # from inputs (the power-balance description trees) for the hour's sampled slice, for
 # `recorder derived` to compare with the derivation.
-breakdown_witness = []
+breakdown_witness = ["collector-governance/breakdown_witness"]
+# Diagnostic oracle, off by default: also record each division's name member template reference
+# (DivisionStatus.name_template), which only the fresh-save oracle reads, to compare a member that
+# names a deleted template.
+name_template_witness = []
 # Diagnostic checked-allocation injection; absent from normal builds.
-alloc-fault-injection = ["engine/alloc-fault-injection"]
+alloc-fault-injection = ["engine/alloc-fault-injection", "collector-memory/alloc-fault-injection"]
 # Parent-run synthetic exception oracle; its native DLL is built separately.
-tap-foreign-probe = []
+tap-foreign-probe = ["collector-observers/tap-foreign-probe"]
 # Diagnostic: read every carried advisor afresh and compare.
 advisor_verify = ["advisor_changes"]
 portrait_changes = []
 # Re-read AirCountryRelations only for countries whose vectors a native writer touched.
-relation_changes = []
+relation_changes = ["collector-air-relations/relation_changes"]
 # Re-read air histories only where a native writer touched them.
-history_changes = []
+history_changes = ["collector-air-histories/history_changes"]
 # Diagnostic: compare every carried history each hour instead of the hourly slice.
-history_verify = ["history_changes"]
+history_verify = ["history_changes", "collector-air-histories/history_verify"]
 # Diagnostic: copy and compare every carried country's relation vectors each hour.
-relation_verify = ["relation_changes"]
+relation_verify = ["relation_changes", "collector-air-relations/relation_verify"]
 # Relation opinion writer hooks: observed relations refreshes read only the statuses a writer changed.
-opinion_changes = []
+opinion_changes = ["collector-observers/opinion_changes"]
 # Diagnostic: compare every replayed owner of each opinion refresh with a full read.
-opinion_verify = ["opinion_changes"]
+opinion_verify = ["opinion_changes", "collector-observers/opinion_verify", "collector-intel/opinion_verify"]
 # Diagnostic: read every carried portrait afresh and compare.
 portrait_verify = ["portrait_changes"]
 # Carry a character's CharacterRoleTraits country-leader and advisor rows, and its advisor roles'
 # modifier caches and tooltip keys, until a native writer touches it; the role sites share the
 # advisor family's patches.
-character_changes = ["advisor_changes"]
+character_changes = ["advisor_changes", "collector-observers/character_changes"]
 # Diagnostic: read every carried character afresh, publish its rows and poison on a difference.
-character_verify = ["character_changes"]
+character_verify = ["character_changes", "collector-observers/character_verify"]
 # Carry a ScriptFlags scope's rows until a native writer touches its flag manager.
-flag_changes = []
+flag_changes = ["collector-intel/flag_changes"]
 # Also read every carried flag manager afresh, publish its rows and poison on a difference.
-flag_verify = ["flag_changes"]
+flag_verify = ["flag_changes", "collector-intel/flag_verify"]
 # Carry a state's or province's building rows until a native writer touches its building status.
-building_changes = []
+building_changes = ["collector-construction/building_changes"]
 # Also read every carried building status afresh, publish its rows and poison on a difference.
-building_verify = ["building_changes"]
+building_verify = ["building_changes", "collector-construction/building_verify"]
 # Carry a country's AvailableAdvisors rows until a native writer touches its pool or a listed
 # advisor's character, and the AdvisorTokens table until a writer touches it; character
 # certificates come from `character_changes`.
-advisor_pool_changes = ["character_changes"]
+advisor_pool_changes = ["character_changes", "collector-observers/advisor_pool_changes"]
 # Also read every carried pool and token table afresh, publish the rows and poison on a difference.
-advisor_pool_verify = ["advisor_pool_changes"]
+advisor_pool_verify = ["advisor_pool_changes", "collector-observers/advisor_pool_verify"]
 # Publish the latest complete HiredAdvisors walk over an hour no appointed-list, pool, character or
 # roster writer ran (the advisor-pool family observes the appointed lists); once a day such an hour
 # walks and compares.
-appointment_changes = ["advisor_pool_changes", "roster_changes"]
+appointment_changes = ["advisor_pool_changes", "roster_changes", "collector-advisors/appointment_changes"]
 # Walk HiredAdvisors every hour and compare each hour a quiet hour would carry with the held walk.
 # On by default during the burn-in of the appointment hooks.
-appointment_verify = ["appointment_changes"]
+appointment_verify = ["appointment_changes", "collector-advisors/appointment_verify"]
 # Publish the latest complete CountryCharacters and CountryRetiredCharacters walk over an hour no
 # pool (the advisor-pool family observes every record writer), character or roster writer ran;
 # once a day such an hour walks and compares.
-character_record_changes = ["advisor_pool_changes", "roster_changes"]
+character_record_changes = ["advisor_pool_changes", "roster_changes", "collector-advisors/character_record_changes"]
 # Walk the records every hour and compare each hour a quiet hour would carry with the held walk.
 # On by default during the burn-in of the record hooks.
-character_record_verify = ["character_record_changes"]
+character_record_verify = ["character_record_changes", "collector-advisors/character_record_verify"]
 # Carry a country's PartyLeaders rows until a native writer touches one of its parties or a listed
 # leader's character; character certificates come from `character_changes`.
-party_leader_changes = ["character_changes"]
+party_leader_changes = ["character_changes", "collector-governance/party_leader_changes"]
 # Also read every carried country afresh, publish its rows and poison on a difference.
-party_leader_verify = ["party_leader_changes"]
+party_leader_verify = ["party_leader_changes", "collector-governance/party_leader_verify"]
 # Carry a ScriptVariables store's entries and keys until a native writer touches it; its seed is
 # read every hour.
-variable_changes = []
+variable_changes = ["collector-intel/variable_changes"]
 # Also read every carried variable store afresh, publish its rows and poison on a difference.
-variable_verify = ["variable_changes"]
+variable_verify = ["variable_changes", "collector-intel/variable_verify"]
 # Carry a country's PoliticalParties rows (popularity and the ruling flag are read every hour)
 # until a native writer touches one of its parties or its party list changes, and its ActiveIdeas
 # rows until its idea list changes.
-party_changes = []
+party_changes = ["collector-governance/party_changes"]
 # Also read every carried country afresh, publish its rows and poison on a difference.
-party_verify = ["party_changes"]
+party_verify = ["party_changes", "collector-governance/party_verify"]
 # Carry an air wing's WingEquipment rows until a native writer touches its equipment pool.
-wing_changes = []
+wing_changes = ["collector-observers/wing_changes"]
 # Also read every carried wing afresh, publish its rows and poison on a difference.
-wing_verify = ["wing_changes"]
+wing_verify = ["wing_changes", "collector-observers/wing_verify"]
 # Observe the character roster arrays and scientist roles: Characters and the role census, and
 # ScriptFlags' scope walk, carry a quiet roster hour; CharacterRoleTraits carries its scientist
 # rows over a quiet scientist hour. Needs the advisor and advisor-pool families' forwarders.
-roster_changes = []
+roster_changes = ["collector-observers/roster_changes"]
 # Read every hour afresh and compare with what a quiet roster or scientist hour would carry.
-roster_verify = ["roster_changes"]
+roster_verify = ["roster_changes", "collector-observers/roster_verify"]
 # Observe capitals, elections, ruling parties, party and idea arrays and popularity: the Politics
 # walk carries Politics, PoliticalParties, ActiveIdeas and PartyLeaders over a quiet hour. Needs
 # the politics capture family's forwarder.
-political_status_changes = []
+political_status_changes = ["collector-observers/political_status_changes"]
 # Read every hour afresh and compare with what a quiet politics hour would carry.
-political_status_verify = ["political_status_changes"]
+political_status_verify = ["political_status_changes", "collector-observers/political_status_verify"]
 # Carry a country's AirRegionalMissions registrations until a native writer registers or
 # unregisters one of its missions; its headers and the wing census are read every hour.
 mission_changes = []
@@ -131,15 +136,15 @@ mission_verify = ["mission_changes"]
 # indexed levels and RailEdges rows) from its last complete read until a native writer marks one
 # of its provinces; the daily countdown marks every province on the cooldown list, which is read
 # every hour.
-rail_changes = []
+rail_changes = ["collector-observers/rail_changes"]
 # Also read every batch afresh, compare each carryable info, publish the fresh outputs and poison
 # on a difference. On by default during the burn-in of the batch carry.
-rail_verify = ["rail_changes"]
+rail_verify = ["rail_changes", "collector-observers/rail_verify"]
 # Carry a state's States row and a province's Provinces row until a native writer marks its state
 # or province (manpower, StateFlags and BorderConflicts are read every hour).
-territory_changes = []
+territory_changes = ["collector-observers/territory_changes"]
 # Also read every carried state and province afresh, publish its row and poison on a difference.
-territory_verify = ["territory_changes"]
+territory_verify = ["territory_changes", "collector-observers/territory_verify"]
 # NavalMissionLedgers reads no region ledger header of a navy whose registered-mission set is empty
 # (every ledger writer writes the set in the same call); the sets are read every hour.
 navy_ledger_changes = []
@@ -156,125 +161,125 @@ air_base_verify = ["air_base_changes"]
 # hooked writer of its containers, pools or wings (engine::air_base_mutations) touched its handle;
 # its container countries' links are resolved every hour.
 # The capacity setter and base destructor are the raid and ship model families' patches.
-air_base_carry_changes = ["raid_changes", "ship_model_changes"]
+air_base_carry_changes = ["raid_changes", "ship_model_changes", "collector-observers/air_base_carry_changes"]
 # Also read every carryable base afresh, compare it with its held subtree and stop carrying on a
 # difference.
-air_base_carry_verify = ["air_base_carry_changes"]
+air_base_carry_verify = ["air_base_carry_changes", "collector-observers/air_base_carry_verify"]
 # Carry a division's DivisionStatus.attack_stats (its stat block's attack operands) until
 # The active-stat writer rewrites the stat block (the army and stat block are read every hour).
-army_stat_changes = []
+army_stat_changes = ["collector-division-parts/army_stat_changes"]
 # Also read every carried division's stat block afresh, publish it and poison on a difference.
-army_stat_verify = ["army_stat_changes"]
+army_stat_verify = ["army_stat_changes", "collector-division-parts/army_stat_verify"]
 # Serve a ship's own ShipModels inputs (fixed fields, pool entries, heap fallback sprite,
 # experience and medal-store modifiers) from its held read until a hooked writer touches the ship,
 # its medal store or its carrier base (task forces, locations, countries, weather and variants are
 # read every hour).
-ship_model_changes = []
+ship_model_changes = ["collector-ship-models/ship_model_changes"]
 # Also read every carried ship afresh, publish it and poison on a difference. On by default during
 # its burn-in.
-ship_model_verify = ["ship_model_changes"]
+ship_model_verify = ["ship_model_changes", "collector-ship-models/ship_model_verify"]
 # CountryStabilityInputs/Lines and the research tables read, beside their daily slice, only the
 # countries a native writer of their rows marked since the previous hour (the politics, political
 # status, party leader, character role, roster, relation, territory, raid, opinion and advisor pool
 # families forward the writers they patch); a country no writer marked keeps the rows of its last
 # read until its slice.
-country_input_changes = []
+country_input_changes = ["collector-observers/country_input_changes"]
 # Also read every country every hour, compare each unmarked one with its last read and poison on a
 # difference. On by default during its burn-in.
-country_input_verify = ["country_input_changes"]
+country_input_verify = ["country_input_changes", "collector-observers/country_input_verify"]
 # AirRegionCombat reads a regional air-combat holder only where the air-combat record updater
 # wrote it (its records from the previous capture's hour on) and carries the others.
-air_record_changes = []
+air_record_changes = ["collector-air-records/air_record_changes"]
 # Also read every carried holder whole, publish it and poison on a difference. On by default during
 # its burn-in.
-air_record_verify = ["air_record_changes"]
+air_record_verify = ["air_record_changes", "collector-air-records/air_record_verify"]
 # ResearchTechnologies (and its TechnologyDefinitions) reads, beside its daily slice, the countries a
 # writer of a technology's level, classifier, researched membership or applied bonuses marked; the
 # country input family's hooks mark them. Without it every country is read every hour.
-technology_changes = ["country_input_changes"]
+technology_changes = ["country_input_changes", "collector-observers/technology_changes"]
 # Also read every country's roster every hour, compare each unmarked one with its last read and
 # poison on a difference. Off by default: its burn-in passed.
-technology_verify = ["technology_changes"]
+technology_verify = ["technology_changes", "collector-observers/technology_verify"]
 # Focus and CompletedFocuses read every country owning a state after the daily tick and, in between, the countries
 # a national focus writer marked; the country input family's hooks mark them. Without it every
 # country is read every hour.
-focus_changes = ["country_input_changes"]
+focus_changes = ["country_input_changes", "collector-observers/focus_changes"]
 # Also read every country's focus every hour, compare each unmarked one with its last read and
 # poison on a difference. Off by default: its burn-in passed.
-focus_verify = ["focus_changes"]
+focus_verify = ["focus_changes", "collector-observers/focus_verify"]
 # Projects and ProjectHistory read every country owning a state after the daily tick and, in between, the
 # countries a special project writer marked; the country input family's hooks mark them. Without it
 # every country is read every hour.
-projects_changes = ["country_input_changes"]
+projects_changes = ["country_input_changes", "collector-observers/projects_changes"]
 # Also read every country's project pool every hour, compare each unmarked one with its last read
 # and poison on a difference. Off by default: its burn-in passed.
-projects_verify = ["projects_changes"]
+projects_verify = ["projects_changes", "collector-observers/projects_verify"]
 # WeatherProvinces reads, in an ordinary hour, only the province records the native hourly pass
 # visited (the weather pass's window from the cursor +0x58, provinces_per_update wide) and
 # carries the rest; the weather writers outside that window (reseed, reset, console, load) are
 # counted by the country input family's hooks, and any of them, a jump of the cursor or a gap reads
 # every record. Without it every record is read every hour.
-weather_changes = ["country_input_changes"]
+weather_changes = ["country_input_changes", "collector-observers/weather_changes"]
 # Also read every carried province record every hour and compare it, disabling the window read on a
 # difference. On by default during its burn-in.
-weather_verify = ["weather_changes"]
+weather_verify = ["weather_changes", "collector-observers/weather_verify"]
 # CountryAppearance reads, beside its daily slice, the countries a writer of their appearance fields
 # marked (the cosmetic tag, colour copy, graphical culture, localized name and subject writers, and
 # the forwarded country and diplomacy resets, ruling party, party leader and character role
 # writers); the country input family's hooks mark them. Without it every country is read every hour.
-appearance_changes = ["country_input_changes"]
+appearance_changes = ["country_input_changes", "collector-observers/appearance_changes"]
 # Also read every country's appearance every hour, compare each unmarked one with its last read and
 # poison on a difference. On by default during its burn-in.
-appearance_verify = ["appearance_changes"]
+appearance_verify = ["appearance_changes", "collector-observers/appearance_verify"]
 # CountryCounterInputs reads, beside its daily slice, the countries a writer of their counter inputs
 # marked (the modifier rebuild, the war body, division rosters, unit leaders, neighbours, MIO
 # policies, and the forwarded resets, wartime allies, relation slots, state owners and controllers,
 # cores and character pools); the country input family's hooks mark them. Without it every country
 # is read every hour.
-counter_changes = ["country_input_changes"]
+counter_changes = ["country_input_changes", "collector-observers/counter_changes"]
 # Also read every country's counter inputs every hour, compare each unmarked one with its last read
 # and poison on a difference. On by default during its burn-in.
-counter_verify = ["counter_changes"]
+counter_verify = ["counter_changes", "collector-observers/counter_verify"]
 # CountryVisibility carries an unmarked country's raw accumulator entry under the country input
 # family's modifier-rebuild and forwarded country-reset marks, beside its daily sampled slice.
 # The live definition and eligibility metadata still apply every hour. Without it every country is read.
-visibility_changes = ["country_input_changes"]
+visibility_changes = ["country_input_changes", "collector-observers/visibility_changes", "collector-visibility/visibility_changes"]
 # Read and compare every unmarked country's held raw entry. On by default during burn-in.
-visibility_verify = ["visibility_changes"]
+visibility_verify = ["visibility_changes", "collector-observers/visibility_verify"]
 # Diagnostic, off by default: record the native attack operands of another slice of divisions each
 # hour (DivisionStatus.attack, the stat block's entries plus the live terrains' adjusters) for the
 # recorder's derivation check.
-attack_witness = []
+attack_witness = ["collector-division-parts/attack_witness"]
 # Read a raid state input owner (state or country) within the hour a native writer marks it, beside
 # its daily slice; every unobserved hour reads every owner. Needs the building family's forwarder.
-raid_changes = []
+raid_changes = ["collector-observers/raid_changes"]
 # Read every raid state input owner every hour and compare each unmarked one with its previous read.
 # On by default during the hooks' burn-in.
-raid_verify = ["raid_changes"]
+raid_verify = ["raid_changes", "collector-observers/raid_verify"]
 # Carry a country's and a commander's naval hover tree (NavalModifierTrees) until a native writer
 # rebuilds it; every other reached source tree is read each hour a live naval combat reaches it.
-naval_tree_changes = []
+naval_tree_changes = ["collector-observers/naval_tree_changes"]
 # Also read every carryable tree afresh, publish it and poison on a difference. On by default
 # during the family's burn-in.
-naval_tree_verify = ["naval_tree_changes"]
+naval_tree_verify = ["naval_tree_changes", "collector-observers/naval_tree_verify"]
 # Diagnostic oracle, off by default: also read every reached naval hover source tree afresh and
 # record it per occurrence in NavalModifierTreeSamples, for `recorder derived`.
-naval_tree_oracle = []
+naval_tree_oracle = ["collector-observers/naval_tree_oracle"]
 # RaidIntelInputs answers a country's CRYPTO_STRENGTH and INTELLIGENCE_AGENCY_DEFENSE raw values
 # from its held read, skipping the accumulator entries copy, while its accumulator header and its
 # naval tree country certificate (modifier recalculation, country appearance reset) are the held
 # read's. Without it every country's accumulator is copied every hour.
-raid_intel_changes = ["naval_tree_changes"]
+raid_intel_changes = ["naval_tree_changes", "collector-projects/raid_intel_changes"]
 # Also read every carryable country every hour, compare it with its held answers and poison the
 # naval tree certificates on a difference. On by default during its burn-in.
-raid_intel_verify = ["raid_intel_changes"]
+raid_intel_verify = ["raid_intel_changes", "collector-projects/raid_intel_verify"]
 # Read ProvinceNames, NavalRegionAccess, the world tension tables and DynamicModifiers every hour,
 # publishing a table (a country, for DynamicModifiers) none of its native writers touched from its
 # held read.
-world_input_changes = []
+world_input_changes = ["collector-observers/world_input_changes"]
 # Also read every quiet hour afresh, compare it with the held read and poison on a difference. On
 # by default during the family's burn-in.
-world_input_verify = ["world_input_changes"]
+world_input_verify = ["world_input_changes", "collector-observers/world_input_verify"]
 # Carry a province's ProvinceUnitOrder lists until the hooked append or erase marks it.
 province_unit_changes = []
 # Also read every carryable province afresh, compare it with the held lists and poison on a
@@ -282,30 +287,30 @@ province_unit_changes = []
 province_unit_verify = ["province_unit_changes"]
 # Carry a commander's retreat bans (DivisionRetreatBans) until a writer of its modifier blocks
 # runs; the naval tree family's commander patches forward those writers.
-retreat_ban_changes = ["naval_tree_changes"]
+retreat_ban_changes = ["naval_tree_changes", "collector-observers/retreat_ban_changes"]
 # Also read every reached commander afresh, publish it and poison on a difference. On by default
 # during the family's burn-in.
-retreat_ban_verify = ["retreat_ban_changes"]
+retreat_ban_verify = ["retreat_ban_changes", "collector-observers/retreat_ban_verify"]
 # Label each province's controller and owner areas and record each controller area's
 # representative and contacts, reading again only the areas of provinces a territory writer marked
 # (or that changed area), the areas they left and their neighbours' areas.
-area_changes = []
+area_changes = ["collector-observers/area_changes"]
 # Also read every area every hour, compare it with what the carry would publish and poison on a
 # difference. On by default during the family's burn-in.
-area_verify = ["area_changes"]
+area_verify = ["area_changes", "collector-observers/area_verify"]
 # Carry a province's Provinces row until a territory writer marks the province or its held state
 # (or the building family forwards a write at it); provinces in a border conflict and the
 # fort_bunker operand of fortified provinces are read every hour.
-province_changes = []
+province_changes = ["collector-observers/province_changes"]
 # Also read every province every hour, compare each carryable one with its held row and poison on
 # a difference. On by default during the family's burn-in.
-province_verify = ["province_changes"]
+province_verify = ["province_changes", "collector-observers/province_verify"]
 # Carry a country's CountryLocalSubunits rows until a native writer touches its local sub-unit
 # clones or their requirements.
-local_subunit_changes = []
+local_subunit_changes = ["collector-model-inputs/local_subunit_changes"]
 # Also read every carryable country afresh, publish its rows and poison on a difference. On by
 # default during the family's burn-in.
-local_subunit_verify = ["local_subunit_changes"]
+local_subunit_verify = ["local_subunit_changes", "collector-model-inputs/local_subunit_verify"]
 # Carry a division template's fallback name key, the one DivisionTemplates field the hourly icon
 # walk does not read for every template, until a native writer touches the template.
 template_changes = []
@@ -313,29 +318,85 @@ template_changes = []
 template_verify = ["template_changes"]
 # Carry WarRelations between hours, reading only each war's casualty counters, while no forwarded
 # writer of the war set or its fixed fields ran.
-war_changes = []
+war_changes = ["collector-observers/war_changes"]
 # Also walk every quiet hour and poison on a difference. On by default during the family's
 # burn-in.
-war_verify = ["war_changes"]
+war_verify = ["war_changes", "collector-observers/war_verify"]
 # Carry UnitLeaders rows on quiet roster hours, reading only the leaders a hooked writer touched
 # (and the slice). The naval tree family forwards the leader constructors and destructor.
-unit_leader_changes = ["roster_changes", "naval_tree_changes"]
+unit_leader_changes = ["roster_changes", "naval_tree_changes", "collector-observers/unit_leader_changes"]
 # Also read every carryable leader each quiet hour and poison on a difference. On by default during
 # the family's burn-in.
-unit_leader_verify = ["unit_leader_changes"]
+unit_leader_verify = ["unit_leader_changes", "collector-observers/unit_leader_verify"]
 # Keep the roster job's role census without gathering it while no hooked or forwarded writer of a
 # gathered field ran, gathering only the slice. The advisor and roster families forward their sites.
-census_changes = ["advisor_changes", "roster_changes"]
+census_changes = ["advisor_changes", "roster_changes", "collector-observers/census_changes"]
 # Also gather and compare every row each hour. On by default during the family's burn-in.
-census_verify = ["census_changes"]
+census_verify = ["census_changes", "collector-observers/census_verify"]
 # Carry each unit leader's UnitLeaderTraits rows while no writer of its trait vector ran, reading only
 # the leaders the naval tree family's forwarded modifier recalculation tail or lifetime sites touched.
-unit_leader_trait_changes = ["naval_tree_changes"]
+unit_leader_trait_changes = ["naval_tree_changes", "collector-observers/unit_leader_trait_changes"]
 # Also read every carryable leader each hour and poison on a difference. On by default during the
 # family's burn-in.
-unit_leader_trait_verify = ["unit_leader_trait_changes"]
+unit_leader_trait_verify = ["unit_leader_trait_changes", "collector-observers/unit_leader_trait_verify"]
 
 [dependencies]
+collector-politics.workspace = true
+collector-construction.workspace = true
+collector-railway-guns.workspace = true
+collector-country-counters.workspace = true
+collector-naval-details.workspace = true
+collector-air-histories.workspace = true
+collector-air-relations.workspace = true
+collector-air-records.workspace = true
+collector-air-sorties.workspace = true
+collector-output.workspace = true
+collector-new-divisions.workspace = true
+collector-naval-counters.workspace = true
+collector-division-parts.workspace = true
+collector-naval-movement.workspace = true
+collector-army-icons.workspace = true
+collector-war-overview.workspace = true
+collector-map-tables.workspace = true
+collector-slow-tables.workspace = true
+collector-ledger-tables.workspace = true
+collector-map-events.workspace = true
+collector-fuel-awards.workspace = true
+collector-peace.workspace = true
+collector-experience-gains.workspace = true
+collector-leaders.workspace = true
+collector-production-daily.workspace = true
+collector-visibility.workspace = true
+collector-session.workspace = true
+collector-raids.workspace = true
+collector-combat-log.workspace = true
+collector-supply-trains.workspace = true
+collector-projects.workspace = true
+collector-stability.workspace = true
+collector-model-inputs.workspace = true
+collector-ship-models.workspace = true
+collector-advisors.workspace = true
+collector-lexical.workspace = true
+collector-weather.workspace = true
+collector-governance.workspace = true
+collector-intel.workspace = true
+collector-observers.workspace = true
+collector-extended-support.workspace = true
+collector-production.workspace = true
+collector-economy.workspace = true
+collector-combat.workspace = true
+collector-projection.workspace = true
+collector-raw.workspace = true
+collector-memory.workspace = true
+collector-logistics.workspace = true
+collector-lifetime.workspace = true
+collector-metadata.workspace = true
+collector-snapshots.workspace = true
+collector-certificates.workspace = true
+collector-timing.workspace = true
+collector-hooks.workspace = true
+collector-primitives.workspace = true
+collector-status.workspace = true
 engine.workspace = true
 replay.workspace = true
 retour = "0.3"
@@ -349,7 +410,58 @@ name = "tap_foreign_unwind"
 required-features = ["tap-foreign-probe"]
 
 [dev-dependencies]
+collector-politics = { workspace = true, features = ["test-support"] }
+collector-construction = { workspace = true, features = ["test-support"] }
+collector-railway-guns = { workspace = true, features = ["test-support"] }
+collector-country-counters = { workspace = true, features = ["test-support"] }
+collector-naval-details = { workspace = true, features = ["test-support"] }
+collector-air-histories = { workspace = true, features = ["test-support"] }
+collector-air-relations = { workspace = true, features = ["test-support"] }
+collector-air-records = { workspace = true, features = ["test-support"] }
+collector-air-sorties = { workspace = true, features = ["test-support"] }
+collector-output = { workspace = true, features = ["test-support"] }
+collector-new-divisions = { workspace = true, features = ["test-support"] }
+collector-naval-counters = { workspace = true, features = ["test-support"] }
+collector-division-parts = { workspace = true, features = ["test-support"] }
+collector-naval-movement = { workspace = true, features = ["test-support"] }
+collector-army-icons = { workspace = true, features = ["test-support"] }
+collector-war-overview = { workspace = true, features = ["test-support"] }
+collector-map-tables = { workspace = true, features = ["test-support"] }
+collector-slow-tables = { workspace = true, features = ["test-support"] }
+collector-ledger-tables = { workspace = true, features = ["test-support"] }
+collector-map-events = { workspace = true, features = ["test-support"] }
+collector-fuel-awards = { workspace = true, features = ["test-support"] }
+collector-peace = { workspace = true, features = ["test-support"] }
+collector-experience-gains = { workspace = true, features = ["test-support"] }
+collector-leaders = { workspace = true, features = ["test-support"] }
+collector-production-daily = { workspace = true, features = ["test-support"] }
+collector-visibility = { workspace = true, features = ["test-support"] }
+collector-session = { workspace = true, features = ["test-support"] }
+collector-raids = { workspace = true, features = ["test-support"] }
+collector-combat-log = { workspace = true, features = ["test-support"] }
+collector-supply-trains = { workspace = true, features = ["test-support"] }
+collector-projects = { workspace = true, features = ["test-support"] }
+collector-stability = { workspace = true, features = ["test-support"] }
+collector-model-inputs = { workspace = true, features = ["test-support"] }
+collector-ship-models = { workspace = true, features = ["test-support"] }
+collector-advisors = { workspace = true, features = ["test-support"] }
+collector-lexical = { workspace = true, features = ["test-support"] }
+collector-weather = { workspace = true, features = ["test-support"] }
+collector-governance = { workspace = true, features = ["test-support"] }
+collector-intel = { workspace = true, features = ["test-support"] }
+collector-observers = { workspace = true, features = ["test-support"] }
+collector-extended-support = { workspace = true, features = ["test-support"] }
+collector-production = { workspace = true, features = ["test-support"] }
+collector-economy = { workspace = true, features = ["test-support"] }
+collector-combat = { workspace = true, features = ["test-support"] }
+collector-raw = { workspace = true, features = ["test-support"] }
+collector-memory = { workspace = true, features = ["test-support"] }
+collector-lifetime = { workspace = true, features = ["test-support"] }
+collector-metadata = { workspace = true, features = ["test-support"] }
+collector-certificates = { workspace = true, features = ["test-support"] }
+collector-timing = { workspace = true, features = ["test-support"] }
+collector-hooks = { workspace = true, features = ["test-support"] }
+collector-primitives = { workspace = true, features = ["test-support"] }
+collector-test-support.workspace = true
 engine = { workspace = true, features = ["batch-fallback-test-counts"] }
 
-[build-dependencies]
-cc = "1"

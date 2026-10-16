@@ -1,0 +1,1379 @@
+//! Project facts append once; windows reconstruct only their selected project keys.
+use super::*;
+use crate::prepared::series::{self, Accumulator, Reader};
+use crate::products::construction_spending::{
+    ConstructionSpending, ConstructionSpendingReply, LeafProject, SpendingLeaf, SpendingUnknown,
+    SpentStep,
+};
+
+#[derive(Clone, Serialize, Deserialize)]
+enum Fact {
+    Start(ConstructionProject),
+    Progress(ProjectRun),
+    Counts {
+        built: Vec<LevelsBuilt>,
+        unaccounted: Vec<LevelsBuilt>,
+        possible: Vec<LevelsBuilt>,
+        added: Vec<LevelsBuilt>,
+    },
+    End(ProjectEnd),
+    Repair(i32),
+    Output(ConstructionOutputRead),
+}
+
+#[derive(Default, Serialize, Deserialize)]
+pub(crate) struct Prepared {
+    scan: Scan,
+    facts: Accumulator,
+    queues: Accumulator,
+    members: Accumulator,
+    reads: Accumulator,
+    spending: Accumulator,
+    project_keys: BTreeMap<String, u64>,
+    slots: Vec<u64>,
+    spending_keys: BTreeMap<String, u64>,
+    last_end: Vec<Option<ProjectEnd>>,
+    last_run: Vec<Option<i32>>,
+    first_repair: Vec<Option<i32>>,
+    last_output: Vec<Option<ConstructionOutputRead>>,
+    leaf_totals: BTreeMap<String, i128>,
+    leaf_metadata: BTreeMap<String, LeafMetadata>,
+    before_first: BTreeMap<String, u32>,
+    output_seen: BTreeSet<usize>,
+    #[serde(skip)]
+    touched: BTreeSet<u64>,
+    #[cfg(test)]
+    #[serde(skip)]
+    work: crate::prepared::observer_tests::Work,
+}
+
+fn leaf_key(tag: &str, leaf: &SpendingLeaf) -> io::Result<String> {
+    Ok(serde_json::to_string(&(
+        tag,
+        leaf.repair,
+        leaf.kind,
+        leaf.building,
+        leaf.state,
+        leaf.to_state,
+    ))?)
+}
+
+impl Prepared {
+    pub(crate) fn restore_frame(&mut self, frame: &DecodedFrame) {
+        if self.scan.last == Some(frame.hour) {
+            self.scan.restore_frame(frame);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe(
+        &mut self,
+        frame: &DecodedFrame,
+        format: replay::format::FormatVersion,
+        source: &Source,
+    ) -> io::Result<()> {
+        let changes = crate::prepared::frame_changes::FrameChanges {
+            rows_changed: [true; replay::frame::TABLE_COUNT],
+            table_read: [true; replay::frame::TABLE_COUNT],
+            slot_read: std::array::from_fn(|index| {
+                slot_read(format, &frame.metrics, TableId::ALL[index], frame.hour)
+            }),
+        };
+        self.observe_changed(frame, format, source, &changes)
+    }
+
+    pub(crate) fn observe_changed(
+        &mut self,
+        frame: &DecodedFrame,
+        format: replay::format::FormatVersion,
+        source: &Source,
+        changes: &crate::prepared::frame_changes::FrameChanges,
+    ) -> io::Result<()> {
+        let consecutive = self.scan.last.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
+        self.facts.advance(frame.hour)?;
+        self.queues.advance(frame.hour)?;
+        self.members.advance(frame.hour)?;
+        self.reads.advance(frame.hour)?;
+        self.spending.advance(frame.hour)?;
+        if !consecutive {
+            for (name, total) in &self.leaf_totals {
+                self.spending
+                    .observe(self.spending_keys[name], frame.hour, Some(*total), true);
+            }
+        }
+        self.scan.observe_changed(frame, format, changes);
+        if [TableId::BuildingConstruction, TableId::RailwayConstruction]
+            .into_iter()
+            .any(|table| changes.slot_read[table.index()])
+        {
+            self.scan.sync_reads();
+        }
+        self.project_facts(frame.hour, frame.branch, source)
+    }
+
+    fn project_facts(&mut self, hour: i32, branch: u64, source: &Source) -> io::Result<()> {
+        let dirty = std::mem::take(&mut self.scan.dirty);
+        if dirty.is_empty() && self.scan.log.output_reads.is_empty() {
+            return Ok(());
+        }
+        for &index in &dirty {
+            if index >= self.slots.len() {
+                let key = self.project_keys.len() as u64;
+                let project = &self.scan.log.projects[index];
+                self.project_keys
+                    .insert(serde_json::to_string(&(project.tag.as_str(), key))?, key);
+                self.slots.push(key);
+                self.last_run.push(None);
+                self.last_end.push(None);
+                self.first_repair.push(None);
+                self.last_output.push(None);
+            }
+        }
+        let mut output_steps = BTreeMap::new();
+        for &index in &dirty {
+            let mut output: Vec<_> = self.scan.log.outputs[index]
+                .iter()
+                .filter(|read| read.known_at == hour)
+                .cloned()
+                .collect();
+            for read in &mut output {
+                if self.output_seen.insert(index)
+                    && read.since_hour.is_some()
+                    && !read.observed_since_creation
+                {
+                    let tag = &self.scan.log.projects[index].tag;
+                    *self.before_first.entry(tag.clone()).or_default() += 1;
+                }
+                let before = self.last_output.get(index).and_then(Option::as_ref);
+                for (raw, previous) in [
+                    (
+                        &mut read.construction_raw,
+                        before.and_then(|read| read.construction_raw.as_deref()),
+                    ),
+                    (
+                        &mut read.repair_raw,
+                        before.and_then(|read| read.repair_raw.as_deref()),
+                    ),
+                ] {
+                    if let Some(value) = raw {
+                        let amount = value
+                            .parse::<i128>()
+                            .map_err(|_| crate::invalid("Malformed construction IC"))?
+                            - previous
+                                .unwrap_or("0")
+                                .parse::<i128>()
+                                .map_err(|_| crate::invalid("Malformed construction IC"))?;
+                        *value = amount.to_string();
+                    }
+                }
+                read.repair_ticks =
+                    i32::from(read.repair_ticks > before.map_or(0, |read| read.repair_ticks));
+            }
+            output_steps.insert(index, output);
+        }
+        for (tag, (leaves, _)) in crate::products::construction_spending::all_leaves_for(
+            &self.scan.log,
+            dirty.iter().map(|&index| {
+                (
+                    &self.scan.log.projects[index],
+                    output_steps[&index].as_slice(),
+                )
+            }),
+        ) {
+            for mut leaf in leaves {
+                let name = leaf_key(&tag, &leaf)?;
+                let next = self.spending_keys.len() as u64;
+                self.spending_keys.entry(name.clone()).or_insert(next);
+                let total = self.leaf_totals.entry(name.clone()).or_default();
+                let previous = *total;
+                if let Some(step) = leaf.spent.last() {
+                    *total = total
+                        .checked_add(
+                            step.total_raw
+                                .parse()
+                                .map_err(|_| crate::invalid("Malformed construction IC"))?,
+                        )
+                        .ok_or_else(|| crate::invalid("Construction IC exceeds its exact range"))?;
+                }
+                if previous != *total || self.spending.state(self.spending_keys[&name]).is_none() {
+                    self.spending
+                        .observe(self.spending_keys[&name], hour, Some(*total), false);
+                    #[cfg(test)]
+                    {
+                        self.work.emitted += 1;
+                    }
+                }
+                leaf.spent.clear();
+                merge_leaf(self.leaf_metadata.entry(name).or_default(), leaf);
+            }
+        }
+        // Only this project's two leaves can have an unresolved output interval.
+        for &index in &dirty {
+            let project = &self.scan.log.projects[index];
+            if output_steps[&index]
+                .iter()
+                .any(|read| read.construction_raw.is_some())
+            {
+                for repair in [false, true] {
+                    let name = serde_json::to_string(&(
+                        project.tag.as_str(),
+                        repair,
+                        project.kind,
+                        project.building,
+                        project.state,
+                        project
+                            .to_state
+                            .filter(|_| project.kind == ProjectKind::Railway),
+                    ))?;
+                    if let Some(leaf) = self.leaf_metadata.get_mut(&name) {
+                        leaf.resolve(&project.id, hour);
+                    }
+                }
+            }
+        }
+        let windows = source.block_windows(branch);
+        let window_of = |hour| {
+            windows
+                .partition_point(|window| window.first_hour <= hour)
+                .saturating_sub(1) as u64
+        };
+        for index in dirty {
+            #[cfg(test)]
+            {
+                self.work.history_visits += 1;
+            }
+            let project = &mut self.scan.log.projects[index];
+            let key = self.slots[index];
+            let new = self.last_run[index].is_none();
+            let mut dates = Vec::new();
+            if new {
+                let mut start = project.clone();
+                start.built.clear();
+                start.unaccounted.clear();
+                start.possible.clear();
+                start.added.clear();
+                start.runs.clear();
+                start.end = None;
+                start.first_repair_tick = None;
+                self.facts.event(key, hour, &Fact::Start(start))?;
+                dates.extend([project.first_read, project.created_hour]);
+                if project.created_hour > project.first_read {
+                    for window in window_of(project.first_read)..=window_of(project.created_hour) {
+                        self.members.event(window, hour, &key)?;
+                    }
+                }
+            }
+            if let Some(run) = project.runs.last() {
+                let changed = self.last_run[index] != Some(run.first_hour);
+                if changed {
+                    self.facts.event(key, hour, &Fact::Progress(run.clone()))?;
+                    self.last_run[index] = Some(run.first_hour);
+                }
+                if changed || run.last_hour != hour {
+                    self.queues.observe(
+                        key,
+                        hour,
+                        (run.last_hour == hour).then_some(i128::from(run.first_hour)),
+                        run.first_hour == hour,
+                    );
+                }
+                if run.last_hour == hour {
+                    self.touched.insert(key);
+                }
+            }
+            for values in [&project.built, &project.unaccounted, &project.possible] {
+                dates.extend(
+                    values
+                        .iter()
+                        .map(|value| value.hour.unwrap_or(value.known_at)),
+                );
+            }
+            if !project.built.is_empty()
+                || !project.unaccounted.is_empty()
+                || !project.possible.is_empty()
+                || !project.added.is_empty()
+            {
+                self.facts.event(
+                    key,
+                    hour,
+                    &Fact::Counts {
+                        built: project.built.clone(),
+                        unaccounted: project.unaccounted.clone(),
+                        possible: project.possible.clone(),
+                        added: project.added.clone(),
+                    },
+                )?;
+            }
+            if project.end != self.last_end[index] {
+                if let Some(end) = &project.end {
+                    self.facts.event(key, hour, &Fact::End(end.clone()))?;
+                    dates.extend([end.known_at, end.hour.unwrap_or(end.known_at)]);
+                }
+                self.last_end[index] = project.end.clone();
+            }
+            if project.first_repair_tick != self.first_repair[index] {
+                if let Some(hour) = project.first_repair_tick {
+                    self.facts.event(key, hour, &Fact::Repair(hour))?;
+                }
+                self.first_repair[index] = project.first_repair_tick;
+            }
+            for window in dates.into_iter().map(window_of).collect::<BTreeSet<_>>() {
+                self.members.event(window, hour, &key)?;
+            }
+            let output = &mut self.scan.log.outputs[index];
+            for read in output.iter().filter(|read| read.known_at == hour) {
+                self.facts.event(key, hour, &Fact::Output(read.clone()))?;
+                self.touched.insert(key);
+                if read.construction_raw.is_some() {
+                    self.last_output[index] = Some(read.clone());
+                }
+            }
+            output.clear();
+            project.built.clear();
+            project.unaccounted.clear();
+            project.possible.clear();
+            project.added.clear();
+            if project.runs.len() > 2 {
+                project.runs.drain(..project.runs.len() - 2);
+            }
+        }
+        for &(at, reason) in self
+            .scan
+            .log
+            .output_reads
+            .iter()
+            .filter(|(at, _)| *at == hour)
+        {
+            self.reads.event(0, at, &reason)?;
+        }
+        self.scan.log.output_reads.clear();
+        for values in [
+            &mut self.scan.buildings.reads,
+            &mut self.scan.railways.reads,
+            &mut self.scan.log.reads,
+            &mut self.scan.log.railway_reads,
+        ] {
+            if values.len() > 2 {
+                values.drain(..values.len() - 2);
+            }
+        }
+        self.scan.log.repair_predecessors.clear();
+        Ok(())
+    }
+
+    pub(crate) fn end_block(
+        &mut self,
+        frame_branch: u64,
+        last_hour: i32,
+        source: &Source,
+    ) -> io::Result<()> {
+        self.scan.seal();
+        if let Some(hour) = self.scan.last {
+            self.project_facts(hour, frame_branch, source)?;
+        }
+        let windows = source.block_windows(frame_branch);
+        let window = windows
+            .partition_point(|window| window.first_hour <= last_hour)
+            .saturating_sub(1) as u64;
+        for key in std::mem::take(&mut self.touched) {
+            self.members.event(window, last_hour, &key)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn work(&self) -> crate::prepared::observer_tests::Work {
+        let mut work = self.work;
+        work.row_visits += self.scan.work.row_visits;
+        work.history_visits += self.scan.work.history_visits;
+        work.history_visits += self.scan.buildings.watch.visits + self.scan.railways.watch.visits;
+        work
+    }
+
+    pub(crate) fn bytes(&self) -> usize {
+        self.facts.bytes()
+            + self.queues.bytes()
+            + self.members.bytes()
+            + self.reads.bytes()
+            + self.spending.bytes()
+    }
+
+    pub(crate) fn flush(
+        &mut self,
+        writer: &mut store::Writer,
+        source: &Source,
+        context: &LoadContext,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.scan.seal();
+        if let Some(hour) = self.scan.last {
+            self.project_facts(hour, branch, source)?;
+        }
+        self.facts.flush(
+            writer,
+            &format!("construction-facts-{branch}"),
+            0,
+            cancelled,
+        )?;
+        self.queues.flush(
+            writer,
+            &format!("construction-queues-{branch}"),
+            0,
+            cancelled,
+        )?;
+        self.members.flush(
+            writer,
+            &format!("construction-members-{branch}"),
+            0,
+            cancelled,
+        )?;
+        self.reads.flush(
+            writer,
+            &format!("construction-reads-{branch}"),
+            0,
+            cancelled,
+        )?;
+        self.spending.flush(
+            writer,
+            &format!("construction-spending-{branch}"),
+            5,
+            cancelled,
+        )?;
+        let mut warnings = Vec::new();
+        let names = content_names(
+            source,
+            context,
+            branch,
+            &self.scan.log,
+            cancelled,
+            &mut warnings,
+        )?;
+        scan_warnings(&self.scan.log, &mut warnings);
+        let manifest = ConstructionLogManifestReply {
+            cost_scale: COST_SCALE,
+            windows: windows(source.replay_ref(), branch),
+            recorded: !(self.scan.log.reads.is_empty() && self.scan.log.railway_reads.is_empty()),
+            types: names.types.clone(),
+            repair_icon: names.repair_icon.clone(),
+            warnings: warnings.clone(),
+        };
+        series::write_catalogue(
+            writer,
+            "construction",
+            branch,
+            &self.project_keys,
+            &(manifest, self.scan.last),
+        )?;
+        let params = super::super::CountryParams {
+            branch_id: branch.to_string(),
+            tag: String::new(),
+        };
+        let mut template = ConstructionSpending::reply_from_parts(
+            &params,
+            &self.scan.log,
+            &names,
+            Vec::new(),
+            0,
+            warnings.clone(),
+        );
+        template
+            .warnings
+            .retain(|warning| !warning.starts_with(": no recorded construction"));
+        let mut countries: BTreeMap<String, Vec<SpendingLeaf>> = BTreeMap::new();
+        for (name, leaf) in &self.leaf_metadata {
+            let (tag, _, _, _, _, _): (String, bool, ProjectKind, u32, Option<u32>, Option<u32>) =
+                serde_json::from_str(name)?;
+            countries
+                .entry(tag)
+                .or_default()
+                .push(leaf.materialize(name)?);
+        }
+        let tags: BTreeSet<_> = self
+            .project_keys
+            .keys()
+            .map(|key| serde_json::from_str::<(String, u64)>(key).map(|(tag, _)| tag))
+            .collect::<Result<_, _>>()?;
+        let mut replies = BTreeMap::new();
+        for tag in tags {
+            let mut leaves = countries.remove(&tag).unwrap_or_default();
+            leaves.sort_by_key(|leaf| {
+                (
+                    leaf.repair,
+                    leaf.kind == ProjectKind::Railway,
+                    leaf.building,
+                    leaf.state,
+                    leaf.to_state,
+                )
+            });
+            let params = super::super::CountryParams {
+                branch_id: branch.to_string(),
+                tag: tag.clone(),
+            };
+            let reply = ConstructionSpending::reply_from_parts(
+                &params,
+                &self.scan.log,
+                &names,
+                leaves,
+                self.before_first.get(&tag).copied().unwrap_or(0),
+                warnings.clone(),
+            );
+            replies.insert(tag, reply);
+        }
+        series::write_catalogue(
+            writer,
+            "construction-spending",
+            branch,
+            &self.spending_keys,
+            &(template, replies),
+        )?;
+        let remap = self.scan.compact_projects();
+        self.slots = retain_slots(std::mem::take(&mut self.slots), &remap);
+        self.last_run = retain_slots(std::mem::take(&mut self.last_run), &remap);
+        self.last_end = retain_slots(std::mem::take(&mut self.last_end), &remap);
+        self.first_repair = retain_slots(std::mem::take(&mut self.first_repair), &remap);
+        self.last_output = retain_slots(std::mem::take(&mut self.last_output), &remap);
+        self.output_seen = std::mem::take(&mut self.output_seen)
+            .into_iter()
+            .filter_map(|index| remap.get(&index).copied())
+            .collect();
+        Ok(())
+    }
+}
+
+fn retain_slots<T>(values: Vec<T>, remap: &BTreeMap<usize, usize>) -> Vec<T> {
+    values
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, value)| remap.contains_key(&index).then_some(value))
+        .collect()
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct LeafMetadata {
+    #[serde(with = "crate::prepared_production::map_pairs")]
+    projects: BTreeMap<(String, Option<i32>, i32), LeafProject>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
+    unknown: BTreeMap<(String, i32), SpendingUnknown>,
+}
+
+impl LeafMetadata {
+    fn resolve(&mut self, project: &str, hour: i32) {
+        if let Some((_, gap)) = self
+            .unknown
+            .range_mut((project.to_owned(), i32::MIN)..=(project.to_owned(), i32::MAX))
+            .next_back()
+            && gap.until.is_none()
+        {
+            gap.until = Some(hour);
+        }
+    }
+
+    fn materialize(&self, name: &str) -> io::Result<SpendingLeaf> {
+        let (_, repair, kind, building, state, to_state): (
+            String,
+            bool,
+            ProjectKind,
+            u32,
+            Option<u32>,
+            Option<u32>,
+        ) = serde_json::from_str(name)?;
+        let mut projects: Vec<_> = self.projects.values().cloned().collect();
+        let mut unknown: Vec<_> = self.unknown.values().cloned().collect();
+        projects.sort_by(|a, b| {
+            (a.first_read, a.until, &a.project).cmp(&(b.first_read, b.until, &b.project))
+        });
+        unknown.sort_by(|a, b| (a.known_at, &a.project).cmp(&(b.known_at, &b.project)));
+        Ok(SpendingLeaf {
+            repair,
+            kind,
+            building,
+            state,
+            to_state,
+            spent: Vec::new(),
+            unknown,
+            projects,
+        })
+    }
+}
+
+fn merge_leaf(previous: &mut LeafMetadata, incoming: SpendingLeaf) {
+    for span in incoming.projects {
+        let lower = (span.project.clone(), span.known_at, i32::MIN);
+        let upper = (span.project.clone(), span.known_at, span.first_read);
+        let before = previous
+            .projects
+            .range_mut(lower..=upper)
+            .next_back()
+            .map(|(_, before)| before);
+        if let Some(before) = before.filter(|before| {
+            before.first_read == span.first_read
+                || before.until.is_none()
+                || before.until.is_some_and(|until| span.first_read < until)
+        }) {
+            let first = before.first_read;
+            *before = span;
+            before.first_read = first;
+        } else {
+            previous
+                .projects
+                .insert((span.project.clone(), span.known_at, span.first_read), span);
+        }
+    }
+    for gap in incoming.unknown {
+        if let Some((_, before)) = previous
+            .unknown
+            .range_mut((gap.project.clone(), i32::MIN)..=(gap.project.clone(), i32::MAX))
+            .next_back()
+            && before.until.is_none()
+        {
+            if before.reason == gap.reason {
+                before.until = gap.until;
+                continue;
+            }
+            before.until = Some(gap.known_at);
+        }
+        previous
+            .unknown
+            .insert((gap.project.clone(), gap.known_at), gap);
+    }
+}
+
+fn events(
+    reader: &mut Reader<'_>,
+    keys: &[u64],
+    first: i32,
+    last: i32,
+) -> io::Result<Vec<series::DatedRow>> {
+    let mut cursor = 0;
+    let mut rows = Vec::new();
+    loop {
+        let page = reader.events(keys, first, last, cursor, u32::MAX)?;
+        rows.extend(page.rows);
+        if let Some(next) = page.cursor {
+            cursor = next;
+        } else {
+            break;
+        }
+    }
+    Ok(rows)
+}
+
+fn project_log(
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    selected: &[u64],
+    cancelled: &AtomicBool,
+) -> io::Result<ScannedLog> {
+    let mut facts = Reader::new(
+        store,
+        key,
+        format!("construction-facts-{branch}"),
+        cancelled,
+    )?;
+    let mut queues = Reader::new(
+        store,
+        key,
+        format!("construction-queues-{branch}"),
+        cancelled,
+    )?;
+    let mut log = ScannedLog::default();
+    for &project_key in selected {
+        crate::metadata::check_cancel(cancelled)?;
+        let mut project = None;
+        let mut output = Vec::new();
+        for row in events(&mut facts, &[project_key], i32::MIN, i32::MAX)? {
+            match serde_json::from_value::<Fact>(row.row)? {
+                Fact::Start(value) => project = Some(value),
+                Fact::Progress(value) => project
+                    .as_mut()
+                    .ok_or_else(|| crate::invalid("Construction start fact missing"))?
+                    .runs
+                    .push(value),
+                Fact::Counts {
+                    built,
+                    unaccounted,
+                    possible,
+                    added,
+                } => {
+                    let project = project
+                        .as_mut()
+                        .ok_or_else(|| crate::invalid("Construction start fact missing"))?;
+                    project.built.extend(built);
+                    project.unaccounted.extend(unaccounted);
+                    project.possible.extend(possible);
+                    project.added.extend(added);
+                }
+                Fact::End(value) => {
+                    project
+                        .as_mut()
+                        .ok_or_else(|| crate::invalid("Construction start fact missing"))?
+                        .end = Some(value)
+                }
+                Fact::Repair(hour) => {
+                    project
+                        .as_mut()
+                        .ok_or_else(|| crate::invalid("Construction start fact missing"))?
+                        .first_repair_tick = Some(hour)
+                }
+                Fact::Output(value) => {
+                    if let Some(reason) = value.reason
+                        && let Some(project) = &project
+                    {
+                        log.output_reasons.insert((reason, project.id.clone()));
+                    }
+                    output.push(value);
+                }
+            }
+        }
+        if let Some(mut project) = project {
+            for run in queues.runs(project_key, i32::MIN, i32::MAX)? {
+                if let Some(value) = project
+                    .runs
+                    .iter_mut()
+                    .find(|value| i128::from(value.first_hour) == run.value)
+                {
+                    value.last_hour = value.last_hour.max(run.last_hour);
+                }
+            }
+            log.projects.push(project);
+            log.outputs.push(output);
+        }
+    }
+    // Keys preserve the scan's first-sighting order.
+    Ok(log)
+}
+
+pub(crate) fn query(
+    source: &Source,
+    product: &str,
+    params: serde_json::Value,
+    content: Option<&super::super::ContentOptions>,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<serde_json::Value>> {
+    let branch: u64 = params["branchId"]
+        .as_str()
+        .ok_or_else(|| crate::invalid("Missing construction branch"))?
+        .parse()
+        .map_err(|_| crate::invalid("Invalid construction branch"))?;
+    let (store, key) = crate::prepared::files(source, content)?;
+    let Some(coverage) = crate::prepared::pipeline::coverage(source, content, branch, cancelled)?
+    else {
+        return Ok(None);
+    };
+    if !coverage.complete {
+        return Ok(None);
+    }
+    let Some((_keys, (manifest, last))) = series::read_catalogue::<(
+        ConstructionLogManifestReply,
+        Option<i32>,
+    )>(&store, &key, "construction", branch)?
+    else {
+        return Ok(None);
+    };
+    if product == "construction-log-manifest" {
+        return Ok(Some(serde_json::to_value(manifest)?));
+    }
+    if product == "construction-log" {
+        let params: ConstructionLogParams = serde_json::from_value(params)?;
+        ConstructionLog::validate(&params).map_err(crate::invalid)?;
+        if params.window >= manifest.windows.len() {
+            return Err(crate::invalid("Construction log window not in recording"));
+        }
+        let mut members = Reader::new(
+            &store,
+            &key,
+            format!("construction-members-{branch}"),
+            cancelled,
+        )?;
+        let selected: BTreeSet<u64> =
+            events(&mut members, &[params.window as u64], i32::MIN, i32::MAX)?
+                .into_iter()
+                .map(|row| serde_json::from_value(row.row))
+                .collect::<Result<_, _>>()?;
+        let mut log = project_log(
+            &store,
+            &key,
+            branch,
+            &selected.into_iter().collect::<Vec<_>>(),
+            cancelled,
+        )?;
+        let interval = &manifest.windows[params.window];
+        let next = manifest
+            .windows
+            .get(params.window + 1)
+            .map_or(i32::MAX, |window| window.first_hour.saturating_sub(1));
+        let mut reads = Reader::new(
+            &store,
+            &key,
+            format!("construction-reads-{branch}"),
+            cancelled,
+        )?;
+        if let Some((hour, reason)) =
+            reads.latest_event(0, interval.first_hour.saturating_sub(1))?
+        {
+            log.output_reads
+                .push((hour, serde_json::from_value(reason)?));
+        }
+        for row in events(&mut reads, &[0], interval.first_hour, next)? {
+            log.output_reads
+                .push((row.hour, serde_json::from_value(row.row)?));
+        }
+        let reply = Cut::new(Arc::new(log), manifest.windows).reply(params.window);
+        super::super::check_reply_budget(&reply)?;
+        return Ok(Some(serde_json::to_value(reply)?));
+    }
+    if product == "construction-spending" {
+        let tag = params["tag"]
+            .as_str()
+            .ok_or_else(|| crate::invalid("Missing construction country"))?;
+        super::super::validate_tag(tag).map_err(crate::invalid)?;
+        let hours: Vec<i32> = serde_json::from_value(params["hours"].clone())?;
+        let Some((keys, (mut template, mut replies))) =
+            series::read_catalogue::<(
+                ConstructionSpendingReply,
+                BTreeMap<String, ConstructionSpendingReply>,
+            )>(&store, &key, "construction-spending", branch)?
+        else {
+            return Ok(None);
+        };
+        template.tag = tag.to_owned();
+        let mut reply = replies.remove(tag).unwrap_or_else(|| {
+            if manifest.recorded {
+                template
+                    .warnings
+                    .push(format!("{tag}: no recorded construction in this branch"));
+            }
+            template
+        });
+        if let Some(missing) = last.and_then(|last| last.checked_add(1))
+            && missing <= coverage.last_hour
+        {
+            reply
+                .unattributed
+                .push(crate::products::construction_spending::SpendingUnknown {
+                    known_at: missing,
+                    reason: SpendingGap::NotRecorded,
+                    project: String::new(),
+                    until: None,
+                });
+        }
+        let mut reader = Reader::new(
+            &store,
+            &key,
+            format!("construction-spending-{branch}"),
+            cancelled,
+        )?;
+        for leaf in &mut reply.leaves {
+            leaf.spent.clear();
+            if let Some(&key) = keys.get(&leaf_key(tag, leaf)?) {
+                for hour in hours.iter().copied().collect::<BTreeSet<_>>() {
+                    if let Some(run) = reader.value_at(key, hour)? {
+                        leaf.spent.push(SpentStep {
+                            known_at: hour,
+                            total_raw: run.value.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        return Ok(Some(serde_json::to_value(reply)?));
+    }
+    Err(crate::invalid("Unknown construction query"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::products::construction_log::tests::{
+        CIVILIAN, building_at, building_line, construction_frame,
+    };
+    use crate::test_fixtures::{CAMPAIGN, records};
+    use replay::{
+        frame::TableView,
+        rows::{ConstructionLineOutputRow, TableRows},
+    };
+
+    fn source_for(frames: &[DecodedFrame]) -> Source {
+        let replay = Arc::new(
+            Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap(),
+        );
+        Source::from_replay(
+            crate::SourceKey {
+                source_id: "construction-classes".into(),
+                revision: "1".into(),
+            },
+            "memory.battleplan".into(),
+            replay,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    }
+
+    fn life_frame(hour: i32, id: u64, open: bool) -> DecodedFrame {
+        let mut frame = construction_frame(
+            hour,
+            true,
+            if open {
+                vec![building_line(id, 40, 1, 0, 3)]
+            } else {
+                Vec::new()
+            },
+            Vec::new(),
+            Some(vec![building_at(40, CIVILIAN, (0, 0))]),
+            Vec::new(),
+        );
+        *frame.tables[TableId::ConstructionLineOutput.index()] =
+            TableView::Complete(TableRows::ConstructionLineOutput(vec![
+                ConstructionLineOutputRow {
+                    line: id,
+                    since_hour: hour - i32::from(!open),
+                    construction_raw: 100,
+                    observed_since_creation: true,
+                    exact: true,
+                    ended: !open,
+                    completion: replay::rows::Recorded::Value(None),
+                    ..Default::default()
+                },
+            ]));
+        frame
+    }
+
+    #[test]
+    fn construction_observer_work_is_flat_over_carried_hours_and_closed_project_history() {
+        use crate::prepared::{
+            frame_changes::FrameChangeTracker,
+            observer_tests::{self, Work},
+        };
+        let first = life_frame(100, 1, true);
+        let source = source_for(std::slice::from_ref(&first));
+        let format = source.replay_ref().format;
+        observer_tests::assert_flat(
+            observer_tests::scaled_work(1, |hours| {
+                let mut prepared = Prepared::default();
+                let mut tracker = FrameChangeTracker::new();
+                prepared.observe_changed(
+                    &first,
+                    format,
+                    &source,
+                    &tracker.observe(&first, format),
+                )?;
+                let mut carried = first.clone();
+                carried.metrics.table_ns.fill(0);
+                observer_tests::unchanged_frames(
+                    prepared.work(),
+                    &carried,
+                    hours as i32,
+                    format,
+                    |frame, changes| {
+                        prepared.observe_changed(frame, format, &source, changes)?;
+                        Ok(prepared.work())
+                    },
+                )
+            })
+            .unwrap(),
+        );
+        observer_tests::assert_flat(
+            observer_tests::scaled_work(10, |history| {
+                let frames: Vec<_> = (0..history)
+                    .flat_map(|index| {
+                        [
+                            life_frame(100 + 2 * index as i32, index as u64 + 1, true),
+                            life_frame(101 + 2 * index as i32, index as u64 + 1, false),
+                        ]
+                    })
+                    .collect();
+                let source = source_for(&frames);
+                let format = source.replay_ref().format;
+                let mut tracker = FrameChangeTracker::new();
+                let mut prepared = Prepared::default();
+                for frame in &frames {
+                    prepared.observe_changed(
+                        frame,
+                        format,
+                        &source,
+                        &tracker.observe(frame, format),
+                    )?;
+                }
+                assert_eq!(prepared.project_keys.len(), history);
+                let before = prepared.work();
+                let mut changed = frames.last().unwrap().clone();
+                changed.hour += 1;
+                changed.metrics.table_ns.fill(0);
+                if let TableView::Complete(TableRows::StateBuildings(rows)) =
+                    &mut *changed.tables[TableId::StateBuildings.index()]
+                {
+                    rows[0].level = 1;
+                }
+                prepared.observe_changed(
+                    &changed,
+                    format,
+                    &source,
+                    &tracker.observe(&changed, format),
+                )?;
+                let after = prepared.work();
+                assert_eq!(after.row_visits - before.row_visits, 1);
+                Ok(Work {
+                    row_visits: after.row_visits - before.row_visits,
+                    history_visits: after.history_visits - before.history_visits,
+                    emitted: after.emitted - before.emitted,
+                    ..Default::default()
+                })
+            })
+            .unwrap(),
+        );
+    }
+
+    #[test]
+    fn construction_closed_slots_compact_without_reusing_catalogue_keys_or_losing_retained_output_owners()
+     {
+        use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
+        let flag = AtomicBool::new(false);
+        let mut frames = vec![
+            life_frame(100, 1, true),
+            life_frame(101, 1, false),
+            life_frame(102, 2, true),
+            life_frame(103, 2, false),
+        ];
+        let old_row = match &*frames[1].tables[TableId::ConstructionLineOutput.index()] {
+            TableView::Complete(TableRows::ConstructionLineOutput(rows)) => rows[0].clone(),
+            _ => unreachable!(),
+        };
+        for frame in &mut frames[2..] {
+            if let TableView::Complete(TableRows::ConstructionLineOutput(rows)) =
+                &mut *frame.tables[TableId::ConstructionLineOutput.index()]
+            {
+                rows.insert(0, old_row.clone());
+            }
+        }
+        let source = source_for(&frames);
+        let format = source.replay_ref().format;
+        let expected = scan(source.replay_ref(), 1, &flag).unwrap();
+        let mut fixture = crate::prepared::series::tests::Fixture::new();
+        let mut writer = fixture.writer();
+        let mut prepared = Prepared::default();
+        let mut tracker = FrameChangeTracker::new();
+        for frame in &frames {
+            prepared
+                .observe_changed(frame, format, &source, &tracker.observe(frame, format))
+                .unwrap();
+            if [101, 103].contains(&frame.hour) {
+                prepared.end_block(1, frame.hour, &source).unwrap();
+                prepared
+                    .flush(
+                        &mut writer,
+                        &source,
+                        &LoadContext { content: None },
+                        1,
+                        &flag,
+                    )
+                    .unwrap();
+                assert!(
+                    prepared.scan.log.projects.is_empty(),
+                    "closed native slots survived publication"
+                );
+                assert!(prepared.slots.is_empty());
+                writer.commit().unwrap();
+                if frame.hour == 101 {
+                    prepared =
+                        serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
+                    prepared.restore_frame(frame);
+                    tracker.invalidate();
+                    writer = fixture.append_writer();
+                } else {
+                    break;
+                }
+            }
+        }
+        assert_eq!(
+            prepared
+                .project_keys
+                .values()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([0, 1])
+        );
+        assert_eq!(
+            prepared.scan.log.unowned_lines, 0,
+            "a closed known handle became an unknown owner"
+        );
+        let actual = project_log(&fixture.store, &fixture.key, 1, &[0, 1], &flag).unwrap();
+        observer_tests::assert_reply_parity(&actual.projects, &expected.projects).unwrap();
+        for (tag, (leaves, _)) in crate::products::construction_spending::all_leaves(&expected) {
+            for mut leaf in leaves {
+                let name = leaf_key(&tag, &leaf).unwrap();
+                leaf.spent.clear();
+                observer_tests::assert_reply_parity(
+                    &prepared.leaf_metadata[&name].materialize(&name).unwrap(),
+                    &leaf,
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    fn frames() -> Vec<DecodedFrame> {
+        (100..=151)
+            .filter(|hour| *hour != 132)
+            .map(|hour| {
+                let mut frame = construction_frame(
+                    hour,
+                    [100, 124, 148].contains(&hour),
+                    if hour < 148 {
+                        vec![building_line(900, 40, if hour < 124 { 2 } else { 1 }, 0, 3)]
+                    } else {
+                        vec![]
+                    },
+                    vec![],
+                    Some(vec![building_at(
+                        40,
+                        CIVILIAN,
+                        (
+                            if hour < 120 { 0 } else { 1 },
+                            if hour < 120 { 0 } else { 1 },
+                        ),
+                    )]),
+                    vec![],
+                );
+                *frame.tables[TableId::ConstructionLineOutput.index()] =
+                    TableView::Complete(TableRows::ConstructionLineOutput(if hour <= 148 {
+                        vec![ConstructionLineOutputRow {
+                            line: 900,
+                            since_hour: 100,
+                            construction_raw: if hour < 124 {
+                                0
+                            } else if hour < 148 {
+                                200
+                            } else {
+                                175
+                            },
+                            observed_since_creation: true,
+                            exact: true,
+                            ended: hour == 148,
+                            completion: replay::rows::Recorded::Value(None),
+                            ..Default::default()
+                        }]
+                    } else {
+                        vec![]
+                    }));
+                frame
+            })
+            .collect()
+    }
+
+    #[test]
+    fn project_events_keep_future_operands_and_spending_after_commits_resume_and_append() {
+        let flag = AtomicBool::new(false);
+        let frames = frames();
+        let replay =
+            Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap());
+        let source = Source::from_replay(
+            crate::SourceKey {
+                source_id: "construction-prepared".into(),
+                revision: "1".into(),
+            },
+            "memory.battleplan".into(),
+            replay.clone(),
+            &flag,
+        )
+        .unwrap();
+        let expected = scan(&replay, 1, &flag).unwrap();
+        let expected_leaves = crate::products::construction_spending::all_leaves(&expected);
+        let expected_cut = Cut::new(Arc::new(expected), windows(&replay, 1));
+        let mut fixture = crate::prepared::series::tests::Fixture::new();
+        let mut prepared = Prepared::default();
+        let mut tracker = crate::prepared::frame_changes::FrameChangeTracker::new();
+        for frame in &frames {
+            prepared
+                .observe_changed(
+                    frame,
+                    replay.format,
+                    &source,
+                    &tracker.observe(frame, replay.format),
+                )
+                .unwrap();
+            if [117, 125, 151].contains(&frame.hour) {
+                prepared.end_block(1, frame.hour, &source).unwrap();
+                let mut writer = if frame.hour == 151 {
+                    fixture.append_writer()
+                } else {
+                    fixture.writer()
+                };
+                prepared
+                    .flush(
+                        &mut writer,
+                        &source,
+                        &LoadContext { content: None },
+                        1,
+                        &flag,
+                    )
+                    .unwrap();
+                writer.commit().unwrap();
+                let saved = serde_json::to_vec(&prepared).unwrap();
+                assert!(prepared.scan.log.outputs.iter().all(Vec::is_empty));
+                assert!(
+                    prepared
+                        .scan
+                        .log
+                        .projects
+                        .iter()
+                        .all(|project| project.runs.len() <= 2 && project.built.is_empty())
+                );
+                prepared = serde_json::from_slice(&saved).unwrap();
+                prepared.restore_frame(frame);
+                tracker.invalidate();
+            }
+        }
+        let selected: Vec<_> = prepared.project_keys.values().copied().collect();
+        let mut actual = project_log(&fixture.store, &fixture.key, 1, &selected, &flag).unwrap();
+        let mut reads = Reader::new(
+            &fixture.store,
+            &fixture.key,
+            "construction-reads-1".into(),
+            &flag,
+        )
+        .unwrap();
+        actual.output_reads = events(&mut reads, &[0], i32::MIN, i32::MAX)
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.hour, serde_json::from_value(row.row).unwrap()))
+            .collect();
+        let actual_cut = Cut::new(Arc::new(actual), windows(&replay, 1));
+        for window in 0..actual_cut.windows.len() {
+            assert_eq!(
+                serde_json::to_value(actual_cut.reply(window)).unwrap(),
+                serde_json::to_value(expected_cut.reply(window)).unwrap()
+            );
+        }
+        for (tag, (leaves, _)) in expected_leaves {
+            let mut values = Reader::new(
+                &fixture.store,
+                &fixture.key,
+                "construction-spending-1".into(),
+                &flag,
+            )
+            .unwrap();
+            for mut leaf in leaves {
+                let name = leaf_key(&tag, &leaf).unwrap();
+                let raw = leaf
+                    .spent
+                    .last()
+                    .map(|step| step.total_raw.clone())
+                    .unwrap_or_else(|| "0".into());
+                assert_eq!(
+                    values
+                        .value_at(prepared.spending_keys[&name], 151)
+                        .unwrap()
+                        .unwrap()
+                        .value
+                        .to_string(),
+                    raw
+                );
+                leaf.spent.clear();
+                assert_eq!(
+                    prepared.leaf_metadata[&name].materialize(&name).unwrap(),
+                    leaf
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn construction_preparation_keeps_all_5000_countries_and_project_keys() {
+        let flag = AtomicBool::new(false);
+        let mut frame = construction_frame(
+            100,
+            true,
+            (0..5000)
+                .map(|index| {
+                    let mut line = building_line(index + 1, index as u32 + 1, 1, 0, 1);
+                    line.country = index as u32 + 1;
+                    line
+                })
+                .collect(),
+            vec![],
+            Some(vec![]),
+            vec![],
+        );
+        *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+            (1..=5000)
+                .map(|index| replay::rows::CountryRow {
+                    canonical_slot: index,
+                    id: index,
+                    tag: format!("opaque / country {index}").into_bytes(),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        *frame.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(
+                (1..=5000)
+                    .map(|index| replay::rows::CountryLinkRow {
+                        canonical_slot: index,
+                        id: index,
+                    })
+                    .collect(),
+            ));
+        frame.metrics.table_ns[TableId::BuildingConstruction.index()] = 1;
+        let replay = Arc::new(
+            Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame.clone()])]).unwrap(),
+        );
+        let source = Source::from_replay(
+            crate::SourceKey {
+                source_id: "construction-scale".into(),
+                revision: "1".into(),
+            },
+            "memory.battleplan".into(),
+            replay.clone(),
+            &flag,
+        )
+        .unwrap();
+        let mut prepared = Prepared::default();
+        prepared.observe(&frame, replay.format, &source).unwrap();
+        assert_eq!(prepared.project_keys.len(), 5000);
+        assert_eq!(prepared.scan.log.projects.len(), 5000);
+        assert!(prepared.scan.log.outputs.iter().all(Vec::is_empty));
+        assert_eq!(
+            prepared
+                .scan
+                .log
+                .projects
+                .iter()
+                .map(|project| &project.tag)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            5000
+        );
+        assert!(prepared.bytes() > 0);
+        eprintln!(
+            "construction project keys={}, spending keys={}, continuation bytes={}",
+            prepared.project_keys.len(),
+            prepared.spending_keys.len(),
+            serde_json::to_vec(&prepared).unwrap().len()
+        );
+        let mut tracker = crate::prepared::frame_changes::FrameChangeTracker::new();
+        tracker.observe(&frame, replay.format);
+        let before = prepared.work();
+        frame.hour += 1;
+        frame.metrics.table_ns.fill(0);
+        *frame.tables[TableId::StateBuildings.index()] = TableView::Complete(
+            TableRows::StateBuildings(vec![building_at(1, CIVILIAN, (1, 1))]),
+        );
+        prepared
+            .observe_changed(
+                &frame,
+                replay.format,
+                &source,
+                &tracker.observe(&frame, replay.format),
+            )
+            .unwrap();
+        let after = prepared.work();
+        assert_eq!(after.row_visits - before.row_visits, 1);
+        assert_eq!(
+            after.history_visits - before.history_visits,
+            1,
+            "one changed building visited other projects' watched history"
+        );
+    }
+}

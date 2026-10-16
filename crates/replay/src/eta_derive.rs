@@ -1,13 +1,19 @@
 //! Movement timing replayed from recorded operands with no memory access.
 //!
-//! Progress follows the native first-edge fraction. Arrival times are estimates: the
-//! native walk over each division's recorded route with every edge at one speed, the
-//! native land speed of its recorded stat-block base speed ([`estimated_speed`]). The
-//! game evaluates each edge with its own terrain, infrastructure, weather, river, supply,
-//! air, organisation and fuel terms, which the recording does not hold, so an estimate
-//! drifts from the game wherever those terms apply.
+//! Progress follows the native first-edge fraction. Arrival times walk each division's
+//! recorded route natively, each edge at the native land speed ([`edge_speed`]) of its
+//! recorded stat-block base speed and the speed terms the hour records ([`SpeedTerms`]):
+//! the common modifier ([`common_modifier`]) of country, commander, weather, supply,
+//! enemy air ([`air_term`]) and retreat terms, each edge's terrain, fort, snow, commander
+//! terrain, river and infrastructure terms ([`edge_operands`]), the low-organisation
+//! factor of a hostile move ([`organisation_factor`]) and the fuel factor
+//! ([`fuel_factor`]). The game also applies the location state's speed modifiers, the
+//! template's priority sub-unit armour and category terms, the noncore-supply term and a
+//! relation's river crossing factor, which the recording does not hold, so an arrival
+//! time drifts from the game wherever those apply.
 
 use crate::rows::{DivisionMovementRow, RailwayGunCounterInputRow, Recorded};
+use engine::carmy::{NormalEdgeOperands, PreparedNormalSpeed};
 use engine::cunit::{EtaInputs, EtaLeg, EtaSpeed, eta_remaining};
 
 const MOVEMENT_ONE: i64 = 100_000;
@@ -82,6 +88,357 @@ pub struct Defines {
     pub outer_scale: i64,
     pub river_crossing_two: i64,
     pub river_crossing_three: i64,
+    /// The organisation term's defines; None when the content refused them.
+    pub organisation: Option<OrganisationDefines>,
+}
+
+/// `NMilitary.LOW_ORG_FOR_ATTACK` and `NMilitary.ZERO_ORG_MOVEMENT_MODIFIER`, fixed5.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct OrganisationDefines {
+    /// The organisation share below which a hostile move slows.
+    pub threshold: i64,
+    /// The speed term at zero organisation.
+    pub penalty: i64,
+}
+
+/// The recorded operands of the speed terms an arrival time applies beyond the base
+/// speed.
+pub struct SpeedTerms<'a> {
+    /// The division's common movement modifier ([`common_modifier`]).
+    pub modifier: i64,
+    /// The edge operands of a move `from -> to` ([`edge_operands`]); an error names the
+    /// missing operand.
+    pub edge: &'a dyn Fn(u32, u32) -> Result<NormalEdgeOperands, String>,
+    /// The division's organisation factor ([`organisation_factor`]), None where the
+    /// game applies none.
+    pub organisation: Option<i64>,
+    /// The division's fuel factor ([`fuel_factor`]), None where the game applies none.
+    pub fuel: Option<i64>,
+}
+
+/// The effective modifier values the common term adds, each zero where the game finds
+/// no entry: the country's and the selected commander block's army speed, the country's
+/// attack speed (added only for a hostile move), and the location's province and region
+/// weather speed and attack speed entries.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CommonModifiers {
+    pub country_speed: i64,
+    pub leader_speed: i64,
+    pub country_attack_speed: i64,
+    /// Province speed, province attack speed, region speed, region attack speed.
+    pub weather: [i64; 4],
+}
+
+/// The division's common movement modifier: one, plus the country's and commander's
+/// army speed, the country's attack speed for a hostile move (`attacking`), each weather
+/// entry times the acclimatization factor (the attack speed entries only for a hostile
+/// move), the out-of-supply term ([`supply_term`]), the enemy air term ([`air_term`])
+/// and the retreat or withdrawal term ([`retreat_term`]), each sum the native wrapping
+/// one.
+pub fn common_modifier(
+    modifiers: &CommonModifiers,
+    attacking: bool,
+    acclimatization: i64,
+    supply: i64,
+    air: i64,
+    retreat: i64,
+) -> i64 {
+    let mut value = MOVEMENT_ONE
+        .wrapping_add(modifiers.country_speed)
+        .wrapping_add(modifiers.leader_speed);
+    if attacking {
+        value = value.wrapping_add(modifiers.country_attack_speed);
+    }
+    for (index, entry) in modifiers.weather.into_iter().enumerate() {
+        if index % 2 == 0 || attacking {
+            value = value.wrapping_add(movement_product(acclimatization, entry));
+        }
+    }
+    value
+        .wrapping_add(supply)
+        .wrapping_add(air)
+        .wrapping_add(retreat)
+}
+
+/// The operands of the enemy air term over a division's location: the owner's
+/// regional air superiority pair and movement impact (`RaidAirScores`), the air speed
+/// define and the division's anti-air reduction
+/// ([`engine::csub_unit_definition::movement_air_defense_value`]).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AirOperands {
+    pub friendly: i64,
+    pub enemy: i64,
+    pub impact: i64,
+    pub scale: i64,
+    pub defense: i64,
+}
+
+/// The enemy air term: the impact times the enemy's share of the pair times the air
+/// speed define, plus the anti-air reduction, capped at zero. Zero without operands
+/// (an owner at no war or a location outside any strategic region) or without enemy
+/// superiority, where the game adds nothing, not even the reduction.
+pub fn air_term(operands: Option<&AirOperands>) -> Result<i64, String> {
+    let Some(air) = operands.filter(|air| air.enemy > 0) else {
+        return Ok(0);
+    };
+    let total = air.friendly.wrapping_add(air.enemy);
+    let fraction = if total > 0 {
+        movement_fraction(air.enemy, total)?
+    } else {
+        0
+    };
+    Ok(
+        movement_product(movement_product(air.impact, fraction), air.scale)
+            .wrapping_add(air.defense)
+            .min(0),
+    )
+}
+
+/// The supply operands of the out-of-supply term.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SupplyOperands {
+    /// Division `+0x600`, `+0x610` and `+0x40`: maximum and remaining grace and the
+    /// received supply ratio.
+    pub grace_maximum: i64,
+    pub grace_remaining: i64,
+    pub ratio: i64,
+    /// Signed days out of supply.
+    pub days: i32,
+    /// The supply-days and supply-grace defines (signed 32-bit globals).
+    pub supply_days: i32,
+    pub supply_grace: i32,
+    /// The out-of-supply speed penalty at full severity.
+    pub penalty: i64,
+}
+
+/// The out-of-supply severity's multiplier operands: the country's and the commander
+/// block's out-of-supply factor, and the special-forces factors with the template's
+/// special-forces share, which the game reads only when that share is positive.
+pub struct SupplyFactors<'a> {
+    pub country: i64,
+    pub leader: i64,
+    pub special_forces: [i64; 2],
+    /// The template's special-forces share; an error names why it is unknown.
+    pub share: &'a dyn Fn() -> Result<i64, String>,
+}
+
+/// The out-of-supply severity: the unsupplied share of the larger of the received
+/// ratio and the remaining grace's share of `SUPPLY_GRACE` hours (zero without a
+/// positive maximum grace), times the days out of supply over the supply-days define,
+/// scaled by one plus the out-of-supply factors (the special-forces factors weighted by
+/// the template's share) floored at zero. The movement speed multiplies it by its
+/// full-severity penalty and the attrition hover by its out-of-supply attrition.
+pub fn supply_severity(
+    operands: &SupplyOperands,
+    factors: &SupplyFactors<'_>,
+) -> Result<i64, String> {
+    severity(available(operands)?, operands, factors)
+}
+
+/// The attrition hover's out-of-supply severity: [`supply_severity`] with the available
+/// share first normalized by the army attrition supply threshold, `min(1, available /
+/// threshold)`, one for a zero threshold.
+pub fn attrition_supply_severity(
+    operands: &SupplyOperands,
+    threshold: i64,
+    factors: &SupplyFactors<'_>,
+) -> Result<i64, String> {
+    let normalized = if threshold == 0 {
+        MOVEMENT_ONE
+    } else {
+        movement_fraction(available(operands)?, threshold)?
+    }
+    .min(MOVEMENT_ONE);
+    severity(normalized, operands, factors)
+}
+
+/// The supplied share: the larger of the received ratio and the remaining grace's share
+/// of `SUPPLY_GRACE` hours, clamped to [0, 1]; zero without a positive maximum grace.
+fn available(operands: &SupplyOperands) -> Result<i64, String> {
+    if operands.grace_maximum < 1 {
+        return Ok(0);
+    }
+    let hours = i64::from(operands.supply_grace).wrapping_mul(MOVEMENT_ONE);
+    Ok(movement_fraction(operands.grace_remaining, hours)?
+        .max(operands.ratio)
+        .clamp(0, MOVEMENT_ONE))
+}
+
+fn severity(
+    available: i64,
+    operands: &SupplyOperands,
+    factors: &SupplyFactors<'_>,
+) -> Result<i64, String> {
+    let days = i64::from(operands.days).wrapping_mul(MOVEMENT_ONE);
+    let limit = i64::from(operands.supply_days).wrapping_mul(MOVEMENT_ONE);
+    let severity = movement_product(
+        MOVEMENT_ONE.wrapping_sub(available).clamp(0, MOVEMENT_ONE),
+        movement_fraction(days, limit)?,
+    );
+    if severity == 0 {
+        return Ok(0);
+    }
+    let mut multiplier = MOVEMENT_ONE
+        .wrapping_add(factors.country)
+        .wrapping_add(factors.leader);
+    if factors.special_forces != [0, 0] {
+        let share = (factors.share)()?;
+        if share > 0 {
+            for factor in factors.special_forces {
+                multiplier = multiplier.wrapping_add(movement_product(share, factor));
+            }
+        }
+    }
+    Ok(movement_product(multiplier.max(0), severity))
+}
+
+/// The movement speed's out-of-supply term: the severity ([`supply_severity`]) times the
+/// full-severity penalty; zero for an exiled division, which bypasses supply.
+pub fn supply_term(
+    exiled: bool,
+    operands: &SupplyOperands,
+    factors: &SupplyFactors<'_>,
+) -> Result<i64, String> {
+    if exiled {
+        return Ok(0);
+    }
+    Ok(movement_product(
+        operands.penalty,
+        supply_severity(operands, factors)?,
+    ))
+}
+
+/// The retreat or withdrawal term: a retreating division adds the retreat define and
+/// the country's retreat speed factor, otherwise a withdrawing one the withdrawal define.
+pub fn retreat_term(
+    retreating: bool,
+    withdrawing: bool,
+    retreat_speed: i64,
+    country_retreat_speed: i64,
+    withdrawal_speed: i64,
+) -> i64 {
+    if retreating {
+        retreat_speed.wrapping_add(country_retreat_speed)
+    } else if withdrawing {
+        withdrawal_speed
+    } else {
+        0
+    }
+}
+
+/// The fuel factor: fuel over the capacity (the stat block's fuel word times the
+/// capacity scale), clamped to [0, 1], raised from the out-of-fuel floor as
+/// `(1 - floor) * ratio + floor` when below one; None for a division without capacity,
+/// with a sentinel fuel word or with a full tank, where the game applies none.
+pub fn fuel_factor(
+    fuel: i64,
+    fuel_rate: i64,
+    capacity_scale: i64,
+    floor: i64,
+) -> Result<Option<i64>, String> {
+    let capacity = movement_product(fuel_rate, capacity_scale);
+    if capacity <= 0 || exceptional(fuel) {
+        return Ok(None);
+    }
+    let ratio = movement_fraction(fuel, capacity)?.clamp(0, MOVEMENT_ONE);
+    Ok((ratio < MOVEMENT_ONE)
+        .then(|| movement_product(MOVEMENT_ONE.wrapping_sub(floor), ratio).wrapping_add(floor)))
+}
+
+/// The edge operands of a move into a province.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct EdgeTerms {
+    /// The stat block's movement for the destination's terrain plus the terrain's own
+    /// unit adjuster movement.
+    pub terrain: i64,
+    /// The stat block's fort movement where the destination's fort sum is positive.
+    pub fort: Option<i64>,
+    /// The stat block's snow movement where the destination has snow.
+    pub snow: Option<i64>,
+    /// The direct commander's movement for the destination's terrain.
+    pub leader_terrain: i64,
+    /// The destination state's movement infrastructure term.
+    pub infrastructure: i64,
+    /// For a crossing of kind 1 to 3: the summed river crossing factors, the stat
+    /// block's river movement and the crossing's define (zero for kind 1).
+    pub river: Option<(i64, i64, i64)>,
+}
+
+/// [`NormalEdgeOperands`] of an edge: the terrain, fort, snow, commander terrain and
+/// infrastructure terms summed with the native wrapping addition, and the river terms.
+pub fn edge_operands(terms: &EdgeTerms) -> NormalEdgeOperands {
+    NormalEdgeOperands {
+        additive: terms
+            .terrain
+            .wrapping_add(terms.fort.unwrap_or(0))
+            .wrapping_add(terms.snow.unwrap_or(0))
+            .wrapping_add(terms.leader_terrain)
+            .wrapping_add(terms.infrastructure),
+        river: terms.river,
+    }
+}
+
+/// A numerator the native division does not scale: within two of either signed
+/// extreme.
+fn exceptional(value: i64) -> bool {
+    (value as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd
+}
+
+/// The native signed fraction with its sentinel and zero-divisor result.
+fn movement_fraction(numerator: i64, denominator: i64) -> Result<i64, String> {
+    if denominator == 0
+        || (numerator as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd
+    {
+        return Ok(0xffff_ffff);
+    }
+    numerator
+        .wrapping_mul(MOVEMENT_ONE)
+        .checked_div(denominator)
+        .ok_or_else(|| "a movement fraction overflows the native division".to_owned())
+}
+
+fn movement_product(a: i64, b: i64) -> i64 {
+    a.wrapping_mul(b) / MOVEMENT_ONE
+}
+
+/// The movement speed's organisation factor: a division whose recorded route ends at a
+/// province controlled by a country its owner is at war with (`attacking`, evaluated only
+/// when the share is below the threshold) and whose organisation share of its maximum,
+/// clamped to [0, 1], is below `LOW_ORG_FOR_ATTACK` moves at `1 + (1 - share /
+/// threshold) * ZERO_ORG_MOVEMENT_MODIFIER` of its speed. `operands` is the division's
+/// recorded organisation and maximum. None where the game applies no factor; an operand
+/// refusal is reached only when the factor could apply.
+pub fn organisation_factor(
+    operands: Result<(i64, i64), String>,
+    attacking: impl FnOnce() -> Result<bool, String>,
+    defines: &Defines,
+) -> Result<Option<i64>, String> {
+    let (Some(organisation_defines), Ok((organisation, maximum))) =
+        (defines.organisation, &operands)
+    else {
+        // Without the share or the threshold only a non-hostile move is decided.
+        if !attacking()? {
+            return Ok(None);
+        }
+        return Err(match operands {
+            Err(reason) => reason,
+            Ok(_) => "the content's organisation speed defines failed to load".into(),
+        });
+    };
+    let share =
+        if (*organisation as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd {
+            MOVEMENT_ONE
+        } else {
+            movement_fraction(*organisation, *maximum)?.clamp(0, MOVEMENT_ONE)
+        };
+    if share >= organisation_defines.threshold || !attacking()? {
+        return Ok(None);
+    }
+    let ratio = movement_fraction(share, organisation_defines.threshold)?;
+    Ok(Some(MOVEMENT_ONE.wrapping_add(movement_product(
+        MOVEMENT_ONE.wrapping_sub(ratio),
+        organisation_defines.penalty,
+    ))))
 }
 
 /// The destination-side province operands `normal_movement_edge` reads.
@@ -165,29 +522,39 @@ pub fn railway_gun_first_edge(
     eta_remaining(&input, legs).ok().map(|pair| pair.0)
 }
 
-/// The speed an estimate assumes on every edge: the land tail of Movement-speed
-/// calculation applied to the stat-block base speed alone, floored at 1 km/h (100000) and
-/// then scaled by the content's movement scale with the native wrapping product. With no
-/// destination and full organisation and fuel the game computes the same value; otherwise
-/// the unrecorded edge modifier, organisation and fuel factors make it differ.
-pub fn estimated_speed(base_speed: i64, defines: &Defines) -> i64 {
-    base_speed
-        .max(MOVEMENT_ONE)
-        .wrapping_mul(defines.outer_scale)
-        / MOVEMENT_ONE
+/// The native land speed of the edge `from -> to`: the stat-block base speed times the
+/// common modifier plus the edge's terms, times the organisation and fuel factors,
+/// floored at 1 km/h (100000) and then scaled by the content's movement scale, each
+/// product the native wrapping fixed5 one.
+pub fn edge_speed(
+    base_speed: i64,
+    from: u32,
+    to: u32,
+    terms: &SpeedTerms<'_>,
+    defines: &Defines,
+) -> Result<i64, String> {
+    Ok(PreparedNormalSpeed {
+        modifier: terms.modifier,
+        base_speed,
+        organisation: terms.organisation,
+        fuel: terms.fuel,
+        outer_scale: defines.outer_scale,
+    }
+    .evaluate((terms.edge)(from, to)?))
 }
 
 /// Estimated `(next_remaining, destination_remaining)` for one division, in
 /// native signed fixed5 hours: [`eta_remaining`] over the recorded route from
-/// `location` (`Divisions.province`), every edge and the first-edge progress
-/// at [`estimated_speed`]. Each edge distance follows the native rule for
-/// class 0 over matching content ([`edge_distance`]); self edges emit no leg.
+/// `location` (`Divisions.province`), each edge and the first-edge progress
+/// at its [`edge_speed`]. Each edge distance follows the native rule
+/// for class 0 over matching content ([`edge_distance`]); self edges emit no leg.
 /// The caller rounds hours as the game does ([`engine::cunit::eta_hours`]).
 pub fn estimate(
     movement: &DivisionMovementRow,
     location: u32,
     province: impl Fn(u32) -> Option<ProvinceOperands>,
     distance: impl Fn(u32, u32) -> Option<i64>,
+    terms: &SpeedTerms<'_>,
     defines: &Defines,
 ) -> Result<(i64, i64), String> {
     if location == 0 {
@@ -207,21 +574,24 @@ pub fn estimate(
         movement.numerator,
         province,
         distance,
+        terms,
         defines,
     )
 }
 
 /// The estimated duration of a prospective route (`route` excludes the division's
-/// location and ends at its target), as the counter preview words it: every edge at
-/// [`estimated_speed`], and the division's first-edge progress subtracted only when the
+/// location and ends at its target), as the counter preview words it: each edge at
+/// its [`edge_speed`], and the division's first-edge progress subtracted only when the
 /// route starts with the division's own recorded first edge. Zero for an empty route,
-/// which needs no speed.
+/// which needs no speed. The organisation factor is the division's own, decided by its
+/// recorded route, as the game decides it.
 pub fn estimate_route(
     movement: &DivisionMovementRow,
     location: u32,
     route: &[u32],
     province: impl Fn(u32) -> Option<ProvinceOperands>,
     distance: impl Fn(u32, u32) -> Option<i64>,
+    terms: &SpeedTerms<'_>,
     defines: &Defines,
 ) -> Result<i64, String> {
     if location == 0 {
@@ -236,13 +606,25 @@ pub fn estimate_route(
         0
     };
     walk(
-        movement, location, route, numerator, province, distance, defines,
+        movement, location, route, numerator, province, distance, terms, defines,
     )
     .map(|(_, destination)| destination)
 }
 
-/// [`eta_remaining`] over `route` from `location` at the division's
-/// estimated speed, subtracting `numerator` of progress.
+/// The division's recorded base speed; refused by name when not recorded or refused.
+pub fn base_speed(movement: &DivisionMovementRow) -> Result<i64, String> {
+    match movement.base_speed {
+        Recorded::NotRecorded => {
+            Err("DivisionMovement.base_speed is not recorded in this format".into())
+        }
+        Recorded::Value(None) => Err("the division's base speed was refused".into()),
+        Recorded::Value(Some(speed)) => Ok(speed),
+    }
+}
+
+/// [`eta_remaining`] over `route` from `location` with each edge at its
+/// [`edge_speed`], subtracting `numerator` of progress at the first edge's speed.
+#[allow(clippy::too_many_arguments)]
 fn walk(
     movement: &DivisionMovementRow,
     location: u32,
@@ -250,18 +632,13 @@ fn walk(
     numerator: i64,
     province: impl Fn(u32) -> Option<ProvinceOperands>,
     distance: impl Fn(u32, u32) -> Option<i64>,
+    terms: &SpeedTerms<'_>,
     defines: &Defines,
 ) -> Result<(i64, i64), String> {
-    let base_speed = match movement.base_speed {
-        Recorded::NotRecorded => {
-            return Err("DivisionMovement.base_speed is not recorded in this format".into());
-        }
-        Recorded::Value(None) => return Err("the division's base speed was refused".into()),
-        Recorded::Value(Some(speed)) => speed,
-    };
+    let base_speed = base_speed(movement)?;
     let path_total =
         u32::try_from(route.len()).map_err(|_| "the route exceeds the native count".to_owned())?;
-    let speed = estimated_speed(base_speed, defines);
+    let speed = |from: u32, to: u32| edge_speed(base_speed, from, to, terms, defines);
     let mut legs = Vec::with_capacity(route.len());
     let mut next_leg_count = 0;
     let mut from = location;
@@ -274,7 +651,7 @@ fn walk(
                 .ok_or_else(|| format!("route edge {from}->{to} has no content geometry"))?;
             legs.push(EtaLeg {
                 distance: length,
-                speed: EtaSpeed::Fixed(speed),
+                speed: EtaSpeed::Fixed(speed(from, to)?),
             });
             if index == 0 {
                 next_leg_count = 1;
@@ -291,11 +668,14 @@ fn walk(
         leg_len: legs.len(),
         next_leg_count,
         numerator,
-        current_speed: EtaSpeed::Fixed(speed),
+        // The division's current edge runs into the route's first province.
+        current_speed: EtaSpeed::Fixed(speed(location, route[0])?),
         normal: None,
     };
     eta_remaining(&input, &legs).map_err(str::to_owned)
 }
+
+pub mod frame_terms;
 
 #[cfg(test)]
 mod tests;

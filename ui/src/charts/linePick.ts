@@ -4,7 +4,7 @@ import type { ChartPick } from './TimeChart';
 
 /** Screen ordinates of the paths drawLine uses, including held vertical edges.
  * monotonePath's cubic x controls are thirds, so x advances linearly in t. */
-function ordinates(path: readonly PathCommand[], x: number, targetY: number): number[] {
+export function ordinates(path: readonly PathCommand[], x: number, targetY: number): number[] {
   const ys: number[] = [];
   let px = 0, py = 0;
   for (const command of path) {

@@ -40,29 +40,29 @@ use super::{
     resources::{Learned, RESOURCE_DECIMALS, resource_infos},
     validate_tag,
 };
-use crate::{
-    Source,
-    metadata::{link_slot, tagged_countries, validate_campaign},
-    products::country_groups::HourSpan,
-};
-use replay::{
-    container::Replay,
-    frame::FrameDecoder,
-    rows::{TableId, tables},
-};
+use crate::{Source, products::country_groups::HourSpan};
+use replay::rows::{TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
 
+#[cfg(test)]
+use crate::metadata::validate_campaign;
+#[cfg(test)]
+use replay::{container::Replay, frame::FrameDecoder};
+#[cfg(test)]
+use std::{collections::VecDeque, sync::atomic::Ordering};
+
+pub(crate) mod prepared;
+pub(crate) mod sample;
+
 pub struct TradeFlows;
 
+#[cfg(test)]
 const CACHED_REQUESTS: usize = 4;
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -79,6 +79,7 @@ impl TradeFlowParams {
     }
 
     /// The countries asked for, sorted and each once; none for the whole world.
+    #[cfg(test)]
     fn countries(&self) -> Option<Vec<String>> {
         self.tags.as_ref().map(|tags| {
             tags.iter()
@@ -121,14 +122,14 @@ pub struct TradeFlow {
     pub deals: Vec<u32>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct TradeCountryIdentity {
     pub tag: String,
     pub runs: Vec<CountryIdentityRun>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct TradeFlowsReply {
     pub branch_id: String,
@@ -164,26 +165,6 @@ pub struct PartialSpan {
     pub deals: u32,
 }
 
-/// Each canonical slot's country this hour: its tag and native id, from the first
-/// resolved tagged row, using the same policy as the shared country census.
-/// A slot whose rows the links do not resolve is absent.
-fn identities<'a>(
-    countries: &'a [replay::rows::CountryRow],
-    links: &[replay::rows::CountryLinkRow],
-) -> HashMap<u32, (&'a str, u32)> {
-    let mut ids = HashMap::with_capacity(countries.len());
-    for (_, lookup) in tagged_countries(countries, links) {
-        let Some((country, slot)) = lookup.found() else {
-            continue;
-        };
-        let Ok(tag) = std::str::from_utf8(&country.tag) else {
-            continue;
-        };
-        ids.entry(slot).or_insert((tag, country.id));
-    }
-    ids
-}
-
 /// Adds a known hour with `deals` left out, joining it to the last span when it
 /// follows it with the same count.
 fn mark_partial(spans: &mut Vec<PartialSpan>, hour: i32, deals: u32) {
@@ -201,7 +182,7 @@ fn mark_partial(spans: &mut Vec<PartialSpan>, hour: i32, deals: u32) {
 }
 
 /// A flow's summed terms at a read.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 struct Terms {
     delivered: i64,
     factories: i32,
@@ -211,18 +192,179 @@ struct Terms {
 }
 
 impl Terms {
-    fn add(self, row: &replay::rows::ResourceExchangeRow) -> Option<Self> {
+    fn add(self, row: Self) -> Option<Self> {
         Some(Self {
             delivered: self.delivered.checked_add(row.delivered)?,
-            factories: self.factories.checked_add(row.assigned_factories)?,
-            assigned: self.assigned.checked_add(row.convoys_assigned)?,
-            required: self.required.checked_add(row.convoys_required)?,
-            deals: self.deals.checked_add(1)?,
+            factories: self.factories.checked_add(row.factories)?,
+            assigned: self.assigned.checked_add(row.assigned)?,
+            required: self.required.checked_add(row.required)?,
+            deals: self.deals.checked_add(row.deals)?,
         })
     }
 }
 
-#[derive(Clone, Debug)]
+/// Native fields in recorded order. Re-resolving aliases must not regroup
+/// these operands before checked addition: signed partial sums can overflow.
+fn exchange_operands(rows: &[replay::rows::ResourceExchangeRow]) -> Vec<(u32, u32, u32, Terms)> {
+    rows.iter()
+        .map(|row| {
+            (
+                row.exporter,
+                row.importer,
+                row.resource,
+                Terms {
+                    delivered: row.delivered,
+                    factories: row.assigned_factories,
+                    assigned: row.convoys_assigned,
+                    required: row.convoys_required,
+                    deals: 1,
+                },
+            )
+        })
+        .collect()
+}
+#[derive(Default)]
+struct Inputs {
+    countries: Option<super::territory::CountryReads>,
+    exchanges: Option<Vec<(u32, u32, u32, Terms)>>,
+    names: Option<Learned>,
+    ready: bool,
+    #[cfg(test)]
+    row_visits: usize,
+}
+impl Inputs {
+    fn refresh(
+        &mut self,
+        frame: &replay::frame::DecodedFrame,
+        changes: &crate::prepared::frame_changes::FrameChanges,
+    ) -> bool {
+        let forced = !self.ready;
+        let mut changed = forced;
+        if forced
+            || changes.rows_changed[TableId::Countries.index()]
+            || changes.rows_changed[TableId::CountryLinks.index()]
+        {
+            let rows = frame.complete::<tables::Countries>().ok();
+            let same = rows.is_some_and(|rows| {
+                self.countries
+                    .as_ref()
+                    .is_some_and(|seen| seen.matches(frame, rows))
+            });
+            if !same {
+                self.countries = rows.map(|rows| {
+                    if !forced
+                        && !changes.rows_changed[TableId::CountryLinks.index()]
+                        && let Some(seen) = &self.countries
+                    {
+                        super::territory::CountryReads::from_slots(
+                            frame,
+                            rows,
+                            Arc::clone(seen.slots()),
+                        )
+                    } else {
+                        super::territory::CountryReads::new(frame, rows)
+                    }
+                });
+                changed = true;
+            }
+        }
+        if forced || changes.rows_changed[TableId::ResourceExchanges.index()] {
+            self.exchanges = frame
+                .complete::<tables::ResourceExchanges>()
+                .ok()
+                .map(|rows| {
+                    #[cfg(test)]
+                    {
+                        self.row_visits += rows.len();
+                    }
+                    exchange_operands(rows)
+                });
+            changed = true;
+        }
+        if forced
+            || changes.rows_changed[TableId::ResourceDefinitions.index()]
+            || changes.rows_changed[TableId::LexicalTokens.index()]
+        {
+            self.names = frame
+                .complete::<tables::ResourceDefinitions>()
+                .ok()
+                .zip(frame.complete::<tables::LexicalTokens>().ok())
+                .map(|(definitions, lexical)| {
+                    #[cfg(test)]
+                    {
+                        self.row_visits += definitions.len();
+                    }
+                    let mut names = Learned::default();
+                    names.learn(definitions, lexical);
+                    names
+                });
+            changed = true;
+        }
+        self.ready = true;
+        changed
+    }
+    fn identities(&self) -> HashMap<u32, (&str, u32)> {
+        let mut ids = HashMap::new();
+        if let Some(countries) = &self.countries {
+            for (tag, identity) in countries.holders() {
+                if let Some((slot, id)) = *identity {
+                    ids.entry(slot).or_insert((tag.as_str(), id));
+                }
+            }
+        }
+        ids
+    }
+}
+/// Native aggregation shared by history, preparation and stateless sampling.
+#[allow(clippy::type_complexity)]
+fn flow_rows<'a>(
+    inputs: &'a Inputs,
+    ids: &HashMap<u32, (&'a str, u32)>,
+    wanted: Option<&BTreeSet<Identity>>,
+    rejected: &mut Vec<(Option<(Identity, Identity)>, u32)>,
+) -> io::Result<Option<BTreeMap<(Identity, Identity, u32), (&'a str, &'a str, Terms)>>> {
+    let (Some(exchanges), Some(names), Some(countries)) =
+        (&inputs.exchanges, &inputs.names, &inputs.countries)
+    else {
+        return Ok(None);
+    };
+    let slots = countries.slots();
+    let mut read = BTreeMap::new();
+    for &(exporter, importer, resource, operand) in exchanges {
+        let side = |raw| {
+            slots
+                .get(&raw)
+                .and_then(|slot| ids.get(slot).map(|(tag, id)| (*slot, *tag, *id)))
+        };
+        let (Some((seller_slot, seller, seller_id)), Some((buyer_slot, buyer, buyer_id))) =
+            (side(exporter), side(importer))
+        else {
+            rejected.push((None, 1));
+            continue;
+        };
+        let seller_identity = (seller_slot, seller_id);
+        let buyer_identity = (buyer_slot, buyer_id);
+        if wanted
+            .is_some_and(|ids| !ids.contains(&seller_identity) && !ids.contains(&buyer_identity))
+        {
+            continue;
+        }
+        if !names.contains(resource) {
+            rejected.push((Some((seller_identity, buyer_identity)), 1));
+            continue;
+        }
+        let terms = read
+            .entry((seller_identity, buyer_identity, resource))
+            .or_insert((seller, buyer, Terms::default()));
+        terms.2 = terms
+            .2
+            .add(operand)
+            .ok_or_else(|| crate::invalid("recorded trade terms overflow their sum"))?;
+    }
+    Ok(Some(read))
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct Run {
     first_hour: i32,
     last_hour: i32,
@@ -234,8 +376,11 @@ struct Run {
 fn identity((slot, id): Identity) -> String {
     format!("[{slot},{id}]")
 }
+fn flow_token(seller: Identity, buyer: Identity, resource: u32) -> String {
+    serde_json::to_string(&(identity(seller), identity(buyer), resource)).expect("flow key")
+}
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct Flow {
     seller: String,
     buyer: String,
@@ -245,7 +390,7 @@ struct Flow {
     runs: Vec<Run>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ScannedFlows {
     /// Resources in the game's order: native index and token.
     pub resources: Vec<(u32, String)>,
@@ -267,9 +412,11 @@ impl ScannedFlows {
             .flows
             .iter()
             .flat_map(|flow| {
-                flow.runs
-                    .iter()
-                    .flat_map(|run| [run.seller_tag.clone(), run.buyer_tag.clone()])
+                [flow.seller.clone(), flow.buyer.clone()].into_iter().chain(
+                    flow.runs
+                        .iter()
+                        .flat_map(|run| [run.seller_tag.clone(), run.buyer_tag.clone()]),
+                )
             })
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -324,6 +471,7 @@ impl ScannedFlows {
 }
 
 /// Scans one branch for every trade deal, or those of `tags` as seller or buyer.
+#[cfg(test)]
 pub fn scan(
     replay: &Replay,
     branch: u64,
@@ -333,6 +481,7 @@ pub fn scan(
     let history = country_history::scan_histories(replay, branch, false, &[], cancelled)?;
     scan_with_history(replay, branch, tags, &history, cancelled)
 }
+#[cfg(test)]
 fn scan_with_history(
     replay: &Replay,
     branch: u64,
@@ -349,19 +498,10 @@ fn scan_with_history(
         TableId::ResourceExchanges,
     ];
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Trade request cancelled");
-    let selected_identities = tags.map(|tags| country_history::selected_identities(history, tags));
-    let wanted = |identity: Identity| {
-        selected_identities
-            .as_ref()
-            .is_none_or(|selected| selected.contains(&identity))
+    let mut scan = Scan {
+        wanted: tags.map(|tags| country_history::selected_identities(history, tags)),
+        ..Default::default()
     };
-    let mut result = ScannedFlows::default();
-    let mut learned = Learned::default();
-    let mut index: HashMap<(Identity, Identity, u32), usize> = HashMap::new();
-    let mut known = false;
-    // The countries the previous hour's flows name: slot, tag and country id.
-    let mut carried: Vec<(u32, String, u32)> = Vec::new();
-    let mut last_hour: Option<i32> = None;
     crate::blocks::scan_blocks(
         replay,
         replay.index.iter().filter(|block| block.branch == branch),
@@ -386,131 +526,13 @@ fn scan_with_history(
                     if validate_campaign(decoded, replay).is_err() {
                         break;
                     }
-                    let hour = frame.hour;
-                    let continues = last_hour.and_then(|last| last.checked_add(1)) == Some(hour);
-                    last_hour = Some(hour);
-                    let exchanges = decoded.complete::<tables::ResourceExchanges>().ok();
-                    if !continues || exchanges.is_none() {
-                        known = false;
-                    }
-                    let Some(exchanges) = exchanges else {
-                        continue;
-                    };
-                    let (Ok(definitions), Ok(lexical), Ok(countries), Ok(links)) = (
-                        decoded.complete::<tables::ResourceDefinitions>(),
-                        decoded.complete::<tables::LexicalTokens>(),
-                        decoded.complete::<tables::Countries>(),
-                        decoded.complete::<tables::CountryLinks>(),
-                    ) else {
-                        // A read that cannot say who trades what: unknown from here.
-                        known = false;
-                        continue;
-                    };
-                    learned.learn(definitions, lexical);
-                    let ids = identities(countries, links);
-                    let same = carried
-                        .iter()
-                        .all(|(slot, tag, id)| ids.get(slot) == Some(&(tag.as_str(), *id)));
-                    let mut read: BTreeMap<(Identity, Identity, u32), (&str, &str, Terms)> =
-                        BTreeMap::new();
-                    // The slots this read's flows name, with the country each held.
-                    let mut named: BTreeSet<u32> = BTreeSet::new();
-                    // Deals this read lists but cannot attribute: the hour is known only in part.
-                    let mut skipped = 0_u32;
-                    for exchange in exchanges {
-                        let side = |raw| {
-                            link_slot(links, raw)
-                                .and_then(|slot| ids.get(&slot).map(|(tag, id)| (slot, *tag, *id)))
-                        };
-                        let (
-                            Some((seller_slot, seller, seller_id)),
-                            Some((buyer_slot, buyer, buyer_id)),
-                        ) = (side(exchange.exporter), side(exchange.importer))
-                        else {
-                            // Whoever it names could be one of the countries asked about.
-                            result.unresolved += 1;
-                            skipped = skipped.saturating_add(1);
-                            continue;
-                        };
-                        if !(wanted((seller_slot, seller_id)) || wanted((buyer_slot, buyer_id))) {
-                            continue;
-                        }
-                        if !learned.contains(exchange.resource) {
-                            result.unnamed += 1;
-                            skipped = skipped.saturating_add(1);
-                            continue;
-                        }
-                        named.insert(seller_slot);
-                        named.insert(buyer_slot);
-                        let terms = read
-                            .entry((
-                                (seller_slot, seller_id),
-                                (buyer_slot, buyer_id),
-                                exchange.resource,
-                            ))
-                            .or_insert((seller, buyer, Terms::default()));
-                        terms.2 = terms.2.add(exchange).ok_or_else(|| {
-                            crate::invalid("recorded trade terms overflow their sum")
-                        })?;
-                    }
-                    result.reads.push(hour);
-                    mark(&mut result.known, hour);
-                    if skipped > 0 {
-                        mark_partial(&mut result.partial, hour, skipped);
-                    }
-                    let was_known = known && same;
-                    known = true;
-                    carried = named
-                        .iter()
-                        .map(|slot| {
-                            let (tag, id) = ids[slot];
-                            (*slot, tag.to_owned(), id)
-                        })
-                        .collect();
-                    for ((seller_identity, buyer_identity, resource), (seller, buyer, terms)) in
-                        read
-                    {
-                        let key = (seller_identity, buyer_identity, resource);
-                        let flow = *index.entry(key).or_insert_with(|| {
-                            result.flows.push(Flow {
-                                seller: seller.to_owned(),
-                                buyer: buyer.to_owned(),
-                                seller_identity,
-                                buyer_identity,
-                                resource,
-                                runs: Vec::new(),
-                            });
-                            result.flows.len() - 1
-                        });
-                        let runs = &mut result.flows[flow].runs;
-                        match runs.last_mut() {
-                            Some(run)
-                                if was_known
-                                    && run.last_hour.checked_add(1) == Some(hour)
-                                    && run.terms == terms
-                                    && run.seller_tag == seller
-                                    && run.buyer_tag == buyer =>
-                            {
-                                run.last_hour = hour
-                            }
-                            _ => {
-                                runs.push(Run {
-                                    first_hour: hour,
-                                    last_hour: hour,
-                                    terms,
-                                    seller_tag: seller.to_owned(),
-                                    buyer_tag: buyer.to_owned(),
-                                });
-                            }
-                        }
-                    }
+                    scan.observe(decoded)?;
                 }
             }
             Ok(())
         },
     )?;
-    result.resources = learned.list();
-    result.country_identities = history
+    scan.result.country_identities = history
         .countries
         .iter()
         .filter(|(_, country)| !country.identities.is_empty())
@@ -519,12 +541,258 @@ fn scan_with_history(
             runs: country.identities.as_ref().clone(),
         })
         .collect();
-    Ok(result)
+    Ok(scan.result)
+}
+
+#[derive(Default, Deserialize, Serialize)]
+pub(crate) struct Scan {
+    result: ScannedFlows,
+    learned: Learned,
+    #[serde(with = "crate::prepared_production::map_pairs")]
+    index: HashMap<(Identity, Identity, u32), usize>,
+    known: bool,
+    carried: Vec<(u32, String, u32)>,
+    last_hour: Option<i32>,
+    wanted: Option<BTreeSet<Identity>>,
+    #[serde(skip)]
+    rejected: Vec<(Option<(Identity, Identity)>, u32)>,
+    active: BTreeSet<usize>,
+    materialized: Option<i32>,
+    #[serde(skip)]
+    inputs: Inputs,
+}
+impl Scan {
+    #[cfg(test)]
+    fn observe(&mut self, decoded: &replay::frame::DecodedFrame) -> io::Result<()> {
+        let requested = self.wanted.as_ref().map(|ids| {
+            let mut requested = ids
+                .iter()
+                .map(|&id| (identity(id), "actor".into()))
+                .collect::<Vec<_>>();
+            if requested.is_empty() {
+                requested.push((String::new(), String::new()));
+            }
+            requested
+        });
+        self.inputs.refresh(
+            decoded,
+            &crate::prepared::frame_changes::FrameChanges {
+                rows_changed: [true; replay::frame::TABLE_COUNT],
+                table_read: [true; replay::frame::TABLE_COUNT],
+                slot_read: [true; replay::frame::TABLE_COUNT],
+            },
+        );
+        let sampled = sample::sample_inputs(decoded, requested.as_deref(), &self.inputs)?;
+        self.observe_sampled(decoded, &sampled)
+    }
+    fn advance(&mut self, hour: i32) {
+        self.last_hour = Some(hour);
+    }
+    fn seal(&mut self) {
+        let Some((from, through)) = self
+            .materialized
+            .zip(self.last_hour)
+            .filter(|(from, through)| from < through)
+        else {
+            return;
+        };
+        if self.known {
+            for &index in &self.active {
+                if let Some(run) = self.result.flows[index].runs.last_mut() {
+                    run.last_hour = through;
+                }
+            }
+            if let Some(span) = self.result.known.last_mut() {
+                span.last_hour = through;
+            }
+            if let Some(read) = self.result.reads.last_mut() {
+                *read = through;
+            }
+            if let Some(span) = self
+                .result
+                .partial
+                .last_mut()
+                .filter(|span| span.last_hour == from)
+            {
+                span.last_hour = through;
+            }
+            let hours =
+                usize::try_from(i64::from(through) - i64::from(from)).expect("trade frontier");
+            for (pair, count) in &self.rejected {
+                if pair.is_some() {
+                    self.result.unnamed += hours * *count as usize;
+                } else {
+                    self.result.unresolved += hours * *count as usize;
+                }
+            }
+        }
+        self.materialized = Some(through);
+    }
+    fn observe_sampled(
+        &mut self,
+        decoded: &replay::frame::DecodedFrame,
+        sampled: &crate::prepared::query::progressive::Samples,
+    ) -> io::Result<()> {
+        let Self {
+            result,
+            learned,
+            index,
+            known,
+            carried,
+            last_hour,
+            wanted,
+            rejected,
+            active,
+            materialized,
+            inputs,
+        } = self;
+        rejected.clear();
+        active.clear();
+        *materialized = Some(decoded.hour);
+        let hour = decoded.hour;
+        let continues = last_hour.and_then(|last| last.checked_add(1)) == Some(hour);
+        *last_hour = Some(hour);
+        if !continues {
+            *known = false;
+        }
+        if sampled
+            .get(&(String::new(), "known".into()))
+            .and_then(|(_, value)| *value)
+            .is_none()
+        {
+            // A read that cannot say who trades what: unknown from here.
+            *known = false;
+            return Ok(());
+        }
+        if let Some(names) = &inputs.names {
+            learned.learn_names(names);
+        }
+        let ids: HashMap<u32, (&str, u32)> = sampled
+            .iter()
+            .filter_map(|((tag, field), (holder, _))| {
+                (field == "holder")
+                    .then_some(holder.map(|(slot, id)| (slot, (tag.as_str(), id))))
+                    .flatten()
+            })
+            .collect();
+        let mut read = BTreeMap::new();
+        for ((token, field), (_, amount)) in sampled {
+            if field == "rejected" {
+                let pair: Option<(Identity, Identity)> = serde_json::from_str(token)?;
+                if pair.is_none_or(|(seller, buyer)| {
+                    wanted
+                        .as_ref()
+                        .is_none_or(|ids| ids.contains(&seller) || ids.contains(&buyer))
+                }) {
+                    rejected.push((
+                        pair,
+                        amount
+                            .unwrap_or(0)
+                            .try_into()
+                            .map_err(|_| crate::invalid("Invalid sampled rejected deal count"))?,
+                    ));
+                }
+            }
+            if field != "delivered" {
+                continue;
+            }
+            let (seller, buyer, resource) = sample::pair(token)?;
+            if wanted
+                .as_ref()
+                .is_some_and(|ids| !ids.contains(&seller) && !ids.contains(&buyer))
+            {
+                continue;
+            }
+            let mut amounts = [0; 5];
+            for (field, amount) in sample::FIELDS.iter().zip(&mut amounts) {
+                *amount = sampled
+                    .get(&(token.clone(), (*field).to_owned()))
+                    .and_then(|(_, value)| *value)
+                    .ok_or_else(|| crate::invalid("Missing native sampled trade terms"))?;
+            }
+            read.insert(
+                (seller, buyer, resource),
+                (ids[&seller.0].0, ids[&buyer.0].0, sample::terms(amounts)?),
+            );
+        }
+        let same = carried
+            .iter()
+            .all(|(slot, tag, id)| ids.get(slot) == Some(&(tag.as_str(), *id)));
+        // The slots this read's flows name, with the country each held.
+        let named: BTreeSet<u32> = read
+            .keys()
+            .flat_map(|(seller, buyer, _)| [seller.0, buyer.0])
+            .collect();
+        // Deals this read lists but cannot attribute: the hour is known only in part.
+        let mut skipped = 0_u32;
+        for (pair, count) in rejected.iter() {
+            if pair.is_some() {
+                result.unnamed += *count as usize;
+            } else {
+                result.unresolved += *count as usize;
+            }
+            skipped = skipped.saturating_add(*count);
+        }
+        result.reads.push(hour);
+        mark(&mut result.known, hour);
+        if skipped > 0 {
+            mark_partial(&mut result.partial, hour, skipped);
+        }
+        let was_known = *known && same;
+        *known = true;
+        *carried = named
+            .iter()
+            .map(|slot| {
+                let (tag, id) = ids[slot];
+                (*slot, tag.to_owned(), id)
+            })
+            .collect();
+        for ((seller_identity, buyer_identity, resource), (seller, buyer, terms)) in read {
+            let key = (seller_identity, buyer_identity, resource);
+            let flow = *index.entry(key).or_insert_with(|| {
+                result.flows.push(Flow {
+                    seller: seller.to_owned(),
+                    buyer: buyer.to_owned(),
+                    seller_identity,
+                    buyer_identity,
+                    resource,
+                    runs: Vec::new(),
+                });
+                result.flows.len() - 1
+            });
+            active.insert(flow);
+            let runs = &mut result.flows[flow].runs;
+            match runs.last_mut() {
+                Some(run)
+                    if was_known
+                        && run.last_hour.checked_add(1) == Some(hour)
+                        && run.terms == terms
+                        && run.seller_tag == seller
+                        && run.buyer_tag == buyer =>
+                {
+                    run.last_hour = hour
+                }
+                _ => {
+                    runs.push(Run {
+                        first_hour: hour,
+                        last_hour: hour,
+                        terms,
+                        seller_tag: seller.to_owned(),
+                        buyer_tag: buyer.to_owned(),
+                    });
+                }
+            }
+        }
+        result.resources = learned.list();
+        Ok(())
+    }
 }
 
 /// A scan's branch and countries (none for the whole world).
+#[cfg(test)]
 type ScanKey = (u64, Option<Vec<String>>);
 
+#[cfg(test)]
 #[derive(Default)]
 struct Cache {
     entries: VecDeque<(ScanKey, Arc<ScannedFlows>)>,
@@ -559,6 +827,7 @@ impl Product for TradeFlows {
         Ok(())
     }
 
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -601,39 +870,62 @@ impl Product for TradeFlows {
                 scanned
             }
         };
-        // Without the game folders the flows still draw, resources named by token.
-        let (resources, mut warnings) =
-            resource_infos(source, context, &scanned.resources, cancelled)?;
-        if scanned.unnamed > 0 {
-            warnings.push(format!(
+        reply(source, params, context, &scanned, cancelled)
+    }
+}
+
+pub(crate) fn reply(
+    source: &Source,
+    params: &TradeFlowParams,
+    context: &LoadContext,
+    scanned: &ScannedFlows,
+    cancelled: &AtomicBool,
+) -> io::Result<TradeFlowsReply> {
+    // Without the game folders the flows still draw, resources named by token.
+    let (resources, mut warnings) = resource_infos(source, context, &scanned.resources, cancelled)?;
+    recording_warnings(
+        scanned.unnamed,
+        scanned.unresolved,
+        !scanned.reads.is_empty(),
+        &mut warnings,
+    );
+    let (countries, flows) = scanned.reply_flows();
+    let reply = TradeFlowsReply {
+        branch_id: params.branch_id.clone(),
+        decimals: RESOURCE_DECIMALS,
+        resources,
+        countries,
+        country_identities: scanned.country_identities.clone(),
+        reads: scanned.reads.clone(),
+        known: scanned.known.clone(),
+        partial: scanned.partial.clone(),
+        flows,
+        warnings,
+    };
+    fits_one_reply(&reply, super::MAX_PRODUCT_REPLY_BYTES)?;
+    Ok(reply)
+}
+
+fn recording_warnings(
+    unnamed: usize,
+    unresolved: usize,
+    had_reads: bool,
+    warnings: &mut Vec<String>,
+) {
+    if unnamed > 0 {
+        warnings.push(format!(
                 "{} recorded deal reads name a resource the recorded definitions do not; they are left out.",
-                scanned.unnamed
+                unnamed
             ));
-        }
-        if scanned.unresolved > 0 {
-            warnings.push(format!(
+    }
+    if unresolved > 0 {
+        warnings.push(format!(
                 "{} recorded deal reads name a seller or buyer the recorded links do not resolve; they are left out.",
-                scanned.unresolved
+                unresolved
             ));
-        }
-        if scanned.reads.is_empty() {
-            warnings.push("No trade deals were recorded in this branch.".to_owned());
-        }
-        let (countries, flows) = scanned.reply_flows();
-        let reply = TradeFlowsReply {
-            branch_id: params.branch_id.clone(),
-            decimals: RESOURCE_DECIMALS,
-            resources,
-            countries,
-            country_identities: scanned.country_identities.clone(),
-            reads: scanned.reads.clone(),
-            known: scanned.known.clone(),
-            partial: scanned.partial.clone(),
-            flows,
-            warnings,
-        };
-        fits_one_reply(&reply, super::MAX_PRODUCT_REPLY_BYTES)?;
-        Ok(reply)
+    }
+    if !had_reads {
+        warnings.push("No trade deals were recorded in this branch.".to_owned());
     }
 }
 

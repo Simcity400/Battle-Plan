@@ -6,7 +6,11 @@ import { formatDateTime } from './calendar';
 import { Icon } from '../components/Icons';
 import type { BoundTrack, DashboardTemplate } from './model';
 import type { PlaybackController } from './playback';
-import { timelineGaps } from './timelineGaps';
+import type { DashboardClient } from './client';
+import { newId } from '../shell/ids';
+import { validatePreparationReply, preparationActive } from '../shell/preparation/contract';
+import type { PreparedCoverage } from '../shell/preparation/contract';
+import { timelineGaps, timelinePrepared } from './timelineGaps';
 import CountryPicker from '../components/CountryPicker';
 
 /** The header's country picker, showing the flag the game drew at the playback hour.
@@ -31,8 +35,8 @@ export function PlaybackCountryPicker({ clock, track, ...picker }: { clock: Play
   return <CountryPicker {...picker} flagAt={flagAt} />;
 }
 
-export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
-  clock: PlaybackController; tracks: BoundTrack[]; alignment: DashboardTemplate['alignment']; defaultRoleId: string | null;
+export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId, client }: {
+  client: DashboardClient; clock: PlaybackController; tracks: BoundTrack[]; alignment: DashboardTemplate['alignment']; defaultRoleId: string | null;
 }) {
   const controlsKey = useCallback(() => {
     const snapshot = clock.getSnapshot();
@@ -46,6 +50,23 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
   const reference = tracks.find((track) => track.roleId === defaultRoleId);
   const referenceKey = JSON.stringify(reference && [reference.id, reference.source.id, reference.source.revision,
     reference.branch.id, reference.branch.firstHour, reference.branch.lastHour, reference.axisOffset]);
+  const [prepared, setPrepared] = useState<{ owner: string; coverage: PreparedCoverage | null }>();
+  useEffect(() => {
+    if (!reference || !client.preparationStatus) return;
+    const controller = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      const request = { sourceId: reference.source.id, revision: reference.source.revision, requestId: newId() };
+      try {
+        const status = validatePreparationReply(await client.preparationStatus!(request, controller.signal), request);
+        if (controller.signal.aborted) return;
+        setPrepared({ owner: referenceKey, coverage: status.coverage?.[reference.branch.id] ?? null });
+        if (preparationActive(status)) timer = setTimeout(() => { void poll(); }, 500);
+      } catch { /* Coverage is absent until a valid status arrives. */ }
+    };
+    void poll(); return () => { controller.abort(); clearTimeout(timer); };
+  }, [client, referenceKey]);
+  // Without a reference track the key is undefined too, so an unset state must not match it.
+  const coverage = prepared && prepared.owner === referenceKey ? prepared.coverage : null;
   const draft = dateDraft && dateDraft.reference === referenceKey ? dateDraft.hour : null;
   const setDraft = (hour: number | null) => setDateDraft({ reference: referenceKey, hour });
   const rawHour = reference ? snapshot.hour + reference.axisOffset : null;
@@ -53,6 +74,8 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
   const span = bounds ? bounds.lastHour - bounds.firstHour : 0;
   const progress = bounds && span > 0 ? 100 * (snapshot.hour - bounds.firstHour) / span : 0;
   const gaps = useMemo(() => reference && bounds ? timelineGaps(reference.branch.gaps ?? [], reference.axisOffset, bounds.firstHour, bounds.lastHour) : [], [reference, bounds]);
+  const exact = useMemo(() => reference && bounds ? timelinePrepared(coverage, reference.branch.gaps ?? [], reference.axisOffset,
+    bounds.firstHour, bounds.lastHour) : [], [reference, bounds, coverage]);
   const currentGap = reference?.branch.gaps?.find(gap => rawHour != null && gap.firstHour <= rawHour && gap.lastHour >= rawHour);
   const trackHover = (event: PointerEvent<HTMLInputElement>) => {
     if (!bounds || span <= 0 || !reference) return;
@@ -85,6 +108,9 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
           style={{ '--scrub-progress': `${progress}%` } as CSSProperties}
           onPointerMove={trackHover} onPointerLeave={() => setHover(null)}
           onChange={(event) => { setDraft(null); clock.seek(Number(event.currentTarget.value)); }} />
+        <div className="timeline-prepared-markers" aria-label="Exact prepared hours">{exact.map((span, index) =>
+          <span key={index} className="timeline-prepared" style={{ left: `${span.left}%`, width: `${span.width}%` }}
+            data-tooltip={`Exact prepared hours ? ${formatDateTime(span.firstHour)} to ${formatDateTime(span.lastHour)}`} />)}</div>
         <div className="timeline-gap-markers">{gaps.map((gap, index) => <span key={index} className="timeline-gap" style={{ left: `${gap.left}%`, width: `${gap.width}%` }}
           data-tooltip={`Reported recording gap · ${formatDateTime(gap.firstHour)} to ${formatDateTime(gap.lastHour)} · ${gap.reason}`} />)}</div>
         {hover && <span className="timeline-hover" style={{ left: hover.left }} aria-hidden="true">{formatDateTime(hover.hour)}</span>}

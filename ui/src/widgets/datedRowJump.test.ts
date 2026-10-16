@@ -10,7 +10,8 @@ import type { FocusReply, ResearchReply } from '../generated/dashboard';
 import { formatDate, gameDate, HOUR_EPOCH } from '../dashboard/calendar.ts';
 
 type Node = { type: unknown; props: Record<string, unknown> };
-const nodes = (tree: unknown): Node[] => Array.isArray(tree) ? tree.flatMap(nodes)
+const nodes = (tree: unknown): Node[] => tree && typeof tree === 'object' && 'type' in tree && typeof (tree as Node).type === 'function' && ((tree as Node).type as Function).name === 'VirtualList'
+  ? nodes(((tree as Node).type as Function)((tree as Node).props)) : Array.isArray(tree) ? tree.flatMap(nodes)
   : tree && typeof tree === 'object' && 'props' in tree ? [tree as Node, ...nodes((tree as Node).props.children)] : [];
 
 test('registered Focus and Research rows Jump to their recorded bounds through pointer and menu keys', async () => {
@@ -27,9 +28,13 @@ test('registered Focus and Research rows Jump to their recorded bounds through p
       lastObservedHour: ended - 1, endedByHour: ended, outcomeObservedHour: confirmed, outcome: 'completed' }],
   }] }, artwork: [], folders: [], technologyFolders: [], warnings: [] };
   const host = globalThis as typeof globalThis & { __datedRowData?: FocusReply | ResearchReply;
-    __datedRowMenu?: { x: number; y: number; items: readonly MenuItem[] } };
+    __datedRowMenu?: { x: number; y: number; items: readonly MenuItem[] }; __datedRowKey?: string };
   const shownMenu = () => host.__datedRowMenu;
   const replacements: Record<string, string> = {
+    '/components/VirtualList.tsx': `import { createElement } from 'react'; export const VirtualList = ({ items, itemKey, rowProps, children }) => {
+      globalThis.__datedRowKey = items.length ? itemKey(items[0]) : undefined;
+      return items.map((item, index) => createElement('li', { ...rowProps?.(item, index), key: index }, children(item, index))); };`,
+    '/research/preparedResearch.ts': 'export const usePreparedResearch = () => ({ data: globalThis.__datedRowData });',
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__datedRowData });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     // Server rendering has no document to read theme colours from.
@@ -45,6 +50,7 @@ test('registered Focus and Research rows Jump to their recorded bounds through p
   try {
     type Renderer = { render: (props: WidgetProps) => ReactNode };
     const focusRenderer = (await vite.ssrLoadModule('/ui/src/widgets/national-focus/index.ts')).default as Renderer;
+    const { LegacyNationalFocusWidget: focusOracle } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
     const researchRenderer = (await vite.ssrLoadModule('/ui/src/widgets/research/index.ts')).default as Renderer;
     const seeks: [string, number][] = [];
     const track = { id: 'track', axisOffset: 12, branch: { id: 'branch', firstHour: first, lastHour: last, gaps: [] },
@@ -54,7 +60,7 @@ test('registered Focus and Research rows Jump to their recorded bounds through p
       runtime: { client: {}, tracks: [track], clock: { getHour: () => hour - track.axisOffset }, requestSeek: (id: string, at: number) => seeks.push([id, at]) },
       active: true, onDiagnostics() {} } as unknown as WidgetProps;
     let renderer = focusRenderer;
-    function Probe() { tree = renderer.render(props); return tree; }
+    function Probe() { tree = renderer === focusRenderer ? focusOracle(props) : renderer.render(props); return tree; }
     const render = () => renderToStaticMarkup(createElement(Probe));
     const activate = (row: Node, expected: number) => {
       const pointer = row.props.onContextMenu as (event: unknown) => void;
@@ -82,9 +88,11 @@ test('registered Focus and Research rows Jump to their recorded bounds through p
     };
     host.__datedRowData = focus;
     hour = focusHour - 1; render();
+    const undatedKey = (globalThis as typeof globalThis & { __datedRowKey?: string }).__datedRowKey;
     assert.ok(nodes(tree).filter(node => node.type === 'li').every(node => node.props.onContextMenu === undefined), 'a completion is not dated before its first observation');
     hour = last;
     const html = render();
+    assert.notEqual((globalThis as typeof globalThis & { __datedRowKey?: string }).__datedRowKey, undatedKey, 'undated row expansion belongs to its supplying artwork read');
     assert.match(html, /data-row-menu="National focus actions"/);
     assert.ok(html.includes('data-tooltip="Completed by this date. Focuses are read once a game day, so it may have finished a day or so earlier.">'
       + `${formatDate(gameDate(focusHour)!)}</span>`), 'a dated completion shows its plain date with the daily-read caveat in its hint');
@@ -100,9 +108,14 @@ test('registered Focus and Research rows Jump to their recorded bounds through p
     renderer = researchRenderer; props.widget.kind = 'research'; props.widget.time = { mode: 'follow' };
     host.__datedRowData = research;
     type Jump = (at: number | (() => number | null)) => { onContextMenu: (event: unknown) => void };
-    // Lane cells sit inside the columns view, a hook-free component expanded here.
-    const columnsTree = () => { const view = nodes(tree).find(node => Array.isArray(node.props.lanes) && 'moment' in node.props);
-      return view ? nodes((view.type as (props: Record<string, unknown>) => ReactNode)(view.props)) : []; };
+    const columnsTree = () => {
+      const view = nodes(tree).find(node => Array.isArray(node.props.lanes) && 'moment' in node.props);
+      if (!view) return [];
+      let columns: ReactNode = null;
+      function ColumnsProbe() { columns = (view!.type as (props: Record<string, unknown>) => ReactNode)(view!.props); return columns; }
+      renderToStaticMarkup(createElement(ColumnsProbe));
+      return nodes(columns);
+    };
     const completedCell = () => columnsTree().find(node => (node.props.item as { kind?: string } | undefined)?.kind === 'completed');
     hour = confirmed - 1; render();
     assert.equal(completedCell(), undefined, 'a later completion classification cannot appear early');
@@ -154,5 +167,5 @@ test('registered Focus and Research rows Jump to their recorded bounds through p
     (unknown.onContextMenu as (event: unknown) => void)(event);
     (unknown.onKeyDown as (event: unknown) => void)({ ...event, key: 'ContextMenu', shiftKey: false });
     assert.equal(lookedUp, 2); assert.equal(prevented, 0, 'a missing lazy date preserves the native context event');
-  } finally { delete host.__datedRowData; delete host.__datedRowMenu; await vite.close(); }
+  } finally { delete host.__datedRowData; delete host.__datedRowMenu; delete host.__datedRowKey; await vite.close(); }
 });

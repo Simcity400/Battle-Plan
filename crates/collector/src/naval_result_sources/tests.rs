@@ -300,7 +300,7 @@ fn worker_drain_grows_empty_and_recycled_storage_for_every_owned_source() {
         boundary(clock(11, 1));
         {
             let mut store = store().lock().unwrap();
-            crate::allocation_failure_tests::with_allocations_denied(|| {
+            crate::test_support::with_allocations_denied(|| {
                 for index in 0..count {
                     store.entries.push(Entry {
                         id: index as u64 + 1,

@@ -39,6 +39,7 @@ import { consumptionForActor, fuelConsumptionLevelToken, fuelConsumptionToken, r
 import type { FuelConsumptionLevel, FuelConsumptionSelection } from './fuelConsumption';
 import { fuelExtentToken, fuelMoment, fuelOpen, fuelRecipientAtPick, fuelRecipientForReply, fuelRecipientToken, readFuelExtent, readFuelRecipient } from './fuelDrill';
 import type { FuelRecipientSelection } from './fuelDrill';
+import { usePreparedFuel, scaledFuelSummary, fuelSummaryStrip, useFuelSeriesParity } from './preparedFuel';
 import { fuelCountrySpans, fuelCountryToken, readFuelCountry } from './fuelCountry';
 import type { FuelCountrySelection } from './fuelCountry';
 import { formatFuel, fuelChoiceKey, fuelDecimals, fuelNumbers, fuelRuns, fuelTooltips, fuelView, validateFuelReply } from './fuelData';
@@ -53,19 +54,21 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const options = resolveOptions(OPTIONS, widget.options);
   const digits = fuelDecimals(options);
   const { track, countries, pending, contentPending: groupContentPending, error: groupError, retry: retryGroups } = useComparisonCountries(widget, runtime, active);
-  const requests = track ? countries.tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision, product: 'country-fuel',
-    params: { branchId: track.branch.id, tag } })) : [];
-  const product = useProducts<FuelReply>(runtime.client, requests, active, validateFuelReply);
-  const { error, retry } = product;
-  const retained = useMemo(() => new NumericReply<FuelReply[]>(), [runtime.client]);
-  const numbers = retained.update(JSON.stringify(requests), product.data, fuelNumbers);
-  const data = product.data ?? numbers;
-  const contentPending = !!numbers && !product.data && !error;
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const playhead = window && (widget.time.mode === 'follow' || widget.time.mode === 'pin') ? window.lastHour : null;
   const heldExtent = track && options.show !== 'main' ? readFuelExtent(options.fuelExtent, track.source.metadata.campaignKey, track.branch.id) : null;
   const extent: [number, number] = heldExtent ?? (track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour]
     : [track.branch.firstHour, track.branch.lastHour]) : [0, 1]);
+  const requests = track ? countries.tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision, product: 'country-fuel',
+    params: { branchId: track.branch.id, tag } })) : [];
+  const prepared = usePreparedFuel(runtime.client, track, countries.tags, Math.floor(playhead ?? extent[1]), active, ['fuel','capacity','stripGain','stripBurn'], countries.membership ?? undefined);
+  const legacyProduct = useProducts<FuelReply>(runtime.client, requests, active && !prepared.enabled, validateFuelReply);
+  const product = prepared.enabled ? prepared : legacyProduct;
+  const { error, retry } = product;
+  const retained = useMemo(() => new NumericReply<FuelReply[]>(), [runtime.client]);
+  const numbers = retained.update(JSON.stringify(requests), product.data, fuelNumbers);
+  const data = product.data ?? numbers;
+  const contentPending = !!numbers && !product.data && !error;
   const single = data?.length === 1;
   const [chosenTag, setChosenTag] = useState<string>();
   const [pickTags, setPickTags] = useState<readonly string[]>();
@@ -77,7 +80,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     [widget.countries, countries.tags, countries.membership, options.capacity]); // eslint-disable-line react-hooks/exhaustive-deps
   const pickScope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, candidates, options.show,
     extent, options.playback, options.afterPlayhead, options.windowDays, options.log, options.yMin, options.yMax]);
-  const pickOwner = useMemo(() => ({ scope: pickScope, numbers, client: runtime.client, active }), [pickScope, numbers, runtime.client, active]);
+  const pickOwner = useMemo(() => ({ scope: pickScope, numbers: prepared.enabled ? prepared.owner : numbers, client: runtime.client, active }), [pickScope, prepared.enabled ? prepared.owner : numbers, runtime.client, active]);
   const drill = drillOwner === undefined || drillOwner === pickOwner ? storedDrill : CLOSED;
   const literalChosen = data?.find(reply => reply.tag === chosenTag) ?? (pickTags ? undefined : data?.[0]);
   const drillMeasure = saved?.id ?? BREAKDOWNS.find(item => item.id === drill.breakdown)?.id ?? measure;
@@ -107,11 +110,13 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   [selectedCountry, identityNumbers, track?.branch.firstHour, track?.branch.lastHour]);
   const actorRequests = track && actorSpans ? [...actorSpans.keys()].map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
     product: 'country-fuel', params: { branchId: track.branch.id, tag } })) : [];
-  const actorProduct = useProducts<FuelReply>(runtime.client, actorRequests, active && !!selectedCountry, value => {
+  const actorPrepared = usePreparedFuel(runtime.client, track, [...(actorSpans?.keys() ?? [])], Math.floor(at ?? extent[1]), active && !!selectedCountry, [], actorSpans ?? undefined);
+  const actorLegacyProduct = useProducts<FuelReply>(runtime.client, actorRequests, active && !!selectedCountry && !actorPrepared.enabled, value => {
     const result = validateFuelReply(value);
     if (!track || result.branchId !== track.branch.id || !actorSpans?.has(result.tag)) throw new Error('The selected fuel history belongs to another country or branch.');
     return result;
   });
+  const actorProduct = actorPrepared.enabled ? actorPrepared : actorLegacyProduct;
   const actorStore = useMemo(() => new NumericReply<FuelReply[]>(), [runtime.client]);
   const actorNumbers = actorStore.update(JSON.stringify(actorRequests), actorProduct.data, fuelNumbers);
   const actorData = actorProduct.data ?? actorNumbers;
@@ -124,8 +129,8 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const selectedConsumption = drillMeasure === 'consumption' && chosen && track ? consumptionForActor(retainedConsumption, track.source.metadata.campaignKey, track.branch.id, chosen.tag, identitySpans ?? undefined) : null;
   const actorWithin = useMemo(() => actorSpans ? [...actorSpans.values()].flat().sort((a, b) => a.firstHour - b.firstHour) : undefined, [actorSpans]);
   const detailPickOwner = useMemo(() => ({ pickOwner, tag: chosen?.tag, measure: drillMeasure,
-    numbers: selectedCountry ? actorNumbers : numbers, identities: selectedCountry ? identityNumbers : undefined }),
-  [pickOwner, chosen?.tag, drillMeasure, selectedCountry, actorNumbers, numbers, identityNumbers]);
+    numbers: selectedCountry ? actorPrepared.enabled ? actorPrepared.owner : actorNumbers : prepared.enabled ? prepared.owner : numbers, identities: selectedCountry ? identityNumbers : undefined }),
+  [pickOwner, chosen?.tag, drillMeasure, selectedCountry, actorPrepared.enabled ? actorPrepared.owner : actorNumbers, prepared.enabled ? prepared.owner : numbers, identityNumbers]);
   const pickRef = useRef({ main: pickOwner, detail: detailPickOwner, active });
   pickRef.current = { main: pickOwner, detail: detailPickOwner, active };
   useEffect(() => {
@@ -148,16 +153,23 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
       ...(single ? { color: of === 'fuel' ? tokens.accent : tokens.muted } : {}),
       ...(of === 'capacity' ? { dash: SECONDARY_DASH, endDot: false, muted: true } : { area: single && options.areaFill !== false }),
       endLabel: (hour, name) => {
-        const read = runAt(view.reads, hour)!;
+        const read = runAt(view.reads, hour);
+        if (!read) return single ? (of === 'fuel' ? 'Fuel' : 'Capacity') : name;
         return `${single ? '' : `${name} · `}${of === 'fuel' ? 'Fuel' : 'Capacity'} ${formatFuel(of === 'fuel' ? read.fuelRaw : read.capacityRaw, reply.quantityScale, digits)}`;
       },
     });
     return [...(options.capacity !== false ? [line('capacity')] : []), line('fuel')];
   }), [views, countries.membership, extent[0], extent[1], single, options.capacity, options.areaFill, tokens, digits]); // eslint-disable-line react-hooks/exhaustive-deps
+  const lineSummaries = useMemo(() => prepared.enabled ? new Map(views.flatMap(({ reply }) =>
+    (options.capacity === false ? ['fuel'] : ['fuel', 'capacity']).flatMap(measure => {
+      const summary = scaledFuelSummary(prepared.summary(reply.tag, measure), reply.quantityScale);
+      return summary ? [[`${reply.tag}:${measure}`, summary] as const] : [];
+    }))) : undefined, [views, options.capacity, prepared.enabled, prepared.summaries]);
   const strip = useMemo<ChartStrip | undefined>(() => !single || options.strip === false || !views[0] ? undefined
-    : barStrip(views[0].view.bars.filter(bar => isMember(countries.membership?.get(views[0].reply.tag), bar.lastHour)),
+    : barStrip((prepared.enabled ? fuelSummaryStrip(prepared.summary(views[0].reply.tag,'stripGain'), prepared.summary(views[0].reply.tag,'stripBurn'), views[0].reply) : views[0].view.bars).filter(bar => isMember(countries.membership?.get(views[0].reply.tag), bar.lastHour)),
       { height: height => Math.max(CHART_LAYOUT.stripMin, (height - CHART_LAYOUT.stripInset) * STRIP_SHARE), upLabel: 'gain', downLabel: 'burn' }),
-    [views, single, options.strip, countries.membership]);
+    [views, single, options.strip, countries.membership, prepared.summaries]);
+  useFuelSeriesParity(anchor, runtime.client, track, countries.tags, extent, countries.membership ?? undefined, 'Fuel chart values', data);
   const colors = { fuel: tokens.accent, capacity: tokens.muted, gained: tokens.categories[0], burned: tokens.categories[1] };
   const state = !track ? <WidgetState kind="empty" icon="droplet" message="Load a campaign and choose countries to see their fuel." />
     : playhead !== null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)
@@ -166,7 +178,8 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
       : countries.reason ? <WidgetState kind="empty" message={countries.reason} />
         : (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window ? <WidgetState kind="unavailable" message="Choose another time in widget settings." />
           : pending || !data ? <WidgetState kind="loading" label="Loading fuel…" />
-            : !data.some(reply => reply.reads.length) ? <WidgetState kind="unavailable" message="No fuel was recorded for the chosen countries." /> : undefined;
+            : !data.some(reply => reply.reads.length) && !prepared.states?.states.some(state=>state.recorded)
+              && !prepared.summaries?.series.some(line=>line.summary.buckets.some(bucket=>bucket!==null)) ? <WidgetState kind="unavailable" message="No fuel was recorded for the chosen countries." /> : undefined;
   const open = (hour: number, tag?: string, choices?: readonly string[]) => {
     if (!active || pickRef.current.main !== pickOwner || !pickRef.current.active || saved || state || !track) return;
     hour = Math.floor(hour);
@@ -177,7 +190,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     if (choosing || tag && tag !== chosen?.tag) setLevel(null);
     setDrillOwner(pickOwner);
     if (choosing) { setChosenTag(undefined); setPickTags(choices); setCountryPick(null); }
-    else if (tag && countries.tags.includes(tag) && lines.some(line => line.tag === tag && runAt(line.runs, hour))) {
+    else if (tag && countries.tags.includes(tag) && lines.some(line => line.tag === tag && (prepared.enabled || runAt(line.runs, hour)))) {
       setPickTags(undefined); setChosenTag(tag);
       setCountryPick({ owner: pickOwner, selection: { campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag,
         originOffset: hour - track.branch.firstHour } });
@@ -186,6 +199,9 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
       !choosing && widget.time.mode === 'follow', playhead));
   };
   const main = <CountryRaceView runtime={runtime} track={track} active={active && !saved} options={options} view="lines" extent={extent} playhead={playhead}
+    lineSummaries={lineSummaries} onSummaryView={prepared.enabled ? prepared.onSummaryView : undefined}
+    onReachHour={prepared.enabled ? prepared.onHover : undefined} navigation={prepared.enabled ? prepared : undefined}
+    exactLineTags={prepared.enabled ? async hour => { const data = await prepared.exactAt(hour); return data ? data.states.filter(state=>(state.fuel || state.fuelRaw!==undefined) && isMember(countries.membership?.get(state.tag),hour)).map(state=>state.tag) : null; } : undefined}
     state={state} moment={Math.floor(playhead ?? extent[1])} slots={1} ranked={[]} lines={lines} strip={strip}
     countryTags={countries.tags} keyHours={[...new Set(views.flatMap(item => item.view.readHours))].sort((a, b) => a - b)}
     segmentAt={(tag, hour) => {
@@ -202,12 +218,12 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
       }}>View fuel breakdown</button></>}
     onPick={open} pickOwner={pickOwner} tooltip={() => null}
     timeTooltip={single ? hour => isMember(countries.membership?.get(views[0].reply.tag), hour)
-      ? fuelTooltips(views[0].reply, views[0].view.reads, hour, dayLabel(hour), colors, digits) : null : undefined}
+      ? fuelTooltips(views[0].reply, views[0].view.reads, hour, dayLabel(hour), colors, digits,prepared.amountsAt(views[0].reply.tag,hour)) : null : undefined}
     lineTooltip={(hour, tags, labels, country) => [{ title: dayLabel(hour), rows: tags.flatMap(tag => {
       const value = views.find(item => item.reply.tag === tag);
       if (!value) return [];
       const label = labels(hour)(tag);
-      const tip = fuelTooltips(value.reply, value.view.reads, hour, label.name, colors, digits)[0];
+      const tip = fuelTooltips(value.reply, value.view.reads, hour, label.name, colors, digits,prepared.amountsAt(tag,hour))[0];
       return [{ label: label.name, countryFlag: label, swatch: country(tag), strong: true },
         ...tip.rows.map(row => ({ ...row, indent: true })), ...(tip.note ? [{ label: tip.note, tone: 'muted' as const, indent: true }] : [])];
     }) }]} />;

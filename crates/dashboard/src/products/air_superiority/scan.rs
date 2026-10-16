@@ -1,11 +1,10 @@
 #[cfg(test)]
-use super::assignment::historical_anchors;
-use super::scores::{ScoreRead, ScoreView};
+use super::assignment::{historical_anchors, resolve_keys};
+#[cfg(test)]
+use super::scores::ScoreRead;
+use super::scores::ScoreView;
 use super::{
-    assignment::{
-        AssignedSide, SideAnchors, SideKey, assign_sides_with_anchors, native_side_keys,
-        resolve_keys,
-    },
+    assignment::{AssignedSide, SideAnchors, SideKey, assign_sides_with_anchors, native_side_keys},
     *,
 };
 use crate::products::country_groups::Scan;
@@ -21,18 +20,24 @@ pub(super) struct DayCache {
     pub countries: BTreeSet<String>,
     pub theatres: BTreeMap<String, Vec<u8>>,
     pub sides: Arc<Vec<AirSide>>,
+    #[cfg(test)]
     pub side_indices: Arc<HashMap<String, u32>>,
     pub anchors: Arc<SideAnchors>,
     pub warnings: Vec<String>,
+    #[cfg(test)]
     pub viewpoint: Option<String>,
+    #[cfg(test)]
     pub viewpoint_country: bool,
     pub available: bool,
+    #[cfg(test)]
     pub partial: Option<(i32, Arc<Snapshot>)>,
+    #[cfg(test)]
     pub theatre_read: Option<i32>,
     #[cfg(test)]
     pub measurements: Option<ScanMeasurements>,
 }
 // Opt-in checkpoint timings; normal requests do not read the clock.
+#[cfg(test)]
 #[derive(Clone, Default)]
 pub(super) struct ScanMeasurements {
     pub wire: std::time::Duration,
@@ -53,6 +58,7 @@ impl DayCache {
             .flat_map(|segment| segment.days.iter().map(|(day, sample)| (*day, sample)))
             .collect()
     }
+    #[cfg(test)]
     pub fn day(&self, day: i32) -> Option<&Arc<Snapshot>> {
         self.segments
             .iter()
@@ -72,8 +78,9 @@ impl DayCache {
     }
 }
 
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Auxiliary {
+    #[serde(skip)]
     pub wings: BTreeMap<u32, u32>,
     pub wings_known: bool,
     pub theatres: Arc<BTreeMap<String, BTreeSet<u32>>>,
@@ -85,7 +92,7 @@ pub(super) struct Auxiliary {
 #[derive(Clone)]
 pub(super) struct Snapshot {
     pub hour: i32,
-    key_read: Option<Arc<KeyRead>>,
+    pub(super) key_read: Option<Arc<KeyRead>>,
     pub cells: BTreeMap<u32, AirCell>,
     pub fallback: AirCell,
     pub wings: BTreeMap<u32, u32>,
@@ -99,12 +106,13 @@ pub(super) struct Snapshot {
     pub theatre_read: Option<i32>,
 }
 
-#[derive(PartialEq, Eq)]
-struct KeyRead {
-    countries: BTreeSet<String>,
-    sides: Vec<SideKey>,
-    published: Vec<(usize, String)>,
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(super) struct KeyRead {
+    pub(super) countries: BTreeSet<String>,
+    pub(super) sides: Vec<SideKey>,
+    pub(super) published: Vec<(usize, String)>,
 }
+#[cfg(test)]
 impl KeyRead {
     fn changes(&self, anchors: &SideAnchors) -> bool {
         let keys = resolve_keys(&self.sides, &self.countries, anchors);
@@ -114,6 +122,7 @@ impl KeyRead {
     }
 }
 
+#[cfg(test)]
 fn published_keys_change(cache: &DayCache, anchors: &SideAnchors) -> bool {
     let mut checked = HashSet::new();
     cache
@@ -134,7 +143,7 @@ pub(super) fn span(spans: &mut Vec<AirSpan>, hour: i32) {
         }),
     }
 }
-fn dictionary(
+pub(super) fn dictionary(
     sides: &mut Vec<AirSide>,
     indices: &mut HashMap<String, u32>,
     side: &AssignedSide,
@@ -308,7 +317,7 @@ struct SideRead<'a> {
 // A scan fixes its group history and anchors before it walks the frames.
 // Only a membership/war/name boundary or changed country identity needs a join.
 #[derive(Default)]
-struct RosterRead {
+pub(super) struct RosterRead {
     boundaries: Option<BTreeSet<i32>>,
     present: BTreeSet<String>,
     first: i32,
@@ -377,9 +386,181 @@ impl RosterRead {
     }
 }
 
+#[derive(Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(super) struct ScoreOperands {
+    pub identity_known: bool,
+    pub present: Arc<BTreeSet<String>>,
+    pub witnessed: BTreeSet<String>,
+    pub invalid: BTreeSet<String>,
+    pub complete: bool,
+    pub unresolved: bool,
+    pub available: bool,
+}
+#[derive(Default)]
+pub(super) struct CountryScores {
+    pub operands: ScoreOperands,
+    pub pairs: BTreeMap<(String, u32), (i64, i64)>,
+    pub active: BTreeSet<u32>,
+}
+pub(super) fn score_countries(
+    frame: &DecodedFrame,
+) -> io::Result<(ScoreOperands, HashMap<u32, String>)> {
+    let mut operands = ScoreOperands::default();
+    let (Ok(countries), Ok(links)) = (
+        frame.complete::<tables::Countries>(),
+        frame.complete::<tables::CountryLinks>(),
+    ) else {
+        return Ok((operands, HashMap::new()));
+    };
+    let mut slots = HashMap::new();
+    let present = Arc::make_mut(&mut operands.present);
+    check_country_tags(countries)?;
+    let links = link_slots(links);
+    for (tag, country) in tagged_countries_indexed(countries, &links) {
+        let Some((_, slot)) = country.found() else {
+            return Ok((operands, HashMap::new()));
+        };
+        let tag = std::str::from_utf8(tag).expect("tags checked above");
+        if tag.is_empty() || slots.insert(slot, tag).is_some_and(|old| old != tag) {
+            return Ok((operands, HashMap::new()));
+        }
+        present.insert(tag.to_owned());
+    }
+    operands.identity_known = true;
+    let owners = links
+        .into_iter()
+        .filter_map(|(raw, slot)| slots.get(&slot).map(|tag| (raw, (*tag).to_owned())))
+        .collect();
+    Ok((operands, owners))
+}
+
+#[cfg(test)]
+pub(super) fn country_scores(
+    frame: &DecodedFrame,
+    scores: ScoreView<'_>,
+) -> io::Result<CountryScores> {
+    let (operands, owners) = score_countries(frame)?;
+    Ok(score_values(scores, operands, &owners))
+}
+
+pub(super) fn score_values(
+    scores: ScoreView<'_>,
+    operands: ScoreOperands,
+    owners: &HashMap<u32, String>,
+) -> CountryScores {
+    let mut projection = CountryScores {
+        operands,
+        ..Default::default()
+    };
+    projection.operands.complete = scores.complete;
+    projection.operands.available = scores.complete || !scores.rows.is_empty();
+    if let Some(active) = scores.active {
+        projection.active.extend(active.keys());
+    } else {
+        projection.active.extend(
+            scores
+                .rows
+                .iter()
+                .filter(|row| row.friendly > 0 || row.enemy > 0)
+                .map(|row| row.region),
+        );
+    }
+    if !projection.operands.identity_known {
+        return projection;
+    }
+    let mut supplied = BTreeMap::new();
+    let mut visit = |row: &replay::rows::RaidAirScoreRow| {
+        let Some(tag) = owners.get(&row.country).map(String::as_str) else {
+            projection.operands.unresolved = true;
+            return;
+        };
+        projection.operands.witnessed.insert(tag.to_owned());
+        if row.friendly < 0 || row.enemy < 0 {
+            projection.operands.invalid.insert(tag.to_owned());
+            return;
+        }
+        let value = (row.country, (row.friendly, row.enemy));
+        supplied
+            .entry((tag.to_owned(), row.region))
+            .and_modify(|old: &mut (u32, (i64, i64))| {
+                if row.country > old.0 {
+                    *old = value;
+                }
+            })
+            .or_insert(value);
+    };
+    if let Some(owners) = scores.owners {
+        for index in owners.values().flat_map(|regions| regions.values()) {
+            visit(&scores.rows[*index]);
+        }
+    } else {
+        for row in scores.rows {
+            visit(row);
+        }
+    }
+    projection.pairs = supplied
+        .into_iter()
+        .map(|(key, (_, value))| (key, value))
+        .collect();
+    projection
+}
+#[cfg(test)]
 fn snapshot_score_read(
     frame: &DecodedFrame,
     scores: ScoreView<'_>,
+    side_read: SideRead<'_>,
+    view: (Option<&str>, bool),
+    catalogue: SideCatalogue<'_>,
+) -> io::Result<Snapshot> {
+    let projection = country_scores(frame, scores)?;
+    snapshot_country_scores(frame.hour, &projection, side_read, view, catalogue)
+}
+pub(super) fn prepared_snapshot(
+    hour: i32,
+    projection: &CountryScores,
+    groups: &Scan,
+    anchors: &SideAnchors,
+    view: (Option<&str>, bool),
+    catalogue: SideCatalogue<'_>,
+    rosters: &mut RosterRead,
+) -> io::Result<Snapshot> {
+    snapshot_country_scores(
+        hour,
+        projection,
+        SideRead {
+            groups,
+            anchors,
+            keep_keys: false,
+            cached: Some(rosters),
+        },
+        view,
+        catalogue,
+    )
+}
+pub(super) fn catalogue_snapshot(
+    hour: i32,
+    projection: &CountryScores,
+    groups: &Scan,
+    sides: &mut Vec<AirSide>,
+) -> io::Result<Snapshot> {
+    // Capture native operands; final historical keys are resolved by the prepared query.
+    let anchors = SideAnchors::default();
+    snapshot_country_scores(
+        hour,
+        projection,
+        SideRead {
+            groups,
+            anchors: &anchors,
+            keep_keys: true,
+            cached: None,
+        },
+        (None, false),
+        (sides, &mut HashMap::new()),
+    )
+}
+fn snapshot_country_scores(
+    hour: i32,
+    projection: &CountryScores,
     side_read: SideRead<'_>,
     view: (Option<&str>, bool),
     catalogue: SideCatalogue<'_>,
@@ -393,7 +574,7 @@ fn snapshot_score_read(
     let (viewpoint, viewpoint_country) = view;
     let (sides, indices) = catalogue;
     let mut result = Snapshot {
-        hour: frame.hour,
+        hour,
         key_read: None,
         cells: BTreeMap::new(),
         fallback: reason("identity-not-recorded"),
@@ -407,31 +588,15 @@ fn snapshot_score_read(
         active: BTreeSet::new(),
         theatre_read: None,
     };
-    result.complete = scores.complete;
-    result.available = result.complete || !scores.rows.is_empty();
-    let (Ok(countries), Ok(links)) = (
-        frame.complete::<tables::Countries>(),
-        frame.complete::<tables::CountryLinks>(),
-    ) else {
+    result.complete = projection.operands.complete;
+    result.available = projection.operands.available;
+    if !projection.operands.identity_known {
         return Ok(result);
-    };
-    let mut slots = HashMap::new();
-    let mut present = BTreeSet::new();
-    check_country_tags(countries)?;
-    let links = link_slots(links);
-    for (tag, country) in tagged_countries_indexed(countries, &links) {
-        let Some((_, slot)) = country.found() else {
-            return Ok(result);
-        };
-        let tag = std::str::from_utf8(tag).expect("tags checked above");
-        if tag.is_empty() || slots.insert(slot, tag).is_some_and(|old| old != tag) {
-            return Ok(result);
-        }
-        present.insert(tag.to_owned());
     }
+    let present = &projection.operands.present;
     let country_view = viewpoint.is_some() && viewpoint_country;
     let owned_rosters = if cached.is_none() && !country_view {
-        assign_sides_with_anchors(groups, frame.hour, &present, anchors)
+        assign_sides_with_anchors(groups, hour, present, anchors)
     } else {
         None
     };
@@ -439,7 +604,7 @@ fn snapshot_score_read(
         &[][..]
     } else {
         let rosters = if let Some(cached) = cached {
-            cached.read(groups, anchors, frame.hour, &present)
+            cached.read(groups, anchors, hour, present)
         } else {
             owned_rosters.as_deref()
         };
@@ -449,19 +614,12 @@ fn snapshot_score_read(
         };
         rosters
     };
-    let owner = |raw| links.get(&raw).and_then(|slot| slots.get(slot).copied());
     let view_roster = viewpoint
         .filter(|_| !viewpoint_country)
         .and_then(|view| rosters.iter().find(|side| side.key == view));
     if viewpoint.is_some() && !viewpoint_country && view_roster.is_none() {
         result.fallback = reason("side-not-present");
-        result.active.extend(
-            scores
-                .rows
-                .iter()
-                .filter(|row| row.friendly > 0 || row.enemy > 0)
-                .map(|row| row.region),
-        );
+        result.active.extend(&projection.active);
         return Ok(result);
     }
     let view_tag = viewpoint
@@ -480,83 +638,18 @@ fn snapshot_score_read(
             })
             .collect(),
     };
-    let rows = scores.rows;
-    let mut witnessed = HashSet::new();
-    let mut pairs = HashMap::new();
-    let mut regions = HashSet::new();
-    let mut owners = HashMap::new();
-    if let (Some(owners_index), Some(active)) = (scores.owners, scores.active) {
-        regions.extend(active.keys().copied());
-        for (&raw, indices) in owners_index {
-            // Empty owner indexes may remain after their final pair was deleted.
-            if indices.is_empty() {
-                continue;
-            }
-            let Some(tag) = owner(raw) else {
-                result.complete = false;
-                continue;
-            };
-            if !wanted.contains(tag) {
-                continue;
-            }
-            witnessed.insert(tag);
-            for &index in indices.values() {
-                let row = &rows[index];
-                if row.friendly < 0 || row.enemy < 0 {
-                    result.complete = false;
-                } else {
-                    // Match the sorted decoder's last supplying raw owner if
-                    // two recorded references resolve to the same country.
-                    let supplied = (raw, (row.friendly, row.enemy));
-                    pairs
-                        .entry((tag, row.region))
-                        .and_modify(|old: &mut (u32, (i64, i64))| {
-                            if raw > old.0 {
-                                *old = supplied;
-                            }
-                        })
-                        .or_insert(supplied);
-                }
-            }
-        }
-    } else {
-        let mut supplying_owner: Option<(u32, Option<&str>, bool)> = None;
-        for row in rows {
-            if row.friendly > 0 || row.enemy > 0 {
-                regions.insert(row.region);
-            }
-            if supplying_owner.is_none_or(|(raw, _, _)| raw != row.country) {
-                let (tag, needed) = *owners.entry(row.country).or_insert_with(|| {
-                    let tag = owner(row.country);
-                    let needed = tag.is_some_and(|tag| wanted.contains(tag));
-                    if needed {
-                        witnessed.insert(tag.expect("needed owner"));
-                    }
-                    (tag, needed)
-                });
-                supplying_owner = Some((row.country, tag, needed));
-            }
-            let (_, tag, needed) = supplying_owner.expect("score owner");
-            let Some(tag) = tag else {
-                result.complete = false;
-                continue;
-            };
-            if !needed {
-                continue;
-            }
-            if row.friendly < 0 || row.enemy < 0 {
-                result.complete = false;
-                continue;
-            }
-            pairs.insert((tag, row.region), (row.country, (row.friendly, row.enemy)));
-        }
-    }
-    let regions: BTreeSet<_> = regions.into_iter().collect();
+    result.complete &= !projection.operands.unresolved
+        && !wanted
+            .iter()
+            .any(|tag| projection.operands.invalid.contains(*tag));
+    let regions = &projection.active;
+    let pairs = &projection.pairs;
+    let witnessed = &projection.operands.witnessed;
     let pair = |tag: &str, region: Option<u32>| -> Result<Option<(i64, i64)>, ()> {
         if !present.contains(tag) {
             return Err(());
         }
-        if let Some((_, value)) = region.and_then(|region| pairs.get(&(tag, region))) {
+        if let Some(value) = region.and_then(|region| pairs.get(&(tag.to_owned(), region))) {
             return Ok(Some(*value));
         }
         if !result.complete {
@@ -585,7 +678,7 @@ fn snapshot_score_read(
                 used_keys.insert(side.key.as_str());
             }
             let index =
-                *viewpoint_side.get_or_insert_with(|| dictionary(sides, indices, side, frame.hour));
+                *viewpoint_side.get_or_insert_with(|| dictionary(sides, indices, side, hour));
             return match value {
                 Ok(Some((friendly, enemy))) => AirCell(Some(AirValue::SideViewpoint {
                     view: (friendly.to_string(), enemy.to_string()),
@@ -644,8 +737,7 @@ fn snapshot_score_read(
             if keep_keys {
                 used_keys.insert(side.key.as_str());
             }
-            let index =
-                *side_ids[at].get_or_insert_with(|| dictionary(sides, indices, side, frame.hour));
+            let index = *side_ids[at].get_or_insert_with(|| dictionary(sides, indices, side, hour));
             if side.leader.is_none()
                 && let Some(leader) = leader
             {
@@ -667,14 +759,14 @@ fn snapshot_score_read(
         }
     };
     let fallback = build(None, sides);
-    result.active.clone_from(&regions);
-    for region in regions {
+    result.active.clone_from(regions);
+    for &region in regions {
         result.cells.insert(region, build(Some(region), sides));
     }
     result.fallback = fallback;
     if !used_keys.is_empty() {
         let (countries, sides) =
-            native_side_keys(groups, frame.hour, rosters).expect("assigned native side identities");
+            native_side_keys(groups, hour, rosters).expect("assigned native side identities");
         result.key_read = Some(Arc::new(KeyRead {
             countries,
             sides,
@@ -729,12 +821,14 @@ fn side_pair<'a>(
     )
 }
 
+#[cfg(test)]
 pub(super) const DAY_TABLES: &[TableId] = &[
     TableId::Campaign,
     TableId::Countries,
     TableId::CountryLinks,
     TableId::RaidAirScores,
 ];
+#[cfg(test)]
 pub(super) const MOMENT_TABLES: &[TableId] = &[
     TableId::Campaign,
     TableId::Countries,
@@ -746,6 +840,7 @@ pub(super) const MOMENT_TABLES: &[TableId] = &[
     TableId::AirTheatreMembers,
 ];
 
+#[cfg(test)]
 pub(super) fn day_decoder(tables: &[TableId]) -> FrameDecoder {
     let tables: Vec<_> = tables
         .iter()
@@ -803,7 +898,7 @@ fn auxiliary(frame: &DecodedFrame) -> Auxiliary {
     result
 }
 
-fn apply_auxiliary(sample: &mut Snapshot, aux: &Auxiliary) {
+pub(super) fn apply_auxiliary(sample: &mut Snapshot, aux: &Auxiliary) {
     sample.wings.clone_from(&aux.wings);
     sample.wings_known = aux.wings_known;
     sample.theatres.clone_from(&aux.theatres);
@@ -815,15 +910,10 @@ fn apply_auxiliary(sample: &mut Snapshot, aux: &Auxiliary) {
     }
 }
 
-fn date_theatres(
-    format: replay::format::FormatVersion,
-    frame: &DecodedFrame,
-    known: bool,
-    last_read: &mut Option<i32>,
-) {
+fn date_theatres(read: bool, frame: &DecodedFrame, known: bool, last_read: &mut Option<i32>) {
     if !known {
         *last_read = None;
-    } else if crate::metadata::slot_read(format, &frame.metrics, TableId::AirTheatres, frame.hour) {
+    } else if read {
         *last_read = Some(frame.hour);
     }
 }
@@ -832,7 +922,12 @@ fn date_theatres(
 fn dated_auxiliary(frame: &DecodedFrame, last_read: &mut Option<i32>) -> Auxiliary {
     let mut result = auxiliary(frame);
     date_theatres(
-        replay::format::FormatVersion::CURRENT,
+        crate::metadata::slot_read(
+            replay::format::FormatVersion::CURRENT,
+            &frame.metrics,
+            TableId::AirTheatres,
+            frame.hour,
+        ),
         frame,
         result.theatres_known,
         last_read,
@@ -841,15 +936,16 @@ fn dated_auxiliary(frame: &DecodedFrame, last_read: &mut Option<i32>) -> Auxilia
     result
 }
 
-#[derive(Default)]
-struct AuxiliaryRead {
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+pub(super) struct AuxiliaryRead {
+    #[serde(skip)]
     views: Vec<ViewIdentity>,
     value: Arc<Auxiliary>,
 }
 impl AuxiliaryRead {
-    fn read(
+    pub(super) fn read(
         &mut self,
-        format: replay::format::FormatVersion,
+        read: bool,
         frame: &DecodedFrame,
         last_read: &mut Option<i32>,
     ) -> Arc<Auxiliary> {
@@ -880,7 +976,7 @@ impl AuxiliaryRead {
                 .map(|table| frame.tables[table.index()].identity())
                 .collect();
         }
-        date_theatres(format, frame, self.value.theatres_known, last_read);
+        date_theatres(read, frame, self.value.theatres_known, last_read);
         if self.value.theatre_read != *last_read {
             Arc::make_mut(&mut self.value).theatre_read = *last_read;
         }
@@ -888,6 +984,7 @@ impl AuxiliaryRead {
     }
 }
 
+#[cfg(test)]
 #[derive(Default)]
 pub(super) struct DayReads {
     /// The recording's format, which dates its daily tables
@@ -905,6 +1002,7 @@ pub(super) struct DayReads {
     country_tags: Vec<Vec<u8>>,
     rosters: RosterRead,
 }
+#[cfg(test)]
 impl DayReads {
     pub(super) fn snapshot(
         &mut self,
@@ -986,9 +1084,16 @@ impl DayReads {
             return None;
         }
         let previous = Arc::clone(&self.auxiliary.value);
-        let aux = self
-            .auxiliary
-            .read(self.format, decoded, &mut self.theatre_read);
+        let aux = self.auxiliary.read(
+            crate::metadata::slot_read(
+                self.format,
+                &decoded.metrics,
+                TableId::AirTheatres,
+                decoded.hour,
+            ),
+            decoded,
+            &mut self.theatre_read,
+        );
         if !Arc::ptr_eq(&previous, &aux) {
             self.regions.extend(aux.wings.keys());
             self.theatres.extend(aux.theatre_names.clone());
@@ -997,6 +1102,7 @@ impl DayReads {
     }
 }
 
+#[cfg(test)]
 pub(super) fn attach_auxiliary(cache: &DayCache, sample: &mut Snapshot) {
     let segment = cache.segments.iter().rev().find(|segment| {
         segment
@@ -1020,6 +1126,7 @@ pub(super) fn attach_auxiliary(cache: &DayCache, sample: &mut Snapshot) {
 
 /// A seek within the last column reads at most one day's intersecting blocks.
 /// It never borrows the cached end-of-day value from after the requested hour.
+#[cfg(test)]
 pub(super) fn partial_day(
     replay: &Replay,
     branch: u64,
@@ -1117,6 +1224,7 @@ pub(super) fn extend_days(
     extend_days_shared(cache, replay, branch, groups, None, cancelled)
 }
 
+#[cfg(test)]
 fn merge_sides(sides: &mut Vec<AirSide>, indices: &mut HashMap<String, u32>, base: &[AirSide]) {
     for side in base {
         if let Some(&index) = indices.get(&side.key) {
@@ -1150,6 +1258,7 @@ pub(super) fn extend_days_shared(
     extend_days_anchored(cache, replay, branch, groups, base, anchors, cancelled)
 }
 
+#[cfg(test)]
 pub(super) fn extend_days_anchored(
     cache: &mut DayCache,
     replay: &Replay,
@@ -1355,6 +1464,7 @@ pub(super) fn extend_days_anchored(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn scan_window_measured(
     replay: &Replay,
     branch: u64,
@@ -1527,6 +1637,7 @@ mod index_tests {
                             region: 7000 + country,
                             friendly: i64::from(country == 0),
                             enemy: 0,
+                            impact: Default::default(),
                         })
                         .collect(),
                 ));
@@ -1552,6 +1663,7 @@ mod index_tests {
                             region: 9900,
                             friendly: 3,
                             enemy: 0,
+                            impact: Default::default(),
                         }]),
                     };
                 } else if hour == 4 {
@@ -1561,6 +1673,7 @@ mod index_tests {
                             region: 9999,
                             friendly: 4,
                             enemy: 0,
+                            impact: Default::default(),
                         }]));
                 }
                 let encoded = encoder.encode(frame.clone(), hour == 0).unwrap();
@@ -1633,7 +1746,12 @@ mod index_tests {
             let encoded = encoder.encode(frame.clone(), offset == 0).unwrap();
             let decoded = decoder.advance(&encoded).unwrap();
             let value = reads.read(
-                replay::format::FormatVersion::CURRENT,
+                crate::metadata::slot_read(
+                    replay::format::FormatVersion::CURRENT,
+                    &decoded.metrics,
+                    TableId::AirTheatres,
+                    decoded.hour,
+                ),
                 decoded,
                 &mut last_read,
             );

@@ -11,6 +11,7 @@ use installed_content::{
     image::{Rgba8Image, dds, native::Decode},
     pdxshader::program::{self, Stage},
 };
+use sha2::{Digest, Sha256};
 
 use crate::{cache, gpu, library, stream, vertices};
 
@@ -31,6 +32,9 @@ struct Renderer {
     cache: Arc<cache::Cache>,
     effects: BTreeMap<String, Arc<library::Effect>>,
     stream: stream::Stream,
+    textures: BTreeMap<[u8; 32], (wgpu::TextureView, usize, u64)>,
+    texture_bytes: usize,
+    texture_clock: u64,
 }
 
 static RENDERER: OnceLock<Result<Mutex<Renderer>, String>> = OnceLock::new();
@@ -60,30 +64,62 @@ pub fn program(layers: &ResolvedLayers, effect: &[u8]) -> Result<Arc<program::Pr
 /// Executes the authored Up program with the native Sprite declaration and four-record strip.
 /// Sprite draws bind b0 to both stages, textures to the pixel stage and a triangle strip.
 pub fn render(layers: &ResolvedLayers, draw: Draw, decode: Decode) -> Result<Rgba8Image, String> {
-    let source = program(layers, &draw.effect)?;
-    let technique = source.technique("Up").ok_or_else(|| format!(
-        "effect {:?} has no Up technique; a preceding program is unavailable to isolated artwork", source.effect
-    ))?;
-    let mut defines = globals(layers, decode)?;
-    defines.extend(draw.defines.iter().cloned());
-    let key = cache::Cache::key(&source, technique, &defines)?;
-    let renderer = RENDERER
+    render_batch(layers, vec![draw], decode)?
+        .pop()
+        .ok_or_else(|| "empty artwork submission".to_owned())
+}
+
+fn renderer() -> Result<&'static Mutex<Renderer>, String> {
+    RENDERER
         .get_or_init(|| Renderer::new().map(Mutex::new))
         .as_ref()
-        .map_err(Clone::clone)?;
-    let mut renderer = renderer.lock().unwrap_or_else(|error| error.into_inner());
-    let effect = if let Some(effect) = renderer.effects.get(&key) {
-        effect.clone()
-    } else {
-        let effect = library::Effect::new(source, defines, renderer.cache.clone());
-        renderer.effects.insert(key, effect.clone());
-        effect
-    };
-    let result = renderer.draw(draw, effect);
-    for warning in renderer.cache.diagnostics().warnings.into_keys() {
-        layers.note_shader_warning(warning);
+        .map_err(Clone::clone)
+}
+
+fn variant(
+    layers: &ResolvedLayers,
+    effect: &[u8],
+    caller: &[String],
+    decode: Decode,
+) -> Result<(String, Arc<program::Program>, Vec<String>), String> {
+    let source = program(layers, effect)?;
+    let technique = source.technique("Up").ok_or_else(|| format!("effect {:?} has no Up technique; a preceding program is unavailable to isolated artwork", source.effect))?;
+    let mut defines = globals(layers, decode)?;
+    defines.extend(caller.iter().cloned());
+    Ok((
+        cache::Cache::key(&source, technique, &defines)?,
+        source,
+        defines,
+    ))
+}
+
+/// Several independent sprite targets share one submission and one mapped readback.
+/// Only preparation/submission uses the renderer lock; waiting and copying do not.
+pub fn render_batch(
+    layers: &ResolvedLayers,
+    draws: Vec<Draw>,
+    decode: Decode,
+) -> Result<Vec<Rgba8Image>, String> {
+    if draws.is_empty() {
+        return Ok(Vec::new());
     }
-    result
+    let variants = draws
+        .iter()
+        .map(|draw| variant(layers, &draw.effect, &draw.defines, decode))
+        .collect::<Result<Vec<_>, _>>()?;
+    let job = {
+        let mut renderer = renderer()?.lock().unwrap_or_else(|e| e.into_inner());
+        let effects = variants
+            .into_iter()
+            .map(|variant| renderer.effect(variant))
+            .collect::<Vec<_>>();
+        let result = renderer.submit(draws.into_iter().zip(effects).collect());
+        for warning in renderer.cache.diagnostics().warnings.into_keys() {
+            layers.note_shader_warning(warning);
+        }
+        result?
+    };
+    job.finish()
 }
 
 fn globals(layers: &ResolvedLayers, decode: Decode) -> Result<Vec<String>, String> {
@@ -94,11 +130,35 @@ fn globals(layers: &ResolvedLayers, decode: Decode) -> Result<Vec<String>, Strin
         .get_or_init(|| {
             let files = installed_content::terrain::read_default_map(layers).map_err(|e| e.to_string())?;
             let path = files.file("provinces").map_err(|e| e.to_string())?;
-            let bytes = layers.read(&path).map_err(|e| e.to_string())?;
-            installed_content::image::bmp::rgb_dimensions(&bytes).map_err(|e| e.to_string())
+            let (prefix, length) = layers.read_prefix(&path, 138).map_err(|e| e.to_string())?;
+            installed_content::image::bmp::rgb_dimensions_prefix(&prefix, length).map_err(|e| e.to_string())
         })
         .clone()?;
     Ok(library::globals(size, decode))
+}
+
+fn texture_key(image: &dds::Texture) -> [u8; 32] {
+    use dds::TextureFormat as F;
+    let mut hash = Sha256::new();
+    hash.update([match image.format {
+        F::Rgba8 => 0,
+        F::Bc1 => 1,
+        F::Bc2 => 2,
+        F::Bc3 => 3,
+        F::Bc7 { srgb: false } => 4,
+        F::Bc7 { srgb: true } => 5,
+        F::B5G6R5 => 6,
+        F::B5G5R5A1 => 7,
+    }]);
+    hash.update(image.width.to_le_bytes());
+    hash.update(image.height.to_le_bytes());
+    for mip in &image.mips[0] {
+        hash.update(mip.width.to_le_bytes());
+        hash.update(mip.height.to_le_bytes());
+        hash.update((mip.data.len() as u64).to_le_bytes());
+        hash.update(&mip.data);
+    }
+    hash.finalize().into()
 }
 
 impl Renderer {
@@ -131,24 +191,28 @@ impl Renderer {
             cache: Arc::new(cache::Cache::default()),
             effects: BTreeMap::new(),
             stream: stream::Stream::default(),
+            textures: BTreeMap::new(),
+            texture_bytes: 0,
+            texture_clock: 0,
         })
     }
 
-    fn draw(&mut self, draw: Draw, effect: Arc<library::Effect>) -> Result<Rgba8Image, String> {
-        let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let result = self.draw_inner(draw, effect);
-        match pollster::block_on(validation.pop()).or(pollster::block_on(memory.pop())) {
-            Some(error) => Err(format!("artwork GPU: {error}")),
-            None => result,
-        }
+    fn effect(
+        &mut self,
+        (key, source, defines): (String, Arc<program::Program>, Vec<String>),
+    ) -> Arc<library::Effect> {
+        let cache = self.cache.clone();
+        self.effects
+            .entry(key)
+            .or_insert_with(|| library::Effect::new(source, defines, cache))
+            .clone()
     }
 
-    fn draw_inner(
+    fn prepare(
         &mut self,
         draw: Draw,
         effect: Arc<library::Effect>,
-    ) -> Result<Rgba8Image, String> {
+    ) -> Result<([u32; 2], stream::Submission), String> {
         let selection = effect.select("Up")?;
         let index = selection.as_ref().ok_or("missing Up technique")?.index;
         self.stream.invalidate_bindings();
@@ -187,13 +251,28 @@ impl Renderer {
             wgpu::TextureFormat::Rgba8Unorm,
             1,
         )?;
-        self.readback(draw.size, |pass| {
-            submission.pipeline.draw(pass, &submission.draw)
-        })
+        Ok((draw.size, submission))
     }
 
-    fn upload(&self, image: dds::Texture) -> Result<wgpu::TextureView, String> {
+    fn upload(&mut self, image: dds::Texture) -> Result<wgpu::TextureView, String> {
         use dds::TextureFormat as F;
+        let key = texture_key(&image);
+        self.texture_clock += 1;
+        if let Some((view, _, last)) = self.textures.get_mut(&key) {
+            *last = self.texture_clock;
+            return Ok(view.clone());
+        }
+        let retained = std::mem::size_of::<([u8; 32], (wgpu::TextureView, usize, u64))>()
+            + image.mips[0]
+                .iter()
+                .map(|mip| {
+                    if image.format.sample_16(0).is_some() {
+                        mip.data.len() * 8
+                    } else {
+                        mip.data.len()
+                    }
+                })
+                .sum::<usize>();
         let format = match image.format {
             F::Rgba8 => wgpu::TextureFormat::Rgba8Unorm,
             F::Bc1 => wgpu::TextureFormat::Bc1RgbaUnorm,
@@ -269,74 +348,137 @@ impl Renderer {
                 },
             );
         }
-        Ok(texture.create_view(&Default::default()))
+        let view = texture.create_view(&Default::default());
+        self.texture_bytes += retained;
+        self.textures
+            .insert(key, (view.clone(), retained, self.texture_clock));
+        while self.texture_bytes > 64 * 1024 * 1024 {
+            let oldest = self
+                .textures
+                .iter()
+                .min_by_key(|(_, (_, _, last))| *last)
+                .map(|(key, _)| *key)
+                .unwrap();
+            self.texture_bytes -= self.textures.remove(&oldest).unwrap().1;
+        }
+        Ok(view)
     }
 
-    fn readback(
-        &self,
-        [width, height]: [u32; 2],
-        draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
-    ) -> Result<Rgba8Image, String> {
-        let size = wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        };
-        let target = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("artwork output"),
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let pitch = (width * 4).div_ceil(256) * 256;
+    fn submit(&mut self, draws: Vec<(Draw, Arc<library::Effect>)>) -> Result<Readback, String> {
+        let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let result = self.submit_inner(draws);
+        self.arena.reset();
+        self.stream.invalidate_bindings();
+        self.stream.cache.release_bind_groups();
+        match pollster::block_on(validation.pop()).or(pollster::block_on(memory.pop())) {
+            Some(error) => {
+                self.textures.clear();
+                self.texture_bytes = 0;
+                Err(format!("artwork GPU: {error}"))
+            }
+            None => result,
+        }
+    }
+
+    fn submit_inner(
+        &mut self,
+        draws: Vec<(Draw, Arc<library::Effect>)>,
+    ) -> Result<Readback, String> {
+        let prepared = draws
+            .into_iter()
+            .map(|(draw, effect)| self.prepare(draw, effect))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut offset = 0_u64;
+        let mut regions = Vec::new();
+        for ([width, height], _) in &prepared {
+            let pitch = width
+                .checked_mul(4)
+                .and_then(|n| n.checked_add(255))
+                .ok_or("artwork row overflow")?
+                / 256
+                * 256;
+            let length = u64::from(pitch) * u64::from(*height);
+            regions.push(([*width, *height], pitch, offset));
+            offset = offset.checked_add(length).ok_or("artwork batch overflow")?;
+        }
         let read = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("artwork pixels"),
-            size: u64::from(pitch) * u64::from(height),
+            size: offset,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
+        for (([width, height], submission), (_, pitch, offset)) in
+            prepared.into_iter().zip(&regions)
         {
-            let view = target.create_view(&Default::default());
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
+            let size = wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            };
+            let target = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("artwork output"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
             });
-            draw(&mut pass);
-        }
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &target,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &read,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(pitch),
-                    rows_per_image: None,
+            {
+                let view = target.create_view(&Default::default());
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                submission.pipeline.draw(&mut pass, &submission.draw);
+            }
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &target,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
                 },
-            },
-            size,
-        );
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &read,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: *offset,
+                        bytes_per_row: Some(*pitch),
+                        rows_per_image: None,
+                    },
+                },
+                size,
+            );
+        }
         self.arena.flush(&self.queue);
         self.queue.submit([encoder.finish()]);
-        self.arena.reset();
-        let slice = read.slice(..);
+        Ok(Readback {
+            device: self.device.clone(),
+            buffer: read,
+            regions,
+        })
+    }
+}
+
+struct Readback {
+    device: wgpu::Device,
+    buffer: wgpu::Buffer,
+    regions: Vec<([u32; 2], u32, u64)>,
+}
+impl Readback {
+    fn finish(self) -> Result<Vec<Rgba8Image>, String> {
+        let slice = self.buffer.slice(..);
         let (sender, receiver) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = sender.send(result);
@@ -349,21 +491,129 @@ impl Renderer {
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
         let mapped = slice.get_mapped_range().map_err(|e| e.to_string())?;
-        let pixels = mapped
-            .chunks_exact(pitch as usize)
-            .flat_map(|row| row[..width as usize * 4].iter().copied())
-            .collect();
-        Ok(Rgba8Image {
-            width,
-            height,
-            pixels,
-        })
+        Ok(self
+            .regions
+            .into_iter()
+            .map(|([width, height], pitch, offset)| {
+                let pixels = mapped
+                    [offset as usize..offset as usize + pitch as usize * height as usize]
+                    .chunks_exact(pitch as usize)
+                    .flat_map(|row| row[..width as usize * 4].iter().copied())
+                    .collect();
+                Rgba8Image {
+                    width,
+                    height,
+                    pixels,
+                }
+            })
+            .collect())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires DXC and a GPU; synthetic content only"]
+    fn batched_targets_match_independent_draws_and_reuse_uploaded_texels() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let scratch = crate::Scratch::new().unwrap();
+        let root = &scratch.0;
+        std::fs::create_dir_all(root.join("gfx/FX")).unwrap();
+        std::fs::create_dir(root.join("map")).unwrap();
+        std::fs::write(root.join("gfx/FX/synthetic.shader"), "VertexShader={MainCode V [[ float4 main(float3 p:POSITION):SV_POSITION {return float4(p,1);} ]]} PixelShader={Samplers={Source={Index=0 MagFilter=Point MinFilter=Point MipFilter=Point}} MainCode P [[ float4 main():SV_TARGET {return Source_Texture.SampleLevel(Source_Sampler,float2(0.5,0.5),0);} ]]} Effect Up {VertexShader=V PixelShader=P}").unwrap();
+        std::fs::write(
+            root.join("gfx/FX/requires_constants.shader"),
+            r#"VertexShader = { MainCode V [[ float4 main(float3 p:POSITION):SV_POSITION {return float4(p,1);} ]] }
+PixelShader = {
+ConstantBuffer(0,0) { float4 value;
+};
+MainCode P [[ float4 main():SV_TARGET {return value;} ]]
+}
+Effect Up { VertexShader=V PixelShader=P }
+"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("gfx/FX/defines_hlsl_dx11.fxh"), "").unwrap();
+        std::fs::write(root.join("map/default.map"), "definitions=synthetic.csv provinces=synthetic.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=height.bmp tree_definition=trees.bmp").unwrap();
+        let mut bitmap = vec![0; 58];
+        bitmap[..2].copy_from_slice(b"BM");
+        for (at, value) in [(10, 54_u32), (14, 40), (18, 1), (22, 1)] {
+            bitmap[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        bitmap[26..28].copy_from_slice(&1_u16.to_le_bytes());
+        bitmap[28..30].copy_from_slice(&24_u16.to_le_bytes());
+        std::fs::write(root.join("map/synthetic.bmp"), bitmap).unwrap();
+        let layers = ResolvedLayers::from_folders(&[(root, &[])]).unwrap();
+        let image = dds::Texture::from_rgba8(Rgba8Image {
+            width: 1,
+            height: 1,
+            pixels: vec![64, 128, 192, 255],
+        });
+        let draw = |size| Draw {
+            effect: b"gfx/FX/synthetic.shader".to_vec(),
+            defines: Vec::new(),
+            size,
+            vertices: [
+                [-1.0, -1.0, 0.0, 0.0, 0.0],
+                [-1.0, 1.0, 0.0, 0.0, 0.0],
+                [1.0, -1.0, 0.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0, 0.0, 0.0],
+            ],
+            constants: Vec::new(),
+            textures: vec![(0, Some(image.clone()))],
+        };
+        let first = render(&layers, draw([2, 3]), Decode::default()).unwrap();
+        assert_eq!(first.pixels, [64, 128, 192, 255].repeat(6));
+        let (compiled, retained) = {
+            let renderer = renderer().unwrap().lock().unwrap();
+            (
+                renderer.cache.diagnostics().compiled,
+                renderer.texture_bytes,
+            )
+        };
+        let second = render(&layers, draw([5, 2]), Decode::default()).unwrap();
+        let batch =
+            render_batch(&layers, vec![draw([2, 3]), draw([5, 2])], Decode::default()).unwrap();
+        assert_eq!(batch, [first.clone(), second]);
+        assert_eq!(
+            renderer()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .cache
+                .diagnostics()
+                .compiled,
+            compiled
+        );
+        {
+            let renderer = renderer().unwrap().lock().unwrap();
+            assert_eq!(renderer.texture_bytes, retained);
+            assert!(renderer.textures.contains_key(&texture_key(&image)));
+            assert_eq!(renderer.stream.cache.retained_texture_bind_groups(), 0);
+        }
+        let mut refused = draw([2, 3]);
+        refused.effect = b"gfx/FX/requires_constants.shader".to_vec();
+        let refusal =
+            render_batch(&layers, vec![draw([2, 3]), refused], Decode::default()).unwrap_err();
+        assert!(refusal.contains("native constant buffer"), "{refusal}");
+        assert_eq!(
+            renderer()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .stream
+                .cache
+                .retained_texture_bind_groups(),
+            0
+        );
+        assert_eq!(
+            render(&layers, draw([2, 3]), Decode::default()).unwrap(),
+            first
+        );
+    }
 
     #[test]
     fn sprite_inputs_are_read_once_per_resolved_stack_and_keep_reporting_reads() {

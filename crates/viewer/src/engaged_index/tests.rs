@@ -1,9 +1,14 @@
 use super::*;
+use replay::rows::NavalProvinceCombatRow;
 
 /// The index keeps one point per value change: 1,500 combats whose units
 /// keep changing but whose flags never do cost one point per side,
 /// however many hours fold.
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn memory_follows_value_changes_not_hours() {
     const COMBATS: u64 = 1_500;
     let links: BTreeMap<u32, u32> = (1..=2 * COMBATS as u32).map(|c| (c, c)).collect();
@@ -105,7 +110,7 @@ fn a_load_without_its_origin_folds_its_first_hour_as_a_gap() {
         let start = branch_start(BranchReason::LoadSignal, loaded_hour);
         let mut frame = roster_frame(start.first_hour, Some(&[(40, 4)]), false);
         frame.branch = start.id;
-        let shared = Arc::new(Shared::default());
+        let shared = Arc::new(History::default());
         let country = Country::Tag("AAA".into());
         let mut pass = Pass::new(Arc::clone(&shared), country.clone());
         pass.fold_hour(frame.branch, frame.hour, Some(&frame), native_load(&start));
@@ -123,7 +128,7 @@ fn a_load_without_its_origin_folds_its_first_hour_as_a_gap() {
             viewer.slot,
             &viewer.links,
             viewer.relations.as_ref().map_err(|reason| *reason),
-            Some(&index),
+            Some(index.shared.as_ref()),
         )
         .unwrap()
     };
@@ -458,7 +463,7 @@ fn flags(index: &EngagedIndex, frame: &mut DecodedFrame, hour: Hour, viewer: u32
         viewer,
         &links,
         relations.as_ref().map_err(|reason| *reason),
-        Some(index),
+        Some(index.shared.as_ref()),
     )
     .unwrap()
 }
@@ -759,14 +764,16 @@ fn the_recording_players_icons_keep_the_clients_carried_frame() {
     let index = index(&pass, "C3");
     let mut frame = frames[2].clone();
     let naval = flags(&index, &mut frame, 12, 3).naval;
-    let (kept, provenance) = kept_frames(&frame, NAVAL_ICON, 3, &naval, Some(&index)).unwrap();
+    let (kept, provenance) =
+        kept_frames(&frame, NAVAL_ICON, 3, &naval, Some(index.shared.as_ref())).unwrap();
     assert_eq!(provenance, Provenance::Indexed);
     assert_eq!((naval[&0], kept[&0]), (Engaged::No, Kept::Frame(1)));
     // Before the switch C3 is not the recording player: its own icon
     // history, which never saw the combat engaged.
     let mut frame = frames[1].clone();
     let naval = flags(&index, &mut frame, 11, 3).naval;
-    let (kept, _) = kept_frames(&frame, NAVAL_ICON, 3, &naval, Some(&index)).unwrap();
+    let (kept, _) =
+        kept_frames(&frame, NAVAL_ICON, 3, &naval, Some(index.shared.as_ref())).unwrap();
     assert_eq!((naval[&0], kept[&0]), (Engaged::No, Kept::Unobserved));
 }
 
@@ -825,7 +832,8 @@ fn a_joined_recordings_icon_keeps_the_frame_its_recorded_bytes_set() {
     let index = index(&pass, "C1");
     let mut frame = frames[2].clone();
     let naval = flags(&index, &mut frame, 12, 1).naval;
-    let (kept, provenance) = kept_frames(&frame, NAVAL_ICON, 1, &naval, Some(&index)).unwrap();
+    let (kept, provenance) =
+        kept_frames(&frame, NAVAL_ICON, 1, &naval, Some(index.shared.as_ref())).unwrap();
     assert_eq!(provenance, Provenance::Indexed);
     assert_eq!((naval[&0], kept[&0]), (Engaged::No, Kept::Frame(1)));
     // The byte check keeps the independent derivation: the joined hours
@@ -868,6 +876,10 @@ fn mp_switch_and_observer_hours_are_checked_with_a_stable_human_roster() {
 
 /// Both tracks and the check at 1,500 combats between 5,000 countries.
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn the_check_folds_fifteen_hundred_combats_of_five_thousand_countries() {
     for countries in [1_500_u32, 5_000] {
         let frame = naval_frame(countries, &[1], &[], 1_500, [0, 0]);
@@ -964,7 +976,8 @@ fn an_unengaged_naval_icon_keeps_its_last_engaged_frame_through_the_index() {
         let mut frame = frames[at].clone();
         let hour = frame.hour;
         let naval = flags(&index, &mut frame, hour, 1).naval;
-        let (kept, provenance) = kept_frames(&frame, NAVAL_ICON, 1, &naval, Some(&index)).unwrap();
+        let (kept, provenance) =
+            kept_frames(&frame, NAVAL_ICON, 1, &naval, Some(index.shared.as_ref())).unwrap();
         assert_eq!(provenance, Provenance::Indexed);
         (naval[&0], kept[&0])
     };
@@ -1027,7 +1040,7 @@ fn a_side_whose_combat_ends_is_reported_once() {
 
 #[test]
 fn a_lookup_takes_the_last_change_at_or_before_the_hour_for_the_folded_viewer() {
-    let shared = Arc::new(Shared::default());
+    let shared = Arc::new(History::default());
     let mut points = BTreeMap::new();
     record(
         &mut points,
@@ -1061,14 +1074,14 @@ fn a_lookup_takes_the_last_change_at_or_before_the_hour_for_the_folded_viewer() 
         snapshots,
         folding: Mutex::new(Arc::new(crate::playback::tests::fixture())),
     };
-    let at = |hour, viewer| index.lookup(LAND, 3, hour, viewer, &[62]);
+    let at = |hour, viewer| index.shared.lookup(LAND, 3, hour, viewer, &[62]);
     assert_eq!(at(13, 1), Ok(BTreeMap::from([(62, Engaged::No)])));
     assert_eq!(at(14, 1), Ok(BTreeMap::from([(62, Engaged::Yes)])));
     // Past the fold, another viewer or another branch is not covered.
     assert_eq!(at(21, 1), Err(Provenance::Pending));
     assert_eq!(at(14, 2), Err(Provenance::OtherViewer));
     assert_eq!(
-        index.lookup(LAND, 4, 14, 1, &[62]),
+        index.shared.lookup(LAND, 4, 14, 1, &[62]),
         Err(Provenance::Pending)
     );
 }
@@ -1197,7 +1210,7 @@ fn roster_frame(hour: Hour, players: Option<&[(i32, u32)]>, allied: bool) -> Dec
 /// Folds `hours` for AAA from a load at hour 0 and answers the last one
 /// through [`combats`], as the window does.
 fn fold_for_aaa(hours: &[DecodedFrame]) -> (BTreeMap<u64, Engaged>, Provenance) {
-    let shared = Arc::new(Shared::default());
+    let shared = Arc::new(History::default());
     let country = Country::Tag("AAA".into());
     let mut pass = Pass::new(Arc::clone(&shared), country.clone());
     for frame in hours {
@@ -1218,7 +1231,7 @@ fn fold_for_aaa(hours: &[DecodedFrame]) -> (BTreeMap<u64, Engaged>, Provenance) 
         viewer.slot,
         &viewer.links,
         viewer.relations.as_ref().map_err(|reason| *reason),
-        Some(&index),
+        Some(index.shared.as_ref()),
     )
     .unwrap()
 }
@@ -1252,7 +1265,7 @@ fn a_load_rebuilt_flag_reports_its_provenance() {
         roster_frame(1, Some(&[(40, 4)]), true),
     ];
     let viewer = Viewer::read(&frames[1], &Country::Tag("AAA".into())).unwrap();
-    let rebuilt = |index: Option<&EngagedIndex>| {
+    let rebuilt = |index: Option<&History>| {
         combats(
             &frames[1],
             LAND,
@@ -1265,7 +1278,7 @@ fn a_load_rebuilt_flag_reports_its_provenance() {
     };
     let yes = BTreeMap::from([(62, Engaged::Yes)]);
     assert_eq!(rebuilt(None), (yes.clone(), Provenance::Unindexed));
-    let shared = Arc::new(Shared::default());
+    let shared = Arc::new(History::default());
     let mut pass = Pass::new(Arc::clone(&shared), Country::Tag("AAA".into()));
     pass.fold_hour(1, 0, Some(&frames[0]), Some(0));
     let (snapshots, _inbox) = mpsc::channel();
@@ -1275,7 +1288,10 @@ fn a_load_rebuilt_flag_reports_its_provenance() {
         snapshots,
         folding: Mutex::new(Arc::new(crate::playback::tests::fixture())),
     };
-    assert_eq!(rebuilt(Some(&index)), (yes.clone(), Provenance::Pending));
+    assert_eq!(
+        rebuilt(Some(index.shared.as_ref())),
+        (yes.clone(), Provenance::Pending)
+    );
     // An unreadable first hour folds no viewer.
     let mut unread = frames[1].clone();
     unread.hour = 0;
@@ -1288,7 +1304,7 @@ fn a_load_rebuilt_flag_reports_its_provenance() {
             viewer.slot,
             &viewer.links,
             viewer.relations.as_ref().map_err(|reason| *reason),
-            Some(&index),
+            Some(index.shared.as_ref()),
         )
         .unwrap(),
         (yes, Provenance::Unread)
@@ -1309,8 +1325,7 @@ fn a_load_rebuilt_flag_reports_its_provenance() {
 }
 
 /// A newer snapshot keeps the folded index only when every folded block
-/// has the same bytes and every branch start is the same, not merely the
-/// same block positions.
+/// retains explicit source metadata under the metadata-only append policy.
 #[test]
 fn a_snapshot_extends_the_index_only_with_the_same_blocks_and_branch_starts() {
     use replay::spool::Record;
@@ -1338,7 +1353,39 @@ fn a_snapshot_extends_the_index_only_with_the_same_blocks_and_branch_starts() {
     let reloaded = Arc::new(open(loaded));
     assert_eq!(reloaded.index, older.index);
     let index = EngagedIndex::start(Arc::clone(&older), Country::Recorded).unwrap();
-    assert!(!index.extend(&changed));
+    assert!(index.extend(&changed));
     assert!(!index.extend(&reloaded));
     assert!(index.extend(&same));
+}
+
+#[test]
+fn file_backed_append_inherits_only_unchanged_index_branch_session_and_gap_metadata() {
+    let original = crate::playback::tests::fixture();
+    let appended = original
+        .append(&[crate::playback::tests::records(2, &[900, 901])])
+        .unwrap();
+    let directory = std::env::temp_dir().join(format!("engaged-append-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
+    let old_path = directory.join("old.battleplan");
+    let new_path = directory.join("new.battleplan");
+    std::fs::write(&old_path, original.bytes()).unwrap();
+    std::fs::write(&new_path, appended.bytes()).unwrap();
+    let older = Replay::open_path(&old_path).unwrap();
+    let mut newer = Replay::open_path(&new_path).unwrap();
+    assert!(super::extends(&older, &newer));
+    let saved = newer.sessions[0].clone();
+    newer.sessions[0].process_id ^= 1;
+    assert!(!super::extends(&older, &newer));
+    newer.sessions[0] = saved;
+    let saved = newer.gaps[0].clone();
+    newer.gaps[0].reason.push_str(" changed");
+    assert!(!super::extends(&older, &newer));
+    newer.gaps[0] = saved;
+    newer.index[0].raw_length += 1;
+    assert!(!super::extends(&older, &newer));
+    drop(older);
+    drop(newer);
+    std::fs::remove_file(old_path).unwrap();
+    std::fs::remove_file(new_path).unwrap();
+    std::fs::remove_dir(directory).unwrap();
 }

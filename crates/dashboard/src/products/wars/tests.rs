@@ -70,6 +70,7 @@ fn first_goal_zero_country_uses_dated_reserved_names_and_refuses_missing_input()
     )
     .unwrap();
     let reply = scan(&replay, 1, None, Some(&cat), &AtomicBool::new(false)).unwrap();
+    assert_prepared_parity(&replay, Some(&cat), &[None, Some("TWO")]);
     let observations = &reply.wars[0].observations;
     assert_eq!(observations.len(), 3);
     assert_eq!(observations[0].name.text, "Reserved first / first reserved");
@@ -366,7 +367,7 @@ fn label_catalogue_resolves_only_changed_naming_inputs_and_their_subjects() {
     }
 }
 
-fn recorded(hour: i32) -> DecodedFrame {
+pub(crate) fn recorded(hour: i32) -> DecodedFrame {
     use replay::{
         frame::TableView,
         rows::{
@@ -1385,27 +1386,38 @@ fn loss_only_scan_settles_participants_before_viewpoint_changes_and_gaps() {
 }
 
 #[test]
-fn multi_year_overlapping_groups_keep_casualties_out_of_membership_reply_size() {
+fn overlapping_groups_keep_casualties_out_of_membership_reply_size() {
+    let groups: Vec<_> = (0..4)
+        .map(|group| {
+            let mut observed = observation(0, &[(1, group + 2, 0)]);
+            observed.data.viewpoint_side = (0..250).map(|i| format!("C{i}")).collect();
+            observed.data.opposing_side = (200 + group * 10..450 + group * 10)
+                .map(|i| format!("C{i}"))
+                .collect();
+            observed
+        })
+        .collect();
+    let membership_bytes: usize = groups
+        .iter()
+        .map(|group| crate::transport::json_len(&group.data, MAX_PRODUCT_REPLY_BYTES).unwrap())
+        .sum();
+    // Repeat just far enough that copying the side lists into every hourly
+    // observation would exceed the asserted reply bound.
+    let hours = i32::try_from(MAX_PRODUCT_REPLY_BYTES / 3 / membership_bytes + 1).unwrap();
     let mut wars = Vec::new();
     let mut open = Vec::new();
-    let hours = 24 * 365 * 4;
     for hour in 0..hours {
-        let current = (0..4)
-            .map(|group| {
-                let mut observed = observation(hour, &[(1, group + 2, 0)]);
-                observed.data.viewpoint_side = (0..250).map(|i| format!("C{i}")).collect();
-                observed.data.opposing_side = (200 + group * 10..450 + group * 10)
-                    .map(|i| format!("C{i}"))
-                    .collect();
-                observed.losses = [
-                    (hour as i64 * 1234567).to_string(),
-                    "0".into(),
-                    (hour as i64 * 7654321).to_string(),
-                    "-7".into(),
-                ];
-                observed
-            })
-            .collect();
+        let mut current = groups.clone();
+        for observed in &mut current {
+            observed.data.first_hour = hour;
+            observed.data.last_hour = hour;
+            observed.losses = [
+                (hour as i64 * 1234567).to_string(),
+                "0".into(),
+                (hour as i64 * 7654321).to_string(),
+                "-7".into(),
+            ];
+        }
         open = continue_wars(&mut wars, &open, current, hour.checked_sub(1));
     }
     assert_eq!(wars.len(), 4);
@@ -1424,7 +1436,9 @@ fn multi_year_overlapping_groups_keep_casualties_out_of_membership_reply_size() 
         warnings: vec![],
     };
     let bytes = serde_json::to_vec(&reply).unwrap().len();
-    println!("wars reply four years / four overlapping groups / 500 side entries: {bytes} bytes");
+    println!(
+        "wars reply {hours} hours / four overlapping groups / 500 side entries: {bytes} bytes"
+    );
     assert!(bytes < MAX_PRODUCT_REPLY_BYTES / 3, "reply bytes {bytes}");
 }
 
@@ -1522,9 +1536,10 @@ fn overlapping_branch(hours: i32, redeclare: bool) -> Replay {
 }
 
 #[test]
-fn three_year_branch_reuses_four_overlapping_groups_when_losses_change_hourly() {
-    let hours = 24 * 365 * 3;
+fn cross_block_branch_reuses_four_overlapping_groups_when_losses_change_hourly() {
+    let hours = i32::try_from(replay::KEYFRAME_INTERVAL).unwrap() + 1;
     let replay = overlapping_branch(hours, false);
+    assert!(replay.index.len() > 1);
     let reply = scan(&replay, 1, None, None, &AtomicBool::new(false)).unwrap();
     assert!(reply.unobserved.is_empty());
     assert_eq!(reply.wars.len(), 4);
@@ -1539,14 +1554,19 @@ fn three_year_branch_reuses_four_overlapping_groups_when_losses_change_hourly() 
         );
     }
     let bytes = serde_json::to_vec(&reply).unwrap().len();
-    println!("wars actual three-year branch / four overlapping groups: {bytes} bytes");
+    println!("wars cross-block branch / four overlapping groups: {bytes} bytes");
     assert!(bytes < MAX_PRODUCT_REPLY_BYTES / 3, "reply bytes {bytes}");
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn branch_scan_keeps_more_than_half_a_million_runs_when_the_reply_fits() {
     let hours = 125_001;
     let replay = overlapping_branch(hours, false);
+    assert!(replay.index.len() > 1);
     let reply = scan(&replay, 1, None, None, &AtomicBool::new(false)).unwrap();
     assert!(reply.unobserved.is_empty());
     assert_eq!(reply.wars.len(), 4);
@@ -1569,6 +1589,10 @@ fn branch_scan_keeps_more_than_half_a_million_runs_when_the_reply_fits() {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
 fn branch_scan_past_the_former_timeline_ceiling_refuses_only_the_reply_bytes() {
     // Four fresh groups each hour exceed the old 100,000-timeline ceiling.
     let replay = overlapping_branch(25_001, true);
@@ -1761,5 +1785,704 @@ fn peaceful_viewpoint_changes_and_missing_hours_keep_dated_runs() {
             first_hour: 102,
             last_hour: 102
         }]
+    );
+}
+
+/// The actual prepared observer/assembler, compared with the retained scan for every reached hour.
+fn assert_prepared_parity(replay: &Replay, cat: Option<&Catalogue>, views: &[Option<&str>]) {
+    use crate::prepared::series;
+    let fixture = series::tests::Fixture::new();
+    let flag = AtomicBool::new(false);
+    let source = Source::from_replay(
+        crate::SourceKey {
+            source_id: "wars-prepared".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        Arc::new(Replay::open(replay.bytes().to_vec()).unwrap()),
+        &flag,
+    )
+    .unwrap();
+    let mut observer = prepared::Observer::default();
+    let mut hours = BTreeSet::new();
+    for block in &replay.index {
+        let mut decoder = FrameDecoder::for_tables(TABLES);
+        let frames = replay.read_block_selected(block, TABLES).unwrap();
+        for chunk in frames.chunks(2) {
+            let mut writer = fixture.writer();
+            for frame in chunk {
+                let decoded = decoder.advance(frame).unwrap();
+                hours.insert(decoded.hour);
+                observer.observe(decoded).unwrap();
+            }
+            observer.flush(&mut writer, 1, &flag).unwrap();
+            writer.commit().unwrap();
+            observer = prepared::Observer::restore(
+                series::read_catalogue(&fixture.store, &fixture.key, "wars", 1)
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+    }
+    for &view in views {
+        let expected = scan(replay, 1, view, cat, &flag).unwrap();
+        let actual = prepared::projection(
+            &fixture.store,
+            &fixture.key,
+            &source,
+            &WarsParams {
+                branch_id: "1".into(),
+                viewpoint_tag: view.map(str::to_owned),
+            },
+            None,
+            &hours,
+            cat,
+            &flag,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(expected).unwrap(),
+            "view {view:?}"
+        );
+    }
+}
+
+#[test]
+fn prepared_wars_preserve_viewpoints_future_capitulations_truncation_gaps_and_native_identity_changes()
+ {
+    use replay::rows::TableRows;
+    let mut frames: Vec<_> = (100..=108)
+        .filter(|hour| *hour != 104)
+        .map(recorded)
+        .collect();
+    for frame in &mut frames {
+        if let TableView::Complete(TableRows::WarRelations(rows)) =
+            &mut *frame.tables[TableId::WarRelations.index()]
+        {
+            for row in rows {
+                row.first_casualties -= i64::from(frame.hour);
+                row.second_casualties = i64::from(frame.hour) * 7;
+            }
+        }
+        frame.tables[TableId::Capitulation.index()] =
+            TableView::Complete(TableRows::Capitulation(vec![rows::CapitulationRow {
+                country: 2,
+                capitulated: 1,
+                capitulated_hour: 102,
+                ..Default::default()
+            }]))
+            .into();
+        if frame.hour == 103 {
+            let rows = frame
+                .complete::<tables::WarOverviewCountries>()
+                .unwrap()
+                .to_vec();
+            frame.tables[TableId::WarOverviewCountries.index()] = TableView::Truncated {
+                rows: TableRows::WarOverviewCountries(rows),
+                missing: 1,
+            }
+            .into();
+        }
+        if frame.hour >= 106
+            && let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *frame.tables[TableId::Countries.index()]
+        {
+            rows[0].tag = b"mod-rename".to_vec();
+        }
+        if frame.hour == 108
+            && let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *frame.tables[TableId::Countries.index()]
+        {
+            rows[0].id = 99;
+            rows.sort_by_key(|row| row.id);
+        }
+    }
+    let replay = Replay::from_records(
+        crate::test_fixtures::CAMPAIGN.into(),
+        &[crate::test_fixtures::records(1, frames)],
+    )
+    .unwrap();
+    assert_prepared_parity(
+        &replay,
+        None,
+        &[None, Some("ONE"), Some("TWO"), Some("mod-rename")],
+    );
+}
+
+#[test]
+fn prepared_wars_counter_only_hours_publish_one_global_input_change_and_reached_values() {
+    use crate::prepared::series::{self, Reader};
+    let frames: Vec<_> = (100..200)
+        .map(|hour| {
+            let mut frame = recorded(hour);
+            if let TableView::Complete(rows::TableRows::WarRelations(rows)) =
+                &mut *frame.tables[TableId::WarRelations.index()]
+            {
+                for row in rows {
+                    row.first_casualties -= i64::from(hour);
+                }
+            }
+            // Unrelated hourly country balances must not create naming/topology events.
+            if let TableView::Complete(rows::TableRows::Countries(rows)) =
+                &mut *frame.tables[TableId::Countries.index()]
+            {
+                for row in rows {
+                    row.political_power_raw = Some(i64::from(hour) * 100000);
+                }
+            }
+            frame
+        })
+        .collect();
+    let fixture = series::tests::Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut observer = prepared::Observer::default();
+    for chunk in frames.chunks(50) {
+        let mut writer = fixture.writer();
+        for frame in chunk {
+            observer.observe(frame).unwrap();
+        }
+        observer.flush(&mut writer, 1, &flag).unwrap();
+        writer.commit().unwrap();
+        observer = prepared::Observer::restore(
+            series::read_catalogue(&fixture.store, &fixture.key, "wars", 1)
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    let mut reader =
+        Reader::new(&fixture.store, &fixture.key, "wars-series-1".into(), &flag).unwrap();
+    assert_eq!(
+        reader
+            .events(&[0], i32::MIN, i32::MAX, 0, 256)
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+    assert_eq!(reader.runs(0, 100, 199).unwrap().len(), 1);
+    assert_eq!(
+        fixture
+            .store
+            .range_count(&fixture.key, "wars-series-1")
+            .unwrap(),
+        Some(2)
+    );
+    assert_prepared_parity(
+        &Replay::from_records(
+            crate::test_fixtures::CAMPAIGN.into(),
+            &[crate::test_fixtures::records(1, frames)],
+        )
+        .unwrap(),
+        None,
+        &[None, Some("TWO")],
+    );
+}
+
+fn set_recorded_hour(frame: &mut DecodedFrame, hour: i32) {
+    frame.hour = hour;
+    if let TableView::Complete(rows::TableRows::Clock(rows)) =
+        &mut *frame.tables[TableId::Clock.index()]
+    {
+        rows[0].hour = hour;
+    }
+}
+
+pub(crate) fn scaled_recorded(hour: i32, count: u32) -> DecodedFrame {
+    use replay::rows::TableRows;
+    let mut frame = recorded(hour);
+    frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        (1..=count)
+            .map(|id| rows::CountryRow {
+                id,
+                canonical_slot: id,
+                tag: format!("mod-{id}").into_bytes(),
+                ..Default::default()
+            })
+            .collect(),
+    ))
+    .into();
+    frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        (1..=count)
+            .map(|id| rows::CountryLinkRow {
+                id,
+                canonical_slot: id,
+            })
+            .collect(),
+    ))
+    .into();
+    frame.tables[TableId::WarRelations.index()] = TableView::Complete(TableRows::WarRelations(
+        (2..=count)
+            .map(|second_country| rows::WarRelationRow {
+                first_country: 1,
+                second_country,
+                start_hour: 90,
+                first_was_instigator: 1,
+                first_casualties: i64::MAX - i64::from(hour),
+                second_casualties: i64::from(hour),
+                ..Default::default()
+            })
+            .collect(),
+    ))
+    .into();
+    let mut owned: Vec<_> = (2..=count)
+        .map(|second_country| rows::WarOwnedRelationRow {
+            owner: 1,
+            ordinal: second_country - 2,
+            first_country: 1,
+            second_country,
+            ..Default::default()
+        })
+        .collect();
+    owned.extend((2..=count).map(|owner| rows::WarOwnedRelationRow {
+        owner,
+        ordinal: 0,
+        first_country: 1,
+        second_country: owner,
+        ..Default::default()
+    }));
+    frame.tables[TableId::WarOwnedRelations.index()] =
+        TableView::Complete(TableRows::WarOwnedRelations(owned)).into();
+    frame.tables[TableId::WarOverviewCountries.index()] =
+        TableView::Complete(TableRows::WarOverviewCountries(
+            (1..=count)
+                .map(|country| rows::WarOverviewCountryRow {
+                    country,
+                    major: 1,
+                    score_available: 1,
+                    ..Default::default()
+                })
+                .collect(),
+        ))
+        .into();
+    frame
+}
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn prepared_wars_native_projection_keeps_prefix_names_memberships_and_rejects_replacement_holders()
+{
+    use crate::prepared::series;
+    let (cat, _folder) = catalogue::tests::folder_catalogue(&[(
+        "localisation/mod_l_english.yml",
+        "\u{feff}l_english:\n mod-1:0 \"Original\"\n mod-1_ADJ:0 \"First\"\n mod-2:0 \"Opponent\"\n mod-2_ADJ:0 \"Second\"\n renamed:0 \"Renamed\"\n renamed_ADJ:0 \"Later\"\n NATIVE:0 \"$FIRST$ versus $SECOND$\"\n",
+    )]);
+    let flag = AtomicBool::new(false);
+    for count in [3, 5000] {
+        let mut frames: Vec<_> = (100..=102)
+            .map(|hour| scaled_recorded(hour, count))
+            .collect();
+        for frame in &mut frames[1..] {
+            let TableView::Complete(rows::TableRows::Countries(countries)) =
+                &mut *frame.tables[TableId::Countries.index()]
+            else {
+                panic!()
+            };
+            countries
+                .iter_mut()
+                .find(|row| row.canonical_slot == 1)
+                .unwrap()
+                .tag = b"renamed".to_vec();
+        }
+        let TableView::Complete(rows::TableRows::Countries(countries)) =
+            &mut *frames[2].tables[TableId::Countries.index()]
+        else {
+            panic!()
+        };
+        // Another native country takes the canonical slot and the same alias.
+        let replacement = count + 1;
+        countries
+            .iter_mut()
+            .find(|row| row.canonical_slot == 1)
+            .unwrap()
+            .id = replacement;
+        countries.sort_by_key(|row| row.id);
+        let replay = Arc::new(
+            Replay::from_records(
+                crate::test_fixtures::CAMPAIGN.into(),
+                &[crate::test_fixtures::records(1, frames.clone())],
+            )
+            .unwrap(),
+        );
+        let source = Source::from_replay(
+            crate::SourceKey {
+                source_id: "native-wars".into(),
+                revision: "1".into(),
+            },
+            "memory.battleplan".into(),
+            replay.clone(),
+            &flag,
+        )
+        .unwrap();
+        let fixture = series::tests::Fixture::new();
+        let mut observer = prepared::Observer::default();
+        for chunk in frames.chunks(2) {
+            let mut writer = fixture.writer();
+            for frame in chunk {
+                observer.observe(frame).unwrap();
+            }
+            observer.flush(&mut writer, 1, &flag).unwrap();
+            writer.commit().unwrap();
+            observer = prepared::Observer::restore(
+                series::read_catalogue(&fixture.store, &fixture.key, "wars", 1)
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        let selected = HashSet::from([(1, 1)]);
+        let params = WarsParams {
+            branch_id: "1".into(),
+            viewpoint_tag: Some("mod-1".into()),
+        };
+        let mut expected = scan_selected(
+            &replay,
+            1,
+            Some("mod-1"),
+            Some(&selected),
+            Some(&cat),
+            &flag,
+        )
+        .unwrap();
+        for war in &mut expected.wars {
+            war.casualties.clear();
+        }
+        let projection = prepared::projection(
+            &fixture.store,
+            &fixture.key,
+            &source,
+            &params,
+            Some(&selected),
+            &BTreeSet::new(),
+            Some(&cat),
+            &flag,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&projection).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+        assert!(projection.available);
+        assert_eq!(
+            projection
+                .viewpoints
+                .iter()
+                .map(|run| (&*run.tag, run.first_hour, run.last_hour))
+                .collect::<Vec<_>>(),
+            [("mod-1", 100, 100), ("renamed", 101, 101)]
+        );
+        assert_eq!(
+            projection.unobserved,
+            [HourSpan {
+                first_hour: 102,
+                last_hour: 102
+            }]
+        );
+        assert!(
+            projection
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("selected native war viewpoint holder"))
+        );
+        assert_eq!(projection.wars.len(), expected.wars.len());
+        for (actual, expected) in projection.wars.iter().zip(&expected.wars) {
+            let memberships = |war: &WarTimeline| {
+                war.relations
+                    .iter()
+                    .map(|run| (run.key.clone(), run.first_hour, run.last_hour))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(memberships(actual), memberships(expected));
+        }
+        let prefix = &projection.wars[0];
+        assert_eq!(prefix.first_hour, 100);
+        assert_eq!(prefix.observations[0].name.text, "First versus Second");
+        assert!(prefix.observations[0].name.known);
+        assert_eq!(prefix.relations.len(), (count - 1) as usize);
+        assert!(
+            prefix
+                .relations
+                .iter()
+                .all(|run| run.key.first == (1, 1) && run.key.start == 90 && run.first_hour == 100)
+        );
+        assert!(projection.wars.iter().any(|war| {
+            war.observations
+                .iter()
+                .any(|observation| observation.name.text == "Later versus Second")
+        }));
+        let reached = prepared::projection(
+            &fixture.store,
+            &fixture.key,
+            &source,
+            &params,
+            Some(&selected),
+            &BTreeSet::from([101]),
+            Some(&cat),
+            &flag,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(reached.wars[0].id, prefix.id);
+        assert_eq!(
+            reached.wars[0].observations, prefix.observations,
+            "requesting a later hour keeps earlier dated names and memberships"
+        );
+        assert_eq!(reached.wars[0].relations.len(), prefix.relations.len());
+        assert!(
+            reached.wars[0].casualties.is_empty(),
+            "the prefix remains structural, without fetching unrequested counters"
+        );
+        assert!(reached.wars.iter().any(|war| !war.casualties.is_empty()));
+        let unavailable = prepared::projection(
+            &fixture.store,
+            &fixture.key,
+            &source,
+            &params,
+            Some(&HashSet::new()),
+            &BTreeSet::new(),
+            Some(&cat),
+            &flag,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            unavailable.viewpoints.is_empty() && unavailable.wars.is_empty(),
+            "an empty native selection never falls back to LocalPlayer"
+        );
+    }
+}
+
+#[test]
+fn prepared_wars_bulk_counters_preserve_hourly_changes_and_long_closed_runs_after_resume() {
+    let frames: Vec<_> = (100..=103)
+        .map(|hour| {
+            let mut frame = scaled_recorded(hour, 17);
+            let TableView::Complete(rows::TableRows::WarRelations(relations)) =
+                &mut *frame.tables[TableId::WarRelations.index()]
+            else {
+                panic!()
+            };
+            for row in relations {
+                // A long closed run, an hourly-changing run, signed values and a
+                // constant open counter all contribute to the same exact sums.
+                row.first_casualties = if row.second_country == 2 {
+                    if hour < 103 { 19 } else { -23 }
+                } else {
+                    i64::MAX - i64::from(hour)
+                };
+                row.second_casualties = i64::from(hour);
+                row.first_unknown_casualties = -i64::from(hour);
+                row.second_unknown_casualties = 11;
+            }
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(
+        crate::test_fixtures::CAMPAIGN.into(),
+        &[crate::test_fixtures::records(1, frames)],
+    )
+    .unwrap();
+    // The real helper commits twice and reloads the catalogue after each commit.
+    assert_prepared_parity(&replay, None, &[None, Some("mod-1"), Some("mod-2")]);
+}
+
+#[test]
+fn prepared_wars_sparse_casualty_reads_keep_canonical_bounds_and_gaps() {
+    use crate::prepared::series;
+    let flag = AtomicBool::new(false);
+    let frames: Vec<_> = [100, 101, 102, 103, 105, 106, 107]
+        .into_iter()
+        .map(|hour| {
+            let mut frame = scaled_recorded(hour, 3);
+            let TableView::Complete(rows::TableRows::WarRelations(relations)) =
+                &mut *frame.tables[TableId::WarRelations.index()]
+            else {
+                panic!()
+            };
+            for relation in relations {
+                relation.first_casualties = 18 + i64::from(hour >= 105);
+                relation.second_casualties = 11;
+            }
+            frame
+        })
+        .collect();
+    let replay = Arc::new(
+        Replay::from_records(
+            crate::test_fixtures::CAMPAIGN.into(),
+            &[crate::test_fixtures::records(1, frames.clone())],
+        )
+        .unwrap(),
+    );
+    let source = Source::from_replay(
+        crate::SourceKey {
+            source_id: "wars-sparse".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        replay.clone(),
+        &flag,
+    )
+    .unwrap();
+    let fixture = series::tests::Fixture::new();
+    let mut observer = prepared::Observer::default();
+    for chunk in frames.chunks(2) {
+        let mut writer = fixture.writer();
+        for frame in chunk {
+            observer.observe(frame).unwrap();
+        }
+        observer.flush(&mut writer, 1, &flag).unwrap();
+        writer.commit().unwrap();
+        observer = prepared::Observer::restore(
+            series::read_catalogue(&fixture.store, &fixture.key, "wars", 1)
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    let hours = BTreeSet::from([101, 104, 106]);
+    for view in [None, Some("mod-2")] {
+        let mut expected = scan(&replay, 1, view, None, &flag).unwrap();
+        for war in &mut expected.wars {
+            war.casualties
+                .retain(|run| hours.range(run.0..=run.1).next().is_some());
+        }
+        let actual = prepared::projection(
+            &fixture.store,
+            &fixture.key,
+            &source,
+            &WarsParams {
+                branch_id: "1".into(),
+                viewpoint_tag: view.map(str::to_owned),
+            },
+            None,
+            &hours,
+            None,
+            &flag,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+    }
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: runs in the full suite (--features slow-tests)"
+)]
+fn prepared_wars_changes_keep_unchanged_work_flat_and_one_relation_change_bounded() {
+    use crate::prepared::{
+        frame_changes::FrameChangeTracker,
+        observer_tests::{assert_flat, scaled_work, unchanged_frames},
+    };
+    let format = replay::format::FormatVersion::CURRENT;
+    let initial = scaled_recorded(100, 5000);
+    assert_flat(
+        scaled_work(10, |hours| {
+            let mut observer = prepared::Observer::default();
+            let mut tracker = FrameChangeTracker::new();
+            observer.observe_changed(&initial, &tracker.observe(&initial, format))?;
+            unchanged_frames(
+                observer.work,
+                &initial,
+                hours as i32,
+                format,
+                |frame, changes| {
+                    let mut frame = frame.clone();
+                    let hour = frame.hour;
+                    set_recorded_hour(&mut frame, hour);
+                    observer.observe_changed(&frame, changes)?;
+                    Ok(observer.work)
+                },
+            )
+        })
+        .unwrap(),
+    );
+    assert_flat(
+        scaled_work(10, |history| {
+            let mut observer = prepared::Observer::default();
+            let mut tracker = FrameChangeTracker::new();
+            let mut frame = initial.clone();
+            for offset in 0..history {
+                set_recorded_hour(&mut frame, 100 + offset as i32);
+                if let TableView::Complete(rows::TableRows::WarRelations(rows)) =
+                    &mut *frame.tables[TableId::WarRelations.index()]
+                {
+                    rows[0].start_hour = frame.hour;
+                }
+                observer.observe_changed(&frame, &tracker.observe(&frame, format))?;
+            }
+            let before = observer.work;
+            if let TableView::Complete(rows::TableRows::WarRelations(rows)) =
+                &mut *frame.tables[TableId::WarRelations.index()]
+            {
+                rows[0].first_casualties += 1;
+            }
+            let next_hour = frame.hour + 1;
+            set_recorded_hour(&mut frame, next_hour);
+            observer.observe_changed(&frame, &tracker.observe(&frame, format))?;
+            let visited = observer.work.row_visits - before.row_visits;
+            assert!(
+                visited <= 5000 * (TABLES.len() + 6),
+                "one changed native table has bounded visits: {visited}"
+            );
+            assert_eq!(
+                observer.work.emitted, before.emitted,
+                "casualties do not publish topology"
+            );
+            unchanged_frames(observer.work, &frame, 2, format, |frame, changes| {
+                let mut frame = frame.clone();
+                let hour = frame.hour;
+                set_recorded_hour(&mut frame, hour);
+                observer.observe_changed(&frame, changes)?;
+                Ok(observer.work)
+            })
+        })
+        .unwrap(),
+    );
+}
+
+#[test]
+fn prepared_wars_name_change_keeps_unchanged_relation_keys_flat_at_5000_countries() {
+    use crate::prepared::{
+        frame_changes::FrameChangeTracker,
+        observer_tests::{Work, assert_flat, scaled_work},
+    };
+    assert_flat(
+        scaled_work(500, |countries| {
+            let first = scaled_recorded(100, countries as u32);
+            let mut observer = prepared::Observer::default();
+            let mut tracker = FrameChangeTracker::new();
+            let format = replay::format::FormatVersion::CURRENT;
+            observer.observe_changed(&first, &tracker.observe(&first, format))?;
+            let before = observer.work;
+            let mut renamed = first.clone();
+            set_recorded_hour(&mut renamed, 101);
+            *renamed.tables[TableId::LexicalTokens.index()] =
+                TableView::Complete(rows::TableRows::LexicalTokens(vec![
+                    rows::LexicalTokenRow {
+                        token: 999,
+                        literal: b"unrelated token".to_vec(),
+                    },
+                ]));
+            observer.observe_changed(&renamed, &tracker.observe(&renamed, format))?;
+            let work = Work {
+                row_visits: observer.work.row_visits - before.row_visits,
+                history_visits: observer.work.history_visits - before.history_visits,
+                emitted: observer.work.emitted - before.emitted,
+                ..Default::default()
+            };
+            assert_eq!(
+                (work.row_visits, work.history_visits, work.emitted),
+                (1, 0, 1)
+            );
+            Ok(work)
+        })
+        .unwrap(),
     );
 }

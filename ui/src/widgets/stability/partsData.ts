@@ -127,7 +127,7 @@ export interface PartLayer { id: string; name: string; color: string; members: r
 /** The parts ranked by how much they contributed (size times duration), the
  * largest in the palette's colours in its order, the rest as one grey layer, so
  * no colour is made up and none repeats. */
-export function partLayers(parts: MeasureParts, measure: Measure, palette: readonly string[], grey: string): PartLayer[] {
+export function partLayers(parts: MeasureParts, measure: Measure, palette: readonly string[], grey: string, exactWeights?: ReadonlyMap<string, bigint>): PartLayer[] {
   // Only the known hours count (the widget's range and membership): hours shown before
   // each span starts, so a run's hours in view are a difference of two lookups.
   const observed = [...parts.observed].sort((a, b) => a.firstHour - b.firstHour);
@@ -142,10 +142,10 @@ export function partLayers(parts: MeasureParts, measure: Measure, palette: reado
     return found < 0 ? 0 : before[found] + Math.min(hour, observed[found].lastHour) - observed[found].firstHour + 1;
   };
   const weight = (part: StabilityPart) => part.runs.reduce((sum, run) =>
-    sum + Math.abs(Number(run.valueRaw)) * (shownThrough(run.lastHour) - shownThrough(run.firstHour - 1)), 0);
-  const weights = new Map(parts.parts.map(part => [part.id, weight(part)]));
-  const ranked = parts.parts.filter(part => weights.get(part.id)! > 0)
-    .sort((a, b) => weights.get(b.id)! - weights.get(a.id)! || a.id.localeCompare(b.id));
+    sum + (BigInt(run.valueRaw) < 0n ? -BigInt(run.valueRaw) : BigInt(run.valueRaw)) * BigInt(shownThrough(run.lastHour) - shownThrough(run.firstHour - 1)), 0n);
+  const weights = exactWeights ?? new Map(parts.parts.map(part => [part.id, weight(part)]));
+  const ranked = parts.parts.filter(part => (weights.get(part.id) ?? 0n) > 0n)
+    .sort((a, b) => weights.get(a.id)! === weights.get(b.id)! ? a.id.localeCompare(b.id) : weights.get(a.id)! > weights.get(b.id)! ? -1 : 1);
   // Every palette colour is used before parts are folded together into grey.
   const room = Math.min(ranked.length, palette.length);
   const layers: PartLayer[] = ranked.slice(0, room).map((part, index) => ({ id: part.id, name: partName(part, measure).name, color: palette[index], members: [part.id] }));

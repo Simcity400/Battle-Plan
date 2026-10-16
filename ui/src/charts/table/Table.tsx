@@ -15,6 +15,8 @@ import type { RankChange, Sort, TableGroup } from './logic';
 import { cellContent, columnAlign, growColumnWidths, tableGrid } from './columns.ts';
 import type { TableColumn } from './columns';
 import { sortKey } from './options.ts';
+import { useParityRows } from '../../dashboard/parityRows';
+import type { ParityPreparation } from '../../dashboard/parityRows';
 import '../charts.css';
 import './table.css';
 
@@ -42,13 +44,15 @@ export interface TableProps<T> {
   tooltip?: (row: T) => TooltipContent;
   /** The rows actually mounted; a widget asks for flags only for these countries. */
   onVisibleRows?: (rows: readonly T[]) => void;
+  /** Complete recording operands, with optional history preparation. */
+  parity?: { complete: boolean; preparation?: ParityPreparation; item?: (row: T) => unknown; reads?: unknown };
   hoursPerSecond?: number;
 }
 
 /** style-5 Scoreboard: real table semantics, only the viewport's rows mounted. */
 export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey, groupBy, sort: storedSort, setOption, sortOptionValue = sortKey, cellBars = true,
   rank = false, rankMarkers = true, density = 'comfortable', rowHeight, onRowClick, muted, menu: rowMenu,
-  tooltip, onVisibleRows, hoursPerSecond = 1 }: TableProps<T>) {
+  tooltip, onVisibleRows, parity, hoursPerSecond = 1 }: TableProps<T>) {
   const owner = useId();
   const tokens = useChartTokens();
   const keyboardMenu = useRef(false);
@@ -84,6 +88,13 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
       : sortRows(rows, value, sort.direction, rowKey, tieKey);
   }, [rows, sortValue, sort.direction, rowKey, tieKey, groupBy]);
   const items = useMemo(() => ordered.map((item, slot) => ({ key: rowKey(item), item: { value: item, rank: slot + 1 } })), [ordered, rowKey]);
+  if (import.meta.env.MODE === 'parity') {
+    useParityRows(scroll, () => ({ kind: 'table', label,
+      complete: parity?.complete ?? true, total: ordered.length,
+      columns: columns.map(column => ({ key: column.key, label: column.label })), sort, readOutcomes: parity?.reads,
+      rows: ordered.map((row, index) => ({ key: rowKey(row), index, item: parity?.item ? parity.item(row) : row,
+        cells: columns.map(column => ({ key: column.key, value: column.value(row) })) })) }), parity?.preparation);
+  }
   const moving = useRowMotion(items);
   const committedWindow = useRef<{ items: typeof items; keys: ReadonlySet<string> } | null>(null);
   const [departing, setDeparting] = useState(NO_KEYS);
@@ -180,25 +191,36 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     reported.current = { rows: visible, callback: onVisibleRows };
     onVisibleRows?.(visible);
   }, [visible, onVisibleRows]);
-  // Each mounted header/cell is observed once. Its first observation and every
-  // resize arrive before paint, and a wider one grows its track in that frame.
+  // Each mounted header/cell is observed once. Coalesce its readings before the
+  // next paint so changing tracks cannot feed back into observer delivery.
   const naturalCells = useRef<{ observer: ResizeObserver; observed: Set<Element> } | null>(null);
   useLayoutEffect(() => {
+    const pending = new Map<Element, { key: string; width: number }>();
+    let frame = 0;
     const observer = new ResizeObserver(entries => {
-      const readings = entries.filter(({ target }) => target.isConnected).map(({ target }) => {
+      for (const { target } of entries) {
+        if (!target.isConnected) continue;
         const element = target as HTMLElement;
         const css = getComputedStyle(element.closest('th, td')!);
         // Keep fractional layout pixels; offsetWidth rounds down and can trigger ellipsis.
-        return { key: element.dataset.tableNatural!, width: parseFloat(getComputedStyle(element).width) + parseFloat(css.paddingLeft) + parseFloat(css.paddingRight) };
+        const width = parseFloat(getComputedStyle(element).width) + parseFloat(css.paddingLeft) + parseFloat(css.paddingRight);
+        pending.set(target, { key: element.dataset.tableNatural!, width: Math.max(pending.get(target)?.width ?? 0, width) });
+      }
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const readings = [...pending].filter(([element]) => element.isConnected).map(([, reading]) => reading);
+        pending.clear();
+        if (!readings.length) return;
+        flushSync(() => setNatural(before => {
+          const previous = before.scope === widthScope ? before.widths : new Map<string, number>();
+          const widths = growColumnWidths(previous, readings);
+          return before.scope === widthScope && widths === previous ? before : { scope: widthScope, widths };
+        }));
       });
-      flushSync(() => setNatural(before => {
-        const previous = before.scope === widthScope ? before.widths : new Map<string, number>();
-        const widths = growColumnWidths(previous, readings);
-        return before.scope === widthScope && widths === previous ? before : { scope: widthScope, widths };
-      }));
     });
     naturalCells.current = { observer, observed: new Set() };
-    return () => { observer.disconnect(); naturalCells.current = null; };
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); naturalCells.current = null; };
   }, [widthScope]);
   useLayoutEffect(() => {
     const { observer, observed } = naturalCells.current!;
@@ -212,22 +234,32 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   // each identity; new rows use the minimum until they enter the viewport.
   useLayoutEffect(() => {
     if (!wrapping || !scroll.current) return;
+    const pending = new Map<Element, readonly [string, number]>();
+    let frame = 0;
     const observer = new ResizeObserver(entries => {
-      const readings = entries.filter(entry => entry.target.isConnected).map(entry => {
+      for (const entry of entries) {
+        if (!entry.target.isConnected) continue;
         const element = entry.target as HTMLElement;
-        return [element.dataset.tableRow!, entry.borderBoxSize[0]?.blockSize ?? element.offsetHeight] as const;
+        pending.set(entry.target, [element.dataset.tableRow!, entry.borderBoxSize[0]?.blockSize ?? element.offsetHeight]);
+      }
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const readings = [...pending].filter(([element]) => element.isConnected).map(([, reading]) => reading);
+        pending.clear();
+        if (!readings.length) return;
+        flushSync(() => setRowMeasurements(before => {
+          const previous = before.scope === heightScope ? before.heights : new Map<string, number>();
+          let heights: Map<string, number> | undefined;
+          for (const [key, height] of readings) if (previous.get(key) !== height) {
+            heights ??= new Map(previous); heights.set(key, height);
+          }
+          return heights ? { scope: heightScope, heights } : before;
+        }));
       });
-      flushSync(() => setRowMeasurements(before => {
-        const previous = before.scope === heightScope ? before.heights : new Map<string, number>();
-        let heights: Map<string, number> | undefined;
-        for (const [key, height] of readings) if (previous.get(key) !== height) {
-          heights ??= new Map(previous); heights.set(key, height);
-        }
-        return heights ? { scope: heightScope, heights } : before;
-      }));
     });
     measuredRows.current = { observer, observed: new Set() };
-    return () => { observer.disconnect(); measuredRows.current = null; };
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); measuredRows.current = null; };
   }, [wrapping, heightScope]);
   useLayoutEffect(() => {
     const held = measuredRows.current;

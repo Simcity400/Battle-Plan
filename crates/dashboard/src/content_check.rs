@@ -1,88 +1,12 @@
 //! Content-only preparation for every registered dashboard product.
 
 use crate::{catalogue::Catalogue, products};
+pub use dashboard_core::findings::{Finding, Kind};
 use installed_content::content::ResolvedContent;
 use std::{
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Kind {
-    ParseFailure,
-    Misread,
-    Unsettled,
-    Logged,
-    Refused,
-    Unsupported,
-    Ambiguous,
-    Fallback,
-    Warning,
-    /// Content behavior matching the game.
-    Content,
-    /// A recording supplies the operands; aggregated once per product/reason.
-    Offline,
-}
-
-impl From<installed_content::DiagnosticKind> for Kind {
-    fn from(kind: installed_content::DiagnosticKind) -> Self {
-        match kind {
-            installed_content::DiagnosticKind::ParseFailure => Self::ParseFailure,
-            installed_content::DiagnosticKind::Misread => Self::Misread,
-            installed_content::DiagnosticKind::Unsettled => Self::Unsettled,
-            installed_content::DiagnosticKind::Unsupported => Self::Unsupported,
-            installed_content::DiagnosticKind::Refused => Self::Refused,
-            installed_content::DiagnosticKind::Ambiguous => Self::Ambiguous,
-            installed_content::DiagnosticKind::Fallback => Self::Fallback,
-            installed_content::DiagnosticKind::Logged => Self::Logged,
-            installed_content::DiagnosticKind::Warning => Self::Warning,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Finding {
-    pub kind: Kind,
-    pub file: Option<String>,
-    pub line: Option<u32>,
-    pub subject: String,
-    pub message: String,
-    /// Inventory details are outside the diagnostic's diff identity.
-    pub count: Option<usize>,
-    pub examples: Vec<String>,
-    pub(crate) aggregate_reason: Option<String>,
-}
-
-impl Finding {
-    pub(crate) fn new(kind: Kind, subject: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            kind,
-            file: None,
-            line: None,
-            subject: subject.into(),
-            message: message.into(),
-            count: None,
-            examples: Vec::new(),
-            aggregate_reason: None,
-        }
-    }
-
-    pub(crate) fn grouped(
-        kind: Kind,
-        subject: impl Into<String>,
-        reason: &str,
-        message: impl Into<String>,
-    ) -> Self {
-        Self {
-            aggregate_reason: Some(reason.into()),
-            ..Self::new(kind, subject, message)
-        }
-    }
-
-    pub(crate) fn reader(subject: &str, (kind, message): installed_content::Diagnostic) -> Self {
-        Self::new(kind.into(), subject, message)
-    }
-}
 
 #[derive(Debug)]
 pub struct ProductCheck {
@@ -381,8 +305,8 @@ fn aggregate(findings: &mut Vec<Finding>) {
     use std::collections::{BTreeMap, BTreeSet};
     let mut reasons = BTreeMap::<(Kind, String), BTreeMap<String, BTreeSet<String>>>::new();
     findings.retain(|finding| {
-        let reason = match &finding.aggregate_reason {
-            Some(reason) => reason.clone(),
+        let reason = match finding.aggregate_reason() {
+            Some(reason) => reason.to_owned(),
             None if finding.kind == Kind::Offline => finding.message.clone(),
             None => return true,
         };
@@ -1046,9 +970,8 @@ fn flags_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), Str
 }
 
 fn parties_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), String> {
-    use products::party_history::{
-        PartyNaming, ideology_infos, ideology_type_info, party_key_checked,
-    };
+    use crate::party_names::{PartyNaming, party_key_checked};
+    use products::party_history::{ideology_infos, ideology_type_info};
     let politics = content.politics()?;
     let mut warnings = Vec::new();
     ideology_infos(politics, &mut warnings);

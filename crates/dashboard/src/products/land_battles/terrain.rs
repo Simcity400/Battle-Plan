@@ -9,7 +9,6 @@ use super::super::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, ReplyWarnings}
 use crate::{
     Source,
     catalogue::{self, Catalogue},
-    transport::json_len,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -210,7 +209,7 @@ impl Product for LandBattleTerrains {
                 warnings: vec![reason],
             },
         };
-        json_len(&reply, MAX_PRODUCT_REPLY_BYTES).ok_or_else(|| {
+        super::super::check_reply_budget(&reply).map_err(|_| {
             crate::invalid(format!(
                 "Terrain reply exceeds MAX_PRODUCT_REPLY_BYTES ({MAX_PRODUCT_REPLY_BYTES} bytes); no province was omitted."
             ))

@@ -3,6 +3,136 @@ use crate::test_fixtures::{CAMPAIGN, records, replay, stockpile_frame};
 use replay::frame::{DecodedFrame, TableView};
 use replay::rows::TableRows;
 
+#[test]
+fn one_frame_join_feeds_5000_holder_steps_with_legacy_values_and_independent_gaps() {
+    use crate::test_fixtures::{scale_frame, scale_tag};
+    use replay::rows::{CountryLinkRow, ProductionLineRow, StockpileRow};
+    let first = stockpile_slot(1000);
+    let frames: Vec<_> = [first, first + 1, first + 24, first + 25]
+        .into_iter()
+        .enumerate()
+        .map(|(step, hour)| {
+            let mut frame = scale_frame(1, hour, 5_000);
+            *frame.tables[TableId::Stockpiles.index()] = if step == 2 {
+                TableView::Unavailable {
+                    reason: "stock-only refusal".into(),
+                }
+            } else {
+                TableView::Complete(TableRows::Stockpiles(
+                    (0..5_000)
+                        .flat_map(|index| {
+                            [
+                                StockpileRow {
+                                    country: 100_000 + index,
+                                    variant_handle: 10,
+                                    amount_raw: i64::from(index) + 100_000,
+                                    ordinal: 0,
+                                },
+                                StockpileRow {
+                                    country: 100_000 + index,
+                                    variant_handle: 10,
+                                    amount_raw: 7,
+                                    ordinal: 1,
+                                },
+                            ]
+                        })
+                        .collect(),
+                ))
+            };
+            *frame.tables[TableId::ProductionLines.index()] =
+                TableView::Complete(TableRows::ProductionLines(
+                    (0..5_000)
+                        .map(|index| ProductionLineRow {
+                            country: 100_000 + index,
+                            handle: u64::from(index) + 1,
+                            variant: 10,
+                            kind: engine::cequipment_production_line::KIND_MILITARY,
+                            cost_raw: if index == 0 { 0 } else { 50_000 },
+                            speed_raw: 100_000,
+                            ..Default::default()
+                        })
+                        .collect(),
+                ));
+            if step == 0 || step == 2 {
+                frame.metrics.table_ns[TableId::Stockpiles.index()] = 1;
+            }
+            if step >= 2 {
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *frame.tables[TableId::Countries.index()]
+                {
+                    rows[1].id = 200_000;
+                    rows.sort_by_key(|row| row.id);
+                }
+                if let TableView::Complete(TableRows::CountryLinks(rows)) =
+                    &mut *frame.tables[TableId::CountryLinks.index()]
+                {
+                    rows.push(CountryLinkRow {
+                        id: 200_000,
+                        canonical_slot: 1,
+                    });
+                    rows.sort_by_key(|row| row.id);
+                }
+            }
+            frame
+        })
+        .collect();
+    let recording = replay(frames.clone());
+    let mut states = BTreeMap::<String, ScanState>::new();
+    for frame in &frames {
+        let input = FrameRows::new(frame);
+        assert_eq!(input.identities.len(), 5_000);
+        assert_eq!(
+            input
+                .lines
+                .as_ref()
+                .unwrap()
+                .values()
+                .map(Vec::len)
+                .sum::<usize>(),
+            5_000
+        );
+        for tag in input.identities.keys() {
+            states.entry(tag.clone()).or_default();
+        }
+        for (tag, state) in &mut states {
+            state.observe(recording.format, &input, input.identities.get(tag).copied());
+        }
+    }
+    assert_eq!(states.len(), 5_000);
+    let zero = &states["000"].result;
+    assert_eq!(
+        zero.stock.runs[&10][0].amount_raw.as_deref(),
+        Some("100007")
+    );
+    assert!(
+        zero.daily.runs[&10]
+            .iter()
+            .all(|run| run.amount_raw.is_none())
+    );
+    assert_eq!(zero.stock.spans.last().unwrap().last_hour, first + 1);
+    assert_eq!(zero.daily.spans.last().unwrap().last_hour, first + 25);
+    for index in [0, 1, 62, 1500, 4999] {
+        let tag = String::from_utf8(scale_tag(index)).unwrap();
+        let expected = scan(&recording, 1, &tag, &AtomicBool::new(false)).unwrap();
+        let actual = &states[&tag].result;
+        for (actual, expected) in [
+            (&actual.stock, &expected.stock),
+            (&actual.daily, &expected.daily),
+            (&actual.daily_ic, &expected.daily_ic),
+            (&actual.cost_low, &expected.cost_low),
+            (&actual.cost_high, &expected.cost_high),
+        ] {
+            assert_eq!(actual.runs, expected.runs, "{tag}");
+            assert_eq!(actual.spans, expected.spans, "{tag}");
+            assert_eq!(actual.overflowed, expected.overflowed, "{tag}");
+        }
+        assert_eq!(actual.reads, expected.reads);
+        assert_eq!(actual.line_reads, expected.line_reads);
+        assert_eq!(actual.costless, expected.costless);
+        assert_eq!(actual.other_kinds, expected.other_kinds);
+    }
+}
+
 /// Equipment from one authored file.
 fn types(text: &[u8]) -> Database {
     installed_content::equipment::fixture::load(&[(
@@ -655,4 +785,168 @@ fn observed_available_is_carried_with_the_balance_and_never_backfilled() {
         (day + 2, None)
     );
     assert_eq!(scanned.missing_available, 1);
+}
+
+// Equipment's variant tracking as the stockpile scan reads it.
+mod variant_reads {
+    use crate::test_fixtures::{named_frame, replay, slot_hour};
+    use replay::frame::TableView;
+    use replay::rows::{TableId, TableRows};
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn variant_names_stop_being_known_at_a_gap_or_a_read_that_did_not_land() {
+        use crate::products::equipment_stockpile::scan;
+        let hour = slot_hour(TableId::VariantDefinitions);
+        let mut carried = named_frame(hour + 1, Some(b"Old name"));
+        carried.metrics.table_ns[TableId::VariantModules.index()] = 0;
+        let frames = vec![
+            named_frame(hour, Some(b"Old name")),
+            carried,
+            // A gap (hours +2 to +4), then a due read that did not land: renamed meanwhile,
+            // the old name must not stay.
+            named_frame(hour + 5, None),
+            // No gap, but a due read that did not land.
+            named_frame(hour + 6, Some(b"New name")),
+            named_frame(hour + 7, None),
+            named_frame(hour + 8, Some(b"New name")),
+        ];
+        let scanned = scan(&replay(frames), 1, "GER", &AtomicBool::new(false)).unwrap();
+        let versions: Vec<(i32, Option<String>)> = scanned.variants.versions[&20]
+            .iter()
+            .map(|version| {
+                (
+                    version.first_hour - hour,
+                    version.raw.as_ref().map(|raw| raw.display_name.clone()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            versions,
+            [
+                (0, Some("Old name".to_owned())),
+                // Known until the gap: unknown from its first missing hour.
+                (2, None),
+                (6, Some("New name".to_owned())),
+                (7, None),
+                (8, Some("New name".to_owned())),
+            ]
+        );
+        assert_eq!(scanned.variants.token(20), "infantry_equipment_1");
+    }
+
+    #[test]
+    fn variant_designs_include_recorded_upgrades_and_missing_is_not_zero() {
+        use crate::products::equipment::VariantCatalogue;
+        use replay::rows::VariantUpgradeRow;
+        let hour = slot_hour(TableId::VariantUpgrades);
+        let upgrade = |variant, source_ordinal, definition_token, level| VariantUpgradeRow {
+            variant,
+            source_ordinal,
+            definition_token,
+            level,
+        };
+        let frame = |at, upgrades: Option<Vec<VariantUpgradeRow>>| {
+            let mut frame = named_frame(at, Some(b"Same design name"));
+            *frame.tables[TableId::VariantModules.index()] =
+                TableView::Complete(TableRows::VariantModules(vec![]));
+            *frame.tables[TableId::VariantUpgrades.index()] = match upgrades {
+                Some(rows) => TableView::Complete(TableRows::VariantUpgrades(rows)),
+                None => TableView::Unavailable {
+                    reason: "fixture".into(),
+                },
+            };
+            frame
+        };
+        let design = |rows| {
+            let mut catalogue = VariantCatalogue::default();
+            catalogue.observe(replay::format::FormatVersion::CURRENT, &frame(hour, rows));
+            catalogue.current(20).unwrap().design.clone()
+        };
+        let level_one = design(Some(vec![upgrade(20, 0, 1, 1)])).unwrap();
+        let level_two = design(Some(vec![upgrade(20, 0, 1, 2)])).unwrap();
+        assert_ne!(level_one, level_two);
+        assert_ne!(level_one, design(Some(vec![upgrade(20, 0, 1, 0)])).unwrap());
+        let none = design(Some(vec![])).unwrap();
+        assert_ne!(none, design(Some(vec![upgrade(20, 0, 1, 0)])).unwrap());
+        assert_eq!(design(None), None);
+        // Other variants' upgrades do not enter this design.
+        assert_eq!(design(Some(vec![upgrade(99, 0, 1, 4)])), Some(none));
+        // The recorded ordinal decides the order, never a caller's row order.
+        assert_eq!(
+            design(Some(vec![upgrade(20, 1, 1, 2), upgrade(20, 0, 1, 1)])),
+            design(Some(vec![upgrade(20, 0, 1, 1), upgrade(20, 1, 1, 2)]))
+        );
+        // An unspelled upgrade is an unknown design, not an empty definition.
+        assert_eq!(design(Some(vec![upgrade(20, 0, 999, 1)])), None);
+        // So is an unspelled module; token 0 is no module, a known empty spelling.
+        let modules = |definition_token| {
+            let mut frame = frame(hour, Some(vec![]));
+            *frame.tables[TableId::VariantModules.index()] =
+                TableView::Complete(TableRows::VariantModules(vec![
+                    replay::rows::VariantModuleRow {
+                        variant: 20,
+                        source_ordinal: 0,
+                        slot: 1,
+                        definition_token,
+                        definition_active: 1,
+                    },
+                ]));
+            let mut catalogue = VariantCatalogue::default();
+            catalogue.observe(replay::format::FormatVersion::CURRENT, &frame);
+            catalogue.current(20).unwrap().design.clone()
+        };
+        assert!(modules(1).is_some());
+        assert!(modules(0).is_some());
+        assert_eq!(modules(999), None);
+        // Reads at later hours retain the new levels even with unchanged naming operands.
+        let mut catalogue = VariantCatalogue::default();
+        catalogue.observe(
+            replay::format::FormatVersion::CURRENT,
+            &frame(hour, Some(vec![upgrade(20, 0, 1, 1)])),
+        );
+        catalogue.observe(
+            replay::format::FormatVersion::CURRENT,
+            &frame(hour + 1, Some(vec![upgrade(20, 0, 1, 2)])),
+        );
+        assert_eq!(catalogue.versions[&20].len(), 2);
+        assert_eq!(
+            catalogue.current(20).unwrap().design.as_deref(),
+            Some(level_two.as_str())
+        );
+        // The product's selected-table replay decode must retain the upgrade table too.
+        for (rows, expected) in [
+            (Some(vec![upgrade(20, 0, 1, 1)]), Some(level_one)),
+            (Some(vec![upgrade(20, 0, 1, 2)]), Some(level_two)),
+            (None, None),
+        ] {
+            let scanned = crate::products::equipment_stockpile::scan(
+                &replay(vec![frame(hour, rows)]),
+                1,
+                "GER",
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            assert_eq!(scanned.variants.current(20).unwrap().design, expected);
+        }
+    }
+
+    #[test]
+    fn a_read_after_a_gap_starts_after_the_unknown_stretch_never_at_its_hour() {
+        use crate::products::equipment_stockpile::scan;
+        let hour = slot_hour(TableId::VariantDefinitions);
+        // Known at +0, the recording skips to +9, which reads the variants again.
+        let frames = vec![
+            named_frame(hour, Some(b"Name")),
+            named_frame(hour + 9, Some(b"Name")),
+        ];
+        let scanned = scan(&replay(frames), 1, "GER", &AtomicBool::new(false)).unwrap();
+        let hours: Vec<(i32, bool)> = scanned.variants.versions[&20]
+            .iter()
+            .map(|version| (version.first_hour - hour, version.raw.is_some()))
+            .collect();
+        assert_eq!(hours, [(0, true), (1, false), (9, true)]);
+        // Strictly increasing, as the reply requires.
+        assert!(hours.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    }
 }

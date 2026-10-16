@@ -10,14 +10,13 @@ import { validatePowerBalance } from './powerBalance.ts';
 import type { PowerCurrency, SpendingSelection } from './politicsSpending';
 import { useCountryGroups } from './useCountryGroups';
 import { useIdeaTooltips } from './useIdeaTooltips';
+import { resolveWindow } from './model';
 
 const recordedIdentity = (tag: string) => tag;
 const NO_WARNINGS: readonly string[] = [];
 
-/** Every chosen country uses the same politics-ledger request across the spending
- * tables, the breakdown and the balance charts: its balance view adds the daily
- * gain to the payments, and Rust shares its branch scan across tags. */
-export function usePoliticsSpending(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
+/** Selected windows use prepared daily runs and dated payments. */
+export function usePoliticsSpending(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, totals = false, choices = false) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const groups = useCountryGroups(runtime, track, active);
   const fallback = defaultCountryTag(track);
@@ -40,17 +39,26 @@ export function usePoliticsSpending(widget: WidgetSpec, runtime: WidgetRuntime, 
   // choices in the native matcher and clipping coverage to their holder spans.
   const tags = useMemo(() => !match.ready ? [] : selected.membership === null ? resolved.tags
     : [...new Set(selected.membership.map(run => run.tag))], [match.ready, selected, resolved.tags]);
-  const requests = track ? tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
-    product: 'politics-ledger', params: { branchId: track.branch.id, tag, view: 'balance' } })) : [];
+  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const from = widget.time.mode === 'range' ? window?.firstHour : undefined;
+  const hour = choices ? track?.branch.lastHour : window?.lastHour;
+  const end = widget.time.mode === 'range' ? hour : track?.branch.lastHour;
+  const prepared = !!runtime.client.preparedQuery;
+  const hours = totals && !choices && end !== hour ? [hour, end] : [hour];
+  const requests = track && hour != null ? hours.flatMap(hour => tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'politics-ledger', params: prepared ? { branchId: track.branch.id, tag, view: 'spending', from, hour, totals,
+      within: selection.membership?.get(tag) } : { branchId: track.branch.id, tag, view: 'balance' } }))) : [];
   const ledger = useProducts<PoliticsLedgerReply>(runtime.client, requests, active, validatePowerBalance);
-  return { track, tags, ...ledger, selection, ready: match.ready, reason: resolved.reason ?? match.reason,
+  return { track, tags, ...ledger, data: ledger.data?.slice(0, tags.length),
+    finalData: ledger.data?.slice(hours.length > 1 ? tags.length : 0, hours.length > 1 ? tags.length * 2 : tags.length),
+    prepared, selection, ready: match.ready, reason: resolved.reason ?? match.reason,
     groupWarnings: groups.data?.warnings ?? NO_WARNINGS,
     error: ledger.error ?? groups.error,
     retry: () => { ledger.retry(); groups.retry(); } };
 }
 
 export function useSpendingChoices(widget: WidgetSpec, runtime: WidgetRuntime, currency: PowerCurrency): OptionChoices {
-  const { data } = usePoliticsSpending(widget, runtime, true);
+  const { data } = usePoliticsSpending(widget, runtime, true, true, true);
   return { categories: categoryChoices(data, currency) };
 }
 

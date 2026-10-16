@@ -28,9 +28,12 @@ const reply = (): TensionReply => ({ branchId: 'branch', tensionScale: 1000, con
 });
 
 test('tension drill uses plain cause controls while retaining signed contributions and totals', async () => {
-  const state = { parts: undefined as ComponentProps<typeof DrillParts> | undefined, select: undefined as ComponentProps<typeof Select> | undefined };
+  const state = { parts: undefined as ComponentProps<typeof DrillParts> | undefined, select: undefined as ComponentProps<typeof Select> | undefined,
+    requests: [] as unknown[] };
   const host = globalThis as typeof globalThis & { __tensionPresentation?: typeof state }; host.__tensionPresentation = state;
   const replacements: Record<string, string> = {
+    '/dashboard/preparedSeries.ts': `export const usePreparedWindow = (_client,_source,product,params) => {
+      globalThis.__tensionPresentation.requests.push({product,params}); return { geometryReady: false,owner: {},pickOwner: {},onSummaryView() {},onNavigateHour() {} }; };`,
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsRead = () => new Map();',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryFlagsAt = () => new Map(); export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/useCountriesAt.ts': 'export const STYLES = {};',
@@ -54,6 +57,7 @@ test('tension drill uses plain cause controls while retaining signed contributio
       onCause: (index: number | null) => picks.push(index), onPick() {} } as unknown as ComponentProps<typeof TensionDrill>;
     const render = () => renderToStaticMarkup(createElement(Component, props));
     assert.match(render(), /Total contributions/);
+    assert.deepEqual(state.requests[0],{product:'world-tension',params:{branchId:'branch',share:false}});
     assert.equal(state.select!.label, 'Cause');
     assert.equal(state.select!.options[0].label, 'Choose a cause');
     state.select!.onChange('0'); state.select!.onChange(''); assert.deepEqual(picks, [0, null]);

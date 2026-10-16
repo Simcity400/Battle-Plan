@@ -10,31 +10,36 @@
 //! therefore no outcome source and is not decoded here.
 
 use super::{
-    BranchParams, LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
+    BranchParams, LoadContext, Product,
     country_groups::HourSpan,
     intelligence_content::intelligence_content,
     operative_rows::{membership_read, operations_read},
 };
-use crate::{
-    Source,
-    metadata::{LinkTags, branch_bounds, validate_campaign},
-    transport::json_len,
-};
+use crate::{Source, metadata::branch_bounds};
 use replay::{
     container::Replay,
-    frame::{DecodedFrame, FrameDecoder},
+    frame::DecodedFrame,
     rows::{OperationRow, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::atomic::AtomicBool,
 };
 use ts_rs::TS;
+
+#[cfg(test)]
+use crate::metadata::validate_campaign;
+#[cfg(test)]
+use replay::frame::FrameDecoder;
+#[cfg(test)]
+use std::sync::{Arc, atomic::Ordering};
+
+#[cfg(test)]
+mod oracle;
+#[cfg(test)]
+use oracle::scan;
 
 pub struct EspionageLog;
 
@@ -53,7 +58,7 @@ impl EspionageLogParams {
     }
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct EspionageOperationType {
     pub key: String,
@@ -62,7 +67,7 @@ pub struct EspionageOperationType {
     pub icon_missing: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct EspionageOperativeName {
     pub id: String,
@@ -70,7 +75,7 @@ pub struct EspionageOperativeName {
     pub unavailable: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct EspionageOperationRun {
     pub first_hour: i32,
@@ -105,14 +110,14 @@ pub struct EspionageOperationRun {
     pub operative_names: Option<Vec<EspionageOperativeName>>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum EspionageEndReason {
     Completed,
     Disappeared,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct EspionageOutcome {
     /// Stored independent trials, never success/failure.
@@ -126,7 +131,7 @@ pub struct EspionageOutcome {
     pub description_required_bytes: String,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct EspionageOperationEnd {
     pub by_hour: i32,
@@ -143,7 +148,7 @@ pub struct EspionageOperationEnd {
     pub target_tag: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct EspionageOperation {
     /// Full native handle and episode's first read. Auto-repeat creates a fresh
@@ -158,7 +163,7 @@ pub struct EspionageOperation {
     pub end: Option<EspionageOperationEnd>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct EspionageLogReply {
     pub branch_id: String,
@@ -180,19 +185,29 @@ pub struct EspionageLogReply {
 
 type OperationInstance = (usize, (u32, u32, u32));
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Builder {
     operations: Vec<EspionageOperation>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
     open: HashMap<u64, OperationInstance>,
     available: Vec<HourSpan>,
     reads: Vec<i32>,
     types: BTreeSet<String>,
     warnings: BTreeMap<String, usize>,
-    links: LinkTags,
+    #[cfg(test)]
+    #[serde(skip)]
+    native_countries: super::operative_rows::CountryInputs,
     language: String,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
     instances: HashMap<u64, Vec<OperationInstance>>,
     completions: Vec<HourSpan>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     seen_completions: HashMap<(u32, u64), super::operation_description::OperationDescriptionRef>,
+    #[allow(clippy::type_complexity)]
+    #[serde(skip)]
+    changed: Option<BTreeMap<usize, (u64, (u32, u32, u32))>>,
+    #[serde(skip)]
+    new_completions: Vec<(u32, u64)>,
 }
 
 fn budget_error() -> io::Error {
@@ -200,15 +215,44 @@ fn budget_error() -> io::Error {
 }
 
 impl Builder {
+    fn new(replay: &Replay) -> Self {
+        Self {
+            language: replay
+                .identity
+                .language
+                .strip_prefix("l_")
+                .unwrap_or(&replay.identity.language)
+                .to_owned(),
+            ..Self::default()
+        }
+    }
+
+    fn matching(&self, handle: u64, fingerprint: (u32, u32, u32), hour: i32) -> Option<usize> {
+        self.instances
+            .get(&handle)?
+            .iter()
+            .rev()
+            .find(|(index, identity)| {
+                *identity == fingerprint
+                    && self.operations[*index].first_read <= hour
+                    && self.operations[*index]
+                        .end
+                        .as_ref()
+                        .is_none_or(|end| end.completion_sequence.is_none())
+            })
+            .map(|(index, _)| *index)
+    }
+
     fn warn(&mut self, reason: impl Into<String>) {
         *self.warnings.entry(reason.into()).or_default() += 1;
     }
 
-    fn observe_completions(
+    fn observe_completions_countries(
         &mut self,
         frame: &DecodedFrame,
         replay: &Replay,
         branch: u64,
+        countries: &super::operative_rows::CountryInputs,
     ) -> io::Result<()> {
         if !TableId::OperationCompletions
             .last_change()
@@ -238,7 +282,7 @@ impl Builder {
                 last_hour: hour,
             });
         }
-        let labels = self.links.update(frame).is_ok();
+        let labels = countries.complete().is_some();
         let language = replay
             .identity
             .language
@@ -247,6 +291,8 @@ impl Builder {
         let mut repeated: BTreeMap<i32, Vec<&replay::rows::OperationCompletionRow>> =
             BTreeMap::new();
         for row in rows {
+            #[cfg(test)]
+            super::intelligence_prepared::work(|work| work.row_visits += 1);
             let reference = super::operation_description::OperationDescriptionRef {
                 hour,
                 id: row.id.to_string(),
@@ -264,25 +310,15 @@ impl Builder {
             }
             self.seen_completions
                 .insert((row.owner, row.sequence), reference.clone());
+            if self.changed.is_some() {
+                self.new_completions.push((row.owner, row.sequence));
+            }
             let key = super::intelligence_capture::literal(frame, Some(row.definition_token));
             if let Some(key) = &key {
                 self.types.insert(key.clone());
             }
             let fingerprint = (row.owner, row.target, row.definition_token);
-            let matched = self.instances.get(&row.id).and_then(|instances| {
-                instances
-                    .iter()
-                    .rev()
-                    .find(|(index, identity)| {
-                        *identity == fingerprint
-                            && self.operations[*index].first_read <= row.completion_hour
-                            && self.operations[*index]
-                                .end
-                                .as_ref()
-                                .is_none_or(|end| end.completion_sequence.is_none())
-                    })
-                    .map(|(index, _)| *index)
-            });
+            let matched = self.matching(row.id, fingerprint, row.completion_hour);
             let index = match matched {
                 Some(index) => index,
                 None => {
@@ -303,6 +339,9 @@ impl Builder {
                     index
                 }
             };
+            if let Some(changed) = &mut self.changed {
+                changed.insert(index, (row.id, fingerprint));
+            }
             let (outcome, outcome_unrecorded) = outcome_at_end(
                 Some(row.bonus),
                 Some(row.detected),
@@ -326,9 +365,11 @@ impl Builder {
                 reason: EspionageEndReason::Completed,
                 outcome,
                 outcome_unrecorded,
-                owner_tag: labels.then(|| self.links.get(row.owner).cloned()).flatten(),
+                owner_tag: labels
+                    .then(|| countries.labels.get(&row.owner).cloned())
+                    .flatten(),
                 target_tag: labels
-                    .then(|| self.links.get(row.target).cloned())
+                    .then(|| countries.labels.get(&row.target).cloned())
                     .flatten(),
             });
         }
@@ -360,7 +401,11 @@ impl Builder {
         }
     }
 
-    fn observe(&mut self, frame: &DecodedFrame) {
+    fn observe_countries(
+        &mut self,
+        frame: &DecodedFrame,
+        countries: &super::operative_rows::CountryInputs,
+    ) {
         let Ok(rows) = frame.complete::<tables::Operations>() else {
             self.warn("Operations unavailable or incomplete; values and endings unknown");
             return;
@@ -394,7 +439,7 @@ impl Builder {
             self.warn("Duplicate operation handles refused");
             return;
         }
-        let labels = self.links.update(frame).is_ok();
+        let labels = countries.complete().is_some();
         if !labels {
             self.warn("Country identities unavailable at operation read");
         }
@@ -441,7 +486,11 @@ impl Builder {
             .copied()
             .collect();
         for id in absent {
-            let (index, (owner, target, _)) = self.open.remove(&id).expect("open handle");
+            let (index, fingerprint) = self.open.remove(&id).expect("open handle");
+            if let Some(changed) = &mut self.changed {
+                changed.insert(index, (id, fingerprint));
+            }
+            let (owner, target, _) = fingerprint;
             let operation = &mut self.operations[index];
             if operation.end.is_none() {
                 let (outcome, outcome_unrecorded) =
@@ -458,12 +507,18 @@ impl Builder {
                     reason: EspionageEndReason::Disappeared,
                     outcome,
                     outcome_unrecorded,
-                    owner_tag: labels.then(|| self.links.get(owner).cloned()).flatten(),
-                    target_tag: labels.then(|| self.links.get(target).cloned()).flatten(),
+                    owner_tag: labels
+                        .then(|| countries.labels.get(&owner).cloned())
+                        .flatten(),
+                    target_tag: labels
+                        .then(|| countries.labels.get(&target).cloned())
+                        .flatten(),
                 });
             }
         }
         for row in rows {
+            #[cfg(test)]
+            super::intelligence_prepared::work(|work| work.row_visits += 1);
             let name = lexical.and_then(|tokens| {
                 tokens
                     .binary_search_by_key(&row.definition_token, |token| token.token)
@@ -550,9 +605,11 @@ impl Builder {
                     })
                     .collect()
             });
-            let owner_tag = labels.then(|| self.links.get(row.owner).cloned()).flatten();
+            let owner_tag = labels
+                .then(|| countries.labels.get(&row.owner).cloned())
+                .flatten();
             let target_tag = labels
-                .then(|| self.links.get(row.target).cloned())
+                .then(|| countries.labels.get(&row.target).cloned())
                 .flatten();
             let run = EspionageOperationRun {
                 first_hour: hour,
@@ -598,6 +655,9 @@ impl Builder {
                 Some(index) => index,
                 None => {
                     if let Some((old, previous_fingerprint)) = self.open.remove(&row.id) {
+                        if let Some(changed) = &mut self.changed {
+                            changed.insert(old, (row.id, previous_fingerprint));
+                        }
                         let previous = &mut self.operations[old];
                         if previous.end.is_none() {
                             let (outcome, outcome_unrecorded) = outcome_at_end(
@@ -622,10 +682,10 @@ impl Builder {
                                 outcome,
                                 outcome_unrecorded,
                                 owner_tag: labels
-                                    .then(|| self.links.get(previous_fingerprint.0).cloned())
+                                    .then(|| countries.labels.get(&previous_fingerprint.0).cloned())
                                     .flatten(),
                                 target_tag: labels
-                                    .then(|| self.links.get(previous_fingerprint.1).cloned())
+                                    .then(|| countries.labels.get(&previous_fingerprint.1).cloned())
                                     .flatten(),
                             });
                         }
@@ -648,6 +708,9 @@ impl Builder {
                     index
                 }
             };
+            if let Some(changed) = &mut self.changed {
+                changed.insert(index, (row.id, fingerprint));
+            }
             let operation = &self.operations[index];
             let same = operation.runs.last().is_some_and(|previous| {
                 previous.last_hour.checked_add(1) == Some(hour) && previous.same_values(&run)
@@ -818,109 +881,49 @@ fn outcome_at_end(
     )
 }
 
-fn scan(
-    replay: &Replay,
-    params: &BranchParams,
-    cancelled: &AtomicBool,
-) -> io::Result<EspionageLogReply> {
-    let branch = replay
-        .branches
-        .iter()
-        .find(|branch| branch.id == params.branch())
-        .ok_or_else(|| crate::invalid("Branch not in this recording"))?;
-    let (first_hour, last_hour) = branch_bounds(replay, branch);
-    let selected = [
-        TableId::Campaign,
-        TableId::Countries,
-        TableId::CountryLinks,
-        TableId::Operations,
-        TableId::OperationCompletions,
-        TableId::OperationAssignments,
-        TableId::OperativeMemberships,
-        TableId::LexicalTokens,
-    ];
-    let mut builder = Builder {
-        language: replay
-            .identity
-            .language
-            .strip_prefix("l_")
-            .unwrap_or(&replay.identity.language)
-            .to_owned(),
-        ..Builder::default()
-    };
-    crate::blocks::scan_blocks(
-        replay,
-        replay
-            .index
-            .iter()
-            .filter(|block| block.branch == params.branch()),
-        &selected,
-        cancelled,
-        |blocks| {
-            for (_, frames) in blocks {
-                let mut decoder = FrameDecoder::for_tables(&selected);
-                let Ok(frames) = frames else {
-                    builder.warn("Unread replay block; operation history has a gap");
-                    continue;
-                };
-                for frame in frames {
-                    if cancelled.load(Ordering::Acquire) {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Interrupted,
-                            "Espionage request cancelled",
-                        ));
-                    }
-                    let Ok(decoded) = decoder.advance(&frame) else {
-                        builder.warn("Unread replay frame; operation history has a gap");
-                        break;
-                    };
-                    if validate_campaign(decoded, replay).is_err() {
-                        break;
-                    }
-                    builder.observe(decoded);
-                    builder.observe_completions(decoded, replay, params.branch())?;
-                }
-            }
-            Ok(())
-        },
-    )?;
-    let unavailable = builder
-        .available
-        .is_empty()
-        .then(|| "Operations was unavailable, incomplete or never read in this recording.".into());
-    let reply = EspionageLogReply {
-        branch_id: params.branch_id.clone(),
-        window: None,
-        windows: Vec::new(),
-        first_hour,
-        last_hour,
-        available: builder.available,
-        read_hours: builder.reads,
-        completions_available: builder.completions,
-        completions_unrecorded: (!TableId::OperationCompletions
-            .last_change()
-            .present(replay.format.version()))
-        .then(|| "Operation completion events not recorded in this format".into()),
-        types: builder
-            .types
-            .into_iter()
-            .map(|key| EspionageOperationType {
-                key,
-                name: None,
-                icon: None,
-                icon_missing: Some("Operation content unavailable".into()),
-            })
-            .collect(),
-        operations: builder.operations,
-        warnings: builder
-            .warnings
-            .into_iter()
-            .map(|(reason, count)| format!("{reason} ({count} observations)."))
-            .collect(),
-        unavailable,
-    };
-    Ok(reply)
+impl Builder {
+    fn reply(
+        &self,
+        branch_id: String,
+        first_hour: i32,
+        last_hour: i32,
+        format: u16,
+    ) -> EspionageLogReply {
+        EspionageLogReply {
+            branch_id,
+            window: None,
+            windows: Vec::new(),
+            first_hour,
+            last_hour,
+            available: self.available.clone(),
+            read_hours: self.reads.clone(),
+            completions_available: self.completions.clone(),
+            completions_unrecorded: (!TableId::OperationCompletions.last_change().present(format))
+                .then(|| "Operation completion events not recorded in this format".into()),
+            types: self
+                .types
+                .iter()
+                .map(|key| EspionageOperationType {
+                    key: key.clone(),
+                    name: None,
+                    icon: None,
+                    icon_missing: Some("Operation content unavailable".into()),
+                })
+                .collect(),
+            operations: self.operations.clone(),
+            warnings: self
+                .warnings
+                .iter()
+                .map(|(reason, count)| format!("{reason} ({count} observations)."))
+                .collect(),
+            unavailable: self.available.is_empty().then(|| {
+                "Operations was unavailable, incomplete or never read in this recording.".into()
+            }),
+        }
+    }
 }
+
+pub(crate) mod prepared;
 
 impl Product for EspionageLog {
     const KEY: &'static str = "espionage-log";
@@ -944,6 +947,7 @@ impl Product for EspionageLog {
             EspionageLogReply::decl(),
         ]
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -960,91 +964,102 @@ impl Product for EspionageLog {
         let raw = Arc::clone(cache.raw.as_ref().expect("scanned branch"));
         drop(cache);
         let mut reply = metadata_window(&raw, params.window)?;
-        if !reply.types.is_empty()
-            || reply.operations.iter().any(|operation| {
-                operation
-                    .runs
-                    .iter()
-                    .any(|run| run.operative_names.is_some())
-            })
+        present(source, context, cancelled, &mut reply)?;
+        Ok(reply)
+    }
+}
+
+fn present(
+    source: &Source,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+    reply: &mut EspionageLogReply,
+) -> io::Result<()> {
+    crate::metadata::check_cancel(cancelled)?;
+    if !reply.types.is_empty()
+        || reply.operations.iter().any(|operation| {
+            operation
+                .runs
+                .iter()
+                .any(|run| run.operative_names.is_some())
+        })
+    {
+        match context
+            .content()
+            .and_then(|options| intelligence_content(source, options))
         {
-            match context
-                .content()
-                .and_then(|options| intelligence_content(source, options))
-            {
-                Ok(content) => {
-                    for operation_type in &mut reply.types {
-                        let (artwork, missing) = content.operation_artwork(&operation_type.key);
-                        operation_type.name = artwork.name;
-                        operation_type.icon = artwork.icon;
-                        operation_type.icon_missing = missing;
-                    }
-                    let mut names = HashMap::new();
-                    for name in reply
-                        .operations
-                        .iter_mut()
-                        .flat_map(|operation| &mut operation.runs)
-                        .flat_map(|run| run.operative_names.iter_mut().flatten())
-                    {
-                        if let Some(raw) = name.name.take() {
-                            let resolved = names.entry(raw.clone()).or_insert_with(|| {
-                                match crate::catalogue::localised_bytes(
-                                    &content.catalogue.localisation,
-                                    raw.as_bytes(),
-                                    crate::catalogue::View::Plain,
-                                ) {
-                                    Ok(name) => (Some(name), None),
-                                    Err(reason) => (None, Some(reason)),
-                                }
-                            });
-                            name.name = resolved.0.clone();
-                            name.unavailable = resolved.1.clone();
-                        }
-                    }
-                    reply.warnings.extend(content.warnings.iter().cloned());
-                    reply.warnings.extend(content.catalogue.refusal_lines());
+            Ok(content) => {
+                for operation_type in &mut reply.types {
+                    let (artwork, missing) = content.operation_artwork(&operation_type.key);
+                    operation_type.name = artwork.name;
+                    operation_type.icon = artwork.icon;
+                    operation_type.icon_missing = missing;
                 }
-                Err(reason) => {
-                    for name in reply
-                        .operations
-                        .iter_mut()
-                        .flat_map(|operation| &mut operation.runs)
-                        .flat_map(|run| run.operative_names.iter_mut().flatten())
-                    {
-                        if let Some(raw) = name.name.take() {
+                let mut names = HashMap::new();
+                for name in reply
+                    .operations
+                    .iter_mut()
+                    .flat_map(|operation| &mut operation.runs)
+                    .flat_map(|run| run.operative_names.iter_mut().flatten())
+                {
+                    if let Some(raw) = name.name.take() {
+                        let resolved = names.entry(raw.clone()).or_insert_with(|| {
                             match crate::catalogue::localised_bytes(
-                                &installed_content::localisation::Localisation::default(),
+                                &content.catalogue.localisation,
                                 raw.as_bytes(),
                                 crate::catalogue::View::Plain,
                             ) {
-                                Ok(value) => name.name = Some(value),
-                                Err(reason) => name.unavailable = Some(reason),
+                                Ok(name) => (Some(name), None),
+                                Err(reason) => (None, Some(reason)),
                             }
+                        });
+                        name.name = resolved.0.clone();
+                        name.unavailable = resolved.1.clone();
+                    }
+                }
+                reply.warnings.extend(content.warnings.iter().cloned());
+                reply.warnings.extend(content.catalogue.refusal_lines());
+            }
+            Err(reason) => {
+                for name in reply
+                    .operations
+                    .iter_mut()
+                    .flat_map(|operation| &mut operation.runs)
+                    .flat_map(|run| run.operative_names.iter_mut().flatten())
+                {
+                    if let Some(raw) = name.name.take() {
+                        match crate::catalogue::localised_bytes(
+                            &installed_content::localisation::Localisation::default(),
+                            raw.as_bytes(),
+                            crate::catalogue::View::Plain,
+                        ) {
+                            Ok(value) => name.name = Some(value),
+                            Err(reason) => name.unavailable = Some(reason),
                         }
                     }
-                    reply.warnings.push(format!("Operation content unavailable: {reason}; operative names show their saved literal/key"));
                 }
+                reply.warnings.push(format!("Operation content unavailable: {reason}; operative names show their saved literal/key"));
             }
         }
-        let mut name_refusals = BTreeMap::new();
-        for name in reply
-            .operations
-            .iter()
-            .flat_map(|operation| &operation.runs)
-            .flat_map(|run| run.operative_names.iter().flatten())
-        {
-            if let Some(reason) = &name.unavailable {
-                *name_refusals.entry(reason).or_insert(0_usize) += 1;
-            }
-        }
-        reply.warnings.extend(
-            name_refusals
-                .into_iter()
-                .map(|(reason, count)| format!("{reason} ({count} operative-name observations).")),
-        );
-        check_reply_budget(&reply)?;
-        Ok(reply)
     }
+    let mut name_refusals = BTreeMap::new();
+    for name in reply
+        .operations
+        .iter()
+        .flat_map(|operation| &operation.runs)
+        .flat_map(|run| run.operative_names.iter().flatten())
+    {
+        if let Some(reason) = &name.unavailable {
+            *name_refusals.entry(reason).or_insert(0_usize) += 1;
+        }
+    }
+    reply.warnings.extend(
+        name_refusals
+            .into_iter()
+            .map(|(reason, count)| format!("{reason} ({count} operative-name observations).")),
+    );
+    check_reply_budget(reply)?;
+    Ok(())
 }
 
 /// Transport windows follow the daily census granularity, independent of native
@@ -1222,10 +1237,10 @@ fn metadata_window(
 }
 
 fn check_reply_budget(reply: &EspionageLogReply) -> io::Result<()> {
-    json_len(reply, MAX_PRODUCT_REPLY_BYTES).ok_or_else(budget_error)?;
-    Ok(())
+    super::check_reply_budget(reply).map_err(|_| budget_error())
 }
 
+#[cfg(test)]
 /// Retains the current branch scan; content changes refresh presentation independently.
 #[derive(Default)]
 struct Cache {
@@ -1236,12 +1251,13 @@ struct Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{products::MAX_PRODUCT_REPLY_BYTES, transport::json_len};
     use replay::{
         frame::TableView,
         rows::{CountryLinkRow, CountryRow, TableRows},
     };
 
-    fn frame(hour: i32, count: u32) -> DecodedFrame {
+    pub(super) fn frame(hour: i32, count: u32) -> DecodedFrame {
         let mut frame = crate::test_fixtures::source(1, hour, Some(1));
         // Successful explicit reads also occur away from the scheduled slot.
         frame.metrics.table_ns[TableId::Operations.index()] = 1;

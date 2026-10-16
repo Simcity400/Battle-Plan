@@ -14,6 +14,15 @@ import { dealAccounting, dealWindow } from './resourceDeals.ts';
 
 const U = 100000;
 
+test('automatic resources can choose an unprepared history before any exact pool operands arrive', () => {
+  const summary = { from: 0, to: 29, width: 1, approximate: [{ firstHour: 0, lastHour: 29 }], buckets: [{ firstHour: 0, lastHour: 29,
+    firstValue: 3, lastValue: 3, minValue: 3, maxValue: 3, minHour: 0, maxHour: 0, lastValueHour: 0, firstBreak: true, hasBreak: false }] };
+  const data = { branchId: '1', tag: 'C', decimals: 5, warnings: [], resources: [{ id: 7, token: 'mod/native', ordinal: 1, name: null, icon: null }],
+    series: [{ id: 7, runs: [] }], trades: [], dealHours: [], campaignSizes: {}, summaries: [{ id: 7, supply: summary, demand: summary }] };
+  assert.equal(automaticResource(data), 'mod/native');
+  assert.equal(data.series[0].runs.length, 0, 'geometry never becomes a written exact pool amount');
+});
+
 test('signed resource parts preserve native net even when availability has a rounding residual', () => {
   const run = pools(1, 2, { producedRaw: 9, importedRaw: 2, subjectsRaw: -1, toExportRaw: 3, availableRaw: 7.00001,
     afterProjectsRaw: 5.00001, productionRaw: -4 });

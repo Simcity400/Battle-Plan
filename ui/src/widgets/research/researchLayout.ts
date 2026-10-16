@@ -1,4 +1,4 @@
-import type { ResearchCoverage, ResearchEntry, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
+import type { ResearchCoverage, ResearchEntry, ResearchHistory, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatDate, formatDateTime, gameDate, monthNames } from '../../dashboard/calendar.ts';
 import { researchNumber } from './researchBreakdown.ts';
@@ -73,6 +73,58 @@ export function researchLanes(slots: readonly ResearchSlotHistory[], coverage: r
     lane.offset = Math.max(lane.offset, other.offset + other.items.filter(item => item.hour <= lane.appeared).length);
   }
   return lanes.sort((a, b) => a.slot.index - b.slot.index);
+}
+
+interface IndexedLane { source: ResearchLane; reveals: { hour: number; position: number; item: ResearchItem }[]; count: number; shown: ResearchLane }
+const laneIndexes = new WeakMap<ResearchHistory, { lanes: IndexedLane[]; shown: ResearchLane[] }>();
+function prefixAt<T>(rows: readonly T[], hour: number, at: (row: T) => number): number {
+  let low = 0, high = rows.length;
+  while (low < high) { const mid = (low + high) >>> 1; if (at(rows[mid]) <= hour) low = mid + 1; else high = mid; }
+  return low;
+}
+function revealedAt(item: ResearchItem): number {
+  return item.kind === 'completed' ? Math.max(item.hour, item.entry.firstObservedHour, item.entry.outcomeObservedHour ?? item.hour)
+    : item.kind === 'held' ? item.run.lastHour + 1 : item.kind === 'gap' ? item.lastHour + 1 : item.hour;
+}
+
+/** Index the immutable history once. Playback selects only newly revealed rows;
+ * unchanged lanes retain their rows and native keyboard identities. Slot reads
+ * remain in the source history and are looked up at the displayed hour. */
+export function researchLanesAt(history: ResearchHistory, hour: number): ResearchLane[] {
+  if (Number.isNaN(hour)) return [];
+  let index = laneIndexes.get(history);
+  if (!index) {
+    index = { lanes: researchLanes(history.slots, history.coverage, Infinity).map(source => ({ source, count: -1,
+      shown: { ...source, offset: 0, items: [] }, reveals: source.items.map((item, position) => ({ item, position, hour: revealedAt(item) }))
+        .sort((a, b) => a.hour - b.hour || a.position - b.position) })), shown: [] };
+    laneIndexes.set(history, index);
+  }
+  const shown: ResearchLane[] = [];
+  for (const lane of index.lanes) {
+    if (lane.source.appeared > hour) continue;
+    const count = prefixAt(lane.reveals, hour, row => row.hour);
+    if (count !== lane.count) {
+      lane.count = count;
+      lane.shown = { ...lane.source, offset: 0,
+        items: lane.reveals.slice(0, count).sort((a, b) => a.position - b.position).map(row => row.item) };
+    }
+    shown.push(lane.shown);
+  }
+  const order = [...shown].sort((a, b) => a.appeared - b.appeared || a.slot.index - b.slot.index);
+  for (const lane of order) {
+    let offset = 0;
+    for (const other of order) {
+      if (other.appeared >= lane.appeared) break;
+      offset = Math.max(offset, other.offset + prefixAt(other.items, lane.appeared, item => item.hour));
+    }
+    if (lane.offset !== offset) {
+      const next = { ...lane, offset }, at = shown.indexOf(lane);
+      shown[at] = next; order[order.indexOf(lane)] = next;
+      index.lanes.find(owner => owner.source.slot.index === lane.slot.index)!.shown = next;
+    }
+  }
+  if (shown.length !== index.shown.length || shown.some((lane, at) => lane !== index!.shown[at])) index.shown = shown;
+  return index.shown;
 }
 
 /** One List row: a completion, something held (older recordings), or a gap. */

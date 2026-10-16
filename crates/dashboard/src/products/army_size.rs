@@ -1,5 +1,5 @@
 //! Land army totals and the Army size race. Country attribution is shared with
-//! Scoreboard through `visit_army_runs`; all views use the same per-source scan.
+//! Scoreboard through the prepared army series and the native per-frame step.
 //! Missing reads and country identities end runs; they never produce zeros.
 //!
 //! An expeditionary transfer retains the source owner while the target receives
@@ -27,22 +27,22 @@ use super::{
 };
 use crate::{
     Source,
-    metadata::{
-        IdentityTrack, TaggedCountry, link_slot, slot_read, tagged_countries, validate_campaign,
-    },
+    metadata::{IdentityTrack, TaggedCountry, link_slot, slot_read, tagged_countries},
 };
 use replay::{
     container::Replay,
-    frame::{FrameDecoder, TableUpdate},
+    frame::TableUpdate,
     rows::{CountryLinkRow, DivisionRow, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap},
     io,
     sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
+#[cfg(test)]
+use {crate::metadata::validate_campaign, replay::frame::FrameDecoder, std::collections::VecDeque};
 
 pub struct ArmySize;
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -148,13 +148,14 @@ pub struct ArmySizeReply {
 /// Value and supplying read for an hour. None from `army_value_at` is unknown or
 /// absent, never zero. Strength is current hit points, in ordinary HP units.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg(test)]
 pub struct ArmyValue {
     pub value: f64,
     pub raw: i128,
     pub read_hour: i32,
 }
 
-fn channel(measure: ArmyMeasure, attribution: ArmyAttribution) -> usize {
+pub(crate) fn channel(measure: ArmyMeasure, attribution: ArmyAttribution) -> usize {
     match (measure, attribution) {
         (ArmyMeasure::Divisions, ArmyAttribution::Owner) => 0,
         (ArmyMeasure::Strength, ArmyAttribution::Owner) => 1,
@@ -178,13 +179,13 @@ fn amount(raw: Option<i128>, measure: ArmyMeasure) -> Option<f64> {
     })
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Totals {
     // Owner/host divisions, HP, battalions, then native division manpower totals.
     values: [Option<i128>; 8],
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct RawRun {
     first: i32,
     last: i32,
@@ -192,7 +193,7 @@ struct RawRun {
     totals: Totals,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Track {
     runs: Vec<RawRun>,
     last: Option<(Identity, i32)>,
@@ -201,8 +202,31 @@ struct Track {
     mix: Vec<RawMixRun>,
     mix_version: Option<(u64, u64, [bool; 2])>,
 }
+impl Track {
+    fn advance(&mut self, hour: i32) {
+        let Some(segment) = self.segments.last_mut() else {
+            return;
+        };
+        let before = segment.last_hour;
+        segment.last_hour = hour;
+        self.last_identity.advance(hour);
+        if let Some((_, at)) = &mut self.last
+            && *at == before
+        {
+            *at = hour;
+            if let Some(run) = self.runs.last_mut() {
+                run.last = hour;
+            }
+            if let Some(mix) = self.mix.last_mut()
+                && mix.last == before
+            {
+                mix.last = hour;
+            }
+        }
+    }
+}
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Scan {
     tracks: BTreeMap<String, Track>,
     divisions: bool,
@@ -213,6 +237,24 @@ struct Scan {
     battalions: bool,
     composition_unreadable: usize,
     invalid_table_reads: BTreeMap<String, usize>,
+    frontier: Option<i32>,
+    live: std::collections::BTreeSet<String>,
+    #[serde(skip)]
+    removed: Vec<String>,
+    #[serde(skip)]
+    observed: Vec<String>,
+}
+impl Scan {
+    fn seal(&mut self) {
+        if let Some(hour) = self.frontier {
+            for tag in &self.live {
+                self.tracks
+                    .get_mut(tag)
+                    .expect("live army holder")
+                    .advance(hour);
+            }
+        }
+    }
 }
 
 /// Census owner rule: positive signed expeditionary owner, otherwise roster owner.
@@ -231,6 +273,7 @@ fn add(target: &mut Option<i64>, value: i64) {
 /// Detailed tables use native sparse deltas; only country/census tables need
 /// full decoder reconstruction. Sparse tables validate keys and native deltas
 /// before updating their own baselines; failed reads stay gaps.
+#[cfg(test)]
 fn scan_tables(detailed: bool) -> Vec<TableId> {
     let mut tables = vec![
         TableId::Campaign,
@@ -244,6 +287,7 @@ fn scan_tables(detailed: bool) -> Vec<TableId> {
     tables
 }
 
+#[cfg(test)]
 fn scan(replay: &Replay, branch: u64, detailed: bool, cancelled: &AtomicBool) -> io::Result<Scan> {
     let selected = scan_tables(detailed);
     let mut wire_selected = selected.clone();
@@ -274,9 +318,7 @@ fn scan(replay: &Replay, branch: u64, detailed: bool, cancelled: &AtomicBool) ->
                     if validate_campaign(decoded, replay).is_err() {
                         break;
                     }
-                    state.apply_changes(&frame, decoded);
-                    state.compose(decoded);
-                    observe_totals(&mut result, decoded, &frame, replay, branch, &mut state);
+                    state.step(&mut result, &frame, decoded, replay);
                 }
             }
             Ok(())
@@ -292,9 +334,169 @@ struct ScanState {
     countries: Option<replay::frame::ViewIdentity>,
     links: Option<replay::frame::ViewIdentity>,
     unreadable_tags: usize,
+    keys: Option<crate::metadata::CountryKeys>,
+    identity_changed: bool,
+    applied: Option<i32>,
+    reads: Option<[bool; 4]>,
+    rates: (usize, usize, BTreeMap<String, usize>),
+    slots: HashMap<u32, Vec<usize>>,
+    census_counts: HashMap<u32, Option<i64>>,
+    census_invalid: bool,
+    census_unreadable: usize,
+    census_dirty: std::collections::BTreeSet<u32>,
+    census_ready: Option<bool>,
+    restriction: Option<bool>,
+    composition_rates: HashMap<String, usize>,
+    composition_rate: usize,
+
+    #[cfg(test)]
+    work: crate::prepared::observer_tests::Work,
 }
 
 impl ScanState {
+    #[cfg(test)]
+    fn step(
+        &mut self,
+        result: &mut Scan,
+        frame: &replay::frame::Frame,
+        decoded: &replay::frame::DecodedFrame,
+        replay: &Replay,
+    ) {
+        self.step_changes(result, frame, decoded, replay, None);
+        result.seal();
+    }
+    fn step_changes(
+        &mut self,
+        result: &mut Scan,
+        frame: &replay::frame::Frame,
+        decoded: &replay::frame::DecodedFrame,
+        replay: &Replay,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+    ) -> bool {
+        result.observed.clear();
+        result.removed.clear();
+        let valid = self.identities(decoded);
+        let identity_changed = self.identity_changed;
+        let reads = [
+            TableId::DivisionCensus,
+            TableId::Divisions,
+            TableId::DivisionTemplateIcons,
+            TableId::DivisionLandInputs,
+        ]
+        .map(|id| slot_read(replay.format, &decoded.metrics, id, decoded.hour));
+        let continuous = result
+            .frontier
+            .is_some_and(|at| at.checked_add(1) == Some(decoded.hour));
+        let unchanged = continuous
+            && valid
+            && !self.identity_changed
+            && self.reads == Some(reads)
+            && changes.is_some_and(|changes| {
+                [
+                    TableId::DivisionCensus,
+                    TableId::Divisions,
+                    TableId::DivisionTemplateIcons,
+                    TableId::DivisionLandInputs,
+                    TableId::LexicalTokens,
+                ]
+                .iter()
+                .all(|id| !changes.rows_changed[id.index()])
+            });
+        if unchanged {
+            result.unreadable += self.rates.0;
+            result.composition_unreadable += self.rates.1;
+            for (key, &count) in &self.rates.2 {
+                *result.invalid_table_reads.entry(key.clone()).or_default() += count;
+            }
+            result.frontier = Some(decoded.hour);
+            return false;
+        }
+        if !continuous || identity_changed {
+            result.seal();
+        }
+        let before_inventory = self.inventory.as_ref().map(|inventory| {
+            (
+                inventory.known(),
+                inventory.composition_known(),
+                inventory.unreadable() != 0,
+            )
+        });
+        let unreadable = result.unreadable;
+        let composition = result.composition_unreadable;
+        self.apply_changes(frame, decoded);
+        self.compose(decoded);
+        let gap = replay.gaps.iter().any(|gap| {
+            gap.branch == decoded.branch
+                && gap.first_hour <= decoded.hour
+                && decoded.hour <= gap.last_hour
+        });
+        if identity_changed {
+            let present: std::collections::BTreeSet<_> = self
+                .identities
+                .iter()
+                .map(|(tag, _)| tag.as_str())
+                .collect();
+            self.composition_rates
+                .retain(|tag, _| present.contains(tag.as_str()));
+            self.composition_rate = self.composition_rates.values().sum();
+        }
+        #[cfg(test)]
+        {
+            self.work.row_visits += [
+                TableId::Divisions,
+                TableId::DivisionTemplateIcons,
+                TableId::DivisionLandInputs,
+            ]
+            .iter()
+            .filter(|id| !matches!(frame.tables[id.index()], TableUpdate::Unchanged { .. }))
+            .map(|id| match &frame.tables[id.index()] {
+                TableUpdate::Snapshot(rows) | TableUpdate::Truncated { rows, .. } => rows.len(),
+                TableUpdate::Delta {
+                    changed, deleted, ..
+                } => changed.len() + deleted.len(),
+                _ => 0,
+            })
+            .sum::<usize>();
+        }
+        let after_inventory = self.inventory.as_ref().map(|inventory| {
+            (
+                inventory.known(),
+                inventory.composition_known(),
+                inventory.unreadable() != 0,
+            )
+        });
+        self.restriction = Some(
+            changes.is_some()
+                && continuous
+                && !identity_changed
+                && self.reads == Some(reads)
+                && before_inventory == after_inventory,
+        );
+        observe_totals(result, decoded, frame, replay.format, gap, self, changes);
+        self.rates = (
+            result.unreadable - unreadable,
+            result.composition_unreadable - composition,
+            self.inventory
+                .as_ref()
+                .into_iter()
+                .flat_map(|inventory| inventory.errors())
+                .map(|(table, reason)| (format!("{table:?}: {reason}"), 1))
+                .collect(),
+        );
+        result.frontier = Some(decoded.hour);
+        if gap || !valid || identity_changed || !continuous || result.live.is_empty() {
+            let live = if gap || !valid {
+                Default::default()
+            } else {
+                self.identities.iter().map(|(tag, _)| tag.clone()).collect()
+            };
+            result.removed = result.live.difference(&live).cloned().collect();
+            result.live = live;
+        }
+        self.applied = Some(decoded.hour);
+        self.reads = Some(reads);
+        true
+    }
     fn new(detailed: bool) -> Self {
         Self {
             inventory: detailed.then(Inventory::default),
@@ -316,12 +518,16 @@ impl ScanState {
         }
     }
     fn identities(&mut self, decoded: &replay::frame::DecodedFrame) -> bool {
+        self.identity_changed = false;
         let (Ok(countries), Ok(links)) = (
             decoded.complete::<tables::Countries>(),
             decoded.complete::<tables::CountryLinks>(),
         ) else {
             self.countries = None;
             self.links = None;
+            self.identity_changed = true;
+            self.identities.clear();
+            self.keys = None;
             return false;
         };
         let country_view = &decoded.tables[TableId::Countries.index()];
@@ -334,6 +540,13 @@ impl ScanState {
         {
             return true;
         }
+        if self.links.as_ref().is_some_and(|old| old.is(link_view))
+            && self.keys.as_ref().is_some_and(|keys| keys.same(countries))
+        {
+            self.countries = Some(country_view.identity());
+            return true;
+        }
+        self.identity_changed = true;
         let tagged = tagged_countries(countries, links);
         self.unreadable_tags = tagged
             .iter()
@@ -352,8 +565,13 @@ impl ScanState {
                     .map(|tag| (tag.to_owned(), (slot, country.id)))
             })
             .collect();
+        self.slots.clear();
+        for (index, (_, identity)) in self.identities.iter().enumerate() {
+            self.slots.entry(identity.0).or_default().push(index);
+        }
         self.countries = Some(country_view.identity());
         self.links = Some(link_view.identity());
+        self.keys = Some(crate::metadata::CountryKeys::read(countries));
         true
     }
 }
@@ -362,9 +580,10 @@ fn observe_totals(
     result: &mut Scan,
     decoded: &replay::frame::DecodedFrame,
     frame: &replay::frame::Frame,
-    replay: &Replay,
-    branch: u64,
+    format: replay::format::FormatVersion,
+    gap: bool,
     state: &mut ScanState,
+    changes: Option<&crate::prepared::frame_changes::FrameChanges>,
 ) {
     let hour = decoded.hour;
     if let Some(inventory) = &state.inventory {
@@ -378,12 +597,12 @@ fn observe_totals(
     let division_read = matches!(
         &frame.tables[TableId::Divisions.index()],
         TableUpdate::Snapshot(_) | TableUpdate::Delta { .. } | TableUpdate::Unchanged { .. }
-    ) && slot_read(replay.format, &decoded.metrics, TableId::Divisions, hour);
+    ) && slot_read(format, &decoded.metrics, TableId::Divisions, hour);
     let template_read = matches!(
         &frame.tables[TableId::DivisionTemplateIcons.index()],
         TableUpdate::Snapshot(_) | TableUpdate::Delta { .. } | TableUpdate::Unchanged { .. }
     ) && slot_read(
-        replay.format,
+        format,
         &decoded.metrics,
         TableId::DivisionTemplateIcons,
         hour,
@@ -391,23 +610,16 @@ fn observe_totals(
     if division_read {
         result.strength = true;
         result.divisions = true;
-        result.manpower |= slot_read(
-            replay.format,
-            &decoded.metrics,
-            TableId::DivisionLandInputs,
-            hour,
-        ) && matches!(
-            &frame.tables[TableId::DivisionLandInputs.index()],
-            TableUpdate::Snapshot(_) | TableUpdate::Delta { .. } | TableUpdate::Unchanged { .. }
-        );
+        result.manpower |= slot_read(format, &decoded.metrics, TableId::DivisionLandInputs, hour)
+            && matches!(
+                &frame.tables[TableId::DivisionLandInputs.index()],
+                TableUpdate::Snapshot(_)
+                    | TableUpdate::Delta { .. }
+                    | TableUpdate::Unchanged { .. }
+            );
         result.battalions |= template_read;
     }
-    if replay
-        .gaps
-        .iter()
-        .any(|gap| gap.branch == branch && gap.first_hour <= hour && hour <= gap.last_hour)
-        || !state.identities(decoded)
-    {
+    if gap || !state.identities(decoded) {
         return;
     }
     result.unreadable += state.unreadable_tags;
@@ -417,20 +629,23 @@ fn observe_totals(
     let census = decoded
         .complete::<tables::DivisionCensus>()
         .ok()
-        .filter(|_| {
-            slot_read(
-                replay.format,
-                &decoded.metrics,
-                TableId::DivisionCensus,
-                hour,
-            )
-        });
+        .filter(|_| slot_read(format, &decoded.metrics, TableId::DivisionCensus, hour));
     result.inventory_fallback |= division_read && census.is_none();
-    let mut counts = HashMap::<u32, Option<i64>>::new();
-    let mut invalid = false;
-    if let Some(census) = census {
-        result.divisions = true;
-        for row in census {
+    state.census_dirty.clear();
+    let census_changed = state.census_ready != Some(census.is_some())
+        || changes.is_none_or(|changes| {
+            changes.rows_changed[TableId::DivisionCensus.index()]
+                || changes.rows_changed[TableId::CountryLinks.index()]
+        });
+    if census_changed {
+        let mut counts = HashMap::<u32, Option<i64>>::new();
+        let mut invalid = false;
+        let mut unreadable = 0;
+        for row in census.into_iter().flatten() {
+            #[cfg(test)]
+            {
+                state.work.row_visits += 1;
+            }
             if let Some(slot) = link_slot(links, row.country) {
                 add(
                     counts.entry(slot).or_insert(Some(0)),
@@ -438,10 +653,27 @@ fn observe_totals(
                 );
             } else if row.grouped != 0 || row.ungrouped != 0 {
                 invalid = true;
-                result.unreadable += 1;
+                unreadable += 1;
             }
         }
+        state.census_dirty.extend(
+            state
+                .census_counts
+                .keys()
+                .chain(counts.keys())
+                .filter(|slot| state.census_counts.get(slot) != counts.get(slot))
+                .copied(),
+        );
+        if state.census_invalid != invalid {
+            state.restriction = Some(false);
+        }
+        state.census_counts = counts;
+        state.census_invalid = invalid;
+        state.census_unreadable = unreadable;
+        state.census_ready = Some(census.is_some());
     }
+    result.divisions |= census.is_some();
+    result.unreadable += state.census_unreadable;
     let inventory = state
         .inventory
         .as_ref()
@@ -450,23 +682,47 @@ fn observe_totals(
     if let Some(inventory) = inventory {
         result.unreadable += inventory.unreadable();
     }
-    for (tag, identity) in &state.identities {
+    let indices: Vec<_> = if state.restriction == Some(true) {
+        state
+            .inventory
+            .as_ref()
+            .into_iter()
+            .flat_map(|inventory| inventory.dirty.iter())
+            .chain(&state.census_dirty)
+            .filter_map(|slot| state.slots.get(slot))
+            .flatten()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    } else {
+        (0..state.identities.len()).collect()
+    };
+    result.composition_unreadable += state.composition_rate;
+    for index in indices {
+        let (tag, identity) = &state.identities[index];
         let slot = identity.0;
+        #[cfg(test)]
+        {
+            state.work.history_visits += 1;
+        }
         let mut total = inventory.map_or_else(Totals::default, |inventory| {
             inventory.totals(slot, composition.is_some())
         });
-        if !slot_read(
-            replay.format,
-            &decoded.metrics,
-            TableId::DivisionLandInputs,
-            hour,
-        ) {
+        if !slot_read(format, &decoded.metrics, TableId::DivisionLandInputs, hour) {
             total.values[6] = None;
             total.values[7] = None;
         }
         if census.is_some() {
-            total.values[0] = (!invalid)
-                .then(|| counts.get(&slot).copied().flatten().map(i128::from))
+            total.values[0] = (!state.census_invalid)
+                .then(|| {
+                    state
+                        .census_counts
+                        .get(&slot)
+                        .copied()
+                        .flatten()
+                        .map(i128::from)
+                })
                 .flatten();
         }
         // Identity coverage is independent of measure availability.
@@ -476,12 +732,33 @@ fn observe_totals(
         let Some(track) = result.tracks.get_mut(tag) else {
             continue;
         };
+        if result.live.contains(tag)
+            && let Some(frontier) = result.frontier
+        {
+            track.advance(frontier);
+        }
         observe_identity(
             &mut track.segments,
             &mut track.last_identity,
             *identity,
             hour,
         );
+        result.observed.push(tag.clone());
+        let composition_notes = composition.map_or(0, |inventory| {
+            inventory
+                .parts_version(slot)
+                .2
+                .iter()
+                .filter(|known| !**known)
+                .count()
+        });
+        let before_notes = state
+            .composition_rates
+            .insert(tag.clone(), composition_notes)
+            .unwrap_or(0);
+        state.composition_rate = state.composition_rate + composition_notes - before_notes;
+        result.composition_unreadable =
+            result.composition_unreadable + composition_notes - before_notes;
         if census.is_none() && inventory.is_none() {
             continue;
         }
@@ -499,7 +776,6 @@ fn observe_totals(
         }
         if let Some(inventory) = composition {
             let version = inventory.parts_version(slot);
-            result.composition_unreadable += version.2.iter().filter(|known| !**known).count();
             if let Some(run) = track.mix.last_mut()
                 && continues
                 && track.mix_version == Some(version)
@@ -530,11 +806,13 @@ fn observe_totals(
 }
 
 #[derive(Default)]
+#[cfg(test)]
 struct Scans {
     entries: VecDeque<(u64, bool, Arc<Scan>)>,
     runs: usize,
 }
 
+#[cfg(test)]
 fn scanned(
     source: &Source,
     branch: u64,
@@ -578,6 +856,7 @@ fn scanned(
 /// Scoreboard's army column: exact per-country value at one recorded hour,
 /// using the same cached scan and owner/host rules as the widget. Unavailable
 /// tables, missing country rows, invalid HP and gaps return None.
+#[cfg(test)]
 pub fn army_value_at(
     source: &Source,
     branch: u64,
@@ -613,6 +892,7 @@ pub fn army_value_at(
 /// Exact cached runs for the requested tags; an empty selection visits all tags.
 /// Inclusive hours are hourly supplying reads. None stays unknown, and starts
 /// preserve native identity/gap boundaries without expanding campaign hours.
+#[cfg(test)]
 pub fn visit_army_runs(
     source: &Source,
     branch: u64,
@@ -703,7 +983,7 @@ fn for_each_reply_run(
         Ok(())
     };
     let runs = window_runs(track, range);
-    let whole = [range.clone()];
+    let whole = [*range];
     crate::ranking::for_each_piece(
         runs,
         spans.unwrap_or(&whole),
@@ -783,10 +1063,13 @@ fn reply_series(
     range: &HourSpan,
     selected: Option<&BTreeMap<String, Vec<super::country_history::CountryIdentityRun>>>,
     cancelled: &AtomicBool,
+    prepared_membership: Option<BTreeMap<String, Vec<HourSpan>>>,
 ) -> io::Result<(Vec<ArmySeries>, usize)> {
     let transport_budget = super::MAX_PRODUCT_REPLY_BYTES;
     let index = channel(params.measure, params.count_for);
-    let membership = if let Some(top) = params.top {
+    let membership = if prepared_membership.is_some() {
+        prepared_membership
+    } else if let Some(top) = params.top {
         let runs: BTreeMap<_, _> = scan
             .tracks
             .iter()
@@ -950,6 +1233,7 @@ impl Product for ArmySize {
         }
         Ok(())
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -960,162 +1244,184 @@ impl Product for ArmySize {
             .branch_id
             .parse()
             .map_err(|_| crate::invalid("Invalid branch"))?;
-        if !source
-            .replay_ref()
-            .branches
-            .iter()
-            .any(|known| known.id == branch)
-        {
-            return Err(crate::invalid("Unknown branch"));
-        }
-        let windows: Vec<_> = source
-            .replay_ref()
-            .index
-            .iter()
-            .filter(|block| block.branch == branch)
-            .map(|block| HourSpan {
-                first_hour: block.first_hour,
-                last_hour: block.last_hour,
-            })
-            .collect();
-        let interval = params
-            .window
-            .map(|index| {
-                windows
-                    .get(index)
-                    .cloned()
-                    .ok_or_else(|| crate::invalid("Unknown army history window"))
-            })
-            .transpose()?;
         let detailed =
             params.measure != ArmyMeasure::Divisions || params.count_for == ArmyAttribution::Host;
         let scan = scanned(source, branch, detailed, cancelled)?;
-        let mut warnings = Vec::new();
-        warnings.extend(scan.invalid_table_reads.iter().map(|(reason, count)| {
-            format!("{count} army table reads rejected ({reason}); affected values stay gaps.")
-        }));
-        if scan.unreadable > 0 {
-            warnings.push(format!("{} division/country attribution reads could not be resolved; affected totals remain unknown.", scan.unreadable));
-        }
-        if scan.composition_unreadable > 0 && params.measure == ArmyMeasure::Battalions {
-            warnings.push(format!(
+        build_reply(source, params, context, cancelled, &scan, None, None)
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Oracle and prepared windows share one reply builder"
+)]
+fn build_reply(
+    source: &Source,
+    params: &ArmySizeParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+    scan: &Scan,
+    histories: Option<Arc<super::country_history::RecordedHistories>>,
+    prepared_membership: Option<BTreeMap<String, Vec<HourSpan>>>,
+) -> io::Result<ArmySizeReply> {
+    let branch = params
+        .branch_id
+        .parse()
+        .map_err(|_| crate::invalid("Invalid branch"))?;
+    if !source
+        .replay_ref()
+        .branches
+        .iter()
+        .any(|known| known.id == branch)
+    {
+        return Err(crate::invalid("Unknown branch"));
+    }
+    let windows = source.block_windows(branch);
+    let interval = params
+        .window
+        .map(|index| {
+            windows
+                .get(index)
+                .cloned()
+                .ok_or_else(|| crate::invalid("Unknown army history window"))
+        })
+        .transpose()?;
+    let mut warnings = Vec::new();
+    warnings.extend(scan.invalid_table_reads.iter().map(|(reason, count)| {
+        format!("{count} army table reads rejected ({reason}); affected values stay gaps.")
+    }));
+    if scan.unreadable > 0 {
+        warnings.push(format!("{} division/country attribution reads could not be resolved; affected totals remain unknown.", scan.unreadable));
+    }
+    if scan.composition_unreadable > 0 && params.measure == ArmyMeasure::Battalions {
+        warnings.push(format!(
                 "{} country attribution-hours have unresolved division ownership or missing/invalid template composition; battalion totals stay unknown.",
                 scan.composition_unreadable));
-        }
-        let measures = [
-            ArmyMeasure::Manpower,
-            ArmyMeasure::Divisions,
-            ArmyMeasure::Strength,
-            ArmyMeasure::Battalions,
-        ]
-        .into_iter()
-        .filter(|measure| match measure {
+    }
+    let measures = [
+        ArmyMeasure::Manpower,
+        ArmyMeasure::Divisions,
+        ArmyMeasure::Strength,
+        ArmyMeasure::Battalions,
+    ]
+    .into_iter()
+    .filter(|measure| match measure {
+        ArmyMeasure::Divisions => scan.divisions,
+        ArmyMeasure::Strength => scan.strength,
+        ArmyMeasure::Manpower => scan.manpower,
+        ArmyMeasure::Battalions => scan.battalions,
+    })
+    .collect();
+    let mut projection = params.clone();
+    let identities = if params.top.is_none() && !params.tags.is_empty() {
+        let identities = if let Some(histories) = histories {
+            histories
+        } else {
+            super::country_history::branch_histories(source, branch, false, &[], cancelled)?
+        };
+        let selected = super::country_history::selected_identities(&identities, &params.tags);
+        projection.tags = super::country_history::selected_aliases(&identities, &params.tags);
+        interval.as_ref().map(|range| {
+            projection
+                .tags
+                .iter()
+                .map(|tag| {
+                    let runs = identities
+                        .countries
+                        .get(tag)
+                        .map_or_else(Vec::new, |country| {
+                            window_identities(country, range)
+                                .into_iter()
+                                .filter(|identity| {
+                                    selected.contains(&(identity.slot, identity.country_id))
+                                })
+                                .collect()
+                        });
+                    (tag.clone(), runs)
+                })
+                .collect::<BTreeMap<_, _>>()
+        })
+    } else {
+        None
+    };
+    let (mut series, series_bytes) = interval.as_ref().map_or_else(
+        || Ok((Vec::new(), 2)),
+        |range| {
+            reply_series(
+                scan,
+                &projection,
+                range,
+                identities.as_ref(),
+                cancelled,
+                prepared_membership,
+            )
+        },
+    )?;
+    let types = if let Some(range) = interval.as_ref()
+        && params.by_type
+        && params.measure == ArmyMeasure::Battalions
+    {
+        composition_reply(
+            source,
+            context,
+            scan,
+            params,
+            range,
+            &mut series,
+            &mut warnings,
+            cancelled,
+        )?
+    } else {
+        Vec::new()
+    };
+    let mut reply = ArmySizeReply {
+        branch_id: params.branch_id.clone(),
+        windows: if params.window.is_none() {
+            windows.to_vec()
+        } else {
+            Vec::new()
+        },
+        window: params.window,
+        interval,
+        available: match params.measure {
+            ArmyMeasure::Divisions if params.count_for == ArmyAttribution::Host => scan.strength,
             ArmyMeasure::Divisions => scan.divisions,
             ArmyMeasure::Strength => scan.strength,
             ArmyMeasure::Manpower => scan.manpower,
             ArmyMeasure::Battalions => scan.battalions,
-        })
-        .collect();
-        let mut projection = params.clone();
-        let identities = if params.top.is_none() && !params.tags.is_empty() {
-            let identities =
-                super::country_history::branch_histories(source, branch, false, &[], cancelled)?;
-            let selected = super::country_history::selected_identities(&identities, &params.tags);
-            projection.tags = super::country_history::selected_aliases(&identities, &params.tags);
-            interval.as_ref().map(|range| {
-                projection
-                    .tags
-                    .iter()
-                    .map(|tag| {
-                        let runs = identities
-                            .countries
-                            .get(tag)
-                            .map_or_else(Vec::new, |country| {
-                                window_identities(country, range)
-                                    .into_iter()
-                                    .filter(|identity| {
-                                        selected.contains(&(identity.slot, identity.country_id))
-                                    })
-                                    .collect()
-                            });
-                        (tag.clone(), runs)
-                    })
-                    .collect::<BTreeMap<_, _>>()
-            })
-        } else {
-            None
-        };
-        let (mut series, series_bytes) = interval.as_ref().map_or_else(
-            || Ok((Vec::new(), 2)),
-            |range| reply_series(&scan, &projection, range, identities.as_ref(), cancelled),
-        )?;
-        let types = if let Some(range) = interval.as_ref()
-            && params.by_type
-            && params.measure == ArmyMeasure::Battalions
-        {
-            composition_reply(
-                source,
-                context,
-                &scan,
-                params,
-                range,
-                &mut series,
-                &mut warnings,
-                cancelled,
-            )?
-        } else {
-            Vec::new()
-        };
-        let mut reply = ArmySizeReply {
-            branch_id: params.branch_id.clone(),
-            windows: if params.window.is_none() {
-                windows
-            } else {
-                Vec::new()
-            },
-            window: params.window,
-            interval,
-            available: match params.measure {
-                ArmyMeasure::Divisions if params.count_for == ArmyAttribution::Host => {
-                    scan.strength
-                }
-                ArmyMeasure::Divisions => scan.divisions,
-                ArmyMeasure::Strength => scan.strength,
-                ArmyMeasure::Manpower => scan.manpower,
-                ArmyMeasure::Battalions => scan.battalions,
-            },
-            measures,
-            types,
-            series: Vec::new(),
-            warnings,
-        };
-        let envelope_bytes = crate::transport::json_len(&reply, super::MAX_PRODUCT_REPLY_BYTES)
-            .ok_or_else(reply_bound)?;
-        let bytes = if series
-            .iter()
-            .any(|series| series.mix.is_some() || series.identities.is_some())
-        {
-            crate::transport::json_len(&series, super::MAX_PRODUCT_REPLY_BYTES)
-                .ok_or_else(reply_bound)?
-        } else {
-            series_bytes
-        };
-        if envelope_bytes + bytes - 2 > super::MAX_PRODUCT_REPLY_BYTES {
-            return Err(reply_bound());
-        }
-        reply.series = series;
-        Ok(reply)
+        },
+        measures,
+        types,
+        series: Vec::new(),
+        warnings,
+    };
+    let envelope_bytes = crate::transport::json_len(&reply, super::MAX_PRODUCT_REPLY_BYTES)
+        .ok_or_else(reply_bound)?;
+    let bytes = if series
+        .iter()
+        .any(|series| series.mix.is_some() || series.identities.is_some())
+    {
+        crate::transport::json_len(&series, super::MAX_PRODUCT_REPLY_BYTES)
+            .ok_or_else(reply_bound)?
+    } else {
+        series_bytes
+    };
+    if envelope_bytes + bytes - 2 > super::MAX_PRODUCT_REPLY_BYTES {
+        return Err(reply_bound());
     }
+    reply.series = series;
+    Ok(reply)
 }
 
 mod composition;
+pub(crate) mod prepared;
 pub(crate) use composition::check_content;
 use composition::{RawMixRun, composition_reply};
 mod inventory;
 use inventory::Inventory;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 mod scale;

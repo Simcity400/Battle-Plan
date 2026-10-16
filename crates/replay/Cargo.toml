@@ -6,7 +6,15 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[lib]
+doctest = false
+
+[features]
+# Tests that take more than about two seconds; see AGENTS.md.
+slow-tests = []
+
 [dependencies]
+replay-data.workspace = true
 crc32fast = "1"
 engine.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -14,8 +22,11 @@ serde_json.workspace = true
 zstd = "0.13"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 # Process CPU time for the pack bench.
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[dev-dependencies]
+replay-data = { workspace = true, features = ["test-support"] }

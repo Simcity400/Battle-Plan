@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo } from 'react';
+import { useParityRows } from '../../dashboard/parityRows';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import CountryRaceView from '../../charts/race/CountryRaceView';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
@@ -54,6 +55,9 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, groups.data, onDiagnostics]);
 
+  const root = useRef<HTMLDivElement>(null);
+  useParityRows(root, () => ({ kind: 'chart', label: 'Raid tally values', complete: !!data,
+    total: shownSeries.length, moment, metric, rows: shownSeries }));
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its raid tally." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (grouped && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
@@ -62,7 +66,7 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
   if (resolved.reason) return <WidgetState kind="unavailable" message={resolved.reason} />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (resolved.top == null && !data.series.some(item => item.runs.length)) return <WidgetState kind="unavailable" message="No raid counts were recorded for these countries." />;
-  return <CountryRaceView runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead} moment={moment}
+  return <div ref={root} style={{ display: 'contents' }}><CountryRaceView runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead} moment={moment}
     slots={resolved.top ?? Math.max(1, counted.tags.length)} ranked={ranked} lines={lines} segmentAt={segmentAt} label={tallyLabel(metric)}
     presentation={{ exact: false, held: false }}
     beforeChart={metric === 'both' ? view === 'lines'
@@ -71,5 +75,5 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
     empty={resolved.top != null && readAt(data.readHours, moment) === moment ? `No raids ${metric === 'both' ? 'launched or succeeded' : metric} yet.` : 'No raid counts recorded at this time.'}
     formatValue={tallyValue}
     tooltip={(tag, hour, name) => [tallyTooltip(data, tag, hour, name)]}
-    lineTooltip={(hour, tags, labelAt, country) => [tallyLineTooltip(series, hour, tags, labelAt, country, metric)]} />;
+    lineTooltip={(hour, tags, labelAt, country) => [tallyLineTooltip(series, hour, tags, labelAt, country, metric)]} /></div>;
 }

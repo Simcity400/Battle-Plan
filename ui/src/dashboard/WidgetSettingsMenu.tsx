@@ -1,5 +1,6 @@
+import { loadWidgetRenderer } from '../widgets/rendererLoaders';
 import { Popover, PopoverHeading, usePopover } from '../components/Popover';
-import { useId } from 'react';
+import { lazy, Suspense, useId, useMemo } from 'react';
 import { Icon } from '../components/Icons';
 import { WidgetSettings } from './settings/WidgetSettings';
 import type { DashboardTemplate, WidgetSpec } from './model';
@@ -9,6 +10,7 @@ export default function WidgetSettingsMenu({ widget, template, runtime, onApply,
   widget: WidgetSpec; template: DashboardTemplate; runtime: WidgetRuntime;
   onApply: (widget: WidgetSpec, view?: boolean) => void; onRemove?: () => void; onReset?: () => void;
 }) {
+  const Settings = useMemo(() => lazy(async () => { await loadWidgetRenderer(widget.kind); return { default: WidgetSettings }; }), [widget.kind]);
   const id = useId();
   const menu = usePopover();
   const { trigger, open } = menu;
@@ -17,7 +19,7 @@ export default function WidgetSettingsMenu({ widget, template, runtime, onApply,
       popoverTarget={id} aria-haspopup="dialog" aria-expanded={open}><Icon name="settings" /></button>
     <Popover menu={menu} id={id} className="widget-settings-menu" aria-label={`${widget.title} settings`}>
       <PopoverHeading title="Widget settings" menu={menu} onDelete={onRemove} onReset={onReset} />
-      {open && <WidgetSettings widget={widget} template={template} runtime={runtime} onChange={onApply} />}
+      {open && <Suspense fallback={<p role="status">Loading settings?</p>}><Settings widget={widget} template={template} runtime={runtime} onChange={onApply} /></Suspense>}
     </Popover>
   </>;
 }

@@ -1,0 +1,75 @@
+//! Recorded combat modifier naming shared by combat hovers and selected-unit attack text.
+
+pub const BM_LEADER_BONUS: &str = "BM_LEADER_BONUS";
+pub const BM_COUNTRY_BONUS: &str = "BM_COUNTRY_BONUS";
+pub const BM_ENCIRCLEMENT_PENALTY: &str = "BM_ENCIRCLEMENT_PENALTY";
+pub const BM_EXPERIENCE: &str = "BM_EXPERIENCE";
+pub const BM_PLANNING: &str = "BM_PLANNING";
+pub const BM_STACKING: &str = "BM_STACKING";
+pub const BM_WIDTH: &str = "BM_WIDTH";
+pub const BM_DUGIN_MODIFIER: &str = "BM_DUGIN_MODIFIER";
+pub const BM_AMPH_PENALTY: &str = "BM_AMPH_PENALTY";
+pub const BM_FORT_MODIFIER: &str = "BM_FORT_MODIFIER";
+pub const BM_RIVER_PENALTY: &str = "BM_RIVER_PENALTY";
+pub const BM_SHORE_BOMBARD: &str = "BM_SHORE_BOMBARD";
+pub const BM_RAILWAY_GUN_BOMBARD: &str = "BM_RAILWAY_GUN_BOMBARD";
+pub const BM_MULTIPLE: &str = "BM_MULTIPLE";
+pub const BM_ENEMY_AIR_SUPERIORITY: &str = "BM_ENEMY_AIR_SUPERIORITY";
+pub const BM_AIR_SUPPORT: &str = "BM_AIR_SUPPORT";
+pub const BM_PARADROP: &str = "BM_PARADROP";
+pub const BM_SUPPLY: &str = "BM_SUPPLY";
+pub const BM_DECRYPTION: &str = "BM_DECRYPTION";
+pub const BM_HATES_COUNTRY: &str = "BM_HATES_COUNTRY";
+pub const BM_HATES_COUNTRY_ON_CORE: &str = "BM_HATES_COUNTRY_ON_CORE";
+pub const BM_BORDER_WAR_MODIFIER: &str = "BM_BORDER_WAR_MODIFIER";
+pub const BM_EXILE_LEADER_DIVISION: &str = "BM_EXILE_LEADER_DIVISION";
+pub const BM_ACTIVE_CODE_CRACKING_BONUSES: &str = "BM_ACTIVE_CODE_CRACKING_BONUSES";
+pub const BM_LOCAL_BONUS: &str = "BM_LOCAL_BONUS";
+pub const BM_BASE_PROXIMITY: &str = "BM_BASE_PROXIMITY";
+pub const BM_POOR_SCREEN_PENALTY: &str = "BM_POOR_SCREEN_PENALTY";
+pub const BM_TERRAIN: &str = "BM_TERRAIN";
+pub const BM_WEATHER: &str = "BM_WEATHER";
+pub const BM_NIGHT_MODIFIER: &str = "BM_NIGHT_MODIFIER";
+
+/// The complete modifier-name dispatch, in recorded order.
+const MODIFIER_NAMES: [&str; 30] = [
+    BM_LEADER_BONUS,
+    BM_COUNTRY_BONUS,
+    BM_ENCIRCLEMENT_PENALTY,
+    BM_EXPERIENCE,
+    BM_PLANNING,
+    BM_STACKING,
+    BM_WIDTH,
+    BM_DUGIN_MODIFIER,
+    BM_AMPH_PENALTY,
+    BM_FORT_MODIFIER,
+    BM_RIVER_PENALTY,
+    BM_SHORE_BOMBARD,
+    BM_RAILWAY_GUN_BOMBARD,
+    BM_MULTIPLE,
+    BM_ENEMY_AIR_SUPERIORITY,
+    BM_AIR_SUPPORT,
+    BM_PARADROP,
+    BM_SUPPLY,
+    BM_DECRYPTION,
+    BM_HATES_COUNTRY,
+    BM_HATES_COUNTRY_ON_CORE,
+    BM_BORDER_WAR_MODIFIER,
+    BM_EXILE_LEADER_DIVISION,
+    BM_ACTIVE_CODE_CRACKING_BONUSES,
+    BM_LOCAL_BONUS,
+    BM_BASE_PROXIMITY,
+    BM_POOR_SCREEN_PENALTY,
+    BM_TERRAIN,
+    BM_WEATHER,
+    BM_NIGHT_MODIFIER,
+];
+
+/// Modifier-name dispatch shared by the combat hover
+/// and the selected army's attack list.
+pub fn modifier_name_key(id: u32) -> Result<&'static str, String> {
+    MODIFIER_NAMES
+        .get(id as usize)
+        .copied()
+        .ok_or_else(|| format!("combat modifier {id} has no native name key"))
+}

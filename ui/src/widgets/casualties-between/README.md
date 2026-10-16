@@ -2,7 +2,7 @@
 
 **What it shows:** Directed known casualty flows between countries on a chord, with a single signed pair table, total and histories. All pairs and Corrections open the corresponding rows.
 
-**Product(s) it reads:** [`casualty-pairs`](../../../../crates/dashboard/src/products/war_casualties/pairs.rs) shares the [`war_casualties.rs`](../../../../crates/dashboard/src/products/war_casualties.rs) branch scan with [Casualties](../casualties/README.md).
+**Product(s) it reads:** Prepared [`casualty-pairs`](../../../../crates/dashboard/src/products/war_casualties/pairs.rs) windows share the [`casualty observer`](../../../../crates/dashboard/src/products/war_casualties.rs) with [Casualties](../casualties/README.md). Each stored window contains all countries; the shared window builder applies native-holder and `between` selection. A null window reads availability and the block manifest without decoding the recording.
 
 **Settings:** All countries by default; chosen countries' casualties with anyone or only between them; countries around the chord, Chord/Casualty pairs and inline/pop-out drill; Campaign, Follow, Pin and Range.
 
@@ -16,3 +16,6 @@
 **Files:** [CasualtyPairsWidget.tsx](CasualtyPairsWidget.tsx) renders and loads windows; `casualtyPairsData.ts` validates; `casualtyChord.ts` folds/projects flows; `casualtyPairDrill.ts` shapes histories and pins. Adjacent tests cover those rules. `casualtyPairs.css`, `definition.ts` and `index.ts` own styling, settings and registration.
 
 Shared framework conventions: [widgets](../README.md).
+
+Parity builds expose "Casualty pairs exact values" with every directed signed
+flow, supplying read, country identity and requested window.

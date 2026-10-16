@@ -48,6 +48,7 @@ use super::{
     LoadContext, Product, country_groups::HourSpan, identity::character_script_token,
     politics_content, validate_tag,
 };
+use crate::prepared::frame_changes::FrameChanges;
 use crate::{
     Source,
     catalogue::{self, Catalogue, View},
@@ -66,18 +67,24 @@ use replay::{
 use serde::{Deserialize, Serialize};
 use std::{
     cell::OnceCell,
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{
-        Arc, Condvar, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
+};
+#[cfg(test)]
+use std::{
+    collections::VecDeque,
+    sync::{Condvar, Mutex},
     time::Duration,
 };
 use ts_rs::TS;
 
 pub struct UnitLeaders;
 pub mod portraits;
+pub mod prepared;
 pub const MAX_REPLY_BYTES: usize = super::MAX_PRODUCT_REPLY_BYTES;
 // Portrait tokens map army 0x289d to 1 and navy 0x289e to 2.
 const PORTRAIT_ARMY: u32 = 1;
@@ -373,7 +380,7 @@ pub struct LeaderObservation {
     pub naval_commands: bool,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct UnitLeadersReply {
     pub branch_id: String,
@@ -401,6 +408,7 @@ pub struct UnitLeadersResponse {
     pub warnings: Vec<String>,
 }
 
+#[cfg(test)]
 impl From<Arc<UnitLeadersReply>> for UnitLeadersResponse {
     fn from(history: Arc<UnitLeadersReply>) -> Self {
         Self {
@@ -548,7 +556,16 @@ fn append_command(
     kind: LeaderFormationKind,
     name: Option<&str>,
     hour: i32,
-) {
+) -> (usize, bool, usize) {
+    let before = state.career.commands.len();
+    let unknown_before = state
+        .command_indices
+        .get(&formation)
+        .map_or(0, |&index| state.career.commands[index].name_unknown.len());
+    let repeated = state
+        .command_indices
+        .get(&formation)
+        .is_some_and(|&index| state.career.commands[index].last_hour == hour);
     let leader = &mut state.career;
     if let Some(last) = state
         .command_indices
@@ -587,6 +604,21 @@ fn append_command(
             name: name.map(str::to_owned),
         });
     }
+    let index = state.command_indices[&formation];
+    let unknown = if state.career.commands.len() == before {
+        state.career.commands[index]
+            .name_unknown
+            .len()
+            .saturating_sub(unknown_before)
+    } else {
+        state.career.commands[index].name_unknown.len()
+    };
+    (
+        index,
+        repeated,
+        (state.career.commands.len() - before) * std::mem::size_of::<LeaderCommand>()
+            + unknown * std::mem::size_of::<HourSpan>(),
+    )
 }
 
 /// The hour's trigger inputs, read when a leader first needs them: the World
@@ -694,17 +726,41 @@ fn reply_bytes(reply: &UnitLeadersReply) -> io::Result<usize> {
     })
 }
 
-struct Content {
+pub(crate) struct Content {
     catalogue: Arc<Catalogue>,
     politics: Arc<politics_content::PoliticsContent>,
     leaders: installed_content::unit_leader::Leaders,
 }
 
+#[cfg(test)]
+thread_local! {
+    static CONTENT_LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn content_loads() -> usize {
+    CONTENT_LOADS.with(std::cell::Cell::get)
+}
+
 impl Content {
+    pub(crate) fn for_catalogue(
+        source: &Source,
+        context: &LoadContext,
+        catalogue: Option<Arc<Catalogue>>,
+    ) -> io::Result<Option<Self>> {
+        catalogue
+            .map(|catalogue| {
+                let politics = politics_content::politics_content(source, context.content()?)?;
+                Self::load(catalogue, politics)
+            })
+            .transpose()
+    }
     fn load(
         catalogue: Arc<Catalogue>,
         politics: Arc<politics_content::PoliticsContent>,
     ) -> io::Result<Self> {
+        #[cfg(test)]
+        CONTENT_LOADS.with(|loads| loads.set(loads.get() + 1));
         let leaders = installed_content::unit_leader::Leaders::load(&catalogue.content.layers, &|_| None)?;
         Ok(Self {
             catalogue,
@@ -825,13 +881,18 @@ struct LastRead {
     owner_slot: Option<u32>,
     owner_epoch: u64,
     trait_epoch: u64,
+    holder: Option<(u32, u32)>,
 }
 
+#[derive(Serialize, Deserialize)]
 struct LeaderState {
     reference: u64,
     career: LeaderCareer,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
     command_indices: HashMap<u64, usize>,
+    #[serde(skip)]
     last_read: Option<LastRead>,
+    #[serde(skip)]
     visibility: Option<VisibilityRead>,
     visible_hour: Option<i32>,
     admitted: bool,
@@ -872,9 +933,11 @@ impl LeaderState {
 
 // Hourly writes share one allocation and adjacent cache lines. Materialize only
 // admitted careers after the scan, retaining the complete transfer history.
+#[derive(Clone, Serialize, Deserialize)]
 struct StoredRun {
     run: UnitLeaderRun,
     previous: Option<usize>,
+    emitted: bool,
 }
 
 fn append_stored_run(
@@ -920,6 +983,7 @@ fn append_stored_run(
             value,
         },
         previous: state.last_run,
+        emitted: false,
     });
     state.last_run = Some(index);
     if known {
@@ -944,18 +1008,34 @@ fn trait_slice<'a>(
 
 /// The tables a scan decodes: its own, and the trigger kit leader visibility
 /// reads (`triggers::RECORDED_TABLES`), so no recorded operand is discarded.
+const LEADER_TABLES: &[TableId] = &[
+    TableId::UnitLeaders,
+    TableId::Characters,
+    TableId::LexicalTokens,
+    TableId::CharacterPortraits,
+    TableId::UnitLeaderTraits,
+    TableId::LandCombatDetails,
+    TableId::NavalCombatDetails,
+    TableId::LandCombatResults,
+    TableId::NavalResultSources,
+    TableId::NavalResults,
+    TableId::NavalCombatResultDetails,
+];
+const COMMAND_TABLES: &[TableId] = &[
+    TableId::OrdersGroups,
+    TableId::OrdersGroupPlans,
+    TableId::NavalMissionTaskForces,
+    TableId::TaskForces,
+    TableId::Fleets,
+];
+
+#[cfg(test)]
 fn scan_tables(career: bool, choices: bool) -> Vec<TableId> {
-    let mut selected = vec![
+    let mut selected = LEADER_TABLES.to_vec();
+    selected.extend([
         TableId::Campaign,
         TableId::Countries,
         TableId::CountryLinks,
-        TableId::UnitLeaders,
-        TableId::Characters,
-        TableId::LexicalTokens,
-        TableId::CharacterPortraits,
-        TableId::UnitLeaderTraits,
-        TableId::LandCombatDetails,
-        TableId::NavalCombatDetails,
         TableId::States,
         TableId::Provinces,
         TableId::ScriptFlags,
@@ -965,19 +1045,9 @@ fn scan_tables(career: bool, choices: bool) -> Vec<TableId> {
         TableId::CharacterRoleTraits,
         TableId::CharacterOperatives,
         TableId::CountryRetiredCharacters,
-        TableId::LandCombatResults,
-        TableId::NavalResultSources,
-        TableId::NavalResults,
-        TableId::NavalCombatResultDetails,
-    ];
+    ]);
     if career {
-        selected.extend([
-            TableId::OrdersGroups,
-            TableId::OrdersGroupPlans,
-            TableId::NavalMissionTaskForces,
-            TableId::TaskForces,
-            TableId::Fleets,
-        ]);
+        selected.extend_from_slice(COMMAND_TABLES);
     }
     if choices {
         selected.retain(|table| {
@@ -996,1036 +1066,1345 @@ fn scan_tables(career: bool, choices: bool) -> Vec<TableId> {
     selected
 }
 
-fn scan(
-    replay: &Replay,
-    params: &UnitLeadersParams,
-    content: Option<&Content>,
-    cancelled: &AtomicBool,
-) -> io::Result<UnitLeadersReply> {
-    let branch = params.branch_id.parse::<u64>().expect("validated branch");
-    let start = replay
-        .index
-        .iter()
-        .filter(|b| b.branch == branch)
-        .map(|b| b.first_hour)
-        .min()
-        .ok_or_else(|| crate::invalid("Branch has no recorded frames"))?;
-    let career = params.view == LeaderView::Career;
-    let choices = params.view == LeaderView::Choices;
-    let requested: Option<BTreeSet<&str>> = match &params.selection {
-        LeaderSelection::Countries { tags } => Some(tags.iter().map(String::as_str).collect()),
-        _ => None,
-    };
-    let selected = scan_tables(career, choices);
-    let mut reply = UnitLeadersReply {
-        branch_id: params.branch_id.clone(),
-        first_hour: start,
-        leaders: Vec::new(),
-        people: Vec::new(),
-        roles: Vec::new(),
-        traits: Vec::new(),
-        observed: Vec::new(),
-        selection_tags: None,
-        results_missing: RESULTS_MISSING.into(),
-        navy_commands_missing: if replay.format.field_gaps(TableId::Fleets).next().is_none() {
-            String::new()
-        } else {
-            NAVY_COMMANDS_MISSING.into()
-        },
-        warnings: Vec::new(),
-    };
-    let mut leader_indices = HashMap::<u64, usize>::new();
-    let mut leaders = Vec::<LeaderState>::new();
-    let mut stored_runs = Vec::<StoredRun>::new();
-    let mut row_indices = Vec::<Option<(u64, usize)>>::new();
-    let mut people = HashMap::<String, u32>::new();
-    let mut last_people = HashMap::<(u32, u8), PersonRead>::new();
-    // Epochs name tables by identity: holding no rows lets the decoder update
-    // them in place, and an equal reallocation only rereads the cached values.
-    let mut identity_epoch = 0_u64;
-    let mut identity_tables: Option<[ViewIdentity; 3]> = None;
-    let mut owner_tags = LinkTags::default();
-    let mut owner_epoch = 0_u64;
-    let mut trait_table: Option<(ViewIdentity, bool)> = None;
-    let mut trait_epoch = 0_u64;
-    let mut formation_names = HashMap::<u64, (Option<Vec<u8>>, Option<String>)>::new();
-    let mut roles = HashMap::<(Option<u32>, i32, u8, Option<i32>), u32>::new();
-    let mut rank_names = HashMap::<i32, Option<String>>::new();
-    let mut skill_ceilings = HashMap::<(i32, i32), Option<i32>>::new();
-    let mut refusals = catalogue::Refusals::default();
-    let mut trait_tokens = HashMap::<String, u32>::new();
-    let mut trait_sets = HashMap::<Vec<u32>, Arc<[u32]>>::new();
-    let mut token_list = Vec::new();
-    let mut battle_indices = HashMap::<(u64, u8, u64), usize>::new();
-    let mut battle_hours = HashMap::<u64, Vec<(i32, i32, bool, u8, u64, u8)>>::new();
-    let mut outcomes = BattleOutcomes::new();
-    let mut naval_sources = BTreeMap::<u64, replay::rows::NavalResultSourceRow>::new();
-    let mut results_recorded = false;
-    let mut missing_battles: [Option<i32>; 2] = [None, None];
-    let mut previous_combats: [Option<(i32, BTreeSet<u64>)>; 2] = [None, None];
-    let only = match &params.selection {
-        LeaderSelection::Leader { reference } => {
-            Some(reference.parse::<u64>().expect("validated leader"))
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct NavalSource {
+    combat: u64,
+    game_hour: i32,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+#[allow(clippy::type_complexity)]
+pub(crate) struct Scan {
+    reply: UnitLeadersReply,
+    frontier: Option<i32>,
+    materialized: Option<i32>,
+    #[serde(skip)]
+    read_mask: Option<u32>,
+    #[serde(skip)]
+    scoped_visibility: bool,
+    #[serde(skip)]
+    active_commands: Vec<(usize, usize)>,
+    #[serde(skip)]
+    commands_continuous: bool,
+    #[serde(skip)]
+    holders: Option<(crate::metadata::CountryKeys, BTreeMap<String, (u32, u32)>)>,
+    #[serde(skip)]
+    pending_bytes: usize,
+    #[cfg(test)]
+    #[serde(skip)]
+    work: crate::prepared::observer_tests::Work,
+
+    #[serde(skip)]
+    leader_indices: HashMap<u64, usize>,
+    leaders: Vec<LeaderState>,
+    stored_runs: Vec<StoredRun>,
+    #[serde(skip)]
+    row_indices: Vec<Option<(u64, usize)>>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
+    people: HashMap<String, u32>,
+    #[serde(skip)]
+    last_people: HashMap<(u32, u8), PersonRead>,
+    identity_epoch: u64,
+    #[serde(skip)]
+    identity_tables: Option<[ViewIdentity; 3]>,
+    #[serde(skip)]
+    owner_tags: LinkTags,
+    owner_epoch: u64,
+    #[serde(skip)]
+    trait_table: Option<(ViewIdentity, bool)>,
+    trait_epoch: u64,
+    #[serde(skip)]
+    formation_names: HashMap<u64, (Option<Vec<u8>>, Option<String>)>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
+    roles: HashMap<String, u32>,
+    #[serde(skip)]
+    rank_names: HashMap<i32, Option<String>>,
+    #[serde(skip)]
+    skill_ceilings: HashMap<(i32, i32), Option<i32>>,
+    refusals: catalogue::Refusals,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
+    trait_tokens: HashMap<String, u32>,
+    #[serde(skip)]
+    trait_sets: HashMap<Vec<u32>, Arc<[u32]>>,
+    token_list: Vec<String>,
+    #[serde(skip)]
+    battle_indices: HashMap<(u64, u8, u64), usize>,
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
+    battle_hours: HashMap<u64, Vec<(i32, i32, bool, u8, u64, u8)>>,
+    #[serde(skip)]
+    outcomes: BattleOutcomes,
+    #[serde(skip)]
+    naval_sources: BTreeMap<u64, NavalSource>,
+    results_recorded: bool,
+    missing_battles: [Option<i32>; 2],
+    previous_combats: [Option<(i32, BTreeSet<u64>)>; 2],
+}
+impl Scan {
+    fn recount_pending(&mut self) {
+        self.pending_bytes = self.stored_runs.len() * std::mem::size_of::<StoredRun>()
+            + self
+                .battle_hours
+                .values()
+                .map(|rows| rows.len() * std::mem::size_of::<(i32, i32, bool, u8, u64, u8)>())
+                .sum::<usize>()
+            + self
+                .leaders
+                .iter()
+                .flat_map(|leader| &leader.career.commands)
+                .map(|command| {
+                    std::mem::size_of::<LeaderCommand>()
+                        + command.name_unknown.len() * std::mem::size_of::<HourSpan>()
+                })
+                .sum::<usize>();
+    }
+    fn refresh_holders(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> bool {
+        if self.holders.is_some()
+            && ![TableId::Countries, TableId::CountryLinks]
+                .iter()
+                .any(|table| changes.rows_changed[table.index()])
+        {
+            return false;
         }
-        _ => None,
-    };
-    crate::blocks::scan_blocks(
-        replay,
-        replay.index.iter().filter(|b| b.branch == branch),
-        &selected,
-        cancelled,
-        |blocks| {
-            for (block, frames) in blocks {
-                let frames = match frames {
-                    Ok(frames) => frames,
-                    Err(e) => {
-                        refusals.note(e.to_string(), format!("block {}", block.first_hour));
+        let (Ok(countries), Ok(links)) = (
+            frame.complete::<tables::Countries>(),
+            frame.complete::<tables::CountryLinks>(),
+        ) else {
+            return self.holders.take().is_some();
+        };
+        if !changes.rows_changed[TableId::CountryLinks.index()]
+            && let Some((keys, _)) = &self.holders
+        {
+            #[cfg(test)]
+            {
+                self.work.row_visits += countries.len();
+            }
+            if keys.same(countries) {
+                return false;
+            }
+        }
+        #[cfg(test)]
+        {
+            self.work.row_visits += countries.len() * 2;
+        }
+        let holders = crate::metadata::tagged_countries(countries, links)
+            .into_iter()
+            .filter_map(|(tag, country)| match country {
+                crate::metadata::TaggedCountry::Found(country, slot) => std::str::from_utf8(tag)
+                    .ok()
+                    .map(|tag| (tag.to_owned(), (slot, country.id))),
+                _ => None,
+            })
+            .collect();
+        let changed = changes.rows_changed[TableId::CountryLinks.index()]
+            || self
+                .holders
+                .as_ref()
+                .is_none_or(|(_, before)| before != &holders);
+        self.holders = Some((crate::metadata::CountryKeys::read(countries), holders));
+        changed
+    }
+    /// Only authenticated consecutive observations can carry an open career.
+    fn advance(&mut self, hour: i32) {
+        debug_assert!(
+            self.frontier
+                .is_some_and(|last| last.checked_add(1) == Some(hour))
+        );
+        self.frontier = Some(hour);
+    }
+
+    /// Current bindings only; closed leaders and commands are never visited here.
+    fn seal(&mut self) {
+        let (Some(at), Some(through)) = (self.materialized, self.frontier) else {
+            return;
+        };
+        if at == through {
+            return;
+        }
+        if let Some(observed) = self.reply.observed.last_mut()
+            && observed.last_hour == at
+        {
+            observed.last_hour = through;
+        }
+        for (_, index) in self.row_indices.iter().flatten() {
+            #[cfg(test)]
+            {
+                self.work.history_visits += 1;
+            }
+            let state = &mut self.leaders[*index];
+            if state.visible_hour == Some(at) {
+                state.visible_hour = Some(through);
+                if let Some(run) = state.last_run
+                    && self.stored_runs[run].run.last_hour == at
+                {
+                    self.stored_runs[run].run.last_hour = through;
+                }
+            }
+        }
+        for &(leader, command) in &self.active_commands {
+            #[cfg(test)]
+            {
+                self.work.history_visits += 1;
+            }
+            let command = &mut self.leaders[leader].career.commands[command];
+            if command.last_hour == at {
+                command.last_hour = through;
+                if let Some(unknown) = command.name_unknown.last_mut()
+                    && unknown.last_hour == at
+                {
+                    unknown.last_hour = through;
+                }
+            }
+        }
+        for missing in self.missing_battles.iter_mut().flatten() {
+            if *missing == at {
+                *missing = through;
+            }
+        }
+        for (hour, _) in self.previous_combats.iter_mut().flatten() {
+            if *hour == at {
+                *hour = through;
+            }
+        }
+        self.materialized = Some(through);
+    }
+    pub(crate) fn new(replay: &Replay, branch: u64) -> io::Result<Self> {
+        let start = replay
+            .index
+            .iter()
+            .filter(|b| b.branch == branch)
+            .map(|b| b.first_hour)
+            .min()
+            .ok_or_else(|| crate::invalid("Branch has no recorded frames"))?;
+        let params = UnitLeadersParams {
+            branch_id: branch.to_string(),
+            selection: LeaderSelection::All,
+            view: LeaderView::Career,
+            leaders: LeaderKinds::All,
+        };
+        let reply = UnitLeadersReply {
+            branch_id: params.branch_id.clone(),
+            first_hour: start,
+            leaders: Vec::new(),
+            people: Vec::new(),
+            roles: Vec::new(),
+            traits: Vec::new(),
+            observed: Vec::new(),
+            selection_tags: None,
+            results_missing: RESULTS_MISSING.into(),
+            navy_commands_missing: if replay.format.field_gaps(TableId::Fleets).next().is_none() {
+                String::new()
+            } else {
+                NAVY_COMMANDS_MISSING.into()
+            },
+            warnings: Vec::new(),
+        };
+
+        Ok(Self {
+            reply,
+            ..Default::default()
+        })
+    }
+    fn observe(
+        &mut self,
+        decoded: &DecodedFrame,
+        replay: &Replay,
+        params: &UnitLeadersParams,
+        content: Option<&Content>,
+        changes: &FrameChanges,
+        admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
+    ) -> io::Result<()> {
+        let holders_changed = self.refresh_holders(decoded, changes);
+        let inputs = LEADER_TABLES.iter().chain(
+            COMMAND_TABLES
+                .iter()
+                .filter(|_| params.view == LeaderView::Career),
+        );
+        let mask = inputs
+            .clone()
+            .enumerate()
+            .fold(0u32, |mask, (index, table)| {
+                mask | (u32::from(changes.slot_read[table.index()]) << index)
+            });
+        if changes.rows_changed[TableId::UnitLeaders.index()] {
+            self.scoped_visibility = decoded.complete::<tables::UnitLeaders>().is_ok_and(|rows| {
+                #[cfg(test)]
+                {
+                    self.work.row_visits += rows.len();
+                }
+                rows.iter()
+                    .any(|row| row.visibility_choice != 0 || row.template_visibility != 0)
+            });
+        }
+        if (!self.scoped_visibility || content.is_none())
+            && self.commands_continuous
+            && !holders_changed
+            && self
+                .frontier
+                .is_some_and(|last| last.checked_add(1) == Some(decoded.hour))
+            && self.read_mask == Some(mask)
+            && !inputs
+                .clone()
+                .any(|table| changes.rows_changed[table.index()])
+        {
+            self.advance(decoded.hour);
+            return Ok(());
+        }
+        self.seal();
+        self.frontier = Some(decoded.hour);
+        self.materialized = Some(decoded.hour);
+        self.read_mask = Some(mask);
+        self.observe_read(decoded, replay, params, content, admit)
+    }
+
+    /// The per-hour oracle and changed-frame preparation share this exact step.
+    fn observe_read(
+        &mut self,
+        decoded: &DecodedFrame,
+        replay: &Replay,
+        params: &UnitLeadersParams,
+        content: Option<&Content>,
+        admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
+    ) -> io::Result<()> {
+        self.active_commands.clear();
+        self.commands_continuous = true;
+        let start = self.reply.first_hour;
+        let career = params.view == LeaderView::Career;
+        let choices = params.view == LeaderView::Choices;
+        let requested: Option<BTreeSet<&str>> = match &params.selection {
+            LeaderSelection::Countries { tags } => Some(tags.iter().map(String::as_str).collect()),
+            _ => None,
+        };
+        let only = match &params.selection {
+            LeaderSelection::Leader { reference } => {
+                Some(reference.parse::<u64>().expect("validated leader"))
+            }
+            _ => None,
+        };
+        let Self {
+            reply,
+            leader_indices,
+            leaders,
+            stored_runs,
+            row_indices,
+            people,
+            last_people,
+            identity_epoch,
+            identity_tables,
+            owner_tags,
+            owner_epoch,
+            trait_table,
+            trait_epoch,
+            formation_names,
+            roles,
+            rank_names,
+            skill_ceilings,
+            refusals,
+            trait_tokens,
+            trait_sets,
+            token_list,
+            battle_indices,
+            battle_hours,
+            outcomes,
+            naval_sources,
+            results_recorded,
+            missing_battles,
+            previous_combats,
+            active_commands,
+            commands_continuous,
+            holders: admission_holders,
+            scoped_visibility,
+            frontier,
+            pending_bytes,
+            #[cfg(test)]
+            work,
+            ..
+        } = self;
+        let hour = decoded.hour;
+        if slot_read(
+            replay.format,
+            &decoded.metrics,
+            TableId::LandCombatResults,
+            hour,
+        ) && let Ok(results) = decoded.complete::<tables::LandCombatResults>()
+        {
+            *results_recorded = true;
+            for result in results {
+                #[cfg(test)]
+                {
+                    work.row_visits += 1;
+                }
+                if record_outcome(
+                    outcomes,
+                    (1, result.combat),
+                    (result.end_hour, hour, result.winners),
+                ) {
+                    refusals.note(
+                        "Conflicting native land battle outcomes",
+                        result.combat.to_string(),
+                    );
+                }
+            }
+        }
+        if slot_read(
+            replay.format,
+            &decoded.metrics,
+            TableId::NavalResultSources,
+            hour,
+        ) && let Ok(sources) = decoded.complete::<tables::NavalResultSources>()
+        {
+            *results_recorded = true;
+            for source in sources {
+                #[cfg(test)]
+                {
+                    work.row_visits += 1;
+                }
+                if !source.transient && !source.merged {
+                    naval_sources.insert(
+                        source.result,
+                        NavalSource {
+                            combat: source.combat,
+                            game_hour: source.game_hour,
+                        },
+                    );
+                }
+            }
+        }
+        if let Ok(results) = decoded.complete::<tables::NavalResults>() {
+            for result in results {
+                #[cfg(test)]
+                {
+                    work.row_visits += 1;
+                }
+                if let Some(source) = naval_sources.get(&result.id) {
+                    // Results copy the combat's first and second sides; the recorded
+                    // selector chooses those exact embedded sides.
+                    let winners = match result.winning_side {
+                        1 => 1,
+                        2 => 2,
+                        _ => 0,
+                    };
+                    if result.winning_side > 2 {
+                        refusals.note(
+                            "Unsupported native naval winner selector",
+                            result.id.to_string(),
+                        );
+                    }
+                    if record_outcome(
+                        outcomes,
+                        (2, source.combat),
+                        (source.game_hour, hour, winners),
+                    ) {
+                        refusals.note(
+                            "Conflicting native naval battle outcomes",
+                            source.combat.to_string(),
+                        );
+                    }
+                }
+            }
+        }
+        // Failed table reads allocate errors: resolve each once, never per leader.
+        let characters = decoded.complete::<tables::Characters>().ok();
+        let holders = if choices {
+            None
+        } else {
+            decoded.complete::<tables::CharacterPortraits>().ok()
+        };
+        let lexical = decoded.complete::<tables::LexicalTokens>().ok();
+        let now_identity = [
+            TableId::Characters,
+            TableId::CharacterPortraits,
+            TableId::LexicalTokens,
+        ]
+        .map(|t| &decoded.tables[t.index()]);
+        if identity_tables.as_ref().is_none_or(|last| {
+            last.iter()
+                .zip(now_identity)
+                .any(|(last, now)| !last.is(now))
+        }) {
+            *identity_epoch += 1;
+            *identity_tables = Some(now_identity.map(SharedView::identity));
+        }
+        let visibility_epoch =
+            (characters.is_some() && lexical.is_some()).then_some(*identity_epoch);
+        let land = decoded
+            .complete::<tables::LandCombatDetails>()
+            .ok()
+            .filter(|_| {
+                slot_read(
+                    replay.format,
+                    &decoded.metrics,
+                    TableId::LandCombatDetails,
+                    hour,
+                )
+            });
+        let navy = decoded
+            .complete::<tables::NavalCombatDetails>()
+            .ok()
+            .filter(|_| {
+                slot_read(
+                    replay.format,
+                    &decoded.metrics,
+                    TableId::NavalCombatDetails,
+                    hour,
+                )
+            });
+        for (i, known) in [land.is_some(), navy.is_some()].into_iter().enumerate() {
+            if !known {
+                missing_battles[i] = Some(hour);
+            }
+        }
+        let land_commands = career
+            && slot_read(replay.format, &decoded.metrics, TableId::OrdersGroups, hour)
+            && decoded.complete::<tables::OrdersGroups>().is_ok();
+        let fleet_rows = career
+            .then(|| decoded.complete::<tables::Fleets>().ok())
+            .flatten()
+            .filter(|_| slot_read(replay.format, &decoded.metrics, TableId::Fleets, hour));
+        let fleet_commands = fleet_rows.filter(|rows| {
+            rows.iter()
+                .all(|row| !matches!(row.leader, Recorded::NotRecorded))
+        });
+        let mut naval_commands = fleet_commands.is_some()
+            || career
+                && slot_read(
+                    replay.format,
+                    &decoded.metrics,
+                    TableId::NavalMissionTaskForces,
+                    hour,
+                )
+                && slot_read(replay.format, &decoded.metrics, TableId::TaskForces, hour)
+                && decoded.complete::<tables::NavalMissionTaskForces>().is_ok()
+                && decoded.complete::<tables::TaskForces>().is_ok();
+        if !slot_read(replay.format, &decoded.metrics, TableId::UnitLeaders, hour) {
+            observe(
+                &mut reply.observed,
+                hour,
+                false,
+                land.is_some(),
+                navy.is_some(),
+                land_commands,
+                naval_commands,
+            );
+            return Ok(());
+        }
+        let (Ok(rows), Ok(_), Ok(links)) = (
+            decoded.complete::<tables::UnitLeaders>(),
+            decoded.complete::<tables::Countries>(),
+            decoded.complete::<tables::CountryLinks>(),
+        ) else {
+            observe(
+                &mut reply.observed,
+                hour,
+                false,
+                land.is_some(),
+                navy.is_some(),
+                land_commands,
+                naval_commands,
+            );
+            return Ok(());
+        };
+        if stored_runs.capacity() == 0 && !rows.is_empty() {
+            let count = if only.is_some() { 1 } else { rows.len() };
+            stored_runs.reserve(count);
+        }
+        // Owner slots and tags read only the links and each country's
+        // slot and tag, which LinkTags compares; balances never bump this.
+        if owner_tags.update(decoded)? {
+            *owner_epoch += 1;
+        }
+        let needs_visibility = if frontier.is_some() {
+            *scoped_visibility
+        } else {
+            rows.iter()
+                .any(|row| row.visibility_choice != 0 || row.template_visibility != 0)
+        };
+        let world = content.filter(|_| needs_visibility).and_then(|c| {
+            match c.catalogue.scripted_content() {
+                Ok(scripted) => Some(HourWorld {
+                    content: scripted,
+                    frame: decoded,
+                    world: OnceCell::new(),
+                    gap: OnceCell::new(),
+                }),
+                Err(reason) => {
+                    refusals.note(reason, "leader visibility content");
+                    None
+                }
+            }
+        });
+        let traits = decoded
+            .complete::<tables::UnitLeaderTraits>()
+            .ok()
+            .filter(|_| {
+                slot_read(
+                    replay.format,
+                    &decoded.metrics,
+                    TableId::UnitLeaderTraits,
+                    hour,
+                )
+            });
+        let mut trait_cursor = 0;
+        let mut complete = true;
+        let now_traits = &decoded.tables[TableId::UnitLeaderTraits.index()];
+        if trait_table
+            .as_ref()
+            .is_none_or(|(last, known)| *known != traits.is_some() || !last.is(now_traits))
+        {
+            *trait_epoch += 1;
+            *trait_table = Some((now_traits.identity(), traits.is_some()));
+        }
+        for (row_index, row) in rows.iter().enumerate() {
+            #[cfg(test)]
+            {
+                work.row_visits += 1;
+            }
+            if !params.leaders.includes(row.kind) {
+                continue;
+            }
+            let reference = handle(row);
+            if only.is_some_and(|wanted| wanted != reference) {
+                continue;
+            }
+            // Most rosters keep their recorded order. Avoid a hash lookup
+            // for every leader while still accepting insertions/transfers.
+            let index = if let Some((_, index)) = row_indices
+                .get(row_index)
+                .and_then(Option::as_ref)
+                .filter(|(last, _)| *last == reference)
+            {
+                *index
+            } else {
+                let index = *leader_indices.entry(reference).or_insert_with(|| {
+                    leaders.push(LeaderState::new(reference));
+                    leaders.len() - 1
+                });
+                if row_index >= row_indices.len() {
+                    row_indices.resize(row_index + 1, None);
+                }
+                row_indices[row_index] = Some((reference, index));
+                index
+            };
+            let state = &mut leaders[index];
+            let owner_unchanged = state.last_read.as_ref().is_some_and(|last| {
+                last.owner_epoch == *owner_epoch && last.row.owner == row.owner
+            });
+            let owner_slot = state
+                .last_read
+                .as_ref()
+                .filter(|last| last.owner_epoch == *owner_epoch && last.row.owner == row.owner)
+                .map(|last| last.owner_slot)
+                .unwrap_or_else(|| link_slot(links, row.owner));
+            let owner_known = if owner_unchanged {
+                reply.roles[state.last_read.as_ref().expect("cached owner").role as usize]
+                    .owner
+                    .is_some()
+            } else {
+                owner_tags.get(row.owner).is_some()
+            };
+            if !owner_known {
+                complete = false;
+                refusals.note(
+                    "Leader owner has no resolved recorded country tag",
+                    reference.to_string(),
+                );
+            }
+            if let Some(tags) = &requested
+                && !state.admitted
+                && !owner_unchanged
+                && owner_tags
+                    .get(row.owner)
+                    .is_some_and(|tag| tags.contains(tag.as_str()))
+            {
+                state.admitted = true;
+            }
+            match visible(
+                row,
+                world.as_ref(),
+                &mut state.visibility,
+                visibility_epoch,
+                owner_slot.is_some(),
+            ) {
+                Ok(true) => {}
+                Ok(false) => {
+                    continue;
+                }
+                Err(reason) => {
+                    complete = false;
+                    if let Some(reason) = reason {
+                        refusals.note(reason, reference.to_string());
+                    }
+                    continue;
+                }
+            }
+            state.visible_hour = Some(hour);
+            let holder = owner_tags
+                .get(row.owner)
+                .and_then(|tag| admission_holders.as_ref()?.1.get(tag))
+                .copied();
+            // The prepared admission roster depends only on the current holder
+            // and kind. Native hourly coverage still belongs to this scan.
+            let admission_changed = state.last_read.as_ref().is_none_or(|last| {
+                last.holder != holder
+                    || last.row.kind != row.kind
+                    || reply.roles[last.role as usize].owner.as_ref() != owner_tags.get(row.owner)
+            });
+            let person_id = if let Some(last) = state.last_read.as_ref().filter(|last| {
+                last.person_epoch == *identity_epoch
+                    && last.row.character_id == row.character_id
+                    && last.row.kind == row.kind
+            }) {
+                last.person
+            } else if let Some(cached) = last_people
+                .get(&(row.character_id, row.kind))
+                .filter(|p| p.epoch == *identity_epoch)
+            {
+                cached.person
+            } else {
+                let character = characters.and_then(|cs| {
+                    cs.binary_search_by_key(&row.character_id, |c| c.id)
+                        .ok()
+                        .map(|i| &cs[i])
+                });
+                let holder = holders.and_then(|ps| {
+                    ps.binary_search_by_key(&row.character_id, |p| p.character)
+                        .ok()
+                        .map(|i| &ps[i])
+                });
+                let token = character
+                    .zip(lexical)
+                    .and_then(|(c, lex)| character_script_token(c, lex));
+                // Stable character/holder reads reuse identity without formatting or decoding artwork each hour.
+                let cached = last_people
+                    .get(&(row.character_id, row.kind))
+                    .filter(|cached| {
+                        cached.character.as_ref() == character
+                            && cached.holder.as_ref() == holder
+                            && reply.people[cached.person as usize].token.as_deref() == token
+                    })
+                    .map(|cached| cached.person);
+                if let Some(index) = cached {
+                    last_people
+                        .get_mut(&(row.character_id, row.kind))
+                        .expect("cached person")
+                        .epoch = *identity_epoch;
+                    index
+                } else {
+                    let identity = format!(
+                        "{}:{}:{:?}:{:?}:{:?}",
+                        row.character_id,
+                        row.kind,
+                        token,
+                        character.map(|c| &c.token),
+                        holder
+                    );
+                    // Retain the operand identity, never the recorded rows themselves.
+                    let identity = blake3::hash(identity.as_bytes()).to_hex().to_string();
+                    let index = if let Some(&index) = people.get(&identity) {
+                        index
+                    } else {
+                        let person = person(decoded, row, character, token, content, reply);
+                        let index = reply.people.len() as u32;
+                        reply.people.push(person);
+                        people.insert(identity, index);
+                        index
+                    };
+                    last_people.insert(
+                        (row.character_id, row.kind),
+                        PersonRead {
+                            epoch: *identity_epoch,
+                            character: character.cloned(),
+                            holder: holder.cloned(),
+                            person: index,
+                        },
+                    );
+                    index
+                }
+            };
+            let owner = if owner_unchanged {
+                reply.roles[state.last_read.as_ref().expect("cached owner").role as usize]
+                    .owner
+                    .as_deref()
+            } else {
+                owner_tags.get(row.owner).map(String::as_str)
+            };
+            let raw_traits = (!choices)
+                .then_some(traits)
+                .flatten()
+                .map(|ts| trait_slice(ts, reference, &mut trait_cursor));
+            let leader = &mut state.career;
+            let previous_run = state.last_run.map(|i| &stored_runs[i].run);
+            let previous_hour = previous_run.map(|r| r.last_hour);
+            let gap = previous_hour.is_some_and(|h| h.checked_add(1) != Some(hour));
+            let battle_gap = previous_hour.is_some_and(|h| {
+                missing_battles[usize::from(row.kind - 1)].is_some_and(|m| m >= h)
+            });
+            let current_battles_missing = if row.kind == engine::cunit_leader::KIND_ARMY {
+                land.is_none()
+            } else {
+                navy.is_none()
+            };
+            if leader.partial_from.is_none() && (gap || battle_gap || current_battles_missing) {
+                leader.partial_from = Some(hour);
+            }
+            let traits_unchanged = state.last_read.as_ref().is_some_and(|last| {
+                last.trait_epoch == *trait_epoch || last.traits.as_deref() == raw_traits
+            });
+            let unchanged = state.last_read.as_ref().is_some_and(|last| {
+                last.row.category == row.category
+                    && last.row.kind == row.kind
+                    && last.row.skill_status == row.skill_status
+                    && last.row.skill_level == row.skill_level
+                    && last.row.components == row.components
+                    && traits_unchanged
+                    && (owner_unchanged
+                        || reply.roles[last.role as usize].owner.as_deref() == owner)
+                    && last.person == person_id
+            });
+            if unchanged
+                && !gap
+                && let Some(i) = state.last_run
+            {
+                stored_runs[i].run.last_hour = hour;
+                let read = state.last_read.as_mut().expect("unchanged read");
+                // Experience and other unshown fields can change without
+                // creating new values, roles or trait holdings.
+                if read.row != *row {
+                    read.row.clone_from(row);
+                }
+                read.person_epoch = *identity_epoch;
+                read.owner_slot = owner_slot;
+                read.owner_epoch = *owner_epoch;
+                read.trait_epoch = *trait_epoch;
+                read.holder = holder;
+                if admission_changed {
+                    admit(reference, &reply.roles[read.role as usize], holder);
+                }
+                continue;
+            }
+            let held = if traits_unchanged {
+                previous_run.expect("last trait read").value.traits.clone()
+            } else {
+                raw_traits.and_then(|ts| {
+                    let mut held = Vec::with_capacity(ts.len());
+                    for t in ts {
+                        let token = match std::str::from_utf8(&t.token) {
+                            Ok(token) => token,
+                            Err(_) => {
+                                refusals.note("Trait token is not UTF-8", reference.to_string());
+                                return None;
+                            }
+                        };
+                        let index = if let Some(&index) = trait_tokens.get(token) {
+                            index
+                        } else {
+                            let index = token_list.len() as u32;
+                            token_list.push(token.to_owned());
+                            trait_tokens.insert(token.to_owned(), index);
+                            index
+                        };
+                        held.push(index);
+                    }
+                    held.sort_unstable();
+                    held.dedup();
+                    if let Some(shared) = trait_sets.get(&held) {
+                        Some(Arc::clone(shared))
+                    } else {
+                        let shared = Arc::from(held.as_slice());
+                        trait_sets.insert(held, Arc::clone(&shared));
+                        Some(shared)
+                    }
+                })
+            };
+            let maximum_skill = state
+                .last_read
+                .as_ref()
+                .filter(|last| {
+                    last.row.skill_level == row.skill_level && last.row.category == row.category
+                })
+                .map(|last| reply.roles[last.role as usize].maximum_skill)
+                .unwrap_or_else(|| {
+                    *skill_ceilings
+                        .entry((row.skill_level, row.category))
+                        .or_insert_with(|| {
+                            content.and_then(|c| {
+                                maximum_skill(&c.leaders.skills, row.skill_level, row.category)
+                            })
+                        })
+                });
+            let key = serde_json::to_string(&(owner_slot, row.category, row.kind, maximum_skill))?;
+            let cached_role = state
+                .last_read
+                .as_ref()
+                .filter(|last| {
+                    last.row.category == row.category
+                        && last.row.kind == row.kind
+                        && reply.roles[last.role as usize].maximum_skill == maximum_skill
+                        && (owner_unchanged
+                            || reply.roles[last.role as usize].owner.as_deref() == owner)
+                })
+                .map(|last| last.role)
+                .or_else(|| roles.get(&key).copied())
+                .filter(|&i| reply.roles[i as usize].owner.as_deref() == owner);
+            let role = if let Some(role) = cached_role {
+                role
+            } else {
+                let owner = owner.map(str::to_owned);
+                let rank = rank_names
+                    .entry(row.category)
+                    .or_insert_with(|| {
+                        content.and_then(|c| {
+                            rank_key(row.category)
+                                .and_then(|key| c.catalogue.localised(key, View::Plain))
+                        })
+                    })
+                    .clone();
+                if row.skill_status != 0 && maximum_skill.is_none() {
+                    refusals.note("Maximum skill is unavailable from recorded content or its skill definitions", row.category.to_string());
+                }
+                if rank_key(row.category).is_none() {
+                    refusals.note("Unsupported leader rank category", row.category.to_string());
+                }
+                let index = reply.roles.len() as u32;
+                reply.roles.push(LeaderRole {
+                    owner,
+                    category: row.category,
+                    rank,
+                    kind: row.kind,
+                    maximum_skill,
+                    attribute_names: attribute_names(
+                        row.kind,
+                        content.map(|content| content.catalogue.as_ref()),
+                    ),
+                });
+                roles.insert(key, index);
+                index
+            };
+            if let Some(last) = &mut state.last_read {
+                last.row.clone_from(row);
+                if !traits_unchanged {
+                    last.traits = raw_traits.map(<[_]>::to_vec);
+                }
+                last.role = role;
+                last.person = person_id;
+                last.person_epoch = *identity_epoch;
+                last.owner_slot = owner_slot;
+                last.owner_epoch = *owner_epoch;
+                last.trait_epoch = *trait_epoch;
+                last.holder = holder;
+            } else {
+                state.last_read = Some(LastRead {
+                    row: row.clone(),
+                    traits: raw_traits.map(<[_]>::to_vec),
+                    role,
+                    person: person_id,
+                    person_epoch: *identity_epoch,
+                    owner_slot,
+                    owner_epoch: *owner_epoch,
+                    trait_epoch: *trait_epoch,
+                    holder,
+                });
+            }
+            let value = LeaderValues {
+                person: person_id,
+                role,
+                skill: (row.skill_status != 0).then_some(row.skill_level),
+                components: row.components,
+                traits: held,
+            };
+            let before = stored_runs.len();
+            append_stored_run(state, stored_runs, value, hour, start, choices);
+            *pending_bytes = pending_bytes
+                .saturating_add((stored_runs.len() - before) * std::mem::size_of::<StoredRun>());
+            if admission_changed {
+                admit(reference, &reply.roles[role as usize], holder);
+            }
+        }
+        row_indices.truncate(rows.len());
+        if land_commands {
+            let plans = decoded
+                .complete::<tables::OrdersGroupPlans>()
+                .unwrap_or_default();
+            if let Ok(groups) = decoded.complete::<tables::OrdersGroups>() {
+                for group in groups {
+                    #[cfg(test)]
+                    {
+                        work.row_visits += 1;
+                    }
+                    let Some(&index) = leader_indices.get(&group.leader) else {
+                        continue;
+                    };
+                    let state = &mut leaders[index];
+                    if state.visible_hour != Some(hour) {
+                        continue;
+                    }
+                    let raw_name = match &group.name {
+                        Recorded::Value(Some(bytes)) => Some(bytes.as_slice()),
+                        Recorded::NotRecorded => plans
+                            .binary_search_by_key(&group.handle, |plan| plan.group)
+                            .ok()
+                            .map(|index| plans[index].name.as_slice()),
+                        Recorded::Value(None) => {
+                            refusals.note(
+                                "Stored army command name capture refused",
+                                group.handle.to_string(),
+                            );
+                            None
+                        }
+                    };
+                    let name =
+                        formation_name(formation_names, group.handle, raw_name, content, refusals);
+                    let kind = if group.is_army_group != 0 {
+                        LeaderFormationKind::ArmyGroup
+                    } else {
+                        LeaderFormationKind::Army
+                    };
+                    let (command, repeated, bytes) =
+                        append_command(state, group.handle, kind, name, hour);
+                    *pending_bytes = pending_bytes.saturating_add(bytes);
+                    *commands_continuous &= !repeated;
+                    active_commands.push((index, command));
+                }
+            }
+        }
+        if let Some(fleets) = fleet_commands {
+            for fleet in fleets {
+                #[cfg(test)]
+                {
+                    work.row_visits += 1;
+                }
+                let commander = match fleet.leader {
+                    Recorded::Value(Some(reference)) => reference,
+                    _ => {
+                        naval_commands = false;
+                        refusals.note(
+                            "Fleet commander reference capture refused",
+                            fleet.id.to_string(),
+                        );
                         continue;
                     }
                 };
-                let mut decoder = FrameDecoder::for_tables(&selected);
-                for frame in frames {
-                    if cancelled.load(Ordering::Acquire) {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Interrupted,
-                            "Leader request cancelled",
-                        ));
-                    }
-                    let decoded = match decoder.advance(&frame) {
-                        Ok(f) => f,
-                        Err(e) => {
-                            refusals.note(e.to_string(), frame.hour.to_string());
-                            break;
-                        }
-                    };
-                    validate_campaign(decoded, replay)?;
-                    let hour = decoded.hour;
-                    if slot_read(
-                        replay.format,
-                        &decoded.metrics,
-                        TableId::LandCombatResults,
-                        hour,
-                    ) && let Ok(results) = decoded.complete::<tables::LandCombatResults>()
-                    {
-                        results_recorded = true;
-                        for result in results {
-                            if record_outcome(
-                                &mut outcomes,
-                                (1, result.combat),
-                                (result.end_hour, hour, result.winners),
-                            ) {
-                                refusals.note(
-                                    "Conflicting native land battle outcomes",
-                                    result.combat.to_string(),
-                                );
-                            }
-                        }
-                    }
-                    if slot_read(
-                        replay.format,
-                        &decoded.metrics,
-                        TableId::NavalResultSources,
-                        hour,
-                    ) && let Ok(sources) = decoded.complete::<tables::NavalResultSources>()
-                    {
-                        results_recorded = true;
-                        for source in sources {
-                            if !source.transient && !source.merged {
-                                naval_sources.insert(source.result, source.clone());
-                            }
-                        }
-                    }
-                    if let Ok(results) = decoded.complete::<tables::NavalResults>() {
-                        for result in results {
-                            if let Some(source) = naval_sources.get(&result.id) {
-                                // Results copy the combat's first and second sides; the recorded
-                                // selector chooses those exact embedded sides.
-                                let winners = match result.winning_side {
-                                    1 => 1,
-                                    2 => 2,
-                                    _ => 0,
-                                };
-                                if result.winning_side > 2 {
-                                    refusals.note(
-                                        "Unsupported native naval winner selector",
-                                        result.id.to_string(),
-                                    );
-                                }
-                                if record_outcome(
-                                    &mut outcomes,
-                                    (2, source.combat),
-                                    (source.game_hour, hour, winners),
-                                ) {
-                                    refusals.note(
-                                        "Conflicting native naval battle outcomes",
-                                        source.combat.to_string(),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    // Failed table reads allocate errors: resolve each once, never per leader.
-                    let characters = decoded.complete::<tables::Characters>().ok();
-                    let holders = if choices {
+                let Some(&index) = leader_indices.get(&commander) else {
+                    continue;
+                };
+                let state = &mut leaders[index];
+                if state.visible_hour != Some(hour)
+                    || state
+                        .last_read
+                        .as_ref()
+                        .is_none_or(|last| last.row.kind != engine::cunit_leader::KIND_NAVY)
+                {
+                    continue;
+                }
+                let raw_name = match &fleet.name {
+                    Recorded::Value(Some(bytes)) => Some(bytes.as_slice()),
+                    _ => {
+                        refusals.note("Stored fleet name unavailable", fleet.id.to_string());
                         None
-                    } else {
-                        decoded.complete::<tables::CharacterPortraits>().ok()
-                    };
-                    let lexical = decoded.complete::<tables::LexicalTokens>().ok();
-                    let now_identity = [
-                        TableId::Characters,
-                        TableId::CharacterPortraits,
-                        TableId::LexicalTokens,
-                    ]
-                    .map(|t| &decoded.tables[t.index()]);
-                    if identity_tables.as_ref().is_none_or(|last| {
-                        last.iter()
-                            .zip(now_identity)
-                            .any(|(last, now)| !last.is(now))
-                    }) {
-                        identity_epoch += 1;
-                        identity_tables = Some(now_identity.map(SharedView::identity));
                     }
-                    let visibility_epoch =
-                        (characters.is_some() && lexical.is_some()).then_some(identity_epoch);
-                    let land = decoded
-                        .complete::<tables::LandCombatDetails>()
-                        .ok()
-                        .filter(|_| {
-                            slot_read(
-                                replay.format,
-                                &decoded.metrics,
-                                TableId::LandCombatDetails,
-                                hour,
-                            )
-                        });
-                    let navy = decoded
-                        .complete::<tables::NavalCombatDetails>()
-                        .ok()
-                        .filter(|_| {
-                            slot_read(
-                                replay.format,
-                                &decoded.metrics,
-                                TableId::NavalCombatDetails,
-                                hour,
-                            )
-                        });
-                    for (i, known) in [land.is_some(), navy.is_some()].into_iter().enumerate() {
-                        if !known {
-                            missing_battles[i] = Some(hour);
-                        }
-                    }
-                    let land_commands = career
-                        && slot_read(replay.format, &decoded.metrics, TableId::OrdersGroups, hour)
-                        && decoded.complete::<tables::OrdersGroups>().is_ok();
-                    let fleet_rows = career
-                        .then(|| decoded.complete::<tables::Fleets>().ok())
-                        .flatten()
-                        .filter(|_| {
-                            slot_read(replay.format, &decoded.metrics, TableId::Fleets, hour)
-                        });
-                    let fleet_commands = fleet_rows.filter(|rows| {
-                        rows.iter()
-                            .all(|row| !matches!(row.leader, Recorded::NotRecorded))
-                    });
-                    let mut naval_commands = fleet_commands.is_some()
-                        || career
-                            && slot_read(
-                                replay.format,
-                                &decoded.metrics,
-                                TableId::NavalMissionTaskForces,
-                                hour,
-                            )
-                            && slot_read(
-                                replay.format,
-                                &decoded.metrics,
-                                TableId::TaskForces,
-                                hour,
-                            )
-                            && decoded.complete::<tables::NavalMissionTaskForces>().is_ok()
-                            && decoded.complete::<tables::TaskForces>().is_ok();
-                    if !slot_read(replay.format, &decoded.metrics, TableId::UnitLeaders, hour) {
-                        observe(
-                            &mut reply.observed,
-                            hour,
-                            false,
-                            land.is_some(),
-                            navy.is_some(),
-                            land_commands,
-                            naval_commands,
-                        );
-                        continue;
-                    }
-                    let (Ok(rows), Ok(_), Ok(links)) = (
-                        decoded.complete::<tables::UnitLeaders>(),
-                        decoded.complete::<tables::Countries>(),
-                        decoded.complete::<tables::CountryLinks>(),
-                    ) else {
-                        observe(
-                            &mut reply.observed,
-                            hour,
-                            false,
-                            land.is_some(),
-                            navy.is_some(),
-                            land_commands,
-                            naval_commands,
-                        );
-                        continue;
-                    };
-                    if stored_runs.capacity() == 0 && !rows.is_empty() {
-                        let count = if only.is_some() { 1 } else { rows.len() };
-                        stored_runs.reserve(count);
-                    }
-                    // Owner slots and tags read only the links and each country's
-                    // slot and tag, which LinkTags compares; balances never bump this.
-                    if owner_tags.update(decoded)? {
-                        owner_epoch += 1;
-                    }
-                    let needs_visibility = rows
-                        .iter()
-                        .any(|row| row.visibility_choice != 0 || row.template_visibility != 0);
-                    let world = content.filter(|_| needs_visibility).and_then(|c| {
-                        match c.catalogue.scripted_content() {
-                            Ok(scripted) => Some(HourWorld {
-                                content: scripted,
-                                frame: decoded,
-                                world: OnceCell::new(),
-                                gap: OnceCell::new(),
-                            }),
-                            Err(reason) => {
-                                refusals.note(reason, "leader visibility content");
-                                None
-                            }
-                        }
-                    });
-                    let traits = decoded
-                        .complete::<tables::UnitLeaderTraits>()
-                        .ok()
-                        .filter(|_| {
-                            slot_read(
-                                replay.format,
-                                &decoded.metrics,
-                                TableId::UnitLeaderTraits,
-                                hour,
-                            )
-                        });
-                    let mut trait_cursor = 0;
-                    let mut complete = true;
-                    let now_traits = &decoded.tables[TableId::UnitLeaderTraits.index()];
-                    if trait_table.as_ref().is_none_or(|(last, known)| {
-                        *known != traits.is_some() || !last.is(now_traits)
-                    }) {
-                        trait_epoch += 1;
-                        trait_table = Some((now_traits.identity(), traits.is_some()));
-                    }
-                    for (row_index, row) in rows.iter().enumerate() {
-                        if !params.leaders.includes(row.kind) {
-                            continue;
-                        }
-                        let reference = handle(row);
-                        if only.is_some_and(|wanted| wanted != reference) {
-                            continue;
-                        }
-                        // Most rosters keep their recorded order. Avoid a hash lookup
-                        // for every leader while still accepting insertions/transfers.
-                        let index = if let Some((_, index)) = row_indices
-                            .get(row_index)
-                            .and_then(Option::as_ref)
-                            .filter(|(last, _)| *last == reference)
-                        {
-                            *index
-                        } else {
-                            let index = *leader_indices.entry(reference).or_insert_with(|| {
-                                leaders.push(LeaderState::new(reference));
-                                leaders.len() - 1
-                            });
-                            if row_index >= row_indices.len() {
-                                row_indices.resize(row_index + 1, None);
-                            }
-                            row_indices[row_index] = Some((reference, index));
-                            index
-                        };
-                        let state = &mut leaders[index];
-                        let owner_unchanged = state.last_read.as_ref().is_some_and(|last| {
-                            last.owner_epoch == owner_epoch && last.row.owner == row.owner
-                        });
-                        let owner_slot = state
-                            .last_read
-                            .as_ref()
-                            .filter(|last| {
-                                last.owner_epoch == owner_epoch && last.row.owner == row.owner
-                            })
-                            .map(|last| last.owner_slot)
-                            .unwrap_or_else(|| link_slot(links, row.owner));
-                        let owner_known = if owner_unchanged {
-                            reply.roles
-                                [state.last_read.as_ref().expect("cached owner").role as usize]
-                                .owner
-                                .is_some()
-                        } else {
-                            owner_tags.get(row.owner).is_some()
-                        };
-                        if !owner_known {
-                            complete = false;
-                            refusals.note(
-                                "Leader owner has no resolved recorded country tag",
-                                reference.to_string(),
-                            );
-                        }
-                        if let Some(tags) = &requested
-                            && !state.admitted
-                            && !owner_unchanged
-                            && owner_tags
-                                .get(row.owner)
-                                .is_some_and(|tag| tags.contains(tag.as_str()))
-                        {
-                            state.admitted = true;
-                        }
-                        match visible(
-                            row,
-                            world.as_ref(),
-                            &mut state.visibility,
-                            visibility_epoch,
-                            owner_slot.is_some(),
-                        ) {
-                            Ok(true) => {}
-                            Ok(false) => {
-                                continue;
-                            }
-                            Err(reason) => {
-                                complete = false;
-                                if let Some(reason) = reason {
-                                    refusals.note(reason, reference.to_string());
-                                }
-                                continue;
-                            }
-                        }
-                        state.visible_hour = Some(hour);
-                        let person_id = if let Some(last) =
-                            state.last_read.as_ref().filter(|last| {
-                                last.person_epoch == identity_epoch
-                                    && last.row.character_id == row.character_id
-                                    && last.row.kind == row.kind
-                            }) {
-                            last.person
-                        } else if let Some(cached) = last_people
-                            .get(&(row.character_id, row.kind))
-                            .filter(|p| p.epoch == identity_epoch)
-                        {
-                            cached.person
-                        } else {
-                            let character = characters.and_then(|cs| {
-                                cs.binary_search_by_key(&row.character_id, |c| c.id)
-                                    .ok()
-                                    .map(|i| &cs[i])
-                            });
-                            let holder = holders.and_then(|ps| {
-                                ps.binary_search_by_key(&row.character_id, |p| p.character)
-                                    .ok()
-                                    .map(|i| &ps[i])
-                            });
-                            let token = character
-                                .zip(lexical)
-                                .and_then(|(c, lex)| character_script_token(c, lex));
-                            // Stable character/holder reads reuse identity without formatting or decoding artwork each hour.
-                            let cached = last_people
-                                .get(&(row.character_id, row.kind))
-                                .filter(|cached| {
-                                    cached.character.as_ref() == character
-                                        && cached.holder.as_ref() == holder
-                                        && reply.people[cached.person as usize].token.as_deref()
-                                            == token
-                                })
-                                .map(|cached| cached.person);
-                            if let Some(index) = cached {
-                                last_people
-                                    .get_mut(&(row.character_id, row.kind))
-                                    .expect("cached person")
-                                    .epoch = identity_epoch;
-                                index
-                            } else {
-                                let identity = format!(
-                                    "{}:{}:{:?}:{:?}:{:?}",
-                                    row.character_id,
-                                    row.kind,
-                                    token,
-                                    character.map(|c| &c.token),
-                                    holder
-                                );
-                                let index = if let Some(&index) = people.get(&identity) {
-                                    index
-                                } else {
-                                    let person =
-                                        person(decoded, row, character, token, content, &mut reply);
-                                    let index = reply.people.len() as u32;
-                                    reply.people.push(person);
-                                    people.insert(identity, index);
-                                    index
-                                };
-                                last_people.insert(
-                                    (row.character_id, row.kind),
-                                    PersonRead {
-                                        epoch: identity_epoch,
-                                        character: character.cloned(),
-                                        holder: holder.cloned(),
-                                        person: index,
-                                    },
-                                );
-                                index
-                            }
-                        };
-                        let owner = if owner_unchanged {
-                            reply.roles
-                                [state.last_read.as_ref().expect("cached owner").role as usize]
-                                .owner
-                                .as_deref()
-                        } else {
-                            owner_tags.get(row.owner).map(String::as_str)
-                        };
-                        let raw_traits = (!choices)
-                            .then_some(traits)
-                            .flatten()
-                            .map(|ts| trait_slice(ts, reference, &mut trait_cursor));
-                        let leader = &mut state.career;
-                        let previous_run = state.last_run.map(|i| &stored_runs[i].run);
-                        let previous_hour = previous_run.map(|r| r.last_hour);
-                        let gap = previous_hour.is_some_and(|h| h.checked_add(1) != Some(hour));
-                        let battle_gap = previous_hour.is_some_and(|h| {
-                            missing_battles[usize::from(row.kind - 1)].is_some_and(|m| m >= h)
-                        });
-                        let current_battles_missing = if row.kind == engine::cunit_leader::KIND_ARMY
-                        {
-                            land.is_none()
-                        } else {
-                            navy.is_none()
-                        };
-                        if leader.partial_from.is_none()
-                            && (gap || battle_gap || current_battles_missing)
-                        {
-                            leader.partial_from = Some(hour);
-                        }
-                        let traits_unchanged = state.last_read.as_ref().is_some_and(|last| {
-                            last.trait_epoch == trait_epoch || last.traits.as_deref() == raw_traits
-                        });
-                        let unchanged = state.last_read.as_ref().is_some_and(|last| {
-                            last.row.category == row.category
-                                && last.row.kind == row.kind
-                                && last.row.skill_status == row.skill_status
-                                && last.row.skill_level == row.skill_level
-                                && last.row.components == row.components
-                                && traits_unchanged
-                                && (owner_unchanged
-                                    || reply.roles[last.role as usize].owner.as_deref() == owner)
-                                && last.person == person_id
-                        });
-                        if unchanged
-                            && !gap
-                            && let Some(i) = state.last_run
-                        {
-                            stored_runs[i].run.last_hour = hour;
-                            let read = state.last_read.as_mut().expect("unchanged read");
-                            // Experience and other unshown fields can change without
-                            // creating new values, roles or trait holdings.
-                            if read.row != *row {
-                                read.row.clone_from(row);
-                            }
-                            read.person_epoch = identity_epoch;
-                            read.owner_slot = owner_slot;
-                            read.owner_epoch = owner_epoch;
-                            read.trait_epoch = trait_epoch;
-                            continue;
-                        }
-                        let held = if traits_unchanged {
-                            previous_run.expect("last trait read").value.traits.clone()
-                        } else {
-                            raw_traits.and_then(|ts| {
-                                let mut held = Vec::with_capacity(ts.len());
-                                for t in ts {
-                                    let token = match std::str::from_utf8(&t.token) {
-                                        Ok(token) => token,
-                                        Err(_) => {
-                                            refusals.note(
-                                                "Trait token is not UTF-8",
-                                                reference.to_string(),
-                                            );
-                                            return None;
-                                        }
-                                    };
-                                    let index = if let Some(&index) = trait_tokens.get(token) {
-                                        index
-                                    } else {
-                                        let index = token_list.len() as u32;
-                                        token_list.push(token.to_owned());
-                                        trait_tokens.insert(token.to_owned(), index);
-                                        index
-                                    };
-                                    held.push(index);
-                                }
-                                held.sort_unstable();
-                                held.dedup();
-                                if let Some(shared) = trait_sets.get(&held) {
-                                    Some(Arc::clone(shared))
-                                } else {
-                                    let shared = Arc::from(held.as_slice());
-                                    trait_sets.insert(held, Arc::clone(&shared));
-                                    Some(shared)
-                                }
-                            })
-                        };
-                        let maximum_skill = state
-                            .last_read
-                            .as_ref()
-                            .filter(|last| {
-                                last.row.skill_level == row.skill_level
-                                    && last.row.category == row.category
-                            })
-                            .map(|last| reply.roles[last.role as usize].maximum_skill)
-                            .unwrap_or_else(|| {
-                                *skill_ceilings
-                                    .entry((row.skill_level, row.category))
-                                    .or_insert_with(|| {
-                                        content.and_then(|c| {
-                                            maximum_skill(
-                                                &c.leaders.skills,
-                                                row.skill_level,
-                                                row.category,
-                                            )
-                                        })
-                                    })
-                            });
-                        let key = (owner_slot, row.category, row.kind, maximum_skill);
-                        let cached_role = state
-                            .last_read
-                            .as_ref()
-                            .filter(|last| {
-                                last.row.category == row.category
-                                    && last.row.kind == row.kind
-                                    && reply.roles[last.role as usize].maximum_skill
-                                        == maximum_skill
-                                    && (owner_unchanged
-                                        || reply.roles[last.role as usize].owner.as_deref()
-                                            == owner)
-                            })
-                            .map(|last| last.role)
-                            .or_else(|| roles.get(&key).copied())
-                            .filter(|&i| reply.roles[i as usize].owner.as_deref() == owner);
-                        let role = if let Some(role) = cached_role {
-                            role
-                        } else {
-                            let owner = owner.map(str::to_owned);
-                            let rank = rank_names
-                                .entry(row.category)
-                                .or_insert_with(|| {
-                                    content.and_then(|c| {
-                                        rank_key(row.category)
-                                            .and_then(|key| c.catalogue.localised(key, View::Plain))
-                                    })
-                                })
-                                .clone();
-                            if row.skill_status != 0 && maximum_skill.is_none() {
-                                refusals.note("Maximum skill is unavailable from recorded content or its skill definitions", row.category.to_string());
-                            }
-                            if rank_key(row.category).is_none() {
-                                refusals.note(
-                                    "Unsupported leader rank category",
-                                    row.category.to_string(),
-                                );
-                            }
-                            let index = reply.roles.len() as u32;
-                            reply.roles.push(LeaderRole {
-                                owner,
-                                category: row.category,
-                                rank,
-                                kind: row.kind,
-                                maximum_skill,
-                                attribute_names: attribute_names(
-                                    row.kind,
-                                    content.map(|content| content.catalogue.as_ref()),
-                                ),
-                            });
-                            roles.insert(key, index);
-                            index
-                        };
-                        if let Some(last) = &mut state.last_read {
-                            last.row.clone_from(row);
-                            if !traits_unchanged {
-                                last.traits = raw_traits.map(<[_]>::to_vec);
-                            }
-                            last.role = role;
-                            last.person = person_id;
-                            last.person_epoch = identity_epoch;
-                            last.owner_slot = owner_slot;
-                            last.owner_epoch = owner_epoch;
-                            last.trait_epoch = trait_epoch;
-                        } else {
-                            state.last_read = Some(LastRead {
-                                row: row.clone(),
-                                traits: raw_traits.map(<[_]>::to_vec),
-                                role,
-                                person: person_id,
-                                person_epoch: identity_epoch,
-                                owner_slot,
-                                owner_epoch,
-                                trait_epoch,
-                            });
-                        }
-                        let value = LeaderValues {
-                            person: person_id,
-                            role,
-                            skill: (row.skill_status != 0).then_some(row.skill_level),
-                            components: row.components,
-                            traits: held,
-                        };
-                        append_stored_run(state, &mut stored_runs, value, hour, start, choices);
-                    }
-                    if land_commands {
-                        let plans = decoded
-                            .complete::<tables::OrdersGroupPlans>()
-                            .unwrap_or_default();
-                        if let Ok(groups) = decoded.complete::<tables::OrdersGroups>() {
-                            for group in groups {
-                                let Some(&index) = leader_indices.get(&group.leader) else {
-                                    continue;
-                                };
-                                let state = &mut leaders[index];
-                                if state.visible_hour != Some(hour) {
-                                    continue;
-                                }
-                                let raw_name = match &group.name {
-                                    Recorded::Value(Some(bytes)) => Some(bytes.as_slice()),
-                                    Recorded::NotRecorded => plans
-                                        .binary_search_by_key(&group.handle, |plan| plan.group)
-                                        .ok()
-                                        .map(|index| plans[index].name.as_slice()),
-                                    Recorded::Value(None) => {
-                                        refusals.note(
-                                            "Stored army command name capture refused",
-                                            group.handle.to_string(),
-                                        );
-                                        None
-                                    }
-                                };
-                                let name = formation_name(
-                                    &mut formation_names,
-                                    group.handle,
-                                    raw_name,
-                                    content,
-                                    &mut refusals,
-                                );
-                                let kind = if group.is_army_group != 0 {
-                                    LeaderFormationKind::ArmyGroup
-                                } else {
-                                    LeaderFormationKind::Army
-                                };
-                                append_command(state, group.handle, kind, name, hour);
-                            }
-                        }
-                    }
-                    if let Some(fleets) = fleet_commands {
-                        for fleet in fleets {
-                            let commander = match fleet.leader {
-                                Recorded::Value(Some(reference)) => reference,
-                                _ => {
-                                    naval_commands = false;
-                                    refusals.note(
-                                        "Fleet commander reference capture refused",
-                                        fleet.id.to_string(),
-                                    );
-                                    continue;
-                                }
-                            };
-                            let Some(&index) = leader_indices.get(&commander) else {
-                                continue;
-                            };
-                            let state = &mut leaders[index];
-                            if state.visible_hour != Some(hour)
-                                || state.last_read.as_ref().is_none_or(|last| {
-                                    last.row.kind != engine::cunit_leader::KIND_NAVY
-                                })
-                            {
-                                continue;
-                            }
-                            let raw_name = match &fleet.name {
-                                Recorded::Value(Some(bytes)) => Some(bytes.as_slice()),
-                                _ => {
-                                    refusals.note(
-                                        "Stored fleet name unavailable",
-                                        fleet.id.to_string(),
-                                    );
-                                    None
-                                }
-                            };
-                            let name = formation_name(
-                                &mut formation_names,
-                                fleet.id,
-                                raw_name,
-                                content,
-                                &mut refusals,
-                            );
-                            append_command(state, fleet.id, LeaderFormationKind::Fleet, name, hour);
-                        }
-                    } else if naval_commands
-                        && let (Ok(missions), Ok(tasks)) = (
-                            decoded.complete::<tables::NavalMissionTaskForces>(),
-                            decoded.complete::<tables::TaskForces>(),
-                        )
-                    {
-                        let mut fleets = BTreeMap::<u64, Option<u64>>::new();
-                        for mission in missions {
-                            let Some(task) = tasks
-                                .binary_search_by_key(&mission.task_force, |task| task.id)
-                                .ok()
-                                .map(|index| &tasks[index])
-                            else {
-                                naval_commands = false;
-                                continue;
-                            };
-                            if task.fleet == 0 {
-                                naval_commands = false;
-                                continue;
-                            }
-                            let commander =
-                                fleets.entry(task.fleet).or_insert(Some(mission.leader));
-                            if *commander != Some(mission.leader) {
-                                *commander = None;
-                                naval_commands = false;
-                                refusals.note(
-                                    "Conflicting recorded fleet commander references",
-                                    task.fleet.to_string(),
-                                );
-                            }
-                        }
-                        for (fleet, commander) in fleets {
-                            let Some(index) =
-                                commander.and_then(|c| leader_indices.get(&c).copied())
-                            else {
-                                continue;
-                            };
-                            let state = &mut leaders[index];
-                            if state.visible_hour == Some(hour)
-                                && state.last_read.as_ref().is_some_and(|last| {
-                                    last.row.kind == engine::cunit_leader::KIND_NAVY
-                                })
-                            {
-                                append_command(
-                                    state,
-                                    fleet,
-                                    LeaderFormationKind::Fleet,
-                                    None,
-                                    hour,
-                                );
-                            }
-                        }
-                    }
-                    observe(
-                        &mut reply.observed,
-                        hour,
-                        complete,
-                        land.is_some(),
-                        navy.is_some(),
-                        land_commands,
-                        naval_commands,
+                };
+                let name = formation_name(formation_names, fleet.id, raw_name, content, refusals);
+                let (command, repeated, bytes) =
+                    append_command(state, fleet.id, LeaderFormationKind::Fleet, name, hour);
+                *pending_bytes = pending_bytes.saturating_add(bytes);
+                *commands_continuous &= !repeated;
+                active_commands.push((index, command));
+            }
+        } else if naval_commands
+            && let (Ok(missions), Ok(tasks)) = (
+                decoded.complete::<tables::NavalMissionTaskForces>(),
+                decoded.complete::<tables::TaskForces>(),
+            )
+        {
+            let mut fleets = BTreeMap::<u64, Option<u64>>::new();
+            for mission in missions {
+                #[cfg(test)]
+                {
+                    work.row_visits += 1;
+                }
+                let Some(task) = tasks
+                    .binary_search_by_key(&mission.task_force, |task| task.id)
+                    .ok()
+                    .map(|index| &tasks[index])
+                else {
+                    naval_commands = false;
+                    continue;
+                };
+                if task.fleet == 0 {
+                    naval_commands = false;
+                    continue;
+                }
+                let commander = fleets.entry(task.fleet).or_insert(Some(mission.leader));
+                if *commander != Some(mission.leader) {
+                    *commander = None;
+                    naval_commands = false;
+                    refusals.note(
+                        "Conflicting recorded fleet commander references",
+                        task.fleet.to_string(),
                     );
-                    if !choices {
-                        let combat_sets = [
-                            land.map(|rows| rows.iter().map(|c| c.combat).collect::<BTreeSet<_>>()),
-                            navy.map(|rows| rows.iter().map(|c| c.combat).collect::<BTreeSet<_>>()),
-                        ];
-                        let sides = land
-                            .into_iter()
-                            .flatten()
-                            .flat_map(|c| {
-                                c.sides.iter().enumerate().map(move |(side, s)| {
-                                    (1u8, c.combat, s.commander, 1u8 << side, hour, true)
-                                })
-                            })
-                            .chain(navy.into_iter().flatten().flat_map(|c| {
-                                c.sides.iter().enumerate().map(move |(side, s)| {
-                                    (2u8, c.combat, s.commander, 1u8 << side, hour, true)
-                                })
-                            }))
-                            .chain(
-                                decoded
-                                    .complete::<tables::LandCombatResults>()
-                                    .ok()
-                                    .filter(|_| {
-                                        slot_read(
-                                            replay.format,
-                                            &decoded.metrics,
-                                            TableId::LandCombatResults,
-                                            hour,
-                                        )
-                                    })
-                                    .into_iter()
-                                    .flatten()
-                                    .flat_map(|result| {
-                                        result.sides.iter().enumerate().map(
-                                            move |(side, operands)| {
-                                                (
-                                                    1u8,
-                                                    result.combat,
-                                                    operands.commander,
-                                                    1u8 << side,
-                                                    result.end_hour,
-                                                    false,
-                                                )
-                                            },
-                                        )
-                                    }),
-                            )
-                            .chain(
-                                decoded
-                                    .complete::<tables::NavalCombatResultDetails>()
-                                    .ok()
-                                    .into_iter()
-                                    .flatten()
-                                    .filter_map(|result| {
-                                        naval_sources
-                                            .get(&result.result)
-                                            .map(|source| (result, source))
-                                    })
-                                    .flat_map(|(result, source)| {
-                                        result.sides.iter().enumerate().map(
-                                            move |(side, operands)| {
-                                                (
-                                                    2u8,
-                                                    source.combat,
-                                                    operands.leader,
-                                                    1u8 << side,
-                                                    source.game_hour,
-                                                    false,
-                                                )
-                                            },
-                                        )
-                                    }),
-                            );
-                        for (kind, combat, commander, side, participation_hour, active) in sides {
-                            let Some(&index) = leader_indices.get(&commander) else {
-                                continue;
-                            };
-                            if leaders[index].visible_hour != Some(hour) {
-                                continue;
-                            }
-                            let reads = battle_hours.entry(commander).or_default();
-                            if let Some(&index) = battle_indices.get(&(commander, kind, combat)) {
-                                reads[index].5 |= side;
-                            } else {
-                                let combat_new_this_hour = active
-                                    && previous_combats[usize::from(kind - 1)]
-                                        .as_ref()
-                                        .is_some_and(|(h, set)| {
-                                            h.checked_add(1) == Some(hour) && !set.contains(&combat)
-                                        });
-                                battle_indices.insert((commander, kind, combat), reads.len());
-                                reads.push((
-                                    participation_hour,
-                                    hour,
-                                    !combat_new_this_hour,
-                                    kind,
-                                    combat,
-                                    side,
-                                ));
-                            }
-                        }
-                        previous_combats = combat_sets.map(|set| set.map(|set| (hour, set)));
-                    }
                 }
             }
-            Ok(())
-        },
-    )?;
-    reply.leaders = leaders
-        .into_iter()
-        .filter_map(|state| {
-            if state.last_run.is_none() || requested.is_some() && !state.admitted {
-                return None;
-            }
-            let mut leader = state.career;
-            let mut index = state.last_run;
-            while let Some(i) = index {
-                let stored = &stored_runs[i];
-                leader.runs.push(stored.run.clone());
-                index = stored.previous;
-            }
-            leader.runs.reverse();
-            let mut hours = battle_hours.remove(&state.reference).unwrap_or_default();
-            hours.sort_by_key(|read| (read.0, read.3, read.4));
-            let mut previous = 0_i64;
-            let mut starts = Vec::with_capacity(hours.len());
-            let mut start_reads = Vec::with_capacity(hours.len());
-            let mut unknown_starts = Vec::new();
-            let mut won = Vec::with_capacity(hours.len());
-            let mut result_hours = Vec::with_capacity(hours.len());
-            let mut result_read_hours = Vec::with_capacity(hours.len());
-            for (index, (hour, read_hour, unknown, kind, combat, side)) in
-                hours.into_iter().enumerate()
-            {
-                starts.push(i64::from(hour) - previous);
-                start_reads.push(read_hour);
-                previous = i64::from(hour);
-                let result = outcomes.get(&(kind, combat)).copied().flatten().filter(
-                    |(result_hour, _, winners)| {
-                        *result_hour >= hour && *winners != 0 && side.count_ones() == 1
-                    },
-                );
-                won.push(result.map(|(_, _, winners)| winners & side != 0));
-                result_hours.push(result.map(|(hour, _, _)| hour));
-                result_read_hours.push(result.map(|(_, read_hour, _)| read_hour));
-                if unknown {
-                    unknown_starts.push(index as u32);
+            for (fleet, commander) in fleets {
+                let Some(index) = commander.and_then(|c| leader_indices.get(&c).copied()) else {
+                    continue;
+                };
+                let state = &mut leaders[index];
+                if state.visible_hour == Some(hour)
+                    && state
+                        .last_read
+                        .as_ref()
+                        .is_some_and(|last| last.row.kind == engine::cunit_leader::KIND_NAVY)
+                {
+                    let (command, repeated, bytes) =
+                        append_command(state, fleet, LeaderFormationKind::Fleet, None, hour);
+                    *pending_bytes = pending_bytes.saturating_add(bytes);
+                    *commands_continuous &= !repeated;
+                    active_commands.push((index, command));
                 }
-            }
-            leader.battle_starts = Some(starts);
-            leader.battle_start_read_hours = Some(start_reads);
-            leader.unknown_battle_starts = Some(unknown_starts);
-            if results_recorded {
-                leader.battle_won = Some(won);
-                leader.battle_result_hours = Some(result_hours);
-                leader.battle_result_read_hours = Some(result_read_hours);
-            }
-            Some(leader)
-        })
-        .collect();
-    reply
-        .leaders
-        .sort_unstable_by_key(|l| l.reference.parse::<u64>().expect("leader reference"));
-    {
-        let used: BTreeSet<_> = reply
-            .leaders
-            .iter()
-            .flat_map(|leader| leader.runs.iter().map(|run| run.value.person))
-            .collect();
-        let remap: BTreeMap<_, _> = used
-            .iter()
-            .enumerate()
-            .map(|(new, old)| (*old, new as u32))
-            .collect();
-        reply.people = used
-            .into_iter()
-            .map(|index| reply.people[index as usize].clone())
-            .collect();
-        let used_roles: BTreeSet<_> = reply
-            .leaders
-            .iter()
-            .flat_map(|leader| leader.runs.iter().map(|run| run.value.role))
-            .collect();
-        let role_remap: BTreeMap<_, _> = used_roles
-            .iter()
-            .enumerate()
-            .map(|(new, old)| (*old, new as u32))
-            .collect();
-        reply.roles = used_roles
-            .into_iter()
-            .map(|index| reply.roles[index as usize].clone())
-            .collect();
-        for leader in &mut reply.leaders {
-            for run in &mut leader.runs {
-                run.value.person = remap[&run.value.person];
-                run.value.role = role_remap[&run.value.role];
             }
         }
-        let used_traits: BTreeSet<_> =
-            reply
+        observe(
+            &mut reply.observed,
+            hour,
+            complete,
+            land.is_some(),
+            navy.is_some(),
+            land_commands,
+            naval_commands,
+        );
+        if !choices {
+            let combat_sets = [
+                land.map(|rows| rows.iter().map(|c| c.combat).collect::<BTreeSet<_>>()),
+                navy.map(|rows| rows.iter().map(|c| c.combat).collect::<BTreeSet<_>>()),
+            ];
+            let sides =
+                land.into_iter()
+                    .flatten()
+                    .flat_map(|c| {
+                        c.sides.iter().enumerate().map(move |(side, s)| {
+                            (1u8, c.combat, s.commander, 1u8 << side, hour, true)
+                        })
+                    })
+                    .chain(navy.into_iter().flatten().flat_map(|c| {
+                        c.sides.iter().enumerate().map(move |(side, s)| {
+                            (2u8, c.combat, s.commander, 1u8 << side, hour, true)
+                        })
+                    }))
+                    .chain(
+                        decoded
+                            .complete::<tables::LandCombatResults>()
+                            .ok()
+                            .filter(|_| {
+                                slot_read(
+                                    replay.format,
+                                    &decoded.metrics,
+                                    TableId::LandCombatResults,
+                                    hour,
+                                )
+                            })
+                            .into_iter()
+                            .flatten()
+                            .flat_map(|result| {
+                                result
+                                    .sides
+                                    .iter()
+                                    .enumerate()
+                                    .map(move |(side, operands)| {
+                                        (
+                                            1u8,
+                                            result.combat,
+                                            operands.commander,
+                                            1u8 << side,
+                                            result.end_hour,
+                                            false,
+                                        )
+                                    })
+                            }),
+                    )
+                    .chain(
+                        decoded
+                            .complete::<tables::NavalCombatResultDetails>()
+                            .ok()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|result| {
+                                naval_sources
+                                    .get(&result.result)
+                                    .map(|source| (result, source))
+                            })
+                            .flat_map(|(result, source)| {
+                                result
+                                    .sides
+                                    .iter()
+                                    .enumerate()
+                                    .map(move |(side, operands)| {
+                                        (
+                                            2u8,
+                                            source.combat,
+                                            operands.leader,
+                                            1u8 << side,
+                                            source.game_hour,
+                                            false,
+                                        )
+                                    })
+                            }),
+                    );
+            for (kind, combat, commander, side, participation_hour, active) in sides {
+                #[cfg(test)]
+                {
+                    work.row_visits += 1;
+                }
+                let Some(&index) = leader_indices.get(&commander) else {
+                    continue;
+                };
+                if leaders[index].visible_hour != Some(hour) {
+                    continue;
+                }
+                let reads = battle_hours.entry(commander).or_default();
+                if let Some(&index) = battle_indices.get(&(commander, kind, combat)) {
+                    reads[index].5 |= side;
+                } else {
+                    let combat_new_this_hour = active
+                        && previous_combats[usize::from(kind - 1)]
+                            .as_ref()
+                            .is_some_and(|(h, set)| {
+                                h.checked_add(1) == Some(hour) && !set.contains(&combat)
+                            });
+                    battle_indices.insert((commander, kind, combat), reads.len());
+                    reads.push((
+                        participation_hour,
+                        hour,
+                        !combat_new_this_hour,
+                        kind,
+                        combat,
+                        side,
+                    ));
+                    *pending_bytes = pending_bytes.saturating_add(std::mem::size_of::<(
+                        i32,
+                        i32,
+                        bool,
+                        u8,
+                        u64,
+                        u8,
+                    )>());
+                }
+            }
+            *previous_combats = combat_sets.map(|set| set.map(|set| (hour, set)));
+        }
+        Ok(())
+    }
+    fn finish(
+        mut self,
+        params: &UnitLeadersParams,
+        content: Option<&Content>,
+    ) -> io::Result<UnitLeadersReply> {
+        self.seal();
+        let choices = params.view == LeaderView::Choices;
+        let requested: Option<BTreeSet<&str>> = match &params.selection {
+            LeaderSelection::Countries { tags } => Some(tags.iter().map(String::as_str).collect()),
+            _ => None,
+        };
+        let Self {
+            mut reply,
+            leaders,
+            stored_runs,
+            mut battle_hours,
+            outcomes,
+            results_recorded,
+            mut token_list,
+            mut refusals,
+            ..
+        } = self;
+        reply.leaders = leaders
+            .into_iter()
+            .filter_map(|state| {
+                if state.last_run.is_none() || requested.is_some() && !state.admitted {
+                    return None;
+                }
+                let mut leader = state.career;
+                let mut index = state.last_run;
+                while let Some(i) = index {
+                    let stored = &stored_runs[i];
+                    leader.runs.push(stored.run.clone());
+                    index = stored.previous;
+                }
+                leader.runs.reverse();
+                let mut hours = battle_hours.remove(&state.reference).unwrap_or_default();
+                hours.sort_by_key(|read| (read.0, read.3, read.4));
+                let mut previous = 0_i64;
+                let mut starts = Vec::with_capacity(hours.len());
+                let mut start_reads = Vec::with_capacity(hours.len());
+                let mut unknown_starts = Vec::new();
+                let mut won = Vec::with_capacity(hours.len());
+                let mut result_hours = Vec::with_capacity(hours.len());
+                let mut result_read_hours = Vec::with_capacity(hours.len());
+                for (index, (hour, read_hour, unknown, kind, combat, side)) in
+                    hours.into_iter().enumerate()
+                {
+                    starts.push(i64::from(hour) - previous);
+                    start_reads.push(read_hour);
+                    previous = i64::from(hour);
+                    let result = outcomes.get(&(kind, combat)).copied().flatten().filter(
+                        |(result_hour, _, winners)| {
+                            *result_hour >= hour && *winners != 0 && side.count_ones() == 1
+                        },
+                    );
+                    won.push(result.map(|(_, _, winners)| winners & side != 0));
+                    result_hours.push(result.map(|(hour, _, _)| hour));
+                    result_read_hours.push(result.map(|(_, read_hour, _)| read_hour));
+                    if unknown {
+                        unknown_starts.push(index as u32);
+                    }
+                }
+                leader.battle_starts = Some(starts);
+                leader.battle_start_read_hours = Some(start_reads);
+                leader.unknown_battle_starts = Some(unknown_starts);
+                if results_recorded {
+                    leader.battle_won = Some(won);
+                    leader.battle_result_hours = Some(result_hours);
+                    leader.battle_result_read_hours = Some(result_read_hours);
+                }
+                Some(leader)
+            })
+            .collect();
+        reply
+            .leaders
+            .sort_unstable_by_key(|l| l.reference.parse::<u64>().expect("leader reference"));
+        {
+            let used: BTreeSet<_> = reply
+                .leaders
+                .iter()
+                .flat_map(|leader| leader.runs.iter().map(|run| run.value.person))
+                .collect();
+            let remap: BTreeMap<_, _> = used
+                .iter()
+                .enumerate()
+                .map(|(new, old)| (*old, new as u32))
+                .collect();
+            reply.people = used
+                .into_iter()
+                .map(|index| reply.people[index as usize].clone())
+                .collect();
+            let used_roles: BTreeSet<_> = reply
+                .leaders
+                .iter()
+                .flat_map(|leader| leader.runs.iter().map(|run| run.value.role))
+                .collect();
+            let role_remap: BTreeMap<_, _> = used_roles
+                .iter()
+                .enumerate()
+                .map(|(new, old)| (*old, new as u32))
+                .collect();
+            reply.roles = used_roles
+                .into_iter()
+                .map(|index| reply.roles[index as usize].clone())
+                .collect();
+            for leader in &mut reply.leaders {
+                for run in &mut leader.runs {
+                    run.value.person = remap[&run.value.person];
+                    run.value.role = role_remap[&run.value.role];
+                }
+            }
+            let used_traits: BTreeSet<_> = reply
                 .leaders
                 .iter()
                 .flat_map(|leader| {
@@ -2039,50 +2418,65 @@ fn scan(
                     )
                 })
                 .collect();
-        if used_traits.len() != token_list.len() {
-            let mut remap = vec![0; token_list.len()];
-            for (new, old) in used_traits.iter().enumerate() {
-                remap[*old as usize] = new as u32;
-            }
-            let mut sets = HashMap::<Vec<u32>, Arc<[u32]>>::new();
-            for leader in &mut reply.leaders {
-                for gain in &mut leader.trait_gains {
-                    gain.token = remap[gain.token as usize];
+            if used_traits.len() != token_list.len() {
+                let mut remap = vec![0; token_list.len()];
+                for (new, old) in used_traits.iter().enumerate() {
+                    remap[*old as usize] = new as u32;
                 }
-                for run in &mut leader.runs {
-                    if let Some(held) = &mut run.value.traits {
-                        let mapped = if let Some(mapped) = sets.get(held.as_ref()) {
-                            Arc::clone(mapped)
-                        } else {
-                            let mapped: Arc<[u32]> =
-                                held.iter().map(|old| remap[*old as usize]).collect();
-                            sets.insert(held.to_vec(), Arc::clone(&mapped));
-                            mapped
-                        };
-                        *held = mapped;
+                let mut sets = HashMap::<Vec<u32>, Arc<[u32]>>::new();
+                for leader in &mut reply.leaders {
+                    for gain in &mut leader.trait_gains {
+                        gain.token = remap[gain.token as usize];
+                    }
+                    for run in &mut leader.runs {
+                        if let Some(held) = &mut run.value.traits {
+                            let mapped = if let Some(mapped) = sets.get(held.as_ref()) {
+                                Arc::clone(mapped)
+                            } else {
+                                let mapped: Arc<[u32]> =
+                                    held.iter().map(|old| remap[*old as usize]).collect();
+                                sets.insert(held.to_vec(), Arc::clone(&mapped));
+                                mapped
+                            };
+                            *held = mapped;
+                        }
                     }
                 }
+                token_list = token_list
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(i, token)| used_traits.contains(&(i as u32)).then_some(token))
+                    .collect();
             }
-            token_list = token_list
-                .into_iter()
-                .enumerate()
-                .filter_map(|(i, token)| used_traits.contains(&(i as u32)).then_some(token))
-                .collect();
+            if choices {
+                reply.observed.clear();
+            }
         }
-        if choices {
-            reply.observed.clear();
+        let prepared: BTreeMap<_, _> = std::mem::take(&mut reply.traits)
+            .into_iter()
+            .map(|info| (info.token.clone(), info))
+            .collect();
+        for token in token_list {
+            let info = prepared
+                .get(&token)
+                .cloned()
+                .unwrap_or_else(|| trait_info(&token, content));
+            if let Some(reason) = &info.missing {
+                refusals.note(reason.clone(), token);
+            }
+            reply.traits.push(info);
         }
+        reply
+            .warnings
+            .extend(refusals.lines("Leader data withheld"));
+        extend_content_warnings(&mut reply, content);
+        reply.warnings.sort();
+        reply.warnings.dedup();
+        Ok(reply)
     }
-    for token in token_list {
-        let info = trait_info(&token, content);
-        if let Some(reason) = &info.missing {
-            refusals.note(reason.clone(), token);
-        }
-        reply.traits.push(info);
-    }
-    reply
-        .warnings
-        .extend(refusals.lines("Leader data withheld"));
+}
+
+fn extend_content_warnings(reply: &mut UnitLeadersReply, content: Option<&Content>) {
     if let Some(c) = content {
         reply.warnings.extend(c.catalogue.verification.clone());
         reply.warnings.extend(c.catalogue.warnings.iter().cloned());
@@ -2100,34 +2494,93 @@ fn scan(
         );
         reply.warnings.extend(c.catalogue.refusal_lines());
     }
-    reply.warnings.sort();
-    reply.warnings.dedup();
-    Ok(reply)
+}
+
+#[cfg(test)]
+fn scan(
+    replay: &Replay,
+    params: &UnitLeadersParams,
+    content: Option<&Content>,
+    cancelled: &AtomicBool,
+) -> io::Result<UnitLeadersReply> {
+    let branch = params.branch_id.parse::<u64>().expect("validated branch");
+    let selected = scan_tables(
+        params.view == LeaderView::Career,
+        params.view == LeaderView::Choices,
+    );
+    let mut scan = Scan::new(replay, branch)?;
+    scan.reply.branch_id.clone_from(&params.branch_id);
+    crate::blocks::scan_blocks(
+        replay,
+        replay.index.iter().filter(|b| b.branch == branch),
+        &selected,
+        cancelled,
+        |blocks| {
+            for (block, frames) in blocks {
+                let frames = match frames {
+                    Ok(frames) => frames,
+                    Err(e) => {
+                        scan.refusals
+                            .note(e.to_string(), format!("block {}", block.first_hour));
+                        continue;
+                    }
+                };
+                let mut decoder = FrameDecoder::for_tables(&selected);
+                for frame in frames {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "Leader request cancelled",
+                        ));
+                    }
+                    let decoded = match decoder.advance(&frame) {
+                        Ok(frame) => frame,
+                        Err(e) => {
+                            scan.refusals.note(e.to_string(), frame.hour.to_string());
+                            break;
+                        }
+                    };
+                    validate_campaign(decoded, replay)?;
+                    scan.observe_read(decoded, replay, params, content, &mut |_, _, _| {})?;
+                }
+            }
+            Ok(())
+        },
+    )?;
+    scan.finish(params, content)
 }
 
 // Retention limits cached snapshots, never the inventory a request may ask for.
+#[cfg(test)]
 const CACHED_BRANCHES: usize = 2;
+#[cfg(test)]
 const CACHED_REPLIES: usize = 4;
+#[cfg(test)]
 type CachedReply = Result<Arc<UnitLeadersReply>, (io::ErrorKind, String)>;
 
+#[cfg(test)]
 fn remembered(result: io::Result<Arc<UnitLeadersReply>>) -> CachedReply {
     result.map_err(|error| (error.kind(), error.to_string()))
 }
+#[cfg(test)]
 fn recalled(result: CachedReply) -> io::Result<Arc<UnitLeadersReply>> {
     result.map_err(|(kind, message)| io::Error::new(kind, message))
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct BranchState {
     scan: Option<CachedReply>,
     scanning: bool,
     replies: VecDeque<(UnitLeadersParams, CachedReply)>,
 }
+#[cfg(test)]
 #[derive(Default)]
 struct BranchSlot {
     state: Mutex<BranchState>,
     ready: Condvar,
 }
+#[cfg(test)]
 impl BranchSlot {
     fn scanned(
         &self,
@@ -2185,11 +2638,13 @@ impl BranchSlot {
     }
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct Cache {
     catalogue: Option<Arc<Catalogue>>,
     branches: VecDeque<(String, Arc<BranchSlot>)>,
 }
+#[cfg(test)]
 impl Cache {
     fn branch(&mut self, catalogue: Option<Arc<Catalogue>>, branch: &str) -> Arc<BranchSlot> {
         let same = match (&self.catalogue, &catalogue) {
@@ -2651,6 +3106,7 @@ impl Product for UnitLeaders {
             UnitLeadersReply::decl(),
         ]
     }
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -2674,12 +3130,7 @@ impl Product for UnitLeaders {
             return recalled(reply).map(UnitLeadersResponse::from);
         }
         let scanned = slot.scanned(cancelled, || {
-            let content = cat
-                .map(|catalogue| -> io::Result<Content> {
-                    let politics = politics_content::politics_content(source, context.content()?)?;
-                    Content::load(catalogue, politics)
-                })
-                .transpose();
+            let content = Content::for_catalogue(source, context, cat);
             let full = UnitLeadersParams {
                 branch_id: params.branch_id.clone(),
                 selection: LeaderSelection::All,

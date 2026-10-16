@@ -1,0 +1,92 @@
+import { registerWidgets } from '../dashboard/definitions.ts';
+import type { WidgetRenderer } from '../dashboard/definitions.ts';
+import { widgetMetas } from './definitions.ts';
+export const rendererLoaders = {
+  'map': () => import('./map'),
+  'national-focus': () => import('./national-focus'),
+  'research': () => import('./research'),
+  'active-research': () => import('./active-research'),
+  'political-power': () => import('./political-power'),
+  'political-power-spending': () => import('./political-power-spending'),
+  'political-power-spending-breakdown': () => import('./political-power-spending-breakdown'),
+  'command-power': () => import('./command-power'),
+  'command-power-spending': () => import('./command-power-spending'),
+  'stability': () => import('./stability'),
+  'idea-timeline': () => import('./idea-timeline'),
+  'national-spirits': () => import('./national-spirits'),
+  'spirit-history': () => import('./spirit-history'),
+  'ruling-party': () => import('./ruling-party'),
+  'resource-balance': () => import('./resource-balance'),
+  'equipment-stockpile': () => import('./equipment-stockpile'),
+  'fuel': () => import('./fuel'),
+  'production-lines': () => import('./production-lines'),
+  'factories': () => import('./factories'),
+  'territory': () => import('./territory'),
+  'territory-breakdown': () => import('./territory-breakdown'),
+  'equipment-losses': () => import('./equipment-losses'),
+  'equipment-produced': () => import('./equipment-produced'),
+  'production-spending': () => import('./production-spending'),
+  'occupied-states': () => import('./occupied-states'),
+  'occupation-trend': () => import('./occupation-trend'),
+  'air-force-size': () => import('./air-force-size'),
+  'navy-size': () => import('./navy-size'),
+  'air-superiority-region': () => import('./air-superiority-region'),
+  'air-superiority-timeline': () => import('./air-superiority-timeline'),
+  'air-kills-losses': () => import('./air-kills-losses'),
+  'bombing-damage': () => import('./bombing-damage'),
+  'bombing-damage-breakdown': () => import('./bombing-damage-breakdown'),
+  'experience': () => import('./experience'),
+  'factions': () => import('./factions'),
+  'faction-strength': () => import('./faction-strength'),
+  'subjects': () => import('./subjects'),
+  'trade-flows': () => import('./trade-flows'),
+  'peace-deals': () => import('./peace-deals'),
+  'territory-transfers': () => import('./territory-transfers'),
+  'wars': () => import('./wars'),
+  'world-tension': () => import('./world-tension'),
+  'autonomy': () => import('./autonomy'),
+  'construction-log': () => import('./construction-log'),
+  'construction-spending': () => import('./construction-spending'),
+  'special-projects': () => import('./special-projects'),
+  'nuclear-arsenal': () => import('./nuclear-arsenal'),
+  'naval-losses': () => import('./naval-losses'),
+  'ships-sunk': () => import('./ships-sunk'),
+  'raid-log': () => import('./raid-log'),
+  'raid-tally': () => import('./raid-tally'),
+  'decryption': () => import('./decryption'),
+  'espionage-log': () => import('./espionage-log'),
+  'agency-comparison': () => import('./agency-comparison'),
+  'operatives-roster': () => import('./operatives-roster'),
+  'who-spies-on-whom': () => import('./who-spies-on-whom'),
+  'scoreboard': () => import('./scoreboard'),
+  'game-score': () => import('./game-score'),
+  'casualties': () => import('./casualties'),
+  'casualties-between': () => import('./casualties-between'),
+  'casualties-breakdown': () => import('./casualties-breakdown'),
+  'generals': () => import('./generals'),
+  'general-career': () => import('./general-career'),
+  'aces': () => import('./aces'),
+  'army-size': () => import('./army-size'),
+  'supply-health': () => import('./supply-health'),
+  'division-log': () => import('./division-log'),
+  'land-battles': () => import('./land-battles'),
+  'naval-battles': () => import('./naval-battles'),
+  'event-feed': () => import('./event-feed'),
+} satisfies Record<(typeof widgetMetas)[number]['kind'], () => Promise<{ default: WidgetRenderer }>>;
+const loaded = new Map<string, Promise<WidgetRenderer>>();
+export function loadWidgetRenderer(kind: string): Promise<WidgetRenderer | undefined> {
+  if (!Object.hasOwn(rendererLoaders, kind)) return Promise.resolve(undefined);
+  const loader = rendererLoaders[kind as keyof typeof rendererLoaders];
+  if (!loader) return Promise.resolve(undefined);
+  let held = loaded.get(kind);
+  if (!held) {
+    held = loader().then(module => {
+      const meta = widgetMetas.find(meta => meta.kind === kind)!;
+      registerWidgets([{ ...meta, useOptionChoices: (module.default as WidgetRenderer).useOptionChoices }]);
+      return module.default;
+    });
+    loaded.set(kind, held);
+    held.catch(() => { loaded.delete(kind); });
+  }
+  return held;
+}

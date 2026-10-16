@@ -1,8 +1,12 @@
 use super::{Capture, Playhead, Viewer, seek_open_target};
-use crate::{Config, map};
 use eframe::{egui, wgpu};
 use replay::{frame::TableView, rows::TableId};
+use std::collections::HashSet;
+use std::path::Path;
 use std::{path::PathBuf, sync::Arc, time::Instant};
+use viewer_foundation::map::perspective::Country;
+use viewer_foundation::map::presentation::Target;
+use viewer_foundation::map::ui_scale::Setting;
 
 impl Viewer {
     pub(super) fn embedded_logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
@@ -13,7 +17,7 @@ impl Viewer {
         if pending.close {
             return;
         }
-        if pending.standalone {
+        if pending.campaign_map {
             self.dashboard_active = false;
             self.last_step = Instant::now();
             self.last_frame = Instant::now();
@@ -58,13 +62,13 @@ impl Viewer {
         }
         if let Some(source) = self.source.clone() {
             let replay = source.replay();
-            let preferences = self
+            let service = self
                 .embedded
                 .as_ref()
                 .expect("embedded controller")
-                .service()
-                .map_settings(&replay);
-            self.set_embedded_graphics(preferences.graphics);
+                .service();
+            let preferences =
+                self.follow_map_settings(&service, dashboard::map_settings::campaign_key(&replay));
             let selection = (
                 dashboard::map_settings::campaign_key(&replay),
                 preferences.visual_mods.clone(),
@@ -97,8 +101,7 @@ impl Viewer {
             }
         }
         let actions = pending.actions;
-        // The web shell owns these controls; they call the same viewer state
-        // that the standalone egui controls use. Rendering is unchanged.
+        // The web shell owns these controls and changes the map's own state.
         for action in actions {
             self.host_map_action(action, ctx, frame);
         }
@@ -132,7 +135,7 @@ impl Viewer {
                 .document
                 .as_ref()
                 .map(|document| (document.source_path.as_path(), self.revision.as_deref()));
-            let pending_load = if self.loading.is_some() || self.settings {
+            let pending_load = if self.loading.is_some() || self.awaiting_folders {
                 self.options
                     .replay
                     .as_deref()
@@ -157,12 +160,12 @@ impl Viewer {
             self.options.hour = None;
             self.options.hour_fraction = 0.0;
             self.open(request.path, ctx, request.revision);
-            if self.loading.is_none() && !self.settings {
+            if self.loading.is_none() && !self.awaiting_folders {
                 self.embedded_seek = None;
             }
         }
         if self.loading.is_none()
-            && !self.settings
+            && !self.awaiting_folders
             && let Some(seek) = self.embedded_seek.take()
         {
             let result = self
@@ -188,7 +191,7 @@ impl Viewer {
                     self.error = None;
                     self.playing = seek.playback.is_some_and(|clock| clock.playing);
                     self.last_step = Instant::now();
-                    let animation_target = map::presentation::Target {
+                    let animation_target = Target {
                         branch: seek.branch,
                         hour: seek.hour,
                         seek_sequence: seek.playback.map(|clock| clock.seek_sequence),
@@ -241,7 +244,7 @@ impl Viewer {
         use dashboard::protocol::MapAction;
         match action {
             MapAction::Unload { path } => {
-                if self.unload_recording(std::path::Path::new(&path)) {
+                if self.unload_recording(Path::new(&path)) {
                     self.retire_map(frame, ());
                 }
             }
@@ -256,7 +259,7 @@ impl Viewer {
                 }
             }
             MapAction::UiScale { scale } => {
-                self.ui_scale = map::ui_scale::Setting::from_stored(scale);
+                self.ui_scale = Setting::from_stored(scale);
             }
             MapAction::Diagnostics { enabled } => {
                 self.diagnostics = enabled;
@@ -265,10 +268,7 @@ impl Viewer {
                 }
             }
             MapAction::Configure { options } => {
-                self.perspective.country = options.country.map_or(
-                    map::perspective::Country::Recorded,
-                    map::perspective::Country::Tag,
-                );
+                self.perspective.country = options.country.map_or(Country::Recorded, Country::Tag);
                 self.perspective.fog = options.fog;
             }
             MapAction::Export {
@@ -299,25 +299,36 @@ impl Viewer {
                     });
                 }
             }
+            // The host saved and checked them; this process only applies them.
             MapAction::Folders { game, user } => {
-                let config = Config {
-                    game_dir: PathBuf::from(game),
-                    user_dir: PathBuf::from(user),
-                    ..self.config.clone()
-                };
-                match config.save() {
-                    Ok(()) => {
-                        self.config = config;
-                        self.configure_service();
-                        self.settings = false;
-                        self.error = None;
-                        if let Some(path) = self.options.replay.clone() {
-                            self.open(path, ctx, self.expected_revision.clone());
-                        }
-                    }
-                    Err(error) => self.error = Some(error.to_string()),
+                self.config.game_dir = PathBuf::from(game);
+                self.config.user_dir = PathBuf::from(user);
+                self.awaiting_folders = self.config.resolve_options().is_err();
+                self.error = None;
+                self.configure_service();
+                if self.error.is_none()
+                    && let Some(path) = self.options.replay.clone()
+                {
+                    self.open(path, ctx, self.expected_revision.clone());
                 }
                 self.report_map_details();
+            }
+            MapAction::MapSettingsSaved => {
+                // Read off the UI thread; the per-frame preference check then reloads any map
+                // they change.
+                if let Some(embedded) = &self.embedded {
+                    let service = embedded.service();
+                    let repaint = ctx.clone();
+                    let spawned = std::thread::Builder::new()
+                        .name("map preferences".into())
+                        .spawn(move || {
+                            service.reload_map_settings();
+                            repaint.request_repaint();
+                        });
+                    if let Err(error) = spawned {
+                        self.error = Some(format!("Map preferences: {error}"));
+                    }
+                }
             }
             MapAction::Inspect => self.report_map_details(),
         }
@@ -368,7 +379,7 @@ impl Viewer {
                 shown.political_build.as_secs_f64() * 1000.0
             ));
         }
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         messages.retain(|message| seen.insert(message.clone()));
         embedded.report_details(dashboard::protocol::MapDetails {
             content_ready: self.config.resolve_options().is_ok(),

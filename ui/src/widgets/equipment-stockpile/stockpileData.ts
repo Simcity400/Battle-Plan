@@ -10,6 +10,7 @@ import type { ChoiceSource } from '../../dashboard/chosen';
 import { contentKey, setToken } from '../../dashboard/options.ts';
 import { DOMAINS, UNRESOLVED_ARM, UNRESOLVED_MARK, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
 import type { AmountRun, Domain, EquipmentStockpileReply, StockVariant } from '../../generated/dashboard';
+import type { PreparedStockpileReply } from './preparedStockpileChart';
 
 /** A country's equipment stockpile, from the recorded `Stockpiles` and production
  * lines, and its logistics record: the game's own surplus or shortage per equipment
@@ -113,6 +114,8 @@ export interface StockGroup {
    * excluded one never makes the group incomplete. A variant of unknown type could
    * belong to any included type, so it always counts. */
   scope: readonly string[];
+  /** Branch-wide identity witnesses, separate from the reached naming page. */
+  designs?: readonly string[];
 }
 
 /** A group's label at an hour: a variant is named as recorded then (it can be renamed);
@@ -123,8 +126,11 @@ export const labelAt = (group: StockGroup, grouping: Grouping, hour: number) =>
 /** Whether the reply holds anything to show: a stockpile read, production, a logistics
  * record or the hours the country was AI-controlled. What was not recorded is said
  * per value; only a reply with none of these is unavailable. */
-export const hasRecords = (reply: EquipmentStockpileReply) =>
-  reply.reads.length > 0 || reply.lineReads.length > 0 || reply.logisticsReads.length > 0 || reply.aiHours.length > 0;
+export const hasRecords = (reply: EquipmentStockpileReply) => {
+  const prepared = (reply as PreparedStockpileReply).prepared;
+  return reply.reads.length > 0 || reply.lineReads.length > 0 || reply.logisticsReads.length > 0 || reply.aiHours.length > 0
+    || !!prepared && (prepared.stockRecorded || prepared.linesRecorded || prepared.balanceRecorded || prepared.aiRecorded);
+};
 
 /** A variant's name as recorded at an hour, else its token or handle. */
 export const variantName = (variant: StockVariant, hour: number) =>
@@ -161,7 +167,8 @@ export function stockGroups(reply: EquipmentStockpileReply, grouping: Grouping, 
   if (grouping === 'variant') {
     return [...shown].sort((a, b) => rank(typeKey(a)) - rank(typeKey(b)) || typeKey(a).localeCompare(typeKey(b))
       || (BigInt(a.id) < BigInt(b.id) ? -1 : BigInt(a.id) > BigInt(b.id) ? 1 : 0))
-      .map(variant => ({ key: variantKey(reply, variant), label: variantName(variant, hour), domain: domainOf(variant), variants: [variant], types: [], kind: grouping, scope: included }));
+      .map(variant => ({ key: variantKey(reply, variant), label: variantName(variant, hour), domain: domainOf(variant), variants: [variant], types: [], kind: grouping, scope: included,
+        designs: (reply as PreparedStockpileReply).prepared?.designs[variant.id] }));
   }
   const groups = new Map<string, StockGroup & { variants: StockVariant[]; types: string[] }>();
   const groupOf = (type: string, domain: Domain | null) => {
@@ -178,7 +185,8 @@ export function stockGroups(reply: EquipmentStockpileReply, grouping: Grouping, 
   const listed = reply.logistics.filter(item => !included.length || included.includes(item.key)).map(item => {
     const domain = typeIndex.get(item.key)?.domain ?? null;
     return { item, domain, key: grouping === 'domain' ? domain ?? UNRESOLVED_ARM : item.key,
-      nonzero: [...item.balance, ...item.stock, ...item.available].some(run => run.amountRaw !== '0') };
+      nonzero: (reply as PreparedStockpileReply).prepared?.nonzeroLogistics.includes(item.key)
+        ?? [...item.balance, ...item.stock, ...item.available].some(run => run.amountRaw !== '0') };
   });
   for (const entry of listed) if (entry.nonzero) groupOf(entry.item.key, entry.domain);
   for (const entry of listed) {
@@ -429,6 +437,8 @@ export function balanceChangeHours(reply: EquipmentStockpileReply, group: Pick<S
 
 /** The largest stock a group held, or need it had, at any read. */
 function peak(reply: EquipmentStockpileReply, group: StockGroup): bigint {
+  const prepared = (reply as PreparedStockpileReply).prepared;
+  if (prepared) return BigInt(prepared.choices[JSON.stringify([group.kind, group.kind === 'variant' ? group.variants[0]?.id : group.key])]?.raw ?? '0');
   let most = changeHours(reply, group.variants).reduce((best, hour) => {
     const stock = stockAt(reply, group, hour) ?? 0n;
     return stock > best ? stock : best;
@@ -527,7 +537,7 @@ function chosenGroup(byRow: ReadonlyMap<string, StockGroup>, key: string): Stock
   const at = key.lastIndexOf(DESIGN_MARK);
   if (at < 0) return undefined;
   const design = key.slice(at + 1);
-  return group.variants[0]?.names.some(entry => entry.design === design) ? group : undefined;
+  return group.designs?.includes(design) || group.variants[0]?.names.some(entry => entry.design === design) ? group : undefined;
 }
 
 /** What the chips over the chart choose from, over the keys `choiceKey` gives: a group
@@ -552,7 +562,15 @@ export const SAVED_DESIGN_UNAVAILABLE = 'Saved design unavailable. Choose anothe
 
 /** Whether the chart shows each group's share of need (a recorded balance, and not by
  * variant, which has none of its own) or its stock. */
-export const shareModeOf = (reply: EquipmentStockpileReply, grouping: Grouping) => grouping !== 'variant' && reply.balanceHours.length > 0;
+export const shareModeOf = (reply: EquipmentStockpileReply, grouping: Grouping) => grouping !== 'variant'
+  && ((reply as PreparedStockpileReply).prepared?.balanceRecorded ?? reply.balanceHours.length > 0);
+
+export function chartDrawable(reply: EquipmentStockpileReply, group: StockGroup, grouping: Grouping): boolean {
+  const prepared = (reply as PreparedStockpileReply).prepared;
+  if (!prepared) return chartRuns(reply, group, grouping).length > 0;
+  const choice = prepared.choices[JSON.stringify([group.kind, group.kind === 'variant' ? group.variants[0]?.id : group.key])];
+  return (shareModeOf(reply, grouping) ? choice?.shareDrawable : choice?.stockDrawable) ?? false;
+}
 
 /** A group's line over time in the chart's mode; empty when it has nothing to draw. */
 export const chartRuns = (reply: EquipmentStockpileReply, group: StockGroup, grouping: Grouping) =>
@@ -565,7 +583,7 @@ export const chartRuns = (reply: EquipmentStockpileReply, group: StockGroup, gro
 export function chartChoices(reply: EquipmentStockpileReply, grouping: Grouping): { value: string; label: string }[] {
   return stockGroups(reply, grouping, Infinity).flatMap(group => {
     const key = choiceKey(group, Infinity);
-    return key != null && chartRuns(reply, group, grouping).length > 0 ? [{ value: setToken(key), label: group.label }] : [];
+    return key != null && chartDrawable(reply, group, grouping) ? [{ value: setToken(key), label: group.label }] : [];
   });
 }
 

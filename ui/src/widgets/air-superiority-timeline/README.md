@@ -19,3 +19,5 @@
 **Files:** [AirSuperiorityTimelineWidget.tsx](AirSuperiorityTimelineWidget.tsx) configures the [heat kit](../../charts/heat/README.md); `airSuperiorityTimeline.css` styles the wrapper. Shared [airOptions.ts](../../dashboard/airOptions.ts) and [airSuperiority.ts](../../dashboard/airSuperiority.ts) own comparison/projection. `definition.ts` and `index.ts` declare settings and registration.
 
 Shared framework conventions: [widgets](../README.md).
+
+The widget reads prepared air-superiority windows and exposes the "Air superiority daily values" parity model.

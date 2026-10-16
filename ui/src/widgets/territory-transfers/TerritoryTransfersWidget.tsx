@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
+import { PreparedLogCoverage } from '../../charts/log/LogList';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
 import { jumpItem } from '../../charts/jump';
@@ -17,6 +18,7 @@ import type { OptionValue } from '../../dashboard/options';
 import { peaceDealAt } from '../../dashboard/peaceDealsData';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useParityRows } from '../../dashboard/parityRows';
 import { usePeaceDeals } from '../../dashboard/usePeaceDeals';
 import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
 import { COUNTRY_SORT, OPTIONS, TRANSFER_BREAKDOWN, TRANSFER_SORT, TRANSFER_SORT_KEY } from './definition';
@@ -43,7 +45,7 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
   const drillAnchor = useRef<HTMLDivElement>(null);
   const following = widget.time.mode === 'follow';
   usePlaybackHour(runtime.clock, active && (following || drill.breakdown != null && drill.follow));
-  const { track, data, error, retry } = usePeaceDeals(widget, runtime, active);
+  const { track, data, error, retry, preparing } = usePeaceDeals(widget, runtime, active);
   const options = resolveOptions(OPTIONS, widget.options);
   const view = options.show === 'transfers' || options.show === TRANSFER_BREAKDOWN.id ? options.show : 'main';
   const pinned = view === TRANSFER_BREAKDOWN.id;
@@ -82,6 +84,11 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
     const rows = countryBalances(shown);
     return filtered ? rows.filter(row => match.matches(row.side.tag, row.side.hour)) : rows;
   }, [shown, filtered, match]);
+  if (import.meta.env.MODE === 'parity') useParityRows(drillAnchor, () => ({ kind: 'table', label: 'Territory transfer values', complete: true, total: shown.length,
+    rows: shown.map((row, index) => ({ index, key: row.key, item: { ...row, victoryPoints: row.victoryPoints?.toString() ?? null } })),
+    countries: balances.map(row => ({ key: row.key, side: row.side, gained: row.gained, lost: row.lost,
+      gainedVictoryPoints: row.gainedVictoryPoints?.toString() ?? null, lostVictoryPoints: row.lostVictoryPoints?.toString() ?? null,
+      from: [...row.from], to: [...row.to], unattributed: row.unattributed, first: row.first, last: row.last })) }));
   const selectionMissing = useMemo(() => pinned && storedSelection ? selectedTransfers(scoped, storedSelection).missing : 0, [pinned, storedSelection, scoped]);
 
   useEffect(() => {
@@ -152,7 +159,7 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
   if (!track) return <WidgetState kind="empty" icon="flows" message="Load a campaign to see territory transfers." />;
   if (moment < track.branch.firstHour || moment > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (!data || !transfers) return <WidgetState kind="loading" label="Loading territory transfers…" />;
+  if (!data || !transfers) return preparing ? <PreparedLogCoverage coverage={null} /> : <WidgetState kind="loading" label="Loading territory transfers…" />;
   if (pinned && selectionMissing) return <WidgetState kind="unavailable" message={`${usNumber.format(selectionMissing)} selected transfer links are not recorded in this scope.`} />;
   if (scope === 'conference' && !conference) return <WidgetState kind="empty" message={selectedToken ? 'This conference is outside the selected recorded interval.' : 'No peace conferences yet.'} />;
   if (filtered && !match.ready) return <WidgetState kind="loading" label="Loading territory transfers…" />;

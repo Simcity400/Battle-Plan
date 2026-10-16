@@ -6,7 +6,7 @@ One country’s signed civilian-factory output as a sunburst: new/repair work �
 
 ## Products it reads
 
-[`construction-spending`](../../../../crates/dashboard/src/products/construction_spending.rs) shares the Construction log scan. [`place-names`](../../../../crates/dashboard/src/products/place_names.rs) supplies state names at the shown hour.
+[`construction-spending`](../../../../crates/dashboard/src/products/construction_spending.rs) shares the Construction log observer and leaf grouping. Prepared leaf series supply only the selected start, reached and final totals; the catalogue retains project and partial-output operands. [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) supplies state names at the shown hour.
 
 ## Settings
 
@@ -18,6 +18,8 @@ Campaign/follow/pin/range; each hierarchy level, IC decimals and the shared [sun
 - Exact signed fractions remain in totals and selectable correction rows, written to the chosen decimals; only positive amounts draw slices. Natural repairs can count as projects with zero factory IC.
 - Amounts enter at supplying reads. Output not recorded exactly (failed or missing reads, linked output, resets, missing final publications) leaves the counted amounts drawn and marked partial. Output no country can be given (no census owner, or output not read) makes only the whole partial, without a slice or legend row; a country with none of its own shows “No construction recorded” with that note. The note under the legend says what is not counted: earlier spending, output not recorded exactly and output no country can be given. Fill keeps Share while the whole is not known. Older recordings can open without output.
 - A project contributing to both new and repair counts once when that level is hidden. [useStateNamesAt](../../dashboard/useStateNamesAt.ts) changes dated labels, never paths/amounts. Older uncaptured name fields use authored fallback; captured failures keep a fallback label and a concise unavailable status.
+
+Parity builds expose the **Construction spending values** model.
 
 ## Files
 

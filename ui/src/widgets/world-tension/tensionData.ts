@@ -1,5 +1,5 @@
 import { clipToSpans, runAt } from '../../charts/series.ts';
-import type { Span } from '../../charts/series';
+import type { Breakable, Span } from '../../charts/series';
 import { buildStack } from '../../charts/stack.ts';
 import type { StackModel, StackRun } from '../../charts/stack';
 import { fixedNumber, formatAxisValue, formatFixed } from '../../charts/valueAxis.ts';
@@ -57,10 +57,12 @@ export interface TensionModel {
   countryOf: ReadonlyMap<string, string>;
   identities: ReadonlyMap<string, readonly CountryIdentityRun[]>;
   nativeKeys: ReadonlySet<string>;
+  firstContributions: ReadonlyMap<string,number>;
   lineage: Lineage;
 }
 
-export function tensionModel(reply: TensionReply, lineage = new Lineage([]), metadata: readonly CountryMetadata[] = []): TensionModel {
+export function tensionModel(reply: TensionReply, lineage = new Lineage([]), metadata: readonly CountryMetadata[] = [],
+  firstContributions = new Map(reply.countries.flatMap(country => country.runs.length ? [[countryKey(country),country.runs[0].firstHour] as const] : []))): TensionModel {
   const contributionDecimals = decimalsOf(reply.contributionScale)!;
   const raw = new Map(reply.countries.map(country => [countryKey(country), country.runs] as const));
   const tagOf = new Map(reply.countries.map(country => [countryKey(country), country.tag] as const));
@@ -77,7 +79,7 @@ export function tensionModel(reply: TensionReply, lineage = new Lineage([]), met
   const countryOf = new Map(reply.countries.map(country => [countryKey(country), slots.get(country.slot)!]));
   const identities = new Map(reply.countries.map(country => [countryKey(country), country.identities ?? []]));
   const nativeKeys = new Set(reply.countries.filter(country => country.identities !== undefined).map(countryKey));
-  return { reply, tensionDecimals: decimalsOf(reply.tensionScale)!, contributionDecimals, raw, tagOf, countryOf, identities, nativeKeys, lineage };
+  return { reply, tensionDecimals: decimalsOf(reply.tensionScale)!, contributionDecimals, raw, tagOf, countryOf, identities, nativeKeys, lineage,firstContributions };
 }
 
 /** A native layer's own proved alias at this hour; only omitted suffixes use the
@@ -166,6 +168,24 @@ export function layerRaw(model: TensionModel, read: TensionRead, raw: string, sh
   return share ? shareRaw(model, read, raw) : raw;
 }
 
+/** The same native-holder and membership clipping for exact stacks and summary requests. */
+export function selectedContributionSpans<T extends Breakable>(model: TensionModel, key: string, runs: readonly T[],
+  membership: ReadonlyMap<string, readonly Span[]> | null, membersAreCountries: boolean, countryIds: ReadonlySet<string> | null): readonly T[] {
+
+    if (!countryIds && !(membership && membersAreCountries)) return membership ? clipToSpans(runs, membership.get(model.tagOf.get(key)!) ?? []) : runs;
+    const byCountry = new Map<string, CountryIdentityRun[]>();
+    for (const identity of model.identities.get(key) ?? []) {
+      const key = countryIdentityKey(identity);
+      if (countryIds && !countryIds.has(key)) continue;
+      const spans = byCountry.get(key);
+      if (spans) spans.push(identity); else byCountry.set(key, [identity]);
+    }
+    const known = [...byCountry].flatMap(([key, spans]) => membership && membersAreCountries
+      ? clipToSpans(spans, membership.get(key) ?? []) : spans);
+    const selected = clipToSpans(runs, known);
+    return membership && !membersAreCountries ? clipToSpans(selected, membership.get(model.tagOf.get(key)!) ?? []) : selected;
+}
+
 /** The stack of the `keys` countries' contributions and Other (shares of world
  * tension, or as recorded), as plotting percentages: a run per read and layer, each
  * held until the next read, for the kit's signed stack (`buildStack`). It breaks
@@ -176,20 +196,7 @@ export function tensionStack(model: TensionModel, keys: readonly string[], share
   countryIds: ReadonlySet<string> | null = null): StackModel {
   const bands: StackRun[][] = Array.from({ length: keys.length + 1 }, () => []);
   const sources = keys.map(key => model.raw.get(key) ?? []);
-  const held = sources.map((runs, index) => {
-    if (!countryIds && !(membership && membersAreCountries)) return membership ? clipToSpans(runs, membership.get(model.tagOf.get(keys[index])!) ?? []) : runs;
-    const byCountry = new Map<string, CountryIdentityRun[]>();
-    for (const identity of model.identities.get(keys[index]) ?? []) {
-      const key = countryIdentityKey(identity);
-      if (countryIds && !countryIds.has(key)) continue;
-      const spans = byCountry.get(key);
-      if (spans) spans.push(identity); else byCountry.set(key, [identity]);
-    }
-    const known = [...byCountry].flatMap(([key, spans]) => membership && membersAreCountries
-      ? clipToSpans(spans, membership.get(key) ?? []) : spans);
-    const selected = clipToSpans(runs, known);
-    return membership && !membersAreCountries ? clipToSpans(selected, membership.get(model.tagOf.get(keys[index])!) ?? []) : selected;
-  });
+  const held = sources.map((runs,index) => selectedContributionSpans(model,keys[index],runs,membership,membersAreCountries,countryIds));
   // Membership can change between daily reads. Split there too, moving the
   // contribution to Other while keeping the value supplied by the same read.
   const cuts = membership || countryIds ? [...new Set(held.flatMap(runs => runs.flatMap(run => [run.firstHour, run.lastHour + 1])))].sort((a, b) => a - b) : [];

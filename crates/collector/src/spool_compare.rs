@@ -76,7 +76,9 @@ type Compare = fn(&FrameEncoder, Target, &mut TableInput, &mut Vec<usize>, &Atom
 macro_rules! compared_tables {
     ($($table:ident),+ $(,)?) => {
         /// Every recorded hourly table but Clock, whose row depends on the enclosing
-        /// hour, roughly in descending full-path cost so the threads finish
+        /// hour, and MapEvents, whose one row is the interval ending at the
+        /// frame's hour and so never equals the preceding hour's baseline,
+        /// roughly in descending full-path cost so the threads finish
         /// together. Other cadences reach the encoder as shared or carried rows.
         pub(crate) const TABLES: [TableId; [$(stringify!($table)),+].len()] = [$(TableId::$table),+];
         const COMPARE: [Compare; TABLES.len()] = [$(compare::<tables::$table>),+];
@@ -118,6 +120,7 @@ compared_tables!(
     WarRelations,
     LandCombatModifiers,
     LandCombatDivisionModifiers,
+    ReserveModifierTrees,
     AirBaseRegistrations,
     ProvinceSupply,
     RelationLinks,
@@ -189,6 +192,7 @@ compared_tables!(
     RadarCoverage,
     NavalBases,
     RailwayGunCounterInputs,
+    OwnerTransportSpeeds,
     CountryCommandPower,
     DivisionCensus,
     PowerBalanceMembers,
@@ -552,22 +556,28 @@ mod tests {
     };
 
     #[test]
-    fn every_hourly_table_but_the_clock_is_compared_once() {
+    fn every_hourly_table_but_the_clock_and_map_events_is_compared_once() {
         let mut seen = [false; TABLE_COUNT];
         for table in TABLES {
             assert!(!seen[table.index()], "{table:?} listed twice");
             seen[table.index()] = true;
         }
         // Retired tables are absent from current frames and never compared.
+        // Clock and MapEvents rows name the frame's own hour (MapEvents'
+        // interval ends at it), so neither can equal the preceding hour's
+        // baseline; comparing MapEvents would only ever find it dense.
         let current = replay::format::FormatVersion::CURRENT.version();
-        for table in TableId::ALL {
-            let hourly = replay::cadence::cadence(table) == Cadence::Hourly;
-            assert_eq!(
-                seen[table.index()],
-                hourly && table != TableId::Clock && table.last_change().present(current),
-                "{table:?}"
-            );
-        }
+        let misplaced: Vec<(TableId, bool)> = TableId::ALL
+            .into_iter()
+            .filter_map(|table| {
+                let hourly = replay::cadence::cadence(table) == Cadence::Hourly;
+                let names_its_hour = matches!(table, TableId::Clock | TableId::MapEvents);
+                let expected = hourly && !names_its_hour && table.last_change().present(current);
+                (seen[table.index()] != expected).then_some((table, expected))
+            })
+            .collect();
+        // Each entry is a table and whether it should be listed.
+        assert_eq!(misplaced, []);
     }
 
     fn state(id: u32, owner: u32) -> StateRow {
@@ -729,7 +739,7 @@ mod tests {
         let rows = vec![state(1, 10), state(2, 20)];
         encoder.encode_input(frame(0, rows.clone()), false).unwrap();
         let mut input = frame(1, rows);
-        crate::allocation_failure_tests::with_allocations_denied(|| {
+        crate::test_support::with_allocations_denied(|| {
             compare_frame(
                 &encoder,
                 Target {

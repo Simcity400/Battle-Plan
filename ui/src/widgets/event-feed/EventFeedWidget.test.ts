@@ -12,7 +12,7 @@ import { definition } from './definition.ts';
 
 registerWidgets([definition]);
 const host = globalThis as typeof globalThis & { __eventBounds?: {
-  ready: boolean; feed?: { active: boolean; hour: number | null; from: number | null; live: boolean };
+  ready: boolean; feed?: { active: boolean; hour: number | null; from: number | null };
   labels?: { active: boolean; wanted: unknown }; log?: { playhead: number | null };
 } };
 function source(id: string, firstHour: number, lastHour: number): DashboardSource {
@@ -32,8 +32,8 @@ test('Event feed validates the resolved track cutoff, suspends old viewport read
   // Keep the actual caller/model/clock. Replace product, artwork and list surfaces; the
   // single visible-row state stands for rows retained after the previous LogList unmount.
   const replacements: Record<string, string> = {
-    '/widgets/event-feed/useEventFeed.ts': `export const useEventFeed = (_runtime, _track, active, hour, filter, _key, live) => {
-      globalThis.__eventBounds.feed = { active, hour, from: filter.firstHour, live };
+    '/widgets/event-feed/useEventFeed.ts': `export const useEventFeed = (_runtime, _track, active, hour, filter, _key) => {
+      globalThis.__eventBounds.feed = { active, hour, from: filter.firstHour };
       return { data: globalThis.__eventBounds.ready ? { unavailable: [] } : undefined,
         pages: [], warnings: [], errors: new Map(), onWantedPages() {}, retry() {}, retryPages() {} };
     };`,
@@ -80,22 +80,26 @@ test('Event feed validates the resolved track cutoff, suspends old viewport read
     invalid(400); invalid(99);
     host.__eventBounds!.ready = false; invalid(400); host.__eventBounds!.ready = true;
     render(150);
-    assert.deepEqual(host.__eventBounds!.feed, { active: true, hour: 150, from: null, live: true });
+    assert.deepEqual(host.__eventBounds!.feed, { active: true, hour: 150, from: null });
     assert.equal(host.__eventBounds!.log!.playhead, 150);
     assert.deepEqual(host.__eventBounds!.labels, { active: true, wanted: [{ hour: 150, tag: 'native country' }] });
+    // Cursor requests follow the resolved cutoff directly; there is no separate live flag.
+    render(175);
+    assert.deepEqual(host.__eventBounds!.feed, { active: true, hour: 175, from: null }, 'Follow advances the feed cutoff with the clock');
+    assert.equal(host.__eventBounds!.log!.playhead, 175);
     widget.time = pinTime(widget, tracks, 150);
     render(400);
-    assert.deepEqual(host.__eventBounds!.feed, { active: true, hour: 150, from: null, live: false });
+    assert.deepEqual(host.__eventBounds!.feed, { active: true, hour: 150, from: null });
     assert.equal(host.__eventBounds!.log!.playhead, null, 'Pin remains held while the clock is outside this branch');
     widget.time = { mode: 'pin', windows: { short: { firstOffset: 0, lastOffset: 101 } } }; invalid(150);
     widget.time = { mode: 'pin', windows: { short: { firstOffset: 0, lastOffset: -1 } } }; invalid(150);
     widget.time = { mode: 'pin', windows: {} }; invalid(150);
     widget.time = { mode: 'campaign' }; render(400);
-    assert.deepEqual(host.__eventBounds!.feed, { active: true, hour: 200, from: null, live: false });
+    assert.deepEqual(host.__eventBounds!.feed, { active: true, hour: 200, from: null });
     widget.time = { mode: 'range', firstOffset: -50, lastOffset: 300 }; render(400);
-    assert.deepEqual(host.__eventBounds!.feed, { active: true, hour: 200, from: 50, live: false }, 'an overlapping range keeps its recorded portion');
+    assert.deepEqual(host.__eventBounds!.feed, { active: true, hour: 200, from: 50 }, 'an overlapping range keeps its recorded portion');
     widget.time = { mode: 'range', firstOffset: 20, lastOffset: 80 }; render(400);
-    assert.deepEqual(host.__eventBounds!.feed, { active: true, hour: 180, from: 120, live: false });
+    assert.deepEqual(host.__eventBounds!.feed, { active: true, hour: 180, from: 120 });
     widget.time = { mode: 'range', firstOffset: 101, lastOffset: 300 }; invalid(150);
     widget.time = { mode: 'range', firstOffset: -100, lastOffset: -1 }; invalid(150);
   } finally { delete host.__eventBounds; clock.stop(); await vite.close(); }

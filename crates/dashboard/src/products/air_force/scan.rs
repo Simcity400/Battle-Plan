@@ -9,7 +9,7 @@ use crate::{
 };
 use replay::{
     container::Replay,
-    frame::{DecodedFrame, Frame, FrameDecoder, ViewIdentity},
+    frame::{DecodedFrame, Frame, FrameDecoder},
     rows::{AirWingRow, TableId, WingEquipmentRow, tables},
 };
 use std::{
@@ -17,10 +17,10 @@ use std::{
     sync::atomic::Ordering,
 };
 
-#[derive(Default)]
-struct Track {
-    runs: Vec<RawRun>,
-    segments: Vec<HourSpan>,
+#[derive(Default, Serialize, Deserialize)]
+pub(super) struct Track {
+    pub(super) runs: Vec<RawRun>,
+    pub(super) segments: Vec<HourSpan>,
     last_identity: IdentityTrack,
     last_known: Option<(Identity, i32)>,
 }
@@ -32,7 +32,7 @@ impl Track {
             .last_mut()
             .expect("identity segment")
             .last_hour = hour;
-        self.last_identity.step(Some(identity), hour);
+        self.last_identity.advance(hour);
         self.runs.last_mut().expect("observed counts").last_hour = hour;
         if self.last_known.is_some() {
             self.last_known = Some((identity, hour));
@@ -68,22 +68,32 @@ impl Track {
     }
 }
 
-#[derive(Default)]
-struct Histories {
-    tags: HashMap<String, usize>,
-    tracks: Vec<Track>,
-    active: Vec<(usize, Identity)>,
+#[derive(Default, Serialize, Deserialize)]
+pub(super) struct Histories {
+    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
+    pub(super) tags: HashMap<String, usize>,
+    pub(super) tracks: Vec<Track>,
+    #[serde(skip)]
+    pub(super) active: Vec<(usize, Identity)>,
+    #[serde(skip)]
+    pub(super) active_tags: Vec<String>,
+    #[serde(skip)]
+    pub(super) observed: Vec<String>,
+    #[serde(skip)]
+    pub(super) removed: Vec<String>,
+    #[serde(skip)]
     slots: HashMap<u32, Vec<usize>>,
+    #[serde(skip)]
     undisplayable: Vec<Vec<u8>>,
     // Untouched tracks extend lazily to the last authenticated hour. Flush before
     // topology/coverage changes, so absent countries and gaps never get carried.
-    through: Option<i32>,
+    pub(super) through: Option<i32>,
     #[cfg(test)]
-    projected: usize,
+    pub(super) projected: usize,
 }
 
 impl Histories {
-    fn flush(&mut self) {
+    pub(super) fn flush(&mut self) {
         if let Some(hour) = self.through.take() {
             for &(track, identity) in &self.active {
                 self.tracks[track].extend(identity, hour);
@@ -92,6 +102,7 @@ impl Histories {
     }
 
     fn countries(&mut self, countries: &Countries) {
+        let previous = std::mem::take(&mut self.active_tags);
         self.active.clear();
         self.slots.clear();
         self.undisplayable.clear();
@@ -114,8 +125,15 @@ impl Histories {
                     .or_default()
                     .push(self.active.len());
                 self.active.push((track, identity));
+                self.active_tags.push(tag.to_owned());
             }
         }
+        let current: HashSet<_> = self.active_tags.iter().map(String::as_str).collect();
+        self.removed.extend(
+            previous
+                .into_iter()
+                .filter(|tag| !current.contains(tag.as_str())),
+        );
     }
 
     fn observe(
@@ -142,6 +160,9 @@ impl Histories {
             None
         };
         track.observe(identity, hour, roster, effective);
+        if track.runs.last().is_some_and(|run| run.first_hour == hour) {
+            self.observed.push(self.active_tags[active].clone());
+        }
         #[cfg(test)]
         {
             self.projected += 1;
@@ -436,6 +457,12 @@ impl Census {
                     .entry(slot)
                     .or_default()
                     .change(&wing.counts, sign);
+                if self.totals[owner]
+                    .get(&slot)
+                    .is_some_and(|total| total.wings == 0 && total.signatures.is_empty())
+                {
+                    self.totals[owner].remove(&slot);
+                }
                 self.dirty.insert(slot);
             } else {
                 self.unattributed[owner] += sign;
@@ -622,7 +649,10 @@ impl Census {
         slot: u32,
         pool: &mut HashSet<Arc<Counts>>,
     ) -> io::Result<Arc<Counts>> {
-        self.totals[owner].entry(slot).or_default().counts(pool)
+        match self.totals[owner].get_mut(&slot) {
+            Some(totals) => totals.counts(pool),
+            None => Ok(shared_counts(Counts::default(), pool)),
+        }
     }
 }
 
@@ -633,6 +663,296 @@ fn shared_counts(counts: Counts, pool: &mut HashSet<Arc<Counts>>) -> Arc<Counts>
     let counts = Arc::new(counts);
     pool.insert(Arc::clone(&counts));
     counts
+}
+
+#[derive(Default, Serialize, Deserialize)]
+pub(crate) struct Scan {
+    pub(super) histories: Histories,
+    pub(super) result: ScannedAir,
+    previous_complete: [bool; 2],
+    variant_tokens: BTreeMap<u64, String>,
+    definitions_complete: bool,
+    last_hour: Option<i32>,
+    #[serde(skip)]
+    variants: Option<VariantCatalogue>,
+    #[serde(skip)]
+    counts_pool: HashSet<Arc<Counts>>,
+    #[serde(skip)]
+    pub(super) countries: Countries,
+    #[serde(skip)]
+    census: Census,
+    #[serde(skip)]
+    pub(super) applied: Option<i32>,
+    #[serde(skip)]
+    rates: [usize; 5],
+    #[serde(skip)]
+    joined: bool,
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(super) work: crate::prepared::observer_tests::Work,
+}
+impl Scan {
+    /// Rebuild transient joins from the committed decoder frame without repeating its history or counters.
+    pub(super) fn rejoin(
+        &mut self,
+        frame: &Frame,
+        decoded: &DecodedFrame,
+        format: replay::format::FormatVersion,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        if self.last_hour != Some(decoded.hour) || self.applied.is_some() {
+            return Ok(());
+        }
+        let histories = std::mem::take(&mut self.histories);
+        let result = std::mem::take(&mut self.result);
+        let previous_complete = self.previous_complete;
+        self.last_hour = decoded.hour.checked_sub(1);
+        self.step_changes(frame, decoded, format, cancelled, None)?;
+        self.histories = histories;
+        self.result = result;
+        self.previous_complete = previous_complete;
+        self.histories.countries(&self.countries);
+        self.applied = Some(decoded.hour);
+        Ok(())
+    }
+    pub(super) fn step_changes(
+        &mut self,
+        frame: &Frame,
+        decoded: &DecodedFrame,
+        format: replay::format::FormatVersion,
+        cancelled: &AtomicBool,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+    ) -> io::Result<()> {
+        self.histories.observed.clear();
+        self.histories.removed.clear();
+        let joined = self.countries.update(decoded);
+        self.joined = !matches!(joined, Ok(false));
+        let unchanged = self
+            .last_hour
+            .is_some_and(|at| at.checked_add(1) == Some(decoded.hour))
+            && matches!(joined, Ok(false))
+            && changes.is_some_and(|changes| {
+                ![
+                    TableId::AirWings,
+                    TableId::WingEquipment,
+                    TableId::VariantDefinitions,
+                    TableId::LexicalTokens,
+                ]
+                .iter()
+                .any(|id| changes.rows_changed[id.index()])
+                    && !changes.slot_read[TableId::VariantDefinitions.index()]
+            });
+        if unchanged {
+            self.last_hour = Some(decoded.hour);
+            if self.histories.through.is_some() {
+                self.histories.through = Some(decoded.hour);
+            }
+            if let Some(variants) = &mut self.variants {
+                variants.advance(decoded.hour);
+            }
+            self.result.unreadable_owners[0] += self.rates[0];
+            self.result.unreadable_owners[1] += self.rates[1];
+            self.result.equipment_missing += self.rates[2];
+            self.result.equipment_refused += self.rates[3];
+            self.result.equipment_remainders += self.rates[4];
+            for tag in &self.histories.undisplayable {
+                *self
+                    .result
+                    .undisplayable_tags
+                    .entry(tag.clone())
+                    .or_default() += 1;
+            }
+            return Ok(());
+        }
+        let before = [
+            self.result.unreadable_owners[0],
+            self.result.unreadable_owners[1],
+            self.result.equipment_missing,
+            self.result.equipment_refused,
+            self.result.equipment_remainders,
+        ];
+        #[cfg(test)]
+        {
+            if let Some(changes) = changes {
+                self.work.row_visits += <super::prepared::Air as crate::products::parts_race_prepared::Family>::SAMPLE_TABLES.iter()
+                    .filter(|id| changes.rows_changed[id.index()])
+                    .map(|id| match &*decoded.tables[id.index()] { replay::frame::TableView::Complete(rows)
+                        | replay::frame::TableView::Truncated { rows, .. } => rows.len(), _ => 0 }).sum::<usize>();
+            }
+        }
+        self.step(frame, decoded, format, cancelled)?;
+        self.applied = Some(decoded.hour);
+        self.rates = [
+            self.result.unreadable_owners[0],
+            self.result.unreadable_owners[1],
+            self.result.equipment_missing,
+            self.result.equipment_refused,
+            self.result.equipment_remainders,
+        ];
+        for (rate, before) in self.rates.iter_mut().zip(before) {
+            *rate -= before;
+        }
+        Ok(())
+    }
+    pub(super) fn step(
+        &mut self,
+        frame: &Frame,
+        decoded: &DecodedFrame,
+        format: replay::format::FormatVersion,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        let Self {
+            histories,
+            result,
+            previous_complete,
+            variant_tokens,
+            definitions_complete,
+            last_hour,
+            variants,
+            counts_pool,
+            countries,
+            census,
+            joined,
+            ..
+        } = self;
+        let variants = variants.get_or_insert_with(|| {
+            let mut catalogue = VariantCatalogue::default();
+            catalogue.versions = variant_tokens
+                .iter()
+                .map(|(&id, token)| {
+                    (
+                        id,
+                        vec![super::super::equipment::VariantVersion {
+                            first_hour: last_hour.unwrap_or(decoded.hour),
+                            raw: Some(super::super::equipment::RawVariant {
+                                id,
+                                token: token.clone(),
+                                ..Default::default()
+                            }),
+                        }],
+                    )
+                })
+                .collect();
+            catalogue
+        });
+        let hour = decoded.hour;
+        let continuous = last_hour.is_some_and(|last| last.checked_add(1) == Some(hour));
+        *last_hour = Some(hour);
+        if !continuous {
+            variants.forget(hour);
+            variant_tokens.clear();
+        }
+        let complete = decoded.complete::<tables::VariantDefinitions>().is_ok();
+        let check_names = !continuous
+            || complete != *definitions_complete
+            || slot_read(format, &decoded.metrics, TableId::VariantDefinitions, hour);
+        *definitions_complete = complete;
+        variants.observe(format, decoded);
+        let names_changed = if check_names {
+            let mut changed = false;
+            if complete
+                && decoded.complete::<tables::Countries>().is_ok()
+                && decoded.complete::<tables::CountryLinks>().is_ok()
+                && decoded.complete::<tables::LexicalTokens>().is_ok()
+            {
+                for definition in decoded
+                    .complete::<tables::VariantDefinitions>()
+                    .unwrap_or_default()
+                {
+                    if let Some(raw) = variants.current(definition.id)
+                        && variant_tokens.get(&definition.id) != Some(&raw.token)
+                    {
+                        variant_tokens.insert(definition.id, raw.token.clone());
+                        changed = true;
+                    }
+                }
+            } else {
+                changed = !variant_tokens.is_empty();
+                variant_tokens.clear();
+            }
+            changed
+        } else {
+            false
+        };
+        let rebuild = !continuous || names_changed;
+        let Ok(countries_changed) = countries.update(decoded) else {
+            histories.flush();
+            histories.removed.append(&mut histories.active_tags);
+            histories.active.clear();
+            census.ready = false;
+            return Ok(());
+        };
+        let countries_changed = countries_changed || *joined;
+        let complete = census.update(
+            Inputs {
+                decoded,
+                frame,
+                variants,
+                countries,
+                rebuild: rebuild || countries_changed,
+            },
+            result,
+            counts_pool,
+            cancelled,
+        )?;
+        let sparse_history = continuous
+            && !countries_changed
+            && histories.through.is_some()
+            && *previous_complete == [true; 2]
+            && complete == [true; 2];
+        if !sparse_history {
+            histories.flush();
+            // Balance-only country reads retain this native slot/tag join.
+            histories.countries(countries);
+        }
+        for tag in &histories.undisplayable {
+            *result.undisplayable_tags.entry(tag.clone()).or_default() += 1;
+        }
+        if sparse_history {
+            let affected: Vec<_> = census
+                .dirty
+                .iter()
+                .filter_map(|slot| histories.slots.get(slot))
+                .flatten()
+                .copied()
+                .collect();
+            for active in affected {
+                histories.observe(active, hour, complete, census, counts_pool)?;
+            }
+        } else {
+            for active in 0..histories.active.len() {
+                histories.observe(active, hour, complete, census, counts_pool)?;
+            }
+        }
+        *previous_complete = complete;
+        histories.through = Some(hour);
+        Ok(())
+    }
+    pub(super) fn published(&mut self) {
+        // Open tracks and census snapshots retain their Arcs; historical intern entries can go.
+        self.counts_pool.clear();
+        if let Some(variants) = &mut self.variants {
+            for versions in variants.versions.values_mut() {
+                if versions.len() > 1 {
+                    versions.drain(..versions.len() - 1);
+                }
+            }
+        }
+    }
+    pub(super) fn finish(mut self) -> ScannedAir {
+        self.histories.flush();
+        #[cfg(test)]
+        {
+            self.result.reconciled_wings = self.census.reconciled;
+            self.result.projected_countries = self.histories.projected;
+        }
+        for (tag, index) in self.histories.tags {
+            let track = std::mem::take(&mut self.histories.tracks[index]);
+            self.result.segments.insert(tag.clone(), track.segments);
+            self.result.series.insert(tag, track.runs);
+        }
+        self.result
+    }
 }
 
 pub(super) fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<ScannedAir> {
@@ -651,17 +971,7 @@ pub(super) fn scan_with_decode(
     }
     let mut selected = VariantCatalogue::TABLES.to_vec();
     selected.extend([TableId::Campaign, TableId::AirWings, TableId::WingEquipment]);
-    let mut variants = VariantCatalogue::default();
-    let mut histories = Histories::default();
-    let mut previous_complete = [false; 2];
-    let mut result = ScannedAir::default();
-    // Equal immutable censuses share storage, including both ownership modes.
-    let mut counts_pool = HashSet::new();
-    let mut last_projection: Option<(i32, Vec<ViewIdentity>)> = None;
-    let mut countries = Countries::default();
-    let mut census = Census::default();
-    let mut variant_tokens: BTreeMap<u64, String> = BTreeMap::new();
-    let mut definitions_complete = false;
+    let mut observer = Scan::default();
     crate::blocks::scan_blocks(
         replay,
         replay.index.iter().filter(|block| block.branch == branch),
@@ -696,144 +1006,11 @@ pub(super) fn scan_with_decode(
                     if validate_campaign(decoded, replay).is_err() {
                         break;
                     }
-                    let hour = decoded.hour;
-                    let continuous = last_projection
-                        .as_ref()
-                        .is_some_and(|(last, _)| last.checked_add(1) == Some(hour));
-                    let complete = decoded.complete::<tables::VariantDefinitions>().is_ok();
-                    let check_names = !continuous
-                        || complete != definitions_complete
-                        || slot_read(
-                            replay.format,
-                            &decoded.metrics,
-                            TableId::VariantDefinitions,
-                            hour,
-                        );
-                    definitions_complete = complete;
-                    variants.observe(replay.format, decoded);
-                    let names_changed = if check_names {
-                        let current: BTreeMap<_, _> = variants
-                            .versions
-                            .iter()
-                            .filter_map(|(&id, _)| {
-                                variants.current(id).map(|raw| (id, raw.token.clone()))
-                            })
-                            .collect();
-                        let changed = variant_tokens != current;
-                        variant_tokens = current;
-                        changed
-                    } else {
-                        false
-                    };
-                    let projection: Vec<_> = [
-                        TableId::Countries,
-                        TableId::CountryLinks,
-                        TableId::AirWings,
-                        TableId::WingEquipment,
-                        TableId::VariantDefinitions,
-                        TableId::LexicalTokens,
-                    ]
-                    .iter()
-                    .map(|table| decoded.tables[table.index()].identity())
-                    .collect();
-                    let unchanged =
-                        last_projection
-                            .as_ref()
-                            .is_some_and(|(last_hour, previous)| {
-                                last_hour.checked_add(1) == Some(hour)
-                                    && !slot_read(
-                                        replay.format,
-                                        &decoded.metrics,
-                                        TableId::VariantDefinitions,
-                                        hour,
-                                    )
-                                    && previous
-                                        .iter()
-                                        .zip(&projection)
-                                        .all(|(old, current)| old == current)
-                            });
-                    let rebuild = !continuous || names_changed;
-                    last_projection = Some((hour, projection));
-                    if unchanged && histories.through.is_some() {
-                        // Identical authenticated tables confirm another recorded hour.
-                        histories.through = Some(hour);
-                        continue;
-                    }
-                    let Ok(countries_changed) = countries.update(decoded) else {
-                        histories.flush();
-                        census.ready = false;
-                        continue;
-                    };
-                    let complete = census.update(
-                        Inputs {
-                            decoded,
-                            frame: &frame,
-                            variants: &variants,
-                            countries: &countries,
-                            rebuild: rebuild || countries_changed,
-                        },
-                        &mut result,
-                        &mut counts_pool,
-                        cancelled,
-                    )?;
-                    let sparse_history = continuous
-                        && !countries_changed
-                        && histories.through.is_some()
-                        && previous_complete == [true; 2]
-                        && complete == [true; 2];
-                    if !sparse_history {
-                        histories.flush();
-                        // Balance-only country reads retain this native slot/tag join.
-                        histories.countries(&countries);
-                    }
-                    for tag in &histories.undisplayable {
-                        *result.undisplayable_tags.entry(tag.clone()).or_default() += 1;
-                    }
-                    if sparse_history {
-                        let affected: Vec<_> = census
-                            .dirty
-                            .iter()
-                            .filter_map(|slot| histories.slots.get(slot))
-                            .flatten()
-                            .copied()
-                            .collect();
-                        for active in affected {
-                            histories.observe(
-                                active,
-                                hour,
-                                complete,
-                                &mut census,
-                                &mut counts_pool,
-                            )?;
-                        }
-                    } else {
-                        for active in 0..histories.active.len() {
-                            histories.observe(
-                                active,
-                                hour,
-                                complete,
-                                &mut census,
-                                &mut counts_pool,
-                            )?;
-                        }
-                    }
-                    previous_complete = complete;
-                    histories.through = Some(hour);
+                    observer.step(&frame, decoded, replay.format, cancelled)?;
                 }
             }
             Ok(())
         },
     )?;
-    histories.flush();
-    #[cfg(test)]
-    {
-        result.reconciled_wings = census.reconciled;
-        result.projected_countries = histories.projected;
-    }
-    for (tag, index) in histories.tags {
-        let track = std::mem::take(&mut histories.tracks[index]);
-        result.segments.insert(tag.clone(), track.segments);
-        result.series.insert(tag, track.runs);
-    }
-    Ok(result)
+    Ok(observer.finish())
 }

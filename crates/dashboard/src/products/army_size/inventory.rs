@@ -206,6 +206,7 @@ pub(super) struct Inventory {
     compiled: HashMap<u64, Composition>,
     parts: HashMap<u32, Parts>,
     unknown_owner: [i128; 2],
+    pub(super) dirty: std::collections::BTreeSet<u32>,
     links: Option<ViewIdentity>,
     lexical: Option<ViewIdentity>,
     names: HashMap<u32, String>,
@@ -319,6 +320,7 @@ fn edit_parts(parts: &mut HashMap<u32, Parts>, slot: u32, counts: [i128; 2], val
 
 impl Inventory {
     pub fn apply_changes(&mut self, frame: &Frame, decoded: &replay::frame::DecodedFrame) {
+        self.dirty.clear();
         let links = decoded.complete::<tables::CountryLinks>().ok();
         let view = links.map(|_| &decoded.tables[TableId::CountryLinks.index()]);
         let changed_links = match (&self.links, view) {
@@ -370,6 +372,7 @@ impl Inventory {
             };
         }
         if changed_links || matches!(&divisions, Applied::Reset(_) | Applied::Missing) {
+            self.dirty.extend(self.core.keys().copied());
             self.core.clear();
             self.members.clear();
             self.weights.clear();
@@ -384,6 +387,7 @@ impl Inventory {
                     &mut self.core,
                     &mut self.unknown_owner,
                 );
+                self.dirty.extend(slots.into_iter().flatten());
                 edit_weights(row.template, slots, 1, &mut self.members, &mut self.weights);
             }
         } else if let Applied::Changes(edits) = divisions {
@@ -408,6 +412,8 @@ impl Inventory {
                         &mut self.unknown_owner,
                     )
                 });
+                self.dirty
+                    .extend(before.into_iter().chain(after).flatten().flatten());
                 if before == after
                     && old.as_ref().map(|row| row.template) == new.as_ref().map(|row| row.template)
                 {
@@ -445,6 +451,7 @@ impl Inventory {
                         let Some(slot) = link_slot(links, raw) else {
                             continue;
                         };
+                        self.dirty.insert(slot);
                         let core = self.core.entry(slot).or_default();
                         edit_manpower(core, index, old.as_ref(), -1);
                         edit_manpower(core, index, new.as_ref(), 1);
@@ -452,6 +459,7 @@ impl Inventory {
                 }
             }
             Applied::Missing => {
+                self.dirty.extend(self.core.keys().copied());
                 for core in self.core.values_mut() {
                     core.manpower = [0, 0];
                     core.bad_manpower = core.count;
@@ -494,12 +502,14 @@ impl Inventory {
             self.lexical = view.map(|view| view.identity());
         }
         if self.rebuild_parts {
+            self.dirty.extend(self.parts.keys().copied());
             self.parts.clear();
             self.rebuild_parts = false;
             self.generation = self.generation.wrapping_add(1);
         }
         let unknown = None;
         for ((template, slot), counts) in self.weights.drain() {
+            self.dirty.insert(slot);
             edit_parts(
                 &mut self.parts,
                 slot,
@@ -541,6 +551,7 @@ impl Inventory {
             let old = self.compiled.get(&template).unwrap_or(&unknown);
             if old != &value {
                 for (slot, counts) in self.members.get(&template).into_iter().flatten() {
+                    self.dirty.insert(*slot);
                     edit_parts(&mut self.parts, *slot, counts.map(|count| -count), old);
                     edit_parts(&mut self.parts, *slot, *counts, &value);
                 }

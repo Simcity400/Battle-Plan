@@ -1,5 +1,6 @@
 use super::*;
 use crate::{foreign_unwind_probe as probe, hook::Hook};
+use std::ptr;
 use windows_sys::Win32::System::Diagnostics::Debug::RtlLookupFunctionEntry;
 
 static RAISE: AtomicUsize = AtomicUsize::new(0);

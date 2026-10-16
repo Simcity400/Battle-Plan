@@ -6,7 +6,7 @@ Country political-power balance lines with markers for one-off payments and a sh
 
 ## Products it reads
 
-[`country-measure`](../../../../crates/dashboard/src/products/country_measure.rs) (`politicalPower`) supplies balances; [`politics-ledger`](../../../../crates/dashboard/src/products/politics_ledger.rs) supplies daily accounting and matched payments. Shared looks/groups follow the [widget contract](../README.md#contract).
+[`country-measure`](../../../../crates/dashboard-base/src/products/country_measure.rs) (`politicalPower`) supplies balances; [`politics-ledger`](../../../../crates/dashboard-politics-ledger/src/products/politics_ledger.rs) supplies daily accounting and matched payments. Shared looks/groups follow the [widget contract](../README.md#contract).
 
 ## Settings
 

@@ -4,8 +4,10 @@
 use super::*;
 use replay::{container::Replay, frame::FrameDecoder};
 
+#[cfg(test)]
 const CACHED_BRANCHES: usize = 4;
 
+#[cfg(test)]
 #[derive(Default)]
 struct WorldBuilder {
     /// The recording's format, which dates its daily tables
@@ -19,7 +21,9 @@ struct WorldBuilder {
     projected_frames: usize,
 }
 
+#[cfg(test)]
 impl WorldBuilder {
+    #[cfg(test)]
     fn observe(&mut self, frame: &DecodedFrame) {
         const VIEWS: [TableId; 4] = [
             TableId::Countries,
@@ -81,7 +85,7 @@ impl WorldBuilder {
                 } else {
                     *self
                         .warnings
-                        .entry("Project owner has no recorded CountryLinks mapping.".into())
+                        .entry(prepared::completion_stream::UNMAPPED_PROJECT_OWNER.into())
                         .or_default() += 1;
                 }
             }
@@ -95,7 +99,7 @@ impl WorldBuilder {
                 } else {
                     *self
                         .warnings
-                        .entry("Project history owner has no recorded CountryLinks mapping.".into())
+                        .entry(prepared::completion_stream::UNMAPPED_HISTORY_OWNER.into())
                         .or_default() += 1;
                 }
             }
@@ -137,23 +141,14 @@ impl WorldBuilder {
     }
 }
 
+#[cfg(test)]
 fn scan_completions(
     replay: &Replay,
     scan: &history::BranchScan,
     branch: u64,
-    mut content: Option<&mut Content>,
+    content: Option<&mut Content>,
     cancelled: &AtomicBool,
 ) -> io::Result<ProjectCompletions> {
-    if let Some(content) = content.as_deref_mut()
-        && scripted_names(&content.definitions, &content.catalogue.localisation)
-        && !content.scoped.iter().any(|(seen, _)| *seen == branch)
-    {
-        let names = history::scoped_names(replay, scan, branch, content, cancelled)?;
-        content.scoped.push((branch, Arc::new(names)));
-        if content.scoped.len() > CACHED_BRANCHES {
-            content.scoped.remove(0);
-        }
-    }
     let mut world = WorldBuilder {
         format: scan.format,
         campaign_start: scan.campaign_start,
@@ -180,6 +175,7 @@ fn scan_completions(
     finish(world, replay, branch, content, cancelled)
 }
 
+#[cfg(test)]
 fn finish(
     world: WorldBuilder,
     replay: &Replay,
@@ -199,14 +195,92 @@ fn finish(
         }
         observations.extend(builder.completions.into_values());
     }
-    let mut pending = BTreeMap::<i32, Vec<CompletionObservation>>::new();
-    for observation in observations {
+    let presented = present_observations(
+        replay,
+        branch,
+        observations
+            .into_iter()
+            .enumerate()
+            .map(|(id, row)| (id as u64, row))
+            .collect(),
+        content.as_deref_mut(),
+        cancelled,
+    )?;
+    let mut events = Vec::new();
+    for row in presented {
+        if let Some(event) = row.completion {
+            events.push(event);
+        }
+        for (reason, count) in row.warnings {
+            *counts.entry(reason).or_default() += count;
+        }
+    }
+    let warnings = content.as_ref().map_or_else(Vec::new, |content| {
+        let mut warnings = content.definitions.warnings.clone();
+        warnings.extend(content.catalogue.verification.iter().cloned());
+        warnings
+    });
+    let texts = take_refusals(content.as_deref());
+    let refusals = refusal_totals(counts, &texts);
+    if let Some(content) = content.as_ref() {
+        content
+            .refusals
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .merge(&texts);
+    }
+    Ok(ProjectCompletions {
+        events,
+        warnings,
+        refusals,
+        unavailable: (!available).then(|| {
+            "Projects was unavailable, incomplete, or never read for any country.".to_owned()
+        }),
+    })
+}
+
+pub(super) fn refusal_totals(
+    mut counts: BTreeMap<String, usize>,
+    texts: &catalogue::Refusals,
+) -> Vec<(String, usize)> {
+    for (reason, count) in texts.counted_diagnostic_lines("Project texts") {
+        *counts.entry(reason).or_default() += count;
+    }
+    counts.into_iter().collect()
+}
+
+/// Transient presentation work; raw observations never enter prepared state.
+pub(super) struct PresentedCompletion {
+    pub id: u64,
+    pub observation: CompletionObservation,
+    pub completion: Option<ProjectCompletion>,
+    pub warnings: BTreeMap<String, usize>,
+    pub refusals: catalogue::Refusals,
+}
+
+/// Present newly recognised changes at their native hours, decoding each selected
+/// block once. The recording oracle and preparation share this presenter.
+pub(super) fn present_observations(
+    replay: &Replay,
+    branch: u64,
+    observations: Vec<(u64, CompletionObservation)>,
+    mut content: Option<&mut Content>,
+    cancelled: &AtomicBool,
+) -> io::Result<Vec<PresentedCompletion>> {
+    let mut pending = BTreeMap::<i32, Vec<(u64, CompletionObservation)>>::new();
+    for (id, observation) in observations {
         pending
             .entry(observation.date.hour)
             .or_default()
-            .push(observation);
+            .push((id, observation));
     }
-    let selected = vec![
+    if pending.is_empty() {
+        return Ok(Vec::new());
+    }
+    let scoped = content.as_ref().is_some_and(|content| {
+        scripted_names(&content.definitions, &content.catalogue.localisation)
+    });
+    let mut selected = vec![
         TableId::Campaign,
         TableId::Countries,
         TableId::CountryLinks,
@@ -216,7 +290,12 @@ fn finish(
         TableId::CharacterPortraits,
         TableId::CountryAppearance,
     ];
-    let mut events = Vec::new();
+    if scoped {
+        selected.push(TableId::Projects);
+        selected.extend_from_slice(crate::triggers::RECORDED_TABLES);
+        selected.sort_unstable();
+        selected.dedup();
+    }
     let blocks: Vec<_> = replay
         .index
         .iter()
@@ -228,21 +307,27 @@ fn finish(
                     .is_some()
         })
         .collect();
-    // Every relevant block is decoded forward once, including the prefix needed
-    // to reconstruct its native event hours. No completion performs a seek.
-    if !blocks.is_empty() {
+    let saved_names = if scoped {
+        content
+            .as_deref_mut()
+            .map(|content| std::mem::take(&mut content.scoped))
+    } else {
+        None
+    };
+    let mut names = history::NameScan::default();
+    let mut aggregate = take_refusals(content.as_deref());
+    let result = (|| {
+        let mut result = Vec::new();
         crate::blocks::scan_blocks(replay, blocks, &selected, cancelled, |blocks| {
             for (block, frames) in blocks {
+                crate::metadata::check_cancel(cancelled)?;
                 let Some((&last_needed, _)) = pending
                     .range(block.first_hour..=block.last_hour)
                     .next_back()
                 else {
                     continue;
                 };
-                crate::metadata::check_cancel(cancelled)?;
-                let Ok(frames) = frames else {
-                    continue;
-                };
+                let Ok(frames) = frames else { continue };
                 let mut decoder = FrameDecoder::for_tables(&selected);
                 for frame in frames {
                     if frame.hour > last_needed {
@@ -254,6 +339,19 @@ fn finish(
                     };
                     if validate_campaign(frame, replay).is_err() {
                         break;
+                    }
+                    if scoped && let Some(content) = content.as_deref_mut() {
+                        names.observe(
+                            frame,
+                            &history::Actors::read(frame),
+                            slot_read(replay.format, &frame.metrics, TableId::Projects, frame.hour),
+                            content,
+                            cancelled,
+                        )?;
+                        content.scoped.clear();
+                        content
+                            .scoped
+                            .push((branch, Arc::new(names.take_current())));
                     }
                     let Some(observations) = pending.remove(&frame.hour) else {
                         continue;
@@ -273,68 +371,70 @@ fn finish(
                                 .collect::<BTreeMap<_, _>>()
                         })
                         .unwrap_or_default();
-                    for observation in observations {
-                        let Some(tag) = identities.get(&observation.identity) else {
-                            *counts.entry("Project country identity could not be resolved at its completion hour.".into()).or_default() += 1;
-                            continue;
+                    for (id, observation) in observations {
+                        let mut warnings = BTreeMap::new();
+                        let completion = match identities.get(&observation.identity) {
+                            None => {
+                                warnings.insert("Project country identity could not be resolved at its completion hour.".into(), 1);
+                                None
+                            }
+                            Some(tag) => {
+                                match std::str::from_utf8(tag) {
+                                    Err(_) => {
+                                        warnings.insert("Project country tag at its completion hour is non-UTF-8.".into(), 1);
+                                        None
+                                    }
+                                    Ok(tag) => Some(present_completion(
+                                        tag.to_owned(),
+                                        observation.clone(),
+                                        frame,
+                                        content.as_deref_mut(),
+                                        &mut warnings,
+                                    )),
+                                }
+                            }
                         };
-                        let Ok(tag) = std::str::from_utf8(tag) else {
-                            *counts
-                                .entry(
-                                    "Project country tag at its completion hour is non-UTF-8."
-                                        .into(),
-                                )
-                                .or_default() += 1;
-                            continue;
-                        };
-                        events.push(present_completion(
-                            tag.to_owned(),
+                        let refusals = take_refusals(content.as_deref());
+                        aggregate.merge(&refusals);
+                        result.push(PresentedCompletion {
+                            id,
                             observation,
-                            frame,
-                            content.as_deref_mut(),
-                            &mut counts,
-                        ));
+                            completion,
+                            warnings,
+                            refusals,
+                        });
                     }
                 }
             }
             Ok(())
         })?;
-    }
-    let missing = pending.values().map(Vec::len).sum::<usize>();
-    if missing > 0 {
-        *counts
-            .entry("Project completion hour was not recorded.".into())
-            .or_default() += missing;
-    }
-    let warnings = content.as_ref().map_or_else(Vec::new, |content| {
-        let mut warnings = content.definitions.warnings.clone();
-        warnings.extend(content.catalogue.verification.iter().cloned());
-        warnings
-    });
-    if let Some(content) = content.as_ref() {
-        for (reason, count) in content
+        for (id, observation) in pending.into_values().flatten() {
+            result.push(PresentedCompletion {
+                id,
+                observation,
+                completion: None,
+                warnings: BTreeMap::from([("Project completion hour was not recorded.".into(), 1)]),
+                refusals: Default::default(),
+            });
+        }
+        Ok(result)
+    })();
+    if let Some(content) = content {
+        content
             .refusals
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .counted_diagnostic_lines("Project texts")
-        {
-            *counts.entry(reason).or_default() += count;
+            .merge(&aggregate);
+        if let Some(saved) = saved_names {
+            content.scoped = saved;
         }
     }
-    let refusals = counts.into_iter().collect();
-    Ok(ProjectCompletions {
-        events,
-        warnings,
-        refusals,
-        unavailable: (!available).then(|| {
-            "Projects was unavailable, incomplete, or never read for any country.".to_owned()
-        }),
-    })
+    result
 }
 
 /// Country-prefixed project text follows the same native selector as the topic.
 /// Dollar aliases are expanded before deciding whether country frame inputs are needed.
-fn scripted_names(
+pub(super) fn scripted_names(
     definitions: &Catalog,
     localisation: &installed_content::localisation::Localisation,
 ) -> bool {
@@ -360,7 +460,7 @@ fn scripted_names(
     })
 }
 
-fn structural_reason(reason: &str) -> String {
+pub(super) fn structural_reason(reason: &str) -> String {
     if let Some((project, offset)) = reason
         .strip_prefix("Project ")
         .and_then(|rest| rest.split_once(" has unsupported native state offset "))
@@ -374,7 +474,7 @@ fn structural_reason(reason: &str) -> String {
     }
 }
 
-fn present_completion(
+pub(super) fn present_completion(
     tag: String,
     observation: CompletionObservation,
     frame: &DecodedFrame,
@@ -443,6 +543,7 @@ fn present_completion(
     event
 }
 
+#[cfg(test)]
 pub(crate) fn completion_events(
     source: &Source,
     branch: u64,
@@ -513,6 +614,7 @@ pub(crate) fn completion_events(
     let events = Arc::new(events);
     let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
     if !same_content(&cache.catalogue) {
+        #[cfg(test)]
         cache.replies.clear();
         cache.completions.clear();
         cache.catalogue = catalogue;

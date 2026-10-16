@@ -293,7 +293,15 @@ fn army_size_scale_including_wire_decode() {
                         state.compose(decoded);
                         let composition = start.elapsed().as_secs_f64() * 1000.0;
                         let start = Instant::now();
-                        observe_totals(&mut built, decoded, &frame, &replay, 1, &mut state);
+                        observe_totals(
+                            &mut built,
+                            decoded,
+                            &frame,
+                            replay.format,
+                            false,
+                            &mut state,
+                            None,
+                        );
                         let countries = start.elapsed().as_secs_f64() * 1000.0;
                         let index = usize::from(detailed);
                         for (stage, value) in [decode, apply, countries, composition]
@@ -534,13 +542,14 @@ fn army_size_scale_window_reply_sizes() {
                     window: Some(1),
                 };
                 let (series, series_bytes) =
-                    reply_series(black_box(&scanned), &params, &range, None, &cancelled).unwrap();
+                    reply_series(black_box(&scanned), &params, &range, None, &cancelled, None)
+                        .unwrap();
                 let reply = ArmySizeReply {
                     branch_id: "1".into(),
                     available: true,
                     windows: vec![],
                     window: Some(1),
-                    interval: Some(range.clone()),
+                    interval: Some(range),
                     measures: vec![
                         ArmyMeasure::Divisions,
                         ArmyMeasure::Strength,
@@ -593,7 +602,7 @@ fn army_size_scale_window_reply_sizes() {
         by_type: true,
         window: Some(1),
     };
-    let (mut series, _) = reply_series(&scanned, &params, &range, None, &cancelled).unwrap();
+    let (mut series, _) = reply_series(&scanned, &params, &range, None, &cancelled, None).unwrap();
     let mut warnings = vec![];
     let types = composition_reply(
         &source,
@@ -611,7 +620,7 @@ fn army_size_scale_window_reply_sizes() {
         available: true,
         windows: vec![],
         window: Some(1),
-        interval: Some(range.clone()),
+        interval: Some(range),
         measures: vec![
             ArmyMeasure::Divisions,
             ArmyMeasure::Strength,

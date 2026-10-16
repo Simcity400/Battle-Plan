@@ -1,7 +1,9 @@
+import type { useTradeFlows } from './useTradeFlows';
 import { useCallback, useMemo, useState } from 'react';
 import DrillParts from '../../charts/drill/DrillParts';
 import type { DrillPart } from '../../charts/drill/DrillParts';
 import { dayLabel, drawBands, drawPlayhead, drawValueRule } from '../../charts/draw';
+import { drawApproximateSpans } from '../../charts/chartSummary';
 import Legend from '../../charts/Legend';
 import type { LegendItem } from '../../charts/Legend';
 import { compactStack, compactStackExtent, forEachCompactStackSegment } from '../../charts/stack';
@@ -18,7 +20,7 @@ import type { NameAt } from '../../dashboard/countryNamesAt';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import type { HourSpan, ResourceInfo } from '../../generated/dashboard';
-import { contributionHistory, contributionMeasureExtent, contributionMeasureModel, forEachContributionMeasureSegment } from './tradeDrill';
+import { preparedContributionStack, contributionHistory, contributionMeasureExtent, contributionMeasureModel, forEachContributionMeasureSegment } from './tradeDrill';
 import { bandGroups, countryParts, countryTotal, countryTrade, divergingExtent, mergedBands, mirrored, partnerFact } from './tradeCountry';
 import type { CountryPart, TradeDirection } from './tradeCountry';
 import { coverageNote, knownSpanAt, measureNote, resourceName } from './tradeData';
@@ -38,11 +40,12 @@ export function resourceLegendItems(resources: readonly ResourceInfo[], colours:
 /** One country's whole trade: what it imported and exported, by resource and by
  * partner, at the drill's day for the widget's measure, and the same over time with
  * exports above the axis and imports below it. */
-export default function TradeCountryView({ holder, trade, resources, track, runtime, measure, from, hour, extent, playhead, colours, tokens, active, onPick, onContextMenu }: {
+export default function TradeCountryView({ prepared, holder, trade, resources, track, runtime, measure, from, hour, extent, playhead, colours, tokens, active, onPick, onContextMenu }: {
   holder: string; trade: TradeData; resources: ReadonlySet<number> | null; track: BoundTrack; runtime: WidgetRuntime; measure: Measure; from: number;
   hour: number | null; extent: [number, number]; playhead: number | null;
   colours: ReadonlyMap<number, string>; tokens: ChartTokens; active: boolean; onPick: (hour: number) => void;
   onContextMenu: (hour: number, x: number, y: number) => void;
+  prepared?: Pick<ReturnType<typeof useTradeFlows>, 'onSummaryView' | 'onHover' | 'onNavigateHour' | 'keyboardHour' | 'keyboardRevision' | 'hasExactHour'>;
 }) {
   const known: readonly HourSpan[] = trade.reply.known;
   const decimals = trade.reply.decimals;
@@ -97,6 +100,7 @@ export default function TradeCountryView({ holder, trade, resources, track, runt
   [parts, visible, facts, labels.labelAt, factHour, amount, scale, resourceInfo, colours, tokens.muted]);
 
   // Over time: the same measure, each deal a band in its resource's colour.
+  const dense = useMemo(() => ({ imports: preparedContributionStack(country.imports), exports: preparedContributionStack(country.exports) }), [country]);
   const stacks = useMemo(() => measure === 'current' ? {
     imports: compactStack(country.imports.map(flow => contributionHistory(flow, known))),
     exports: compactStack(country.exports.map(flow => contributionHistory(flow, known))),
@@ -120,7 +124,13 @@ export default function TradeCountryView({ holder, trade, resources, track, runt
           const merged = mergedBands(piece, groups);
           return direction === 'imports' ? mirrored(merged) : merged;
         };
-        if (stacks) forEachCompactStackSegment(stacks[direction], frame.x[0], end, minHours, piece => {
+        const summary = dense[direction];
+        if (summary && (summary.from !== frame.x[0] || summary.to !== end || summary.width !== Math.ceil(frame.plotWidth))) continue;
+        if (summary) drawApproximateSpans(ctx, frame, summary.approximate, end, () => forEachCompactStackSegment(summary.model, frame.x[0], end, minHours, piece => {
+          const geometry = measure === 'current' ? heldStackSegment(piece) : piece;
+          drawBands(ctx, frame, chartTokens, geometry.hours, place(geometry).bands, colors, geometry);
+        }, summary.sample));
+        else if (stacks) forEachCompactStackSegment(stacks[direction], frame.x[0], end, minHours, piece => {
           const held = heldStackSegment(piece);
           drawBands(ctx, frame, chartTokens, held.hours, place(held).bands, colors, held);
         });
@@ -129,9 +139,10 @@ export default function TradeCountryView({ holder, trade, resources, track, runt
       }
       drawValueRule(ctx, frame, chartTokens, 0);
     },
-    extent: x => stacks ? divergingExtent(compactStackExtent(stacks.exports, x[0], x[1]), compactStackExtent(stacks.imports, x[0], x[1]))
+    extent: x => dense.exports || dense.imports ? divergingExtent(dense.exports ? compactStackExtent(dense.exports.model, x[0], x[1]) : null, dense.imports ? compactStackExtent(dense.imports.model, x[0], x[1]) : null)
+      : stacks ? divergingExtent(compactStackExtent(stacks.exports, x[0], x[1]), compactStackExtent(stacks.imports, x[0], x[1]))
       : measured ? divergingExtent(contributionMeasureExtent(measured.exports, x[0], x[1]), contributionMeasureExtent(measured.imports, x[0], x[1])) : null,
-  }], [stacks, measured, bands]);
+  }], [dense, stacks, measured, bands, measure]);
   const keyHours = useMemo(() => {
     const hours = stacks ? [...stacks.imports.hours, ...stacks.exports.hours] : measured ? [...measured.imports.hours, ...measured.exports.hours] : [];
     return [...new Set(hours)].sort((a, b) => a - b);
@@ -144,6 +155,7 @@ export default function TradeCountryView({ holder, trade, resources, track, runt
   const legend = useMemo(() => resourceLegendItems(shownResources, colours, tokens.muted), [shownResources, colours, tokens.muted]);
   const totalLabel = measure === 'total' ? 'Delivered' : measure === 'average' ? 'Average per trading day' : 'Per day';
   const note = hour == null ? undefined : coverageNote(trade.reply, measure, from, hour);
+  const cumulativePending = trade.flows.some(flow => flow.prepared?.cumulativePending);
   const tooltipRows = useCallback((at: number): TooltipRow[] => DIRECTIONS.flatMap((direction, index) => {
     const total = countryTotal(country[direction], measure, from, at, known);
     const byResource = countryParts(country[direction], direction, 'resource', measure, from, at, known)
@@ -157,10 +169,11 @@ export default function TradeCountryView({ holder, trade, resources, track, runt
   }), [country, measure, from, known, trade.resourceOrder, resourceInfo, colours, amount]);
 
   const empty = (direction: TradeDirection) => `No ${direction} ${measure === 'current' ? 'on this day' : 'in this time'}.`;
+  const pending = hour != null && !!prepared?.hasExactHour && !prepared.hasExactHour(hour);
   return <div className="trade-country">
     <p className="drill-empty">{measureNote(measure)}{hour != null ? (measure === 'current' ? ` · ${dayLabel(hour)}` : ` · ${dayLabel(from)} – ${dayLabel(hour)}`) : ''}
       {resources ? ' · Chosen resources only' : ''}.</p>
-    {hour == null || !parts || !rows ? <p className="drill-empty">Choose a day.</p> : <div className="trade-country-sides">
+    {pending ? <p className="drill-empty">Loading trade amounts…</p> : hour == null || !parts || !rows ? <p className="drill-empty">Choose a day.</p> : <div className="trade-country-sides">
       {DIRECTIONS.map(direction => {
         const side = parts[direction];
         const shown = rows[direction];
@@ -178,16 +191,19 @@ export default function TradeCountryView({ holder, trade, resources, track, runt
       })}
     </div>}
     {note && <p className="drill-empty">{note}</p>}
+    {cumulativePending && <p className="drill-empty">Trade totals and averages are still being prepared.</p>}
     <Legend always label="Resources" items={legend} windowed={legend.length > tokens.categories.length} />
     <p className="drill-empty">{measureNote(measure)} over time: exports above the line, imports below it.</p>
+    {!!(dense.imports?.approximate.length || dense.exports?.approximate.length) && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Approximate</p>}
     <div className="trade-drill-chart">
       <TimeChart label={`${measureNote(measure)} over time, exports above and imports below, by resource`} extent={extent} branchStart={track.branch.firstHour}
         playhead={playhead} playback="cursor" afterPlayhead hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
-        axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} keyHours={keyHours}
+        axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} onSummaryView={prepared?.onSummaryView} onHover={prepared?.onHover}
+        onNavigateHour={prepared?.onNavigateHour} keyboardHour={prepared?.keyboardHour} keyboardRevision={prepared?.keyboardRevision} keyHours={keyHours}
         formatValue={(value, ticks) => formatAxisValue(Math.abs(value), ticks.map(Math.abs))}
-        active={active} revision={stacks ?? measured} onPick={onPick} onContextMenu={onContextMenu}
+        active={active} revision={dense.exports ?? dense.imports ?? stacks ?? measured} onPick={onPick} onContextMenu={onContextMenu}
         overlay={(ctx, frame, chartTokens) => { if (hour != null) drawPlayhead(ctx, frame, chartTokens, hour); }}
-        tooltip={at => knownSpanAt(known, at) < 0 && measure === 'current'
+        tooltip={at => prepared?.hasExactHour && !prepared.hasExactHour(at) ? { title: dayLabel(at), rows: [{ label: 'Trade amounts', value: 'Loading...', tone: 'muted' }] } : knownSpanAt(known, at) < 0 && measure === 'current'
           ? { title: dayLabel(at), rows: [{ label: 'Trade', value: 'Not recorded', tone: 'muted' }] }
           : { title: dayLabel(at), rows: tooltipRows(at) }} />
     </div>

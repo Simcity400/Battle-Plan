@@ -20,40 +20,56 @@
 //! (`PoliticalParties.name`) when `set_party_name` cleared the default flag,
 //! otherwise `<tag>_<ideology group>_party`, then with the party tag's
 //! positive original reference, then the
-//! ideology group's own name. [`party_key`] follows it.
+//! ideology group's own name. [`crate::party_names::party_key`] follows it.
 
 use super::{
     CountryParams, LoadContext, Product, country_measure::FixedRun, idea_history::IdeaCharacter,
-    identity, politics_content::politics_content,
+    politics_content::politics_content,
 };
+#[cfg(test)]
+use crate::metadata::validate_campaign;
 use crate::{
     Source,
     catalogue::View,
-    metadata::{CountryKeys, link_slot, tagged_countries, tagged_country, validate_campaign},
+    identity,
+    metadata::{CountryKeys, link_slot, tagged_countries},
+    party_names::party_key_for_tag_checked,
     products::country_groups::{HourSpan, mark_unobserved},
 };
+use replay::rows::{TableId, tables};
+#[cfg(test)]
 use replay::{
     container::Replay,
     frame::{FrameDecoder, ViewIdentity},
-    rows::{TableId, tables},
 };
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::{collections::VecDeque, sync::Arc};
+
+pub use crate::party_names::{PartyNaming, party_key};
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     io,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::atomic::{AtomicBool, Ordering},
 };
 use ts_rs::TS;
 
 pub struct PartyHistory;
+pub(crate) mod prepared;
 
 /// Decimal places of recorded popularity (a percentage).
 pub const POPULARITY_DECIMALS: u8 = 5;
+#[cfg(test)]
 const CACHED_BRANCHES: usize = 2;
+#[cfg(test)]
 const CACHED_COUNTRIES: usize = 8;
+
+fn party_popularity(row: &replay::rows::PoliticalPartyRow) -> Option<(&str, i128)> {
+    let token = std::str::from_utf8(&row.token)
+        .ok()
+        .filter(|token| !token.is_empty())?;
+    Some((token, i128::from(row.popularity)))
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
@@ -98,76 +114,6 @@ pub struct PartyNameRun {
     pub name: u32,
     pub first_hour: i32,
     pub last_hour: i32,
-}
-
-/// What names a party: its tag and ideology group, or the keys `set_party_name` stored.
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PartyNaming {
-    /// The ideology group token.
-    pub token: String,
-    /// The party's own tag; None when no recorded country has its slot.
-    pub tag: Option<String>,
-    /// The country's original tag, empty for none; None when not recorded.
-    pub original_tag: Option<String>,
-    /// The stored key, when the default flag is clear.
-    pub key: Option<String>,
-}
-
-/// The party localisation key: the stored key, else
-/// `<TAG>_<group>_party`, `<ORIGTAG>_<group>_party`, then the group token.
-/// None when the tag or original tag is not recorded.
-pub fn party_key(naming: &PartyNaming, defines: impl Fn(&str) -> bool) -> Option<String> {
-    party_key_checked(naming, defines).map(|(key, _)| key)
-}
-
-/// The same party ladder, retaining its fallback reason for the offline check.
-pub(crate) fn party_key_checked(
-    naming: &PartyNaming,
-    defines: impl Fn(&str) -> bool,
-) -> Option<(String, Option<String>)> {
-    let selected_tag = match naming.original_tag.as_deref() {
-        Some("") => naming.tag.as_deref(),
-        original => original,
-    };
-    party_key_for_tag_checked(naming, selected_tag, defines)
-}
-
-/// The same ladder with exact selected tag bytes. A positive
-/// reference may spell empty text, which still probes `_<group>_party`.
-pub(crate) fn party_key_with_selected_tag(
-    naming: &PartyNaming,
-    selected_tag: &str,
-    defines: impl Fn(&str) -> bool,
-) -> Option<String> {
-    party_key_for_tag_checked(naming, Some(selected_tag), defines).map(|(key, _)| key)
-}
-
-fn party_key_for_tag_checked(
-    naming: &PartyNaming,
-    selected_tag: Option<&str>,
-    defines: impl Fn(&str) -> bool,
-) -> Option<(String, Option<String>)> {
-    if let Some(key) = &naming.key {
-        return Some((key.clone(), None));
-    }
-    let own = format!("{}_{}_party", naming.tag.as_deref()?, naming.token);
-    let key = if defines(&own) {
-        own
-    } else {
-        format!("{}_{}_party", selected_tag?, naming.token)
-    };
-    Some(if defines(&key) {
-        (key, None)
-    } else {
-        (
-            naming.token.clone(),
-            Some(format!(
-                "party name keys for {:?} / {} are missing; the ideology group name is shown",
-                naming.tag.as_deref()?,
-                naming.token
-            )),
-        )
-    })
 }
 
 pub(crate) fn ideology_type_info(
@@ -224,7 +170,7 @@ pub struct LeaderArtwork {
 pub use super::character_portraits::RecordedPortrait;
 
 /// A leader as scanned: the character and the portrait entry of its runs.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScannedLeader {
     pub character: IdeaCharacter,
     pub portrait: RecordedPortrait,
@@ -258,7 +204,7 @@ pub struct PartyHistoryReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScannedParties {
     pub parties: BTreeMap<String, PartySeries>,
     pub ruling: Vec<RulingRun>,
@@ -298,16 +244,18 @@ pub(crate) fn recorded_party_key(
         })
 }
 
-fn party_naming_rows<'a>(
-    decoded: &'a replay::frame::DecodedFrame,
-    countries: &'a [replay::rows::CountryRow],
-) -> BTreeMap<
+type PartyNamingRows = BTreeMap<
     u32,
     (
-        &'a replay::rows::CountryRow,
-        Option<&'a replay::rows::CountryAppearanceRow>,
+        replay::rows::CountryRow,
+        Option<replay::rows::CountryAppearanceRow>,
     ),
-> {
+>;
+#[cfg(test)]
+fn party_naming_rows(
+    decoded: &replay::frame::DecodedFrame,
+    countries: &[replay::rows::CountryRow],
+) -> PartyNamingRows {
     let appearances: BTreeMap<_, _> = decoded
         .complete::<tables::CountryAppearance>()
         .ok()
@@ -320,7 +268,10 @@ fn party_naming_rows<'a>(
         .map(|country| {
             (
                 country.canonical_slot,
-                (country, appearances.get(&country.id).copied()),
+                (
+                    country.clone(),
+                    appearances.get(&country.id).map(|row| (*row).clone()),
+                ),
             )
         })
         .collect()
@@ -329,15 +280,7 @@ fn party_naming_rows<'a>(
 fn recorded_party_tags(
     decoded: &replay::frame::DecodedFrame,
     raw: u32,
-    rows: Option<
-        &BTreeMap<
-            u32,
-            (
-                &replay::rows::CountryRow,
-                Option<&replay::rows::CountryAppearanceRow>,
-            ),
-        >,
-    >,
+    rows: Option<&PartyNamingRows>,
     current: (
         &replay::rows::CountryRow,
         u32,
@@ -372,7 +315,7 @@ fn recorded_party_tags(
             (current.0, current.2)
         } else if let Some(rows) = rows {
             rows.get(&slot)
-                .copied()
+                .map(|(country, appearance)| (country, appearance.as_ref()))
                 .ok_or_else(|| format!("party tag slot {slot} has no Countries row"))?
         } else {
             let country = decoded
@@ -457,6 +400,7 @@ fn leader_portrait(
 
 /// The feed's ruling and name runs. Popularity, leaders and elections are only
 /// retained by the selected-country topic scan, using the same observer.
+#[cfg(test)]
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ScannedPartyBranch {
     pub countries: BTreeMap<String, ScannedParties>,
@@ -465,6 +409,7 @@ pub(crate) struct ScannedPartyBranch {
     absent: ScannedParties,
 }
 
+#[cfg(test)]
 impl ScannedPartyBranch {
     #[cfg(test)]
     pub fn country(&self, tag: &str) -> &ScannedParties {
@@ -472,18 +417,21 @@ impl ScannedPartyBranch {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct CountryScan {
     result: ScannedParties,
     last: Option<((u32, u32), i32)>,
     last_election: Option<i32>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     people: BTreeMap<(u32, String, String, RecordedPortrait), u32>,
+    #[serde(with = "crate::prepared_production::map_pairs")]
     namings: BTreeMap<(PartyNaming, Result<String, String>), u32>,
     refused_gaps: usize,
     unresolved: usize,
     unresolved_now: bool,
     invalid_ruling: usize,
     invalid_tokens: BTreeSet<Vec<u8>>,
+    open_parties: BTreeSet<String>,
 }
 
 struct CountryRead<'a> {
@@ -495,11 +443,20 @@ struct CountryRead<'a> {
 }
 
 impl CountryScan {
+    #[cfg(test)]
     fn extend(&mut self, hour: i32) {
+        if self
+            .last
+            .is_some_and(|(_, previous)| previous.checked_add(1) == Some(hour))
+        {
+            self.advance(hour);
+        }
+    }
+    fn advance(&mut self, hour: i32) {
         let Some((_, previous)) = self.last.as_mut() else {
             return;
         };
-        if previous.checked_add(1) != Some(hour) {
+        if hour <= *previous {
             return;
         }
         if let Some(run) = self.result.ruling.last_mut()
@@ -512,6 +469,22 @@ impl CountryScan {
         {
             run.last_hour = hour;
         }
+        for token in &self.open_parties {
+            if let Some(run) = self
+                .result
+                .parties
+                .get_mut(token)
+                .and_then(|series| series.runs.last_mut())
+                && run.last_hour == *previous
+            {
+                run.last_hour = hour;
+            }
+        }
+        if let Some(run) = self.result.leaders.last_mut()
+            && run.last_hour == *previous
+        {
+            run.last_hour = hour;
+        }
         *previous = hour;
     }
 
@@ -519,15 +492,7 @@ impl CountryScan {
         &mut self,
         decoded: &replay::frame::DecodedFrame,
         read: CountryRead<'_>,
-        naming_rows: Option<
-            &BTreeMap<
-                u32,
-                (
-                    &replay::rows::CountryRow,
-                    Option<&replay::rows::CountryAppearanceRow>,
-                ),
-            >,
-        >,
+        naming_rows: Option<&PartyNamingRows>,
         topic: bool,
     ) {
         let Self {
@@ -539,6 +504,7 @@ impl CountryScan {
             refused_gaps,
             invalid_ruling,
             invalid_tokens,
+            open_parties,
             ..
         } = self;
         let CountryRead {
@@ -562,11 +528,12 @@ impl CountryScan {
             mark_unobserved(&mut result.unobserved, at + 1, hour - 1);
         }
         *last = Some((identity, hour));
+        open_parties.clear();
         for party in parties
             .into_iter()
             .flat_map(|(rows, indices)| indices.iter().map(move |&index| &rows[index]))
         {
-            let Ok(token) = std::str::from_utf8(&party.token) else {
+            let Some((token, popularity)) = party_popularity(party) else {
                 if topic {
                     invalid_tokens.insert(party.token.clone());
                 }
@@ -575,16 +542,8 @@ impl CountryScan {
                 }
                 continue;
             };
-            if token.is_empty() {
-                if topic {
-                    invalid_tokens.insert(party.token.clone());
-                }
-                if !topic && party.is_ruling != 0 {
-                    *invalid_ruling += 1;
-                }
-                continue;
-            }
             if topic {
+                open_parties.insert(token.to_owned());
                 let series =
                     result
                         .parties
@@ -597,7 +556,7 @@ impl CountryScan {
                     Some(run)
                         if continues
                             && run.last_hour.checked_add(1) == Some(hour)
-                            && run.value_raw.parse::<i64>() == Ok(party.popularity) =>
+                            && run.value_raw.parse::<i128>() == Ok(popularity) =>
                     {
                         run.last_hour = hour
                     }
@@ -608,7 +567,7 @@ impl CountryScan {
                         series.runs.push(FixedRun {
                             first_hour: hour,
                             last_hour: hour,
-                            value_raw: party.popularity.to_string(),
+                            value_raw: popularity.to_string(),
                             starts_segment,
                         });
                     }
@@ -770,7 +729,498 @@ impl CountryScan {
     }
 }
 
+/// The existing topic observation, shared by its oracle walk and preparation.
+#[derive(Default, Serialize, Deserialize)]
+struct TopicScan {
+    countries: BTreeMap<String, CountryScan>,
+    unobserved: Vec<HourSpan>,
+    #[cfg(test)]
+    #[serde(skip)]
+    calls: usize,
+    #[serde(skip)]
+    native: TopicInputs,
+    hour: Option<i32>,
+    active: BTreeSet<String>,
+    #[serde(skip)]
+    updated: Vec<String>,
+    #[serde(skip)]
+    removed: Vec<String>,
+}
+
+#[derive(Default)]
+struct TopicInputs {
+    keys: Option<CountryKeys>,
+    countries: Option<Vec<replay::rows::CountryRow>>,
+    links: Option<Vec<replay::rows::CountryLinkRow>>,
+    holders: BTreeMap<String, (usize, u32)>,
+    by_slot: BTreeMap<u32, Vec<String>>,
+    by_id: BTreeMap<u32, Vec<String>>,
+    parties: Option<Vec<replay::rows::PoliticalPartyRow>>,
+    owned: BTreeMap<u32, Vec<usize>>,
+    appearances: BTreeMap<u32, replay::rows::CountryAppearanceRow>,
+    politics_rows: Vec<replay::rows::PoliticsRow>,
+    politics: BTreeMap<u32, replay::rows::PoliticsRow>,
+    naming: PartyNamingRows,
+    naming_users: BTreeMap<u32, BTreeSet<String>>,
+    leader_users: BTreeMap<u32, BTreeSet<String>>,
+    characters: Option<BTreeMap<u32, replay::rows::CharacterRow>>,
+    portraits: Option<BTreeMap<u32, replay::rows::CharacterPortraitRow>>,
+    lexical: Option<BTreeMap<u32, Vec<u8>>>,
+    script_users: BTreeMap<u32, BTreeSet<String>>,
+    duplicates: BTreeSet<String>,
+    #[cfg(test)]
+    work: crate::prepared::observer_tests::Work,
+}
+impl TopicInputs {
+    fn refresh(
+        &mut self,
+        frame: &replay::frame::DecodedFrame,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+    ) -> BTreeSet<String> {
+        let changed =
+            |table: TableId| changes.is_none_or(|changes| changes.rows_changed[table.index()]);
+        let mut roster = false;
+        let mut dirty = BTreeSet::new();
+        if changed(TableId::Countries) {
+            let rows = frame.complete::<tables::Countries>().ok();
+            #[cfg(test)]
+            {
+                self.work.row_visits += rows.map_or(0, |rows| rows.len());
+            }
+            if !rows.is_some_and(|rows| self.keys.as_ref().is_some_and(|keys| keys.same(rows))) {
+                self.keys = rows.map(CountryKeys::read);
+                self.countries = rows.map(|rows| rows.to_vec());
+                roster = true;
+            }
+        }
+        if changed(TableId::CountryLinks) {
+            let rows = frame.complete::<tables::CountryLinks>().ok();
+            #[cfg(test)]
+            {
+                self.work.row_visits += rows.map_or(0, |rows| rows.len());
+            }
+            let next = rows.map(|rows| rows.to_vec());
+            roster |= self.links != next;
+            self.links = next;
+        }
+        if roster {
+            dirty.extend(self.holders.keys().cloned());
+            self.holders.clear();
+            self.by_slot.clear();
+            self.by_id.clear();
+            if let Some((countries, links)) = self.countries.as_ref().zip(self.links.as_ref()) {
+                for (tag, found) in tagged_countries(countries, links) {
+                    if let (Ok(tag), Some((country, slot))) =
+                        (std::str::from_utf8(tag), found.found())
+                    {
+                        let index = countries
+                            .binary_search_by_key(&country.id, |row| row.id)
+                            .expect("country index");
+                        self.holders.insert(tag.to_owned(), (index, slot));
+                        self.by_slot.entry(slot).or_default().push(tag.to_owned());
+                        self.by_id
+                            .entry(country.id)
+                            .or_default()
+                            .push(tag.to_owned());
+                    }
+                }
+            }
+            dirty.extend(self.holders.keys().cloned());
+        }
+        if changed(TableId::PoliticalParties) || roster {
+            if changed(TableId::PoliticalParties) {
+                let rows = frame.complete::<tables::PoliticalParties>().ok();
+                #[cfg(test)]
+                {
+                    self.work.row_visits += rows.map_or(0, |rows| rows.len());
+                }
+                let next = rows.map(|rows| rows.to_vec());
+                // Compare the product's current native row projection, not histories.
+                let mut owners = BTreeSet::new();
+                for row in self.parties.iter().flatten().chain(next.iter().flatten()) {
+                    owners.insert(row.country);
+                }
+                for owner in owners {
+                    let group = |rows: &[replay::rows::PoliticalPartyRow]| {
+                        let first = rows.partition_point(|row| row.country < owner);
+                        let last = rows.partition_point(|row| row.country <= owner);
+                        (first, last)
+                    };
+                    let old = self.parties.as_deref().unwrap_or(&[]);
+                    let new = next.as_deref().unwrap_or(&[]);
+                    let (a, b) = group(old);
+                    let (c, d) = group(new);
+                    if old[a..b] != new[c..d]
+                        && let Some(slot) = self
+                            .links
+                            .as_ref()
+                            .and_then(|links| link_slot(links, owner))
+                    {
+                        dirty.extend(self.by_slot.get(&slot).into_iter().flatten().cloned());
+                    }
+                }
+                if self.parties.is_some() != next.is_some() {
+                    dirty.extend(self.holders.keys().cloned());
+                }
+                self.parties = next;
+            }
+            self.owned.clear();
+            self.naming_users.clear();
+            for (index, row) in self.parties.iter().flatten().enumerate() {
+                if let Some(slot) = self
+                    .links
+                    .as_ref()
+                    .and_then(|links| link_slot(links, row.country))
+                {
+                    self.owned.entry(slot).or_default().push(index);
+                    if let Some(named) = self
+                        .links
+                        .as_ref()
+                        .and_then(|links| link_slot(links, row.tag))
+                    {
+                        self.naming_users
+                            .entry(named)
+                            .or_default()
+                            .extend(self.by_slot.get(&slot).into_iter().flatten().cloned());
+                    } else if row.tag == 0 {
+                        self.naming_users
+                            .entry(0)
+                            .or_default()
+                            .extend(self.by_slot.get(&slot).into_iter().flatten().cloned());
+                    }
+                }
+            }
+        }
+        if changed(TableId::CountryAppearance) {
+            let rows = frame.complete::<tables::CountryAppearance>().ok();
+            #[cfg(test)]
+            {
+                self.work.row_visits += rows.map_or(0, |rows| rows.len());
+            }
+            let next: BTreeMap<_, _> = rows
+                .into_iter()
+                .flatten()
+                .map(|row| {
+                    (
+                        row.country,
+                        replay::rows::CountryAppearanceRow {
+                            country: row.country,
+                            leader_character: row.leader_character,
+                            leader_ideology: row.leader_ideology.clone(),
+                            original_tag: row.original_tag.clone(),
+                            original_tag_reference: row.original_tag_reference,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect();
+            let ids: BTreeSet<_> = self
+                .appearances
+                .keys()
+                .chain(next.keys())
+                .copied()
+                .filter(|id| self.appearances.get(id) != next.get(id))
+                .collect();
+            for id in ids {
+                dirty.extend(self.by_id.get(&id).into_iter().flatten().cloned());
+                if let Some(countries) = &self.countries
+                    && let Ok(index) = countries.binary_search_by_key(&id, |row| row.id)
+                {
+                    let slot = countries[index].canonical_slot;
+                    dirty.extend(self.naming_users.get(&slot).into_iter().flatten().cloned());
+                    if let Some((country, appearance)) = self.naming.get_mut(&slot)
+                        && country.id == id
+                    {
+                        *appearance = next.get(&id).cloned();
+                    }
+                }
+            }
+            self.appearances = next;
+        }
+        if changed(TableId::Politics) || roster {
+            if changed(TableId::Politics) {
+                let rows = frame.complete::<tables::Politics>().ok();
+                #[cfg(test)]
+                {
+                    self.work.row_visits += rows.map_or(0, |rows| rows.len());
+                }
+                self.politics_rows = rows.map_or_else(Vec::new, |rows| rows.to_vec());
+            }
+            let mut next = BTreeMap::new();
+            for row in &self.politics_rows {
+                if let Some(slot) = self
+                    .links
+                    .as_ref()
+                    .and_then(|links| link_slot(links, row.country))
+                {
+                    next.entry(slot).or_insert_with(|| row.clone());
+                }
+            }
+            let slots: BTreeSet<_> = self
+                .politics
+                .keys()
+                .chain(next.keys())
+                .copied()
+                .filter(|slot| self.politics.get(slot) != next.get(slot))
+                .collect();
+            for slot in slots {
+                dirty.extend(self.by_slot.get(&slot).into_iter().flatten().cloned());
+            }
+            self.politics = next;
+        }
+        if roster {
+            self.naming = self
+                .countries
+                .iter()
+                .flatten()
+                .map(|country| {
+                    (
+                        country.canonical_slot,
+                        (country.clone(), self.appearances.get(&country.id).cloned()),
+                    )
+                })
+                .collect();
+        }
+        if roster || changed(TableId::CountryAppearance) {
+            self.leader_users.clear();
+            for (id, appearance) in &self.appearances {
+                if let Some(character) = appearance.leader_character {
+                    self.leader_users
+                        .entry(character)
+                        .or_default()
+                        .extend(self.by_id.get(id).into_iter().flatten().cloned());
+                }
+            }
+        }
+        if changed(TableId::Characters) {
+            let rows = frame.complete::<tables::Characters>().ok();
+            #[cfg(test)]
+            {
+                self.work.row_visits += rows.map_or(0, |rows| rows.len());
+            }
+            let next: Option<BTreeMap<_, _>> = rows.map(|rows| {
+                rows.iter()
+                    .map(|row| {
+                        (
+                            row.id,
+                            replay::rows::CharacterRow {
+                                id: row.id,
+                                name_token_id: row.name_token_id,
+                                token: row.token.clone(),
+                                ..Default::default()
+                            },
+                        )
+                    })
+                    .collect()
+            });
+            if self.characters.is_some() != next.is_some() {
+                dirty.extend(self.leader_users.values().flatten().cloned());
+            }
+            for id in self
+                .characters
+                .iter()
+                .chain(&next)
+                .flat_map(|rows| rows.keys())
+            {
+                if self.characters.as_ref().and_then(|rows| rows.get(id))
+                    != next.as_ref().and_then(|rows| rows.get(id))
+                {
+                    dirty.extend(self.leader_users.get(id).into_iter().flatten().cloned());
+                }
+            }
+            self.characters = next;
+        }
+        if changed(TableId::CharacterPortraits) {
+            let rows = frame.complete::<tables::CharacterPortraits>().ok();
+            #[cfg(test)]
+            {
+                self.work.row_visits += rows.map_or(0, |rows| rows.len());
+            }
+            let next: Option<BTreeMap<_, _>> = rows.map(|rows| {
+                rows.iter()
+                    .map(|row| (row.character, row.clone()))
+                    .collect()
+            });
+            if self.portraits.is_some() != next.is_some() {
+                dirty.extend(self.leader_users.values().flatten().cloned());
+            }
+            for id in self
+                .portraits
+                .iter()
+                .chain(&next)
+                .flat_map(|rows| rows.keys())
+            {
+                if self.portraits.as_ref().and_then(|rows| rows.get(id))
+                    != next.as_ref().and_then(|rows| rows.get(id))
+                {
+                    dirty.extend(self.leader_users.get(id).into_iter().flatten().cloned());
+                }
+            }
+            self.portraits = next;
+        }
+        if roster || changed(TableId::CountryAppearance) || changed(TableId::Characters) {
+            self.script_users.clear();
+            for (id, tags) in &self.leader_users {
+                if let Some(row) = self.characters.as_ref().and_then(|rows| rows.get(id))
+                    && let Ok(token) = u32::try_from(row.name_token_id)
+                {
+                    self.script_users
+                        .entry(token)
+                        .or_default()
+                        .extend(tags.iter().cloned());
+                }
+            }
+        }
+        if changed(TableId::LexicalTokens) {
+            let rows = frame.complete::<tables::LexicalTokens>().ok();
+            #[cfg(test)]
+            {
+                self.work.row_visits += rows.map_or(0, |rows| rows.len());
+            }
+            let next: Option<BTreeMap<_, _>> = rows.map(|rows| {
+                rows.iter()
+                    .map(|row| (row.token, row.literal.clone()))
+                    .collect()
+            });
+            for token in self
+                .lexical
+                .iter()
+                .chain(&next)
+                .flat_map(|rows| rows.keys())
+            {
+                if self.lexical.as_ref().and_then(|rows| rows.get(token))
+                    != next.as_ref().and_then(|rows| rows.get(token))
+                {
+                    dirty.extend(self.script_users.get(token).into_iter().flatten().cloned());
+                }
+            }
+            self.lexical = next;
+        }
+        if changed(TableId::ReservedCountryNaming) {
+            dirty.extend(self.naming_users.get(&0).into_iter().flatten().cloned());
+            dirty.extend(self.by_slot.get(&0).into_iter().flatten().cloned());
+        }
+        if changes.is_none_or(|changes| changes.rows_changed.iter().all(|changed| *changed)) {
+            dirty.extend(self.holders.keys().cloned());
+        }
+        dirty.extend(self.duplicates.iter().cloned());
+        dirty
+    }
+}
+impl TopicScan {
+    fn observe(
+        &mut self,
+        decoded: &replay::frame::DecodedFrame,
+        requested: Option<&str>,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+    ) {
+        let hour = decoded.hour;
+        let previous = self.hour;
+        let adjacent = previous.and_then(|at| at.checked_add(1)) == Some(hour);
+        let mut dirty = self.native.refresh(decoded, changes);
+        self.updated.clear();
+        self.removed.clear();
+        if !adjacent {
+            self.seal(); // Close the old authenticated frontier before a gap.
+            dirty.extend(self.native.holders.keys().cloned());
+        }
+        self.hour = Some(hour);
+        let known = self.native.countries.is_some() && self.native.links.is_some();
+        if !known || self.native.parties.is_none() {
+            mark_unobserved(&mut self.unobserved, hour, hour);
+        }
+        for tag in dirty {
+            if requested.is_some_and(|wanted| wanted != tag) {
+                continue;
+            }
+            let Some(&(index, slot)) = self.native.holders.get(&tag) else {
+                if self.active.remove(&tag) {
+                    self.removed.push(tag);
+                }
+                continue;
+            };
+            let country = &self.native.countries.as_ref().expect("country holders")[index];
+            let state = self.countries.entry(tag.clone()).or_default();
+            if adjacent
+                && self.active.contains(&tag)
+                && let Some(previous) = previous
+            {
+                state.advance(previous);
+            }
+            let indices = self.native.owned.get(&slot).map_or(&[][..], Vec::as_slice);
+            let mut tokens = BTreeSet::new();
+            let mut ruling = 0;
+            let mut unique = true;
+            for row in self
+                .native
+                .parties
+                .iter()
+                .flat_map(|rows| indices.iter().map(move |&index| &rows[index]))
+            {
+                unique &= tokens.insert(&row.token);
+                ruling += usize::from(row.is_ruling != 0);
+            }
+            if unique && ruling <= 1 {
+                self.native.duplicates.remove(&tag);
+            } else {
+                self.native.duplicates.insert(tag.clone());
+            }
+            #[cfg(test)]
+            {
+                self.calls += 1;
+                self.native.work.emitted += 1;
+            }
+            state.observe(
+                decoded,
+                CountryRead {
+                    country,
+                    slot,
+                    parties: self.native.parties.as_deref().map(|rows| (rows, indices)),
+                    appearance: self.native.appearances.get(&country.id),
+                    politics: self.native.politics.get(&slot),
+                },
+                Some(&self.native.naming),
+                true,
+            );
+            self.active.insert(tag.clone());
+            self.updated.push(tag);
+        }
+    }
+
+    fn seal(&mut self) {
+        if let Some(hour) = self.hour {
+            for tag in &self.active {
+                if let Some(state) = self.countries.get_mut(tag) {
+                    state.advance(hour);
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn country(&self, tag: &str) -> ScannedParties {
+        let mut result = self
+            .countries
+            .get(tag)
+            .map(|state| state.result.clone())
+            .unwrap_or_default();
+        result.unobserved.extend(self.unobserved.iter().cloned());
+        result.unobserved.sort_by_key(|span| span.first_hour);
+        let spans = std::mem::take(&mut result.unobserved);
+        for span in spans {
+            mark_unobserved(&mut result.unobserved, span.first_hour, span.last_hour);
+        }
+        if let Some(state) = self.countries.get(tag)
+            && !state.invalid_tokens.is_empty()
+        {
+            result.warnings.push(format!("PoliticalParties ideology tokens are empty or not UTF-8; their popularity and names cannot be identified (count: {}).",state.invalid_tokens.len()));
+        }
+        result
+    }
+}
+
 /// Scans and retains only the requested country's topic history.
+#[cfg(test)]
 pub fn scan(
     replay: &Replay,
     branch: u64,
@@ -781,6 +1231,7 @@ pub fn scan(
     Ok(scanned.countries.remove(tag).unwrap_or(scanned.absent))
 }
 
+#[cfg(test)]
 pub(crate) fn scan_all(
     replay: &Replay,
     branch: u64,
@@ -789,6 +1240,7 @@ pub(crate) fn scan_all(
     scan_selected(replay, branch, None, cancelled)
 }
 
+#[cfg(test)]
 fn scan_selected(
     replay: &Replay,
     branch: u64,
@@ -812,6 +1264,7 @@ fn scan_selected(
         ]);
     }
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Party request cancelled");
+    let mut topic = TopicScan::default();
     let mut states: BTreeMap<String, CountryScan> = BTreeMap::new();
     let mut unobserved = Vec::new();
     let mut observed = false;
@@ -850,6 +1303,10 @@ fn scan_selected(
                         break;
                     }
                     let hour = frame.hour;
+                    if let Some(tag) = requested {
+                        topic.observe(decoded, Some(tag), None);
+                        continue;
+                    }
                     let (Ok(countries), Ok(links)) = (
                         decoded.complete::<tables::Countries>(),
                         decoded.complete::<tables::CountryLinks>(),
@@ -861,52 +1318,6 @@ fn scan_selected(
                     observed |= parties.is_some();
                     if parties.is_none() {
                         mark_unobserved(&mut unobserved, hour, hour);
-                    }
-                    if let Some(tag) = requested {
-                        let Some((country, slot)) = tagged_country(countries, links, tag).found()
-                        else {
-                            continue;
-                        };
-                        let owned: Vec<_> = parties
-                            .into_iter()
-                            .flatten()
-                            .enumerate()
-                            .filter(|(_, party)| link_slot(links, party.country) == Some(slot))
-                            .map(|(index, _)| index)
-                            .collect();
-                        let appearance = decoded
-                            .complete::<tables::CountryAppearance>()
-                            .ok()
-                            .and_then(|rows| {
-                                rows.iter().rev().find(|row| row.country == country.id)
-                            });
-                        let politics =
-                            decoded
-                                .complete::<tables::Politics>()
-                                .ok()
-                                .and_then(|rows| {
-                                    rows.iter()
-                                        .find(|row| link_slot(links, row.country) == Some(slot))
-                                });
-                        if !states.contains_key(tag) {
-                            states.insert(tag.to_owned(), CountryScan::default());
-                        }
-                        states
-                            .get_mut(tag)
-                            .expect("selected country inserted")
-                            .observe(
-                                decoded,
-                                CountryRead {
-                                    country,
-                                    slot,
-                                    parties: parties.map(|rows| (rows, owned.as_slice())),
-                                    appearance,
-                                    politics,
-                                },
-                                None,
-                                true,
-                            );
-                        continue;
                     }
                     // Hourly balances change Countries; the feed reads only its keys.
                     if parties.is_some()
@@ -1018,6 +1429,12 @@ fn scan_selected(
             Ok(())
         },
     )?;
+    if let Some(tag) = requested {
+        return Ok(ScannedPartyBranch {
+            countries: BTreeMap::from([(tag.to_owned(), topic.country(tag))]),
+            ..Default::default()
+        });
+    }
     let mut result = ScannedPartyBranch {
         observed,
         absent: ScannedParties {
@@ -1074,11 +1491,13 @@ fn scan_selected(
     Ok(result)
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct BranchCache {
     entries: VecDeque<(u64, Arc<ScannedPartyBranch>)>,
 }
 
+#[cfg(test)]
 pub(crate) fn scanned_branch(
     source: &Source,
     branch: u64,
@@ -1104,6 +1523,7 @@ pub(crate) fn scanned_branch(
     Ok(scanned)
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct Cache {
     entries: VecDeque<((u64, String), Arc<ScannedParties>)>,
@@ -1132,6 +1552,7 @@ impl Product for PartyHistory {
         params.validate()
     }
 
+    #[cfg(test)]
     fn load(
         source: &Source,
         params: &Self::Params,
@@ -1171,116 +1592,130 @@ impl Product for PartyHistory {
                 scanned
             }
         };
-        let mut warnings = scanned.warnings.clone();
-        // Without the game folders the chart still draws, in palette colours and with tokens for names.
-        let politics = match context
-            .content()
-            .and_then(|content| politics_content(source, content))
-        {
-            Ok(politics) => {
-                warnings.extend(politics.warnings.iter().cloned());
-                Some(politics)
-            }
-            Err(error) => {
-                warnings.push(format!(
-                    "Ideology and leader names, colours and portraits are unavailable: {error}"
-                ));
-                None
-            }
-        };
-        let ideologies = politics
-            .as_ref()
-            .map_or_else(Vec::new, |politics| ideology_infos(politics, &mut warnings));
-        let types: BTreeSet<&str> = scanned
-            .leaders
-            .iter()
-            .map(|run| run.ideology.as_str())
-            .filter(|token| !token.is_empty())
-            .collect();
-        let ideology_types = types
-            .into_iter()
-            .map(|token| ideology_type_info(politics.as_deref(), token))
-            .collect();
-        let mut people = Vec::with_capacity(scanned.people.len());
-        for leader in &scanned.people {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Party request cancelled",
-                ));
-            }
-            let character = &leader.character;
-            let script = (!character.token.is_empty()).then_some(character.token.as_str());
-            let (name, portrait) = match &politics {
-                Some(politics) => (
-                    politics.character_name(script, &character.name),
-                    super::character_portraits::portrait_png(politics, &leader.portrait),
-                ),
-                None => (None, Err("Content is unavailable.".to_owned())),
-            };
-            let (portrait, portrait_missing) = match portrait {
-                Ok(portrait) => (Some(portrait), None),
-                Err(reason) => (None, Some(reason)),
-            };
-            people.push(LeaderArtwork {
-                character: character.clone(),
-                name,
-                portrait,
-                portrait_missing,
-            });
+        reply(source, params, context, &scanned, None, cancelled)
+    }
+}
+
+fn reply(
+    source: &Source,
+    params: &CountryParams,
+    context: &LoadContext,
+    scanned: &ScannedParties,
+    historical_types: Option<&BTreeSet<String>>,
+    cancelled: &AtomicBool,
+) -> io::Result<PartyHistoryReply> {
+    let mut warnings = scanned.warnings.clone();
+    // Without the game folders the chart still draws, in palette colours and with tokens for names.
+    let politics = match context
+        .content()
+        .and_then(|content| politics_content(source, content))
+    {
+        Ok(politics) => {
+            warnings.extend(politics.warnings.iter().cloned());
+            Some(politics)
         }
-        let party_names = scanned
-            .namings
-            .iter()
-            .enumerate()
-            .map(|(index, _)| {
-                politics.as_ref().and_then(|politics| {
-                    let (key, fallback) =
-                        match recorded_party_key(&scanned, index, |key| politics.defines(key)) {
-                            Ok(value) => value,
-                            Err(reason) => {
-                                warnings.push(format!("party name: {reason}"));
-                                return None;
-                            }
-                        };
-                    if let Some(reason) = fallback {
-                        warnings.push(reason);
-                    }
-                    // Party names are plain.
-                    politics.localised(&key, View::Plain)
-                })
-            })
-            .collect();
-        if people.iter().any(|leader| leader.portrait.is_some()) {
-            warnings.push("Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned());
-        }
-        if scanned.parties.is_empty() {
+        Err(error) => {
             warnings.push(format!(
-                "{}: no recorded parties in this branch",
-                params.tag
+                "Ideology and leader names, colours and portraits are unavailable: {error}"
+            ));
+            None
+        }
+    };
+    let ideologies = politics
+        .as_ref()
+        .map_or_else(Vec::new, |politics| ideology_infos(politics, &mut warnings));
+    let types: BTreeSet<&str> = scanned
+        .leaders
+        .iter()
+        .map(|run| run.ideology.as_str())
+        .filter(|token| !token.is_empty())
+        .collect();
+    let types = historical_types
+        .map(|types| types.iter().map(String::as_str).collect())
+        .unwrap_or(types);
+    let ideology_types = types
+        .into_iter()
+        .map(|token| ideology_type_info(politics.as_deref(), token))
+        .collect();
+    let mut people = Vec::with_capacity(scanned.people.len());
+    for leader in &scanned.people {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Party request cancelled",
             ));
         }
-        // Names left out for a localisation refusal, by reason and key.
-        if let Some(politics) = &politics {
-            warnings.extend(politics.catalogue.refusal_lines());
-        }
-        Ok(PartyHistoryReply {
-            branch_id: params.branch_id.clone(),
-            tag: params.tag.clone(),
-            decimals: POPULARITY_DECIMALS,
-            parties: scanned.parties.values().cloned().collect(),
-            ruling: scanned.ruling.clone(),
-            leaders: scanned.leaders.clone(),
-            party_name_runs: scanned.party_name_runs.clone(),
-            party_names,
-            people,
-            ideology_types,
-            elections: scanned.elections.clone(),
-            ideologies,
-            unobserved: scanned.unobserved.clone(),
-            warnings,
-        })
+        let character = &leader.character;
+        let script = (!character.token.is_empty()).then_some(character.token.as_str());
+        let (name, portrait) = match &politics {
+            Some(politics) => (
+                politics.character_name(script, &character.name),
+                super::character_portraits::portrait_png(politics, &leader.portrait),
+            ),
+            None => (None, Err("Content is unavailable.".to_owned())),
+        };
+        let (portrait, portrait_missing) = match portrait {
+            Ok(portrait) => (Some(portrait), None),
+            Err(reason) => (None, Some(reason)),
+        };
+        people.push(LeaderArtwork {
+            character: character.clone(),
+            name,
+            portrait,
+            portrait_missing,
+        });
     }
+    let party_names = scanned
+        .namings
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            politics.as_ref().and_then(|politics| {
+                let (key, fallback) =
+                    match recorded_party_key(scanned, index, |key| politics.defines(key)) {
+                        Ok(value) => value,
+                        Err(reason) => {
+                            warnings.push(format!("party name: {reason}"));
+                            return None;
+                        }
+                    };
+                if let Some(reason) = fallback {
+                    warnings.push(reason);
+                }
+                // Party names are plain.
+                politics.localised(&key, View::Plain)
+            })
+        })
+        .collect();
+    if people.iter().any(|leader| leader.portrait.is_some()) {
+        warnings.push("Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned());
+    }
+    if scanned.parties.is_empty() {
+        warnings.push(format!(
+            "{}: no recorded parties in this branch",
+            params.tag
+        ));
+    }
+    // Names left out for a localisation refusal, by reason and key.
+    if let Some(politics) = &politics {
+        warnings.extend(politics.catalogue.refusal_lines());
+    }
+    Ok(PartyHistoryReply {
+        branch_id: params.branch_id.clone(),
+        tag: params.tag.clone(),
+        decimals: POPULARITY_DECIMALS,
+        parties: scanned.parties.values().cloned().collect(),
+        ruling: scanned.ruling.clone(),
+        leaders: scanned.leaders.clone(),
+        party_name_runs: scanned.party_name_runs.clone(),
+        party_names,
+        people,
+        ideology_types,
+        elections: scanned.elections.clone(),
+        ideologies,
+        unobserved: scanned.unobserved.clone(),
+        warnings,
+    })
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun } from '../../generated/dashboard';
+import type { PreparedProductionSpendingReply } from './spendingData';
 import { groupTree, amountText, arcTargets, sliceTooltip } from '../../charts/sunburst/layout.ts';
 import type { SunburstText } from '../../charts/sunburst/layout';
 import { UNIT, formatAppliedIc, productionSpendingItems, spendingAt, spendingEmptyLabel, spendingFinals, spendingTotal, validateProductionSpendingReply } from './spendingData.ts';
@@ -432,15 +433,30 @@ test('empty-state wording requires dated complete-empty census evidence and exac
   assert.doesNotMatch(spendingEmptyLabel(data, 124), /No military production/);
 });
 
+test('prepared spending ranges use native segments and exact extrema rather than sampled endpoints', () => {
+  const data: PreparedProductionSpendingReply = reply();
+  const wide = 10n ** 25n;
+  data.leaves = [leaf({ runs: [known(123, 123, String(wide)), known(148, 148, String(wide + 3n)),
+    { firstHour: 171, lastHour: 171, totalRaw: null, reason: 'lostOutput' }] })];
+  data.total = [known(123, 123, String(wide)), known(148, 148, String(wide + 3n)),
+    { firstHour: 171, lastHour: 171, totalRaw: null, reason: 'lostOutput' }];
+  data.continuity = { '148': [true, true], '171': [true, true] };
+  data.peaks = { [JSON.stringify(['v/1', false])]: String(wide + 17n) };
+  assert.equal(productionSpendingItems(data, { from: 124, hour: 148, end: 171 })[0].exact, 3n);
+  assert.deepEqual(spendingFinals(data, 124, 171)[0], { exact: null, geometry: 17 });
+  data.continuity['148'] = [false, true];
+  assert.equal(productionSpendingItems(data, { from: 124, hour: 148, end: 171 })[0].exact, null);
+});
+
 test('the actual spending widget shows the census-backed empty state even with its legend disabled', async () => {
-  const state = { data: reply(), footnote: undefined as string | undefined };
+  const state = { data: reply(), footnote: undefined as string | undefined, request: undefined as unknown, source: undefined as unknown };
   const host = globalThis as typeof globalThis & { __spendingEmpty?: typeof state };
   host.__spendingEmpty = state;
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false },
     plugins: [{ name: 'spending-empty-fixture', enforce: 'pre', transform(_source, id) {
       const path = id.replaceAll('\\', '/');
-      if (path.endsWith('/dashboard/products.ts')) return 'export const useProduct = () => ({ data: globalThis.__spendingEmpty.data });';
+      if (path.endsWith('/dashboard/products.ts')) return 'export const useProduct = (_client, request, _active, _validate, source) => { globalThis.__spendingEmpty.request = request; globalThis.__spendingEmpty.source = source; return { data: globalThis.__spendingEmpty.data }; };';
       if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = () => {};';
       if (path.endsWith('/charts/sunburst/Sunburst.tsx')) return "import { createElement } from 'react'; export default props => { globalThis.__spendingEmpty.footnote = props.footnote; return createElement('div', null, 'Spending chart'); };";
     } }] });
@@ -463,5 +479,9 @@ test('the actual spending widget shows the census-backed empty state even with i
     assert.match(render(), /Spending chart/, 'zero amounts from active lines do not prove emptiness');
     state.data.total = [{ firstHour: 100, lastHour: 171, totalRaw: null, reason: 'rocketTableUnavailable' }];
     assert.doesNotMatch(render(), /No military production/);
+    props.runtime.client.preparedQuery = async () => ({} as never);
+    render();
+    assert.equal(state.source, props.runtime.tracks[0].source);
+    assert.deepEqual((state.request as { params: unknown }).params, { branchId: '1', tag: 'opaque/tag', refits: false, from: null, hour: 171, end: 171 });
   } finally { await vite.close(); delete host.__spendingEmpty; }
 });

@@ -2,11 +2,11 @@ import { useMemo } from 'react';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
-import { useProduct } from '../../dashboard/products';
+import { usePreparedResearch } from './preparedResearch';
 import { setToken } from '../../dashboard/options';
 import { useChartTokens } from '../../charts/useChartTokens';
-import type { ResearchHistory, ResearchReply } from '../../generated/dashboard';
-import { researchFolderList, researchFolderLooks, researchRequest, validateResearchReply } from './researchData';
+import type { ResearchHistory } from '../../generated/dashboard';
+import { researchFolderList, researchFolderLooks } from './researchData';
 
 /** Every technology a history names, assignments and slot states alike. */
 export function historyTokens(history: ResearchHistory): string[] {
@@ -19,9 +19,7 @@ export function historyTokens(history: ResearchHistory): string[] {
 export function useResearchReply(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
-  const request = useMemo(() => track && tag ? researchRequest(track.source.id, track.source.revision, { branchId: track.branch.id, tag }) : null,
-    [track, tag]);
-  return { track, tag, ...useProduct<ResearchReply>(runtime.client, request, active, validateResearchReply) };
+  return { track, tag, ...usePreparedResearch(runtime.client, track?.source, track?.branch.id, tag, active) };
 }
 
 /** The folder filter's choices: the folders this country's research shows, in

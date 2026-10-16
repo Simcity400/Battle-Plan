@@ -73,6 +73,276 @@ fn tension_frame(
 }
 
 #[test]
+fn prepared_tension_requires_history_for_disappeared_country_names_and_pending_tail() {
+    use crate::products::world_tension::Scan;
+    let first = tension_frame(
+        100,
+        true,
+        100,
+        &[(9, 10_000)],
+        &[(31, 90, b"Recorded cause", 10_000, 10_000)],
+    );
+    let tail = tension_frame(
+        101,
+        false,
+        100,
+        &[(9, 10_000)],
+        &[(31, 90, b"Recorded cause", 10_000, 10_000)],
+    );
+    let format = replay::format::FormatVersion::CURRENT;
+    let mut remembered = Scan::default();
+    remembered.observe(format, &first).unwrap();
+    remembered.observe(format, &tail).unwrap();
+    let mut fresh = Scan::default();
+    fresh.observe(format, &tail).unwrap();
+    assert_eq!(remembered.result.reads.last().unwrap().unnamed_raw, "0");
+    assert_eq!(fresh.result.reads.last().unwrap().unnamed_raw, "10000");
+    assert_eq!(remembered.result.events[0].tag.as_deref(), Some("D01 mod"));
+    assert_eq!(fresh.result.events[0].tag, None);
+
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first, tail])]).unwrap();
+    let root = std::env::temp_dir().join(format!("tension-pending-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let path = root.join("campaign.battleplan");
+    std::fs::write(&path, replay.bytes()).unwrap();
+    let flag = AtomicBool::new(false);
+    let source = crate::Source::open(
+        crate::SourceKey {
+            source_id: "tension-pending-cross-frame".into(),
+            revision: crate::protocol::replay_revision(&path).unwrap(),
+        },
+        path,
+        &flag,
+    )
+    .unwrap();
+    let request = crate::transport::ProductRequest {
+        source_id: source.key().source_id.clone(),
+        revision: source.key().revision.clone(),
+        product: "series-summary".into(),
+        params: serde_json::json!({"branchId":"1","family":{"kind":"world-tension"},"from":100,"to":101,"width":32,"within":{}}),
+    };
+    let reply: serde_json::Value = serde_json::from_str(
+        &crate::prepared::query::query(&source, &request, None, &flag).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        reply["data"].is_null(),
+        "an unprepared cross-frame tension tail is pending, never a zero-valued chart"
+    );
+    crate::prepared::files(&source, None)
+        .unwrap()
+        .0
+        .clear()
+        .unwrap();
+    drop(source);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn prepared_tension_keeps_equal_read_dates_duplicates_renames_gaps_and_resume_state() {
+    use crate::products::{
+        BranchParams, LoadContext, Product,
+        world_tension::{Scan, WorldTension},
+    };
+    let mut frames = vec![
+        tension_frame(
+            100,
+            true,
+            5000,
+            &[(7, 600_000), (8, -100_000)],
+            &[
+                (11, 90, b"Synthetic cause", 250_000, 350_000),
+                (11, 90, b"Synthetic cause", 250_000, 350_000),
+            ],
+        ),
+        tension_frame(
+            101,
+            true,
+            5000,
+            &[(7, 600_000), (8, -100_000)],
+            &[
+                (11, 90, b"Synthetic cause", 250_000, 350_000),
+                (11, 90, b"Synthetic cause", 250_000, 350_000),
+            ],
+        ),
+        tension_frame(102, true, 5000, &[(7, 600_000), (8, -100_000)], &[]),
+        tension_frame(
+            103,
+            true,
+            5000,
+            &[(7, 600_000), (8, -100_000)],
+            &[
+                (11, 90, b"Synthetic cause", 250_000, 100_000),
+                (11, 90, b"Synthetic cause", 250_000, 350_000),
+            ],
+        ),
+        tension_frame(
+            104,
+            true,
+            0,
+            &[(7, 0), (8, 0)],
+            &[
+                (11, 90, b"Synthetic cause", 0, 100_000),
+                (11, 90, b"Synthetic cause", 0, 350_000),
+            ],
+        ),
+    ];
+    *frames[2].tables[TableId::WorldTension.index()] = TableView::Unavailable {
+        reason: "Synthetic missing tension".into(),
+    };
+    for frame in &mut frames[2..] {
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            rows.iter_mut()
+                .find(|row| row.canonical_slot == 7)
+                .unwrap()
+                .tag = b"renamed mod country".to_vec();
+        }
+    }
+    let replay =
+        Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap());
+    let flag = AtomicBool::new(false);
+    let source = crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "tension".into(),
+            revision: "1".into(),
+        },
+        Default::default(),
+        replay.clone(),
+        &flag,
+    )
+    .unwrap();
+    let fixture = crate::prepared::series::tests::Fixture::new();
+    let mut scan = Scan::default();
+    for batch in [&frames[..2], &frames[2..]] {
+        let mut writer = fixture.writer();
+        for frame in batch {
+            scan.prepare(replay.format, frame).unwrap();
+        }
+        scan.flush(&mut writer, 1, &flag).unwrap();
+        writer.commit().unwrap();
+        scan = crate::prepared::series::read_catalogue::<Scan>(
+            &fixture.store,
+            &fixture.key,
+            "world-tension",
+            1,
+        )
+        .unwrap()
+        .unwrap()
+        .1;
+        assert_eq!(scan.result.reads.len(), 1);
+        assert!(scan.building.iter().all(|country| country.runs.is_empty()));
+    }
+    let params = BranchParams {
+        branch_id: "1".into(),
+    };
+    let expected =
+        WorldTension::load(&source, &params, &LoadContext { content: None }, &flag).unwrap();
+    let within: std::collections::BTreeMap<_, _> = scan
+        .building
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            (
+                index.to_string(),
+                vec![(index.to_string(), 100, 104, false)],
+            )
+        })
+        .collect();
+    let history =
+        crate::products::country_history::branch_histories(&source, 1, false, &[], &flag).unwrap();
+    let actual = super::prepared::query(
+        &source,"series-state",
+        &serde_json::json!({"branchId":"1","reads":([100,101,102,103,104].map(|hour|serde_json::json!({"hour":hour})))}),
+        &fixture.store,&fixture.key,&history,&flag,
+    ).unwrap();
+    let next = super::prepared::query(
+        &source,"series-next-change",
+        &serde_json::json!({"branchId":"1","key":"ArrowRight","from":101,"firstHour":100,"lastHour":104}),
+        &fixture.store,&fixture.key,&history,&flag,
+    ).unwrap();
+    let mut exact = actual.clone();
+    for field in [
+        "catalogue",
+        "summaries",
+        "exactHours",
+        "navigation",
+        "available",
+    ] {
+        exact.as_object_mut().unwrap().remove(field);
+    }
+    assert_eq!(exact, serde_json::to_value(&expected).unwrap());
+    assert_eq!(next["hour"], 103);
+    assert_eq!(expected.events.len(), 2);
+    assert_eq!(expected.events[0].added.len(), 2);
+    assert_eq!(
+        expected
+            .reads
+            .iter()
+            .map(|read| (read.first_hour, read.starts_segment))
+            .collect::<Vec<_>>(),
+        [(100, true), (101, false), (103, true), (104, false)]
+    );
+    assert_eq!(
+        fixture
+            .store
+            .range_count(&fixture.key, "tension-series-1")
+            .unwrap(),
+        Some(2)
+    );
+    let dense = super::prepared::query(
+        &source,"series-summary",
+        &serde_json::json!({"branchId":"1","from":100,"to":104,"width":1,"within":within,"share":true}),
+        &fixture.store,&fixture.key,&history,&flag,
+    ).unwrap();
+    let world = dense["summaries"]["world"]["buckets"].as_array().unwrap();
+    assert_eq!(
+        world
+            .iter()
+            .filter_map(|bucket| bucket["minValue"].as_f64())
+            .reduce(f64::min),
+        Some(0.0)
+    );
+    assert_eq!(
+        world
+            .iter()
+            .filter_map(|bucket| bucket["maxValue"].as_f64())
+            .reduce(f64::max),
+        Some(5.0)
+    );
+    assert!(world.iter().any(|bucket| bucket["hasBreak"] == true));
+}
+
+#[test]
+fn prepared_tension_share_keeps_wide_amounts_without_intermediate_overflow() {
+    let frame = tension_frame(100, false, i64::MAX, &[(7, i64::MAX)], &[]);
+    let fixture = crate::prepared::series::tests::Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut scan = super::Scan::default();
+    scan.prepare(replay::format::FormatVersion::CURRENT, &frame)
+        .unwrap();
+    let mut writer = fixture.writer();
+    scan.flush(&mut writer, 1, &flag).unwrap();
+    writer.commit().unwrap();
+    let mut reader = crate::prepared::series::Reader::new(
+        &fixture.store,
+        &fixture.key,
+        "tension-series-1".into(),
+        &flag,
+    )
+    .unwrap();
+    assert_eq!(
+        reader.value_at(5, 100).unwrap().unwrap().value,
+        i128::from(i64::MAX)
+    );
+    assert_eq!(
+        reader.value_at(6, 100).unwrap().unwrap().value,
+        i128::from(i64::MAX) * i128::from(engine::cworld_threat::SCALAR_DIVISOR)
+    );
+}
+
+#[test]
 fn world_tension_sum_overflow_is_refused_instead_of_saturated() {
     use crate::products::world_tension::scan;
     let slot = tension_slot(10);
@@ -553,4 +823,288 @@ fn world_tension_keeps_two_countries_sharing_a_tag_apart() {
         ]
     );
     assert_eq!(scanned.reads[1].unnamed_raw, "0");
+}
+
+#[test]
+fn tension_changes_keep_quiet_hours_and_closed_history_flat_and_source_changes_avoid_aggregate_joins()
+ {
+    use super::Scan;
+    use crate::prepared::{
+        frame_changes::FrameChangeTracker,
+        observer_tests::{assert_flat, scaled_work, unchanged_frames},
+    };
+    let format = replay::format::FormatVersion::CURRENT;
+    let initial = tension_frame(
+        100,
+        true,
+        100,
+        &[(9, 10_000)],
+        &[(31, 90, b"Recorded cause", 10_000, 10_000)],
+    );
+    assert_flat(
+        scaled_work(10, |hours| {
+            let mut scan = Scan::default();
+            let mut tracker = FrameChangeTracker::new();
+            scan.prepare_changed(format, &initial, &tracker.observe(&initial, format))?;
+            unchanged_frames(
+                scan.work,
+                &initial,
+                hours as i32,
+                format,
+                |frame, changes| {
+                    scan.prepare_changed(format, frame, changes)?;
+                    Ok(scan.work)
+                },
+            )
+        })
+        .unwrap(),
+    );
+    assert_flat(
+        scaled_work(10, |history| {
+            let mut scan = Scan::default();
+            let mut tracker = FrameChangeTracker::new();
+            let mut current = initial.clone();
+            for index in 0..history {
+                current.hour = 100 + index as i32;
+                if let TableView::Complete(TableRows::ThreatSources(rows)) =
+                    &mut *current.tables[TableId::ThreatSources.index()]
+                {
+                    rows[0].date = current.hour;
+                }
+                scan.prepare_changed(format, &current, &tracker.observe(&current, format))?;
+            }
+            assert_eq!(scan.result.events.len(), history);
+            unchanged_frames(scan.work, &current, 10, format, |frame, changes| {
+                scan.prepare_changed(format, frame, changes)?;
+                Ok(scan.work)
+            })
+        })
+        .unwrap(),
+    );
+    let mut scan = Scan::default();
+    let mut tracker = FrameChangeTracker::new();
+    scan.prepare_changed(format, &initial, &tracker.observe(&initial, format))
+        .unwrap();
+    let before = scan.work;
+    let mut changed = initial.clone();
+    changed.hour += 1;
+    if let TableView::Complete(TableRows::ThreatSources(rows)) =
+        &mut *changed.tables[TableId::ThreatSources.index()]
+    {
+        rows[0].final_raw += 1;
+    }
+    scan.prepare_changed(format, &changed, &tracker.observe(&changed, format))
+        .unwrap();
+    assert_eq!(
+        scan.work.row_visits - before.row_visits,
+        1,
+        "only the changed source is joined; aggregate/identity tables are held"
+    );
+    assert_eq!(
+        scan.work.history_visits - before.history_visits,
+        0,
+        "a source-only change revisits no country series"
+    );
+}
+
+#[test]
+fn tension_deferred_sources_and_refusal_rates_match_oracle_after_quiet_commits_resume_append_and_gap()
+ {
+    use super::Scan;
+    use crate::prepared::{frame_changes::FrameChangeTracker, series};
+    let flag = AtomicBool::new(false);
+    let initial = tension_frame(
+        100,
+        true,
+        101,
+        &[(9, 10_000)],
+        &[(31, 90, b"Recorded cause", 9_000, 10_000)],
+    );
+    let mut frames: Vec<_> = (100..=110)
+        .map(|hour| {
+            let mut frame = initial.clone();
+            frame.hour = hour;
+            frame
+        })
+        .collect();
+    let mut after = initial.clone();
+    after.hour = 113;
+    frames.push(after.clone());
+    after.hour = 114;
+    frames.push(after);
+    let source = crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "tension-deferred".into(),
+            revision: "1".into(),
+        },
+        Default::default(),
+        Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap()),
+        &flag,
+    )
+    .unwrap();
+    let mut fixture = series::tests::Fixture::new();
+    let mut scan = Scan::default();
+    for (index, batch) in [&frames[..6], &frames[6..11], &frames[11..]]
+        .into_iter()
+        .enumerate()
+    {
+        let mut tracker = FrameChangeTracker::new();
+        for frame in batch {
+            scan.prepare_changed(
+                source.replay_ref().format,
+                frame,
+                &tracker.observe(frame, source.replay_ref().format),
+            )
+            .unwrap();
+        }
+        let mut writer = if index == 2 {
+            fixture.append_writer()
+        } else {
+            fixture.writer()
+        };
+        scan.flush(&mut writer, 1, &flag).unwrap();
+        writer.commit().unwrap();
+        scan = series::read_catalogue::<Scan>(&fixture.store, &fixture.key, "world-tension", 1)
+            .unwrap()
+            .unwrap()
+            .1;
+    }
+    let histories =
+        crate::products::country_history::branch_histories(&source, 1, false, &[], &flag).unwrap();
+    let expected = super::scan(source.replay_ref(), 1, &flag)
+        .unwrap()
+        .reply(
+            &crate::products::BranchParams {
+                branch_id: "1".into(),
+            },
+            &histories,
+        )
+        .unwrap();
+    let mut actual = super::prepared::query(&source, "series-state", &serde_json::json!({"branchId":"1", "reads":frames.iter().map(|frame| serde_json::json!({"hour":frame.hour})).collect::<Vec<_>>()}), &fixture.store, &fixture.key, &histories, &flag).unwrap();
+    for field in [
+        "catalogue",
+        "summaries",
+        "exactHours",
+        "navigation",
+        "available",
+    ] {
+        actual.as_object_mut().unwrap().remove(field);
+    }
+    crate::prepared::observer_tests::assert_reply_parity(&actual, &expected).unwrap();
+    assert_eq!(actual["events"][0]["lastRead"], 114);
+}
+
+#[test]
+fn tension_identity_change_reuses_unchanged_aggregate_and_source_operands() {
+    use super::Scan;
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    let format = replay::format::FormatVersion::CURRENT;
+    let initial = tension_frame(
+        100,
+        true,
+        100,
+        &[(9, 10_000)],
+        &[(31, 90, b"Recorded cause", 10_000, 10_000)],
+    );
+    let mut scan = Scan::default();
+    let mut oracle = Scan::default();
+    let mut tracker = FrameChangeTracker::new();
+    scan.prepare_changed(format, &initial, &tracker.observe(&initial, format))
+        .unwrap();
+    oracle.observe(format, &initial).unwrap();
+    let before = scan.work;
+    let mut changed = initial.clone();
+    changed.hour = 101;
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *changed.tables[TableId::Countries.index()]
+    {
+        rows.iter_mut()
+            .find(|row| row.canonical_slot == 9)
+            .unwrap()
+            .tag = b"RENAMED".to_vec();
+    }
+    let changed_rows = changed
+        .complete::<replay::rows::tables::Countries>()
+        .unwrap()
+        .len();
+    scan.prepare_changed(format, &changed, &tracker.observe(&changed, format))
+        .unwrap();
+    oracle.observe(format, &changed).unwrap();
+    assert_eq!(
+        scan.work.row_visits - before.row_visits,
+        changed_rows,
+        "neither held native table nor CountryLinks is walked again"
+    );
+    assert_eq!(scan.result.events, oracle.result.events);
+    assert_eq!(scan.result.unnamed_reads, oracle.result.unnamed_reads);
+    assert_eq!(scan.building.last().unwrap().tag, "RENAMED");
+    assert_eq!(scan.result.reads.last(), oracle.result.reads.last());
+}
+
+#[test]
+fn tension_one_source_change_never_walks_five_thousand_held_contributions() {
+    use super::Scan;
+    use crate::prepared::{
+        frame_changes::FrameChangeTracker,
+        observer_tests::{Work, assert_flat, scaled_work},
+    };
+    assert_flat(
+        scaled_work(500, |countries| {
+            let mut first = crate::test_fixtures::scale_frame(1, 100, countries as u32);
+            *first.tables[TableId::WorldTension.index()] =
+                TableView::Complete(TableRows::WorldTension(vec![
+                    replay::rows::WorldTensionRow {
+                        total_raw: countries as i64 / engine::cworld_threat::SCALAR_DIVISOR,
+                        source_count: 1,
+                        country_aggregate_count: countries as i32,
+                    },
+                ]));
+            *first.tables[TableId::ThreatCountryAggregates.index()] =
+                TableView::Complete(TableRows::ThreatCountryAggregates(
+                    (0..countries)
+                        .map(|slot| replay::rows::ThreatCountryAggregateRow {
+                            country_slot: slot as u32,
+                            total_raw: 1,
+                        })
+                        .collect(),
+                ));
+            *first.tables[TableId::ThreatSources.index()] =
+                TableView::Complete(TableRows::ThreatSources(vec![
+                    replay::rows::ThreatSourceRow {
+                        ordinal: 0,
+                        country: 100_000,
+                        current_raw: countries as i64,
+                        final_raw: countries as i64,
+                        date: 90,
+                        reason: b"Recorded source".to_vec(),
+                        ..Default::default()
+                    },
+                ]));
+            first.metrics.table_ns[TableId::WorldTension.index()] = 1;
+            let format = replay::format::FormatVersion::CURRENT;
+            let mut scan = Scan::default();
+            let mut tracker = FrameChangeTracker::new();
+            scan.prepare_changed(format, &first, &tracker.observe(&first, format))?;
+            assert_eq!(scan.current.len(), countries);
+            let before = scan.work;
+            let mut changed = first.clone();
+            changed.hour = 101;
+            if let TableView::Complete(TableRows::ThreatSources(rows)) =
+                &mut *changed.tables[TableId::ThreatSources.index()]
+            {
+                rows[0].final_raw += 1;
+            }
+            scan.prepare_changed(format, &changed, &tracker.observe(&changed, format))?;
+            let work = Work {
+                row_visits: scan.work.row_visits - before.row_visits,
+                history_visits: scan.work.history_visits - before.history_visits,
+                ..Default::default()
+            };
+            assert_eq!((work.row_visits, work.history_visits), (1, 0));
+            assert_eq!(scan.current.len(), countries);
+            assert_eq!(scan.result.events[0].added.len(), 2);
+            Ok(work)
+        })
+        .unwrap(),
+    );
 }

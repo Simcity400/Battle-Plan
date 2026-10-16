@@ -193,3 +193,17 @@ test('participant holding keeps renamed country capitulations and filters other 
   const gap = warTooltip({ ...input, participant: { tag: 'renamed', run: null, capitulations: [18] } });
   assert.equal(gap.rows.filter(row => row.label === 'Capitulated').length, 0);
 });
+
+
+test('exact casualty reads show loading while known war geometry stays available', () => {
+  const war = {id:'1',firstHour:0,lastHour:10,startedBy:true,endedBy:true,observations:[],casualties:[],participants:[],capitulations:[]};
+  const observation = {firstHour:0,lastHour:10,viewpointTag:'A',viewpointSide:['A'],opposingSide:['B'],attackersAreViewpoint:true,
+    representative:['A','B'] as [string,string],name:{text:'Recorded war',known:true,reason:null,key:null}};
+  const base={war,observation,losses:null,lossesPending:true,hour:5,until:10,branchLast:10,unobserved:[],capitulationsUnobserved:[],
+    country:(tag:string)=>({name:tag,known:true}),day:(hour:number)=>String(hour)};
+  const pending=warTooltip(base);
+  assert.equal(pending.title,'Recorded war');
+  assert.ok(pending.rows.filter(row=>row.label?.endsWith('casualties')).every(row=>row.value==='Loading…'));
+  const gap=warTooltip({...base,unobserved:[{firstHour:5,lastHour:5}]});
+  assert.ok(gap.rows.filter(row=>row.label?.endsWith('casualties')).every(row=>row.value==='Not recorded'));
+});

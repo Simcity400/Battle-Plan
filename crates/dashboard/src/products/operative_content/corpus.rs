@@ -7,7 +7,10 @@ use serde_json::{Value, json};
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
+
+static NEXT: AtomicU64 = AtomicU64::new(0);
 
 fn required_path(name: &str) -> PathBuf {
     PathBuf::from(
@@ -271,8 +274,9 @@ fn operative_capture_define_reader_corpus() {
         .unwrap()
         .as_nanos();
     let mirrors = scratch.join(format!(
-        "capture-defines-inputs-{}-{unique}",
-        std::process::id()
+        "capture-defines-inputs-{}-{unique}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let base = mirrors.join("vanilla");
     copy_directory(
@@ -399,8 +403,9 @@ fn operative_content_script_reader_corpus() {
         .unwrap()
         .as_nanos();
     let mirrors = scratch.join(format!(
-        "script-corpus-inputs-{}-{unique}",
-        std::process::id()
+        "script-corpus-inputs-{}-{unique}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let base = mirrors.join("vanilla");
     println!("Script audit: copy vanilla common/interface bytes to external scratch");

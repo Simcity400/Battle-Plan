@@ -1,3 +1,4 @@
+import { summaryStack } from '../../charts/chartSummary.ts';
 import { drillHour, pinnedBreakdown } from '../../charts/drill/drillState.ts';
 import type { DrillAction, DrillState } from '../../charts/drill/drillState';
 import { addStackAmount, forEachCompactStackSegment, stackEdges } from '../../charts/stack.ts';
@@ -133,6 +134,8 @@ export function observedTradeSpans(known: readonly HourSpan[], unobserved: reado
 /** Positive daily history with recorded zeros between deals, broken where the
  * catalogue/deals or hourly group membership were not recorded. No hour grid. */
 export function contributionHistory(flow: Flow, known: readonly HourSpan[]): StackRun[] {
+  const exact = flow.prepared?.summary?.runs;
+  if (exact) return exact.map(run => ({ ...run, value: Math.max(0, run.value) }));
   const runs: StackRun[] = [];
   let at = 0;
   const push = (firstHour: number, lastHour: number, value: number) => {
@@ -322,4 +325,15 @@ export function pinContributions(source: WidgetSpec, track: Pick<BoundTrack, 'id
   return { ...pinned, time: follow ? { mode: 'follow' } : { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } },
     options: { ...pinned.options, tradeSelection: selectionToken(selection, tradeContext(track)),
       tradeExtent: setToken(JSON.stringify(extent.map(at => at - track.branch.firstHour))) } };
+}
+
+/** The complete trade inventory has no residual band; shared D-12 samples draw it. */
+export function preparedContributionStack(flows: readonly Flow[]) {
+  const view = flows.find(flow => flow.prepared?.summary)?.prepared?.summary;
+  if (!view || flows.every(flow => flow.prepared?.summary?.runs !== undefined && !flow.prepared.summary.approximate?.length)) return null;
+  const summaries = flows.map(flow => flow.prepared?.summary ?? { ...view, runs: [], buckets: view.buckets.map(() => null), approximate: [] })
+    .map(summary => ({ ...summary, buckets: summary.buckets.map(bucket => bucket ? { ...bucket,
+    firstValue: Math.max(0, bucket.firstValue), lastValue: Math.max(0, bucket.lastValue), minValue: Math.max(0, bucket.minValue), maxValue: Math.max(0, bucket.maxValue) } : null) }));
+  const dense = summaryStack(summaries);
+  return { ...dense, from: summaries[0].from, to: summaries[0].to, width: summaries[0].width };
 }

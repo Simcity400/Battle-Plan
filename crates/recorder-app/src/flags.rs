@@ -2,7 +2,8 @@
 //! recorded content stack (mods first-class) with the same flag keys, search
 //! order and checked decoder the replay app uses. No flag is drawn when no
 //! candidate resolves.
-use installed_content::{ResolveOptions, ResolvedLayers, flags::FlagSet, image::Rgba8Image};
+use installed_content::{ResolveOptions, ResolvedLayers, flags::FlagSet};
+use installed_content_image::Rgba8Image;
 use replay::identity::Identity;
 use serde::Serialize;
 use std::io;

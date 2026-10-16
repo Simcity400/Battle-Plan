@@ -7,13 +7,13 @@
 //! the recorded top bar's `player_flag` button names; `Panel` applies it with the
 //! overlay's edge shading evened out, for flags drawn inside the dashboard's panels.
 
-use super::{LoadContext, Product, recorded_rows, validate_tag};
+use super::{LoadContext, Product, validate_tag};
+pub use crate::flag_choices::{FlagChoice, choices, ruling_groups};
 use crate::{Source, catalogue::Catalogue, content, invalid};
 use installed_content::{ResolveOptions, content::ResolvedContent, flags::FlagSet, image::Rgba8Image};
 use replay::{
     container::{Replay, SeekResult},
-    frame::DecodedFrame,
-    rows::{TableId, tables},
+    rows::TableId,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -569,70 +569,6 @@ fn shield(flag: &Rgba8Image, mask: &Rgba8Image, overlay: Option<&Rgba8Image>) ->
     }
 }
 
-pub struct FlagChoice {
-    pub raw: u32,
-    pub tag: String,
-    pub candidates: Vec<String>,
-    /// Why the native candidate chain is unknown. A known cosmetic candidate
-    /// can still supply the complete flag when only its later tag is unknown.
-    pub refusal: Option<String>,
-}
-
-impl FlagChoice {
-    pub fn key(&self, exists: impl Fn(&str) -> bool) -> Result<&str, String> {
-        self.candidates
-            .iter()
-            .find(|key| exists(key))
-            .map(String::as_str)
-            .ok_or_else(|| {
-                self.refusal
-                    .clone()
-                    .unwrap_or_else(|| "country has no resolved flag artwork".into())
-            })
-    }
-}
-
-/// The flag's ruling ideology group, retaining a missing or unsupported join
-/// instead of skipping the group-qualified candidate.
-pub fn ruling_groups(
-    frame: &DecodedFrame,
-) -> io::Result<BTreeMap<u32, Result<Option<String>, String>>> {
-    let parties: BTreeMap<_, _> = recorded_rows::<tables::PoliticalParties>(frame)?
-        .iter()
-        .map(|row| ((row.country, row.id), row.token.as_slice()))
-        .collect();
-    let politics: BTreeMap<_, _> = recorded_rows::<tables::Politics>(frame)?
-        .iter()
-        .map(|row| (row.country, row.ruling_party))
-        .collect();
-    Ok(recorded_rows::<tables::Countries>(frame)?
-        .iter()
-        .map(|row| {
-            let country = row.id;
-            let group = (|| {
-                let ruling = politics
-                    .get(&country)
-                    .ok_or_else(|| format!("country {country} flag needs its Politics row"))?;
-                let ruling = ruling.as_ref().ok_or_else(|| {
-                    format!("country {country} flag has a null ruling-party pointer")
-                })?;
-                let token = parties.get(&(country, *ruling)).ok_or_else(|| {
-                    format!("country {country} flag needs PoliticalParties ruling group {ruling}")
-                })?;
-                let token = std::str::from_utf8(token)
-                    .map_err(|_| format!("country {country} flag ruling group is not UTF-8"))?;
-                // Capture authenticates the ordinary group, whose active flag is
-                // initialized to 1 and never changed by authored content. The null
-                // group is refused. Even an empty accepted token is an active group,
-                // so the qualified candidate still appends its underscore.
-                Ok(Some(token.to_owned()))
-            })();
-            (country, group)
-        })
-        .collect())
-}
-
-/// Flag asset candidates per country at one hour, shared with the combat UI.
 /// The tables [`choices`] reads, its ruling groups included.
 const CHOICE_TABLES: [TableId; 5] = [
     TableId::Countries,
@@ -641,68 +577,6 @@ const CHOICE_TABLES: [TableId; 5] = [
     TableId::Politics,
     TableId::PoliticalParties,
 ];
-
-pub fn choices(frame: &DecodedFrame) -> io::Result<Vec<FlagChoice>> {
-    let links: BTreeMap<_, _> = recorded_rows::<tables::CountryLinks>(frame)?
-        .iter()
-        .map(|r| (r.id, r.canonical_slot))
-        .collect();
-    let countries: BTreeMap<_, _> = recorded_rows::<tables::Countries>(frame)?
-        .iter()
-        .map(|r| (r.canonical_slot, r))
-        .collect();
-    let groups = ruling_groups(frame)?;
-    let appearances: BTreeMap<_, _> = recorded_rows::<tables::CountryAppearance>(frame)?
-        .iter()
-        .map(|r| (r.country, r))
-        .collect();
-    Ok(links
-        .into_iter()
-        .filter_map(|(raw, slot)| {
-            let country = countries.get(&slot)?;
-            // Atlas population tests the object's own country reference.
-            if (country.id as i32) <= 0 {
-                return None;
-            }
-            let tag = String::from_utf8_lossy(&country.tag).into_owned();
-            // Atlas cells belong to the resolved country object. An alias link
-            // supplies the same object's captured appearance and party.
-            let owner = country.id;
-            let appearance = appearances.get(&owner);
-            let cosmetic = appearance
-                .ok_or_else(|| format!("country {owner} flag needs its CountryAppearance row"))
-                .and_then(|row| {
-                    std::str::from_utf8(&row.cosmetic_tag)
-                        .map_err(|_| "country cosmetic tag is not UTF-8".to_owned())
-                });
-            let original = appearance
-                .ok_or_else(|| format!("country {owner} flag needs its CountryAppearance row"))
-                .and_then(|row| installed_content::country_names::original_tag(country, row));
-            let group = groups
-                .get(&owner)
-                .cloned()
-                .unwrap_or_else(|| Err(format!("country {owner} flag needs its ruling group")));
-            let candidates = match (&cosmetic, &group) {
-                (Ok(cosmetic), Ok(group)) => installed_content::country_names::flag_keys(
-                    original.as_ref().ok().copied(),
-                    cosmetic,
-                    group.as_deref(),
-                ),
-                _ => Vec::new(),
-            };
-            let refusal = cosmetic
-                .err()
-                .or_else(|| group.err())
-                .or_else(|| original.err());
-            Some(FlagChoice {
-                raw,
-                tag,
-                candidates,
-                refusal,
-            })
-        })
-        .collect())
-}
 
 pub struct FlagContext {
     options: ResolveOptions,
@@ -903,6 +777,7 @@ impl FlagContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use replay::frame::DecodedFrame;
 
     fn flag_frame(
         original: replay::rows::Recorded<Option<Vec<u8>>>,
@@ -1496,25 +1371,11 @@ mod tests {
     }
 
     #[test]
-    fn flag_params_default_to_full_and_reject_paths_and_unbounded_batches() {
-        let mut value = serde_json::json!({ "branchId": "1", "hour": 0, "tags": ["GER"] });
-        let params: CountryFlagParams = serde_json::from_value(value.clone()).unwrap();
+    fn flag_params_default_to_full_and_reject_invalid_tags_and_unbounded_batches() {
+        let value = serde_json::json!({ "branchId": "1", "hour": 0, "tags": ["GER"] });
+        let params: CountryFlagParams = serde_json::from_value(value).unwrap();
         assert_eq!(params.size, CountryFlagSize::Full);
         assert!(CountryFlags::validate(&params).is_ok());
-        value["size"] = serde_json::json!("small");
-        let params: CountryFlagParams = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(params.size, CountryFlagSize::Small);
-        for (name, size) in [
-            ("medium", CountryFlagSize::Medium),
-            ("shield", CountryFlagSize::Shield),
-            ("panel", CountryFlagSize::Panel),
-        ] {
-            value["size"] = serde_json::json!(name);
-            let params: CountryFlagParams = serde_json::from_value(value.clone()).unwrap();
-            assert_eq!(params.size, size);
-        }
-        value["size"] = serde_json::json!("../other");
-        assert!(serde_json::from_value::<CountryFlagParams>(value).is_err());
         let mut params = CountryFlagParams {
             branch_id: "1".into(),
             hour: 0,

@@ -6,6 +6,8 @@
 
 **Settings:** Top ten by dealt plus taken by default; manual countries and smart groups; bar-end values, ratio column and inline/pop-out drill; Campaign, Follow, Pin and Range.
 
+Prepared queries load the shared ledger event pages; availability reads the saved family flag.
+
 **Notable behaviour:**
 
 - The quantity is actual applied building-health loss from the proved aircraft callers, not the native returned damage budget. Unknown callers make coverage uncertain; other damage writers are excluded.

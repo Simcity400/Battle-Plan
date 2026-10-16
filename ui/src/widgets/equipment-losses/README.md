@@ -6,7 +6,7 @@ One country’s signed losses by cause → equipment type → exact design, with
 
 ## Products it reads
 
-[`equipment-losses`](../../../../crates/dashboard/src/products/equipment_losses.rs) owns native cause meanings, content labels and coverage.
+Prepared [`equipment-losses`](../../../../crates/dashboard/src/products/equipment_losses.rs) requests use one viewport plus exact reached dates. The existing product owns native cause meanings, content labels and coverage. Background preparation observes all native holders once; queries read the selected holder's sparse loss series and metadata.
 
 ## Settings
 
@@ -20,7 +20,10 @@ Land losses from Every destruction (default) or Game’s Combat Log; hierarchy l
 - BigInt preserves every signed digit. Negative corrections and recorded zero remain selectable; only positive geometry draws. Corrections or incomplete full totals disable shares/Fill.
 - Leaves drill native cohorts; parents zoom. History steps at supplying changes and breaks at unread intervals. Picking holds; Follow uses the clock. Range drills keep their subtraction basis without Follow.
 - Pin saves campaign/branch, native slot/ID/origin, cohort and date/range basis. Validated aliases follow only that holder; gaps/reused tags cannot supply losses. Headers follow the body date. Invalid holders refuse; older missing-holder pins keep neutral headers.
-- NumericReply retains picks through content-only refresh; source or numeric changes invalidate them.
+- NumericReply retains picks through content-only refresh; source or native-selection changes invalidate them.
+- Chart geometry uses viewport summaries and the existing stack painter. Hover and picks require separately requested exact dates. Keyboard navigation reads shared series change boundaries and native sinking dates. Pending playback stays at the previous reply's own hour.
+- Sparse ship events publish at observation time and retain the native sinking date, preserving backdated totals without rewriting committed preparation.
+- Unprepared ranges stay pending and show the shared "still being prepared" note. Totals require prior drains, retained closed log entries, convoy reset increments, ended exchanges and ship observations, so one-frame samples cannot supply them.
 
 ## Files
 
@@ -28,4 +31,12 @@ Land losses from Every destruction (default) or Game’s Combat Log; hierarchy l
 |---|---|
 | [EquipmentLossesWidget.tsx](EquipmentLossesWidget.tsx) | Sunburst, coverage and inventory/drill composition. |
 | [lossesData.ts](lossesData.ts), [lossDrill.ts](lossDrill.ts) | Exact amounts, coverage, scoped selections and history; adjacent tests. |
+| [lossesParity.ts](lossesParity.ts) | Test-only complete Sunburst inputs, exact source points, totals, content and coverage. |
+| [preparedLosses.ts](preparedLosses.ts) | Prepared viewport routing, reached dates, cancellation and navigation. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [equipmentLosses.css](equipmentLosses.css) | Settings, registration and layout. |
+
+Parity builds expose every ordered Sunburst item and its exact signed operands,
+native country selection, counting window, coverage and referenced content.
+The provider starts no reads. Ordinary builds expose no model provider.
+Its label is "Equipment losses"; prepared replies identify their exact reached
+dates separately from chart samples.

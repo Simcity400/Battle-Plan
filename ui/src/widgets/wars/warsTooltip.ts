@@ -39,6 +39,7 @@ export interface WarTooltipInput {
   war: WarTimeline;
   observation: WarObservation | null;
   losses: WarCasualtyRun | null;
+  lossesPending?: boolean;
   hour: number;
   until: number;
   branchLast: number;
@@ -78,7 +79,7 @@ export function warTooltip(input: WarTooltipInput): TooltipContent {
   } else {
     const count = !absent && observation ? new Set([...observation.viewpointSide, ...observation.opposingSide]).size : null;
     rows.push({ label: 'Participants', value: count == null ? absent ?? 'Not recorded' : String(count), tone: count == null ? 'muted' : undefined });
-    rows.push(...casualtyRows(absent ? null : losses, sides, absent ?? undefined));
+    rows.push(...casualtyRows(absent ? null : losses, sides, absent ?? (input.lossesPending ? 'Loading…' : undefined)));
     if (!absent && observation) for (const [index, tags] of [observation.viewpointSide, observation.opposingSide].entries()) {
       rows.push({ label: sides[index], divider: true });
       for (const tag of new Set(tags)) rows.push({ label: country(tag).name, countryFlag: country(tag), indent: true, short: true });

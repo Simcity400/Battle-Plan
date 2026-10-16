@@ -6,25 +6,59 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[lib]
+doctest = false
+
 [dependencies]
+installed-content-core.workspace = true
+installed-content-abilities.workspace = true
+installed-content-country-names.workspace = true
+installed-content-division-names.workspace = true
+installed-content-equipment-graphics.workspace = true
+installed-content-events.workspace = true
+installed-content-focus.workspace = true
+installed-content-gfx.workspace = true
+installed-content-localisation.workspace = true
+installed-content-naval-combat-defines.workspace = true
+installed-content-naval-path.workspace = true
+installed-content-province-area.workspace = true
+installed-content-raids.workspace = true
+installed-content-regions.workspace = true
+installed-content-scripted-localisation.workspace = true
+installed-content-settings.workspace = true
+installed-content-state-categories.workspace = true
+installed-content-states.workspace = true
+installed-content-unit-path.workspace = true
+installed-content-wargoals.workspace = true
+installed-content-weather.workspace = true
+
+[dev-dependencies]
 engine.workspace = true
-# PUC Lua 5.1, the runtime the game links, for common/defines.
-mlua = { version = "0.12", default-features = false, features = ["lua51", "vendored", "send"] }
-# The PNG plugin of the game's FreeImage decodes through libpng; see image::native.
-png.workspace = true
-# libpng's iCCP profiles are zlib streams (see image::native::png_colorspace); archive layers
-# inflate their records as raw deflate (content::physfs_zip).
-miniz_oxide = "0.8"
-replay.workspace = true
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
-sha2.workspace = true
+installed-content-division-names = { workspace = true, features = ["layer-fixtures"] }
+installed-content-core = { workspace = true, features = ["layer-fixtures"] }
 
 [features]
-# Hand-built fixtures for other crates' unit tests, such as
-# `movement::MovementMap::from_parts`; enabled only from dev-dependencies.
-test-support = []
-
-[target.'cfg(windows)'.dependencies]
-# Native folder opens and the monitors the game's SDL display indices name.
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_UI_HiDpi"] }
+test-support = [
+    "installed-content-core/test-support",
+    "installed-content-abilities/test-support",
+    "installed-content-country-names/test-support",
+    "installed-content-division-names/test-support",
+    "installed-content-equipment-graphics/test-support",
+    "installed-content-events/test-support",
+    "installed-content-focus/test-support",
+    "installed-content-gfx/test-support",
+    "installed-content-localisation/test-support",
+    "installed-content-naval-combat-defines/test-support",
+    "installed-content-naval-path/test-support",
+    "installed-content-province-area/test-support",
+    "installed-content-raids/test-support",
+    "installed-content-regions/test-support",
+    "installed-content-scripted-localisation/test-support",
+    "installed-content-settings/test-support",
+    "installed-content-state-categories/test-support",
+    "installed-content-states/test-support",
+    "installed-content-unit-path/test-support",
+    "installed-content-wargoals/test-support",
+    "installed-content-weather/test-support",
+]
+layer-fixtures = ["installed-content-core/layer-fixtures"]

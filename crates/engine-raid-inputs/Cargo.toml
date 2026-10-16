@@ -1,0 +1,24 @@
+[package]
+name = "engine-raid-inputs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+alloc-fault-injection = ["engine-native/alloc-fault-injection"]
+
+[dependencies]
+engine-executable.workspace = true
+engine-intelligence.workspace = true
+engine-native.workspace = true
+engine-projects.workspace = true
+engine-resources.workspace = true
+engine-stability.workspace = true
+
+[dev-dependencies]
+engine-native = { workspace = true, features = ["test-support"] }

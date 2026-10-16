@@ -26,7 +26,7 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 10 }, countries: { max: Number.MAX_SAFE_INTEGER, ranked: true }, defaultCountries: TOP_COUNTRIES,
   migrate: (_from, widget) => ({ ...widget, configVersion: 2, options: normaliseAirOptions(widget.options) }),
-  availability: { product: 'military-air-ledger', params: { family: 'airLosses' } }, options: OPTIONS,
+  availability: { product: 'military-air-ledger', params: { availability: true, family: 'airLosses' } }, options: OPTIONS,
   variants: raceViewVariants('Air kills & losses', OPTIONS, { breakdown: 'Aircraft loss causes' }),
 } as const satisfies WidgetMeta;
 

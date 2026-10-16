@@ -22,13 +22,14 @@
 
 use super::{
     LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
-    identity::{Look, built_template, character_script_token},
-    politics_content::{IdeaCountry, IdeaName, PoliticsContent, politics_content},
+    politics_content::{PoliticsContent, politics_content},
     recorded_rows, validate_tag,
 };
 use crate::{
     Source,
     catalogue::View,
+    idea_names::{IdeaCountry, IdeaName},
+    identity::{Look, built_template, character_script_token},
     metadata::{mapped_slot, validate_campaign},
     products::country_measure::FixedRun,
     scripted_text::ScriptedText,
@@ -1017,12 +1018,18 @@ pub(super) fn recorded_character<'a>(
     let index = rows
         .binary_search_by_key(&line.identity_id, |row| row.id)
         .ok()?;
-    let row = &rows[index];
-    Some(RecordedCharacter {
+    Some(recorded_character_row(&rows[index], lexical))
+}
+
+pub(super) fn recorded_character_row<'a>(
+    row: &'a replay::rows::CharacterRow,
+    lexical: Option<&'a [replay::rows::LexicalTokenRow]>,
+) -> RecordedCharacter<'a> {
+    RecordedCharacter {
         script: lexical.and_then(|rows| character_script_token(row, rows)),
         saved: std::str::from_utf8(&row.token).ok().unwrap_or_default(),
         template: built_template(row, lexical),
-    })
+    }
 }
 
 /// A line's name in the viewer's language, its character (if any) as recorded:
@@ -1122,11 +1129,287 @@ fn line_name_for(
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Track {
     identity: Option<(u32, u32)>,
-    hour: Option<i32>,
     values: [Option<i64>; 3],
+    read: Option<i32>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+pub(crate) struct Scan {
+    tracks: BTreeMap<String, Track>,
+    hour: Option<i32>,
+    active: BTreeSet<String>,
+    #[serde(skip)]
+    native: Native,
+    #[serde(skip)]
+    pub(crate) removed: Vec<String>,
+}
+
+/// Current native operands only. A3 refreshes each source independently; no
+/// recorded frame or historical table is retained, and resume rebuilds it.
+#[derive(Default)]
+pub(super) struct Native {
+    keys: Option<crate::metadata::CountryKeys>,
+    countries: Option<Vec<replay::rows::CountryRow>>,
+    links: Option<Vec<replay::rows::CountryLinkRow>>,
+    pub(super) roster: BTreeMap<u32, (String, u32)>,
+    pub(super) slots: BTreeMap<u32, Vec<u32>>,
+    pub(super) inputs: Option<BTreeMap<u32, CountryStabilityInputRow>>,
+    pub(super) reads: Option<BTreeMap<u32, i32>>,
+    command: Option<BTreeMap<u32, replay::rows::CountryCommandPowerRow>>,
+    pub(super) membership_changed: bool,
+    #[cfg(test)]
+    pub(super) work: crate::prepared::observer_tests::Work,
+}
+fn changed_keys<T: PartialEq>(
+    old: &Option<BTreeMap<u32, T>>,
+    new: &Option<BTreeMap<u32, T>>,
+) -> BTreeSet<u32> {
+    old.iter()
+        .chain(new)
+        .flat_map(|rows| rows.keys())
+        .copied()
+        .filter(|id| {
+            old.as_ref().and_then(|rows| rows.get(id)) != new.as_ref().and_then(|rows| rows.get(id))
+        })
+        .collect()
+}
+fn same_keys<T>(old: &Option<BTreeMap<u32, T>>, new: &Option<BTreeMap<u32, T>>) -> bool {
+    match (old, new) {
+        (Some(old), Some(new)) => old.keys().eq(new.keys()),
+        (None, None) => true,
+        _ => false,
+    }
+}
+impl Native {
+    pub(super) fn country(&self, id: u32) -> Option<&replay::rows::CountryRow> {
+        let rows = self.countries.as_ref()?;
+        rows.binary_search_by_key(&id, |row| row.id)
+            .ok()
+            .map(|index| &rows[index])
+    }
+    pub(super) fn refresh(
+        &mut self,
+        frame: &replay::frame::DecodedFrame,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+        command_power: bool,
+    ) -> BTreeSet<u32> {
+        self.membership_changed = false;
+        // These operands use their rows/status. Supplying dates are explicit
+        // SliceReads rows; an equal fresh acquisition changes no operand here.
+        let reads =
+            |table: TableId| changes.is_none_or(|changes| changes.rows_changed[table.index()]);
+        let mut roster_changed = false;
+        if reads(TableId::Countries) {
+            let rows = frame.complete::<tables::Countries>().ok();
+            #[cfg(test)]
+            {
+                self.work.row_visits += rows.map_or(0, |rows| rows.len());
+            }
+            if !rows.is_some_and(|rows| self.keys.as_ref().is_some_and(|keys| keys.same(rows))) {
+                self.keys = rows.map(crate::metadata::CountryKeys::read);
+                self.countries = rows.map(|rows| rows.to_vec());
+                roster_changed = true;
+            }
+        }
+        if reads(TableId::CountryLinks) {
+            let rows = frame.complete::<tables::CountryLinks>().ok();
+            #[cfg(test)]
+            {
+                self.work.row_visits += rows.map_or(0, |rows| rows.len());
+            }
+            let next = rows.map(|rows| rows.to_vec());
+            roster_changed |= self.links != next;
+            self.links = next;
+        }
+        let mut dirty = BTreeSet::new();
+        if roster_changed {
+            self.membership_changed = true;
+            dirty.extend(self.roster.keys().copied());
+            self.roster.clear();
+            self.slots.clear();
+            if let Some((countries, links)) = self.countries.as_ref().zip(self.links.as_ref()) {
+                for country in countries {
+                    let (Ok(tag), Ok(slot)) = (
+                        std::str::from_utf8(&country.tag),
+                        mapped_slot(country, links),
+                    ) else {
+                        continue;
+                    };
+                    self.roster.insert(country.id, (tag.to_owned(), slot));
+                    self.slots.entry(slot).or_default().push(country.id);
+                }
+            }
+            dirty.extend(self.roster.keys().copied());
+        }
+        if reads(TableId::CountryStabilityInputs) {
+            let rows = recorded_rows::<tables::CountryStabilityInputs>(frame).ok();
+            #[cfg(test)]
+            {
+                self.work.row_visits += rows.map_or(0, |rows| rows.len());
+            }
+            let next = rows.map(|rows| rows.iter().map(|row| (row.country, row.clone())).collect());
+            self.membership_changed |= !same_keys(&self.inputs, &next);
+            dirty.extend(changed_keys(&self.inputs, &next));
+            self.inputs = next;
+        }
+        if reads(TableId::SliceReads) {
+            let rows = frame.complete::<tables::SliceReads>().ok();
+            #[cfg(test)]
+            {
+                self.work.row_visits += rows.map_or(0, |rows| rows.len());
+            }
+            let next = rows.map(|rows| {
+                rows.iter()
+                    .filter(|row| row.table == TableId::CountryStabilityInputs as u32)
+                    .map(|row| (row.owner, row.sample_hour))
+                    .collect()
+            });
+            self.membership_changed |= !same_keys(&self.reads, &next);
+            dirty.extend(changed_keys(&self.reads, &next));
+            self.reads = next;
+        }
+        if command_power && reads(TableId::CountryCommandPower) {
+            let rows = frame.complete::<tables::CountryCommandPower>().ok();
+            #[cfg(test)]
+            {
+                self.work.row_visits += rows.map_or(0, |rows| rows.len());
+            }
+            let next = rows.map(|rows| {
+                rows.iter()
+                    .map(|row| (row.canonical_slot, row.clone()))
+                    .collect()
+            });
+            for slot in changed_keys(&self.command, &next) {
+                dirty.extend(self.slots.get(&slot).into_iter().flatten().copied());
+            }
+            self.command = next;
+        }
+        if changes.is_none_or(|changes| changes.rows_changed.iter().all(|changed| *changed)) {
+            dirty.extend(self.roster.keys().copied());
+        }
+        dirty
+    }
+}
+impl Scan {
+    pub(crate) fn step(
+        &mut self,
+        decoded: &replay::frame::DecodedFrame,
+        tags: Option<&BTreeSet<String>>,
+        changes: Option<&crate::prepared::frame_changes::FrameChanges>,
+        mut sink: impl FnMut(
+            &str,
+            &CountryStabilityInputRow,
+            u32,
+            i32,
+            [Option<i64>; 3],
+            [bool; 3],
+            [bool; 4],
+        ) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let adjacent = self.hour.and_then(|hour| hour.checked_add(1)) == Some(decoded.hour);
+        self.hour = Some(decoded.hour);
+        self.removed.clear();
+        let mut dirty = self.native.refresh(decoded, changes, true);
+        if !adjacent {
+            dirty.extend(self.native.roster.keys().copied());
+        }
+        // Only current holder membership is considered, never historical tracks.
+        // A roster/table refusal closes its active keys at the previous frontier.
+        if self.native.membership_changed
+            || changes.is_none_or(|changes| changes.rows_changed.iter().all(|changed| *changed))
+        {
+            let valid: BTreeSet<_> = self
+                .native
+                .roster
+                .iter()
+                .filter(|(id, _)| {
+                    self.native
+                        .inputs
+                        .as_ref()
+                        .is_some_and(|rows| rows.contains_key(id))
+                        && self
+                            .native
+                            .reads
+                            .as_ref()
+                            .is_some_and(|rows| rows.contains_key(id))
+                })
+                .map(|(_, (tag, _))| tag.clone())
+                .collect();
+            for tag in self.active.difference(&valid) {
+                self.removed.push(tag.clone());
+                if let Some(track) = self.tracks.get_mut(tag) {
+                    track.identity = None;
+                }
+            }
+            self.active = valid;
+        }
+        for id in dirty {
+            let Some((tag, slot)) = self.native.roster.get(&id) else {
+                continue;
+            };
+            if tags.is_some_and(|tags| !tags.contains(tag)) {
+                continue;
+            }
+            let Some((row, read)) = self
+                .native
+                .inputs
+                .as_ref()
+                .and_then(|rows| rows.get(&id))
+                .zip(
+                    self.native
+                        .reads
+                        .as_ref()
+                        .and_then(|rows| rows.get(&id))
+                        .copied(),
+                )
+            else {
+                continue;
+            };
+            let identity = (*slot, id);
+            let track = self.tracks.entry(tag.to_owned()).or_default();
+            let continues = adjacent && track.identity == Some(identity);
+            let values = [
+                formula::stability(row).value,
+                formula::war_support(row).value,
+                formula::max_command_power(
+                    row,
+                    self.native.command.as_ref().and_then(|rows| rows.get(slot)),
+                )
+                .value,
+            ];
+            if changes.is_none() || !continues || track.values != values || track.read != Some(read)
+            {
+                #[cfg(test)]
+                {
+                    self.native.work.emitted += 1;
+                }
+                sink(
+                    tag,
+                    row,
+                    *slot,
+                    read,
+                    values,
+                    track.values.map(|value| continues && value.is_some()),
+                    std::array::from_fn(|index| {
+                        !continues
+                            || track.read != Some(read)
+                            || index > 0 && track.values[index - 1] != values[index - 1]
+                    }),
+                )?;
+            }
+            track.identity = Some(identity);
+            track.values = values;
+            track.read = Some(read);
+        }
+        Ok(())
+    }
+    #[cfg(all(test, feature = "slow-tests"))]
+    pub(crate) fn work(&self) -> crate::prepared::observer_tests::Work {
+        self.native.work
+    }
 }
 
 /// Scans one branch once for every tag; the breakdown is taken at `hour`.
@@ -1153,7 +1436,8 @@ pub fn scan(
         .iter()
         .map(|tag| ((*tag).to_owned(), CountryStabilitySeries::default()))
         .collect();
-    let mut tracks: BTreeMap<String, Track> = BTreeMap::new();
+    let mut observer = Scan::default();
+    let selected_tags = tags.iter().map(|tag| (*tag).to_owned()).collect();
     let mut warnings = Vec::new();
     crate::blocks::scan_blocks(
         replay,
@@ -1179,91 +1463,57 @@ pub fn scan(
                     if validate_campaign(decoded, replay).is_err() {
                         break;
                     }
-                    let (Ok(countries), Ok(links), Ok(inputs), Ok(reads)) = (
-                        decoded.complete::<tables::Countries>(),
-                        decoded.complete::<tables::CountryLinks>(),
-                        recorded_rows::<tables::CountryStabilityInputs>(decoded),
-                        decoded.complete::<tables::SliceReads>(),
-                    ) else {
-                        continue;
-                    };
-                    let read_hour = |table, owner| replay::sliced::read_hour(reads, table, owner);
-                    for country in countries {
-                        let Some(tag) = std::str::from_utf8(&country.tag).ok() else {
-                            continue;
-                        };
-                        let Some(series) = result.get_mut(tag) else {
-                            continue;
-                        };
-                        let Ok(slot) = mapped_slot(country, links) else {
-                            continue;
-                        };
-                        let Ok(index) = inputs.binary_search_by_key(&country.id, |row| row.country)
-                        else {
-                            continue;
-                        };
-                        let row = &inputs[index];
-                        let Some(read) = read_hour(TableId::CountryStabilityInputs, row.country)
-                        else {
-                            continue;
-                        };
-                        let identity = (slot, country.id);
-                        let track = tracks.entry(tag.to_owned()).or_default();
-                        let continues = track.identity == Some(identity)
-                            && track.hour.and_then(|h| h.checked_add(1)) == Some(frame.hour);
-                        let values = [
-                            formula::stability(row).value,
-                            formula::war_support(row).value,
-                            formula::max_command_power(row, formula::command_power(decoded, slot))
-                                .value,
-                        ];
-                        for ((runs, value), previous) in [
-                            &mut series.stability,
-                            &mut series.war_support,
-                            &mut series.max_command_power,
-                        ]
-                        .into_iter()
-                        .zip(values)
-                        .zip(track.values)
-                        {
-                            let Some(value) = value else { continue };
-                            let joined = continues && previous.is_some();
-                            match runs.last_mut() {
-                                Some(run)
-                                    if joined && run.value_raw.parse::<i64>() == Ok(value) =>
-                                {
-                                    run.last_hour = frame.hour;
-                                }
-                                _ => {
-                                    runs.push(FixedRun {
-                                        first_hour: frame.hour,
-                                        last_hour: frame.hour,
-                                        value_raw: value.to_string(),
-                                        starts_segment: !joined,
-                                    });
+                    observer.step(
+                        decoded,
+                        Some(&selected_tags),
+                        None,
+                        |tag, row, slot, read, values, joined, _changed| {
+                            let series = result.get_mut(tag).unwrap();
+                            for ((runs, value), joined) in [
+                                &mut series.stability,
+                                &mut series.war_support,
+                                &mut series.max_command_power,
+                            ]
+                            .into_iter()
+                            .zip(values)
+                            .zip(joined)
+                            {
+                                let Some(value) = value else { continue };
+                                match runs.last_mut() {
+                                    Some(run)
+                                        if joined && run.value_raw.parse::<i64>() == Ok(value) =>
+                                    {
+                                        run.last_hour = frame.hour;
+                                    }
+                                    _ => {
+                                        runs.push(FixedRun {
+                                            first_hour: frame.hour,
+                                            last_hour: frame.hour,
+                                            value_raw: value.to_string(),
+                                            starts_segment: !joined,
+                                        });
+                                    }
                                 }
                             }
-                        }
-                        series.recorded = true;
-                        note_carried(&mut series.carried, frame.hour, read);
-                        track.identity = Some(identity);
-                        track.hour = Some(frame.hour);
-                        track.values = values;
-                        if hour == Some(frame.hour) {
-                            series.breakdown = Some(breakdown_of(
-                                BreakdownInput {
-                                    decoded,
-                                    hour: frame.hour,
-                                    row,
-                                    slot,
-                                    read_hour: read,
-                                    reads,
-                                    tag,
-                                },
-                                &mut warnings,
-                            ));
-                        }
-                    }
+                            series.recorded = true;
+                            note_carried(&mut series.carried, frame.hour, read);
+                            if hour == Some(frame.hour) {
+                                series.breakdown = Some(breakdown_of(
+                                    BreakdownInput {
+                                        decoded,
+                                        hour: frame.hour,
+                                        row,
+                                        slot,
+                                        read_hour: read,
+                                        reads: decoded.complete::<tables::SliceReads>().unwrap(),
+                                        tag,
+                                    },
+                                    &mut warnings,
+                                ));
+                            }
+                            Ok(())
+                        },
+                    )?;
                 }
             }
             Ok(())
@@ -1369,3 +1619,7 @@ mod display_text_tests {
 
 #[cfg(test)]
 mod tests;
+
+// Advisor templates as politics content resolves them for breakdown lines.
+#[cfg(test)]
+mod held_advisor_tests;

@@ -1,5 +1,5 @@
 import ArtFallback from '../../components/ArtFallback';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
 import ProgressMeter from '../../charts/meter/ProgressMeter';
@@ -19,6 +19,7 @@ import { countryMatch, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackSpeed } from '../../dashboard/playback';
+import { useParityRows } from '../../dashboard/parityRows';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { OperativeRosterReply } from '../../generated/dashboard';
@@ -45,15 +46,23 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
   const fallback = defaultCountryTag(track);
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data,
     track?.branch.lastHour ?? hour, definition.countries.max), [widget.countries, fallback, groups.data, track, hour]);
+  const first = track ? track.branch.firstHour + Math.floor((hour - track.branch.firstHour) / 24) * 24 : hour;
   const request = track && resolved.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'operatives-roster',
-    params: { branchId: track.branch.id, tags: resolved.tags } } : null;
-  const { data, error, retry } = useProduct<OperativeRosterReply>(runtime.client, request, active, validateOperativesRosterReply);
+    params: runtime.client.preparedQuery
+      ? { branchId: track.branch.id, tags: resolved.tags, firstHour: first, lastHour: Math.min(first + 23, track.branch.lastHour), includeDeparted: widget.time.mode === 'campaign' && options.departed === true }
+      : { branchId: track.branch.id, tags: resolved.tags } } : null;
+  const { data, error, retry } = useProduct<OperativeRosterReply>(runtime.client, request, active, validateOperativesRosterReply, track?.source);
   const match = useMemo(() => countryMatch(widget.countries, fallback ? [fallback] : [], groups.data,
     track?.branch.lastHour ?? hour), [widget.countries, fallback, groups.data, track?.branch.lastHour, hour]);
   const membershipUnknown = resolved.membership !== null && resolved.unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour);
   const view = useMemo(() => data && match.ready ? rosterAt(data, hour, widget.time.mode === 'campaign' && options.departed === true,
     match.matches) : null, [data, hour, widget.time.mode, options.departed, match]);
   const rows = view?.rows ?? EMPTY_ROWS;
+  const root = useRef<HTMLDivElement>(null);
+  useParityRows(root, () => ({ kind: 'table', label: 'Operative roster values', complete: Boolean(data && view && match.ready), total: rows.length,
+    rows: rows.map(row => ({ key: row.key, country: row.country, joinedHour: row.entry.joinedHour, departedHour: row.departed ? row.entry.departedHour : null,
+      value: row.run.value, readHour: row.readHour, assignmentReadHour: row.assignmentReadHour, moments: operativeMoments(row) })),
+  }));
   const [visibleRows, setVisibleRows] = useState<readonly OperativeRow[]>(EMPTY_ROWS);
   const onVisibleRows = useCallback((rows: readonly OperativeRow[]) => setVisibleRows(rows), []);
   const wanted = useMemo(() => {
@@ -149,7 +158,7 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
       density={options.density === 'compact' ? 'compact' : 'comfortable'} rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)} muted={muted}
       menu={row => operativeMoments(row).map(moment => ({ ...jumpItem(runtime, track.id, moment.hour), label: moment.label }))}
       tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />;
-  return <div className="operatives-roster">
+  return <div ref={root} className="operatives-roster">
     {!!rows.length && view && view.unknown.length > 0 && <p className="operative-note">{view.unknown.length} country rosters unavailable.</p>}
     {body}
   </div>;

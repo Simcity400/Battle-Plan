@@ -54,6 +54,7 @@ test('mounted force views keep witnessed actors through pending names and reject
   host.__forceEffect = (id, effect, deps) => { host.__forceMemo!(id + '/effects', () => state.effects.push(effect), deps); };
   host.__forceReducer = (reducer, initial) => [state.drill ??= initial, action => { state.drill = reducer(state.drill!, action); }];
   const replacements: Record<string, string> = {
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__forceNumeric.groups, error: globalThis.__forceNumeric.error, retry() {} });',
     '/dashboard/model.ts': `export const resolveWindow = (widget, track, _tracks, hour) => ({ firstHour: track.branch.firstHour,
       lastHour: widget.time.mode === 'follow' ? hour : track.branch.lastHour });
       export const createWidget = () => { throw Error('Pin is outside this fixture'); };`,

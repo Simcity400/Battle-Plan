@@ -16,5 +16,5 @@ export function useLeaders(runtime: WidgetRuntime, trackId: string, selection: L
   const track = runtime.tracks.find(t => t.id === trackId);
   const request = track && selection ? { sourceId: track.source.id, revision: track.source.revision, product: 'unit-leaders',
     params: { branchId: track.branch.id, selection, view, leaders } } : null;
-  return useProduct<UnitLeadersData>(runtime.client, request, active, validateUnitLeadersReply);
+  return useProduct<UnitLeadersData>(runtime.client, request, active, validateUnitLeadersReply, track?.source);
 }

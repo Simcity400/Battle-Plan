@@ -1,14 +1,4 @@
 //! Opt-in layer measurements against the synthetic replay example's output.
-use crate::{
-    document::{Document, Hour, InitialHour},
-    engaged_index::{self, EngagedIndex},
-    map::{
-        camera::{MapSize, Placement},
-        perspective, political,
-        tables::core,
-        visibility::Relations,
-    },
-};
 use replay::{
     container::SeekResult,
     frame::TableView,
@@ -21,6 +11,15 @@ use std::{
     sync::Arc,
     thread,
     time::{Duration, Instant},
+};
+use viewer_foundation::engagement_history::LAND;
+use viewer_foundation::engagement_history::combats;
+use {
+    crate::document::Document, crate::document::Hour, crate::document::InitialHour,
+    crate::engaged_index::EngagedIndex, viewer_foundation::map::camera::MapSize,
+    viewer_foundation::map::camera::Placement, viewer_foundation::map::perspective,
+    viewer_foundation::map::tables::core, viewer_foundation::map::visibility::Relations,
+    viewer_world::map::political,
 };
 
 fn lap<T>(name: &str, camera: &str, hour: i32, work: impl FnOnce() -> io::Result<T>) {
@@ -82,7 +81,7 @@ fn unit_scale_replay_layers() {
         .map(|block| block.last_hour)
         .max()
         .unwrap();
-    while !engaged.covers(1, last) {
+    while !engaged.shared.covers(1, last) {
         thread::sleep(Duration::from_millis(1));
     }
     let ms = started.elapsed().as_secs_f64() * 1e3;
@@ -135,17 +134,17 @@ fn unit_scale_replay_layers() {
                 .collect();
             let relations = Relations::read(&frame, &links);
             assert!(
-                engaged.answers(&frame, viewer),
+                engaged.shared.answers(&frame, viewer),
                 "the index does not answer hour {at}"
             );
             let flags = |index: Option<&EngagedIndex>| {
-                engaged_index::combats(
+                combats(
                     &frame,
-                    engaged_index::LAND,
+                    LAND,
                     viewer,
                     &links,
                     relations.as_ref().map_err(|reason| *reason),
-                    index,
+                    index.map(|index| index.shared.as_ref()),
                 )
             };
             if camera_name == "close" && offset == 0 {
@@ -231,7 +230,7 @@ fn unit_scale_replay_layers() {
             });
         }
         let mut pipeline = crate::hours::Pipeline::new(
-            std::sync::Arc::clone(&document.content),
+            Arc::clone(&document.content),
             document.playback.replay_handle(),
         )
         .unwrap();

@@ -27,12 +27,13 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
 import { NumericReply } from '../../dashboard/numericReply';
-import { useProduct } from '../../dashboard/products';
+import { usePreparedSupply } from './preparedSupply';
+import { useParityRows } from '../../dashboard/parityRows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import type { SupplyHealthParams, SupplyHealthReply, SupplyHealthSeries, CountryGroupReply } from '../../generated/dashboard';
+import type { SupplyHealthReply, SupplyHealthSeries, CountryGroupReply } from '../../generated/dashboard';
 import { definition } from './definition';
 import { supplyCountrySelection } from './SupplyCountryChip';
-import { STATES, STATE_LABELS, supplyDrillNumbers, supplyShareRuns, supplyTooltip, totalDivisions, validateSupplyHealthReply } from './supplyHealthData';
+import { STATES, STATE_LABELS, supplyDrillNumbers, supplyShareRuns, supplyTooltip, totalDivisions } from './supplyHealthData';
 import './supplyHealth.css';
 
 const NO_WARNINGS: string[] = [];
@@ -76,17 +77,22 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
   const lastHour = track?.branch.lastHour ?? 0;
   const countries = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, definition.countries.max),
     [widget.countries, fallback, groups.data, lastHour]);
-  const request = track && countries.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'supply-health',
-    params: { branchId: track.branch.id, tags: countries.tags } satisfies SupplyHealthParams } : null;
-  const incoming = useProduct<SupplyHealthReply>(runtime.client, request, active, validateSupplyHealthReply);
-  const numericScope = JSON.stringify([sourceScope, widget.countries, countries.tags]);
-  const data = stores.numbers.update(numericScope, incoming.data, supplyDrillNumbers);
-  const warnings = stores.warnings.update(numericScope, incoming.data?.warnings, reply => reply);
-  const { error, retry } = incoming;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window
     ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const playhead = window && (widget.time.mode === 'follow' || widget.time.mode === 'pin') ? window.lastHour : null;
   const head = Math.floor(playhead ?? extent[1]);
+  const [tip, setTip] = useState<{ tag: string; hour: number } | null>(null);
+  const incoming = usePreparedSupply(runtime.client, track, countries.tags, head, tip?.hour ?? null, active, undefined, visibleTags);
+  const numericScope = JSON.stringify([sourceScope, widget.countries, countries.tags]);
+  const data = stores.numbers.update(numericScope, incoming.data, supplyDrillNumbers);
+  const warnings = stores.warnings.update(numericScope, incoming.data?.warnings, reply => reply);
+  const { error, retry } = incoming;
+  useParityRows(body, () => {
+    const rows = (incoming.data?.series ?? []).flatMap(series => series.runs.map(run => ({ tag: series.tag, ...run, identities: series.identities })));
+    return { kind: 'windowed', label: 'Supply health exact counts', complete: incoming.parityComplete, total: rows.length,
+      rows: rows.map((row, index) => ({ index, key: `${row.tag}:${row.firstHour}:${row.lastHour}`, ...row })),
+      available: incoming.data?.available, reason: incoming.data?.reason, warnings: incoming.data?.warnings };
+  }, { prepare: incoming.parityPrepare, ready: () => incoming.parityComplete, error: () => incoming.error ?? null });
   const resetKey = JSON.stringify([track?.source.id, track?.branch.id, widget.countries, widget.time,
     options.show, widget.options?.drillOriginHour]);
   useEffect(() => { dispatchDrill({ type: 'close' }); setDrillOrigin(null); }, [resetKey]);
@@ -133,14 +139,15 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
     const inRange = clipToSpans(series.runs, [{ firstHour: extent[0], lastHour: extent[1] }]);
     const membership = countries.membership?.get(series.tag);
     const runs = membership ? clipToSpans(inRange, membership) : inRange;
-    return { tag: series.tag, identities: series.identities, membership, runs, shares: supplyShareRuns(runs), hours: runs.map(run => run.firstHour),
+    const geometry = clipToSpans(incoming.geometry.get(series.tag) ?? runs, [{ firstHour: extent[0], lastHour: extent[1] }]);
+    const drawing = membership ? clipToSpans(geometry, membership) : geometry;
+    return { drawing, tag: series.tag, identities: series.identities, membership, runs, shares: supplyShareRuns(drawing), hours: runs.map(run => run.firstHour),
       pickOwner: { client: runtime.client, source: sourceScope, selection: countryScope, first: extent[0], last: extent[1],
         tag: series.tag, runs, identities: series.identities, membership } };
-  }), [data, membershipKey, extent[0], extent[1], runtime.client, sourceScope, countryScope]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [data, incoming.geometry, membershipKey, extent[0], extent[1], runtime.client, sourceScope, countryScope]); // eslint-disable-line react-hooks/exhaustive-deps
   const seriesByTag = useMemo(() => new Map(series.map(item => [item.tag, item])), [series]);
   const badgesByTag = useMemo(() => countryCapitulationBadges(groups.data, series.map(country => ({ ...country, segments: country.runs })), extent),
     [groups.data, series, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [tip, setTip] = useState<{ tag: string; hour: number } | null>(null);
   const wanted = useMemo(() => [...visibleTags.map(tag => ({ tag, hour: Math.min(head, seriesByTag.get(tag)?.runs.at(-1)?.lastHour ?? head) })),
     ...(tip && visibleTags.includes(tip.tag) ? [tip] : [])].filter(({ tag, hour }) => {
       const country = seriesByTag.get(tag);
@@ -188,10 +195,11 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
           return <section className="supply-health-country-chart" tabIndex={0}
             aria-label={labels.labelAt(labelHour)(country.tag).name} onKeyDown={event => { if (event.target !== event.currentTarget) event.stopPropagation(); }}>
             {series.length > 1 && <p className="supply-health-country">{labels.labelAt(labelHour)(country.tag).name}</p>}
-            {!country.runs.length ? <WidgetState kind="unavailable" message="Supply was not recorded for this period." />
-              : country.runs.every(run => totalDivisions(run) === 0) ? <WidgetState kind="empty" message="No divisions in this period." />
+            {!country.drawing.length ? <WidgetState kind="unavailable" message="Supply was not recorded for this period." />
+              : country.drawing.every(run => totalDivisions(run) === 0) ? <WidgetState kind="empty" message="No divisions in this period." />
               : <StackedShareChart label={`Supply health · ${labels.labelAt(labelHour)(country.tag).name}`}
-                runs={country.shares} bands={bands} extent={extent} playhead={playhead}
+                onSummaryView={incoming.onSummaryView} onNavigateHour={incoming.onNavigateHour} keyboardHour={incoming.keyboardHour} keyboardRevision={incoming.keyboardRevision}
+                summaries={incoming.summaries.get(country.tag)} runs={country.shares} bands={bands} extent={extent} playhead={playhead}
                 playback={options.playback as PlaybackMode} afterPlayhead={options.afterPlayhead === true}
                 windowHours={Number(options.windowDays) * 24} hoursPerSecond={hoursPerSecond}
                 branchStart={track.branch.firstHour} active={active && row.phase !== 'leaving' && (!drillOpen || options.drill === 'popout')}

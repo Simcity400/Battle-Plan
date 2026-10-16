@@ -18,7 +18,7 @@ test('Factories and Equipment produced register a breakdown slot and forward it 
         if (path.endsWith('/dashboard/products.ts')) return 'export const useProduct = () => ({ retry() {} });';
         if (path.endsWith('/dashboard/useCountryGroups.ts')) return 'export const useCountryGroups = () => ({ retry() {} });';
         if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = () => 0;';
-        if (path.endsWith('/charts/useChartTokens.ts')) return "export const useChartTokens = () => ({ categories: [], muted: '#888' });";
+        if (path.endsWith('/charts/useChartTokens.ts')) return "export const useChartTokens = () => ({ categories: [], muted: '#888' }); export const useViewportHeight = () => 800;";
       },
     }] });
   try {
