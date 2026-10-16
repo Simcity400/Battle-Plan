@@ -407,6 +407,8 @@ pub fn change_map_muted(app: &AppHandle, muted: bool) -> Result<bool, String> {
     *stored = Ok(next);
     // Sent before the lock is released, so changes arrive in saved order.
     app.state::<NativeHost>().set_muted(muted);
+    app.state::<crate::popout::PopOuts>()
+        .mirror(&dashboard::protocol::MapAction::Mute { muted });
     drop(stored);
     let _ = app.emit("map-muted", muted);
     Ok(muted)

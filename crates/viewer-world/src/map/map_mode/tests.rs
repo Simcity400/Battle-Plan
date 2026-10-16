@@ -4,9 +4,9 @@ use installed_content::scripted_map_modes;
 use replay::{
     frame::{Metrics, TableView},
     rows::{
-        CapitulationRow, CountryAppearanceRow, CountryLinkRow, CountryRow, FactionMemberRow,
-        FactionRow, IntelNetworkRow, PlayerRow, ProvinceRow, Recorded, StateRow, SubjectRow,
-        TableId, TableRows,
+        CapitulationRow, CountryAppearanceRow, CountryCounterInputRow, CountryLinkRow, CountryRow,
+        FactionMemberRow, FactionRow, IntelNetworkRow, PlayerRow, ProvinceRow, Recorded, StateRow,
+        SubjectRow, TableId, TableRows,
     },
 };
 
@@ -130,6 +130,19 @@ fn frame() -> DecodedFrame {
             })
             .collect(),
     ));
+    // A tag operand resolves the country's recorded owned-state count before considering
+    // original-tag substitution; controlling provinces alone does not supply that count.
+    tables[TableId::CountryCounterInputs.index()] =
+        TableView::Complete(TableRows::CountryCounterInputs(
+            countries
+                .iter()
+                .map(|&(id, _, _)| CountryCounterInputRow {
+                    country: id,
+                    owned_state_count: 1,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
     let province = |id, state, country| ProvinceRow {
         id,
         state,
@@ -467,6 +480,8 @@ fn operatives_colour_the_selected_countrys_network_states_its_targets_control() 
                 map: &map(),
                 frame,
                 selected,
+                world: None,
+                colour: None,
             },
         )
         .unwrap()
@@ -827,7 +842,7 @@ fn colour_scripts_paint_each_target_their_callback_colours() {
     let painted_provinces: Vec<u32> = (0..top.region_of.len() as u32)
         .filter(|&province| top.region_of[province as usize] != 0)
         .collect();
-    assert_eq!(painted_provinces, [3]);
+    assert_eq!(painted_provinces, [3], "{:?}", painted.warnings);
     assert_eq!(
         top.styles.values().cloned().collect::<Vec<_>>(),
         [Style {

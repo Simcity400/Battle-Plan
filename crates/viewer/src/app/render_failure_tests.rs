@@ -210,8 +210,8 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
         "{:?}",
         viewer.map_state(&target)
     );
-    let registered = viewer.presented.generation;
-    let texture = viewer.presented.texture;
+    let registered = viewer.scene_target.generation;
+    let texture = viewer.scene_target.texture;
     let failed_path = fixture.output.join("failed-redraw.png");
     arm(&mut viewer, failed_path.clone(), request.camera);
     viewer.scene.as_mut().unwrap().test_faults.fatal = Some(Point::Post);
@@ -235,10 +235,10 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
         submissions
     );
     assert_eq!(
-        viewer.presented.generation, registered,
+        viewer.scene_target.generation, registered,
         "failed target registered with egui"
     );
-    assert_eq!(viewer.presented.texture, texture);
+    assert_eq!(viewer.scene_target.texture, texture);
     assert!(viewer.scene.as_ref().unwrap().generation() > registered);
 
     let recovered_path = fixture.output.join("recovered.png");
@@ -250,7 +250,7 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
     });
     assert!(recovered_path.exists(), "{:?}", viewer.capture_note);
     assert_eq!(
-        viewer.presented.generation,
+        viewer.scene_target.generation,
         viewer.scene.as_ref().unwrap().generation()
     );
     let state = viewer.map_state(&target);
@@ -382,9 +382,9 @@ fn a_retired_map_shown_again_draws_its_new_target() -> std::io::Result<()> {
         v.rendered.is_some() || v.error.is_some() || v.map_error.is_some()
     });
     assert!(viewer.error.is_none() && viewer.map_error.is_none());
-    let shown = viewer.presented.generation;
+    let shown = viewer.scene_target.generation;
     viewer.retire_map(&frame, ());
-    assert!(viewer.presented.texture.is_none());
+    assert!(viewer.scene_target.texture.is_none());
     viewer.install_map(document()?, fixture.scene()?, "fixture".into());
     until(&mut viewer, &ctx, &frame, &target, |v| {
         v.rendered.is_some() || v.error.is_some() || v.map_error.is_some()
@@ -396,6 +396,6 @@ fn a_retired_map_shown_again_draws_its_new_target() -> std::io::Result<()> {
     );
     // The new scene reached the freed target's generation and still registered its own.
     assert_eq!(viewer.scene.as_ref().unwrap().generation(), shown);
-    assert!(viewer.presented.texture.is_some());
+    assert!(viewer.scene_target.texture.is_some());
     Ok(())
 }

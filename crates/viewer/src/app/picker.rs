@@ -716,8 +716,9 @@ mod tests {
                 clip: bounds,
                 visible: true,
             };
-            let _ = egui::Context::default()
+            let mut output = egui::Context::default()
                 .run_ui(Default::default(), |ui| viewer.map_ui(ui, frame, &target));
+            output.textures_delta.clear();
         };
 
         // Each click asks for a flip; the picker keeps showing the host's value meanwhile.

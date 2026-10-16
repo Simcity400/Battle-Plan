@@ -782,7 +782,7 @@ pub struct Viewer {
     loading: Option<mpsc::Receiver<Result<LoadedReplay, String>>>,
     error: Option<String>,
     scene: Option<Scene>,
-    presented: Presented,
+    scene_target: Presented,
     map_error: Option<String>,
     camera: Option<Placement>,
     camera_manual: bool,
@@ -794,7 +794,7 @@ pub struct Viewer {
     /// host's control sets it.
     free_overlays: bool,
     /// The overlay as a free eye shows it this frame ([`free_icons::present`]).
-    presented: Batch,
+    free_overlay: Batch,
     /// The icons a free eye shows this frame, which the pointer's hits follow; `None` when the
     /// overlay draws as laid out.
     looks: Option<free_icons::Looks>,
@@ -1215,7 +1215,7 @@ impl Viewer {
                 CameraMode::Map
             },
             free_overlays: false,
-            presented: Batch::default(),
+            free_overlay: Batch::default(),
             looks: None,
             input: crate::controls::Input::default(),
             orbit: crate::controls::orbit::Orbit::default(),
@@ -1253,7 +1253,7 @@ impl Viewer {
             loading: None,
             error,
             scene: None,
-            presented: Presented::default(),
+            scene_target: Presented::default(),
             map_error: None,
             playing: false,
             speed: 24,
@@ -1405,7 +1405,7 @@ impl Viewer {
     }
 
     pub(crate) fn retire_map<T: Send + 'static>(&mut self, frame: &eframe::Frame, permit: T) {
-        if let Some(texture) = self.presented.take()
+        if let Some(texture) = self.scene_target.take()
             && let Some(state) = frame.wgpu_render_state()
         {
             state.renderer.write().free_texture(&texture);
@@ -1906,7 +1906,7 @@ impl Viewer {
         self.unit_models = None;
         self.unit_field_uploaded = false;
         self.profile_frame = 0;
-        self.presented.generation = 0;
+        self.scene_target.generation = 0;
         if self.embedded.is_none() {
             self.error = None;
         }
@@ -3452,7 +3452,7 @@ impl Viewer {
                     ui_scale,
                     Some(&ground),
                     self.overlay.as_ref().expect("drawn above"),
-                    &mut self.presented,
+                    &mut self.free_overlay,
                 ))
             } else {
                 None
@@ -3639,7 +3639,7 @@ impl Viewer {
         laps.lap("diagnostics");
         self.update_faction_highlight(document, &state.device, point.filter(|_| !over_combat))?;
         let overlay = if self.looks.is_some() {
-            &self.presented
+            &self.free_overlay
         } else {
             self.overlay.as_ref().expect("built above")
         };
@@ -3741,10 +3741,10 @@ impl Viewer {
             audio.release();
         }
         let [animate, overlay_upload, encode, submit] = scene.render_laps();
-        if self.presented.stale(scene.generation()) {
+        if self.scene_target.stale(scene.generation()) {
             let view = scene.view().ok_or("Map target was not created")?;
             let mut egui_renderer = state.renderer.write();
-            if let Some(texture) = self.presented.texture {
+            if let Some(texture) = self.scene_target.texture {
                 egui_renderer.update_egui_texture_from_wgpu_texture(
                     &state.device,
                     view,
@@ -3752,13 +3752,13 @@ impl Viewer {
                     texture,
                 );
             } else {
-                self.presented.texture = Some(egui_renderer.register_native_texture(
+                self.scene_target.texture = Some(egui_renderer.register_native_texture(
                     &state.device,
                     view,
                     PRESENTATION_FILTER,
                 ));
             }
-            self.presented.generation = scene.generation();
+            self.scene_target.generation = scene.generation();
         }
         // capture: the frame is drawn and the scene still holds it, so the
         // readback is the dump's own.
@@ -3855,7 +3855,7 @@ impl Viewer {
         self.map_warnings = warnings;
         self.profile_frame += 1;
         let texture = self
-            .presented
+            .scene_target
             .texture
             .ok_or("Map target was not registered")?;
         ui.painter().image(
