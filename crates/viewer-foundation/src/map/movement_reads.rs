@@ -548,7 +548,7 @@ impl<'w, 'a> Moves<'w, 'a> {
 
     fn province(&self, province: u32) -> Fact<&'a ProvinceRow> {
         self.world
-            .provinces
+            .provinces()
             .get(&province)
             .copied()
             .ok_or_else(|| format!("province {province} is not recorded"))
@@ -589,7 +589,7 @@ impl<'w, 'a> Moves<'w, 'a> {
         let rows = self.table::<tables::RelationLinks>()?;
         let raws = get(&self.cells.slot_raws, || {
             let mut out: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-            for (&raw, &slot) in &self.world.links {
+            for (&raw, &slot) in self.world.links() {
                 out.entry(slot).or_default().push(raw);
             }
             for raws in out.values_mut() {
@@ -657,7 +657,7 @@ impl<'w, 'a> Moves<'w, 'a> {
     /// Each country's active war opponents from `WarRelations`.
     fn war_sets(&self) -> Result<&BTreeMap<u32, BTreeSet<u32>>, String> {
         get(&self.cells.war_sets, || {
-            let hour = self.world.hour;
+            let hour = self.world.hour();
             let mut out: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
             for row in self.table::<tables::WarRelations>()? {
                 if !ongoing(row.start_hour, row.end_hour, hour) {
@@ -679,7 +679,7 @@ impl<'w, 'a> Moves<'w, 'a> {
     fn state_of(&self, province: u32) -> Fact<Option<u32>> {
         let row = self
             .world
-            .provinces
+            .provinces()
             .get(&province)
             .ok_or_else(|| format!("province {province} is not recorded"))?;
         Ok((row.state != 0).then_some(row.state))
@@ -687,7 +687,7 @@ impl<'w, 'a> Moves<'w, 'a> {
 
     fn native_relations(&self) -> Result<&NativeRelations, String> {
         get(&self.cells.native_relations, || {
-            NativeRelations::read(self.world.frame(), &self.world.links)
+            NativeRelations::read(self.world.frame(), self.world.links())
                 .map_err(|error| error.to_string())
         })
     }
@@ -785,7 +785,7 @@ impl MoveWorld for Moves<'_, '_> {
     /// the table: ended relations stay in it.
     fn subject_tie(&self, a: Country, b: Country) -> Fact<bool> {
         let subjects = get(&self.cells.subjects, || {
-            let hour = self.world.hour;
+            let hour = self.world.hour();
             let mut out = BTreeSet::new();
             for row in self.table::<tables::Subjects>()? {
                 if !ongoing(row.start_hour, row.end_hour, hour) {
@@ -836,7 +836,7 @@ impl MoveWorld for Moves<'_, '_> {
     fn controller(&self, province: u32) -> Fact<Country> {
         let row = self
             .world
-            .provinces
+            .provinces()
             .get(&province)
             .ok_or_else(|| format!("province {province} is not recorded"))?;
         self.slot(row.controller)
@@ -844,7 +844,7 @@ impl MoveWorld for Moves<'_, '_> {
 
     fn controller_raw_positive(&self, province: u32) -> Fact<bool> {
         self.world
-            .provinces
+            .provinces()
             .get(&province)
             .map(|row| row.controller as i32 > 0)
             .ok_or_else(|| format!("province {province} is not recorded"))
@@ -853,7 +853,7 @@ impl MoveWorld for Moves<'_, '_> {
     fn state_owner(&self, province: u32) -> Fact<Country> {
         let row = self
             .world
-            .provinces
+            .provinces()
             .get(&province)
             .ok_or_else(|| format!("province {province} is not recorded"))?;
         self.slot(row.owner)
@@ -861,7 +861,7 @@ impl MoveWorld for Moves<'_, '_> {
 
     fn state_owner_raw_positive(&self, province: u32) -> Fact<bool> {
         self.world
-            .provinces
+            .provinces()
             .get(&province)
             .map(|row| row.owner as i32 > 0)
             .ok_or_else(|| format!("province {province} is not recorded"))

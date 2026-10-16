@@ -1841,3 +1841,47 @@ fn exact_transfer_identity_comes_from_the_event_not_a_replacement_at_publication
         reason.contains("1 transfers with unrecorded event-hour endpoint identities")
     }));
 }
+
+/// Every scan lists a settlement's per-loser limitations in tag order.
+#[test]
+fn per_loser_limitations_follow_tag_order_on_every_scan() {
+    let without_loser_governments = |mut frame: DecodedFrame| {
+        let TableView::Complete(TableRows::Politics(rows)) =
+            &mut *frame.tables[TableId::Politics.index()]
+        else {
+            panic!()
+        };
+        // The fixture's losers are the odd countries.
+        rows.retain(|row| row.country % 2 == 0);
+        frame
+    };
+    let replies: Vec<_> = (0..2)
+        .map(|_| {
+            scan(vec![
+                without_loser_governments(frame(100, 120, false, &[9])),
+                without_loser_governments(frame(101, 120, true, &[])),
+            ])
+        })
+        .collect();
+    assert_eq!(
+        serde_json::to_value(&replies[0]).unwrap(),
+        serde_json::to_value(&replies[1]).unwrap()
+    );
+    let deal = replies[0]
+        .deals
+        .iter()
+        .find(|deal| deal.conference_id.as_deref() == Some("9"))
+        .unwrap();
+    let lines: Vec<_> = deal
+        .limitations
+        .iter()
+        .filter(|line| line.starts_with("Government of "))
+        .cloned()
+        .collect();
+    let mut expected: Vec<_> = (1..120)
+        .step_by(2)
+        .map(|id| format!("Government of country/{id} is not recorded at both reads."))
+        .collect();
+    expected.sort();
+    assert_eq!(lines, expected);
+}

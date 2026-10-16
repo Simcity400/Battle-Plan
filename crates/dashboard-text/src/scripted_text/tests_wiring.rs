@@ -1293,6 +1293,7 @@ fn raid_text_follows_the_active_event_scope_through_chains_and_entries() {
             random_seed: 1,
             random_counter: 0x5ea6_ba9e,
             random_seed_refusal: None,
+            clock_seed: None,
         },
         EventScope {
             this: EventObject::Country(2),
@@ -1302,6 +1303,7 @@ fn raid_text_follows_the_active_event_scope_through_chains_and_entries() {
             random_seed: 1,
             random_counter: 0x5ea6_ba9e,
             random_seed_refusal: None,
+            clock_seed: None,
         },
         EventScope {
             this: EventObject::Country(3),
@@ -1311,6 +1313,7 @@ fn raid_text_follows_the_active_event_scope_through_chains_and_entries() {
             random_seed: 1,
             random_counter: 0x5ea6_ba9e,
             random_seed_refusal: None,
+            clock_seed: None,
         },
     ]);
     assert_eq!(expand("[FROM.GetTag]", &nested).as_deref(), Ok("ENG"));
@@ -1376,6 +1379,7 @@ fn unknown_scope_parts_refuse_only_where_they_are_read() {
             random_seed: 1,
             random_counter: 0x5ea6_ba9e,
             random_seed_refusal: None,
+            clock_seed: None,
         }])
     };
     let sov = unknown(EventObject::Country(2));

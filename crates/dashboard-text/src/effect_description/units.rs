@@ -1507,7 +1507,7 @@ impl Renderer<'_, '_, '_> {
             world.state_order(state)?.to_vec()
         } else {
             world
-                .provinces
+                .provinces()
                 .values()
                 .filter(|province| province.state == state)
                 .map(|province| province.id)
@@ -1585,7 +1585,7 @@ impl Renderer<'_, '_, '_> {
         };
         let mut admitted =
             |province: &replay::rows::ProvinceRow, ignore_occupants| -> Result<bool, String> {
-                if !world.state_provinces.contains_key(&province.state) {
+                if !world.state_provinces().contains_key(&province.state) {
                     return Err(format!(
                         "province {} state {} is not defined by the recorded content stack",
                         province.id, province.state
@@ -1624,7 +1624,7 @@ impl Renderer<'_, '_, '_> {
                 // Mixed unit counts include land, naval and railway units.
             };
         for ignore_occupants in [score.is_some(), true] {
-            if let Some(province) = world.provinces.get(&priority)
+            if let Some(province) = world.provinces().get(&priority)
                 && admitted(province, ignore_occupants)?
             {
                 return Ok(Some(province.state));
@@ -1634,7 +1634,7 @@ impl Renderer<'_, '_, '_> {
             for index in 0..provinces.len() {
                 let id = provinces[(start + index) % provinces.len()];
                 let province = world
-                    .provinces
+                    .provinces()
                     .get(&id)
                     .ok_or_else(|| format!("Provinces lacks state {state} candidate {id}"))?;
                 if !admitted(province, ignore_occupants)? {

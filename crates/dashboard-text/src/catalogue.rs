@@ -53,8 +53,12 @@ impl ContentError {
 /// One demanded database per recorded-content binding, including a failed read.
 /// The owning Source/ResolvedLayers supplies the key and lifetime; this policy
 /// only serialises a cold load and retains its result. Cancellation is retryable.
+/// The text refusals and readers the read produced are retained too, and every
+/// later use credits them to its consumer scopes ([`own_refusals`]), so which
+/// consumer read first does not decide whose refusals they are.
 pub struct CachedResult<T> {
     value: Mutex<Option<Result<Arc<T>, ContentError>>>,
+    noted: Mutex<OwnRefusals>,
     #[cfg(any(test, feature = "test-support"))]
     loads: std::sync::atomic::AtomicUsize,
 }
@@ -62,6 +66,7 @@ impl<T> Default for CachedResult<T> {
     fn default() -> Self {
         Self {
             value: Mutex::new(None),
+            noted: Mutex::default(),
             #[cfg(any(test, feature = "test-support"))]
             loads: Default::default(),
         }
@@ -74,14 +79,18 @@ impl<T> CachedResult<T> {
             #[cfg(any(test, feature = "test-support"))]
             self.loads
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let result = read();
+            // The read's notes reach the enclosing scopes as they happen.
+            let (result, noted) = capture(read);
             if result
                 .as_ref()
                 .is_err_and(|error| error.kind() == io::ErrorKind::Interrupted)
             {
                 return result.map(Arc::new);
             }
+            *self.noted.lock().unwrap_or_else(|error| error.into_inner()) = noted;
             *value = Some(result.map(Arc::new).map_err(ContentError::from));
+        } else {
+            credit(&self.noted.lock().unwrap_or_else(|error| error.into_inner()));
         }
         value
             .as_ref()
@@ -451,6 +460,136 @@ impl Refusals {
             })
             .collect()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// A lazily read content input whose reader warnings a consumer's own lines
+/// carry once the consumer has used it ([`Catalogue::reader_warning_lines`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Reader {
+    /// Scripted localisation ([`Catalogue::scripted_content`]).
+    Scripted,
+    /// State templates ([`Catalogue::cached_states`]), however scripted text reaches them.
+    States,
+    /// Faction templates, as scripted text reads them.
+    FactionTemplates,
+}
+
+/// The text refusals one consumer's own catalogue calls produced, and the
+/// lazily read inputs those calls used. A prepared family keeps it in its
+/// saved state, so a family restored from a commit reports what the same
+/// family continued in memory would.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnRefusals {
+    texts: Refusals,
+    readers: BTreeSet<Reader>,
+}
+
+impl OwnRefusals {
+    fn is_empty(&self) -> bool {
+        self.texts.is_empty() && self.readers.is_empty()
+    }
+
+    pub fn merge(&mut self, other: &Self) {
+        self.texts.merge(&other.texts);
+        self.readers.extend(other.readers.iter().copied());
+    }
+}
+
+/// One consumer scope on this thread. A capture ([`capture`]) collects
+/// without changing what the catalogue reports.
+struct Active {
+    own: OwnRefusals,
+    reports: bool,
+}
+
+thread_local! {
+    /// The consumer scopes active on this thread, innermost last.
+    static SCOPES: std::cell::RefCell<Vec<Active>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn scoped<T>(own: &mut OwnRefusals, reports: bool, run: impl FnOnce() -> T) -> T {
+    // Pops the scope back into `own` on return and when `run` unwinds.
+    struct Exit<'a>(&'a mut OwnRefusals);
+    impl Drop for Exit<'_> {
+        fn drop(&mut self) {
+            if let Some(active) = SCOPES.with(|scopes| scopes.borrow_mut().pop()) {
+                *self.0 = active.own;
+            }
+        }
+    }
+    SCOPES.with(|scopes| {
+        scopes.borrow_mut().push(Active {
+            own: std::mem::take(own),
+            reports,
+        });
+    });
+    let _exit = Exit(own);
+    run()
+}
+
+/// Runs `run` as one consumer of catalogue text. Every text refusal a
+/// catalogue notes on this thread meanwhile, and every lazy reader used,
+/// joins `own`; memoised reads credit theirs on each use ([`CachedResult`]).
+/// Inside, [`Catalogue::refusal_lines`] reports `own` rather than the
+/// catalogue's shared tally, which every consumer of the source changes at
+/// its own pace. Enclosing scopes receive what inner calls produce; the
+/// innermost scope reports.
+pub fn own_refusals<T>(own: &mut OwnRefusals, run: impl FnOnce() -> T) -> T {
+    scoped(own, true, run)
+}
+
+/// What `run` noted, which reaches the enclosing scopes as well, for a memo
+/// or another thread to credit ([`credit`]) to later users.
+pub fn capture<T>(run: impl FnOnce() -> T) -> (T, OwnRefusals) {
+    let mut own = OwnRefusals::default();
+    let value = scoped(&mut own, false, run);
+    (value, own)
+}
+
+/// Credits `noted` to every scope active on this thread, as if the calls
+/// that produced it ran here.
+pub fn credit(noted: &OwnRefusals) {
+    if noted.is_empty() {
+        return;
+    }
+    SCOPES.with(|scopes| {
+        for active in scopes.borrow_mut().iter_mut() {
+            active.own.merge(noted);
+        }
+    });
+}
+
+/// Notes that the consumers active on this thread used `reader`.
+pub fn used(reader: Reader) {
+    SCOPES.with(|scopes| {
+        for active in scopes.borrow_mut().iter_mut() {
+            active.own.readers.insert(reader);
+        }
+    });
+}
+
+fn note_own(reason: &str, identity: &str) {
+    SCOPES.with(|scopes| {
+        for active in scopes.borrow_mut().iter_mut() {
+            active.own.texts.note(reason, identity);
+        }
+    });
+}
+
+/// `read` of the innermost reporting scope, when one is active.
+fn reporting<T>(read: impl FnOnce(&OwnRefusals) -> T) -> Option<T> {
+    SCOPES.with(|scopes| {
+        scopes
+            .borrow()
+            .iter()
+            .rev()
+            .find(|active| active.reports)
+            .map(|active| read(&active.own))
+    })
 }
 
 /// Named, counted refusals whose storage is bounded with a product's reply.
@@ -783,6 +922,7 @@ impl Catalogue {
     /// ([`crate::scripted_text::ScriptedContent::read`]), read once. Its
     /// reading's warnings join [`Catalogue::refusal_lines`].
     pub fn scripted_content(&self) -> Result<&crate::scripted_text::ScriptedContent, String> {
+        used(Reader::Scripted);
         self.scripted
             .get_or_init(|| {
                 #[cfg(any(test, feature = "test-support"))]
@@ -802,6 +942,7 @@ impl Catalogue {
     }
 
     pub fn cached_states(&self) -> Result<&crate::scripted_text::StateContent, String> {
+        used(Reader::States);
         self.state_content
             .get_or_init(|| {
                 #[cfg(any(test, feature = "test-support"))]
@@ -830,6 +971,7 @@ impl Catalogue {
     }
 
     pub fn refuse_finding(&self, finding: Finding) {
+        note_own(&finding.message, &finding.subject);
         self.refused
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -839,6 +981,8 @@ impl Catalogue {
 
     /// The texts refused so far, one warning per reason, and the warnings
     /// of scripted localisation and shared content reads, including lazy reads.
+    /// Inside a consumer scope ([`own_refusals`]) these are the consumer's own
+    /// refusals and the warnings of the readers it used, in the same form.
     pub fn refusal_lines(&self) -> Vec<String> {
         self.refusal_entries()
             .into_iter()
@@ -849,14 +993,21 @@ impl Catalogue {
     /// Text summaries retain their actual identity count; reader warnings have
     /// no measured affected-item count. Consumers never parse warning prose.
     pub fn refusal_entries(&self) -> Vec<(String, Option<usize>)> {
-        let mut lines: Vec<_> = self
-            .refused
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .counted_diagnostic_lines("texts are not shown")
-            .into_iter()
-            .map(|(line, count)| (line, Some(count)))
-            .collect();
+        let texts = |refused: &Refusals| -> Vec<(String, Option<usize>)> {
+            refused
+                .counted_diagnostic_lines("texts are not shown")
+                .into_iter()
+                .map(|(line, count)| (line, Some(count)))
+                .collect()
+        };
+        let mut lines = reporting(|own| texts(&own.texts)).unwrap_or_else(|| {
+            texts(
+                &*self
+                    .refused
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()),
+            )
+        });
         lines.extend(
             self.reader_warning_lines()
                 .into_iter()
@@ -866,8 +1017,13 @@ impl Catalogue {
     }
 
     /// Shared lazy-reader and uncovered-read warnings without another
-    /// product's accumulated text/artwork refusals.
+    /// product's accumulated text/artwork refusals. Inside a consumer scope,
+    /// only the lazy readers the consumer used report, without the stack's
+    /// live artwork-effect and uncovered-read diagnostics.
     pub fn reader_warning_lines(&self) -> Vec<String> {
+        if let Some(readers) = reporting(|own| own.readers.clone()) {
+            return self.used_reader_warning_lines(&readers);
+        }
         let mut lines = Vec::new();
         let environment_warnings = if let Some(Ok(scripted)) = self.scripted.get() {
             lines.extend(
@@ -901,6 +1057,58 @@ impl Catalogue {
         lines.extend(self.content.layers.faction_template_diagnostics());
         lines.extend(self.content.layers.shader_warning_lines());
         self.content.layers.read_warnings().append_to(&mut lines);
+        lines
+    }
+
+    /// [`Self::reader_warning_lines`] of the lazy readers one consumer used,
+    /// read now when this process has not read them yet, in the same order.
+    /// The stack's artwork-effect and uncovered-read diagnostics are left
+    /// out: any consumer's read adds to them at its own pace, so they are
+    /// reported where a reply is served
+    /// ([`crate::Source::append_stack_warnings`]), never in a consumer's
+    /// published lines.
+    fn used_reader_warning_lines(&self, readers: &BTreeSet<Reader>) -> Vec<String> {
+        let mut lines = Vec::new();
+        if readers.contains(&Reader::Scripted)
+            && let Ok(scripted) = self.scripted_content()
+        {
+            lines.extend(
+                scripted
+                    .names
+                    .warnings
+                    .iter()
+                    .map(|(_, message)| message.clone()),
+            );
+        }
+        if readers.contains(&Reader::States)
+            && let Ok(states) = self.cached_states()
+        {
+            // The scripted environment's state warnings, once it has prepared
+            // them, are these same warnings.
+            let environment_warnings: &[String] = match self.scripted.get() {
+                Some(Ok(scripted)) => scripted
+                    .environment
+                    .get()
+                    .and_then(|environment| environment.as_ref().ok())
+                    .map_or(&[][..], |environment| environment.warnings()),
+                _ => &[],
+            };
+            lines.extend(environment_warnings.iter().cloned());
+            lines.extend(
+                crate::scripted_text::live_state_warnings(&states.warnings)
+                    .filter(|warning| {
+                        !environment_warnings
+                            .iter()
+                            .any(|line| line.as_str() == *warning)
+                    })
+                    .map(str::to_owned),
+            );
+        }
+        if readers.contains(&Reader::FactionTemplates) {
+            // Diagnostics report an already-read template set.
+            let _ = self.content.layers.faction_templates();
+            lines.extend(self.content.layers.faction_template_diagnostics());
+        }
         lines
     }
 
@@ -2138,6 +2346,158 @@ pub mod tests {
                 .collect::<Vec<_>>()
         );
         assert_eq!(catalogue.reader_warning_lines(), [reads.warning().unwrap()]);
+    }
+
+    /// A consumer's scope reports its own refusals in the shared tally's form;
+    /// another consumer's refusals, before or after, stay out, and the tally a
+    /// consumer saved reports the same when restored.
+    #[test]
+    fn own_refusal_scopes_report_only_their_own_refusals_and_survive_saving() {
+        let (catalogue, _folder) = folder_catalogue(&[(
+            "localisation/mod_l_english.yml",
+            "\u{feff}l_english:\n GAP:0 \"a¤b\"\n OTHER:0 \"c¤d\"\n",
+        )]);
+        assert_eq!(catalogue.localised("OTHER", View::Plain), None);
+        let mut own = OwnRefusals::default();
+        let lines = own_refusals(&mut own, || {
+            assert_eq!(catalogue.localised("GAP", View::Plain), None);
+            catalogue.refusal_lines()
+        });
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].starts_with("1 texts are not shown: ") && lines[0].ends_with("; GAP"),
+            "{lines:?}"
+        );
+        catalogue.refuse("later reason", "LATER");
+        // The shared tally holds every consumer's refusals.
+        let shared = catalogue.refusal_lines();
+        assert_eq!(shared.len(), 3, "{shared:?}");
+        let saved: OwnRefusals =
+            serde_json::from_slice(&serde_json::to_vec(&own).unwrap()).unwrap();
+        for mut restored in [own, saved] {
+            assert_eq!(
+                own_refusals(&mut restored, || catalogue.refusal_lines()),
+                lines
+            );
+        }
+        assert_eq!(catalogue.refusal_lines(), shared);
+    }
+
+    /// A cached result's read refused once, for whichever consumer read first;
+    /// every consumer that uses the result reports the refusal.
+    #[test]
+    fn cached_results_credit_their_read_refusals_to_every_consumer() {
+        let (catalogue, _folder) = folder_catalogue(&[(
+            "localisation/mod_l_english.yml",
+            "\u{feff}l_english:\n GAP:0 \"a¤b\"\n",
+        )]);
+        let cache = KeyedResults::<String, Option<String>>::default();
+        let key = "GAP".to_owned();
+        let read = |consumer: &mut OwnRefusals| {
+            own_refusals(consumer, || {
+                cache
+                    .get_or_init(&key, |key| Ok(catalogue.localised(key, View::Plain)))
+                    .unwrap();
+                catalogue.refusal_lines()
+            })
+        };
+        let (mut first, mut second) = (OwnRefusals::default(), OwnRefusals::default());
+        let lines = read(&mut first);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(read(&mut second), lines);
+        assert_eq!(
+            cache.loads(&key),
+            1,
+            "the second consumer used the cached result"
+        );
+        assert_eq!(first, second);
+    }
+
+    /// Inside a scope, lazy reader warnings report only for readers the
+    /// consumer used, read again on a stack that has not read them yet.
+    #[test]
+    fn own_scopes_report_the_warnings_of_the_readers_they_used() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let files = [(
+            "common/factions/templates/test.txt",
+            "bad={name=token:missing_name visible=yes}",
+        )];
+        let (catalogue, _folder) = folder_catalogue(&files);
+        // Another consumer reads the templates.
+        let templates = catalogue.content.layers.faction_templates().unwrap();
+        assert!(!templates.warnings.is_empty());
+        assert_eq!(catalogue.reader_warning_lines(), templates.warnings);
+        let mut unused = OwnRefusals::default();
+        assert!(own_refusals(&mut unused, || catalogue.refusal_lines()).is_empty());
+        let mut user = OwnRefusals::default();
+        let lines = own_refusals(&mut user, || {
+            used(Reader::FactionTemplates);
+            catalogue.refusal_lines()
+        });
+        assert_eq!(lines, templates.warnings);
+        let (fresh, _fresh_folder) = folder_catalogue(&files);
+        let mut restored: OwnRefusals =
+            serde_json::from_slice(&serde_json::to_vec(&user).unwrap()).unwrap();
+        assert_eq!(
+            own_refusals(&mut restored, || fresh.reader_warning_lines()),
+            templates.warnings
+        );
+    }
+
+    #[test]
+    fn an_unwinding_scope_keeps_its_refusals_and_leaves_no_scope_behind() {
+        let (catalogue, _folder) = folder_catalogue(&[]);
+        let mut own = OwnRefusals::default();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            own_refusals::<()>(&mut own, || {
+                catalogue.refuse("before the panic", "UNWOUND");
+                panic!("synthetic observer panic");
+            })
+        }));
+        assert!(unwound.is_err());
+        assert!(SCOPES.with(|scopes| scopes.borrow().is_empty()));
+        let mut later = OwnRefusals::default();
+        assert!(own_refusals(&mut later, || catalogue.refusal_lines()).is_empty());
+        assert_eq!(
+            own_refusals(&mut own, || catalogue.refusal_lines()),
+            ["1 texts are not shown: before the panic; UNWOUND"]
+        );
+    }
+
+    /// Another consumer's render and uncovered read add to the stack's live
+    /// diagnostics; a scope's lines are unchanged by them, and the shared
+    /// lines, as the reply boundary reports them, still carry both.
+    #[test]
+    fn own_scopes_leave_out_the_stacks_live_artwork_and_uncovered_read_diagnostics() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let (catalogue, _folder) =
+            folder_catalogue(&[("outside_policy/synthetic.txt", "another consumer's file")]);
+        let reads = catalogue.content.layers.report_uncovered_reads();
+        let mut own = OwnRefusals::default();
+        let before = own_refusals(&mut own, || {
+            catalogue.refuse("own reason", "OWN");
+            catalogue.refusal_lines()
+        });
+        catalogue
+            .content
+            .layers
+            .note_shader_warning("synthetic artwork-effect note".into());
+        catalogue
+            .content
+            .layers
+            .read("outside_policy/synthetic.txt")
+            .unwrap();
+        let after = own_refusals(&mut own, || catalogue.refusal_lines());
+        assert_eq!(after, before);
+        assert_eq!(after, ["1 texts are not shown: own reason; OWN"]);
+        let shared = catalogue.refusal_lines();
+        assert!(
+            shared.contains(&"synthetic artwork-effect note".to_owned()),
+            "{shared:?}"
+        );
+        assert!(shared.contains(&reads.warning().unwrap()), "{shared:?}");
     }
 
     #[test]

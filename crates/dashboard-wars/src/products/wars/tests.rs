@@ -70,6 +70,7 @@ fn first_goal_zero_country_uses_dated_reserved_names_and_refuses_missing_input()
         &[dashboard_base::test_fixtures::records(1, frames)],
     )
     .unwrap();
+    let cat = Arc::new(cat);
     let reply = scan(&replay, 1, None, Some(&cat), &AtomicBool::new(false)).unwrap();
     assert_prepared_parity(&replay, Some(&cat), &[None, Some("TWO")]);
     let observations = &reply.wars[0].observations;
@@ -1652,7 +1653,7 @@ fn peaceful_viewpoint_changes_and_missing_hours_keep_dated_runs() {
 }
 
 /// The actual prepared observer/assembler, compared with the retained scan for every reached hour.
-fn assert_prepared_parity(replay: &Replay, cat: Option<&Catalogue>, views: &[Option<&str>]) {
+fn assert_prepared_parity(replay: &Replay, cat: Option<&Arc<Catalogue>>, views: &[Option<&str>]) {
     use dashboard_base::prepared::series;
     let fixture = series::tests::Fixture::new();
     let flag = AtomicBool::new(false);
@@ -1688,7 +1689,7 @@ fn assert_prepared_parity(replay: &Replay, cat: Option<&Catalogue>, views: &[Opt
         }
     }
     for &view in views {
-        let expected = scan(replay, 1, view, cat, &flag).unwrap();
+        let expected = scan(replay, 1, view, cat.map(|cat| &**cat), &flag).unwrap();
         let actual = prepared::projection(
             &fixture.store,
             &fixture.key,
@@ -1816,14 +1817,21 @@ fn prepared_wars_counter_only_hours_publish_one_global_input_change_and_reached_
     }
     let mut reader =
         Reader::new(&fixture.store, &fixture.key, "wars-series-1".into(), &flag).unwrap();
+    assert_eq!(reader.event_count_through(0, i32::MAX).unwrap(), 1);
+    // The input row is raw bytes, not a JSON array of byte numbers: the
+    // changed tables, then the compressed packet, which decodes whole.
+    let (hour, row) = reader.event_raw(0, 0).unwrap();
+    assert_eq!(hour, 100);
+    assert!(serde_json::from_slice::<serde_json::Value>(&row).is_err());
+    let (changes, packet) = walks::decode_input(&row).unwrap();
+    assert_eq!(changes.len(), TABLES.len());
+    let packet = dashboard_base::prepared::series::decompress(packet).unwrap();
+    let mut input = replay::codec::Decoder::new(&packet);
     assert_eq!(
-        reader
-            .events(&[0], i32::MIN, i32::MAX, 0, 256)
-            .unwrap()
-            .rows
-            .len(),
-        1
+        DecodedFrame::decode_checkpoint(&mut input).unwrap().hour,
+        100
     );
+    input.finish().unwrap();
     assert_eq!(reader.runs(0, 100, 199).unwrap().len(), 1);
     assert_eq!(
         fixture
@@ -1864,6 +1872,7 @@ fn prepared_wars_native_projection_keeps_prefix_names_memberships_and_rejects_re
         "localisation/mod_l_english.yml",
         "\u{feff}l_english:\n mod-1:0 \"Original\"\n mod-1_ADJ:0 \"First\"\n mod-2:0 \"Opponent\"\n mod-2_ADJ:0 \"Second\"\n renamed:0 \"Renamed\"\n renamed_ADJ:0 \"Later\"\n NATIVE:0 \"$FIRST$ versus $SECOND$\"\n",
     )]);
+    let cat = Arc::new(cat);
     let flag = AtomicBool::new(false);
     for count in [3, 5000] {
         let mut frames: Vec<_> = (100..=102)
@@ -2279,4 +2288,545 @@ fn prepared_wars_name_change_keeps_unchanged_relation_keys_flat_at_5000_countrie
         })
         .unwrap(),
     );
+}
+
+/// Fresh observers of one recording publish one catalogue: relation lifetimes
+/// are numbered in recorded WarRelations order, never the joined map's hash order.
+#[test]
+fn prepared_wars_fresh_observers_number_relation_lifetimes_in_recorded_order() {
+    use dashboard_base::prepared::series;
+    let count = 80;
+    let frames = [scaled_recorded(100, count), scaled_recorded(101, count)];
+    let flag = AtomicBool::new(false);
+    let published: Vec<_> = (0..2)
+        .map(|_| {
+            let fixture = series::tests::Fixture::new();
+            let mut observer = prepared::Observer::default();
+            for frame in &frames {
+                observer.observe(frame).unwrap();
+            }
+            let mut writer = fixture.writer();
+            observer.flush(&mut writer, 1, &flag).unwrap();
+            writer.commit().unwrap();
+            let (indices, state) = series::read_catalogue::<prepared::Observer>(
+                &fixture.store,
+                &fixture.key,
+                "wars",
+                1,
+            )
+            .unwrap()
+            .unwrap();
+            (indices, serde_json::to_vec(&state).unwrap())
+        })
+        .collect();
+    assert_eq!(published[0], published[1]);
+    let recorded = frames[0].complete::<tables::WarRelations>().unwrap();
+    assert_eq!(published[0].0.len(), recorded.len());
+    for (position, row) in recorded.iter().enumerate() {
+        // Synthetic countries share their slot, raw id and link id.
+        let key = WarRelationKey::new(
+            (row.first_country, row.first_country),
+            (row.second_country, row.second_country),
+            row.start_hour,
+        );
+        assert_eq!(
+            published[0].0[&serde_json::to_string(&key).unwrap()],
+            position as u64
+        );
+    }
+}
+
+/// A country listed on both native sides has two runs at one hour; they keep
+/// native side order through the reply's participant sort.
+#[test]
+fn participant_runs_sharing_an_hour_and_tag_keep_native_side_order() {
+    let tags: Vec<String> = (0..64).map(|index| format!("mod-{index:02}")).collect();
+    let data = WarObservation {
+        first_hour: 7,
+        last_hour: 7,
+        viewpoint_tag: tags[0].clone(),
+        viewpoint_side: tags.clone(),
+        opposing_side: tags.iter().rev().cloned().collect(),
+        attackers_are_viewpoint: Some(true),
+        representative: None,
+        name: naming::unknown("Not recorded: synthetic representative"),
+    };
+    let replies: Vec<_> = (0..2)
+        .map(|_| {
+            let mut walk = Walk::new(1, 7);
+            walk.reply.wars.push(WarTimeline {
+                id: "0".into(),
+                first_hour: 7,
+                last_hour: 7,
+                started_by: true,
+                ended_by: true,
+                observations: Vec::new(),
+                casualties: Vec::new(),
+                participants: Vec::new(),
+                capitulations: Vec::new(),
+                relations: Vec::new(),
+                open_participants: HashMap::new(),
+                open_relations: HashMap::new(),
+            });
+            add_observation(&mut walk.reply.wars[0], data.clone(), None);
+            let reply = walk.finish(7, None).unwrap();
+            reply.wars[0]
+                .participants
+                .iter()
+                .map(|run| (run.tag.clone(), run.side))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(replies[0], replies[1]);
+    let expected: Vec<_> = tags
+        .iter()
+        .flat_map(|tag| {
+            [
+                (tag.clone(), WarSide::Attacker),
+                (tag.clone(), WarSide::Defender),
+            ]
+        })
+        .collect();
+    assert_eq!(replies[0], expected);
+}
+
+#[test]
+fn restored_wars_close_a_relation_that_ends_at_the_first_hour_after_a_commit() {
+    use dashboard_base::prepared::series;
+    use replay::{frame::TableView, rows::TableRows};
+    // The second war relation ends at hour 104, the first hour after a commit.
+    let frames: Vec<_> = (100..108)
+        .map(|hour| {
+            let mut frame = recorded(hour);
+            if hour >= 104
+                && let TableView::Complete(TableRows::WarRelations(rows)) =
+                    &mut *frame.tables[TableId::WarRelations.index()]
+            {
+                rows.truncate(1);
+            }
+            frame
+        })
+        .collect();
+    let flag = AtomicBool::new(false);
+    dashboard_base::prepared::observer_tests::assert_restore_continues(
+        replay::format::FormatVersion::CURRENT,
+        &[&frames[..4], &frames[4..]],
+        prepared::Observer::default,
+        |observer, frame, changes, _| observer.observe_changed(frame, changes).unwrap(),
+        |observer, writer, _| observer.flush(writer, 1, &flag).unwrap(),
+        |fixture| {
+            prepared::Observer::restore(
+                series::read_catalogue(&fixture.store, &fixture.key, "wars", 1)
+                    .unwrap()
+                    .unwrap(),
+            )
+        },
+    );
+}
+
+/// A multi-block branch whose topology changes every hour (war scores move),
+/// where the war with THREE ends at 150 and a new one starts at 201, TWO
+/// capitulates at 180 and is renamed at 300, casualty runs of seven hours
+/// cross every publication, and hours 250-252 are missing. From
+/// `counter_only` on, only casualties change.
+fn walked_frames(hours: std::ops::Range<i32>, counter_only: i32) -> Vec<DecodedFrame> {
+    use replay::rows::TableRows;
+    hours
+        .filter(|hour| !(250..=252).contains(hour))
+        .map(|hour| {
+            let mut frame = recorded(hour);
+            if let TableView::Complete(TableRows::WarOverviewCountries(rows)) =
+                &mut *frame.tables[TableId::WarOverviewCountries.index()]
+            {
+                for row in rows {
+                    row.divisions = hour.min(counter_only);
+                }
+            }
+            if let TableView::Complete(TableRows::WarRelations(rows)) =
+                &mut *frame.tables[TableId::WarRelations.index()]
+            {
+                for row in rows.iter_mut() {
+                    row.second_casualties = i64::from(hour / 7);
+                    if row.second_country == 3 && hour > 200 {
+                        row.start_hour = 201;
+                    }
+                }
+                if (150..=200).contains(&hour) {
+                    rows.retain(|row| row.second_country != 3);
+                }
+            }
+            if (150..=200).contains(&hour)
+                && let TableView::Complete(TableRows::WarOwnedRelations(rows)) =
+                    &mut *frame.tables[TableId::WarOwnedRelations.index()]
+            {
+                rows.retain(|row| row.owner != 3 && row.second_country != 3);
+            }
+            if hour >= 180 {
+                frame.tables[TableId::Capitulation.index()] =
+                    TableView::Complete(TableRows::Capitulation(vec![rows::CapitulationRow {
+                        country: 2,
+                        capitulated: 1,
+                        capitulated_hour: 180,
+                        ..Default::default()
+                    }]))
+                    .into();
+            }
+            if hour >= 300
+                && let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *frame.tables[TableId::Countries.index()]
+            {
+                rows[1].tag = b"mod-two".to_vec();
+            }
+            frame
+        })
+        .collect()
+}
+
+/// Prepare `frames` through the production observer, committing and reloading
+/// its saved state every `block` frames, then calling `committed`.
+fn prepare_walked(
+    fixture: &dashboard_base::prepared::series::tests::Fixture,
+    frames: &[DecodedFrame],
+    block: usize,
+    mut committed: impl FnMut(i32),
+) {
+    let flag = AtomicBool::new(false);
+    let mut observer = prepared::Observer::default();
+    for chunk in frames.chunks(block) {
+        let mut writer = fixture.writer();
+        for frame in chunk {
+            observer.observe(frame).unwrap();
+        }
+        observer.flush(&mut writer, 1, &flag).unwrap();
+        writer.commit().unwrap();
+        observer = prepared::Observer::restore(
+            dashboard_base::prepared::series::read_catalogue(
+                &fixture.store,
+                &fixture.key,
+                "wars",
+                1,
+            )
+            .unwrap()
+            .unwrap(),
+        );
+        committed(chunk.last().unwrap().hour);
+    }
+}
+
+fn walked_source(replay: &Arc<Replay>) -> Source {
+    Source::from_replay(
+        dashboard_base::source::SourceKey {
+            source_id: "wars-walks".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        replay.clone(),
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+}
+
+type Memberships = Vec<Vec<(WarRelationKey, i32, i32)>>;
+
+fn memberships(reply: &WarsReply) -> Memberships {
+    reply
+        .wars
+        .iter()
+        .map(|war| {
+            war.relations
+                .iter()
+                .map(|run| (run.key.clone(), run.first_hour, run.last_hour))
+                .collect()
+        })
+        .collect()
+}
+
+/// The reply and its Rust-only relation memberships.
+fn walked(
+    fixture: &dashboard_base::prepared::series::tests::Fixture,
+    source: &Source,
+    view: Option<&str>,
+    selected: Option<&HashSet<(u32, u32)>>,
+    hours: &BTreeSet<i32>,
+    cat: Option<&Arc<Catalogue>>,
+) -> (serde_json::Value, Memberships) {
+    let reply = prepared::projection(
+        &fixture.store,
+        &fixture.key,
+        source,
+        &WarsParams {
+            branch_id: "1".into(),
+            viewpoint_tag: view.map(str::to_owned),
+        },
+        selected,
+        hours,
+        cat,
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+    .unwrap();
+    let memberships = memberships(&reply);
+    (serde_json::to_value(reply).unwrap(), memberships)
+}
+
+fn decoded_inputs() -> usize {
+    walks::DECODED.with(std::cell::Cell::get)
+}
+
+/// Kept walks answer every requested hour set exactly as the walk from the
+/// branch start, and a later query decodes at most one resume interval of
+/// change inputs however many blocks precede it.
+#[test]
+fn prepared_wars_resume_points_match_the_whole_walk_and_bound_decoded_inputs() {
+    let selected = HashSet::from([(1, 1)]);
+    for end in [300, 420] {
+        let frames = walked_frames(100..end, end);
+        let replay = Arc::new(
+            Replay::from_records(
+                dashboard_base::test_fixtures::CAMPAIGN.into(),
+                &[dashboard_base::test_fixtures::records(1, frames.clone())],
+            )
+            .unwrap(),
+        );
+        let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+        prepare_walked(&fixture, &frames, 16, |_| {});
+        let last = end - 1;
+        let all: BTreeSet<i32> = frames.iter().map(|frame| frame.hour).collect();
+        let sets = [
+            BTreeSet::new(),
+            BTreeSet::from([100]),
+            BTreeSet::from([230]),
+            BTreeSet::from([last]),
+            BTreeSet::from([248, 249, 253, 254]),
+            BTreeSet::from([120, 175, 230, last]),
+            all.clone(),
+        ];
+        let views: [(Option<&str>, Option<&HashSet<(u32, u32)>>); 3] = [
+            (None, None),
+            (Some("ONE"), None),
+            (Some("ONE"), Some(&selected)),
+        ];
+        for (view, selection) in views {
+            let kept = walked_source(&replay);
+            // A structural query walks every input once and keeps the walk.
+            let before = decoded_inputs();
+            walked(&fixture, &kept, view, selection, &BTreeSet::new(), None);
+            let inputs = (decoded_inputs() - before) as u64;
+            let held = walks::held(&kept);
+            assert_eq!(held.len(), 1);
+            assert_eq!(held[0].inputs, inputs);
+            assert!(inputs > 190, "one change input per recorded hour: {inputs}");
+            assert!(held[0].points <= walks::WALK_POINTS, "{:?}", held[0]);
+            assert!(
+                held[0].point_bytes <= walks::WALK_POINT_BYTES,
+                "{:?}",
+                held[0]
+            );
+            assert!(
+                held[0].interval > 1 && held[0].interval * 32 <= held[0].inputs,
+                "{:?}",
+                held[0]
+            );
+            let interval = held[0].interval as usize;
+            for hours in &sets {
+                let before = decoded_inputs();
+                let warm = walked(&fixture, &kept, view, selection, hours, None);
+                let decoded = decoded_inputs() - before;
+                let cold = walked(
+                    &fixture,
+                    &walked_source(&replay),
+                    view,
+                    selection,
+                    hours,
+                    None,
+                );
+                assert_eq!(warm, cold, "{view:?} {selection:?} {hours:?}");
+                if hours.is_empty() || hours.len() == 1 && hours.contains(&last) {
+                    assert_eq!(decoded, 0, "the kept walk already holds the last input");
+                } else if hours.len() == 1 {
+                    assert!(decoded < interval, "{hours:?}: {decoded} of {interval}");
+                } else if hours.len() <= 4 {
+                    assert!(
+                        decoded <= 4 * interval,
+                        "{hours:?}: {decoded} of {interval}"
+                    );
+                }
+            }
+            // The whole walk from the branch start is the oracle.
+            let (expected, hours) = match selection {
+                None => (
+                    scan(&replay, 1, view, None, &AtomicBool::new(false)).unwrap(),
+                    all.clone(),
+                ),
+                Some(selection) => {
+                    let mut reply = scan_selected(
+                        &replay,
+                        1,
+                        view,
+                        Some(selection),
+                        None,
+                        &AtomicBool::new(false),
+                    )
+                    .unwrap();
+                    for war in &mut reply.wars {
+                        war.casualties.clear();
+                    }
+                    (reply, BTreeSet::new())
+                }
+            };
+            let (reply, relations) = walked(&fixture, &kept, view, selection, &hours, None);
+            assert_eq!(reply, serde_json::to_value(&expected).unwrap(), "{view:?}");
+            assert_eq!(relations, memberships(&expected), "{view:?}");
+        }
+    }
+}
+
+/// A walk kept across published appends, including counter-only ones that
+/// only extend the last input's coverage, answers as a walk made fresh from
+/// the reloaded store at every commit.
+#[test]
+fn prepared_wars_kept_walks_continue_across_appends_as_fresh_ones() {
+    let frames = walked_frames(100..330, 290);
+    let replay = Arc::new(
+        Replay::from_records(
+            dashboard_base::test_fixtures::CAMPAIGN.into(),
+            &[dashboard_base::test_fixtures::records(1, frames.clone())],
+        )
+        .unwrap(),
+    );
+    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+    let kept = walked_source(&replay);
+    let selected = HashSet::from([(1, 1)]);
+    let mut commits = 0;
+    prepare_walked(&fixture, &frames, 23, |hour| {
+        commits += 1;
+        for hours in [
+            BTreeSet::new(),
+            BTreeSet::from([hour]),
+            BTreeSet::from([hour - 30, hour - 1, hour]),
+        ] {
+            for (view, selection) in [(None, None), (Some("ONE"), Some(&selected))] {
+                let continued = walked(&fixture, &kept, view, selection, &hours, None);
+                let fresh = walked(
+                    &fixture,
+                    &walked_source(&replay),
+                    view,
+                    selection,
+                    &hours,
+                    None,
+                );
+                assert_eq!(continued, fresh, "after {hour}: {view:?} {hours:?}");
+            }
+        }
+    });
+    assert!(commits >= 10);
+    // After the rename at 300, counter-only commits publish no input but
+    // extend the last one's coverage.
+    let unread = AtomicBool::new(false);
+    let mut reader = dashboard_base::prepared::series::Reader::new(
+        &fixture.store,
+        &fixture.key,
+        "wars-series-1".into(),
+        &unread,
+    )
+    .unwrap();
+    let inputs = reader.event_count_through(0, i32::MAX).unwrap();
+    assert_eq!(reader.event_date(0, inputs - 1).unwrap(), 300);
+    assert_eq!(reader.event_date(0, inputs - 2).unwrap(), 290);
+    let all = frames.iter().map(|frame| frame.hour).collect();
+    assert_eq!(
+        walked(&fixture, &kept, None, None, &all, None).0,
+        serde_json::to_value(scan(&replay, 1, None, None, &AtomicBool::new(false)).unwrap())
+            .unwrap()
+    );
+}
+
+/// The source keeps a few walks, most recently used first, each within its
+/// resume point bounds; a different content catalogue walks again.
+#[test]
+fn prepared_wars_keep_bounded_walks_per_viewpoint_and_catalogue() {
+    let frames = walked_frames(100..300, 300);
+    let replay = Arc::new(
+        Replay::from_records(
+            dashboard_base::test_fixtures::CAMPAIGN.into(),
+            &[dashboard_base::test_fixtures::records(1, frames.clone())],
+        )
+        .unwrap(),
+    );
+    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+    prepare_walked(&fixture, &frames, 16, |_| {});
+    let source = walked_source(&replay);
+    let structure = BTreeSet::new();
+    let selected = HashSet::from([(1, 1)]);
+    let before = decoded_inputs();
+    walked(&fixture, &source, None, None, &structure, None);
+    let inputs = decoded_inputs() - before;
+    for (view, selection) in [
+        (Some("ONE"), None),
+        (Some("TWO"), None),
+        (Some("THREE"), None),
+        (Some("ONE"), Some(&selected)),
+    ] {
+        walked(&fixture, &source, view, selection, &structure, None);
+    }
+    let held = walks::held(&source);
+    assert_eq!(held.len(), walks::CACHED_WALKS);
+    for walk in &held {
+        assert_eq!(walk.inputs as usize, inputs);
+        assert!(walk.points <= walks::WALK_POINTS, "{walk:?}");
+        assert!(walk.point_bytes <= walks::WALK_POINT_BYTES, "{walk:?}");
+        assert!(walk.tail_bytes > 0, "{walk:?}");
+    }
+    // The least recently used walk (LocalPlayer) was dropped and walks again;
+    // the most recent one answers without decoding.
+    let before = decoded_inputs();
+    walked(
+        &fixture,
+        &source,
+        Some("ONE"),
+        Some(&selected),
+        &structure,
+        None,
+    );
+    assert_eq!(decoded_inputs() - before, 0);
+    walked(&fixture, &source, None, None, &structure, None);
+    assert_eq!(decoded_inputs() - before, inputs);
+    assert_eq!(walks::held(&source).len(), walks::CACHED_WALKS);
+
+    // Walks are keyed by the catalogue they name, held by identity.
+    let (first, _first_folder) = catalogue::tests::folder_catalogue(&[]);
+    let (second, _second_folder) = catalogue::tests::folder_catalogue(&[]);
+    let (first, second) = (Arc::new(first), Arc::new(second));
+    let named = walked_source(&replay);
+    let before = decoded_inputs();
+    let a = walked(&fixture, &named, None, None, &structure, Some(&first));
+    assert_eq!(decoded_inputs() - before, inputs);
+    let again = walked(&fixture, &named, None, None, &structure, Some(&first));
+    assert_eq!(decoded_inputs() - before, inputs);
+    let b = walked(&fixture, &named, None, None, &structure, Some(&second));
+    assert_eq!(decoded_inputs() - before, 2 * inputs);
+    assert_eq!(a, again);
+    assert_eq!(a, b);
+    assert_eq!(walks::held(&named).len(), 2);
+
+    // A smaller point budget doubles the interval until the points fit.
+    let mid = BTreeSet::from([230]);
+    let plain = walked_source(&replay);
+    let expected = walked(&fixture, &plain, None, None, &mid, None);
+    let reference = walks::held(&plain).remove(0);
+    let budget = reference.point_bytes / 4;
+    walks::POINT_BYTES.with(|bytes| bytes.set(Some(budget)));
+    let thin = walked_source(&replay);
+    walked(&fixture, &thin, None, None, &structure, None);
+    let thinned = walks::held(&thin);
+    walks::POINT_BYTES.with(|bytes| bytes.set(None));
+    assert!(
+        thinned[0].point_bytes <= budget || thinned[0].points == 1,
+        "{:?}",
+        thinned[0]
+    );
+    assert!(thinned[0].interval > reference.interval, "{:?}", thinned[0]);
+    let before = decoded_inputs();
+    assert_eq!(walked(&fixture, &thin, None, None, &mid, None), expected);
+    assert!(decoded_inputs() - before < thinned[0].interval as usize);
 }

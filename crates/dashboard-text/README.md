@@ -19,4 +19,36 @@ Nothing here names a product or a source. The [dashboard](../dashboard/README.md
 | [catalogue.rs](src/catalogue.rs) | Shared lazy localisation, content databases, native GUI/sprite lookup, texture decoding and PNG replies; the per-source loader is in the dashboard. |
 | [metadata.rs](src/metadata.rs) | Branch bounds, gaps, initial country catalogue, frame checks, country-link resolution and supplying-read detection. |
 
+## Own refusals
+
+The catalogue's text refusal tally (`Catalogue::refusal_lines`) is shared by
+every consumer of the source, at whatever pace each runs. A consumer whose output
+must not depend on the others runs its calls inside `catalogue::own_refusals`
+with its own `OwnRefusals`: every text refusal noted on that thread meanwhile, and
+every lazy reader it uses (scripted localisation, state templates, faction
+templates), joins its tally, and inside the scope `refusal_lines` reports that
+tally in the same form and order, with only the warnings of the readers it used
+(read again if this process has not read them yet). A cached result retains what
+its read refused and credits it to every scope that uses it, and scripted text
+expanded on a larger stack credits its thread's notes back to the caller, so who
+read first decides nothing. Artwork-effect and uncovered-read diagnostics,
+which any consumer's read adds to, stay the resolved stack's live diagnostics:
+a scope's lines leave them out, and a prepared query reply's content warnings
+gain the current ones where it is served
+(`Source::append_stack_warnings`), as product replies gain the read set.
+
+## Evaluation reuse
+
+An evaluation run under `triggers::inputs::capture` returns the inputs it read:
+each recorded query on the hour's shared state (`World`, `RecordedScopes`,
+recorded country names, the scripted-text helpers, the Clock seed when randomness
+is drawn) with a digest of its answer, and each raw table it read whole, by view
+identity. Queries run their bodies unrecorded, and shared state built lazily
+inside an evaluation is built unrecorded, so an input is always the query's
+answer, never the reads behind it. `Inputs::confirm` rereads every input on a
+later hour; when all read the same, the evaluation's result is reused. Focus
+presentations and leader visibility reuse this way. Check mode (always in tests,
+`BATTLE_PLAN_REUSE_CHECK` in preparation) evaluates every reused result anyway and counts
+any difference.
+
 The `test-support` feature compiles the catalogue and scope fixtures (`catalogue::tests`, `catalogue::texture_tests`, `scope::tests`) and the test-only instrumentation, such as read counters and synthetic scripted environments, for the tests of crates above this one. Only dev-dependencies enable it.

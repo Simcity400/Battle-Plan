@@ -158,6 +158,369 @@ fn family_lanes_match_every_section_and_keep_the_time_budget() {
     compare_fixture(&Replay::from_records(CAMPAIGN.into(), &[records(1, vec![missing])]).unwrap());
 }
 
+/// Every lane job, in the coordinator's serial call order. Resources and army
+/// fold their block facts instead (`prepass.rs`).
+const LANE_FAMILIES: &[&str] = &[
+    "nukes",
+    "factories",
+    "projects",
+    "peace",
+    "research",
+    "construction",
+    "trade",
+    "measure",
+    "navy",
+    "air",
+    "supply",
+    "stockpile",
+    "air_ledger",
+    "aces",
+    "raids",
+    "game_score",
+    "land",
+    "divisions",
+    "naval",
+    "subjects",
+    "autonomy",
+    "tension",
+    "wars",
+    "ideas",
+    "parties",
+    "leaders",
+    "intelligence",
+    "stability",
+    "politics_ledger",
+    "fuel",
+    "occupation",
+    "casualties",
+    "equipment_losses",
+];
+
+/// Families observed by lane jobs whose observation needs no other family's
+/// output of the same frame.
+const MOVED: &[&str] = &[
+    "projects",
+    "construction",
+    "navy",
+    "air",
+    "supply",
+    "stockpile",
+    "raids",
+    "land",
+    "naval",
+    "ideas",
+    "leaders",
+    "intelligence",
+    "politics_ledger",
+    "occupation",
+    "casualties",
+];
+
+#[test]
+fn family_lanes_observe_every_job_family_in_serial_order_and_on_lanes() {
+    for parallelism in [2, 4] {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let trace = Arc::clone(&seen);
+        let hook: lanes::Hook = Arc::new(move |family, observed, _changes| {
+            if family != "coordinator" && observed.branch == 1 && observed.hour == 10 {
+                trace.lock().unwrap().push(family.to_owned());
+            }
+            lanes::Fault::Continue
+        });
+        let mut fixture = Fixture::new(&recording());
+        let source = fixture.source("lane-jobs");
+        lanes::with_test_lanes(parallelism, Some(hook), || {
+            run(&source, None, &AtomicBool::new(false), |_| {})
+        })
+        .unwrap();
+        let mut seen = seen.lock().unwrap().clone();
+        if parallelism == 2 {
+            // Serial observation calls each job where the coordinator called it.
+            assert_eq!(seen, LANE_FAMILIES);
+        }
+        seen.sort_unstable();
+        let mut expected = LANE_FAMILIES.to_vec();
+        expected.sort_unstable();
+        assert_eq!(seen, expected, "lane jobs at parallelism {parallelism}");
+        for family in MOVED {
+            assert!(LANE_FAMILIES.contains(family), "{family} is not a lane job");
+        }
+    }
+}
+
+// One frame giving several moved families rows that change by hour.
+fn moved_families_frame(hour: i32) -> DecodedFrame {
+    use replay::rows::{
+        ActiveIdeaRow, AirWingRow, LexicalTokenRow, ShipCounterInputs, ShipModelRow, ShipRow,
+        StateResistanceRow, TaskForceRow, WingEquipmentRow,
+    };
+    let mut frame = frame(1, hour, 3);
+    *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(vec![
+        AirWingRow {
+            id: 1,
+            owner: 100_000,
+            country_override: 100_001,
+            planes: 10 + hour,
+            ..Default::default()
+        },
+        AirWingRow {
+            id: 2,
+            owner: 100_001,
+            planes: 15,
+            ..Default::default()
+        },
+    ]));
+    *frame.tables[TableId::WingEquipment.index()] =
+        TableView::Complete(TableRows::WingEquipment(vec![
+            WingEquipmentRow {
+                wing: 1,
+                ordinal: 0,
+                variant: 77,
+                amount_raw: 1_000_000,
+            },
+            WingEquipmentRow {
+                wing: 2,
+                ordinal: 0,
+                variant: 78,
+                amount_raw: 1_500_000,
+            },
+        ]));
+    *frame.tables[TableId::TaskForces.index()] = TableView::Complete(TableRows::TaskForces(
+        (0..3_u32)
+            .map(|index| TaskForceRow {
+                id: u64::from(index) + 1,
+                roster_owner: 100_000 + index,
+                logical_owner: 100_000 + (index + 1) % 3,
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::Ships.index()] = TableView::Complete(TableRows::Ships(
+        (0..3_u32)
+            .map(|index| ShipRow {
+                id: u64::from(index) + 1,
+                task_force: u64::from(index) + 1,
+                class_id: 41,
+                strength: i64::from(index + 1) * 100_000 + i64::from(hour) * 1_000,
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::ShipModels.index()] = TableView::Complete(TableRows::ShipModels(
+        (0..3_u32)
+            .map(|index| ShipModelRow {
+                ship: u64::from(index) + 1,
+                counter: Some(ShipCounterInputs {
+                    maximum_strength: 10_000_000,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 41,
+            literal: b"first_ship".to_vec(),
+        }]));
+    let mut ideas = vec![ActiveIdeaRow {
+        country: 100_000,
+        ordinal: 0,
+        token: b"mod_idea".to_vec(),
+    }];
+    if hour >= 12 {
+        ideas.push(ActiveIdeaRow {
+            country: 100_001,
+            ordinal: 0,
+            token: b"mod_later_idea".to_vec(),
+        });
+    }
+    *frame.tables[TableId::ActiveIdeas.index()] =
+        TableView::Complete(TableRows::ActiveIdeas(ideas));
+    *frame.tables[TableId::HiredAdvisors.index()] =
+        TableView::Complete(TableRows::HiredAdvisors(Vec::new()));
+    if hour >= 12
+        && let TableView::Complete(TableRows::States(rows)) =
+            &mut *frame.tables[TableId::States.index()]
+    {
+        // The second country occupies the first country's state.
+        rows[0].controller = 100_001;
+    }
+    *frame.tables[TableId::StateResistance.index()] =
+        TableView::Complete(TableRows::StateResistance(
+            (0..3_u32)
+                .map(|index| StateResistanceRow {
+                    state: index + 1,
+                    country: 100_000 + index,
+                    active: 1,
+                    level: i64::from(index) + i64::from(hour),
+                    compliance: i64::from(index),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    frame
+}
+
+// Project and sinking rows over the single-country source fixture.
+fn project_and_sinking_frame(hour: i32) -> DecodedFrame {
+    use replay::rows::{LexicalTokenRow, ProjectRow, ProjectState, SunkShipEntry, SunkShipsRow};
+    let mut frame = crate::test_fixtures::source(1, hour, Some(i64::from(hour) * 1000));
+    frame.metrics.table_ns[TableId::Projects.index()] = 1;
+    *frame.tables[TableId::Projects.index()] = TableView::Complete(TableRows::Projects(
+        (1..=2)
+            .map(|local_id| ProjectRow {
+                owner: 11,
+                local_id,
+                definition_id: 8,
+                started: 1,
+                state: ProjectState {
+                    current_offset: 0xe8,
+                    not_completed: 0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::ProjectHistory.index()] =
+        TableView::Complete(TableRows::empty(TableId::ProjectHistory));
+    *frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 8,
+            literal: b"mod_project".to_vec(),
+        }]));
+    let entries = if hour >= 102 {
+        vec![SunkShipEntry {
+            ship_name: b"synthetic lane sinking".to_vec(),
+            victim_country: 9001,
+            attacker_country: 9001,
+            sink_hour: 102,
+            ..Default::default()
+        }]
+    } else {
+        Vec::new()
+    };
+    *frame.tables[TableId::SunkShips.index()] =
+        TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow { entries }]));
+    frame.metrics.table_ns[TableId::SunkShips.index()] = 1;
+    frame
+}
+
+// Two blocks of one branch: the first two frames, then the rest appended.
+fn two_blocks(frames: Vec<DecodedFrame>) -> Replay {
+    let first = Replay::from_records(CAMPAIGN.into(), &[records(1, frames[..2].to_vec())]).unwrap();
+    first
+        .append(&[continuation_records(&first, 1, frames[2..].to_vec())])
+        .unwrap()
+}
+
+/// Lanes match serial observation of `replay`, and the comparison covers each
+/// of `families`: a lane omitting that family's observations is detected.
+fn assert_lane_parity_covers(
+    replay: &Replay,
+    families: &[&'static str],
+    undetected: &mut Vec<&'static str>,
+) {
+    let mut fixture = Fixture::new(replay);
+    let expected = serial_control(&mut fixture, "lane-coverage", None);
+    let clear = |source: Arc<Source>| {
+        super::super::super::files(&source, None)
+            .unwrap()
+            .0
+            .clear()
+            .unwrap();
+    };
+    let parallel = fixture.source("lane-coverage");
+    lanes::with_test_lanes(4, None, || {
+        run(&parallel, None, &AtomicBool::new(false), |_| {})
+    })
+    .unwrap();
+    assert_payloads_equal(
+        &payloads(&parallel, None),
+        &expected,
+        "moved families: lanes vs serial",
+    );
+    clear(parallel);
+    for &family in families {
+        let source = fixture.source("lane-coverage");
+        let hook: lanes::Hook = Arc::new(move |name, _frame, _changes| {
+            if name == family {
+                lanes::Fault::Skip
+            } else {
+                lanes::Fault::Continue
+            }
+        });
+        let diverged = lanes::with_test_lanes(4, Some(hook), || {
+            run(&source, None, &AtomicBool::new(false), |_| {})
+        })
+        .is_err()
+            || payloads(&source, None) != expected;
+        if !diverged {
+            undetected.push(family);
+        }
+        clear(source);
+    }
+}
+
+#[test]
+fn family_lanes_match_serial_for_every_moved_family_and_detect_a_diverging_lane() {
+    let recordings = [
+        (
+            two_blocks((10..=13).map(moved_families_frame).collect()),
+            &[
+                "air",
+                "navy",
+                "ideas",
+                "occupation",
+                "politics_ledger",
+                "supply",
+                "raids",
+                "intelligence",
+                "stockpile",
+                "construction",
+            ][..],
+        ),
+        (
+            two_blocks(
+                crate::products::unit_leaders::prepared::test_fixtures::outcome_frames(false),
+            ),
+            &["leaders", "land"][..],
+        ),
+        (
+            two_blocks(
+                (100..=103)
+                    .map(|hour| crate::products::wars::test_fixtures::scaled_recorded(hour, 3))
+                    .collect(),
+            ),
+            &["casualties"][..],
+        ),
+        (
+            two_blocks((100..=103).map(project_and_sinking_frame).collect()),
+            &["projects", "naval"][..],
+        ),
+    ];
+    let mut covered: Vec<_> = recordings
+        .iter()
+        .flat_map(|(_, families)| families.iter().copied())
+        .collect();
+    covered.sort_unstable();
+    let mut moved = MOVED.to_vec();
+    moved.sort_unstable();
+    assert_eq!(
+        covered, moved,
+        "every moved family has a covering recording"
+    );
+    let mut undetected = Vec::new();
+    for (replay, families) in &recordings {
+        assert_lane_parity_covers(replay, families, &mut undetected);
+    }
+    assert!(
+        undetected.is_empty(),
+        "lane parity misses a diverging lane of {undetected:?}"
+    );
+}
+
 #[test]
 #[cfg_attr(
     not(feature = "slow-tests"),
@@ -244,7 +607,7 @@ fn family_lanes_same_frame_identity_and_membership_change_match_serial() {
     }
     let replay =
         Replay::from_records(CAMPAIGN.into(), &[records(1, vec![initial, changed])]).unwrap();
-    // Territory/history/supply/groups run on the coordinator; subject/tension
+    // Territory/history/groups run on the coordinator; subject/tension/supply
     // jobs run on lanes. They must use this immutable frame and their own state,
     // not a coordinator's old or partially updated identity/link cache.
     compare_fixture(&replay);
@@ -298,7 +661,11 @@ fn frame_changes_are_computed_once_and_shared_by_coordinator_and_all_lanes() {
         assert_eq!(seen.len(), 4);
         for (_, coordinator, workers) in seen.values() {
             assert_eq!(*coordinator, 1);
-            assert_eq!(*workers, 20, "all 20 numeric jobs see the same fact");
+            assert_eq!(
+                *workers,
+                LANE_FAMILIES.len(),
+                "every lane job sees the same fact"
+            );
         }
     }
 }
@@ -348,39 +715,41 @@ fn frame_changes_force_all_on_same_branch_post_publication_restore() {
 #[test]
 fn family_lanes_enter_together_and_never_advance_to_the_next_frame() {
     use std::sync::mpsc;
+    // The two heaviest lane jobs, the politics ledger and stability, are
+    // always packed on different lanes.
     let (resource_send, resource_receive) = mpsc::sync_channel(1);
-    let (stability_send, stability_receive) = mpsc::sync_channel(1);
+    let (ledger_send, ledger_receive) = mpsc::sync_channel(1);
     let resource_receive = Mutex::new(resource_receive);
-    let stability_receive = Mutex::new(stability_receive);
+    let ledger_receive = Mutex::new(ledger_receive);
     let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let count = Arc::clone(&entered);
     let resource_frame = std::sync::atomic::AtomicUsize::new(0);
-    let stability_frame = std::sync::atomic::AtomicUsize::new(0);
+    let ledger_frame = std::sync::atomic::AtomicUsize::new(0);
     let hook: lanes::Hook = Arc::new(move |family, observed, _changes| {
-        if observed.hour == 10 && family == "resources" {
+        if observed.hour == 10 && family == "stability" {
             resource_frame.store(observed as *const DecodedFrame as usize, Ordering::SeqCst);
             count.fetch_add(1, Ordering::SeqCst);
             resource_send.send(()).unwrap();
-            stability_receive
+            ledger_receive
                 .lock()
                 .unwrap()
                 .recv_timeout(Duration::from_secs(2))
-                .expect("stability must enter while resources is active");
+                .expect("the politics ledger must enter while stability is active");
             assert_eq!(
                 resource_frame.load(Ordering::SeqCst),
-                stability_frame.load(Ordering::SeqCst),
+                ledger_frame.load(Ordering::SeqCst),
                 "lanes must share the same frame allocation"
             );
-        } else if observed.hour == 10 && family == "stability" {
-            stability_frame.store(observed as *const DecodedFrame as usize, Ordering::SeqCst);
+        } else if observed.hour == 10 && family == "politics_ledger" {
+            ledger_frame.store(observed as *const DecodedFrame as usize, Ordering::SeqCst);
             count.fetch_add(1, Ordering::SeqCst);
-            stability_send.send(()).unwrap();
+            ledger_send.send(()).unwrap();
             resource_receive
                 .lock()
                 .unwrap()
                 .recv_timeout(Duration::from_secs(2))
-                .expect("resources must enter while stability is active");
-        } else if observed.hour == 11 && matches!(family, "resources" | "stability") {
+                .expect("stability must enter while the politics ledger is active");
+        } else if observed.hour == 11 && matches!(family, "stability" | "politics_ledger") {
             assert_eq!(
                 count.load(Ordering::SeqCst),
                 2,
@@ -516,7 +885,7 @@ fn family_lanes_cancel_error_panic_disconnect_discard_the_whole_block_and_resume
             let prefix = payloads(&source, None);
             let cancellation = Arc::clone(&flag);
             let hook: lanes::Hook = Arc::new(move |family, frame, _changes| {
-                if family != "resources" || frame.hour != hour {
+                if family != "trade" || frame.hour != hour {
                     return lanes::Fault::Continue;
                 }
                 match failure {
@@ -735,5 +1104,115 @@ fn family_lanes_missing_and_modded_content_match_every_section_and_warning_byte(
             &expected,
             "content lanes vs serial control",
         );
+    }
+}
+
+/// A branch flushed at a block end and continued in memory into its next block
+/// publishes exactly what the branch read back from its saved state publishes.
+#[test]
+fn flushed_branches_continued_in_memory_publish_as_reloaded_ones() {
+    let recordings = [
+        two_blocks((10..=13).map(moved_families_frame).collect()),
+        two_blocks(crate::products::unit_leaders::prepared::test_fixtures::outcome_frames(false)),
+        two_blocks(
+            (100..=103)
+                .map(|hour| crate::products::wars::test_fixtures::scaled_recorded(hour, 3))
+                .collect(),
+        ),
+        two_blocks((100..=103).map(project_and_sinking_frame).collect()),
+    ];
+    for replay in recordings {
+        let mut fixture = Fixture::new(&replay);
+        // A measured run publishes and commits at every block end.
+        let mut prepare = |name: &str, reload: bool| {
+            let source = fixture.source(name);
+            super::super::RELOAD_FLUSHED.with(|flag| flag.set(reload));
+            super::super::CONTINUED.with(|continued| continued.set(0));
+            run_measured_through(
+                &source,
+                None,
+                &AtomicBool::new(false),
+                true,
+                Duration::ZERO,
+                Some(4),
+                |_| Ok(()),
+                |_| {},
+            )
+            .unwrap();
+            super::super::RELOAD_FLUSHED.with(|flag| flag.set(false));
+            let published = payloads(&source, None);
+            // Both sources open one path, so the next run must not reuse this store.
+            super::super::super::files(&source, None)
+                .unwrap()
+                .0
+                .clear()
+                .unwrap();
+            drop(source);
+            (
+                published,
+                super::super::CONTINUED.with(std::cell::Cell::get),
+            )
+        };
+        let (reloaded, none) = prepare("reloaded", true);
+        let (continued, once) = prepare("continued", false);
+        assert_eq!((none, once), (0, 1), "the second block continues the first");
+        // Name the fields of differing JSON payloads (saved observer states are
+        // compressed JSON) before comparing every byte.
+        let decoded = |bytes: &[u8]| {
+            let plain = zstd::decode_all(bytes).unwrap_or_else(|_| bytes.to_vec());
+            serde_json::from_slice::<serde_json::Value>(&plain).ok()
+        };
+        let mut differences = Vec::new();
+        for (key, bytes) in &continued {
+            if let Some(other) = reloaded.get(key).filter(|other| *other != bytes)
+                && let (Some(left), Some(right)) = (decoded(bytes), decoded(other))
+            {
+                json_differences(
+                    &left,
+                    &right,
+                    format!("{}#{}", key.0, key.1),
+                    &mut differences,
+                );
+            }
+        }
+        differences.truncate(40);
+        assert!(
+            differences.is_empty(),
+            "continued vs reloaded fields: {differences:#?}"
+        );
+        assert_payloads_equal(&continued, &reloaded, "continued vs reloaded");
+    }
+}
+
+fn json_differences(
+    left: &serde_json::Value,
+    right: &serde_json::Value,
+    path: String,
+    out: &mut Vec<String>,
+) {
+    use serde_json::Value;
+    match (left, right) {
+        (Value::Object(left), Value::Object(right)) => {
+            for key in left
+                .keys()
+                .chain(right.keys())
+                .collect::<std::collections::BTreeSet<_>>()
+            {
+                match (left.get(key), right.get(key)) {
+                    (Some(l), Some(r)) => json_differences(l, r, format!("{path}.{key}"), out),
+                    (l, r) => out.push(format!("{path}.{key}: {l:?} / {r:?}")),
+                }
+            }
+        }
+        (Value::Array(l), Value::Array(r)) if l.len() == r.len() => {
+            for (index, (l, r)) in l.iter().zip(r).enumerate() {
+                json_differences(l, r, format!("{path}[{index}]"), out);
+            }
+        }
+        _ if left != right => {
+            let shown = |value: &Value| value.to_string().chars().take(300).collect::<String>();
+            out.push(format!("{path}: {} / {}", shown(left), shown(right)));
+        }
+        _ => {}
     }
 }

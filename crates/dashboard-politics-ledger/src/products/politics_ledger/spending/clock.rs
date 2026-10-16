@@ -138,15 +138,34 @@ impl Scanned {
         } else {
             Vec::new()
         };
-        Arc::make_mut(&mut self.inputs).refresh(frame, Some(changes));
+        // Changed rows describe the hour after the last one this observed.
+        let continuous =
+            self.clock.previous.and_then(|last| last.checked_add(1)) == Some(frame.hour);
+        let pending = (self.pending_known && continuous).then_some(&self.pending);
+        #[cfg(test)]
+        let pending = pending.filter(|_| !self.whole_tables);
+        Arc::make_mut(&mut self.inputs).refresh_changes(frame, changes, pending);
+        #[cfg(test)]
+        {
+            self.row_hours += usize::from(self.inputs.narrow);
+        }
+        // A holder's name is read from the hour's characters, unit leaders
+        // and dictionary; only holders named from a changed row can change.
+        #[cfg(not(test))]
+        let rows_known = true;
+        #[cfg(test)]
+        let rows_known = !self.whole_tables;
+        let named = self.holds.naming_slots(changes, rows_known);
         if !self.clock.bound {
             // Resume rebuilt the old join for transition comparison, but the
             // first new read must still bind its per-read diagnostic rates.
             Arc::make_mut(&mut self.inputs).countries_changed = true;
         }
         let recheck = std::mem::take(&mut self.clock.recheck);
-        let changed = self.inputs.changed || !recheck.is_empty();
-        Arc::make_mut(&mut self.inputs).slots.extend(recheck);
+        let changed = self.inputs.changed || !recheck.is_empty() || !named.is_empty();
+        let inputs = Arc::make_mut(&mut self.inputs);
+        inputs.slots.extend(recheck);
+        inputs.slots.extend(named);
         if self.clock.previous.and_then(|last| last.checked_add(1)) != Some(frame.hour)
             || self.clock.census_known != frame.complete::<tables::Countries>().is_ok()
         {
@@ -291,5 +310,54 @@ impl Scanned {
                 .advance(hour, &self.clock.selected, &self.clock.active);
         }
         self.clock.recording = false;
+        self.refresh_pending();
+    }
+
+    /// The power and cost rows not recorded as events: their identity had no
+    /// tag when observed. After an hour joined from its changed rows, only
+    /// the observed countries' rows can have been recorded or removed.
+    fn refresh_pending(&mut self) {
+        let inputs = Arc::clone(&self.inputs);
+        let narrow = inputs.narrow && self.pending_known;
+        if narrow {
+            let observed: [BTreeSet<u32>; 2] = [
+                inputs.observed(0).copied().collect(),
+                inputs.observed(3).copied().collect(),
+            ];
+            self.pending[0].retain(|key| !observed[0].contains(&((key >> 64) as u32)));
+            self.pending[1].retain(|key| !observed[1].contains(&((key >> 32) as u32)));
+        } else {
+            self.pending = Default::default();
+        }
+        let power: Box<dyn Iterator<Item = &CountryPowerChangeRow> + '_> = if narrow {
+            Box::new(inputs.power_rows())
+        } else {
+            Box::new(inputs.power().iter())
+        };
+        for row in power {
+            if !self
+                .events
+                .contains(&(row.country, row.instance, row.epoch, row.sequence))
+            {
+                self.pending[0].insert(row.key());
+            }
+        }
+        let costs: Box<dyn Iterator<Item = &CountryPowerDailyCostRow> + '_> = if narrow {
+            Box::new(inputs.cost_rows())
+        } else {
+            Box::new(inputs.costs().iter())
+        };
+        for row in costs {
+            if !self.costs.contains(&(
+                row.country,
+                row.instance,
+                row.epoch,
+                row.day_hour,
+                row.ordinal,
+            )) {
+                self.pending[1].insert(row.key());
+            }
+        }
+        self.pending_known = true;
     }
 }

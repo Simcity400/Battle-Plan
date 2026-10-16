@@ -58,7 +58,7 @@ Resolve every content fact through `ResolvedLayers`: **vanilla, DLC, then mods i
 
 `resolve` uses recorded IDs, order, hashes and coverage policy, independently of current launcher selections. Machine paths and descriptor locations stay outside portable identity. Caches must preserve verification on hits and misses; changed, added or removed covered files are errors.
 
-The persistent content-hash cache is written only when entries change or an absent/unreadable cache needs rebuilding. An unchanged valid cache remains byte-for-byte intact. Verification and read statistics still cover every selected file; successful hashes persist even when a later layer refuses resolution. Cache write errors remain failures whenever a write is needed.
+Folder layers stamp, look up and hash their files on the machine's cores; digests reach the cache in file order, and a failing file keeps the digests of the files before it. The persistent content-hash cache is written only when entries change or an absent/unreadable cache needs rebuilding. An unchanged valid cache remains byte-for-byte intact. Verification and read statistics still cover every selected file; successful hashes persist even when a later layer refuses resolution. Cache write errors remain failures whenever a write is needed.
 
 Use stack listing/read APIs. `script_files::paths` and `ResolvedLayers::directory_files` list direct files in merged filename byte order. Follow each loader's suffix and recursion rules; recursive loaders generally read files before subdirectories.
 

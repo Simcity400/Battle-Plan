@@ -2,7 +2,6 @@
 use super::*;
 use crate::prepared::series::{self, DatedRow, LateIndex, Reader};
 use crate::products::special_projects::prepared::completion_stream;
-use std::time::SystemTime;
 #[cfg(test)]
 thread_local! {
     pub(super) static EVENT_ROWS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -107,12 +106,12 @@ impl Metadata {
         }
     }
 }
-type Stamps = Vec<(u64, SystemTime)>;
+type Stamps = Vec<store::RangeId>;
 #[derive(Default)]
 struct Cache(BTreeMap<u64, (store::SourceKey, Stamps, Arc<Metadata>)>);
 
-// Large change catalogues are decoded once per opened source. Published file
-// stamps and the store key invalidate this cache on append, replacement or Clear.
+// Large change catalogues are decoded once per opened source. Published range
+// identities and the store key invalidate this cache on append, replacement or Clear.
 fn metadata(
     source: &Source,
     store: &store::Store,
@@ -121,11 +120,10 @@ fn metadata(
 ) -> io::Result<Option<Arc<Metadata>>> {
     let mut stamps = Vec::new();
     for family in FAMILIES {
-        let Some(file) = store.read(key, &format!("{family}-{branch}-catalogue"), 0)? else {
+        let Some(ranges) = series::catalogue_ranges(store, key, family, branch)? else {
             return Ok(None);
         };
-        let stamp = file.metadata()?;
-        stamps.push((stamp.len(), stamp.modified()?));
+        stamps.extend(ranges);
     }
     let state = source.state::<Cache>();
     let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());

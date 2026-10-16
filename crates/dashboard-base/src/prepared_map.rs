@@ -286,7 +286,7 @@ impl Builder {
     pub fn accept(
         &mut self,
         writer: &mut Writer,
-        source: Frame,
+        source: &Frame,
         frame: &DecodedFrame,
         position: Position,
     ) -> io::Result<()> {
@@ -680,7 +680,7 @@ pub fn gap_reason(
         reason
     })
 }
-fn gap_record(file: &mut std::fs::File, ordinal: u64) -> io::Result<(Hour, Hour, u64, u64)> {
+fn gap_record(file: &mut store::Range, ordinal: u64) -> io::Result<(Hour, Hour, u64, u64)> {
     let mut bytes = [0; GAP_RECORD_BYTES as usize];
     let offset = ordinal
         .checked_mul(GAP_RECORD_BYTES)
@@ -692,11 +692,7 @@ fn gap_record(file: &mut std::fs::File, ordinal: u64) -> io::Result<(Hour, Hour,
     let last = i32::from_le_bytes(bytes[4..8].try_into().unwrap());
     let offset = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
     let len = u64::from_le_bytes(bytes[16..24].try_into().unwrap());
-    if first > last
-        || offset
-            .checked_add(len)
-            .is_none_or(|end| end > file.metadata().map(|m| m.len()).unwrap_or(0))
-    {
+    if first > last || offset.checked_add(len).is_none_or(|end| end > file.len()) {
         return Err(invalid("map gap record exceeds its page"));
     }
     Ok((first, last, offset, len))

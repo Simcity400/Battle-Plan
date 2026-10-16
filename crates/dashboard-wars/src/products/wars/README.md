@@ -13,10 +13,11 @@ including retired occurrences and swap removals.
 |---|---|
 | [../wars.rs](../wars.rs) | Product metadata, dated projection, app continuity and casualty membership; the recording loader is a test oracle and the shared branch/viewpoint cache also serves casualty breakdowns. |
 | [prepared.rs](prepared.rs) | One branch-global change observer, shared relation casualty series and reached-hour reply assembly. |
+| [walks.rs](walks.rs) | Each requested viewpoint's walk over the change inputs, kept on the source with resume points; the change input row format. |
 | [native.rs](native.rs) | Grouping, representative selection and indexed deduplication. |
 | [naming.rs](naming.rs) | Recorded native name operands and content-resolved war names. |
 | [labels.rs](labels.rs) | Historical country names for label measurement. |
-| [tests.rs](tests.rs) | Synthetic grouping properties, continuity, naming, scale and reply-budget cases. |
+| [tests.rs](tests.rs) | Synthetic grouping properties, continuity, naming, kept walks, scale and reply-budget cases. |
 
 Display and settings belong to the
 [Wars widget](../../../../../ui/src/widgets/wars/README.md).
@@ -57,11 +58,14 @@ warn, and missing capitulation coverage has its own spans.
 ## Prepared queries
 
 The pipeline observes native inputs once for the branch. Shared events retain
-changed topology/naming tables and capitulation evidence, using the existing
-prepared decoder checkpoint encoding compressed before JSON event publication.
+changed topology/naming tables and capitulation evidence. Each change input is
+a raw event row, not JSON: the number of changed tables and their numbers as
+little-endian u16s, then the changed tables in the prepared decoder checkpoint
+encoding, compressed.
 Semantic name operands ignore unrelated hourly balances; casualty-only hours add
 no input event. One small catalogue keeps relation-lifetime keys, their first
-supplying read and the latest inputs for resume. Four shared series hold exact
+supplying read and the latest inputs for resume. New keys are numbered in
+recorded WarRelations row order, so equal inputs publish equal catalogues. Four shared series hold exact
 counters in canonical endpoint order, with unknown spans preserved.
 
 The shared frame fact guards native relation normalisation and semantic input
@@ -72,8 +76,21 @@ changes publish their event without revisiting unchanged relation counters. A st
 capitulation date still becomes usable when the accepted clock reaches it.
 
 A query applies its viewpoint or LocalPlayer through the same native observation,
-continuity and reply builder as the branch scan. Work grows with structural
-changes; topology inputs decode one change at a time. Casualty counters read
+continuity and reply builder as the branch scan, decoding one change input at a
+time. The walk is whole-branch and depends on the viewpoint, the native-holder
+selection and the content catalogue, so the source keeps it per such key
+(`walks.rs`): the four most recently used walks, each with its state after
+every published input and resumable copies every interval of inputs from the
+branch start. A copy keeps the open wars, the last dated run of each kind, the
+held inputs and the decoded tables, which copies share; wars no longer open
+keep only their app ID. The interval starts at one input and doubles while a
+walk holds more than 1,024 copies or more than an estimated 64 MiB of them. The
+first query for a key walks every input once. A later one walks only inputs
+published since, extending the last input's coverage, which grows with
+counter-only appends; it hydrates each requested hour from the nearest copy,
+fewer than one interval of inputs before the hour's input. A store that no
+longer holds the walk's last input starts it again; the catalogue is held and
+matched by identity. Replies equal the walk from the branch start. Casualty counters read
 contiguous requested `reads: [{hour}]` windows through the series reader, keeping
 only reached values and preserving canonical run bounds across commits. Open
 counter runs come from the accumulator. Two adjacent runs prove the earlier

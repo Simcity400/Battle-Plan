@@ -2226,3 +2226,163 @@ fn every_scan_decodes_the_trigger_kit_its_visibility_reads() {
         }
     }
 }
+
+/// A leader's visibility evaluation is reused while every input it read
+/// reads the same value, and evaluated again once one reads differently or
+/// its owner changes, giving the same verdicts with check mode on (each
+/// reused evaluation run anyway) and off (as in preparation).
+#[test]
+fn leader_visibility_evaluations_are_reused_until_an_input_reads_differently() {
+    reused_leader_visibility(true);
+    dashboard_text::triggers::inputs::reusing(|| reused_leader_visibility(false));
+}
+
+fn reused_leader_visibility(checking: bool) {
+    use dashboard_text::triggers::{ContentFacts, LeaderRoles};
+    use replay::{
+        frame::{Metrics, TableView},
+        rows::{CountryLinkRow, CountryRow, LexicalTokenRow, ScriptFlagRow, TableRows},
+    };
+    let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
+        "common/defines/test.lua",
+        "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+    )]);
+    let content = catalogue.scripted_content().unwrap();
+    let names = installed_content::key_names::KeyNames::default();
+    let roles = LeaderRoles::new(vec![installed_content::characters::LeaderTemplate {
+        path: "common/characters/mod.txt".into(),
+        tag: "mod_commander".into(),
+        line: Some(4),
+        role: Ok(Some(
+            installed_content::triggers::read(b"has_country_flag = x", &names).items,
+        )),
+    }]);
+    let triggers = installed_content::trigger_keys::TriggerNames::default();
+    let dlcs = BTreeSet::new();
+    let aliases = Arc::new(installed_content::tag_aliases::TagAliases::default());
+    // Countries 101 and 102; flag x (token 900) set on 101.
+    let mut flagged = DecodedFrame {
+        branch: 1,
+        hour: 100,
+        tables: std::array::from_fn(|index| {
+            TableView::Complete(TableRows::empty(TableId::ALL[index]))
+        })
+        .map(Into::into),
+        metrics: Metrics::default(),
+    };
+    for rows in [
+        TableRows::Countries(
+            [(101, 1, "AAA"), (102, 2, "BBB")]
+                .into_iter()
+                .map(|(id, canonical_slot, tag)| CountryRow {
+                    id,
+                    canonical_slot,
+                    tag: tag.as_bytes().to_vec(),
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+        TableRows::CountryLinks(vec![
+            CountryLinkRow {
+                id: 101,
+                canonical_slot: 1,
+            },
+            CountryLinkRow {
+                id: 102,
+                canonical_slot: 2,
+            },
+        ]),
+        TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 900,
+            literal: b"x".to_vec(),
+        }]),
+        TableRows::ScriptFlags(vec![ScriptFlagRow {
+            scope_kind: 1,
+            scope_id: 101,
+            token: 900,
+            value: 1,
+            ..Default::default()
+        }]),
+    ] {
+        let table = rows.table();
+        *flagged.tables[table.index()] = TableView::Complete(rows);
+    }
+    // Later hours share every table they do not change.
+    let mut cleared = flagged.clone();
+    *cleared.tables[TableId::ScriptFlags.index()] =
+        TableView::Complete(TableRows::empty(TableId::ScriptFlags));
+    let at = |frame: &DecodedFrame, hour| DecodedFrame {
+        hour,
+        ..frame.clone()
+    };
+    let row = UnitLeaderRow {
+        id: 1,
+        reference_type: 4713,
+        owner: 101,
+        kind: 1,
+        category: 1,
+        character_id: 1,
+        template_visibility: 1,
+        ..Default::default()
+    };
+    let mut read = Some(VisibilityRead {
+        key: (Some(1), 1, 0, 1),
+        visibility: LeaderVisibility::Conditioned(0),
+        noted: false,
+    });
+    let mut evaluation = None;
+    let mut counts = ReuseCounts::default();
+    // Each hour's frame, owner, verdict, and evaluations run and reused so far.
+    let hours: [(DecodedFrame, u32, bool, u64, u64); 5] = [
+        (at(&flagged, 100), 101, true, 1, 0),
+        // Every input reads the same value: reused.
+        (at(&flagged, 101), 101, true, 1, 1),
+        // The flag is cleared, so its read differs: evaluated again.
+        (at(&cleared, 102), 101, false, 2, 1),
+        (at(&cleared, 103), 101, false, 2, 2),
+        // Another owner is another evaluation.
+        (at(&cleared, 104), 102, false, 3, 2),
+    ];
+    for (frame, owner, verdict, evaluated, reused) in hours {
+        let world = World::read(
+            &frame,
+            ContentFacts {
+                state_content: Ok(()),
+                leader_roles: Ok(&roles),
+                ..ContentFacts::content_only(&dlcs, &triggers, &aliases)
+            },
+        );
+        let hour = HourWorld {
+            content,
+            frame: &frame,
+            world: OnceCell::from(Ok(world)),
+            gap: OnceCell::new(),
+        };
+        let mut rereads = Rereads::new();
+        let decided = visible_reusing(
+            &UnitLeaderRow {
+                owner,
+                ..row.clone()
+            },
+            Some(&hour),
+            &mut read,
+            Some(Reuse {
+                evaluation: &mut evaluation,
+                rereads: &mut rereads,
+                counts: &mut counts,
+            }),
+            Some(1),
+            true,
+        );
+        assert_eq!(decided, Ok(verdict), "hour {}", frame.hour);
+        assert_eq!(
+            (counts.evaluated, counts.reused),
+            (evaluated, reused),
+            "hour {}",
+            frame.hour
+        );
+    }
+    let checked = if checking { counts.reused } else { 0 };
+    assert_eq!(counts.checked, checked, "check mode runs every reuse");
+    assert_eq!(counts.mismatched, 0);
+}

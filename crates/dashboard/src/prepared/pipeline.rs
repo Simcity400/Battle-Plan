@@ -2,6 +2,7 @@
 
 use replay::identity::IdentityCodec;
 use super::frame_changes::{FrameChangeTracker, FrameChanges};
+use super::prepass::{self, Folded, Outcome, PrePass};
 use super::{Section, State};
 use crate::prepared_focus::{FocusAccumulator, FocusEvaluator, FocusIndex};
 use crate::prepared_measure::MeasureAccumulator;
@@ -473,8 +474,18 @@ fn refuses(error: &io::Error) -> bool {
 }
 
 impl Refused {
-    fn live(&self, family: &str) -> bool {
+    /// Whether `family` has not refused this branch.
+    fn open(&self, family: &str) -> bool {
         self.0.is_empty() || !self.0.contains_key(family)
+    }
+
+    /// Whether the hourly walk goes on with `family` on this branch: it has
+    /// not refused it, and it is not prepared on its own without another
+    /// family reading it in the same hour ([`independent::hourly`]). Every
+    /// observation, flush, save and load of the walk asks this, so a family
+    /// prepared on its own is skipped by its registry entry alone.
+    fn live(&self, family: &str) -> bool {
+        self.open(family) && independent::hourly(family)
     }
 
     /// A family's own observation of a frame or its flush. A refusal is recorded
@@ -497,7 +508,7 @@ impl Refused {
     }
 
     fn refuse(&mut self, family: &str, hour: i32, error: String, from: Option<&str>) {
-        if !self.live(family) {
+        if !self.open(family) {
             return;
         }
         self.0.insert(
@@ -586,6 +597,10 @@ struct Checkpoint {
     display_failures: u64,
     /// Families that refused a branch's recorded data, by branch.
     refused: BTreeMap<u64, Refused>,
+    /// Families prepared on their own ([`independent`]), by name, with their
+    /// progress. Preparation of other families starts over when these differ.
+    #[serde(default)]
+    independent: BTreeMap<String, independent::Progress>,
     /// Active payload bytes excluding this checkpoint's own file.
     bytes: u64,
 }
@@ -861,9 +876,49 @@ struct CoveragePage {
 fn refused_none(refused: &Refused) -> bool {
     refused.0.is_empty()
 }
+/// The coverage page a family prepared on its own published for `query`'s
+/// branch, when `query` waits only for that family.
+fn family_page(
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    query: &str,
+) -> io::Result<Option<(&'static str, CoveragePage)>> {
+    let Some(family) = independent::gating(query) else {
+        return Ok(None);
+    };
+    let Some(file) = store.read(key, &independent::coverage_section(family, branch), 0)? else {
+        return Ok(None);
+    };
+    let page: CoveragePage = serde_json::from_reader(io::BufReader::new(file))?;
+    if page.coverage.schema != SCHEMA || page.coverage.first_hour > page.coverage.last_hour {
+        return Err(invalid("Unsupported prepared coverage schema"));
+    }
+    Ok(Some((family, page)))
+}
+/// The coverage `product`'s queries wait for on `branch`: that of the family
+/// prepared on its own whose registry entry gates the product
+/// ([`independent::gating`]), the branch's otherwise; None before any is
+/// accepted. A product gated so is answered while the hourly walk prepares.
+pub(crate) fn product_coverage(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    branch: u64,
+    product: &str,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Coverage>> {
+    if independent::gating(product).is_none() {
+        return coverage(source, content, branch, cancelled);
+    }
+    check_cancel(cancelled)?;
+    let (store, key) = super::files(source, content)?;
+    Ok(family_page(&store, &key, branch, product)?.map(|(_, page)| page.coverage))
+}
 /// Every prepared query of a refused family on this branch, and every query
 /// reading one, answers with that family's refusal exactly as its product
-/// route refused, rather than with the family's earlier prepared data.
+/// route refused, rather than with the family's earlier prepared data. A
+/// family prepared on its own refuses its queries from its own page, which
+/// it publishes before the hourly walk reaches the refusing hour.
 pub(crate) fn refusal(
     source: &Source,
     content: Option<&ContentOptions>,
@@ -875,11 +930,19 @@ pub(crate) fn refusal(
         .iter()
         .filter(|family| family.queries.contains(&query))
         .peekable();
-    if families.peek().is_none() {
+    if families.peek().is_none() && independent::gating(query).is_none() {
         return Ok(());
     }
     check_cancel(cancelled)?;
     let (store, key) = super::files(source, content)?;
+    if let Some((family, page)) = family_page(&store, &key, branch, query)?
+        && let Some(refusal) = page.refused.0.get(family)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            refusal.error.clone(),
+        ));
+    }
     let Some(file) = store.read(&key, &coverage_section(branch), 0)? else {
         return Ok(());
     };
@@ -919,6 +982,26 @@ fn save_coverage(
         },
     )
 }
+/// Whether a flushed branch is read back from its saved state rather than
+/// continued in memory: in tests that compare both, which publish the same.
+fn reload_flushed() -> bool {
+    #[cfg(test)]
+    {
+        RELOAD_FLUSHED.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static RELOAD_FLUSHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Flushed branches continued in memory into their next block.
+    pub(super) static CONTINUED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn selected() -> &'static [TableId] {
     &TableId::ALL
 }
@@ -935,7 +1018,7 @@ fn checkpoint(
     let Some(file) = file else {
         return Ok(None);
     };
-    let own_bytes = file.metadata()?.len();
+    let own_bytes = file.len();
     let state: Checkpoint = match serde_json::from_reader(io::BufReader::new(file)) {
         Ok(state) => state,
         Err(_) => return Ok(None),
@@ -970,6 +1053,18 @@ fn metadata_prefix(
         tables.sort_unstable();
         tables
     } {
+        return Ok(false);
+    }
+    // Families prepared on their own are never behind the hourly cursor.
+    if !state
+        .independent
+        .keys()
+        .map(String::as_str)
+        .eq(independent::names().iter().copied())
+        || state.independent.values().any(|family| {
+            family.next_block < state.cursor.next_block || family.next_block > state.index.len()
+        })
+    {
         return Ok(false);
     }
     if state.header != header(replay)?
@@ -1065,7 +1160,8 @@ fn load_branch(
         state.identities = serde_json::from_reader(io::BufReader::new(file))?;
     }
     if refused.live("groups") {
-        let section = format!("country-groups-{branch}");
+        // Kept under a reader's names while the groups are prepared on their own.
+        let section = format!("{}-{branch}", independent::kept_as("country-groups"));
         let file = match saved {
             Some(previous) if previous != key => store.read_prefix(previous, key, &section, 0)?,
             _ => store.read(key, &section, 0)?,
@@ -1095,56 +1191,23 @@ fn load_branch(
         state.subjects = serde_json::from_reader(zstd::stream::Decoder::new(file)?)?;
     }
     if refused.live("autonomy") {
-        state.autonomy = Box::new(match saved {
-            Some(previous) if previous != key => {
-                let file = store
-                    .read_prefix(previous, key, &format!("autonomy-{branch}-catalogue"), 0)?
-                    .ok_or_else(|| invalid("Prepared autonomy is missing"))?;
-                let (_, scan): super::series::Catalogue<_> =
-                    serde_json::from_reader(io::BufReader::new(file))?;
-                scan
-            }
-            _ => {
-                super::series::read_catalogue(store, key, "autonomy", branch)?
-                    .ok_or_else(|| invalid("Prepared autonomy is missing"))?
-                    .1
-            }
-        });
+        state.autonomy = Box::new(
+            super::series::read_saved_catalogue(store, key, saved, "autonomy", branch)?
+                .ok_or_else(|| invalid("Prepared autonomy is missing"))?
+                .1,
+        );
     }
     if refused.live("tension") {
-        state.tension = Box::new(match saved {
-            Some(previous) if previous != key => {
-                let file = store
-                    .read_prefix(
-                        previous,
-                        key,
-                        &format!("world-tension-{branch}-catalogue"),
-                        0,
-                    )?
-                    .ok_or_else(|| invalid("Prepared world tension is missing"))?;
-                let (_, scan): super::series::Catalogue<_> =
-                    serde_json::from_reader(io::BufReader::new(file))?;
-                scan
-            }
-            _ => {
-                super::series::read_catalogue(store, key, "world-tension", branch)?
-                    .ok_or_else(|| invalid("Prepared world tension is missing"))?
-                    .1
-            }
-        });
+        state.tension = Box::new(
+            super::series::read_saved_catalogue(store, key, saved, "world-tension", branch)?
+                .ok_or_else(|| invalid("Prepared world tension is missing"))?
+                .1,
+        );
     }
     if refused.live("wars") {
         state.wars = Box::new(crate::products::wars::prepared::Observer::restore(
-            match saved {
-                Some(previous) if previous != key => {
-                    let file = store
-                        .read_prefix(previous, key, &format!("wars-{branch}-catalogue"), 0)?
-                        .ok_or_else(|| invalid("Prepared wars are missing"))?;
-                    serde_json::from_reader(io::BufReader::new(file))?
-                }
-                _ => super::series::read_catalogue(store, key, "wars", branch)?
-                    .ok_or_else(|| invalid("Prepared wars are missing"))?,
-            },
+            super::series::read_saved_catalogue(store, key, saved, "wars", branch)?
+                .ok_or_else(|| invalid("Prepared wars are missing"))?,
         ));
     }
     if refused.live("ideas") {
@@ -1388,6 +1451,8 @@ macro_rules! time_family {
     }};
 }
 
+mod flush;
+mod independent;
 mod lanes;
 
 /// One completed manifest commit, emitted before any next block is admitted.
@@ -1723,6 +1788,10 @@ fn run_inner(
                 display_error: None,
                 display_failures: 0,
                 refused: BTreeMap::new(),
+                independent: independent::names()
+                    .iter()
+                    .map(|&name| (name.to_owned(), independent::Progress::default()))
+                    .collect(),
                 bytes: 0,
             },
             0,
@@ -2054,6 +2123,30 @@ fn run_inner(
             store.extend(&key)
         )?;
     }
+    // Families prepared on their own accept every block before the hourly
+    // walk starts, so their queries do not wait for it.
+    let (opened, committed) = independent::prepare(
+        &independent::Phase {
+            source,
+            replay,
+            store: &store,
+            key: &key,
+            context: &context,
+            map: &map,
+            last_blocks: &last_blocks,
+            measured: measurement.is_some(),
+            cancelled,
+        },
+        writer,
+        &mut state,
+        &mut saved,
+        &mut bytes,
+        &mut family_timings,
+        &mut lane_timings,
+        &mut accepted,
+    )?;
+    writer = opened;
+    metadata_dirty &= !committed;
     let mut branch = replay
         .index
         .get(stream.cursor().next_block)
@@ -2090,6 +2183,25 @@ fn run_inner(
     }
     let mut started = Instant::now();
     finish_timing(&mut family_timings, setup_started, "setup.overhead", false);
+    // The last flushed branch and its state, which the flush saved: the next
+    // block of that branch continues it rather than reading it back.
+    let mut kept: Option<(u64, Box<BranchState>)> = None;
+    // Families prepared from blocks extract upcoming blocks ahead, alone.
+    let prepass = prepass::enabled().then(|| {
+        #[allow(unused_mut)]
+        let mut knobs = prepass::Knobs::current();
+        #[cfg(test)]
+        {
+            knobs.refusals = lanes::test_refusals();
+        }
+        PrePass::start(
+            source.replay(),
+            stream.cursor().next_block,
+            prepass::families(),
+            prepass::workers(lanes::parallelism()),
+            knobs,
+        )
+    });
     loop {
         let block_started = start_timing(&family_timings);
         check_cancel(cancelled)?;
@@ -2099,27 +2211,11 @@ fn run_inner(
             break;
         }
         let mut frame_count = 0usize;
-        let mut leader_reader = replay
-            .index
-            .get(block)
-            .map(|index| {
-                time_family!(
-                    family_timings,
-                    "block.reader",
-                    observe,
-                    super::series::Reader::new(
-                        &store,
-                        &key,
-                        crate::products::unit_leaders::prepared::section(index.branch),
-                        cancelled,
-                    )
-                )
-            })
-            .transpose()?;
         if let Some(domain) = &mut branch {
             let refused = state.refused.entry(replay.index[block].branch).or_default();
             if refused.live("politics_ledger") {
                 domain.ledger.configure(&ledger_content);
+                domain.ledger.decode_previous_from(source.replay());
             }
             if refused.live("territory") {
                 time_family!(
@@ -2218,6 +2314,39 @@ fn run_inner(
             }
         }
         let measured = measurement.is_some();
+        // A family prepared from blocks observes this block hour by hour only
+        // when its extract refused or failed; otherwise its facts fold after
+        // the block's observation.
+        let mut folds = Vec::new();
+        if let Some(prepass) = &prepass
+            && block < replay.index.len()
+        {
+            let extracted = time_family!(
+                family_timings,
+                "prepass.wait",
+                observe,
+                prepass.take(block, cancelled)
+            )?;
+            let mut extract_timings = measured.then(BTreeMap::new);
+            for (&family, (outcome, took)) in prepass.families().iter().zip(extracted) {
+                if let Some(timings) = &mut extract_timings {
+                    let entry: &mut FamilyTimings = timings.entry(family.extract).or_default();
+                    entry.observe += took;
+                    entry.calls += 1;
+                }
+                match outcome {
+                    Outcome::Facts(facts) => folds.push((family, facts)),
+                    Outcome::Sequential => {
+                        let counted = start_timing(&family_timings);
+                        finish_timing(&mut family_timings, counted, family.sequential, false);
+                        prepass::note(family.sequential);
+                    }
+                }
+            }
+            lanes::merge(&mut lane_timings, extract_timings);
+        }
+        let hourly = |name: &str| !folds.iter().any(|(family, _)| family.name == name);
+        let (resources_hourly, army_hourly) = (hourly("resources"), hourly("army"));
         let serial =
             measurement.as_ref().is_some_and(|value| value.serial) || lanes::parallelism() <= 2;
         let decoding_started = measured.then(Instant::now);
@@ -2287,7 +2416,14 @@ fn run_inner(
                     .ok_or_else(|| invalid("Missing prepared branch accumulator"))?;
                 let score_observer = &mut score_observer;
                 let score_naming = &score_naming;
-                let jobs = vec![
+                let load_context = &context;
+                let leader_content = leader_content.as_ref();
+                let stockpile_content = &stockpile_content;
+                let raid_content = raid_content.as_deref();
+                let idea_content = idea_content.as_deref().ok();
+                let intelligence_content = &intelligence_content;
+                let (prepared_store, prepared_key) = (&store, &key);
+                let mut jobs = vec![
                     lanes::Job::new(
                         &[("nukes", 4)],
                         521,
@@ -2310,6 +2446,19 @@ fn run_inner(
                                 "factories",
                                 observe,
                                 factories.observe(frame, replay, changes)
+                            )?;
+                            Ok(())
+                        },
+                    ),
+                    lanes::Job::new(
+                        &[("projects", 6)],
+                        2100,
+                        move |_family, frame, changes, mut family_timings| {
+                            time_family!(
+                                family_timings,
+                                "projects",
+                                observe,
+                                projects.observe_changed(frame, changes, cancelled)
                             )?;
                             Ok(())
                         },
@@ -2341,14 +2490,14 @@ fn run_inner(
                         },
                     ),
                     lanes::Job::new(
-                        &[("resources", 10)],
-                        6905,
+                        &[("construction", 9)],
+                        500,
                         move |_family, frame, changes, mut family_timings| {
                             time_family!(
                                 family_timings,
-                                "resources",
+                                "construction",
                                 observe,
-                                resources.observe_changed(frame, changes)
+                                construction.observe_changed(frame, replay.format, source, changes)
                             )?;
                             Ok(())
                         },
@@ -2380,14 +2529,87 @@ fn run_inner(
                         },
                     ),
                     lanes::Job::new(
-                        &[("army", 14)],
-                        2070,
+                        &[("navy", 15)],
+                        2200,
                         move |_family, frame, changes, mut family_timings| {
                             time_family!(
                                 family_timings,
-                                "army",
+                                "navy",
                                 observe,
-                                army.observe(frame, replay, changes)
+                                navy.observe(
+                                    frame,
+                                    replay,
+                                    source,
+                                    &time_family!(
+                                        family_timings,
+                                        "context.construct",
+                                        observe,
+                                        LoadContext {
+                                            content: content.cloned(),
+                                        }
+                                    ),
+                                    cancelled,
+                                    changes,
+                                )
+                            )?;
+                            Ok(())
+                        },
+                    ),
+                    lanes::Job::new(
+                        &[("air", 16)],
+                        3700,
+                        move |_family, frame, changes, mut family_timings| {
+                            time_family!(
+                                family_timings,
+                                "air",
+                                observe,
+                                air.observe(
+                                    frame,
+                                    replay,
+                                    source,
+                                    &time_family!(
+                                        family_timings,
+                                        "context.construct",
+                                        observe,
+                                        LoadContext {
+                                            content: content.cloned(),
+                                        }
+                                    ),
+                                    cancelled,
+                                    changes,
+                                )
+                            )?;
+                            Ok(())
+                        },
+                    ),
+                    lanes::Job::new(
+                        &[("supply", 17)],
+                        500,
+                        move |_family, frame, changes, mut family_timings| {
+                            time_family!(
+                                family_timings,
+                                "supply",
+                                observe,
+                                supply.observe(frame, changes)
+                            )?;
+                            Ok(())
+                        },
+                    ),
+                    lanes::Job::new(
+                        &[("stockpile", 19)],
+                        4300,
+                        move |_family, frame, changes, mut family_timings| {
+                            time_family!(
+                                family_timings,
+                                "stockpile",
+                                observe,
+                                stockpile.bind_content(stockpile_content)
+                            );
+                            time_family!(
+                                family_timings,
+                                "stockpile",
+                                observe,
+                                stockpile.observe_changed(replay.format, frame, changes)
                             )?;
                             Ok(())
                         },
@@ -2419,6 +2641,19 @@ fn run_inner(
                         },
                     ),
                     lanes::Job::new(
+                        &[("raids", 24)],
+                        700,
+                        move |_family, frame, changes, mut family_timings| {
+                            time_family!(
+                                family_timings,
+                                "raids",
+                                observe,
+                                raids.observe_changed(frame, replay.format, raid_content, changes)
+                            )?;
+                            Ok(())
+                        },
+                    ),
+                    lanes::Job::new(
                         &[("game_score", 25)],
                         1433,
                         move |_family, frame, changes, mut family_timings| {
@@ -2438,6 +2673,25 @@ fn run_inner(
                         },
                     ),
                     lanes::Job::new(
+                        &[("land", 27)],
+                        2700,
+                        move |_family, frame, changes, mut family_timings| {
+                            time_family!(
+                                family_timings,
+                                "land",
+                                observe,
+                                land.configure(source, load_context)
+                            );
+                            time_family!(
+                                family_timings,
+                                "land",
+                                observe,
+                                land.observe_prepared(frame, changes)
+                            )?;
+                            Ok(())
+                        },
+                    ),
+                    lanes::Job::new(
                         &[("divisions", 28)],
                         668,
                         move |_family, frame, changes, mut family_timings| {
@@ -2452,6 +2706,31 @@ fn run_inner(
                                 "divisions",
                                 observe,
                                 divisions.prepare_changed(frame, changes)
+                            )?;
+                            Ok(())
+                        },
+                    ),
+                    lanes::Job::new(
+                        &[("naval", 31)],
+                        1500,
+                        move |_family, frame, changes, mut family_timings| {
+                            time_family!(
+                                family_timings,
+                                "naval.observe",
+                                observe,
+                                naval.observe_prepared(frame, changes)
+                            );
+                            time_family!(
+                                family_timings,
+                                "naval.observe_details",
+                                observe,
+                                naval.observe_details(
+                                    source,
+                                    load_context,
+                                    frame,
+                                    cancelled,
+                                    changes
+                                )
                             )?;
                             Ok(())
                         },
@@ -2514,6 +2793,24 @@ fn run_inner(
                         },
                     ),
                     lanes::Job::new(
+                        &[("ideas", 36)],
+                        500,
+                        move |_family, frame, changes, mut family_timings| {
+                            time_family!(
+                                family_timings,
+                                "ideas",
+                                observe,
+                                ideas.prepare_changes_in(
+                                    frame,
+                                    changes,
+                                    idea_changes,
+                                    idea_content
+                                )
+                            )?;
+                            Ok(())
+                        },
+                    ),
+                    lanes::Job::new(
                         &[("parties", 37)],
                         1793,
                         move |_family, frame, changes, mut family_timings| {
@@ -2522,6 +2819,40 @@ fn run_inner(
                                 "parties",
                                 observe,
                                 parties.observe_changes(frame, changes)
+                            )?;
+                            Ok(())
+                        },
+                    ),
+                    lanes::Job::new(
+                        &[("leaders", 38)],
+                        4600,
+                        move |_family, frame, changes, mut family_timings| {
+                            time_family!(
+                                family_timings,
+                                "leaders",
+                                observe,
+                                leaders.observe(frame, replay, leader_content, changes)
+                            )?;
+                            Ok(())
+                        },
+                    ),
+                    lanes::Job::new(
+                        &[("intelligence", 39)],
+                        600,
+                        move |_family, frame, changes, mut family_timings| {
+                            time_family!(
+                                family_timings,
+                                "intelligence",
+                                observe,
+                                intelligence.observe(
+                                    source,
+                                    intelligence_content,
+                                    frame,
+                                    changes,
+                                    prepared_store,
+                                    prepared_key,
+                                    cancelled
+                                )
                             )?;
                             Ok(())
                         },
@@ -2546,6 +2877,19 @@ fn run_inner(
                         },
                     ),
                     lanes::Job::new(
+                        &[("politics_ledger", 42)],
+                        7100,
+                        move |_family, frame, changes, mut family_timings| {
+                            time_family!(
+                                family_timings,
+                                "politics_ledger",
+                                observe,
+                                ledger.observe(frame, changes, cancelled)
+                            )?;
+                            Ok(())
+                        },
+                    ),
+                    lanes::Job::new(
                         &[("fuel", 43)],
                         1905,
                         move |_family, frame, changes, mut family_timings| {
@@ -2554,6 +2898,32 @@ fn run_inner(
                                 "fuel",
                                 observe,
                                 fuel.observe_changes(frame, replay.format, changes, cancelled)
+                            )?;
+                            Ok(())
+                        },
+                    ),
+                    lanes::Job::new(
+                        &[("occupation", 45)],
+                        500,
+                        move |_family, frame, changes, mut family_timings| {
+                            time_family!(
+                                family_timings,
+                                "occupation",
+                                observe,
+                                occupation.observe(frame, replay.format, cancelled, changes)
+                            )?;
+                            Ok(())
+                        },
+                    ),
+                    lanes::Job::new(
+                        &[("casualties", 46)],
+                        700,
+                        move |_family, frame, changes, mut family_timings| {
+                            time_family!(
+                                family_timings,
+                                "casualties",
+                                observe,
+                                casualties.observe_changes(frame, replay, cancelled, changes)
                             )?;
                             Ok(())
                         },
@@ -2572,6 +2942,38 @@ fn run_inner(
                         },
                     ),
                 ];
+                // A family whose block facts fold after the block is not
+                // observed hour by hour.
+                if resources_hourly {
+                    jobs.push(lanes::Job::new(
+                        &[("resources", 10)],
+                        6905,
+                        move |_family, frame, changes, mut family_timings| {
+                            time_family!(
+                                family_timings,
+                                "resources",
+                                observe,
+                                resources.observe_changed(frame, changes)
+                            )?;
+                            Ok(())
+                        },
+                    ));
+                }
+                if army_hourly {
+                    jobs.push(lanes::Job::new(
+                        &[("army", 14)],
+                        2070,
+                        move |_family, frame, changes, mut family_timings| {
+                            time_family!(
+                                family_timings,
+                                "army",
+                                observe,
+                                army.observe(frame, replay, changes)
+                            )?;
+                            Ok(())
+                        },
+                    ));
+                }
                 let mut lanes = lanes::Lanes::start(
                     scope,
                     jobs,
@@ -2586,11 +2988,20 @@ fn run_inner(
                     let frame_started = start_timing(&family_timings);
                     let observing_started = measured.then(Instant::now);
                     check_cancel(cancelled)?;
-                    let changes: FrameChanges = frame_changes.observe(frame, replay.format);
+                    let updates = std::sync::Arc::new(updates);
+                    let changes: FrameChanges = frame_changes.observe_updates(
+                        frame,
+                        std::sync::Arc::clone(&updates),
+                        replay.format,
+                    );
                     let dispatched = lanes.begin(frame, changes)?;
                     let changes = dispatched.changes();
                     #[cfg(test)]
                     lanes.check_coordinator(frame, changes)?;
+                    // A coordinator call's order is above every lane call before
+                    // it and at most every lane call after it. `finish` keeps the
+                    // coordinator's error on a tie, so the frame reports the first
+                    // failing call in serial order.
                     let mut coordinator_order = 0;
                     let coordinated = (|| -> io::Result<()> {
                         let (failures, error) = family!(
@@ -2677,35 +3088,16 @@ fn run_inner(
                         )?;
                         lanes.serial("nukes", frame, changes, &mut family_timings)?;
                         lanes.serial("factories", frame, changes, &mut family_timings)?;
-                        coordinator_order = 6;
-                        family!(
-                            refused,
-                            "projects",
-                            frame.hour,
-                            time_family!(
-                                family_timings,
-                                "projects",
-                                observe,
-                                projects.observe_changed(frame, changes, cancelled)
-                            )
-                        );
+                        lanes.serial("projects", frame, changes, &mut family_timings)?;
                         lanes.serial("peace", frame, changes, &mut family_timings)?;
                         lanes.serial("research", frame, changes, &mut family_timings)?;
-                        coordinator_order = 9;
-                        family!(
-                            refused,
-                            "construction",
-                            frame.hour,
-                            time_family!(
-                                family_timings,
-                                "construction",
-                                observe,
-                                construction.observe_changed(frame, replay.format, source, changes)
-                            )
-                        );
-                        lanes.serial("resources", frame, changes, &mut family_timings)?;
+                        lanes.serial("construction", frame, changes, &mut family_timings)?;
+                        if resources_hourly {
+                            lanes.serial("resources", frame, changes, &mut family_timings)?;
+                        }
                         lanes.serial("trade", frame, changes, &mut family_timings)?;
                         lanes.serial("measure", frame, changes, &mut family_timings)?;
+                        coordinator_order = 13;
                         family!(
                             refused,
                             "identities",
@@ -2717,91 +3109,13 @@ fn run_inner(
                                 territory.observe_owned_states(frame, identities, Some(changes))
                             )
                         );
-                        lanes.serial("army", frame, changes, &mut family_timings)?;
-                        coordinator_order = 15;
-                        family!(
-                            refused,
-                            "navy",
-                            frame.hour,
-                            time_family!(
-                                family_timings,
-                                "navy",
-                                observe,
-                                navy.observe(
-                                    frame,
-                                    replay,
-                                    source,
-                                    &time_family!(
-                                        family_timings,
-                                        "context.construct",
-                                        observe,
-                                        LoadContext {
-                                            content: content.cloned(),
-                                        }
-                                    ),
-                                    cancelled,
-                                    changes,
-                                )
-                            )
-                        );
-                        coordinator_order = 16;
-                        family!(
-                            refused,
-                            "air",
-                            frame.hour,
-                            time_family!(
-                                family_timings,
-                                "air",
-                                observe,
-                                air.observe(
-                                    frame,
-                                    replay,
-                                    source,
-                                    &time_family!(
-                                        family_timings,
-                                        "context.construct",
-                                        observe,
-                                        LoadContext {
-                                            content: content.cloned(),
-                                        }
-                                    ),
-                                    cancelled,
-                                    changes,
-                                )
-                            )
-                        );
-                        coordinator_order = 17;
-                        family!(
-                            refused,
-                            "supply",
-                            frame.hour,
-                            time_family!(
-                                family_timings,
-                                "supply",
-                                observe,
-                                supply.observe(frame, changes)
-                            )
-                        );
-                        if refused.live("stockpile") {
-                            time_family!(
-                                family_timings,
-                                "stockpile",
-                                observe,
-                                stockpile.bind_content(&stockpile_content)
-                            );
+                        if army_hourly {
+                            lanes.serial("army", frame, changes, &mut family_timings)?;
                         }
-                        coordinator_order = 19;
-                        family!(
-                            refused,
-                            "stockpile",
-                            frame.hour,
-                            time_family!(
-                                family_timings,
-                                "stockpile",
-                                observe,
-                                stockpile.observe_changed(replay.format, frame, changes)
-                            )
-                        );
+                        lanes.serial("navy", frame, changes, &mut family_timings)?;
+                        lanes.serial("air", frame, changes, &mut family_timings)?;
+                        lanes.serial("supply", frame, changes, &mut family_timings)?;
+                        lanes.serial("stockpile", frame, changes, &mut family_timings)?;
                         coordinator_order = 20;
                         family!(
                             refused,
@@ -2829,87 +3143,17 @@ fn run_inner(
                                 air_superiority.observe_changed(frame, replay, groups, changes)
                             )
                         );
-                        coordinator_order = 24;
-                        family!(
-                            refused,
-                            "raids",
-                            frame.hour,
-                            time_family!(
-                                family_timings,
-                                "raids",
-                                observe,
-                                raids.observe_changed(
-                                    frame,
-                                    replay.format,
-                                    raid_content.as_deref(),
-                                    changes
-                                )
-                            )
-                        );
+                        lanes.serial("raids", frame, changes, &mut family_timings)?;
                         lanes.serial("game_score", frame, changes, &mut family_timings)?;
-                        if refused.live("land") {
-                            time_family!(
-                                family_timings,
-                                "land",
-                                observe,
-                                land.configure(source, &context)
-                            );
-                        }
-                        coordinator_order = 27;
-                        family!(
-                            refused,
-                            "land",
-                            frame.hour,
-                            time_family!(
-                                family_timings,
-                                "land",
-                                observe,
-                                land.observe_prepared(frame, changes)
-                            )
-                        );
+                        lanes.serial("land", frame, changes, &mut family_timings)?;
                         lanes.serial("divisions", frame, changes, &mut family_timings)?;
-
-                        if refused.live("naval") {
-                            time_family!(
-                                family_timings,
-                                "naval.observe",
-                                observe,
-                                naval.observe_prepared(frame, changes)
-                            );
-                        }
-                        coordinator_order = 31;
-                        family!(
-                            refused,
-                            "naval",
-                            frame.hour,
-                            time_family!(
-                                family_timings,
-                                "naval.observe_details",
-                                observe,
-                                naval.observe_details(source, &context, frame, cancelled, changes)
-                            )
-                        );
+                        lanes.serial("naval", frame, changes, &mut family_timings)?;
                         lanes.serial("subjects", frame, changes, &mut family_timings)?;
                         lanes.serial("autonomy", frame, changes, &mut family_timings)?;
                         lanes.serial("tension", frame, changes, &mut family_timings)?;
                         lanes.serial("wars", frame, changes, &mut family_timings)?;
-                        coordinator_order = 36;
-                        family!(
-                            refused,
-                            "ideas",
-                            frame.hour,
-                            time_family!(
-                                family_timings,
-                                "ideas",
-                                observe,
-                                ideas.prepare_changes_in(
-                                    frame,
-                                    changes,
-                                    idea_changes,
-                                    idea_content.as_deref().ok()
-                                )
-                            )
-                        );
+                        lanes.serial("ideas", frame, changes, &mut family_timings)?;
+                        coordinator_order = 37;
                         family!(
                             refused,
                             "event_feed",
@@ -2922,60 +3166,10 @@ fn run_inner(
                             )
                         );
                         lanes.serial("parties", frame, changes, &mut family_timings)?;
-                        coordinator_order = 38;
-                        family!(
-                            refused,
-                            "leaders",
-                            frame.hour,
-                            time_family!(
-                                family_timings,
-                                "leaders",
-                                observe,
-                                leaders.observe(
-                                    frame,
-                                    replay,
-                                    leader_content.as_ref(),
-                                    leader_reader
-                                        .as_mut()
-                                        .ok_or_else(|| invalid("Missing prepared leader reader"))?,
-                                    changes,
-                                )
-                            )
-                        );
-                        coordinator_order = 39;
-                        family!(
-                            refused,
-                            "intelligence",
-                            frame.hour,
-                            time_family!(
-                                family_timings,
-                                "intelligence",
-                                observe,
-                                intelligence.observe(
-                                    source,
-                                    &intelligence_content,
-                                    frame,
-                                    changes,
-                                    &store,
-                                    &key,
-                                    cancelled
-                                )
-                            )
-                        );
+                        lanes.serial("leaders", frame, changes, &mut family_timings)?;
+                        lanes.serial("intelligence", frame, changes, &mut family_timings)?;
                         lanes.serial("stability", frame, changes, &mut family_timings)?;
-
-                        coordinator_order = 42;
-                        family!(
-                            refused,
-                            "politics_ledger",
-                            frame.hour,
-                            time_family!(
-                                family_timings,
-                                "politics_ledger",
-                                observe,
-                                ledger.observe(frame, changes, cancelled)
-                            )
-                        );
+                        lanes.serial("politics_ledger", frame, changes, &mut family_timings)?;
                         lanes.serial("fuel", frame, changes, &mut family_timings)?;
                         coordinator_order = 44;
                         family!(
@@ -2989,30 +3183,8 @@ fn run_inner(
                                 territory.observe(frame, replay.format, cancelled, changes)
                             )
                         );
-                        coordinator_order = 45;
-                        family!(
-                            refused,
-                            "occupation",
-                            frame.hour,
-                            time_family!(
-                                family_timings,
-                                "occupation",
-                                observe,
-                                occupation.observe(frame, replay.format, cancelled, changes)
-                            )
-                        );
-                        coordinator_order = 46;
-                        family!(
-                            refused,
-                            "casualties",
-                            frame.hour,
-                            time_family!(
-                                family_timings,
-                                "casualties",
-                                observe,
-                                casualties.observe_changes(frame, replay, cancelled, changes)
-                            )
-                        );
+                        lanes.serial("occupation", frame, changes, &mut family_timings)?;
+                        lanes.serial("casualties", frame, changes, &mut family_timings)?;
                         lanes.serial("equipment_losses", frame, changes, &mut family_timings)?;
                         frame_count += 1;
                         coordinator_order = 48;
@@ -3022,7 +3194,7 @@ fn run_inner(
                             observe,
                             map.accept(
                                 &mut writer,
-                                updates,
+                                &updates,
                                 frame,
                                 dashboard_base::prepared_map::Position {
                                     block,
@@ -3069,6 +3241,61 @@ fn run_inner(
             })?
         };
         finish_timing(&mut family_timings, stream_started, "stream.acquire", false);
+        // Fold each block-prepared family's facts in block order, after the
+        // block's ordinary observation succeeded and before its batch decision.
+        if got && !folds.is_empty() {
+            let index = &replay.index[block];
+            let refused = state.refused.entry(index.branch).or_default();
+            let domain = branch
+                .as_mut()
+                .ok_or_else(|| invalid("Missing prepared branch accumulator"))?;
+            let mut check = || check_cancel(cancelled);
+            for (family, facts) in folds {
+                if !refused.live(family.name) {
+                    continue;
+                }
+                let inject = |hour: i32, result: io::Result<()>| {
+                    #[cfg(test)]
+                    let result = lanes::inject(family.name, hour, result);
+                    #[cfg(not(test))]
+                    let _ = hour;
+                    result
+                };
+                let started = start_timing(&family_timings);
+                let folded = match family.name {
+                    "resources" => domain
+                        .resources
+                        .fold(facts, replay, index, &inject, &mut check),
+                    "army" => domain.army.fold(facts, replay, index, &inject, &mut check),
+                    name => {
+                        return Err(io::Error::other(format!(
+                            "No block fold for the {name} family"
+                        )));
+                    }
+                };
+                let fallback = matches!(folded, Ok(Folded::Fallback));
+                finish_timing(
+                    &mut family_timings,
+                    started,
+                    if fallback {
+                        family.fallback
+                    } else {
+                        family.name
+                    },
+                    false,
+                );
+                if fallback {
+                    prepass::note(family.fallback);
+                }
+                match folded {
+                    Ok(_) => {}
+                    Err(failure) if refuses(&failure.error) => {
+                        refused.refuse(family.name, failure.hour, failure.error.to_string(), None)
+                    }
+                    Err(failure) => return Err(failure.error),
+                }
+            }
+        }
         if let Some(value) = &mut measurement {
             value.timings.hours += frame_count;
             value.timings.observe += observed;
@@ -3281,15 +3508,11 @@ fn run_inner(
                 "progress.accepted",
                 observe,
                 accepted(&Accepted {
-                    sections: {
-                        let mut progress = sections(
-                            State::Preparing,
-                            stream.cursor().next_block,
-                            Some(replay.index.len()),
-                        );
-                        refused_sections(&mut progress, &state.refused);
-                        progress
-                    },
+                    sections: preparing_sections(
+                        &state,
+                        stream.cursor().next_block,
+                        replay.index.len()
+                    ),
                     bytes,
                     next_block: published.next_block,
                     new_blocks: published.new_blocks,
@@ -3366,665 +3589,625 @@ fn run_inner(
                 .take()
                 .ok_or_else(|| invalid("accepted branch accumulator is missing"))?;
             let refused = state.refused.entry(frame.branch).or_default();
-            family!(
-                refused,
-                "focus",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "index",
-                    flush,
-                    branch.index.flush(&mut writer, cancelled)
-                )
-            );
-            if refused.live("production")
-                && let Some(mut page) = time_family!(
-                    family_timings,
-                    "production",
-                    flush,
-                    branch.production.flush()
-                )
             {
-                page.warnings.extend(naming.warnings.iter().cloned());
-                family!(
+                // Families flush into disjoint sections, so the block's flush
+                // runs as tasks on the lane budget (`flush`): each task's steps
+                // in serial order on one thread, every step's writes, refusal
+                // check and timings applied in the serial order below.
+                let BranchState {
+                    index,
+                    production,
+                    research,
+                    peace,
+                    projects,
+                    measure,
+                    air_ledger,
+                    aces,
+                    raids,
+                    air_superiority,
+                    game_score,
+                    autonomy,
+                    tension,
+                    wars,
+                    army,
+                    factories,
+                    nukes,
+                    navy,
+                    air,
+                    supply,
+                    leaders,
+                    construction,
+                    resources,
+                    trade,
+                    stockpile,
+                    identities,
+                    groups,
+                    group_changes,
+                    subjects,
+                    subject_changes,
+                    subject_late,
+                    ideas,
+                    idea_changes,
+                    feed,
+                    parties,
+                    stability,
+                    ledger,
+                    fuel,
+                    territory,
+                    occupation,
+                    intelligence,
+                    casualties,
+                    equipment_losses,
+                    ..
+                } = &mut *branch;
+                let branch = frame.branch;
+                let (context, naming) = (&context, &naming);
+                let (leader_content, leader_content_errors) =
+                    (&leader_content, &leader_content_errors);
+                // While the groups are prepared on their own, this is air
+                // superiority's own read of them, kept under its names.
+                let group_sections = (
+                    independent::kept_as("country-groups"),
+                    independent::kept_as("country-group-changes"),
+                );
+                // Positions are the serial order. Identities' refusal reaches
+                // event_feed and territory (`FAMILIES` dependents), which flush
+                // after it, so they share its task; groups' dependent
+                // air_superiority flushes before groups.
+                let tasks = vec![
+                    flush::Task::new(&[(0, "focus")], move |_, writer, mut family_timings| {
+                        Ok(Some(time_family!(
+                            family_timings,
+                            "index",
+                            flush,
+                            index.flush(writer, cancelled)
+                        )))
+                    }),
+                    flush::Task::new(
+                        &[(1, "production"), (5, "production")],
+                        move |step, writer, mut family_timings| {
+                            if step == 1 {
+                                return Ok(Some(time_family!(
+                                    family_timings,
+                                    "production",
+                                    flush,
+                                    crate::prepared_production::write_catalogue(
+                                        writer, production, cancelled,
+                                    )
+                                )));
+                            }
+                            let Some(mut page) = time_family!(
+                                family_timings,
+                                "production",
+                                flush,
+                                production.flush()
+                            ) else {
+                                return Ok(None);
+                            };
+                            page.warnings.extend(naming.warnings.iter().cloned());
+                            Ok(Some(time_family!(
+                                family_timings,
+                                "production",
+                                flush,
+                                crate::prepared_production::publish_endpoint(
+                                    writer, production, &page,
+                                )
+                                .map(|_| ())
+                            )))
+                        },
+                    ),
+                    flush::Task::new(&[(2, "research")], move |_, writer, mut family_timings| {
+                        Ok(Some(time_family!(
+                            family_timings,
+                            "research",
+                            flush,
+                            research.flush(writer, branch, cancelled)
+                        )))
+                    }),
+                    flush::Task::new(&[(3, "peace")], move |_, writer, mut family_timings| {
+                        Ok(Some(time_family!(
+                            family_timings,
+                            "peace",
+                            flush,
+                            peace.flush(writer, branch, cancelled)
+                        )))
+                    }),
+                    flush::Task::new(&[(4, "projects")], move |_, writer, mut family_timings| {
+                        Ok(Some(time_family!(
+                            family_timings,
+                            "projects",
+                            flush,
+                            projects.flush(writer, branch, cancelled)
+                        )))
+                    }),
+                    flush::Task::new(&[(6, "measure")], move |_, writer, mut family_timings| {
+                        Ok(Some(time_family!(
+                            family_timings,
+                            "measure",
+                            flush,
+                            measure.flush(writer, branch, cancelled)
+                        )))
+                    }),
+                    flush::Task::new(
+                        &[(7, "air_ledger")],
+                        move |_, writer, mut family_timings| {
+                            Ok(Some(time_family!(
+                                family_timings,
+                                "air_ledger",
+                                flush,
+                                air_ledger.flush(writer, branch, cancelled)
+                            )))
+                        },
+                    ),
+                    flush::Task::new(&[(8, "aces")], move |_, writer, mut family_timings| {
+                        Ok(Some(time_family!(
+                            family_timings,
+                            "aces",
+                            flush,
+                            aces.flush(writer, branch, cancelled)
+                        )))
+                    }),
+                    flush::Task::new(&[(9, "raids")], move |_, writer, mut family_timings| {
+                        Ok(Some(time_family!(
+                            family_timings,
+                            "raids",
+                            flush,
+                            raids.flush(writer, branch, cancelled)
+                        )))
+                    }),
+                    flush::Task::new(
+                        &[(10, "air_superiority")],
+                        move |_, writer, mut family_timings| {
+                            Ok(Some(time_family!(
+                                family_timings,
+                                "air_superiority",
+                                flush,
+                                air_superiority.flush(writer, branch, cancelled)
+                            )))
+                        },
+                    ),
+                    flush::Task::new(
+                        &[(11, "game_score")],
+                        move |_, writer, mut family_timings| {
+                            Ok(Some(time_family!(
+                                family_timings,
+                                "game_score",
+                                flush,
+                                game_score.flush(writer, branch, cancelled)
+                            )))
+                        },
+                    ),
+                    flush::Task::new(&[(12, "autonomy")], move |_, writer, mut family_timings| {
+                        Ok(Some(time_family!(
+                            family_timings,
+                            "autonomy",
+                            flush,
+                            autonomy.flush(writer, branch, cancelled)
+                        )))
+                    }),
+                    flush::Task::new(&[(13, "tension")], move |_, writer, mut family_timings| {
+                        Ok(Some(time_family!(
+                            family_timings,
+                            "tension",
+                            flush,
+                            tension.flush(writer, branch, cancelled)
+                        )))
+                    }),
+                    flush::Task::new(&[(14, "wars")], move |_, writer, mut family_timings| {
+                        Ok(Some(time_family!(
+                            family_timings,
+                            "wars",
+                            flush,
+                            wars.flush(writer, branch, cancelled)
+                        )))
+                    }),
+                    flush::Task::new(&[(15, "army")], move |_, writer, mut family_timings| {
+                        Ok(Some(time_family!(
+                            family_timings,
+                            "army",
+                            flush,
+                            army.flush(writer, branch, cancelled)
+                        )))
+                    }),
+                    flush::Task::new(
+                        &[(16, "factories")],
+                        move |_, writer, mut family_timings| {
+                            Ok(Some(time_family!(
+                                family_timings,
+                                "factories",
+                                flush,
+                                factories.flush(writer, branch, cancelled)
+                            )))
+                        },
+                    ),
+                    flush::Task::new(&[(17, "nukes")], move |_, writer, mut family_timings| {
+                        Ok(Some(time_family!(
+                            family_timings,
+                            "nukes",
+                            flush,
+                            nukes.flush(writer, branch, cancelled)
+                        )))
+                    }),
+                    flush::Task::new(&[(18, "navy")], move |_, writer, mut family_timings| {
+                        Ok(Some(time_family!(
+                            family_timings,
+                            "navy",
+                            flush,
+                            navy.flush(writer, branch, cancelled)
+                        )))
+                    }),
+                    flush::Task::new(&[(19, "air")], move |_, writer, mut family_timings| {
+                        Ok(Some(time_family!(
+                            family_timings,
+                            "air",
+                            flush,
+                            air.flush(writer, branch, cancelled)
+                        )))
+                    }),
+                    flush::Task::new(&[(20, "supply")], move |_, writer, mut family_timings| {
+                        Ok(Some(time_family!(
+                            family_timings,
+                            "supply",
+                            flush,
+                            supply.flush(writer, branch, cancelled)
+                        )))
+                    }),
+                    flush::Task::new(&[(21, "leaders")], move |_, writer, mut family_timings| {
+                        Ok(Some(time_family!(
+                            family_timings,
+                            "leaders",
+                            flush,
+                            leaders.flush(
+                                writer,
+                                branch,
+                                leader_content.as_ref(),
+                                leader_content_errors,
+                                cancelled,
+                            )
+                        )))
+                    }),
+                    flush::Task::new(
+                        &[(22, "construction")],
+                        move |_, writer, mut family_timings| {
+                            Ok(Some(time_family!(
+                                family_timings,
+                                "construction",
+                                flush,
+                                construction.flush(
+                                    writer,
+                                    source,
+                                    &time_family!(
+                                        family_timings,
+                                        "context.construct",
+                                        observe,
+                                        LoadContext {
+                                            content: content.cloned(),
+                                        }
+                                    ),
+                                    branch,
+                                    cancelled,
+                                )
+                            )))
+                        },
+                    ),
+                    flush::Task::new(
+                        &[(23, "resources")],
+                        move |_, writer, mut family_timings| {
+                            Ok(Some(time_family!(
+                                family_timings,
+                                "resources",
+                                flush,
+                                resources.flush(
+                                    writer,
+                                    source,
+                                    &time_family!(
+                                        family_timings,
+                                        "context.construct",
+                                        observe,
+                                        LoadContext {
+                                            content: content.cloned(),
+                                        }
+                                    ),
+                                    branch,
+                                    cancelled,
+                                )
+                            )))
+                        },
+                    ),
+                    flush::Task::new(&[(24, "trade")], move |_, writer, mut family_timings| {
+                        Ok(Some(time_family!(
+                            family_timings,
+                            "trade",
+                            flush,
+                            trade.flush(writer, source, context, branch, cancelled)
+                        )))
+                    }),
+                    flush::Task::new(
+                        &[(25, "stockpile")],
+                        move |_, writer, mut family_timings| {
+                            Ok(Some(time_family!(
+                                family_timings,
+                                "stockpile",
+                                flush,
+                                stockpile.flush(writer, branch, cancelled)
+                            )))
+                        },
+                    ),
+                    flush::Task::new(
+                        &[(26, "identities"), (32, "event_feed"), (42, "territory")],
+                        move |step, writer, mut family_timings| {
+                            Ok(Some(match step {
+                                0 => time_family!(family_timings, "identities", flush, {
+                                    identities.seal();
+                                    writer.write_at(
+                                        &format!("country-identities-{branch}"),
+                                        0,
+                                        serde_json::to_vec(&*identities)?.as_slice(),
+                                    )
+                                }),
+                                1 => time_family!(
+                                    family_timings,
+                                    "event_feed",
+                                    flush,
+                                    feed.flush(writer, branch, cancelled)
+                                ),
+                                _ => time_family!(
+                                    family_timings,
+                                    "territory",
+                                    flush,
+                                    territory.flush(writer, branch, cancelled)
+                                ),
+                            }))
+                        },
+                    ),
+                    flush::Task::new(
+                        &[(27, "groups"), (28, "groups"), (33, "groups")],
+                        move |step, writer, mut family_timings| {
+                            Ok(match step {
+                                0 => {
+                                    time_family!(
+                                        family_timings,
+                                        "groups",
+                                        flush,
+                                        groups.finish(replay, branch)
+                                    );
+                                    None
+                                }
+                                1 => Some(time_family!(
+                                    family_timings,
+                                    "group_changes",
+                                    flush,
+                                    group_changes.flush_as(
+                                        writer,
+                                        group_sections.1,
+                                        branch,
+                                        groups,
+                                        cancelled
+                                    )
+                                )),
+                                _ => Some(time_family!(
+                                    family_timings,
+                                    "groups",
+                                    flush,
+                                    writer.write_at(
+                                        &format!("{}-{branch}", group_sections.0),
+                                        0,
+                                        groups.saved_bytes()?.as_slice(),
+                                    )
+                                )),
+                            })
+                        },
+                    ),
+                    flush::Task::new(
+                        &[(29, "subjects"), (30, "subjects"), (34, "subjects")],
+                        move |step, writer, mut family_timings| {
+                            Ok(Some(match step {
+                                0 => time_family!(
+                                    family_timings,
+                                    "subject_changes",
+                                    flush,
+                                    subject_changes.flush(
+                                        writer,
+                                        &format!("subject-changes-{branch}"),
+                                        0,
+                                        cancelled,
+                                    )
+                                ),
+                                1 => time_family!(
+                                    family_timings,
+                                    "subject_changes",
+                                    flush,
+                                    super::series::write_catalogue(
+                                        writer,
+                                        "subject-changes",
+                                        branch,
+                                        &std::collections::BTreeMap::new(),
+                                        &(
+                                            subjects.observed,
+                                            subjects.change_warnings(),
+                                            &*subject_late,
+                                        ),
+                                    )
+                                ),
+                                _ => time_family!(
+                                    family_timings,
+                                    "subjects",
+                                    flush,
+                                    writer.write_at(
+                                        &format!("subjects-{branch}"),
+                                        0,
+                                        {
+                                            subjects.seal();
+                                            crate::prepared::series::compress(
+                                                serde_json::to_vec(&*subjects)?.as_slice(),
+                                                3,
+                                            )?
+                                        }
+                                        .as_slice(),
+                                    )
+                                ),
+                            }))
+                        },
+                    ),
+                    flush::Task::new(
+                        &[(31, "ideas"), (35, "ideas")],
+                        move |step, writer, mut family_timings| {
+                            Ok(Some(if step == 0 {
+                                time_family!(
+                                    family_timings,
+                                    "idea_changes",
+                                    flush,
+                                    ideas.flush_changes(writer, branch, idea_changes, cancelled)
+                                )
+                            } else {
+                                time_family!(
+                                    family_timings,
+                                    "ideas",
+                                    flush,
+                                    writer.write_at(
+                                        &format!("idea-history-{branch}"),
+                                        0,
+                                        ideas.saved_bytes()?.as_slice(),
+                                    )
+                                )
+                            }))
+                        },
+                    ),
+                    flush::Task::new(
+                        &[(36, "parties"), (37, "parties")],
+                        move |step, writer, mut family_timings| {
+                            Ok(Some(if step == 0 {
+                                time_family!(
+                                    family_timings,
+                                    "parties",
+                                    flush,
+                                    parties.flush(writer, branch, cancelled)
+                                )
+                            } else {
+                                time_family!(
+                                    family_timings,
+                                    "parties",
+                                    flush,
+                                    writer.write_at(
+                                        &format!("party-history-{branch}"),
+                                        0,
+                                        parties.saved_bytes()?.as_slice(),
+                                    )
+                                )
+                            }))
+                        },
+                    ),
+                    flush::Task::new(
+                        &[(38, "stability")],
+                        move |_, writer, mut family_timings| {
+                            Ok(Some(time_family!(
+                                family_timings,
+                                "stability",
+                                flush,
+                                stability.flush_timed(writer, branch, cancelled, family_timings)
+                            )))
+                        },
+                    ),
+                    flush::Task::new(
+                        &[(39, "politics_ledger"), (40, "politics_ledger")],
+                        move |step, writer, mut family_timings| {
+                            Ok(Some(if step == 0 {
+                                time_family!(
+                                    family_timings,
+                                    "politics_ledger",
+                                    flush,
+                                    ledger.flush(writer, branch, cancelled)
+                                )
+                            } else {
+                                time_family!(
+                                    family_timings,
+                                    "politics_ledger",
+                                    flush,
+                                    writer.write_at(
+                                        &format!("politics-ledger-state-{branch}"),
+                                        0,
+                                        ledger.saved_bytes()?.as_slice()
+                                    )
+                                )
+                            }))
+                        },
+                    ),
+                    flush::Task::new(&[(41, "fuel")], move |_, writer, mut family_timings| {
+                        Ok(Some(time_family!(
+                            family_timings,
+                            "fuel",
+                            flush,
+                            fuel.flush(writer, branch, replay.format, cancelled)
+                        )))
+                    }),
+                    flush::Task::new(
+                        &[(43, "occupation"), (44, "occupation")],
+                        move |step, writer, mut family_timings| {
+                            Ok(Some(if step == 0 {
+                                time_family!(
+                                    family_timings,
+                                    "occupation",
+                                    flush,
+                                    occupation.flush(writer, branch, cancelled)
+                                )
+                            } else {
+                                time_family!(
+                                    family_timings,
+                                    "occupation",
+                                    flush,
+                                    writer.write_at(
+                                        &format!("occupation-{branch}"),
+                                        0,
+                                        occupation.saved_bytes()?.as_slice(),
+                                    )
+                                )
+                            }))
+                        },
+                    ),
+                    flush::Task::new(
+                        &[(45, "intelligence")],
+                        move |_, writer, mut family_timings| {
+                            Ok(Some(time_family!(
+                                family_timings,
+                                "intelligence",
+                                flush,
+                                intelligence.flush(writer, branch, cancelled)
+                            )))
+                        },
+                    ),
+                    flush::Task::new(
+                        &[(46, "casualties")],
+                        move |_, writer, mut family_timings| {
+                            Ok(Some(time_family!(
+                                family_timings,
+                                "casualties",
+                                flush,
+                                casualties.flush(writer, branch, cancelled)
+                            )))
+                        },
+                    ),
+                    flush::Task::new(
+                        &[(47, "equipment_losses")],
+                        move |_, writer, mut family_timings| {
+                            Ok(Some(time_family!(
+                                family_timings,
+                                "equipment_losses",
+                                flush,
+                                equipment_losses.flush(writer, branch, cancelled)
+                            )))
+                        },
+                    ),
+                ];
+                flush::run(
+                    tasks,
+                    if serial { 1 } else { lanes::parallelism() },
+                    &mut writer,
+                    &mut family_timings,
+                    &mut lane_timings,
                     refused,
-                    "production",
                     frame.hour,
-                    time_family!(
-                        family_timings,
-                        "production",
-                        flush,
-                        crate::prepared_production::publish_endpoint(
-                            &mut writer,
-                            &mut branch.production,
-                            &page,
-                        )
-                    )
-                );
+                )?;
             }
-            family!(
-                refused,
-                "research",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "research",
-                    flush,
-                    branch.research.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "peace",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "peace",
-                    flush,
-                    branch.peace.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "projects",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "projects",
-                    flush,
-                    branch.projects.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "production",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "production",
-                    flush,
-                    crate::prepared_production::write_catalogue(
-                        &mut writer,
-                        &mut branch.production,
-                        cancelled,
-                    )
-                )
-            );
-            family!(
-                refused,
-                "measure",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "measure",
-                    flush,
-                    branch.measure.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "air_ledger",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "air_ledger",
-                    flush,
-                    branch
-                        .air_ledger
-                        .flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "aces",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "aces",
-                    flush,
-                    branch.aces.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "raids",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "raids",
-                    flush,
-                    branch.raids.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "air_superiority",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "air_superiority",
-                    flush,
-                    branch
-                        .air_superiority
-                        .flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "game_score",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "game_score",
-                    flush,
-                    branch
-                        .game_score
-                        .flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "autonomy",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "autonomy",
-                    flush,
-                    branch.autonomy.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "tension",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "tension",
-                    flush,
-                    branch.tension.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "wars",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "wars",
-                    flush,
-                    branch.wars.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "army",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "army",
-                    flush,
-                    branch.army.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "factories",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "factories",
-                    flush,
-                    branch.factories.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "nukes",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "nukes",
-                    flush,
-                    branch.nukes.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "navy",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "navy",
-                    flush,
-                    branch.navy.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "air",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "air",
-                    flush,
-                    branch.air.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "supply",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "supply",
-                    flush,
-                    branch.supply.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "leaders",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "leaders",
-                    flush,
-                    branch.leaders.flush(
-                        &mut writer,
-                        frame.branch,
-                        leader_content.as_ref(),
-                        leader_reader
-                            .as_mut()
-                            .ok_or_else(|| invalid("Missing prepared leader reader"))?,
-                        &leader_content_errors,
-                        cancelled,
-                    )
-                )
-            );
-            family!(
-                refused,
-                "construction",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "construction",
-                    flush,
-                    branch.construction.flush(
-                        &mut writer,
-                        source,
-                        &time_family!(
-                            family_timings,
-                            "context.construct",
-                            observe,
-                            LoadContext {
-                                content: content.cloned(),
-                            }
-                        ),
-                        frame.branch,
-                        cancelled,
-                    )
-                )
-            );
-            family!(
-                refused,
-                "resources",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "resources",
-                    flush,
-                    branch.resources.flush(
-                        &mut writer,
-                        source,
-                        &time_family!(
-                            family_timings,
-                            "context.construct",
-                            observe,
-                            LoadContext {
-                                content: content.cloned(),
-                            }
-                        ),
-                        frame.branch,
-                        cancelled,
-                    )
-                )
-            );
-            family!(
-                refused,
-                "trade",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "trade",
-                    flush,
-                    branch
-                        .trade
-                        .flush(&mut writer, source, &context, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "stockpile",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "stockpile",
-                    flush,
-                    branch.stockpile.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "identities",
-                frame.hour,
-                time_family!(family_timings, "identities", flush, {
-                    branch.identities.seal();
-                    writer.write_at(
-                        &format!("country-identities-{}", frame.branch),
-                        0,
-                        serde_json::to_vec(&branch.identities)?.as_slice(),
-                    )
-                })
-            );
-            if refused.live("groups") {
-                time_family!(
-                    family_timings,
-                    "groups",
-                    flush,
-                    branch.groups.finish(replay, frame.branch)
-                );
-            }
-            family!(
-                refused,
-                "groups",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "group_changes",
-                    flush,
-                    branch.group_changes.flush(
-                        &mut writer,
-                        frame.branch,
-                        &branch.groups,
-                        cancelled
-                    )
-                )
-            );
-            family!(
-                refused,
-                "subjects",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "subject_changes",
-                    flush,
-                    branch.subject_changes.flush(
-                        &mut writer,
-                        &format!("subject-changes-{}", frame.branch),
-                        0,
-                        cancelled,
-                    )
-                )
-            );
-            family!(
-                refused,
-                "subjects",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "subject_changes",
-                    flush,
-                    super::series::write_catalogue(
-                        &mut writer,
-                        "subject-changes",
-                        frame.branch,
-                        &std::collections::BTreeMap::new(),
-                        &(
-                            branch.subjects.observed,
-                            branch.subjects.change_warnings(),
-                            &branch.subject_late,
-                        ),
-                    )
-                )
-            );
-            family!(
-                refused,
-                "ideas",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "idea_changes",
-                    flush,
-                    branch.ideas.flush_changes(
-                        &mut writer,
-                        frame.branch,
-                        &mut branch.idea_changes,
-                        cancelled,
-                    )
-                )
-            );
-            family!(
-                refused,
-                "event_feed",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "event_feed",
-                    flush,
-                    branch.feed.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "groups",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "groups",
-                    flush,
-                    writer.write_at(
-                        &format!("country-groups-{}", frame.branch),
-                        0,
-                        branch.groups.saved_bytes()?.as_slice(),
-                    )
-                )
-            );
-            family!(
-                refused,
-                "subjects",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "subjects",
-                    flush,
-                    writer.write_at(
-                        &format!("subjects-{}", frame.branch),
-                        0,
-                        {
-                            branch.subjects.seal();
-                            crate::prepared::series::compress(
-                                serde_json::to_vec(&branch.subjects)?.as_slice(),
-                                3,
-                            )?
-                        }
-                        .as_slice(),
-                    )
-                )
-            );
-            family!(
-                refused,
-                "ideas",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "ideas",
-                    flush,
-                    writer.write_at(
-                        &format!("idea-history-{}", frame.branch),
-                        0,
-                        branch.ideas.saved_bytes()?.as_slice(),
-                    )
-                )
-            );
-            family!(
-                refused,
-                "parties",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "parties",
-                    flush,
-                    branch.parties.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "parties",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "parties",
-                    flush,
-                    writer.write_at(
-                        &format!("party-history-{}", frame.branch),
-                        0,
-                        branch.parties.saved_bytes()?.as_slice(),
-                    )
-                )
-            );
-            family!(
-                refused,
-                "stability",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "stability",
-                    flush,
-                    branch.stability.flush_timed(
-                        &mut writer,
-                        frame.branch,
-                        cancelled,
-                        &mut family_timings
-                    )
-                )
-            );
-            family!(
-                refused,
-                "politics_ledger",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "politics_ledger",
-                    flush,
-                    branch.ledger.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "politics_ledger",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "politics_ledger",
-                    flush,
-                    writer.write_at(
-                        &format!("politics-ledger-state-{}", frame.branch),
-                        0,
-                        branch.ledger.saved_bytes()?.as_slice()
-                    )
-                )
-            );
-            family!(
-                refused,
-                "fuel",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "fuel",
-                    flush,
-                    branch
-                        .fuel
-                        .flush(&mut writer, frame.branch, replay.format, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "territory",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "territory",
-                    flush,
-                    branch.territory.flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "occupation",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "occupation",
-                    flush,
-                    branch
-                        .occupation
-                        .flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "occupation",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "occupation",
-                    flush,
-                    writer.write_at(
-                        &format!("occupation-{}", frame.branch),
-                        0,
-                        branch.occupation.saved_bytes()?.as_slice(),
-                    )
-                )
-            );
-            family!(
-                refused,
-                "intelligence",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "intelligence",
-                    flush,
-                    branch
-                        .intelligence
-                        .flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "casualties",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "casualties",
-                    flush,
-                    branch
-                        .casualties
-                        .flush(&mut writer, frame.branch, cancelled)
-                )
-            );
-            family!(
-                refused,
-                "equipment_losses",
-                frame.hour,
-                time_family!(
-                    family_timings,
-                    "equipment_losses",
-                    flush,
-                    branch
-                        .equipment_losses
-                        .flush(&mut writer, frame.branch, cancelled)
-                )
-            );
             time_family!(
                 family_timings,
                 "branch_state",
@@ -4061,7 +4244,7 @@ fn run_inner(
                 next_block: stream.cursor().next_block,
                 previous: stream.cursor().previous.as_ref().map(Block::from),
             };
-            time_family!(family_timings, "branch.drop", flush, drop(branch));
+            kept = Some((frame.branch, branch));
             finish_timing(
                 &mut family_timings,
                 flush_started,
@@ -4216,20 +4399,30 @@ fn run_inner(
         )?;
         let next = &replay.index[stream.cursor().next_block];
         frame_changes.invalidate();
-        branch = Some(time_family!(
-            family_timings,
-            "branch.restore-or-construct",
-            observe,
-            load_branch(
-                &store,
-                &key,
-                saved.as_ref(),
-                replay,
-                next.branch,
-                next.first_hour,
-                state.refused.entry(next.branch).or_default(),
-            )
-        )?);
+        branch = Some(match kept.take() {
+            Some((flushed, domain)) if flushed == next.branch && !reload_flushed() => {
+                #[cfg(test)]
+                CONTINUED.with(|continued| continued.set(continued.get() + 1));
+                domain
+            }
+            other => {
+                time_family!(family_timings, "branch.drop", flush, drop(other));
+                time_family!(
+                    family_timings,
+                    "branch.restore-or-construct",
+                    observe,
+                    load_branch(
+                        &store,
+                        &key,
+                        saved.as_ref(),
+                        replay,
+                        next.branch,
+                        next.first_hour,
+                        state.refused.entry(next.branch).or_default(),
+                    )
+                )?
+            }
+        });
         if let (Some(domain), Some(frame)) = (&mut branch, stream.accumulator()) {
             time_family!(
                 family_timings,
@@ -4250,6 +4443,7 @@ fn run_inner(
             false,
         );
     }
+    time_family!(family_timings, "branch.drop", flush, drop(kept));
     let finalizing_started = start_timing(&family_timings);
     published.sections = time_family!(
         family_timings,
@@ -4296,8 +4490,7 @@ fn write_checkpoint(
     // stored total, then add the serialized new file after writing it.
     let prior_checkpoint = writer
         .read_at(CHECKPOINT, 0)?
-        .map(|file| file.metadata().map(|metadata| metadata.len()))
-        .transpose()?
+        .map(|range| range.len())
         .unwrap_or(0);
     state.bytes = active_bytes(bytes, writer.payload_bytes_change())?
         .checked_sub(prior_checkpoint)
@@ -4322,8 +4515,33 @@ fn final_sections(state: &Checkpoint, total: usize) -> Vec<Section> {
             state.display_failures
         ));
     }
-    refused_sections(&mut result, &state.refused);
+    refused_sections(&mut result, &all_refused(state));
     result
+}
+/// Status rows while preparing, at `done` of `total` blocks: a family
+/// prepared on its own shows its own progress.
+fn preparing_sections(state: &Checkpoint, done: usize, total: usize) -> Vec<Section> {
+    let mut result = sections(State::Preparing, done, Some(total));
+    independent::sections(&mut result, state, total);
+    refused_sections(&mut result, &all_refused(state));
+    result
+}
+/// Every family refusal, by branch: the hourly walk's, and those of families
+/// prepared on their own that the walk has not reached yet.
+fn all_refused(state: &Checkpoint) -> BTreeMap<u64, Refused> {
+    let mut all = state.refused.clone();
+    for progress in state.independent.values() {
+        for (&branch, refused) in &progress.refused {
+            let families = &mut all.entry(branch).or_default().0;
+            for (family, refusal) in &refused.0 {
+                families
+                    .entry(family.clone())
+                    .or_insert_with(|| refusal.clone());
+            }
+        }
+    }
+    all.retain(|_, refused| !refused.0.is_empty());
+    all
 }
 /// Fails each refused family's status rows with every branch's reason. A
 /// dependent row names the family whose refusal stopped it.

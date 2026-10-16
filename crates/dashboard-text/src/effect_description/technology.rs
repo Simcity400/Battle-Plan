@@ -359,7 +359,7 @@ impl Renderer<'_, '_, '_> {
         }
         for province in provinces {
             let province = world
-                .provinces
+                .provinces()
                 .get(province)
                 .ok_or("raid state province is not recorded")?;
             let owner = if province.owner == 0 {

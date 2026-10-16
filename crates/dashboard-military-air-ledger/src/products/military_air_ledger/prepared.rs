@@ -161,13 +161,8 @@ impl Prepared {
             ("military-air-losses", &mut self.air),
             ("military-bombing", &mut self.bombing),
         ] {
-            let catalogue: Option<series::Catalogue<BTreeSet<LeafKey>>> = match saved {
-                Some(previous) if previous != key => store
-                    .read_prefix(previous, key, &format!("{name}-{branch}-catalogue"), 0)?
-                    .map(|file| serde_json::from_reader(io::BufReader::new(file)))
-                    .transpose()?,
-                _ => series::read_catalogue(store, key, name, branch)?,
-            };
+            let catalogue: Option<series::Catalogue<BTreeSet<LeafKey>>> =
+                series::read_saved_catalogue(store, key, saved, name, branch)?;
             (events.keys, events.leaves) = catalogue.ok_or_else(|| {
                 dashboard_core::invalid("Prepared military air catalogue is missing")
             })?;

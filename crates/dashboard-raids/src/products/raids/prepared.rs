@@ -263,13 +263,8 @@ impl Prepared {
         }
         .ok_or_else(|| dashboard_core::invalid("Prepared raid continuation is missing"))?;
         let mut state: Self = serde_json::from_reader(zstd::stream::Decoder::new(file)?)?;
-        let catalogue: Option<series::Catalogue<()>> = match saved {
-            Some(previous) if previous != key => store
-                .read_prefix(previous, key, &format!("raids-{branch}-catalogue"), 0)?
-                .map(|file| serde_json::from_reader(io::BufReader::new(file)))
-                .transpose()?,
-            _ => series::read_catalogue(store, key, "raids", branch)?,
-        };
+        let catalogue: Option<series::Catalogue<()>> =
+            series::read_saved_catalogue(store, key, saved, "raids", branch)?;
         state.keys = catalogue
             .ok_or_else(|| dashboard_core::invalid("Prepared raid catalogue is missing"))?
             .0;

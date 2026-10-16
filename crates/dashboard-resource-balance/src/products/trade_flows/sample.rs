@@ -66,6 +66,7 @@ pub(crate) fn sample(
             rows_changed: [true; replay::frame::TABLE_COUNT],
             table_read: [true; replay::frame::TABLE_COUNT],
             slot_read: [true; replay::frame::TABLE_COUNT],
+            updates: None,
         },
     );
     sample_inputs(frame, requested, &inputs)

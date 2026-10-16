@@ -39,6 +39,7 @@ use std::{
 use ts_rs::TS;
 
 pub mod changes;
+pub mod prepared;
 
 pub struct CountryGroups;
 
@@ -921,6 +922,36 @@ pub struct Scan {
     dictionary_changes: Vec<Arc<faction_names::LexicalNames>>,
 }
 
+/// The scan state an hour's unchanged test reads besides the hour's own
+/// change facts: the held country keys and war operands (as digests), the
+/// last observed hour and the next war expiry. Two scans holding equal inputs
+/// find the same hours of one block unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct QuietInputs {
+    countries: Option<u64>,
+    wars: Option<u64>,
+    previous_hour: Option<i32>,
+    next_expiry: Option<i32>,
+}
+
+/// `value` with `rate` added once per hour, as that many additions give it.
+fn repeated_u32(value: u32, rate: u32, hours: i64) -> u32 {
+    u32::try_from(hours)
+        .ok()
+        .and_then(|hours| rate.checked_mul(hours))
+        .and_then(|added| value.checked_add(added))
+        .unwrap_or_else(|| (0..hours).fold(value, |value, _| value + rate))
+}
+
+/// `value` with `rate` added once per hour, as that many additions give it.
+fn repeated(value: usize, rate: usize, hours: i64) -> usize {
+    usize::try_from(hours)
+        .ok()
+        .and_then(|hours| rate.checked_mul(hours))
+        .and_then(|added| value.checked_add(added))
+        .unwrap_or_else(|| (0..hours).fold(value, |value, _| value + rate))
+}
+
 #[derive(Clone, Copy)]
 struct Updates {
     holders: bool,
@@ -1552,7 +1583,7 @@ impl Scan {
     pub fn saved_bytes(&self) -> io::Result<Vec<u8>> {
         let mut state = self.clone();
         state.seal();
-        state.dictionary_changes = vec![Arc::default()];
+        state.dictionary_changes = vec![faction_names::LexicalNames::empty()];
         let mut ids = HashMap::new();
         let mut dictionary = |tokens: &Arc<faction_names::LexicalNames>| {
             *ids.entry(Arc::as_ptr(tokens) as usize).or_insert_with(|| {
@@ -1572,7 +1603,10 @@ impl Scan {
                     && (!row.needs_templates()
                         || (previous.template_token == row.template_token
                             && previous.template == row.template
-                            && Arc::ptr_eq(&previous.tokens, &row.tokens)))
+                            // Only a resolved template reads its dictionary,
+                            // and only its dictionary is saved.
+                            && (!matches!(&row.template, Ok(Some(_)))
+                                || Arc::ptr_eq(&previous.tokens, &row.tokens))))
                 {
                     previous.last_hour = row.last_hour;
                     previous.lexical_read = row.lexical_read;
@@ -1672,6 +1706,47 @@ impl Scan {
             history.begin_block();
         }
     }
+    /// [`Self::advance_changed`] at every hour `first..=last` in order when
+    /// none of them changes the scan, in constant time: the hourly counts
+    /// grow at their current rates and the frontier moves to `last`.
+    pub(crate) fn advance_quiet(&mut self, first: i32, last: i32) {
+        let hours = i64::from(last) - i64::from(first) + 1;
+        self.recent_starts.clear();
+        self.recent_capitulations.clear();
+        let state = &mut self.continuation;
+        state.incomplete = repeated_u32(state.incomplete, state.rates.0, hours);
+        state.capitulations_unread = repeated(state.capitulations_unread, state.rates.1, hours);
+        state.rosters.incomplete = repeated(state.rosters.incomplete, state.rates.2, hours);
+        state.previous_hour = Some(last);
+        state.deferred = true;
+        self.unobserved = state.unobserved.clone();
+        *self
+            .history
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+    }
+    /// What, besides an hour's own change facts, decides whether
+    /// [`Self::advance_changed`] leaves the scan unchanged at that hour.
+    pub(crate) fn quiet_inputs(&self) -> QuietInputs {
+        use std::hash::{Hash, Hasher};
+        let state = &self.continuation;
+        QuietInputs {
+            countries: state.country_keys.as_ref().map(|keys| {
+                let mut hasher = std::hash::DefaultHasher::new();
+                for key in keys.iter() {
+                    key.hash(&mut hasher);
+                }
+                hasher.finish()
+            }),
+            wars: state.war_inputs.as_ref().map(|rows| {
+                let mut hasher = std::hash::DefaultHasher::new();
+                rows.hash(&mut hasher);
+                hasher.finish()
+            }),
+            previous_hour: state.previous_hour,
+            next_expiry: state.next_expiry,
+        }
+    }
     #[allow(clippy::type_complexity)]
     pub fn advance_changed(
         &mut self,
@@ -1714,18 +1789,7 @@ impl Scan {
             || state.previous_hour.and_then(|hour| hour.checked_add(1)) != Some(frame.hour)
             || state.next_expiry.is_some_and(|hour| hour <= frame.hour);
         if !changed {
-            self.recent_starts.clear();
-            self.recent_capitulations.clear();
-            state.incomplete += state.rates.0;
-            state.capitulations_unread += state.rates.1;
-            state.rosters.incomplete += state.rates.2;
-            state.previous_hour = Some(frame.hour);
-            state.deferred = true;
-            self.unobserved = state.unobserved.clone();
-            *self
-                .history
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()) = None;
+            self.advance_quiet(frame.hour, frame.hour);
             return Ok(None);
         }
         let boundary = state.previous_hour.and_then(|hour| hour.checked_add(1)) != Some(frame.hour)

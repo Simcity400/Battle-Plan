@@ -50,6 +50,13 @@ pub struct Prepared {
     scalar_values: BTreeMap<u64, Option<i128>>,
     #[serde(skip)]
     day_tags: BTreeMap<i32, BTreeSet<String>>,
+    /// Whether every part not in `new_parts` names a capture of the last
+    /// capture read.
+    #[serde(skip)]
+    parts_checked: bool,
+    /// Parts added since the last capture read.
+    #[serde(skip)]
+    new_parts: BTreeSet<String>,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
@@ -370,6 +377,18 @@ fn item_field(payment: &Payment) -> io::Result<String> {
     ))?)
 }
 
+/// An identity's open parts, noting one added since the last capture read.
+fn part<'a>(
+    parts: &'a mut BTreeMap<String, DayParts>,
+    added: &mut BTreeSet<String>,
+    identity: String,
+) -> &'a mut DayParts {
+    if !parts.contains_key(&identity) {
+        added.insert(identity.clone());
+    }
+    parts.entry(identity).or_default()
+}
+
 fn amount(value: Option<&str>) -> io::Result<Option<i128>> {
     value
         .map(str::parse)
@@ -499,6 +518,12 @@ impl Prepared {
                 .push(key, Run::new(day, day.saturating_add(23), value, false));
         }
         Ok(())
+    }
+    /// The recording this branch is prepared from. A row the next read dates
+    /// at a previous read is described from that read decoded again, so only
+    /// the previous read's naming tables are held between hours.
+    pub fn decode_previous_from(&mut self, replay: Arc<replay::container::Replay>) {
+        self.scan.replay = Some(replay);
     }
     pub fn configure(&mut self, content: &PreparedContent) {
         if self.content_ready {
@@ -881,10 +906,11 @@ impl Prepared {
             let Some(identity) = identities.get(&spend.id) else {
                 return Err(dashboard_core::invalid("Missing prepared payment identity"));
             };
-            let open = self
-                .parts
-                .entry(serde_json::to_string(&identity.0)?)
-                .or_default();
+            let open = part(
+                &mut self.parts,
+                &mut self.new_parts,
+                serde_json::to_string(&identity.0)?,
+            );
             if open.day != day {
                 open.day = day;
                 open.values.clear();
@@ -922,10 +948,11 @@ impl Prepared {
         let country_first = identity
             .as_ref()
             .map(|identity| -> io::Result<i32> {
-                let open = self
-                    .parts
-                    .entry(serde_json::to_string(&identity.0)?)
-                    .or_default();
+                let open = part(
+                    &mut self.parts,
+                    &mut self.new_parts,
+                    serde_json::to_string(&identity.0)?,
+                );
                 if !starts
                     && self
                         .scan
@@ -1021,7 +1048,7 @@ impl Prepared {
             .map(|(pp, cp, _)| [*pp, *cp])
             .unwrap_or([false; 2]);
         let (values, labels, coverage) = if let Some(identity_key) = identity_key {
-            let open = self.parts.entry(identity_key).or_default();
+            let open = part(&mut self.parts, &mut self.new_parts, identity_key);
             if open.day != day {
                 open.day = day;
                 open.values.clear();
@@ -1132,6 +1159,7 @@ impl Prepared {
                 rows_changed: [true; replay::frame::TABLE_COUNT],
                 table_read: [false; replay::frame::TABLE_COUNT],
                 slot_read: [false; replay::frame::TABLE_COUNT],
+                updates: None,
             },
             cancelled,
         )
@@ -1170,7 +1198,7 @@ impl Prepared {
             daily_tags.extend(self.day_tags.pop_first().unwrap().1);
         }
         if !changed && !expires && daily_tags.is_empty() && self.scan.clock.stable {
-            self.scan.previous = Some(frame.clone());
+            self.scan.retain_previous(frame);
             return Ok(());
         }
         if expires {
@@ -1241,42 +1269,29 @@ impl Prepared {
         .any(|table| changes.rows_changed[table.index()] || changes.table_read[table.index()]);
         if native_changed {
             let native = &self.scan.inputs;
+            // The power and government rows' newest native days are kept as
+            // their rows change.
             let newest = native
-                .daily
+                .daily()
                 .iter()
                 .take(if native.daily_changed {
-                    native.daily.len()
+                    native.daily().len()
                 } else {
                     0
                 })
                 .map(|row| row.day_hour)
-                .chain(
-                    native
-                        .power
-                        .iter()
-                        .take(if native.power_changed {
-                            native.power.len()
-                        } else {
-                            0
-                        })
-                        .filter(|row| {
-                            row.cause == PowerCause::AbilityUpkeep
-                                || row.cause == PowerCause::DailyGain
-                        })
-                        .map(|row| row.hour.div_euclid(24) * 24),
-                )
-                .chain(
-                    native
-                        .governments
-                        .iter()
-                        .take(if native.governments_changed {
-                            native.governments.len()
-                        } else {
-                            0
-                        })
-                        .map(|row| row.hour.div_euclid(24) * 24),
-                )
+                .chain(native.newest_day(0).filter(|_| native.power_changed))
+                .chain(native.newest_day(1).filter(|_| native.governments_changed))
                 .max();
+            #[cfg(test)]
+            {
+                let visits = if native.daily_changed {
+                    native.daily().len()
+                } else {
+                    0
+                };
+                self.scan.publication_visits += visits;
+            }
             if let Some(newest) = newest {
                 self.settle_before(newest)?;
             }
@@ -1726,11 +1741,46 @@ impl Prepared {
             || changes.table_read[TableId::PoliticsCaptureCoverage.index()])
             && let Ok(rows) = frame.complete::<tables::PoliticsCaptureCoverage>()
         {
-            let current: BTreeSet<_> = rows
-                .iter()
-                .map(|row| serde_json::to_string(&row.country))
-                .collect::<Result<_, _>>()?;
-            self.parts.retain(|identity, _| current.contains(identity));
+            // Changed captures describe the hour after the last one observed.
+            let narrow = self.parts_checked
+                && self
+                    .scan
+                    .clock
+                    .previous
+                    .and_then(|last| last.checked_add(1))
+                    == Some(frame.hour);
+            #[cfg(test)]
+            let narrow = narrow && !self.scan.whole_tables;
+            match changes
+                .rows(TableId::PoliticsCaptureCoverage)
+                .filter(|_| narrow)
+            {
+                // Every other part named a capture of the last read, so only
+                // the deleted captures and the parts added since can be gone.
+                Some((_, deleted)) => {
+                    for &key in deleted {
+                        self.parts.remove(&serde_json::to_string(&(key as u32))?);
+                    }
+                    for identity in std::mem::take(&mut self.new_parts) {
+                        let captured = identity.parse::<u32>().is_ok_and(|country| {
+                            self.scan.inputs.witnesses.contains_key(&country)
+                                && serde_json::to_string(&country).is_ok_and(|key| key == identity)
+                        });
+                        if !captured {
+                            self.parts.remove(&identity);
+                        }
+                    }
+                }
+                None => {
+                    let current: BTreeSet<_> = rows
+                        .iter()
+                        .map(|row| serde_json::to_string(&row.country))
+                        .collect::<Result<_, _>>()?;
+                    self.parts.retain(|identity, _| current.contains(identity));
+                }
+            }
+            self.new_parts.clear();
+            self.parts_checked = true;
         }
         self.scan.retain_open(frame, &tags);
         for tag in &tags {

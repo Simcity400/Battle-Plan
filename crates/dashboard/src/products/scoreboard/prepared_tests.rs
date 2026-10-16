@@ -457,6 +457,32 @@ fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gap
         None,
     );
     let unopened = fixture.source();
+    // Unprepared, only columns one frame proves answer; cumulative ones wait.
+    assert!(
+        query(
+            &unopened,
+            &selection,
+            100,
+            true,
+            false,
+            ScoreboardColumnKey::PoliticalPower,
+            true
+        )
+        .is_null()
+    );
+    assert!(
+        query(
+            &unopened,
+            &selection,
+            100,
+            false,
+            false,
+            ScoreboardColumnKey::Factories,
+            true
+        )
+        .is_null(),
+        "a page with every column needs every column's supplier"
+    );
     assert!(
         query(
             &unopened,
@@ -467,7 +493,8 @@ fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gap
             ScoreboardColumnKey::Factories,
             true
         )
-        .is_null()
+        .is_null(),
+        "a tag selection of the index waits for the whole branch's identities"
     );
     let source = fixture.run(1);
     parity(
@@ -763,6 +790,270 @@ fn scoreboard_prepared_registry_routes_without_preparation_or_an_oracle_scan() {
         routed["data"]["data"],
         serde_json::to_value(oracle).unwrap()
     );
+    assert_eq!(
+        source
+            .state::<country_factories::Scans>()
+            .lock()
+            .unwrap()
+            .runs,
+        0
+    );
+}
+
+#[test]
+fn scoreboard_factory_moments_answer_beyond_preparation_as_preparation_does() {
+    use ScoreboardColumnKey::{Factories, FactoriesBuilt, FactoriesTopbar};
+    // Two prefix blocks, unrecorded hours 104 and 105, a rename at 106, a tag
+    // reused by another holder at 108 and a replaced native holder at 109.
+    let blocks: [&[i32]; 4] = [&[100, 101], &[102, 103], &[106, 107], &[108, 109]];
+    let frames = |hours: &[i32]| {
+        hours
+            .iter()
+            .map(|&hour| all_frame(hour))
+            .collect::<Vec<_>>()
+    };
+    let mut prefix =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, frames(blocks[0]))]).unwrap();
+    prefix = prefix
+        .append(&[continuation_records(&prefix, 1, frames(blocks[1]))])
+        .unwrap();
+    let mut full = prefix
+        .append(&[continuation_records(&prefix, 1, frames(blocks[2]))])
+        .unwrap();
+    full = full
+        .append(&[continuation_records(&full, 1, frames(blocks[3]))])
+        .unwrap();
+    let columns = vec![Factories, FactoriesBuilt, FactoriesTopbar];
+    let pick = request(
+        columns.clone(),
+        vec![
+            "GER".into(),
+            "opponent-2".into(),
+            "opponent-3".into(),
+            "renamed native holder".into(),
+        ],
+        None,
+    );
+    let top = request(
+        columns,
+        Vec::new(),
+        Some(ScoreboardTop {
+            count: 2,
+            sort: Factories,
+            descending: true,
+        }),
+    );
+    // What the widget asks at a moment: the ranked index with bars, and the
+    // mounted page with supplying dates. A tag selection of the index waits
+    // for the whole branch's identities, so it is compared apart.
+    let observe = |source: &Source| -> Vec<Value> {
+        let mut replies = Vec::new();
+        for hour in 100..=109 {
+            for selection in [&top] {
+                let index = query(source, selection, hour, true, true, Factories, true);
+                assert!(!index.is_null(), "index at {hour}");
+                let order: Vec<_> = index["data"]["series"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|row| row["tag"].clone())
+                    .collect();
+                replies.push(json!([
+                    hour,
+                    order,
+                    index["maxima"],
+                    at(&index["data"], hour)
+                ]));
+            }
+            let page = query(source, &pick, hour, false, false, Factories, true);
+            assert!(!page.is_null(), "page at {hour}");
+            replies.push(json!([hour, at(&page["data"], hour)]));
+        }
+        replies
+    };
+
+    // Nothing prepared: the moment used to wait for complete preparation.
+    let mut fixture = Fixture::new(&full);
+    let cold = observe(&fixture.source());
+    let renamed = query(&fixture.source(), &pick, 107, false, false, Factories, true);
+    assert_eq!(
+        at(&renamed["data"], 107)["renamed native holder"][2]["factories"][1],
+        107,
+        "a sampled count is dated by its own frame"
+    );
+
+    // A genuine prefix: the first two blocks prepared into this recording's
+    // store, so accepted coverage and identities end at hour 103.
+    let prefix_source = Source::from_replay(
+        crate::SourceKey {
+            source_id: "scoreboard-prepared".into(),
+            revision: crate::protocol::replay_revision(&fixture.path).unwrap(),
+        },
+        fixture.path.clone(),
+        Arc::new(prefix),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    fixture
+        .stores
+        .push(crate::prepared::files(&prefix_source, None).unwrap().0);
+    crate::prepared::pipeline::run(&prefix_source, None, &AtomicBool::new(false), |_| {}).unwrap();
+    let (store, key) = crate::prepared::files(&prefix_source, None).unwrap();
+    let mut writer = store.extend(&key).unwrap();
+    writer
+        .write_at(
+            "preparation-coverage-1",
+            0,
+            serde_json::to_vec(&crate::prepared::pipeline::Coverage {
+                schema: crate::prepared::pipeline::SCHEMA,
+                first_hour: 100,
+                last_hour: 103,
+                complete: false,
+            })
+            .unwrap()
+            .as_slice(),
+        )
+        .unwrap();
+    writer.commit().unwrap();
+    let joined_source = fixture.source();
+    assert_eq!(
+        crate::prepared::pipeline::coverage(&joined_source, None, 1, &AtomicBool::new(false))
+            .unwrap()
+            .unwrap()
+            .last_hour,
+        103
+    );
+    let joined = observe(&joined_source);
+    assert_eq!(
+        joined_source
+            .state::<country_factories::Scans>()
+            .lock()
+            .unwrap()
+            .runs,
+        0,
+        "direct moments never call the factory oracle"
+    );
+
+    // Before the whole branch's identities exist, a tag selection of the
+    // index stays pending: "GER" names a holder renamed at 106 and the one
+    // that took the tag at 108, which no prefix and moment can tell apart.
+    let alone = request(
+        vec![Factories, FactoriesBuilt, FactoriesTopbar],
+        vec!["GER".into()],
+        None,
+    );
+    for source in [&fixture.source(), &joined_source] {
+        for hour in 100..=109 {
+            assert!(
+                query(source, &alone, hour, true, true, Factories, true).is_null(),
+                "tag index at {hour} before the whole branch's identities"
+            );
+        }
+    }
+
+    // Complete preparation of the same recording.
+    let mut complete = Fixture::new(&full);
+    let prepared = observe(&complete.run(4));
+    let complete_source = complete.source();
+    for hour in 100..=109 {
+        for selection in [&pick, &alone] {
+            assert!(
+                !query(
+                    &complete_source,
+                    selection,
+                    hour,
+                    true,
+                    true,
+                    Factories,
+                    true
+                )
+                .is_null(),
+                "tag index at {hour} once prepared"
+            );
+        }
+    }
+    assert_eq!(cold.len(), prepared.len());
+    for (index, (direct, expected)) in cold.iter().zip(&prepared).enumerate() {
+        assert_eq!(direct, expected, "cold reply {index}");
+    }
+    for (index, (prefixed, expected)) in joined.iter().zip(&prepared).enumerate() {
+        assert_eq!(prefixed, expected, "prefix and tail reply {index}");
+    }
+}
+
+#[test]
+fn scoreboard_cold_factory_moment_matches_the_scan_for_5000_countries() {
+    use ScoreboardColumnKey::{Factories, FactoriesBuilt, FactoriesTopbar};
+    let mut frame = countries(100, 5000);
+    if let TableView::Complete(TableRows::CountryFactories(rows)) =
+        &mut *frame.tables[TableId::CountryFactories.index()]
+    {
+        // A country without a factory read ranks unknown, last.
+        rows.retain(|row| row.country != 17);
+    }
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
+    let mut fixture = Fixture::new(&replay);
+    let source = fixture.source();
+    let columns = vec![Factories, FactoriesBuilt, FactoriesTopbar];
+    let index = query(
+        &source,
+        &request(
+            columns.clone(),
+            Vec::new(),
+            Some(ScoreboardTop {
+                count: 5000,
+                sort: Factories,
+                descending: true,
+            }),
+        ),
+        100,
+        true,
+        true,
+        Factories,
+        true,
+    );
+    let rows = index["data"]["series"].as_array().unwrap();
+    assert_eq!(rows.len(), 5000);
+    assert_eq!(rows[0]["tag"], "country-05000");
+    assert_eq!(rows[4999]["tag"], "country-00017");
+    let tags: Vec<String> = rows
+        .iter()
+        .map(|row| row["tag"].as_str().unwrap().to_owned())
+        .collect();
+    let selection = request(columns, tags, None);
+    let page = query(&source, &selection, 100, false, false, Factories, true);
+    let oracle_source = Source::from_replay(
+        source.key().clone(),
+        source.path().to_path_buf(),
+        source.replay(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let oracle = serde_json::to_value(
+        Scoreboard::load(
+            &oracle_source,
+            &selection,
+            &LoadContext { content: None },
+            &AtomicBool::new(false),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let expected = at(&oracle, 100);
+    assert_eq!(at(&page["data"], 100), expected);
+    assert_eq!(at(&index["data"], 100).as_object().unwrap().len(), 5000);
+    for column in ["factories", "factoriesBuilt", "factoriesTopbar"] {
+        let maximum = expected
+            .as_object()
+            .unwrap()
+            .values()
+            .filter_map(|row| row[2][column][0].as_str())
+            .map(|amount| amount.parse::<i128>().unwrap())
+            .max()
+            .unwrap()
+            .max(0);
+        assert_eq!(index["maxima"][column], maximum.to_string());
+    }
     assert_eq!(
         source
             .state::<country_factories::Scans>()

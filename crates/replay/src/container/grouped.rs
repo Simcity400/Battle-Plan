@@ -2790,6 +2790,100 @@ fn read_through(
     Ok(out)
 }
 
+/// A grouped block's hours, metrics and its selected tables' updates at
+/// every hour, decoded and admitted exactly as [`read`] decodes them for the
+/// same selection, without assembling frames: no unselected table's update is
+/// repeated at every hour.
+pub(crate) struct SelectedUpdates {
+    pub(crate) hours: Vec<Hour>,
+    pub(crate) metrics: Vec<Metrics>,
+    /// Each selected table's update at every hour, in the selection's order.
+    pub(crate) updates: Vec<Vec<TableUpdate>>,
+    /// An unselected table [`read`] still decodes (a catalogued layout gap)
+    /// has a first update no keyframe may hold.
+    pub(crate) dependent_keyframe: bool,
+}
+
+/// [`read`] of a whole block for `selected` (each table once), keeping each
+/// selected table's updates by table rather than by frame. The same sections
+/// are inflated and decoded, in the same table order, so it fails exactly
+/// where [`read`] fails.
+pub(crate) fn read_selected_updates(
+    replay: &Replay,
+    index: &BlockIndex,
+    block: &[u8],
+    selected: &[TableId],
+) -> io::Result<SelectedUpdates> {
+    let format = replay.format;
+    if format.version() < GROUPED_FORMAT {
+        return Err(invalid(format!(
+            "grouped block in a format {} recording",
+            format.version()
+        )));
+    }
+    let directory = Directory::parse(block, index)?;
+    let present = Present::new(format.version());
+    let frames = directory.frames;
+    check_header_size(frames, &present)?;
+    let header = directory.raw(block, HEADER)?.unwrap_or_default();
+    let (hours, entries) = read_header(&header, index, frames, &present)?;
+    let diagnostics = directory
+        .raw(block, DIAGNOSTICS)?
+        .ok_or_else(|| invalid_static("grouped block has no diagnostics"))?;
+    let timed = directory.layout == Layout::Timed;
+    let metrics = read_diagnostics_prefix(&diagnostics, frames, &present, timed, frames)?;
+    let context = Context {
+        replay,
+        index,
+        position: replay.index.iter().position(|block| block == index),
+        block,
+        directory: &directory,
+        format,
+        present: &present,
+        hours: &hours,
+        entries: &entries,
+        selected: Some(selected),
+        complete: true,
+    };
+    let mut updates: Vec<Option<Vec<TableUpdate>>> =
+        engine::allocation::collect_vec(selected.iter().map(|_| None))?;
+    let mut dependent_keyframe = false;
+    for table in TableId::ALL {
+        let wanted = selected.iter().position(|selected| *selected == table);
+        // `read` repeats an unselected table's refusal at every hour, and
+        // nothing reconstructs it; a table it decodes anyway is decoded here.
+        if wanted.is_none()
+            && keyframe_refusal(&directory, format, Some(selected), table)?.is_some()
+        {
+            continue;
+        }
+        let decoded = table_updates(&context, table)?;
+        match wanted {
+            Some(position) => updates[position] = Some(decoded),
+            None => {
+                dependent_keyframe |= decoded.first().is_some_and(|update| {
+                    !matches!(
+                        update,
+                        TableUpdate::Snapshot(_)
+                            | TableUpdate::Unavailable { .. }
+                            | TableUpdate::Incompatible { .. }
+                    )
+                });
+            }
+        }
+    }
+    let updates = updates
+        .into_iter()
+        .map(|updates| updates.ok_or_else(|| invalid_static("table selected twice")))
+        .collect::<io::Result<Vec<_>>>()?;
+    Ok(SelectedUpdates {
+        hours,
+        metrics,
+        updates,
+        dependent_keyframe,
+    })
+}
+
 fn check_header_size(frames: usize, present: &Present) -> io::Result<()> {
     // A plain block counts its frames, then frames each prefixed by their
     // length; each table's plain updates have their own budget.

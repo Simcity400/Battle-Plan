@@ -125,7 +125,7 @@ fn prepare(fixture: &Fixture, replay: &Replay, stride: u32, selected: &[TableId]
                 next_frame: offset + 1,
             };
             builder
-                .accept(&mut writer, frame.clone(), &decoded, position)
+                .accept(&mut writer, &frame, &decoded, position)
                 .unwrap();
             last = Some((decoded, position));
         }
@@ -532,7 +532,7 @@ fn sparse_checkpoints_store_no_hourly_updates_and_resume_keeps_full_selection() 
         builder
             .accept(
                 &mut writer,
-                frame,
+                &frame,
                 decoded,
                 Position {
                     block: 0,
@@ -677,8 +677,6 @@ fn later_checkpoint_needs_only_its_own_native_payload() {
                 .read(&fixture.key, &section(1), range)
                 .unwrap()
                 .unwrap()
-                .metadata()
-                .unwrap()
                 .len()
         })
         .sum();
@@ -704,7 +702,7 @@ fn cancelled_preparation_resumes_only_new_frames_and_retains_old_checkpoint_page
         builder
             .accept(
                 &mut writer,
-                frame.clone(),
+                &frame,
                 &decoded,
                 Position {
                     block: 0,
@@ -748,7 +746,7 @@ fn cancelled_preparation_resumes_only_new_frames_and_retains_old_checkpoint_page
         builder
             .accept(
                 &mut writer,
-                frame.clone(),
+                &frame,
                 &decoded,
                 Position {
                     block: 0,
@@ -949,7 +947,7 @@ fn appended_source_restores_accepted_prefix_and_prepares_only_new_blocks() {
                 next_frame: offset + 1,
             };
             builder
-                .accept(&mut writer, frame.clone(), &decoded, position)
+                .accept(&mut writer, &frame, &decoded, position)
                 .unwrap();
             new_frames += 1;
             last = Some((decoded, position));

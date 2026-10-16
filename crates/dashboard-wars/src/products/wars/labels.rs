@@ -4,7 +4,7 @@ use crate::products::war_casualties::same_name_rows;
 use installed_content::country_names::{self, CountryNames, Operands};
 use replay::frame::SharedView;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct CountryLabels {
     /// By `country_names::TABLES`: the views of the last call past the
     /// identity test, held by identity so a later change copies none, and the
@@ -139,6 +139,16 @@ impl CountryLabels {
                 self.involved.insert(raw);
             }
         }
+    }
+
+    /// Held operands, names and views, counted for a walk cache's byte estimate.
+    pub fn entries(&self) -> usize {
+        self.seen.len()
+            + self.read.len()
+            + self.inputs.len()
+            + self.resolved.len()
+            + self.names.values().map(BTreeSet::len).sum::<usize>()
+            + self.involved.len()
     }
 
     pub fn finish(self) -> Vec<String> {

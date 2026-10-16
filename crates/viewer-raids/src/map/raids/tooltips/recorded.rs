@@ -161,6 +161,7 @@ fn event_scopes(scopes: Scopes) -> EventScopes {
         from: Link::Unknown,
         prev: Link::Unknown,
         random_seed: 1,
+        clock_seed: None,
     };
     let top =
         scopes.prev.is_none() && scopes.this == scopes.root && scopes.unknown == Default::default();
@@ -199,6 +200,7 @@ fn event_scopes(scopes: Scopes) -> EventScopes {
             from,
             prev,
             random_seed: 1,
+            clock_seed: None,
         };
         std::iter::once(current).chain(linked).collect()
     };

@@ -4,6 +4,7 @@
 pub(crate) use dashboard_base::prepared::observer_tests;
 pub use dashboard_base::prepared::{coverage, frame_changes, group_sum, series};
 pub mod pipeline;
+pub(crate) mod prepass;
 pub mod query;
 pub mod runner;
 

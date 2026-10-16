@@ -3,8 +3,8 @@ use super::{Scope, Scopes, eval::Evaluator};
 use crate::scope::{RecordedScopes, valid_saved_target};
 use replay::rows::GlobalSavedEventTargetRow as Row;
 
-#[derive(Clone, Copy)]
-pub(crate) enum Reader {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Reader {
     CountrySelector,
     Context,
     Variable,

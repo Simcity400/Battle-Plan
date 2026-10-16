@@ -50,7 +50,7 @@ pub fn query(
         },
         Some(&selected),
         &BTreeSet::new(),
-        cat.as_deref(),
+        cat.as_ref(),
         cancelled,
     )?
     else {

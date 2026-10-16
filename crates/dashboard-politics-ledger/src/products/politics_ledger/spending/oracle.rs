@@ -11,35 +11,6 @@ struct Cache {
     catalogue: Option<Arc<Catalogue>>,
     scan: Option<Arc<Scanned>>,
 }
-/// A read the next read dates no payment at, as that read uses it: to name
-/// countries (`CountryNames`, `Look::read`) and government tokens. Its other
-/// tables share one unavailable view: holding them would copy each one the
-/// decoder changes for the next read.
-pub(super) fn naming_frame(frame: &DecodedFrame) -> DecodedFrame {
-    use replay::frame::{SharedView, TABLE_COUNT, TableView};
-    // Look::read's civil-war operands, then government_token's spellings.
-    let read = [
-        TableId::CountryCivilWars,
-        TableId::CountryCounterInputs,
-        TableId::CountryWars,
-        TableId::WarRelations,
-        TableId::LexicalTokens,
-    ];
-    let unread = SharedView::from(TableView::Unavailable {
-        reason: "not retained after its read".into(),
-    });
-    let mut tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| unread.clone());
-    for table in installed_content::country_names::TABLES.into_iter().chain(read) {
-        tables[table.index()] = frame.tables[table.index()].clone();
-    }
-    DecodedFrame {
-        branch: frame.branch,
-        hour: frame.hour,
-        tables,
-        metrics: frame.metrics.clone(),
-    }
-}
-
 /// The hours an item's text reads trigger operands at, and the reads whose
 /// hour the next read dates a payment at: that payment's event frame is the
 /// previous read. A block reads alike whatever tables are selected, so the

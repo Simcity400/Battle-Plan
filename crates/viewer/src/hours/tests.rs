@@ -501,7 +501,7 @@ fn source_worker_seed_attaches_committed_checkpoints_and_clear_keeps_exact_hour_
                 next_frame: offset + 1,
             };
             builder
-                .accept(&mut writer, frame.clone(), &decoded, position)
+                .accept(&mut writer, &frame, &decoded, position)
                 .unwrap();
             last = Some((decoded, position));
         }

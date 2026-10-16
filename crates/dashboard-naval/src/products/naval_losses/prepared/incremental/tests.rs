@@ -369,3 +369,120 @@ fn changed_contributions_preserve_missing_country_precedence_over_prefix_overflo
         "Naval losses cannot identify possible holders of ship country reference 999999"
     );
 }
+
+#[test]
+fn restored_losses_close_a_holder_that_leaves_at_the_first_hour_after_a_commit() {
+    // Country 2 loses a ship to country 1 at the first hour. Its country and
+    // link are gone from the fifth hour, the first hour after the commit.
+    const VICTIM: Identity = (2, 100_002);
+    type Pair = (sinkings::ShipHistory, Prepared);
+    let flag = AtomicBool::new(false);
+    let format = replay::format::FormatVersion::default();
+    let first = month_start(1940 * 12 + 1).unwrap() + 100;
+    let frames: Vec<DecodedFrame> = (0..8)
+        .map(|offset| {
+            let mut frame = dashboard_base::test_fixtures::scale_frame(1, first + offset, 3);
+            if offset >= 4 {
+                let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();
+                countries.truncate(2);
+                frame.tables[TableId::Countries.index()] =
+                    TableView::Complete(TableRows::Countries(countries)).into();
+                let mut links = frame.complete::<tables::CountryLinks>().unwrap().to_vec();
+                links.truncate(2);
+                frame.tables[TableId::CountryLinks.index()] =
+                    TableView::Complete(TableRows::CountryLinks(links)).into();
+            }
+            frame.tables[TableId::SunkShips.index()] =
+                TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow {
+                    entries: vec![SunkShipEntry {
+                        ship_name: b"synthetic lost ship".to_vec(),
+                        victim_country: 100_002,
+                        attacker_country: 100_001,
+                        class_token: 77,
+                        sink_hour: first,
+                        ..Default::default()
+                    }],
+                }]))
+                .into();
+            frame.tables[TableId::SunkConvoys.index()] =
+                TableView::Complete(TableRows::SunkConvoys(Vec::new())).into();
+            frame.metrics.table_ns[TableId::SunkShips.index()] = 1;
+            frame.metrics.table_ns[TableId::SunkConvoys.index()] = 1;
+            frame
+        })
+        .collect();
+    let blocks = [&frames[..4], &frames[4..]];
+    let retention = sinkings::Retention {
+        ships: true,
+        convoys: true,
+        ship_loss: vec![],
+        convoy_loss: vec![],
+        warnings: vec![],
+    };
+    dashboard_base::prepared::observer_tests::assert_restore_continues(
+        format,
+        &blocks,
+        || -> Pair { (sinkings::ShipHistory::new(first), Prepared::default()) },
+        |pair: &mut Pair, frame, changes, _| {
+            let (history, prepared) = pair;
+            let changes = history.prepare(format, frame, changes);
+            if frame.hour == first + 4 {
+                assert!(history.prepared_scope_changed());
+                assert!(
+                    history
+                        .prepared_holders()
+                        .iter()
+                        .all(|(_, identity)| *identity != VICTIM),
+                    "the victim no longer holds a tag"
+                );
+            }
+            prepared
+                .observe_changes(
+                    &history.scan,
+                    &changes,
+                    history.prepared_holders(),
+                    history.prepared_scope_changed(),
+                    &retention,
+                    &flag,
+                )
+                .unwrap();
+        },
+        |pair: &mut Pair, writer, ordinal| {
+            let (history, prepared) = pair;
+            history.finish_prepared(blocks[ordinal].last().unwrap().hour);
+            if ordinal == 0 {
+                // Ships lost, running: the victim's loss is open at the commit.
+                let key = field_key(prepared.actors[&actor(VICTIM)], 0);
+                let lost = &prepared.channels[0].values;
+                assert!(lost.active().any(|open| open == key));
+                assert_eq!(
+                    lost.state(key)
+                        .and_then(|state| state.last)
+                        .map(|run| run.value),
+                    Some(1)
+                );
+            }
+            prepared.flush(writer, 1, &history.scan, &flag).unwrap();
+            series::write_reply(
+                writer,
+                "naval-losses-continuation",
+                0,
+                &(&*history, &*prepared),
+            )
+            .unwrap();
+        },
+        |fixture| {
+            let (mut history, prepared): Pair =
+                series::read_reply(&fixture.store, &fixture.key, "naval-losses-continuation", 0)
+                    .unwrap()
+                    .unwrap();
+            // As preparation does after every restore: the last frame observed.
+            let last = frames
+                .iter()
+                .find(|frame| frame.hour == history.scan.last_hour)
+                .unwrap();
+            history.resume(last);
+            (history, prepared)
+        },
+    );
+}

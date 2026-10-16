@@ -3,7 +3,7 @@ use dashboard_base::prepared::frame_changes::FrameChanges;
 use dashboard_base::prepared::series::{self, Accumulator, Catalogue as KeyCatalogue, Reader};
 use replay::{codec::Decoder, frame::SharedView};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 /// One branch's global change inputs and relation-lifetime counters, never viewpoints.
 #[derive(Default, Serialize, Deserialize)]
@@ -168,10 +168,14 @@ impl Observer {
             };
             let mut bytes = Vec::new();
             packet.encode_checkpoint(&mut bytes)?;
-            // Keep the checkpoint compact before the generic JSON event reader
-            // materializes it; raw byte arrays otherwise allocate one Value per byte.
-            let bytes = dashboard_base::prepared::series::compress(bytes.as_slice(), 3)?;
-            self.batch.event(0, frame.hour, &(&changes, &bytes))?;
+            // A compressed packet keeps the open batch compact; its row is raw
+            // bytes, read back without a JSON layer.
+            let packet = dashboard_base::prepared::series::compress(bytes.as_slice(), 3)?;
+            self.batch.event_raw(
+                0,
+                frame.hour,
+                super::walks::encode_input(&changes, &packet)?,
+            )?;
             #[cfg(any(test, feature = "test-support"))]
             {
                 self.work.emitted += 1;
@@ -210,12 +214,12 @@ impl Observer {
             self.frame = Some(current);
             return Ok(());
         }
-        let previous: std::collections::BTreeSet<_> = self
-            .inputs
-            .as_ref()
-            .into_iter()
-            .flat_map(|inputs| {
-                inputs.world.relations.values().map(|row| {
+        let previous: std::collections::BTreeSet<_> = match &self.inputs {
+            Some(inputs) => inputs
+                .world
+                .relations
+                .values()
+                .map(|row| {
                     let identity = WarRelationKey::new(
                         inputs.identities[&row.first_country],
                         inputs.identities[&row.second_country],
@@ -223,8 +227,16 @@ impl Observer {
                     );
                     self.indices[&serde_json::to_string(&identity).expect("native relation key")]
                 })
-            })
-            .collect();
+                .collect(),
+            // A restored observer has no join of the hour before; the relations
+            // it held are those whose counters are still open. Without a join
+            // otherwise, none are.
+            None => self
+                .batch
+                .active()
+                .filter_map(|key| key.checked_sub(1).map(|key| key / 4))
+                .collect(),
+        };
         let mut present = std::collections::BTreeSet::new();
         // Canonical endpoint identity, not raw references or a selected viewpoint.
         let refresh = same_structure
@@ -244,7 +256,13 @@ impl Observer {
             .ok();
         }
         if let Some(inputs) = &self.inputs {
-            for row in inputs.world.relations.values() {
+            // New lifetimes are numbered in recorded row order: the joined
+            // map's hash order differs between processes.
+            for row in inputs
+                .relation_order
+                .iter()
+                .map(|key| &inputs.world.relations[key])
+            {
                 #[cfg(any(test, feature = "test-support"))]
                 {
                     self.work.row_visits += 1;
@@ -380,7 +398,7 @@ pub fn query(
         &params,
         None,
         &hours,
-        cat.as_deref(),
+        cat.as_ref(),
         cancelled,
     )?)?)
 }
@@ -389,6 +407,9 @@ pub fn query(
 /// any requested casualty hour. `selected` overrides the tag/LocalPlayer with
 /// the original native-holder selection; an empty set never falls back.
 /// `hours` controls exact casualty hydration only; an empty set returns structure.
+/// The viewpoint's walk is kept on the source ([`super::walks`]): a later query
+/// walks only inputs published since, and the inputs from the nearest resume
+/// point to each requested hour.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn projection(
     store: &store::Store,
@@ -397,7 +418,7 @@ pub(crate) fn projection(
     params: &WarsParams,
     selected: Option<&HashSet<(u32, u32)>>,
     hours: &BTreeSet<i32>,
-    cat: Option<&Catalogue>,
+    cat: Option<&Arc<Catalogue>>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<WarsReply>> {
     Wars::validate(params).map_err(invalid)?;
@@ -412,105 +433,65 @@ pub(crate) fn projection(
         .iter()
         .find(|b| b.id == branch)
         .ok_or_else(|| invalid("Wars branch is not in this recording"))?;
-    let (first, last) = branch_bounds(source.replay_ref(), branch_info);
-    let section = format!("wars-series-{branch}");
-    let mut topology = Reader::new(store, key, section.clone(), cancelled)?;
-    let mut reader = Reader::new(store, key, section, cancelled)?;
-    let mut decoded: Option<DecodedFrame> = None;
-    let mut walk = Walk::new(branch, first);
+    let bounds = branch_bounds(source.replay_ref(), branch_info);
+    let mut reader = Reader::new(store, key, format!("wars-series-{branch}"), cancelled)?;
     let mut casualties: HashMap<usize, Vec<WarCasualtyRun>> = HashMap::new();
-    let mut cursor = 0;
-    let mut ordinal = 0;
-    loop {
-        // Decode one changed input at a time, independently of casualty blobs.
-        let page = topology
-            .events(&[0], first, last, cursor, 1)
-            .map_err(|error| {
-                io::Error::new(error.kind(), format!("Wars change inputs: {error}"))
-            })?;
-        let advanced = !page.rows.is_empty();
-        for row in page.rows {
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            let (changes, bytes): (Vec<u16>, Vec<u8>) = serde_json::from_value(row.row)?;
-            let bytes = dashboard_base::prepared::series::decompress(bytes.as_slice()).map_err(
-                |error| {
-                    io::Error::new(error.kind(), format!("Wars input at {}: {error}", row.hour))
-                },
-            )?;
-            let mut input = Decoder::new(&bytes);
-            let packet = DecodedFrame::decode_checkpoint(&mut input)?;
-            input.finish()?;
-            let mut current = decoded.take().unwrap_or_else(|| packet.clone());
-            current.branch = packet.branch;
-            current.hour = packet.hour;
-            for table in changes {
-                let index = TableId::ALL
-                    .iter()
-                    .position(|id| *id as u16 == table)
-                    .ok_or_else(|| invalid("Unknown wars input table"))?;
-                current.tables[index] = packet.tables[index].clone();
-            }
-            decoded = Some(current);
-            let frame = decoded.as_ref().expect("change inputs");
-            let span = topology
-                .value_at(0, row.hour)
-                .map_err(|error| {
-                    io::Error::new(
-                        error.kind(),
-                        format!("Wars coverage at {}: {error}", row.hour),
-                    )
-                })?
-                .filter(|span| span.value == ordinal as i128 && span.first_hour == row.hour)
-                .ok_or_else(|| invalid("Wars change coverage is missing"))?;
-            walk.observe(frame, params.viewpoint_tag.as_deref(), selected, cat);
+    let mut reply = super::walks::walk(
+        source,
+        store,
+        key,
+        branch,
+        bounds,
+        params,
+        selected,
+        cat,
+        hours,
+        cancelled,
+        |walk, span| {
             if hours
                 .range(span.first_hour..=span.last_hour)
                 .next()
-                .is_some()
-                && let Some((inputs, observed)) = walk
-                    .held
-                    .as_ref()
-                    .and_then(|held| held.observed.as_ref().ok())
+                .is_none()
             {
-                let state = &state;
-                let counters: HashMap<_, _> = inputs
-                    .world
-                    .relations
-                    .iter()
-                    .map(|(&pair, row)| {
-                        let identity = WarRelationKey::new(
-                            inputs.identities[&row.first_country],
-                            inputs.identities[&row.second_country],
-                            row.start_hour,
-                        );
-                        let index = indices
-                            .get(&serde_json::to_string(&identity)?)
-                            .copied()
-                            .ok_or_else(|| invalid("Missing prepared war relation lifetime"))?;
-                        Ok((
-                            pair,
-                            (
-                                index,
-                                inputs.identities[&row.first_country] == identity.first,
-                            ),
-                        ))
-                    })
-                    .collect::<io::Result<_>>()?;
-                let losses = hydrate_losses(&mut reader, state, &counters, observed, span, hours)?;
-                for ((id, _), runs) in walk.open.iter().zip(losses) {
-                    casualties.entry(*id).or_default().extend(runs);
-                }
+                return Ok(());
             }
-            walk.extend(span.last_hour);
-            ordinal += 1;
-        }
-        match page.cursor {
-            Some(next) if advanced && next > cursor => cursor = next,
-            Some(_) => return Err(invalid("Prepared wars change page made no progress")),
-            None => break,
-        }
-    }
-    let mut reply = walk.finish(last, cat)?;
+            let Some((inputs, observed)) = walk
+                .held
+                .as_ref()
+                .and_then(|held| held.observed.as_ref().ok())
+            else {
+                return Ok(());
+            };
+            let counters: HashMap<_, _> = inputs
+                .world
+                .relations
+                .iter()
+                .map(|(&pair, row)| {
+                    let identity = WarRelationKey::new(
+                        inputs.identities[&row.first_country],
+                        inputs.identities[&row.second_country],
+                        row.start_hour,
+                    );
+                    let index = indices
+                        .get(&serde_json::to_string(&identity)?)
+                        .copied()
+                        .ok_or_else(|| invalid("Missing prepared war relation lifetime"))?;
+                    Ok((
+                        pair,
+                        (
+                            index,
+                            inputs.identities[&row.first_country] == identity.first,
+                        ),
+                    ))
+                })
+                .collect::<io::Result<_>>()?;
+            let losses = hydrate_losses(&mut reader, &state, &counters, observed, span, hours)?;
+            for ((id, _), runs) in walk.open.iter().zip(losses) {
+                casualties.entry(*id).or_default().extend(runs);
+            }
+            Ok(())
+        },
+    )?;
     for (index, war) in reply.wars.iter_mut().enumerate() {
         war.casualties.clear();
         let mut runs = casualties.remove(&index).unwrap_or_default();

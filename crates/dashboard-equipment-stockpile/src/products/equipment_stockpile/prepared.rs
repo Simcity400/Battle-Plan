@@ -1,8 +1,28 @@
 //! The shared stockpile frame step feeding integer runs and dated supplying reads.
 use super::*;
-use dashboard_base::prepared::frame_changes::FrameChanges;
+use dashboard_base::prepared::frame_changes::{FrameChanges, field_mask};
 use dashboard_base::prepared::series::{self, Accumulator, Reader};
 use dashboard_base::products::equipment::VariantVersion;
+use replay::frame::TableView;
+use std::{collections::HashMap, sync::LazyLock};
+
+/// The Countries fields a holder is read from; its id is the key.
+static HOLDER_FIELDS: LazyLock<u64> =
+    LazyLock::new(|| field_mask(TableId::Countries, &["canonical_slot", "tag"]));
+/// The ProductionLines fields a holder's output, IC and costs are read from;
+/// the handle is the key.
+static LINE_FIELDS: LazyLock<u64> = LazyLock::new(|| {
+    field_mask(
+        TableId::ProductionLines,
+        &["country", "kind", "variant", "cost_raw", "speed_raw"],
+    )
+});
+/// The tables a holder's numbers are read from, in the order of [`RowIndex::complete`].
+const NUMERIC: [TableId; 3] = [
+    TableId::Stockpiles,
+    TableId::ProductionLines,
+    TableId::LogisticsEquipment,
+];
 
 const FIELDS: [&str; 8] = [
     "stock",
@@ -26,6 +46,56 @@ struct Numbers {
     present: [Accumulator; 8],
     coverage: Accumulator,
     reads: Accumulator,
+    /// Each holder's keys once allocated, so an hour finds them without
+    /// spelling their names; rebuilt by use after restore.
+    #[serde(skip)]
+    resolved: BTreeMap<String, HolderKeys>,
+}
+
+/// One holder's series keys. Keys allocated together here are allocated
+/// together, in this order, where they are first used, so caching them keeps
+/// every key's number.
+#[derive(Default)]
+struct HolderKeys {
+    coverage: Option<[u64; 4]>,
+    reads: Option<[u64; 3]>,
+    operands: [BTreeMap<u64, u64>; 8],
+    complete: Option<[u64; 3]>,
+    groups: BTreeMap<String, [u64; 4]>,
+}
+
+/// The key named `field` of `tag`, allocated in first-use order.
+fn allocate(keys: &mut BTreeMap<String, u64>, tag: &str, field: &str) -> u64 {
+    let next = keys.len() as u64;
+    *keys.entry(series::field_key(tag, field)).or_insert(next)
+}
+
+fn holder_keys<'a>(
+    resolved: &'a mut BTreeMap<String, HolderKeys>,
+    tag: &str,
+) -> &'a mut HolderKeys {
+    if !resolved.contains_key(tag) {
+        resolved.insert(tag.to_owned(), HolderKeys::default());
+    }
+    resolved.get_mut(tag).expect("resolved holder keys")
+}
+
+/// What the whole tables last said of each holder's rows, kept current from
+/// each hour's changed rows: the holders of each canonical slot, the raw
+/// country references linked to it, each production line's country, and the
+/// holders whose rows changed since their last read.
+struct RowIndex {
+    identities: BTreeMap<String, (u32, u32)>,
+    slots: Arc<HashMap<u32, u32>>,
+    holders: HashMap<u32, Vec<String>>,
+    links: HashMap<u32, Vec<u32>>,
+    line_owners: HashMap<u64, u32>,
+    lines: HashMap<u32, BTreeSet<u64>>,
+    /// Whether each [`NUMERIC`] table was complete.
+    complete: [bool; 3],
+    /// Slots whose stock or line rows, and whose logistics rows, changed
+    /// since their holders last read them.
+    stale: [BTreeSet<u32>; 2],
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -56,6 +126,13 @@ struct RepeatedReads {
     line_counts: [usize; 6],
     logistics_counts: [usize; 4],
 }
+impl RepeatedReads {
+    /// Whether a read of the tables at `reads` dates anything for the holder.
+    fn repeats_any(&self, [stock_read, logistics_read]: [bool; 2]) -> bool {
+        (stock_read && (self.stock || self.lines))
+            || (logistics_read && self.logistics == Some(true))
+    }
+}
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Prepared {
@@ -74,10 +151,23 @@ pub struct Prepared {
     #[serde(skip)]
     country_reads: Option<dashboard_base::products::territory::CountryReads>,
     #[serde(skip)]
+    country_rows: Option<usize>,
+    #[serde(skip)]
     repeated: BTreeMap<String, RepeatedReads>,
+    /// Built by each whole-table hour; none after restore.
+    #[serde(skip)]
+    rows: Option<RowIndex>,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
+    /// Hours observed from their changed rows alone.
+    #[cfg(test)]
+    #[serde(skip)]
+    row_hours: usize,
+    /// Observe every hour from the whole tables, never from changed rows.
+    #[cfg(test)]
+    #[serde(skip)]
+    whole_tables: bool,
 }
 
 impl Prepared {
@@ -94,6 +184,7 @@ impl Prepared {
                 rows_changed: [true; replay::frame::TABLE_COUNT],
                 table_read: [true; replay::frame::TABLE_COUNT],
                 slot_read: [true; replay::frame::TABLE_COUNT],
+                updates: None,
             },
         )
     }
@@ -106,19 +197,33 @@ impl Prepared {
         self.naming.advance(frame.hour)?;
         self.numbers.advance(frame.hour)?;
         self.choices.advance(frame.hour)?;
-        let continuous = self.frontier.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
+        let previous = self.frontier;
+        let continuous = previous.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
         self.frontier = Some(frame.hour);
         let countries_changed = if changes.rows_changed[TableId::Countries.index()]
             || changes.rows_changed[TableId::CountryLinks.index()]
             || !continuous
         {
             let rows = frame.complete::<tables::Countries>().ok();
+            // Recorded changes that delete no country and touch no holder
+            // field keep the previous hour's holders.
+            let kept = continuous
+                && !changes.rows_changed[TableId::CountryLinks.index()]
+                && changes
+                    .rows(TableId::Countries)
+                    .is_some_and(|(changed, deleted)| {
+                        deleted.is_empty()
+                            && changed.iter().all(|row| row.mask & *HOLDER_FIELDS == 0)
+                    });
+            #[cfg(test)]
+            let kept = kept && !self.whole_tables;
             let same = rows.is_some_and(|rows| {
-                self.country_reads
-                    .as_ref()
-                    .is_some_and(|seen| seen.matches(frame, rows))
+                self.country_reads.as_ref().is_some_and(|seen| {
+                    (kept && self.country_rows == Some(rows.len())) || seen.matches(frame, rows)
+                })
             });
             if !same {
+                self.country_rows = rows.map(<[_]>::len);
                 self.country_reads = rows.map(|rows| {
                     if !changes.rows_changed[TableId::CountryLinks.index()]
                         && let Some(reads) = &self.country_reads
@@ -144,87 +249,8 @@ impl Prepared {
                 .filter(|&&table| !matches!(table, TableId::Countries | TableId::CountryLinks))
                 .any(|table| changes.rows_changed[table.index()])
             || (!self.naming_ready && changes.slot_read[TableId::VariantDefinitions.index()]);
-        let numeric_changed = !continuous
-            || countries_changed
-            || [
-                TableId::Stockpiles,
-                TableId::ProductionLines,
-                TableId::LogisticsEquipment,
-            ]
-            .iter()
-            .any(|table| changes.rows_changed[table.index()]);
-        let stock_read = changes.slot_read[TableId::Stockpiles.index()];
-        let logistics_read = changes.slot_read[TableId::LogisticsEquipment.index()];
-        let repeat_ready = self.active.iter().all(|tag| {
-            self.repeated.get(tag).is_some_and(|read| {
-                (!stock_read
-                    || (read.stock || frame.complete::<tables::Stockpiles>().is_err())
-                        && (read.lines || frame.complete::<tables::ProductionLines>().is_err()))
-                    && (!logistics_read
-                        || read.logistics.is_some()
-                        || frame.complete::<tables::LogisticsEquipment>().is_err())
-            })
-        });
-        if !naming_changed && !numeric_changed && repeat_ready {
-            self.names.advance(frame.hour);
-            for tag in &self.active {
-                let state = self.scan.get_mut(tag).expect("active stockpile country");
-                state.advance(frame.hour);
-                let scanned = &mut state.result;
-                let repeat = &self.repeated[tag];
-                let holder = self.holders.get_mut(tag).expect("current stockpile holder");
-                if stock_read {
-                    if repeat.stock {
-                        scanned.stock.overflowed += repeat.stock_overflow;
-                        holder.overflowed[0] = scanned.stock.overflowed;
-                        scanned.reads.clear();
-                        scanned.reads.push(frame.hour);
-                        self.numbers.read(tag, 0, frame.hour)?;
-                    }
-                    if repeat.lines {
-                        scanned.costless += repeat.line_counts[0];
-                        scanned.other_kinds += repeat.line_counts[1];
-                        holder.costless = scanned.costless;
-                        holder.other_kinds = scanned.other_kinds;
-                        for (index, rows) in [
-                            &mut scanned.daily,
-                            &mut scanned.daily_ic,
-                            &mut scanned.cost_low,
-                            &mut scanned.cost_high,
-                        ]
-                        .into_iter()
-                        .enumerate()
-                        {
-                            rows.overflowed += repeat.line_counts[index + 2];
-                            holder.overflowed[index + 1] = rows.overflowed;
-                        }
-                        scanned.line_reads.clear();
-                        scanned.line_reads.push(frame.hour);
-                        self.numbers.read(tag, 1, frame.hour)?;
-                    }
-                }
-                if logistics_read && repeat.logistics == Some(true) {
-                    scanned.missing_available += repeat.logistics_counts[0];
-                    holder.missing_available = scanned.missing_available;
-                    for (index, rows) in [
-                        &mut scanned.balance,
-                        &mut scanned.logistics_stock,
-                        &mut scanned.available,
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    {
-                        rows.overflowed += repeat.logistics_counts[index + 1];
-                        holder.overflowed[index + 5] = rows.overflowed;
-                    }
-                    scanned.logistics_reads.clear();
-                    scanned.logistics_reads.push(frame.hour);
-                    self.numbers.read(tag, 2, frame.hour)?;
-                }
-            }
-            return Ok(());
-        }
-        let dirty_names = if naming_changed {
+        // Variants whose group changed this hour: their current holders regroup.
+        let reclassified = if naming_changed {
             // Input changes can precede their supplying read, including after
             // restore. Retain that invalidation until the catalogue can read it;
             // the supplying-read flags still come from this accepted frame.
@@ -232,6 +258,7 @@ impl Prepared {
                 rows_changed: changes.rows_changed,
                 table_read: changes.table_read,
                 slot_read: changes.slot_read,
+                updates: None,
             };
             naming_changes.rows_changed[TableId::VariantDefinitions.index()] |= !self.naming_ready;
             let dirty: std::collections::BTreeSet<u64> = self
@@ -255,13 +282,12 @@ impl Prepared {
                     )
                 });
             self.choices.classify(&self.names, &dirty, frame.hour)?;
-            dirty
-        } else {
-            self.names.advance(frame.hour);
-            BTreeSet::new()
-        };
-        if naming_changed {
-            for id in dirty_names {
+            let reclassified: BTreeSet<u64> = dirty
+                .iter()
+                .copied()
+                .filter(|&id| self.choices.reclassified(id, frame.hour))
+                .collect();
+            for id in dirty {
                 let versions = self
                     .names
                     .versions
@@ -320,22 +346,49 @@ impl Prepared {
                     keep
                 });
             }
-        }
+            reclassified
+        } else {
+            self.names.advance(frame.hour);
+            BTreeSet::new()
+        };
         self.naming.through(frame.hour);
+        // A break, a change of holders or of the dictionary their logistics
+        // tokens are spelled from is read from the whole tables.
+        let whole = !continuous
+            || countries_changed
+            || changes.rows_changed[TableId::LexicalTokens.index()];
         #[cfg(test)]
-        let rows_before = ROW_VISITS.with(std::cell::Cell::get);
-        let input = FrameRows::resolved(
-            frame,
-            self.country_reads.as_ref(),
+        let whole = whole || self.whole_tables;
+        if !whole && self.observe_rows(format, frame, changes, previous, &reclassified)? {
+            #[cfg(test)]
+            {
+                self.row_hours += 1;
+            }
+            return Ok(());
+        }
+        self.observe_tables(format, frame, changes, previous)
+    }
+
+    /// Every holder from the whole tables, and the index of their rows that
+    /// later hours keep current from their changed rows.
+    fn observe_tables(
+        &mut self,
+        format: replay::format::FormatVersion,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        previous: Option<i32>,
+    ) -> io::Result<()> {
+        let reads = [
             changes.slot_read[TableId::Stockpiles.index()],
             changes.slot_read[TableId::LogisticsEquipment.index()],
-        );
+        ];
         #[cfg(test)]
-        {
-            self.work.row_visits += ROW_VISITS.with(std::cell::Cell::get) - rows_before;
-        }
+        let rows_before = ROW_VISITS.with(std::cell::Cell::get);
+        let input = FrameRows::resolved(frame, self.country_reads.as_ref(), reads[0], reads[1]);
         for tag in input.identities.keys() {
-            self.scan.entry(tag.clone()).or_default();
+            if !self.scan.contains_key(tag) {
+                self.scan.insert(tag.clone(), ScanState::default());
+            }
         }
         let touched: BTreeSet<_> = input
             .identities
@@ -344,131 +397,227 @@ impl Prepared {
             .chain(self.active.iter().cloned())
             .collect();
         for tag in &touched {
-            let state = self.scan.get_mut(tag).expect("observed stockpile country");
-            #[cfg(test)]
-            {
-                self.work.history_visits += 1;
-            }
-            let before = read_counts(&state.result);
-            state.observe(format, &input, input.identities.get(tag).copied());
-            let repeat = self.repeated.entry(tag.clone()).or_default();
-            if !input.identities.contains_key(tag) {
-                *repeat = RepeatedReads::default();
-            } else {
-                let after = read_counts(&state.result);
-                if stock_read {
-                    repeat.stock = input.stock.is_some();
-                    repeat.lines = input.lines.is_some();
-                    repeat.stock_overflow = after[0] - before[0];
-                    for (index, count) in repeat.line_counts.iter_mut().enumerate() {
-                        *count = after[index + 1] - before[index + 1];
-                    }
-                }
-                if logistics_read {
-                    repeat.logistics = input
-                        .logistics
-                        .as_ref()
-                        .map(|rows| !rows.get(&input.identities[tag].0).is_none_or(Vec::is_empty));
-                    for (index, count) in repeat.logistics_counts.iter_mut().enumerate() {
-                        *count = after[index + 7] - before[index + 7];
-                    }
-                }
-            }
-            let scanned = &mut state.result;
-            let holder = self.holders.entry(tag.clone()).or_default();
-            let new_variants: BTreeSet<_> = scanned
-                .stock
-                .runs
-                .keys()
-                .chain(scanned.daily.runs.keys())
-                .copied()
-                .filter(|id| !holder.variants.contains(id))
-                .collect();
-            let new_logistics: BTreeSet<_> = scanned
-                .balance
-                .runs
-                .keys()
-                .chain(scanned.logistics_stock.runs.keys())
-                .copied()
-                .filter(|id| !holder.logistics.contains(id))
-                .collect();
-            holder.variants.extend(
-                scanned
-                    .stock
-                    .runs
-                    .keys()
-                    .chain(scanned.daily.runs.keys())
-                    .copied(),
-            );
-            holder.logistics.extend(
-                scanned
-                    .balance
-                    .runs
-                    .keys()
-                    .chain(scanned.logistics_stock.runs.keys())
-                    .copied(),
-            );
-            holder.stock_read |= !scanned.reads.is_empty();
-            holder.line_read |= !scanned.line_reads.is_empty();
-            holder.balance_read |= !scanned.logistics_reads.is_empty();
-            holder.ai_read |= !scanned.ai.spans.is_empty();
-            holder.costless = scanned.costless;
-            holder.other_kinds = scanned.other_kinds;
-            holder.missing_available = scanned.missing_available;
-            for token in scanned
-                .balance
-                .runs
-                .keys()
-                .chain(scanned.logistics_stock.runs.keys())
-            {
-                if let Some(name) = scanned.logistics_tokens.get(token) {
-                    holder.tokens.entry(*token).or_insert_with(|| name.clone());
-                }
-            }
-            for (&token, runs) in scanned
-                .balance
-                .runs
-                .iter()
-                .chain(scanned.logistics_stock.runs.iter())
-                .chain(scanned.available.runs.iter())
-            {
-                if runs.last().is_some_and(|run| {
-                    run.last_hour == frame.hour && run.amount_raw.as_deref() != Some("0")
-                }) {
-                    holder.nonzero_logistics.insert(token);
-                }
-            }
-            self.choices.observe(
-                tag,
-                holder,
-                scanned,
-                &self.names,
-                frame.hour,
-                &mut self.numbers,
-            )?;
-            holder.overflowed = [
-                scanned.stock.overflowed,
-                scanned.daily.overflowed,
-                scanned.daily_ic.overflowed,
-                scanned.cost_low.overflowed,
-                scanned.cost_high.overflowed,
-                scanned.balance.overflowed,
-                scanned.logistics_stock.overflowed,
-                scanned.available.overflowed,
-            ];
-            self.numbers.observe(
-                tag,
-                frame.hour,
-                scanned,
-                holder,
-                &new_variants,
-                &new_logistics,
-            )?;
+            let identity = input.identities.get(tag).copied();
+            self.observe_holder(format, &input, tag, identity, reads, previous)?;
         }
         self.repeated
             .retain(|tag, _| input.identities.contains_key(tag));
         self.active = input.identities.keys().cloned().collect();
+        self.rows = RowIndex::new(frame, self.country_reads.as_ref(), input.identities, reads);
+        #[cfg(test)]
+        {
+            self.work.row_visits += ROW_VISITS.with(std::cell::Cell::get) - rows_before;
+        }
         Ok(())
+    }
+
+    /// The hour from its changed rows alone: possible when it continues the
+    /// previous one with the same holders and dictionary, and each numeric
+    /// table changed by exactly its recorded rows. A holder whose own rows
+    /// changed since its last read of them, or whose variant changed group, is
+    /// observed from its own rows; every other holder's read repeats its last
+    /// one and its values carry, as they would from the whole tables. False
+    /// when the whole tables are needed.
+    fn observe_rows(
+        &mut self,
+        format: replay::format::FormatVersion,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        previous: Option<i32>,
+        reclassified: &BTreeSet<u64>,
+    ) -> io::Result<bool> {
+        let reads = [
+            changes.slot_read[TableId::Stockpiles.index()],
+            changes.slot_read[TableId::LogisticsEquipment.index()],
+        ];
+        let read = reads[0] || reads[1];
+        let Some(index) = self.rows.as_mut() else {
+            return Ok(false);
+        };
+        if index.mark(frame, changes).is_none() {
+            return Ok(false);
+        }
+        let mut full = BTreeMap::<String, (u32, u32)>::new();
+        for (stale, _) in index.stale.iter().zip(reads).filter(|(_, due)| *due) {
+            for slot in stale {
+                for tag in &index.holders[slot] {
+                    full.insert(tag.clone(), index.identities[tag]);
+                }
+            }
+        }
+        if !reclassified.is_empty() {
+            for tag in &self.active {
+                let held = &self.scan[tag].result;
+                if reclassified
+                    .iter()
+                    .any(|id| held.stock.runs.contains_key(id) || held.daily.runs.contains_key(id))
+                {
+                    full.insert(tag.clone(), index.identities[tag]);
+                }
+            }
+        }
+        if read {
+            for (tag, repeat) in &self.repeated {
+                if !full.contains_key(tag) && !repeats(repeat, index.complete, reads) {
+                    full.insert(tag.clone(), index.identities[tag]);
+                }
+            }
+        }
+        #[cfg(test)]
+        let rows_before = ROW_VISITS.with(std::cell::Cell::get);
+        let slots: BTreeSet<u32> = full.values().map(|&(slot, _)| slot).collect();
+        let Some(input) = index.gather(frame, &slots, reads) else {
+            return Ok(false);
+        };
+        #[cfg(test)]
+        {
+            self.work.row_visits += ROW_VISITS.with(std::cell::Cell::get) - rows_before;
+        }
+        if read {
+            for (tag, repeat) in &self.repeated {
+                if full.contains_key(tag) || !repeat.repeats_any(reads) {
+                    continue;
+                }
+                repeat_holder(
+                    self.scan.get_mut(tag).expect("active stockpile country"),
+                    self.holders.get_mut(tag).expect("current stockpile holder"),
+                    repeat,
+                    &mut self.numbers,
+                    tag,
+                    frame.hour,
+                    reads,
+                    previous,
+                )?;
+            }
+        }
+        for (tag, &identity) in &full {
+            self.observe_holder(format, &input, tag, Some(identity), reads, previous)?;
+        }
+        let index = self.rows.as_mut().expect("stockpile row index");
+        for (stale, _) in index.stale.iter_mut().zip(reads).filter(|(_, due)| *due) {
+            stale.clear();
+        }
+        Ok(true)
+    }
+
+    /// One holder's step from its own rows of `input`, shared by the whole
+    /// tables and the changed rows.
+    fn observe_holder(
+        &mut self,
+        format: replay::format::FormatVersion,
+        input: &FrameRows<'_>,
+        tag: &str,
+        identity: Option<(u32, u32)>,
+        [stock_read, logistics_read]: [bool; 2],
+        previous: Option<i32>,
+    ) -> io::Result<()> {
+        let hour = input.frame.hour;
+        let state = self.scan.get_mut(tag).expect("observed stockpile country");
+        state.catch_up(previous);
+        #[cfg(test)]
+        {
+            self.work.history_visits += 1;
+        }
+        let before = read_counts(&state.result);
+        state.observe(format, input, identity);
+        if !self.repeated.contains_key(tag) {
+            self.repeated
+                .insert(tag.to_owned(), RepeatedReads::default());
+        }
+        let repeat = self
+            .repeated
+            .get_mut(tag)
+            .expect("repeated stockpile reads");
+        if let Some((slot, _)) = identity {
+            let after = read_counts(&state.result);
+            if stock_read {
+                repeat.stock = input.stock.is_some();
+                repeat.lines = input.lines.is_some();
+                repeat.stock_overflow = after[0] - before[0];
+                for (index, count) in repeat.line_counts.iter_mut().enumerate() {
+                    *count = after[index + 1] - before[index + 1];
+                }
+            }
+            if logistics_read {
+                repeat.logistics = input
+                    .logistics
+                    .as_ref()
+                    .map(|rows| !rows.get(&slot).is_none_or(Vec::is_empty));
+                for (index, count) in repeat.logistics_counts.iter_mut().enumerate() {
+                    *count = after[index + 7] - before[index + 7];
+                }
+            }
+        } else {
+            *repeat = RepeatedReads::default();
+        }
+        let scanned = &mut state.result;
+        if !self.holders.contains_key(tag) {
+            self.holders.insert(tag.to_owned(), Holder::default());
+        }
+        let holder = self.holders.get_mut(tag).expect("stockpile holder");
+        let new_variants: BTreeSet<_> = scanned
+            .stock
+            .runs
+            .keys()
+            .chain(scanned.daily.runs.keys())
+            .copied()
+            .filter(|id| !holder.variants.contains(id))
+            .collect();
+        let new_logistics: BTreeSet<_> = scanned
+            .balance
+            .runs
+            .keys()
+            .chain(scanned.logistics_stock.runs.keys())
+            .copied()
+            .filter(|id| !holder.logistics.contains(id))
+            .collect();
+        holder.variants.extend(new_variants.iter().copied());
+        holder.logistics.extend(new_logistics.iter().copied());
+        holder.stock_read |= !scanned.reads.is_empty();
+        holder.line_read |= !scanned.line_reads.is_empty();
+        holder.balance_read |= !scanned.logistics_reads.is_empty();
+        holder.ai_read |= !scanned.ai.spans.is_empty();
+        holder.costless = scanned.costless;
+        holder.other_kinds = scanned.other_kinds;
+        holder.missing_available = scanned.missing_available;
+        for token in scanned
+            .balance
+            .runs
+            .keys()
+            .chain(scanned.logistics_stock.runs.keys())
+        {
+            if let Some(name) = scanned.logistics_tokens.get(token) {
+                holder.tokens.entry(*token).or_insert_with(|| name.clone());
+            }
+        }
+        for (&token, runs) in scanned
+            .balance
+            .runs
+            .iter()
+            .chain(scanned.logistics_stock.runs.iter())
+            .chain(scanned.available.runs.iter())
+        {
+            if runs
+                .last()
+                .is_some_and(|run| run.last_hour == hour && run.amount_raw.as_deref() != Some("0"))
+            {
+                holder.nonzero_logistics.insert(token);
+            }
+        }
+        self.choices
+            .observe(tag, holder, scanned, &self.names, hour, &mut self.numbers)?;
+        holder.overflowed = [
+            scanned.stock.overflowed,
+            scanned.daily.overflowed,
+            scanned.daily_ic.overflowed,
+            scanned.cost_low.overflowed,
+            scanned.cost_high.overflowed,
+            scanned.balance.overflowed,
+            scanned.logistics_stock.overflowed,
+            scanned.available.overflowed,
+        ];
+        self.numbers
+            .observe(tag, hour, scanned, holder, &new_variants, &new_logistics)
     }
 
     pub fn bytes(&self) -> usize {
@@ -492,10 +641,11 @@ impl Prepared {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         for tag in &self.active {
-            self.scan
-                .get_mut(tag)
-                .expect("active stockpile country")
-                .seal();
+            let state = self.scan.get_mut(tag).expect("active stockpile country");
+            // Publication and its checkpoint hold every holder through the
+            // last accepted hour, visited or not.
+            state.catch_up(self.frontier);
+            state.seal();
         }
         self.numbers.flush(writer, branch, cancelled)?;
         self.choices.flush(writer, branch, cancelled)?;
@@ -535,11 +685,313 @@ fn read_counts(scanned: &ScannedStockpile) -> [usize; 11] {
     ]
 }
 
+/// Whether a holder's read at `reads` repeats its last one: each table read
+/// now was complete at that read, or is not now.
+fn repeats(
+    read: &RepeatedReads,
+    complete: [bool; 3],
+    [stock_read, logistics_read]: [bool; 2],
+) -> bool {
+    (!stock_read || (read.stock || !complete[0]) && (read.lines || !complete[1]))
+        && (!logistics_read || read.logistics.is_some() || !complete[2])
+}
+
+/// A holder whose own rows are those of its last read: the read repeats that
+/// read's dates and diagnostic counts, and every value carries. Hours that
+/// read nothing for it are not visited; it is stepped through them when next
+/// visited.
+#[allow(clippy::too_many_arguments)]
+fn repeat_holder(
+    state: &mut ScanState,
+    holder: &mut Holder,
+    repeat: &RepeatedReads,
+    numbers: &mut Numbers,
+    tag: &str,
+    hour: i32,
+    reads: [bool; 2],
+    previous: Option<i32>,
+) -> io::Result<()> {
+    if !repeat.repeats_any(reads) {
+        return Ok(());
+    }
+    let [stock_read, logistics_read] = reads;
+    let stock = stock_read && (repeat.stock || repeat.lines);
+    let logistics = logistics_read && repeat.logistics == Some(true);
+    state.catch_up(previous);
+    state.advance(hour);
+    let scanned = &mut state.result;
+    if stock {
+        if repeat.stock {
+            scanned.stock.overflowed += repeat.stock_overflow;
+            holder.overflowed[0] = scanned.stock.overflowed;
+            scanned.reads.clear();
+            scanned.reads.push(hour);
+            numbers.read(tag, 0, hour)?;
+        }
+        if repeat.lines {
+            scanned.costless += repeat.line_counts[0];
+            scanned.other_kinds += repeat.line_counts[1];
+            holder.costless = scanned.costless;
+            holder.other_kinds = scanned.other_kinds;
+            for (index, rows) in [
+                &mut scanned.daily,
+                &mut scanned.daily_ic,
+                &mut scanned.cost_low,
+                &mut scanned.cost_high,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                rows.overflowed += repeat.line_counts[index + 2];
+                holder.overflowed[index + 1] = rows.overflowed;
+            }
+            scanned.line_reads.clear();
+            scanned.line_reads.push(hour);
+            numbers.read(tag, 1, hour)?;
+        }
+    }
+    if logistics {
+        scanned.missing_available += repeat.logistics_counts[0];
+        holder.missing_available = scanned.missing_available;
+        for (index, rows) in [
+            &mut scanned.balance,
+            &mut scanned.logistics_stock,
+            &mut scanned.available,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            rows.overflowed += repeat.logistics_counts[index + 1];
+            holder.overflowed[index + 5] = rows.overflowed;
+        }
+        scanned.logistics_reads.clear();
+        scanned.logistics_reads.push(hour);
+        numbers.read(tag, 2, hour)?;
+    }
+    Ok(())
+}
+
+impl RowIndex {
+    /// The index of the holders the whole tables just resolved; none without
+    /// complete links, whose hours are all read whole. A complete table the
+    /// holders did not read at `reads` may have changed since their last read
+    /// of it, so every holder's next read of it is a full one.
+    fn new(
+        frame: &DecodedFrame,
+        countries: Option<&dashboard_base::products::territory::CountryReads>,
+        identities: BTreeMap<String, (u32, u32)>,
+        [stock_read, logistics_read]: [bool; 2],
+    ) -> Option<Self> {
+        let countries = countries.filter(|_| frame.complete::<tables::CountryLinks>().is_ok())?;
+        let slots = Arc::clone(countries.slots());
+        let mut holders = HashMap::<u32, Vec<String>>::new();
+        for (tag, &(slot, _)) in &identities {
+            holders.entry(slot).or_default().push(tag.clone());
+        }
+        let mut links = HashMap::<u32, Vec<u32>>::new();
+        for (&raw, slot) in slots.iter() {
+            if holders.contains_key(slot) {
+                links.entry(*slot).or_default().push(raw);
+            }
+        }
+        for raws in links.values_mut() {
+            raws.sort_unstable();
+        }
+        let mut line_owners = HashMap::new();
+        let mut lines = HashMap::<u32, BTreeSet<u64>>::new();
+        if let Ok(rows) = frame.complete::<tables::ProductionLines>() {
+            for row in rows {
+                #[cfg(test)]
+                ROW_VISITS.with(|count| count.set(count.get() + 1));
+                line_owners.insert(row.handle, row.country);
+                if let Some(&slot) = slots.get(&row.country) {
+                    lines.entry(slot).or_default().insert(row.handle);
+                }
+            }
+        }
+        let complete = complete(frame);
+        // Only a complete table has rows that may have changed unread.
+        let unread = |read: bool, complete: bool| {
+            if read || !complete {
+                BTreeSet::new()
+            } else {
+                holders.keys().copied().collect()
+            }
+        };
+        Some(Self {
+            stale: [
+                unread(stock_read, complete[0] || complete[1]),
+                unread(logistics_read, complete[2]),
+            ],
+            complete,
+            identities,
+            slots,
+            holders,
+            links,
+            line_owners,
+            lines,
+        })
+    }
+
+    /// Note the holders whose own rows changed this hour. None when a numeric
+    /// table became or stopped being complete, changed other than by its
+    /// recorded rows, or a changed line is missing from it.
+    fn mark(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> Option<()> {
+        if complete(frame) != self.complete {
+            return None;
+        }
+        let [stock, lines, logistics] = NUMERIC.map(|table| changes.rows(table));
+        let (stock, lines, logistics) = (stock?, lines?, logistics?);
+        // Stock and logistics keys lead with the raw country reference.
+        for (table, (changed, deleted)) in [(0, stock), (1, logistics)] {
+            for key in changed
+                .iter()
+                .map(|row| row.key)
+                .chain(deleted.iter().copied())
+            {
+                self.stale_country(table, (key >> 32) as u32);
+            }
+        }
+        let (changed, deleted) = lines;
+        if changed.is_empty() && deleted.is_empty() {
+            return Some(());
+        }
+        let rows = frame.complete::<tables::ProductionLines>().ok()?;
+        for change in changed {
+            let handle = change.key as u64;
+            let known = self.line_owners.get(&handle).copied();
+            if known.is_some() && change.mask & *LINE_FIELDS == 0 {
+                continue;
+            }
+            let owner = rows[rows.binary_search_by_key(&handle, |row| row.handle).ok()?].country;
+            if let Some(old) = known {
+                self.stale_country(0, old);
+                self.unlink(handle, old);
+            }
+            self.stale_country(0, owner);
+            self.line_owners.insert(handle, owner);
+            if let Some(&slot) = self.slots.get(&owner) {
+                self.lines.entry(slot).or_default().insert(handle);
+            }
+        }
+        for &key in deleted {
+            let handle = key as u64;
+            if let Some(old) = self.line_owners.remove(&handle) {
+                self.stale_country(0, old);
+                self.unlink(handle, old);
+            }
+        }
+        Some(())
+    }
+
+    fn stale_country(&mut self, table: usize, raw: u32) {
+        if let Some(&slot) = self.slots.get(&raw)
+            && self.holders.contains_key(&slot)
+        {
+            self.stale[table].insert(slot);
+        }
+    }
+
+    fn unlink(&mut self, handle: u64, raw: u32) {
+        if let Some(slot) = self.slots.get(&raw)
+            && let Some(lines) = self.lines.get_mut(slot)
+        {
+            lines.remove(&handle);
+        }
+    }
+
+    /// The rows of `slots` in each numeric table read at `reads`, grouped as
+    /// the whole tables group them: a slot's rows in key order across its
+    /// links. None when an indexed line is not that slot's.
+    fn gather<'a>(
+        &self,
+        frame: &'a DecodedFrame,
+        slots: &BTreeSet<u32>,
+        [stock_read, logistics_read]: [bool; 2],
+    ) -> Option<FrameRows<'a>> {
+        fn grouped<'a, T>(
+            rows: &'a [T],
+            read: bool,
+            slots: &BTreeSet<u32>,
+            links: &HashMap<u32, Vec<u32>>,
+            country: impl Fn(&T) -> u32,
+        ) -> BTreeMap<u32, Vec<&'a T>> {
+            let mut result = BTreeMap::new();
+            if !read {
+                return result;
+            }
+            for slot in slots {
+                let mut own = Vec::new();
+                for &raw in links.get(slot).into_iter().flatten() {
+                    let first = rows.partition_point(|row| country(row) < raw);
+                    for row in rows[first..].iter().take_while(|row| country(row) == raw) {
+                        #[cfg(test)]
+                        ROW_VISITS.with(|count| count.set(count.get() + 1));
+                        own.push(row);
+                    }
+                }
+                if !own.is_empty() {
+                    result.insert(*slot, own);
+                }
+            }
+            result
+        }
+        let lines = match frame.complete::<tables::ProductionLines>() {
+            Ok(rows) if stock_read => {
+                let mut result = BTreeMap::new();
+                for &slot in slots {
+                    let mut own = Vec::new();
+                    for handle in self.lines.get(&slot).into_iter().flatten() {
+                        let row =
+                            &rows[rows.binary_search_by_key(handle, |row| row.handle).ok()?];
+                        if self.slots.get(&row.country) != Some(&slot) {
+                            return None;
+                        }
+                        #[cfg(test)]
+                        ROW_VISITS.with(|count| count.set(count.get() + 1));
+                        own.push(row);
+                    }
+                    if !own.is_empty() {
+                        result.insert(slot, own);
+                    }
+                }
+                Some(result)
+            }
+            Ok(_) => Some(BTreeMap::new()),
+            Err(_) => None,
+        };
+        Some(FrameRows {
+            frame,
+            identities: BTreeMap::new(),
+            stock: frame
+                .complete::<tables::Stockpiles>()
+                .ok()
+                .map(|rows| grouped(rows, stock_read, slots, &self.links, |row| row.country)),
+            lines,
+            logistics: frame
+                .complete::<tables::LogisticsEquipment>()
+                .ok()
+                .map(|rows| grouped(rows, logistics_read, slots, &self.links, |row| row.country)),
+        })
+    }
+}
+
+/// Whether each [`NUMERIC`] table is complete.
+fn complete(frame: &DecodedFrame) -> [bool; 3] {
+    NUMERIC.map(|table| matches!(*frame.tables[table.index()], TableView::Complete(_)))
+}
+
 impl Numbers {
     fn read(&mut self, tag: &str, field: usize, hour: i32) -> io::Result<()> {
-        let key = self.key(tag, &format!("reads-{field}"));
+        let key = self.read_keys(tag)[field];
         self.reads.observe(key, hour, Some(i128::from(hour)), false);
         self.reads.event(key, hour, &hour)
+    }
+    fn read_keys(&mut self, tag: &str) -> [u64; 3] {
+        let Self { keys, resolved, .. } = self;
+        *holder_keys(resolved, tag).reads.get_or_insert_with(|| {
+            std::array::from_fn(|field| allocate(keys, tag, &format!("reads-{field}")))
+        })
     }
     fn advance(&mut self, hour: i32) -> io::Result<()> {
         for series in self
@@ -552,15 +1004,7 @@ impl Numbers {
         }
         Ok(())
     }
-    fn key(&mut self, tag: &str, field: &str) -> u64 {
-        let next = self.keys.len() as u64;
-        *self
-            .keys
-            .entry(series::field_key(tag, field))
-            .or_insert(next)
-    }
-
-    fn values<K: Ord + Copy + std::fmt::Display>(
+    fn values<K: Ord + Copy + std::fmt::Display + Into<u64>>(
         &mut self,
         tag: &str,
         field: usize,
@@ -569,19 +1013,35 @@ impl Numbers {
         ids: &BTreeSet<K>,
         added: &BTreeSet<K>,
     ) {
+        let Self {
+            keys,
+            amounts,
+            present,
+            resolved,
+            ..
+        } = self;
+        let resolved = &mut holder_keys(resolved, tag).operands[field];
         let span = rows.spans.last().filter(|span| span.last_hour == hour);
         let starts = span.is_some_and(|span| span.first_hour == hour);
         let changed: BTreeSet<_> = if span.is_none() || starts {
             ids.clone()
         } else {
+            // Within a continuing span a value that neither started nor ended
+            // at this hour is the one already carried: only the others change.
             rows.runs
-                .keys()
-                .copied()
+                .iter()
+                .filter(|(_, runs)| {
+                    runs.last()
+                        .is_none_or(|run| run.last_hour != hour || run.first_hour == hour)
+                })
+                .map(|(&id, _)| id)
                 .chain(added.iter().copied())
                 .collect()
         };
         for id in &changed {
-            let key = self.key(tag, &format!("{}:{id}", FIELDS[field]));
+            let key = *resolved
+                .entry((*id).into())
+                .or_insert_with(|| allocate(keys, tag, &format!("{}:{id}", FIELDS[field])));
             let Some(run) = rows
                 .runs
                 .get(id)
@@ -591,7 +1051,7 @@ impl Numbers {
                 // Known absence is independently retained from an explicit
                 // uncomputable row, and contributes zero to the numeric sum.
                 observe_numeric(
-                    &mut self.present[field],
+                    &mut present[field],
                     key,
                     hour,
                     span.map(|_| 0),
@@ -599,7 +1059,7 @@ impl Numbers {
                     false,
                 );
                 observe_numeric(
-                    &mut self.amounts[field],
+                    &mut amounts[field],
                     key,
                     hour,
                     span.map(|_| 0),
@@ -615,21 +1075,21 @@ impl Numbers {
                 .amount_raw
                 .as_ref()
                 .map(|value| value.parse::<i128>().expect("ReadRuns i64"));
-            let previous = self.present[field].state(key).and_then(|state| state.last);
+            let previous = present[field].state(key).and_then(|state| state.last);
             let version = if boundary {
                 previous.map_or(1, |run| run.value.abs() + 1)
             } else {
                 previous.expect("carried stockpile presence").value.abs()
             };
             observe_numeric(
-                &mut self.present[field],
+                &mut present[field],
                 key,
                 hour,
                 Some(if value.is_some() { version } else { -version }),
                 starts,
                 false,
             );
-            observe_numeric(&mut self.amounts[field], key, hour, value, starts, boundary);
+            observe_numeric(&mut amounts[field], key, hour, value, starts, boundary);
         }
         // ReadRuns retains its own open/carry state. Closed history is already in
         // Accumulator; retaining one current interval is sufficient for the step.
@@ -652,6 +1112,12 @@ impl Numbers {
         new_variants: &BTreeSet<u64>,
         new_logistics: &BTreeSet<u32>,
     ) -> io::Result<()> {
+        let coverage = {
+            let Self { keys, resolved, .. } = self;
+            *holder_keys(resolved, tag).coverage.get_or_insert_with(|| {
+                std::array::from_fn(|field| allocate(keys, tag, COVERAGE[field]))
+            })
+        };
         for (field, spans) in [
             &scanned.stock.spans,
             &scanned.daily.spans,
@@ -661,7 +1127,7 @@ impl Numbers {
         .into_iter()
         .enumerate()
         {
-            let key = self.key(tag, COVERAGE[field]);
+            let key = coverage[field];
             let span = spans.last().filter(|span| span.last_hour == hour);
             self.coverage.observe(
                 key,
@@ -670,6 +1136,7 @@ impl Numbers {
                 span.is_some_and(|span| span.first_hour == hour),
             );
         }
+        let read_keys = self.read_keys(tag);
         for (field, reads) in [
             &mut scanned.reads,
             &mut scanned.line_reads,
@@ -678,7 +1145,7 @@ impl Numbers {
         .into_iter()
         .enumerate()
         {
-            let key = self.key(tag, &format!("reads-{field}"));
+            let key = read_keys[field];
             if reads.last() == Some(&hour) {
                 self.reads.observe(key, hour, Some(i128::from(hour)), false);
                 self.reads.event(key, hour, &hour)?;

@@ -737,7 +737,7 @@ pub(super) fn target_state(world: &World<'_>, scope: &RaidScope) -> Option<u32> 
         .find(|&id| id != 0);
     let state_of = |province: u32| {
         world
-            .provinces
+            .provinces()
             .get(&province)
             .map(|row| row.state)
             .filter(|&id| id != 0)
@@ -867,7 +867,7 @@ fn building_matches(
             std::slice::from_ref(&scope.building_location)
         } else {
             world
-                .state_provinces
+                .state_provinces()
                 .get(&scope.building_location)
                 .map_or(&[], Vec::as_slice)
         };

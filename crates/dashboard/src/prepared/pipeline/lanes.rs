@@ -1,4 +1,4 @@
-//! Disjoint numeric observers, packed into scoped workers with a frame barrier.
+//! Disjoint family observers, packed into scoped workers with a frame barrier.
 use super::{FamilyTimings, Refused};
 use crate::prepared::frame_changes::FrameChanges;
 use replay::frame::DecodedFrame;
@@ -58,6 +58,7 @@ impl<'a> Job<'a> {
             if let Some(hook) = hook {
                 match hook(name, frame, changes) {
                     Fault::Continue => {}
+                    Fault::Skip => return Some(Ok(())),
                     Fault::Disconnect => return None,
                     Fault::Error => {
                         return Some(Err(io::Error::other("Injected preparation lane error")));
@@ -361,7 +362,7 @@ impl<'scope> Lanes<'scope> {
     ) -> io::Result<()> {
         if let Some(hook) = &self.hook {
             match hook("coordinator", frame, changes) {
-                Fault::Continue => {}
+                Fault::Continue | Fault::Skip => {}
                 Fault::Error => {
                     return Err(io::Error::other("Injected preparation coordinator error"));
                 }
@@ -494,6 +495,8 @@ pub(super) fn merge(into: &mut Timings, from: Timings) {
 #[cfg(test)]
 pub(super) enum Fault {
     Continue,
+    /// The job's observation of this frame is omitted, as if its lane diverged.
+    Skip,
     Disconnect,
     Error,
     Panic,
@@ -543,6 +546,19 @@ fn injected<T>(
         ));
     }
     result
+}
+
+/// The refusals this thread's test injects, for pre-pass workers to apply.
+#[cfg(test)]
+pub(super) fn test_refusals() -> Vec<(&'static str, i32)> {
+    TEST_REFUSALS.with(|refusals| refusals.borrow().clone())
+}
+
+/// Inject `refusals` on this thread: another thread's test refusals, for a
+/// family prepared there.
+#[cfg(test)]
+pub(super) fn set_test_refusals(refusals: Vec<(&'static str, i32)>) {
+    TEST_REFUSALS.with(|value| *value.borrow_mut() = refusals);
 }
 
 /// Coordinator families observe and flush on the test's own thread.

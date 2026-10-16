@@ -9,6 +9,8 @@ pub struct Prepared {
     scan: Scan,
     series: Accumulator,
     #[serde(skip)]
+    published: Published,
+    #[serde(skip)]
     keys: BTreeMap<String, u64>,
     #[serde(skip)]
     countries: BTreeMap<String, BTreeSet<u64>>,
@@ -19,6 +21,10 @@ pub struct Prepared {
     through: i32,
     #[serde(skip)]
     content_warnings: Vec<String>,
+    /// The content refusals this family's own reads produced, which its
+    /// published warnings report.
+    #[serde(default)]
+    refusals: dashboard_text::catalogue::OwnRefusals,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
@@ -29,6 +35,34 @@ pub struct Metadata {
     warnings: Vec<String>,
     admissions: BTreeMap<String, BTreeSet<(u64, u32, u32)>>,
     kinds: BTreeMap<u64, BTreeSet<u8>>,
+    published: Published,
+}
+
+/// The value each battle outcome and naval result source key holds in the
+/// published series, as its latest event wrote it; the catalogue that names
+/// those keys carries it. Observation restores the keys a frame reaches from
+/// these, and publication compares against them, so neither reads the series
+/// back.
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct Published {
+    #[serde(with = "dashboard_core::map_pairs")]
+    outcomes: BattleOutcomes,
+    #[serde(with = "dashboard_core::map_pairs")]
+    sources: BTreeMap<u64, NavalSource>,
+}
+
+/// Put `key`'s published value into the window's `current` values unless
+/// the window already holds one.
+fn restore<K: Ord + Copy, V: Copy>(
+    current: &mut BTreeMap<K, V>,
+    published: &BTreeMap<K, V>,
+    key: K,
+) {
+    if let std::collections::btree_map::Entry::Vacant(entry) = current.entry(key)
+        && let Some(value) = published.get(&key)
+    {
+        entry.insert(*value);
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -57,6 +91,7 @@ impl Prepared {
         state.content_warnings = metadata.warnings;
         state.admissions = metadata.admissions;
         state.kinds = metadata.kinds;
+        state.published = metadata.published;
         state.scan.leader_indices = state
             .scan
             .leaders
@@ -85,13 +120,31 @@ impl Prepared {
         let key = self.key(reference.to_string())?;
         self.series.event(key, self.through, &event)
     }
-    /// Reload only the outcome/source keys reached by this frame.
+    /// Runs `run` as this family's own consumer of the shared content
+    /// ([`dashboard_text::catalogue::own_refusals`]).
+    fn own<T>(&mut self, run: impl FnOnce(&mut Self) -> T) -> T {
+        let mut own = std::mem::take(&mut self.refusals);
+        let value = dashboard_text::catalogue::own_refusals(&mut own, || run(self));
+        self.refusals = own;
+        value
+    }
+    /// Restore only the published outcome/source keys reached by this frame,
+    /// from [`Published`]: the published series is never read while
+    /// observing.
     pub fn observe(
         &mut self,
         frame: &DecodedFrame,
         replay: &Replay,
         content: Option<&Content>,
-        reader: &mut Reader<'_>,
+        changes: &FrameChanges,
+    ) -> io::Result<()> {
+        self.own(|state| state.observe_own(frame, replay, content, changes))
+    }
+    fn observe_own(
+        &mut self,
+        frame: &DecodedFrame,
+        replay: &Replay,
+        content: Option<&Content>,
         changes: &FrameChanges,
     ) -> io::Result<()> {
         self.series.advance(frame.hour)?;
@@ -102,32 +155,32 @@ impl Prepared {
         ]
         .into_iter()
         .any(|table| changes.rows_changed[table.index()]);
-        let mut sources = BTreeSet::new();
         if naval_changed && let Ok(results) = frame.complete::<tables::NavalResults>() {
             #[cfg(test)]
             {
                 self.work.row_visits += results.len();
             }
-            sources.extend(results.iter().map(|row| row.id));
+            for row in results {
+                restore(
+                    &mut self.scan.naval_sources,
+                    &self.published.sources,
+                    row.id,
+                );
+            }
         }
         if naval_changed && let Ok(results) = frame.complete::<tables::NavalCombatResultDetails>() {
             #[cfg(test)]
             {
                 self.work.row_visits += results.len();
             }
-            sources.extend(results.iter().map(|row| row.result));
-        }
-        for id in sources {
-            if !self.scan.naval_sources.contains_key(&id)
-                && let Some(&key) = self.keys.get(&format!("source:{id}"))
-                && let Some((_, row)) = reader.latest_event(key, i32::MAX)?
-            {
-                self.scan
-                    .naval_sources
-                    .insert(id, serde_json::from_value(row)?);
+            for row in results {
+                restore(
+                    &mut self.scan.naval_sources,
+                    &self.published.sources,
+                    row.result,
+                );
             }
         }
-        let mut outcomes = BTreeSet::new();
         if changes.rows_changed[TableId::LandCombatResults.index()]
             && let Ok(results) = frame.complete::<tables::LandCombatResults>()
         {
@@ -135,19 +188,28 @@ impl Prepared {
             {
                 self.work.row_visits += results.len();
             }
-            outcomes.extend(results.iter().map(|row| (1, row.combat)));
+            for row in results {
+                restore(
+                    &mut self.scan.outcomes,
+                    &self.published.outcomes,
+                    (1, row.combat),
+                );
+            }
         }
         if naval_changed && let Ok(results) = frame.complete::<tables::NavalResults>() {
             #[cfg(test)]
             {
                 self.work.row_visits += results.len();
             }
-            outcomes.extend(results.iter().filter_map(|row| {
-                self.scan
-                    .naval_sources
-                    .get(&row.id)
-                    .map(|source| (2, source.combat))
-            }));
+            for row in results {
+                if let Some(source) = self.scan.naval_sources.get(&row.id) {
+                    restore(
+                        &mut self.scan.outcomes,
+                        &self.published.outcomes,
+                        (2, source.combat),
+                    );
+                }
+            }
         }
         // A source reached in this very frame may introduce a previously seen combat.
         if naval_changed && let Ok(sources) = frame.complete::<tables::NavalResultSources>() {
@@ -155,21 +217,18 @@ impl Prepared {
             {
                 self.work.row_visits += sources.len();
             }
-            outcomes.extend(
-                sources
-                    .iter()
-                    .filter(|source| !source.transient && !source.merged)
-                    .map(|source| (2, source.combat)),
-            );
-        }
-        for id in outcomes {
-            if !self.scan.outcomes.contains_key(&id)
-                && let Some(&key) = self.keys.get(&format!("outcome:{}:{}", id.0, id.1))
-                && let Some((_, row)) = reader.latest_event(key, i32::MAX)?
+            for source in sources
+                .iter()
+                .filter(|source| !source.transient && !source.merged)
             {
-                self.scan.outcomes.insert(id, serde_json::from_value(row)?);
+                restore(
+                    &mut self.scan.outcomes,
+                    &self.published.outcomes,
+                    (2, source.combat),
+                );
             }
         }
+        self.scan.reuse_evaluations = true;
         let params = full_params(&self.scan.reply.branch_id);
         let countries = &mut self.countries;
         let admissions = &mut self.admissions;
@@ -226,12 +285,29 @@ impl Prepared {
     pub fn buffered_bytes(&self) -> usize {
         self.series.bytes().saturating_add(self.scan.pending_bytes)
     }
+    /// Publish the window. Changed outcomes and sources are found against
+    /// [`Published`], so the published series is never read.
     pub fn flush(
         &mut self,
         writer: &mut store::Writer,
         branch: u64,
         content: Option<&Content>,
-        reader: &mut Reader<'_>,
+        content_errors: &[String],
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.own(|state| state.publish_own(writer, branch, content, content_errors, cancelled))?;
+        // The saved state includes this flush's own refusals.
+        writer.write_at(
+            &format!("unit-leaders-{branch}"),
+            0,
+            self.saved_bytes()?.as_slice(),
+        )
+    }
+    fn publish_own(
+        &mut self,
+        writer: &mut store::Writer,
+        branch: u64,
+        content: Option<&Content>,
         content_errors: &[String],
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
@@ -339,11 +415,18 @@ impl Prepared {
             }
             self.scan.reply.observed.push(last);
         }
-        for ((kind, combat), result) in std::mem::take(&mut self.scan.outcomes) {
-            self.write_changed(format!("outcome:{kind}:{combat}"), &result, reader)?;
+        for (outcome, result) in std::mem::take(&mut self.scan.outcomes) {
+            if self.published.outcomes.get(&outcome) != Some(&result) {
+                let (kind, combat) = outcome;
+                self.publish(format!("outcome:{kind}:{combat}"), &result)?;
+                self.published.outcomes.insert(outcome, result);
+            }
         }
         for (id, source) in std::mem::take(&mut self.scan.naval_sources) {
-            self.write_changed(format!("source:{id}"), &source, reader)?;
+            if self.published.sources.get(&id) != Some(&source) {
+                self.publish(format!("source:{id}"), &source)?;
+                self.published.sources.insert(id, source);
+            }
         }
         let mut presentation = UnitLeadersReply::default();
         extend_content_warnings(&mut presentation, content);
@@ -365,31 +448,15 @@ impl Prepared {
                 warnings: self.content_warnings.clone(),
                 admissions: self.admissions.clone(),
                 kinds: self.kinds.clone(),
+                published: self.published.clone(),
             },
-        )?;
-        writer.write_at(
-            &format!("unit-leaders-{branch}"),
-            0,
-            self.saved_bytes()?.as_slice(),
         )
     }
-    fn write_changed(
-        &mut self,
-        name: String,
-        value: &impl Serialize,
-        reader: &mut Reader<'_>,
-    ) -> io::Result<()> {
-        let before = if let Some(&key) = self.keys.get(&name) {
-            reader.latest_event(key, i32::MAX)?.map(|(_, row)| row)
-        } else {
-            None
-        };
+    /// Append `value` as `name`'s latest event.
+    fn publish(&mut self, name: String, value: &impl Serialize) -> io::Result<()> {
         let value = serde_json::to_value(value)?;
-        if before.as_ref() != Some(&value) {
-            let key = self.key(name)?;
-            self.series.event(key, self.through, &value)?;
-        }
-        Ok(())
+        let key = self.key(name)?;
+        self.series.event(key, self.through, &value)
     }
 }
 fn full_params(branch: &str) -> UnitLeadersParams {
@@ -565,16 +632,11 @@ pub fn query(
         }
         let rows: Vec<_> = battles.into_values().collect();
         for row in &rows {
-            let outcome = (row.3, row.4);
-            if !scan.outcomes.contains_key(&outcome)
-                && let Some(&id) = state
-                    .keys
-                    .get(&format!("outcome:{}:{}", outcome.0, outcome.1))
-                && let Some((_, value)) = reader.latest_event(id, i32::MAX)?
-            {
-                scan.outcomes
-                    .insert(outcome, serde_json::from_value(value)?);
-            }
+            restore(
+                &mut scan.outcomes,
+                &state.published.outcomes,
+                (row.3, row.4),
+            );
         }
         scan.battle_hours.insert(leader.reference, rows);
     }

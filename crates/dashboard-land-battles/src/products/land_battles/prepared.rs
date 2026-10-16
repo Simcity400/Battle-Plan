@@ -91,6 +91,21 @@ impl Census {
         ordinal: usize,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        let mut own = std::mem::take(&mut self.refusals);
+        let published = dashboard_text::catalogue::own_refusals(&mut own, || {
+            self.publish_own_block(writer, replay, branch, ordinal, cancelled)
+        });
+        self.refusals = own;
+        published
+    }
+    fn publish_own_block(
+        &mut self,
+        writer: &mut store::Writer,
+        replay: &Replay,
+        branch: u64,
+        ordinal: usize,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
         check_cancel(cancelled)?;
         self.materialize()?;
         let windows = windows(replay, branch);

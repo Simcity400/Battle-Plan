@@ -592,3 +592,44 @@ fn military_air_resumed_attachment_keeps_the_existing_branch_and_prefixes() {
         ]
     );
 }
+
+#[test]
+fn military_air_identities_restarted_after_an_unread_interval_start_a_new_epoch() {
+    // A recovery interval after which the collector restarted its event
+    // identities at zero: the events read after it were never read before.
+    let first = frame(
+        2,
+        vec![air_loss(5, 1, 300_000), air_loss(6, 2, 100_000)],
+        vec![],
+    );
+    let mut partial = frame(3, vec![], vec![]);
+    *partial.tables[TableId::AirLossEvents.index()] = TableView::Unavailable {
+        reason: "event ledger first/branch/recovery interval is partial".into(),
+    };
+    let restarted = frame(
+        4,
+        vec![air_loss(0, 3, 50_000), air_loss(1, 4, 25_000)],
+        vec![],
+    );
+    let next = frame(5, vec![air_loss(2, 5, 10_000)], vec![]);
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, vec![first, partial.clone(), restarted, next])],
+    )
+    .unwrap();
+    let result = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
+    let air = leaves(&result.air, None).unwrap();
+    assert_eq!(air[0].points.last().unwrap().total_raw, "485000");
+
+    // A restarted read holding an event dated before the interval could be a
+    // resend, and still refuses.
+    let mut scan = FamilyScan::default();
+    air_frame(&mut scan, &frame(2, vec![air_loss(5, 1, 1)], vec![])).unwrap();
+    air_frame(&mut scan, &partial).unwrap();
+    assert!(air_frame(&mut scan, &frame(4, vec![air_loss(0, 1, 1)], vec![])).is_err());
+
+    // Without an unread interval a backwards identity still refuses.
+    let mut scan = FamilyScan::default();
+    air_frame(&mut scan, &frame(2, vec![air_loss(5, 1, 1)], vec![])).unwrap();
+    assert!(air_frame(&mut scan, &frame(3, vec![air_loss(0, 3, 1)], vec![])).is_err());
+}

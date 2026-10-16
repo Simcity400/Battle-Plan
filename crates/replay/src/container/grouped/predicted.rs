@@ -399,9 +399,13 @@ fn number_motion(step: Step, before: Option<&Moving>, layout: Layout) -> Option<
 /// Both maps retain capacity, but no historical frame's states stay cached.
 #[derive(Default)]
 struct Transitions {
-    steps: HashMap<(usize, Step), Option<Arc<Rated>>>,
-    states: HashMap<Arc<Rated>, ()>,
+    steps: HashMap<(usize, Step), Option<Arc<Rated>>, FastHash>,
+    states: HashMap<Arc<Rated>, (), FastHash>,
 }
+
+/// Transitions are rebuilt every frame, so a fast hash with a per-process
+/// random seed replaces the default one.
+type FastHash = foldhash::fast::RandomState;
 
 impl Transitions {
     fn clear(&mut self) {
@@ -512,6 +516,17 @@ impl<'a> Cursor<'a> {
         while let Some((first, rest)) = self.moving.split_first() {
             if (first.key, first.field) >= (key, field) {
                 return (first.key == key && first.field == field).then_some(first);
+            }
+            self.moving = rest;
+        }
+        None
+    }
+
+    /// The first field of `key` from `from` on that has a motion.
+    fn next_field(&mut self, key: u128, from: usize) -> Option<usize> {
+        while let Some((first, rest)) = self.moving.split_first() {
+            if (first.key, first.field) >= (key, from) {
+                return (first.key == key).then_some(first.field);
             }
             self.moving = rest;
         }
@@ -829,7 +844,26 @@ pub(super) fn take_residual(
         }
         values.clear();
         let mut plain_mask = 0_u64;
-        for (field, &kind) in schema[..fields].iter().enumerate() {
+        // A field neither stored nor moving stays unchanged and leaves no
+        // motion, so only stored fields and fields with a motion are visited.
+        let mut from = 0;
+        loop {
+            let stored_next = mask
+                .checked_shr(from as u32)
+                .filter(|rest| *rest != 0)
+                .map(|rest| from + rest.trailing_zeros() as usize);
+            let field = match (stored_next, cursor.next_field(key, from)) {
+                (None, None) => break,
+                (Some(field), None) | (None, Some(field)) => field,
+                (Some(stored), Some(moving)) => stored.min(moving),
+            };
+            if field >= fields {
+                break;
+            }
+            from = field + 1;
+            #[cfg(test)]
+            VISITED.with(|visited| visited.set(visited.get() + 1));
+            let kind = schema[field];
             let stored_field = mask & (1 << field) != 0;
             let before = cursor.find(key, field);
             let motion = if table.byte_field(field) {
@@ -909,7 +943,46 @@ pub(super) fn take_residual(
     budget.spend(plain.len() - start)
 }
 #[cfg(test)]
+thread_local! {
+    /// Fields the reader visited on this thread.
+    static VISITED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
 mod tests {
+    #[test]
+    fn readers_visit_only_stored_and_moving_fields() {
+        let mut writer = Predictor::default();
+        let mut reader = Predictor::default();
+        // Stored, stored, then predicted: one field of a wider row each hour.
+        for (hour, delta) in [-1, -1, -1].into_iter().enumerate() {
+            let plain = plain(delta);
+            let mut columns = Columns::new(fields());
+            let stored = put_residual(
+                TABLE,
+                FormatVersion::CURRENT.version(),
+                fields(),
+                &plain,
+                &mut writer,
+                &Shadow::new(),
+                &mut columns,
+                Layout::Predicted,
+                None,
+            )
+            .unwrap();
+            if stored {
+                columns.0[CONTROL].remove(0);
+            }
+            VISITED.with(|visited| visited.set(0));
+            assert_eq!(
+                take(stored.then_some(&columns), &mut reader).unwrap(),
+                plain
+            );
+            assert_eq!(VISITED.with(std::cell::Cell::get), 1, "hour {hour}");
+        }
+        assert!(fields() > 1);
+    }
+
     #[test]
     fn shared_transitions_keep_the_complete_rate_window() {
         let rated = |count| {

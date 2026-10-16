@@ -252,3 +252,53 @@ fn frame_changes_keep_shared_slot_reads_separate_from_own_reads_and_row_changes(
         "the slot's own anchor witnesses this hour"
     );
 }
+
+#[test]
+fn frame_changes_give_each_changed_table_exactly_its_recorded_delta_rows() {
+    let format = FormatVersion::CURRENT;
+    let countries = TableId::Countries;
+    let mut tracker = FrameChangeTracker::new();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    let mut observe = |input: replay::frame::DecodedFrame, keyframe: bool| {
+        let wire = encoder.encode(input, keyframe).unwrap();
+        let decoded = decoder.advance(&wire).unwrap().clone();
+        let changes = tracker.observe_updates(&decoded, std::sync::Arc::new(wire), format);
+        let rows = changes.rows(countries).map(|(changed, deleted)| {
+            let changed: Vec<_> = changed.iter().map(|row| (row.key, row.mask)).collect();
+            (changed, deleted.to_vec())
+        });
+        (changes.rows_changed[countries.index()], rows)
+    };
+    // A keyframe rebuilds every table: any row may have changed.
+    assert_eq!(observe(source(1, 10, Some(7)), true), (true, None));
+    // An unchanged table changes no rows.
+    assert_eq!(
+        observe(source(1, 11, Some(7)), false),
+        (false, Some((Vec::new(), Vec::new())))
+    );
+    // One country's political power changes: that row and that field only.
+    let power = 1_u64 << 2;
+    assert_eq!(
+        observe(source(1, 12, Some(8)), false),
+        (true, Some((vec![(9001, power)], Vec::new())))
+    );
+    // After missing hours the rows are not one delta from the previous hour's.
+    assert_eq!(observe(source(1, 15, Some(9)), false).1, None);
+}
+
+#[test]
+fn frame_changes_rows_refuse_tables_an_observer_marks_changed_itself() {
+    let format = FormatVersion::CURRENT;
+    let mut tracker = FrameChangeTracker::new();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    let wire = encoder.encode(source(1, 10, Some(7)), true).unwrap();
+    let first = decoder.advance(&wire).unwrap().clone();
+    tracker.observe_updates(&first, std::sync::Arc::new(wire), format);
+    let wire = encoder.encode(source(1, 11, Some(7)), false).unwrap();
+    let next = decoder.advance(&wire).unwrap().clone();
+    let mut changes = tracker.observe_updates(&next, std::sync::Arc::new(wire), format);
+    changes.rows_changed[TableId::Countries.index()] = true;
+    assert_eq!(changes.rows(TableId::Countries), None);
+}

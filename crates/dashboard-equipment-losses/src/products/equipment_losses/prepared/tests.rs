@@ -881,3 +881,109 @@ fn equal_signed_total_keeps_its_latest_loss_date_across_a_gap() {
         }]
     );
 }
+
+#[test]
+fn retained_holders_are_retagged_while_identity_tables_are_incomplete_and_at_their_recovery()
+-> io::Result<()> {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    use dashboard_base::prepared::observer_tests::{assert_reply_parity, assert_restore_continues};
+    // Holder 1 leaves the census at hour 12. CountryLinks is unread at hour 14,
+    // the first hour after a commit, and read again at hour 15, the first hour
+    // after the next commit. Every hour has a nonempty destruction drain.
+    let frames: Vec<_> = (10..=16)
+        .map(|hour| {
+            let mut next = frame(hour, if hour < 12 { 2 } else { 1 }, 100_001, false);
+            if hour == 14 {
+                *next.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
+                    reason: "fixture links unread".into(),
+                };
+            }
+            next
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())])?;
+    let flag = AtomicBool::new(false);
+    let blocks = [&frames[..4], &frames[4..5], &frames[5..]];
+    assert_restore_continues(
+        replay.format,
+        &blocks,
+        || Prepared::new(&replay, 1, 10),
+        |prepared, frame, changes, _| {
+            prepared
+                .observe_changes(frame, &replay, &flag, changes)
+                .unwrap();
+        },
+        |prepared, writer, ordinal| {
+            prepared.finish_block(blocks[ordinal].last().unwrap().hour);
+            prepared.flush(writer, 1, &flag).unwrap();
+            let saved = serde_json::to_vec(&*prepared).unwrap();
+            writer
+                .write_at("equipment-loss-continuation-1", 0, saved.as_slice())
+                .unwrap();
+        },
+        |fixture| {
+            serde_json::from_reader(
+                fixture
+                    .store
+                    .read(&fixture.key, "equipment-loss-continuation-1", 0)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap()
+        },
+    );
+    // The continued observer also publishes the oracle's unresolved hour, and
+    // its end at the recovery hour, for the departed and the current holder.
+    let fixture = Fixture::new();
+    let mut prepared = Prepared::new(&replay, 1, 10);
+    let mut tracker = FrameChangeTracker::new();
+    for block in blocks {
+        tracker.invalidate();
+        for frame in block {
+            let changes = tracker.observe(frame, replay.format);
+            prepared.observe_changes(frame, &replay, &flag, &changes)?;
+        }
+        prepared.finish_block(block.last().unwrap().hour);
+        let mut writer = fixture.writer();
+        prepared.flush(&mut writer, 1, &flag)?;
+        writer.commit()?;
+    }
+    for index in [0, 1] {
+        for land_source in [LandSource::Destruction, LandSource::CombatLog] {
+            let selection = LossesParams {
+                branch_id: "1".into(),
+                tag: String::from_utf8(scale_tag(index)).unwrap(),
+                land_source,
+                country: Some(LossCountry {
+                    slot: index,
+                    country_id: 100_000 + index,
+                    origin_hour: 10,
+                }),
+            };
+            let expected = scan(
+                &replay,
+                1,
+                &selection.tag,
+                land_source,
+                selection.country,
+                &flag,
+            )?;
+            let actual = read_scanned(
+                &fixture.store,
+                &fixture.key,
+                1,
+                (index, 100_000 + index),
+                (10.0, 16.0, 10),
+                &(10..=16).collect::<Vec<_>>(),
+                replay.format,
+                &flag,
+            )?
+            .unwrap();
+            assert_reply_parity(
+                &reply(&selection, &actual, Content::default(), Vec::new()),
+                &reply(&selection, &expected, Content::default(), Vec::new()),
+            )?;
+        }
+    }
+    Ok(())
+}

@@ -24,6 +24,8 @@ struct CurrentJoins {
     land: CoverageInputs,
     joined: bool,
     variants_pending: bool,
+    /// Whether the last observed hour lacked complete Countries or CountryLinks.
+    identities_incomplete: bool,
 }
 
 fn join_rows(
@@ -596,11 +598,16 @@ impl Prepared {
                 }
             }
         }
-        if restoring || interrupted {
+        // No holder resolves while either identity table is incomplete: every
+        // retained holder is unresolved then, and absent or found again at the
+        // first hour both are complete.
+        let identities_incomplete = census.is_none() || links.is_none();
+        if restoring || interrupted || identities_incomplete || self.joins.identities_incomplete {
             for &identity in self.countries.keys() {
                 affected.entry(identity).or_default();
             }
         }
+        self.joins.identities_incomplete = identities_incomplete;
         country_metadata(
             &mut self.absent,
             &mut self.absent_state,

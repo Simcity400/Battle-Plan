@@ -49,7 +49,9 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_
 installed-content.workspace = true
 engine.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
-serde_json.workspace = true
+# Saved preparation state reads back every f64 bit for bit, so a restored
+# observer compares equal values as equal.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 ts-rs = "11.1"
 base64 = "0.22.1"
 png.workspace = true
@@ -85,6 +87,7 @@ dashboard-country-fuel = { workspace = true, features = ["test-support"] }
 dashboard-special-projects = { workspace = true, features = ["test-support"] }
 dashboard-politics-ledger = { workspace = true, features = ["test-support"] }
 dashboard-raids = { workspace = true, features = ["test-support"] }
+dashboard-resource-balance = { workspace = true, features = ["test-support"] }
 dashboard-unit-leaders = { workspace = true, features = ["test-support"] }
 dashboard-base = { workspace = true, features = ["test-support"] }
 dashboard-core = { workspace = true, features = ["test-support"] }

@@ -236,6 +236,23 @@ pub fn ensure<'a>(
     Ok(slot.as_mut().expect("artwork context loaded"))
 }
 
+/// A focus country's canonical slot at `frame`'s hour, None when absent.
+fn focus_slot(frame: &replay::frame::DecodedFrame, tag: &str) -> Result<Option<u32>, String> {
+    let countries = frame
+        .complete::<replay::rows::tables::Countries>()
+        .map_err(|error| error.to_string())?;
+    let links = frame
+        .complete::<replay::rows::tables::CountryLinks>()
+        .map_err(|error| error.to_string())?;
+    match crate::metadata::tagged_country(countries, links, tag) {
+        crate::metadata::TaggedCountry::Found(_, slot) => Ok(Some(slot)),
+        crate::metadata::TaggedCountry::Absent => Ok(None),
+        crate::metadata::TaggedCountry::Unresolved => {
+            Err("focus country identity is unresolved".into())
+        }
+    }
+}
+
 /// Resolved artwork and, when refused, its feed-local reason.
 pub type ResolvedArt = (Artwork, Option<String>);
 
@@ -254,6 +271,10 @@ pub struct FocusFrame<'a> {
     pub frame: &'a replay::frame::DecodedFrame,
     catalogue: &'a Catalogue,
     text: OnceLock<Result<crate::scripted_text::ScriptedText<'a>, String>>,
+    /// Each recorded input reread this hour, read once however many
+    /// countries' evaluations read it.
+    rereads:
+        std::cell::RefCell<std::collections::HashMap<crate::triggers::inputs::Key, Option<u64>>>,
     #[cfg(any(test, feature = "test-support"))]
     pub text_builds: std::cell::Cell<usize>,
 }
@@ -264,8 +285,28 @@ impl<'a> FocusFrame<'a> {
             frame,
             catalogue,
             text: OnceLock::new(),
+            rereads: Default::default(),
             #[cfg(any(test, feature = "test-support"))]
             text_builds: std::cell::Cell::new(0),
+        }
+    }
+
+    /// The digest a recorded query reads this hour ([`crate::triggers::inputs`]).
+    pub fn reread(&self, key: &crate::triggers::inputs::Key) -> Option<u64> {
+        if let Some(read) = self.rereads.borrow().get(key) {
+            return *read;
+        }
+        let read = self.read_now(key);
+        self.rereads.borrow_mut().insert(key.clone(), read);
+        read
+    }
+
+    fn read_now(&self, key: &crate::triggers::inputs::Key) -> Option<u64> {
+        match key {
+            crate::triggers::inputs::Key::FocusTag(tag) => Some(crate::triggers::inputs::digest(
+                &focus_slot(self.frame, tag),
+            )),
+            _ => self.text().ok()?.reread(key),
         }
     }
 
@@ -277,12 +318,14 @@ impl<'a> FocusFrame<'a> {
                 #[cfg(any(test, feature = "test-support"))]
                 self.text_builds.set(self.text_builds.get() + 1);
                 catalogue.scripted_content().map(|content| {
-                    crate::scripted_text::ScriptedText::new(
-                        frame,
-                        &catalogue.localisation,
-                        content,
-                        0,
-                    )
+                    crate::triggers::inputs::unrecorded(|| {
+                        crate::scripted_text::ScriptedText::new(
+                            frame,
+                            &catalogue.localisation,
+                            content,
+                            0,
+                        )
+                    })
                 })
             })
             .as_ref()
@@ -1002,26 +1045,15 @@ impl Context {
             self.prefetch_icons(sprites);
         }
         let catalogue = Arc::clone(&self.catalogue);
-        let countries = frame
-            .complete::<replay::rows::tables::Countries>()
-            .map_err(|error| error.to_string());
-        let links = frame
-            .complete::<replay::rows::tables::CountryLinks>()
-            .map_err(|error| error.to_string());
         let mut country_scopes = BTreeMap::new();
         let mut items = requests.iter().map(|&(token, tag)| {
             let country = country_scopes
                 .entry(tag)
-                .or_insert_with(|| -> Result<Option<u32>, String> {
-                    let countries = countries.as_ref().map_err(Clone::clone)?;
-                    let links = links.as_ref().map_err(Clone::clone)?;
-                    match crate::metadata::tagged_country(countries, links, tag) {
-                        crate::metadata::TaggedCountry::Found(_, slot) => Ok(Some(slot)),
-                        crate::metadata::TaggedCountry::Absent => Ok(None),
-                        crate::metadata::TaggedCountry::Unresolved => {
-                            Err("focus country identity is unresolved".into())
-                        }
-                    }
+                .or_insert_with(|| {
+                    crate::triggers::inputs::query(
+                        || crate::triggers::inputs::Key::FocusTag(tag.to_owned()),
+                        || focus_slot(frame, tag),
+                    )
                 })
                 .clone();
             let context = || inputs.text();
@@ -1110,11 +1142,9 @@ impl Context {
                 );
                 // Focus names and descriptions seed a fresh scope with Clock seed
                 // plus the byte-exact focus ID's FNV-1a hash, then the shared hash lanes.
-                let seed = frame
-                    .complete::<replay::rows::tables::Clock>()
-                    .ok()
-                    .and_then(|rows| rows.first())
-                    .map(|clock| clock.seed as u32);
+                // The seed is an input only when the text draws from it.
+                let seed = crate::triggers::inputs::unrecorded(|| crate::scripted_text::clock_seed(frame));
+                scope.clock_seed = Some(seed);
                 let scopes = match seed {
                     Some(seed) => {
                         let hash = token.bytes().fold(0x811c_9dc5_u32, |hash, byte| {

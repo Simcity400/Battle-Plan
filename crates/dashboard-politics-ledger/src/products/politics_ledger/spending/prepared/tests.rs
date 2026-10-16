@@ -1803,3 +1803,780 @@ fn prepared_unresolved_cost_warning_disappears_when_its_application_arrives() {
             .all(|reason| !reason.contains("matched PP application is unavailable"))
     );
 }
+
+/// The recording codec: each input hour is encoded and decoded as the
+/// preparation pipeline reads it, with its recorded updates.
+struct Recorded {
+    encoder: replay::frame::FrameEncoder,
+    decoder: replay::frame::FrameDecoder,
+}
+impl Recorded {
+    fn new() -> Self {
+        Self {
+            encoder: replay::frame::FrameEncoder::new(),
+            decoder: replay::frame::FrameDecoder::new(),
+        }
+    }
+    /// The decoded hour and its updates. Every hourly politics table is
+    /// read, as a live recording reads them, whether or not it changed.
+    fn next(
+        &mut self,
+        input: &mut DecodedFrame,
+        keyframe: bool,
+    ) -> (DecodedFrame, Arc<replay::frame::Frame>) {
+        for table in [
+            TableId::Countries,
+            TableId::CountryLinks,
+            TableId::PoliticsCaptureCoverage,
+            TableId::CountryPowerChanges,
+            TableId::GovernmentChanges,
+            TableId::CountryCommandPower,
+            TableId::Characters,
+        ] {
+            input.metrics.table_ns[table.index()] = replay::frame::READ_TIME_NOT_RECORDED;
+        }
+        let wire = self.encoder.encode(input.clone(), keyframe).unwrap();
+        let decoded = self.decoder.advance(&wire).unwrap().clone();
+        (decoded, Arc::new(wire))
+    }
+}
+
+fn capture(country: u32, since: i32, through: i32) -> PoliticsCaptureCoverageRow {
+    PoliticsCaptureCoverageRow {
+        country,
+        instance: 1,
+        epoch: 1,
+        since_hour: since,
+        through_hour: through,
+        streams: PoliticsCaptureCoverageRow::ALL_STREAMS,
+    }
+}
+
+fn command_power(count: u32) -> TableRows {
+    TableRows::CountryCommandPower(
+        (1..=count)
+            .map(|canonical_slot| CountryCommandPowerRow {
+                canonical_slot,
+                ..Default::default()
+            })
+            .collect(),
+    )
+}
+
+fn payment(country: u32, sequence: u64, hour: i32) -> CountryPowerChangeRow {
+    CountryPowerChangeRow {
+        country,
+        hour,
+        ..event(
+            sequence,
+            PowerCause::Decision,
+            PowerOperation::Subtract,
+            Some(-17),
+        )
+    }
+}
+
+/// Every capture extends to the hour, as a live recording's do.
+fn extend_captures(input: &mut DecodedFrame) {
+    let hour = input.hour;
+    let captures = input
+        .complete::<tables::PoliticsCaptureCoverage>()
+        .unwrap()
+        .iter()
+        .map(|row| PoliticsCaptureCoverageRow {
+            through_hour: hour,
+            ..row.clone()
+        })
+        .collect();
+    put(input, TableRows::PoliticsCaptureCoverage(captures));
+}
+
+/// Each observer's countries observed, rows read, countries presented and
+/// hours joined from changed rows, over one recorded hour.
+type HourWork = (usize, usize, usize, usize);
+
+/// The work of hours whose captures all extend to the hour, with one
+/// country's rows changed at a time, joined from changed rows and from the
+/// whole tables.
+fn assert_hour_observes_only_changed_countries(count: u32) {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    let mut recorded = Recorded::new();
+    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+    let mut observers = [Prepared::default(), Prepared::default()];
+    observers[1].scan.whole_tables = true;
+    let mut input = frame(24, count);
+    put(&mut input, command_power(count));
+    let mut step = |observers: &mut [Prepared; 2], input: &mut DecodedFrame| -> [HourWork; 2] {
+        extend_captures(input);
+        let keyframe = input.hour == 24;
+        let (decoded, wire) = recorded.next(input, keyframe);
+        let mut work = [(0, 0, 0, 0); 2];
+        for ((observer, tracker), work) in observers.iter_mut().zip(&mut trackers).zip(&mut work) {
+            let before = (
+                observer.scan.country_visits,
+                observer.measured_work(),
+                observer.scan.row_hours,
+            );
+            let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), format);
+            observer.observe(&decoded, &changes, &flag).unwrap();
+            let after = observer.measured_work();
+            *work = (
+                observer.scan.country_visits - before.0,
+                after.row_visits - before.1.row_visits,
+                after.history_visits - before.1.history_visits,
+                observer.scan.row_hours - before.2,
+            );
+        }
+        work
+    };
+    let every = count as usize;
+    let [first, whole] = step(&mut observers, &mut input);
+    assert_eq!(first.0, every, "the first hour observes every country");
+    assert_eq!(whole.0, every);
+
+    input.hour = 25;
+    let [rows, whole] = step(&mut observers, &mut input);
+    assert_eq!(rows.3, 1, "the hour is joined from its changed rows");
+    assert_eq!(
+        (rows.0, rows.2),
+        (0, 0),
+        "captures extended to the hour observe no country"
+    );
+    assert_eq!(rows.1, every, "only the changed captures are read");
+    assert_eq!(whole.0, every, "whole tables observe every country again");
+
+    // One country's payment.
+    input.hour = 26;
+    let paying = count / 2;
+    put(
+        &mut input,
+        TableRows::CountryPowerChanges(vec![payment(paying, 1, 26)]),
+    );
+    let [rows, whole] = step(&mut observers, &mut input);
+    assert_eq!(rows.3, 1);
+    assert_eq!(
+        (rows.0, rows.2),
+        (1, 1),
+        "only the paying country is observed and presented"
+    );
+    assert_eq!(rows.1, every + 1);
+    assert_eq!(whole.0, every);
+
+    // A balance no join reads.
+    input.hour = 27;
+    let mut countries = input.complete::<tables::Countries>().unwrap().to_vec();
+    countries[(count / 3) as usize].political_power_raw = Some(27);
+    put(&mut input, TableRows::Countries(countries));
+    let [rows, _] = step(&mut observers, &mut input);
+    assert_eq!(rows.3, 1);
+    assert_eq!((rows.0, rows.2), (0, 0));
+
+    // One capture loses a stream.
+    input.hour = 28;
+    let changed = count / 4;
+    let captures = input
+        .complete::<tables::PoliticsCaptureCoverage>()
+        .unwrap()
+        .iter()
+        .map(|row| PoliticsCaptureCoverageRow {
+            streams: if row.country == changed {
+                PoliticsCaptureCoverageRow::PP
+            } else {
+                row.streams
+            },
+            ..row.clone()
+        })
+        .collect();
+    put(&mut input, TableRows::PoliticsCaptureCoverage(captures));
+    let [rows, _] = step(&mut observers, &mut input);
+    assert_eq!(rows.3, 1);
+    assert_eq!(rows.0, 1, "only the changed capture's country is observed");
+    assert_eq!(observers[1].scan.row_hours, 0);
+}
+
+#[test]
+fn prepared_hour_changing_one_country_observes_only_that_country() {
+    assert_hour_observes_only_changed_countries(200);
+}
+
+#[test]
+#[cfg(feature = "slow-tests")]
+fn prepared_hour_changing_one_of_5000_countries_observes_only_that_country() {
+    assert_hour_observes_only_changed_countries(5000);
+}
+
+/// One fixture hour's edits: payments, daily gains of a captured identity
+/// and of one no capture names, a balance, a restarted capture, a government, a
+/// leader's command power allocation, a capture that stops, is deleted and
+/// starts again, and a payment that leaves the published window.
+fn edit_hour(
+    input: &mut DecodedFrame,
+    captures: &mut Vec<PoliticsCaptureCoverageRow>,
+    power: &mut Vec<CountryPowerChangeRow>,
+) {
+    let hour = input.hour;
+    match hour {
+        26 | 32 => power.push(payment(1, hour as u64, hour)),
+        27 => power.push(payment(3, 27, 27)),
+        28 => {
+            let mut countries = input.complete::<tables::Countries>().unwrap().to_vec();
+            countries[0].political_power_raw = Some(28);
+            put(input, TableRows::Countries(countries));
+        }
+        29 | 31 => power.push(CountryPowerChangeRow {
+            country: if hour == 29 { 2 } else { 1 },
+            instance: if hour == 29 { 1 } else { 9 },
+            hour,
+            currency: PowerCurrency::Political,
+            balance_after_raw: 510,
+            ..event(
+                hour as u64,
+                PowerCause::DailyGain,
+                PowerOperation::Add,
+                Some(500),
+            )
+        }),
+        // A capture that starts again rather than extending its interval.
+        33 => captures[2].since_hour = 33,
+        34 => put(
+            input,
+            TableRows::GovernmentChanges(vec![GovernmentChangeRow {
+                country: 1,
+                instance: 1,
+                epoch: 1,
+                sequence: 34,
+                hour: 34,
+                before_party: Some(1),
+                after_party: Some(2),
+                ..Default::default()
+            }]),
+        ),
+        37 => {
+            power.push(CountryPowerChangeRow {
+                country: 2,
+                instance: 1,
+                epoch: 1,
+                hour,
+                sequence: 37,
+                currency: PowerCurrency::Command,
+                operation: PowerOperation::Subtract,
+                requested_delta_raw: Some(-300_000),
+                cause: PowerCause::LeaderAssignment,
+                site: PowerSite::AllocateCommandPower,
+                balance_before_raw: 1_000_000,
+                balance_after_raw: 700_000,
+                identity: PowerIdentity {
+                    object_kind: PowerObjectKind::Leader,
+                    object_reference: Some((7_u64 << 32) | 2),
+                    ..Default::default()
+                },
+            });
+            let mut command = input
+                .complete::<tables::CountryCommandPower>()
+                .unwrap()
+                .to_vec();
+            command[1].allocated_command_power_raw = 300_000;
+            put(input, TableRows::CountryCommandPower(command));
+        }
+        40 => captures.retain(|row| row.country != 4),
+        41 => captures.push(capture(4, 41, 41)),
+        45 => power.retain(|row| (row.country, row.sequence) != (1, 26)),
+        // A daily gain leaves the published window too.
+        46 => power.retain(|row| (row.country, row.sequence) != (2, 29)),
+        _ => {}
+    }
+    for row in captures.iter_mut() {
+        if row.country != 4 || !(39..=40).contains(&hour) {
+            row.through_hour = hour;
+        }
+    }
+    power.sort_by_key(|row| (row.country, row.sequence));
+    put(input, TableRows::PoliticsCaptureCoverage(captures.clone()));
+    put(input, TableRows::CountryPowerChanges(power.clone()));
+}
+
+#[test]
+fn prepared_changed_rows_match_whole_tables_and_oracle_across_keyframe_gap_and_resume() {
+    use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    let fixtures = [Fixture::new(), Fixture::new()];
+    // Joined from changed rows, and from the whole tables every hour.
+    let mut observers = [Prepared::default(), Prepared::default()];
+    observers[1].scan.whole_tables = true;
+    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+    let mut recorded = Recorded::new();
+    let mut oracle = Scanned::default();
+    let mut input = frame(24, 4);
+    put(&mut input, command_power(4));
+    let mut captures: Vec<_> = (1..=4).map(|country| capture(country, 24, 24)).collect();
+    let mut power = Vec::new();
+    // Hour 42 is a recording gap; hour 38 a keyframe.
+    for hour in (24..=47).filter(|&hour| hour != 42) {
+        input.hour = hour;
+        edit_hour(&mut input, &mut captures, &mut power);
+        let (decoded, wire) = recorded.next(&mut input, hour == 24 || hour == 38);
+        oracle.observe(&decoded, None).unwrap();
+        for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
+            let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), format);
+            observer.observe(&decoded, &changes, &flag).unwrap();
+        }
+        // The events each publishes and their native days are kept by country.
+        let [rows, whole] = &observers;
+        assert_eq!(
+            rows.scan.published_events, whole.scan.published_events,
+            "hour {hour}"
+        );
+        assert_eq!(rows.scan.events, whole.scan.events, "hour {hour}");
+        assert_eq!(
+            rows.scan.inputs.native_days(),
+            whole.scan.inputs.native_days(),
+            "hour {hour}"
+        );
+        if ![35, 44, 47].contains(&hour) {
+            continue;
+        }
+        for (observer, fixture) in observers.iter_mut().zip(&fixtures) {
+            publish(observer, fixture);
+        }
+        for tag in ["C1", "C2", "C3", "C4"] {
+            for view in ["raw", "spending", "balance", "governments"] {
+                assert_eq!(
+                    read(&fixtures[0], tag, 24, hour, view),
+                    read(&fixtures[1], tag, 24, hour, view),
+                    "{tag} {view} published through hour {hour}"
+                );
+            }
+        }
+        if hour == 47 {
+            break;
+        }
+        // Resume both from their checkpoints.
+        for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
+            let (whole_tables, row_hours) = (observer.scan.whole_tables, observer.scan.row_hours);
+            *observer = Prepared::read(observer.saved_bytes().unwrap().as_slice()).unwrap();
+            observer.scan.whole_tables = whole_tables;
+            observer.scan.row_hours = row_hours;
+            observer.resume(&decoded);
+            tracker.invalidate();
+        }
+    }
+    assert!(
+        observers[0].scan.row_hours >= 15,
+        "most hours are joined from their changed rows, not {}",
+        observers[0].scan.row_hours
+    );
+    assert_eq!(observers[1].scan.row_hours, 0);
+    for tag in ["C1", "C2", "C3", "C4"] {
+        let actual = read(&fixtures[0], tag, 24, 47, "raw");
+        let expected = present_view(&oracle, 1, tag, None, &flag, LedgerView::Raw).unwrap();
+        observer_tests::assert_reply_parity(&actual.coverage, &expected.coverage).unwrap();
+        observer_tests::assert_reply_parity(&actual.spending_coverage, &expected.spending_coverage)
+            .unwrap();
+        observer_tests::assert_reply_parity(&actual.command_holds, &expected.command_holds)
+            .unwrap();
+        // Preparation presents each country with its balance changes, so its
+        // warnings count their reasons too (here the command power hold's
+        // unresolved holder item), as the accounting's balance view does.
+        let expected = present_view(&oracle, 1, tag, None, &flag, LedgerView::Balance).unwrap();
+        observer_tests::assert_reply_parity(&actual.warnings, &expected.warnings).unwrap();
+    }
+}
+
+/// A ledger preparing from `replay`, as the pipeline configures it.
+fn prepared_from(replay: &Arc<replay::container::Replay>) -> Prepared {
+    let mut prepared = Prepared::default();
+    prepared.decode_previous_from(Arc::clone(replay));
+    prepared
+}
+
+#[test]
+fn prepared_holds_only_the_naming_tables_of_the_previous_read() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    use replay::format::FormatVersion;
+    let flag = AtomicBool::new(false);
+    // Each hour's tables are their own allocations.
+    let hour_read = |hour: i32| {
+        let mut read = frame(hour, 3);
+        put(
+            &mut read,
+            TableRows::Characters(vec![CharacterRow {
+                id: 5,
+                token: b"Recorded character".to_vec(),
+                ..Default::default()
+            }]),
+        );
+        read
+    };
+    let replay = Arc::new(
+        replay::container::Replay::from_records(
+            dashboard_base::test_fixtures::CAMPAIGN.into(),
+            &[dashboard_base::test_fixtures::records(
+                1,
+                vec![hour_read(24), hour_read(25)],
+            )],
+        )
+        .unwrap(),
+    );
+    let mut prepared = prepared_from(&replay);
+    let mut tracker = FrameChangeTracker::new();
+    for hour in [24, 25] {
+        let current = hour_read(hour);
+        prepared
+            .observe(
+                &current,
+                &tracker.observe(&current, FormatVersion::CURRENT),
+                &flag,
+            )
+            .unwrap();
+        let views = [
+            TableId::Characters,
+            TableId::PoliticsCaptureCoverage,
+            TableId::Countries,
+        ]
+        .map(|table| current.tables[table.index()].clone());
+        drop(current);
+        let [characters, coverage, countries] = views;
+        // Only this test holds a table outside the naming set, so the
+        // decoder could change it in place for the next read.
+        assert!(characters.try_unwrap().is_ok(), "hour {hour}");
+        assert!(coverage.try_unwrap().is_ok(), "hour {hour}");
+        assert!(
+            countries.try_unwrap().is_err(),
+            "the next read names its countries from this read"
+        );
+    }
+    assert_eq!(prepared.scan.reads_again, 0);
+}
+
+#[test]
+fn prepared_payment_dated_at_the_previous_read_is_described_from_that_read_decoded_again() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    use replay::format::FormatVersion;
+    let flag = AtomicBool::new(false);
+    let mut first = frame(24, 1);
+    put(
+        &mut first,
+        TableRows::Characters(vec![CharacterRow {
+            id: 5,
+            token: b"Recorded leader".to_vec(),
+            ..Default::default()
+        }]),
+    );
+    put(
+        &mut first,
+        TableRows::UnitLeaders(vec![UnitLeaderRow {
+            id: 7,
+            reference_type: 2,
+            character_id: 5,
+            category: 1,
+            ..Default::default()
+        }]),
+    );
+    // The next read publishes a payment dated at the first read, after its
+    // leader and character left.
+    let mut second = frame(25, 1);
+    put(&mut second, TableRows::Characters(Vec::new()));
+    put(&mut second, TableRows::UnitLeaders(Vec::new()));
+    put(
+        &mut second,
+        TableRows::CountryPowerChanges(vec![CountryPowerChangeRow {
+            hour: 24,
+            identity: PowerIdentity {
+                object_kind: PowerObjectKind::Leader,
+                object_reference: Some((7_u64 << 32) | 2),
+                ..Default::default()
+            },
+            ..event(3, PowerCause::Decision, PowerOperation::Subtract, Some(-19))
+        }]),
+    );
+    let replay = Arc::new(
+        replay::container::Replay::from_records(
+            dashboard_base::test_fixtures::CAMPAIGN.into(),
+            &[dashboard_base::test_fixtures::records(
+                1,
+                vec![first, second],
+            )],
+        )
+        .unwrap(),
+    );
+    let fixtures = [Fixture::new(), Fixture::new()];
+    // Decoding the previous read again, and holding it whole.
+    let mut observers = [prepared_from(&replay), Prepared::default()];
+    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+    let mut oracle = Scanned::default();
+    for hour in [24, 25] {
+        let replay::container::SeekResult::Frame(decoded) = replay.seek(1, hour).unwrap() else {
+            panic!("hour {hour} is recorded");
+        };
+        oracle.observe(&decoded, None).unwrap();
+        for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
+            let changes = tracker.observe(&decoded, FormatVersion::CURRENT);
+            observer.observe(&decoded, &changes, &flag).unwrap();
+        }
+    }
+    assert_eq!(observers[0].scan.reads_again, 1);
+    assert_eq!(observers[1].scan.reads_again, 0);
+    for (observer, fixture) in observers.iter_mut().zip(&fixtures) {
+        publish(observer, fixture);
+    }
+    for view in ["raw", "spending", "balance", "governments"] {
+        assert_eq!(
+            read(&fixtures[0], "C1", 24, 25, view),
+            read(&fixtures[1], "C1", 24, 25, view),
+            "{view}"
+        );
+    }
+    let actual = read(&fixtures[0], "C1", 24, 25, "spending");
+    assert_eq!(
+        actual
+            .spend_items
+            .iter()
+            .map(|item| item.character)
+            .collect::<Vec<_>>(),
+        [Some(5)],
+        "the payment names the leader's character at its dated read"
+    );
+    let expected = present_view(&oracle, 1, "C1", None, &flag, LedgerView::Balance).unwrap();
+    assert_eq!(actual.spend_items, expected.spend_items);
+    assert_eq!(actual.spending, expected.spending);
+}
+
+/// A leader's command power allocation by `country`, held while allocated.
+fn leader_allocation(country: u32, hour: i32) -> CountryPowerChangeRow {
+    CountryPowerChangeRow {
+        country,
+        instance: 1,
+        epoch: 1,
+        hour,
+        sequence: 1,
+        currency: PowerCurrency::Command,
+        operation: PowerOperation::Subtract,
+        requested_delta_raw: Some(-300_000),
+        cause: PowerCause::LeaderAssignment,
+        site: PowerSite::AllocateCommandPower,
+        balance_before_raw: 1_000_000,
+        balance_after_raw: 700_000,
+        identity: PowerIdentity {
+            object_kind: PowerObjectKind::Leader,
+            object_reference: Some((u64::from(country) << 32) | 2),
+            ..Default::default()
+        },
+    }
+}
+
+/// Each observer's event keys visited to publish and settle, and countries
+/// observed again to name their allocators, over one recorded hour.
+type PublicationWork = (usize, usize);
+
+/// Observers joining from changed rows and from the whole tables, fed the
+/// recorded hours of `count` countries, each publishing payments and holding
+/// a leader's allocation.
+struct Publications {
+    recorded: Recorded,
+    trackers: [dashboard_base::prepared::frame_changes::FrameChangeTracker; 2],
+    observers: [Prepared; 2],
+    input: DecodedFrame,
+}
+impl Publications {
+    fn new(count: u32) -> Self {
+        let mut observers = [Prepared::default(), Prepared::default()];
+        observers[1].scan.whole_tables = true;
+        let mut input = frame(24, count);
+        put(
+            &mut input,
+            TableRows::CountryCommandPower(
+                (1..=count)
+                    .map(|canonical_slot| CountryCommandPowerRow {
+                        canonical_slot,
+                        allocated_command_power_raw: 300_000,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+        );
+        put(
+            &mut input,
+            TableRows::CountryPowerChanges(
+                (1..=count)
+                    .flat_map(|country| {
+                        [
+                            leader_allocation(country, 24),
+                            payment(country, 2, 24),
+                            payment(country, 3, 24),
+                        ]
+                    })
+                    .collect(),
+            ),
+        );
+        // Characters and the dictionary read complete, as live recordings do.
+        put(&mut input, TableRows::Characters(Vec::new()));
+        put(&mut input, TableRows::LexicalTokens(Vec::new()));
+        // Each allocation's leader, and one leader no allocation names.
+        put(
+            &mut input,
+            TableRows::UnitLeaders(
+                (1..=count + 1)
+                    .map(|id| UnitLeaderRow {
+                        id,
+                        reference_type: 2,
+                        character_id: 1_000 + id,
+                        category: 1,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+        );
+        Self {
+            recorded: Recorded::new(),
+            trackers: [
+                dashboard_base::prepared::frame_changes::FrameChangeTracker::new(),
+                dashboard_base::prepared::frame_changes::FrameChangeTracker::new(),
+            ],
+            observers,
+            input,
+        }
+    }
+    fn step(&mut self) -> [PublicationWork; 2] {
+        extend_captures(&mut self.input);
+        let keyframe = self.input.hour == 24;
+        let (decoded, wire) = self.recorded.next(&mut self.input, keyframe);
+        let flag = AtomicBool::new(false);
+        let mut work = [(0, 0); 2];
+        for ((observer, tracker), work) in self
+            .observers
+            .iter_mut()
+            .zip(&mut self.trackers)
+            .zip(&mut work)
+        {
+            let before = (
+                observer.scan.publication_visits,
+                super::super::holds::named_count(),
+            );
+            let changes = tracker.observe_updates(
+                &decoded,
+                Arc::clone(&wire),
+                replay::format::FormatVersion::CURRENT,
+            );
+            observer.observe(&decoded, &changes, &flag).unwrap();
+            *work = (
+                observer.scan.publication_visits - before.0,
+                super::super::holds::named_count() - before.1,
+            );
+        }
+        work
+    }
+    fn power(&self) -> Vec<CountryPowerChangeRow> {
+        self.input
+            .complete::<tables::CountryPowerChanges>()
+            .unwrap()
+            .to_vec()
+    }
+    fn leaders(&self) -> Vec<UnitLeaderRow> {
+        self.input
+            .complete::<tables::UnitLeaders>()
+            .unwrap()
+            .to_vec()
+    }
+}
+
+#[test]
+fn prepared_hour_publishing_one_payment_visits_only_its_country_events() {
+    let count = 200;
+    let mut hours = Publications::new(count);
+    let [first, _] = hours.step();
+    assert!(first.0 >= 3 * count as usize);
+    hours.input.hour = 25;
+    let [rows, whole] = hours.step();
+    assert_eq!(rows.0, 0, "no power or government row changed");
+    assert!(
+        whole.0 >= 6 * count as usize,
+        "the whole tables publish again"
+    );
+
+    // One country's payment.
+    hours.input.hour = 26;
+    let mut power = hours.power();
+    power.push(payment(count / 2, 4, 26));
+    power.sort_by_key(|row| (row.country, row.sequence));
+    put(&mut hours.input, TableRows::CountryPowerChanges(power));
+    let [rows, whole] = hours.step();
+    assert_eq!(rows.0, 3 + 4, "the paying country's old and current events");
+    assert!(whole.0 >= 6 * count as usize);
+
+    // One country's government change.
+    hours.input.hour = 27;
+    put(
+        &mut hours.input,
+        TableRows::GovernmentChanges(vec![GovernmentChangeRow {
+            country: count / 3,
+            instance: 1,
+            epoch: 1,
+            sequence: 9,
+            hour: 27,
+            before_party: Some(1),
+            after_party: Some(2),
+            ..Default::default()
+        }]),
+    );
+    let [rows, _] = hours.step();
+    assert_eq!(rows.0, 1);
+    let [rows, whole] = &hours.observers;
+    assert_eq!(rows.scan.published_events, whole.scan.published_events);
+    assert_eq!(rows.scan.events, whole.scan.events);
+}
+
+#[test]
+fn prepared_unit_leader_change_observes_only_countries_whose_allocators_it_names() {
+    let count = 40;
+    let mut hours = Publications::new(count);
+    hours.step();
+    hours.input.hour = 25;
+    hours.step();
+    let held = |hours: &Publications| hours.observers[0].scan.holds.holding();
+    assert_eq!(held(&hours), count as usize, "every country holds a leader");
+
+    // A leader no allocation names.
+    hours.input.hour = 26;
+    let mut leaders = hours.leaders();
+    leaders.last_mut().unwrap().skill_level = 3;
+    put(&mut hours.input, TableRows::UnitLeaders(leaders));
+    let [rows, whole] = hours.step();
+    assert_eq!(rows.1, 0, "no allocation is named from the changed leader");
+    assert_eq!(whole.1, count as usize, "every allocation is named again");
+
+    // One allocation's leader, then the character it names.
+    hours.input.hour = 27;
+    let mut leaders = hours.leaders();
+    leaders[(count / 2) as usize].skill_level = 4;
+    put(&mut hours.input, TableRows::UnitLeaders(leaders));
+    let [rows, _] = hours.step();
+    assert_eq!(rows.1, 1);
+    hours.input.hour = 28;
+    put(
+        &mut hours.input,
+        TableRows::Characters(vec![CharacterRow {
+            id: 1_000 + count / 4,
+            token: b"Recorded leader".to_vec(),
+            ..Default::default()
+        }]),
+    );
+    let [rows, _] = hours.step();
+    assert_eq!(rows.1, 1, "only the allocation its leader names");
+    assert_eq!(held(&hours), count as usize);
+
+    let fixtures = [Fixture::new(), Fixture::new()];
+    for (observer, fixture) in hours.observers.iter_mut().zip(&fixtures) {
+        publish(observer, fixture);
+    }
+    for country in [1, count / 4, count / 2, count] {
+        let tag = format!("C{country}");
+        let replies = fixtures
+            .each_ref()
+            .map(|fixture| read(fixture, &tag, 24, 28, "raw"));
+        assert_eq!(replies[0].command_holds, replies[1].command_holds, "{tag}");
+        assert_eq!(replies[0], replies[1], "{tag}");
+    }
+}

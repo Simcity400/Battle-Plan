@@ -2313,6 +2313,7 @@ dependencies = [
 name = "dashboard-wars"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
@@ -6683,6 +6684,7 @@ version = "0.1.0"
 dependencies = [
  "crc32fast",
  "engine",
+ "foldhash 0.2.0",
  "replay-data",
  "serde",
  "serde_json",

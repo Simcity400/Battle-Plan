@@ -77,6 +77,15 @@ pub struct CountryRow {
 #[cfg(test)]
 #[path = "rows/border/tests.rs"]
 mod border_tests;
+#[cfg(test)]
+#[path = "rows/validated_apply_tests.rs"]
+mod validated_apply_tests;
+
+#[cfg(test)]
+thread_local! {
+    /// Rows whose keys this thread validated.
+    static VALIDATED_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CountryLinkRow {
@@ -708,6 +717,11 @@ macro_rules! define_tables {
             }
             pub fn apply_delta(self, changed: &[DeltaRow], deleted: &[u128]) -> io::Result<Self> {
                 Ok(match self { $(Self::$table(rows) => Self::$table(apply_typed(rows, changed, deleted)?)),+ })
+            }
+            /// [`Self::apply_delta`] to rows whose keys are valid, then
+            /// [`Self::validate_keys`] of the result.
+            pub fn apply_delta_validated(self, changed: &[DeltaRow], deleted: &[u128]) -> io::Result<Self> {
+                Ok(match self { $(Self::$table(rows) => Self::$table(apply_typed_validated(rows, changed, deleted)?)),+ })
             }
             /// [`Self::apply_delta`] for a baseline that stays shared.
             pub fn apply_delta_shared(&self, changed: &[DeltaRow], deleted: &[u128]) -> io::Result<Self> {
@@ -1502,6 +1516,8 @@ pub fn decode_row<T: RowCodec>(previous: u128, input: &mut Decoder<'_>) -> io::R
 fn validate_typed<T: RowCodec>(rows: &[T]) -> io::Result<()> {
     let mut previous = None;
     for row in rows {
+        #[cfg(test)]
+        VALIDATED_ROWS.with(|count| count.set(count.get() + 1));
         let key = row.key();
         check_native_key(key, T::KEY_BITS)?;
         row.check_key_fields()?;
@@ -1641,27 +1657,201 @@ fn round_rows_to_display<T: RowCodec>(rows: &mut [T]) {
 }
 
 fn apply_typed<T: RowCodec>(
-    mut previous: Vec<T>,
+    previous: Vec<T>,
     changed: &[DeltaRow],
     deleted: &[u128],
 ) -> io::Result<Vec<T>> {
+    apply_typed_at(previous, changed, deleted).map(|(rows, _)| rows)
+}
+
+/// [`apply_typed`], and the positions of the changed rows when the changes
+/// applied in place.
+fn apply_typed_at<T: RowCodec>(
+    mut previous: Vec<T>,
+    changed: &[DeltaRow],
+    deleted: &[u128],
+) -> io::Result<(Vec<T>, Option<Vec<usize>>)> {
+    // Keys ascend on both sides, so each is found searching on from the last.
+    let mut at = allocation::vec(changed.len())?;
+    let mut from = 0;
+    for delta in changed {
+        let found = locate(&previous, from, delta.key);
+        from = found.unwrap_or_else(|position| position);
+        at.push(found);
+    }
+    let mut gone = allocation::vec(deleted.len())?;
+    let mut from = 0;
+    for &key in deleted {
+        let Ok(position) = locate(&previous, from, key) else {
+            // The merge reports an absent key where a row-by-row walk meets it.
+            let len = previous.len();
+            return merge_typed(previous, len, changed, deleted, Ok).map(|rows| (rows, None));
+        };
+        from = position + 1;
+        gone.push(position);
+    }
+    let inserted = at.iter().filter(|found| found.is_err()).count();
     // Changes to rows already present keep the table's length and order: they apply
     // in place, rather than moving every row of the table into a new one.
-    if deleted.is_empty() {
-        let at: Option<Vec<usize>> = changed
-            .iter()
-            .map(|delta| previous.binary_search_by_key(&delta.key, T::key).ok())
-            .collect();
-        if let Some(at) = at {
-            for (delta, at) in changed.iter().zip(at) {
-                let row = std::mem::take(&mut previous[at]);
-                previous[at] = delta.apply(Some(row))?;
+    if inserted == 0 && gone.is_empty() {
+        let mut positions = allocation::vec(at.len())?;
+        for (delta, found) in changed.iter().zip(at) {
+            let position = found.unwrap_or_else(|_| unreachable!("no row is inserted"));
+            let row = std::mem::take(&mut previous[position]);
+            previous[position] = delta.apply(Some(row))?;
+            positions.push(position);
+        }
+        return Ok((previous, Some(positions)));
+    }
+    // A merge moves every row once; an insertion or deletion in place moves the
+    // rows after it, so only a few edits are cheaper in place.
+    if inserted + gone.len() > IN_PLACE_EDITS {
+        return merge_runs(previous, changed, &at, &gone).map(|rows| (rows, None));
+    }
+    // Rows change in key order, as a merge changes them, then the edits move rows.
+    let mut rows_in = allocation::vec(inserted)?;
+    for (delta, found) in changed.iter().zip(&at) {
+        match *found {
+            Ok(position) => {
+                let row = std::mem::take(&mut previous[position]);
+                previous[position] = delta.apply(Some(row))?;
             }
-            return Ok(previous);
+            Err(position) => rows_in.push((position, delta.apply::<T>(None)?)),
         }
     }
-    let len = previous.len();
-    merge_typed(previous, len, changed, deleted, Ok)
+    for &position in gone.iter().rev() {
+        previous.remove(position);
+    }
+    allocation::reserve(&mut previous, rows_in.len())?;
+    let mut removed = gone.iter().peekable();
+    let mut removed_before = 0;
+    for (earlier, (position, row)) in rows_in.into_iter().enumerate() {
+        while removed.next_if(|&&gone| gone < position).is_some() {
+            removed_before += 1;
+        }
+        previous.insert(position - removed_before + earlier, row);
+    }
+    let mut positions = allocation::vec(changed.len())?;
+    let mut from = 0;
+    for delta in changed {
+        let position = locate(&previous, from, delta.key).unwrap_or_else(|position| position);
+        from = position;
+        positions.push(position);
+    }
+    Ok((previous, Some(positions)))
+}
+
+/// Insertions plus deletions applied in place rather than by a merge.
+const IN_PLACE_EDITS: usize = 2;
+
+/// Where `key` is in ascending `rows`, searching on from `from`: Ok for a
+/// present key, Err for where it would go.
+fn locate<T: RowCodec>(rows: &[T], from: usize, key: u128) -> Result<usize, usize> {
+    let rest = &rows[from..];
+    let mut bound = 1;
+    while bound < rest.len() && rest[bound].key() < key {
+        bound *= 2;
+    }
+    let low = bound / 2;
+    let high = (bound + 1).min(rest.len());
+    match rest[low..high].binary_search_by_key(&key, T::key) {
+        Ok(position) => Ok(from + low + position),
+        Err(position) => Err(from + low + position),
+    }
+}
+
+/// [`merge_typed`] of an owned baseline whose deleted keys are all present,
+/// `at` and `gone` the changed and deleted keys' places in it: unchanged rows
+/// move in runs between them. Changes apply in key order, as the merge applies them.
+fn merge_runs<T: RowCodec>(
+    previous: Vec<T>,
+    changed: &[DeltaRow],
+    at: &[Result<usize, usize>],
+    gone: &[usize],
+) -> io::Result<Vec<T>> {
+    let mut rows = allocation::vec(allocation::add(previous.len(), changed.len())?)?;
+    let mut source = Runs {
+        rows: previous.into_iter(),
+        next: 0,
+    };
+    let mut gone = gone.iter().copied().peekable();
+    for (delta, found) in changed.iter().zip(at) {
+        let place = found.unwrap_or_else(|position| position);
+        while let Some(position) = gone.next_if(|&position| position < place) {
+            source.move_to(&mut rows, position);
+            source.take();
+        }
+        source.move_to(&mut rows, place);
+        match found {
+            Ok(_) => rows.push(delta.apply(Some(source.take()))?),
+            Err(_) => rows.push(delta.apply::<T>(None)?),
+        }
+    }
+    for position in gone {
+        source.move_to(&mut rows, position);
+        source.take();
+    }
+    rows.extend(source.rows);
+    Ok(rows)
+}
+
+/// A baseline's rows moved out in order, `next` the position of the first left.
+struct Runs<T> {
+    rows: std::vec::IntoIter<T>,
+    next: usize,
+}
+
+impl<T> Runs<T> {
+    /// Move the rows before position `end` to `out`.
+    fn move_to(&mut self, out: &mut Vec<T>, end: usize) {
+        out.extend(self.rows.by_ref().take(end - self.next));
+        self.next = end;
+    }
+    /// The row at the next position.
+    fn take(&mut self) -> T {
+        self.next += 1;
+        self.rows.next().expect("a located row is present")
+    }
+}
+
+/// [`apply_typed`] to rows with valid keys, then [`validate_typed`] of the
+/// result. Changes applied in place leave every other row as it was, so only
+/// the changed rows and the order beside them can fail: they are checked in
+/// the order a whole-table check meets them, which reports the same error.
+fn apply_typed_validated<T: RowCodec>(
+    previous: Vec<T>,
+    changed: &[DeltaRow],
+    deleted: &[u128],
+) -> io::Result<Vec<T>> {
+    let (rows, at) = apply_typed_at(previous, changed, deleted)?;
+    match at {
+        Some(at) => validate_typed_at(&rows, &at)?,
+        None => validate_typed(&rows)?,
+    }
+    Ok(rows)
+}
+
+/// [`validate_typed`] of rows whose keys were valid before the rows at the
+/// ascending positions `at` changed.
+fn validate_typed_at<T: RowCodec>(rows: &[T], at: &[usize]) -> io::Result<()> {
+    let unordered = || invalid("table rows must have matching types and unique ascending keys");
+    for (index, &position) in at.iter().enumerate() {
+        #[cfg(test)]
+        VALIDATED_ROWS.with(|count| count.set(count.get() + 1));
+        let key = rows[position].key();
+        check_native_key(key, T::KEY_BITS)?;
+        rows[position].check_key_fields()?;
+        if position > 0 && rows[position - 1].key() >= key {
+            return Err(unordered());
+        }
+        // The next row's own checks hold unless it changed too, when its
+        // turn checks this order.
+        let next = position + 1;
+        if at.get(index + 1) != Some(&next) && rows.get(next).is_some_and(|row| key >= row.key()) {
+            return Err(unordered());
+        }
+    }
+    Ok(())
 }
 
 /// One pass over a baseline another hour still holds: a row is cloned only
@@ -2215,10 +2405,10 @@ pub fn decode_delta(
     previous_key: u128,
     decoder: &mut Decoder<'_>,
 ) -> io::Result<DeltaRow> {
-    let mut values = Vec::new();
-    let (key, mask, fields) = decode_delta_with(table, previous_key, decoder, |change| {
-        change.encode(&mut values)
-    })?;
+    // A decoded change admits only its canonical encoding, so the recorded
+    // bytes are the values encoding them again would write.
+    let (key, mask, fields, values) = decode_delta_with(table, previous_key, decoder)?;
+    let values = allocation::copy_vec(values)?;
     #[cfg(any(test, feature = "test-support"))]
     delta_decode_ownership::record();
     Ok(DeltaRow {
@@ -2237,15 +2427,16 @@ pub fn validate_delta_row(
     previous_key: u128,
     decoder: &mut Decoder<'_>,
 ) -> io::Result<u128> {
-    decode_delta_with(table, previous_key, decoder, |_| Ok(())).map(|(key, _, _)| key)
+    decode_delta_with(table, previous_key, decoder).map(|(key, ..)| key)
 }
 
+/// One recorded delta row's key, mask and field count, every field change
+/// validated, and the bytes of those changes.
 fn decode_delta_with<'a>(
     table: TableId,
     previous_key: u128,
     decoder: &mut Decoder<'a>,
-    mut visit: impl FnMut(Change<'a>) -> io::Result<()>,
-) -> io::Result<(u128, u64, usize)> {
+) -> io::Result<(u128, u64, usize, &'a [u8])> {
     let key = table.decode_key(previous_key, decoder)?;
     let mut mask_bytes = [0; 8];
     let fields = table.last_change().fields(table, decoder.format);
@@ -2255,12 +2446,18 @@ fn decode_delta_with<'a>(
     if mask == 0 || mask & !full_mask(fields) != 0 {
         return Err(invalid("invalid recorded delta mask"));
     }
+    let values = decoder.rest();
     for (index, kind) in table.schema().iter().enumerate() {
         if mask & (1_u64 << index) != 0 {
-            visit(kind.decode_change(decoder)?)?;
+            kind.decode_change(decoder)?;
         }
     }
-    Ok((key, mask, fields))
+    Ok((
+        key,
+        mask,
+        fields,
+        &values[..values.len() - decoder.remaining()],
+    ))
 }
 
 #[cfg(any(test, feature = "test-support"))]

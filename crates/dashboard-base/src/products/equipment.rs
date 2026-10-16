@@ -208,6 +208,21 @@ impl VariantCatalogue {
     pub fn advance(&mut self, hour: i32) {
         self.last_hour = Some(hour);
     }
+    /// A catalogue carrying `versions` as they stand: each variant whose latest
+    /// version names it is known, so the next forget ends its names as it would
+    /// for the catalogue that read them.
+    pub fn seeded(versions: BTreeMap<u64, Vec<VariantVersion>>) -> Self {
+        let known = versions
+            .iter()
+            .filter(|(_, versions)| versions.last().is_some_and(|version| version.raw.is_some()))
+            .map(|(&id, _)| id)
+            .collect();
+        Self {
+            versions,
+            known,
+            ..Self::default()
+        }
+    }
     /// The frames' tables it reads: select them with the product's own.
     pub const TABLES: [TableId; 7] = [
         TableId::Countries,

@@ -7,6 +7,9 @@ use serde_json::{Value, json};
 pub struct Presentation {
     catalogue: Arc<dashboard_text::catalogue::Catalogue>,
     unknown_label: String,
+    /// What reading the unknown-attacker title refused, which belongs to
+    /// every family that shows it.
+    unknown_refusals: dashboard_text::catalogue::OwnRefusals,
 }
 pub(crate) type PreparedContent = Result<Option<Arc<Presentation>>, String>;
 
@@ -21,24 +24,28 @@ pub fn prepared_content(source: &Source, context: &LoadContext) -> io::Result<Pr
                 .content
                 .layers
                 .derived::<dashboard_text::catalogue::KeyedResults<(String, String), String>>();
-            let unknown_label = labels
-                .get_or_init(
-                    &(UNKNOWN_LABEL.to_owned(), "plain".to_owned()),
-                    |(key, _)| {
-                        catalogue
-                            .localised(key, dashboard_text::catalogue::View::Plain)
-                            .ok_or_else(|| {
-                                dashboard_core::invalid(
-                                    "Casualty unknown-attacker title is unavailable",
-                                )
-                            })
-                    },
-                )
-                .map(|label| (*label).clone())
-                .unwrap_or_else(|_| "Unknown attacker".into());
+            // The shared result credits its refusal on every read.
+            let (unknown_label, unknown_refusals) = dashboard_text::catalogue::capture(|| {
+                labels
+                    .get_or_init(
+                        &(UNKNOWN_LABEL.to_owned(), "plain".to_owned()),
+                        |(key, _)| {
+                            catalogue
+                                .localised(key, dashboard_text::catalogue::View::Plain)
+                                .ok_or_else(|| {
+                                    dashboard_core::invalid(
+                                        "Casualty unknown-attacker title is unavailable",
+                                    )
+                                })
+                        },
+                    )
+                    .map(|label| (*label).clone())
+                    .unwrap_or_else(|_| "Unknown attacker".into())
+            });
             Ok(Ok(Some(Arc::new(Presentation {
                 catalogue,
                 unknown_label,
+                unknown_refusals,
             }))))
         }
         Err(error) if error.kind() == io::ErrorKind::Interrupted => Err(error),
@@ -161,6 +168,10 @@ pub struct Prepared {
     catalogue: Catalogue,
     first: Option<i32>,
     last: i32,
+    /// The content refusals this family's own reads produced, which its
+    /// published warnings report.
+    #[serde(default)]
+    refusals: dashboard_text::catalogue::OwnRefusals,
     #[serde(skip)]
     named: usize,
     #[serde(skip)]
@@ -197,6 +208,7 @@ impl Prepared {
             },
             first: None,
             last: 0,
+            refusals: Default::default(),
             named: 0,
             presentation: None,
             presentation_error: None,
@@ -218,6 +230,7 @@ impl Prepared {
                 self.catalogue
                     .unknown_label
                     .clone_from(&content.unknown_label);
+                self.refusals.merge(&content.unknown_refusals);
                 self.presentation = Some(Arc::clone(content));
             }
             Ok(None) => {}
@@ -225,7 +238,26 @@ impl Prepared {
         }
     }
 
+    /// Runs `run` as this family's own consumer of the shared content
+    /// ([`dashboard_text::catalogue::own_refusals`]).
+    fn own<T>(&mut self, run: impl FnOnce(&mut Self) -> T) -> T {
+        let mut own = std::mem::take(&mut self.refusals);
+        let value = dashboard_text::catalogue::own_refusals(&mut own, || run(self));
+        self.refusals = own;
+        value
+    }
+
     pub fn observe_changes(
+        &mut self,
+        frame: &DecodedFrame,
+        replay: &Replay,
+        cancelled: &AtomicBool,
+        changes: &dashboard_base::prepared::frame_changes::FrameChanges,
+    ) -> io::Result<()> {
+        self.own(|state| state.observe_own_changes(frame, replay, cancelled, changes))
+    }
+
+    fn observe_own_changes(
         &mut self,
         frame: &DecodedFrame,
         replay: &Replay,
@@ -334,41 +366,43 @@ impl Prepared {
             }
         }
         if self.named < scan.names.len() || self.catalogue.warnings.is_empty() {
-            match self.presentation.as_ref() {
-                Some(presentation) => {
-                    let content = &presentation.catalogue;
-                    for (tag, inputs) in &scan.names[self.named..] {
-                        check_cancel(cancelled)?;
-                        let name = country_label(content, tag, inputs);
-                        let labels = self.catalogue.labels.entry(tag.clone()).or_default();
-                        if !labels.contains(&name) {
-                            labels.push(name);
-                        }
+            if let Some(presentation) = self.presentation.as_ref() {
+                let content = &presentation.catalogue;
+                for (tag, inputs) in &scan.names[self.named..] {
+                    check_cancel(cancelled)?;
+                    let name = country_label(content, tag, inputs);
+                    let labels = self.catalogue.labels.entry(tag.clone()).or_default();
+                    if !labels.contains(&name) {
+                        labels.push(name);
                     }
-                    self.catalogue.warnings = content
-                        .verification
-                        .iter()
-                        .chain(&content.warnings)
-                        .cloned()
-                        .chain(content.refusal_lines())
-                        .collect();
-                }
-                None if self.presentation_error.is_none() => {
-                    self.catalogue.warnings =
-                        vec!["Game content is unavailable; casualty titles are unavailable.".into()]
-                }
-                None => {
-                    let reason = self
-                        .presentation_error
-                        .as_ref()
-                        .expect("configured refusal");
-                    self.catalogue.warnings =
-                        vec![format!("Casualty titles are unavailable: {reason}")]
                 }
             }
             self.named = scan.names.len();
+            self.refresh_warnings();
         }
         Ok(())
+    }
+
+    /// The shared content's warnings and this family's own refusals so far.
+    /// Publication refreshes them too, so they never depend on when naming
+    /// inputs were last read.
+    fn refresh_warnings(&mut self) {
+        self.catalogue.warnings = match (&self.presentation, &self.presentation_error) {
+            (Some(presentation), _) => {
+                let content = &presentation.catalogue;
+                content
+                    .verification
+                    .iter()
+                    .chain(&content.warnings)
+                    .cloned()
+                    .chain(content.refusal_lines())
+                    .collect()
+            }
+            (None, None) => {
+                vec!["Game content is unavailable; casualty titles are unavailable.".into()]
+            }
+            (None, Some(reason)) => vec![format!("Casualty titles are unavailable: {reason}")],
+        };
     }
 
     pub fn bytes(&self) -> usize {
@@ -416,11 +450,21 @@ impl Prepared {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        self.own(|state| state.flush_own(writer, branch, cancelled))
+    }
+
+    fn flush_own(
+        &mut self,
+        writer: &mut store::Writer,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
         let Some(first) = self.first.take() else {
             return Ok(());
         };
         self.builder.scan.seal();
         self.pairs.seal();
+        self.refresh_warnings();
         let scan = &mut self.builder.scan;
         let last = self.last;
         let samples: BTreeMap<_, _> = scan

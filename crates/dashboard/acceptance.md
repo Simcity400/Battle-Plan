@@ -288,3 +288,19 @@ run limit, 120 seconds without child output and 16 GiB private bytes. It records
 corresponding fresh query process. These are sampled process peaks, not allocation
 bounds. The owner builds the release binary and runs the launcher against the
 protected 50-year input; only its evidence-directory copy is prepared.
+
+## Readiness
+
+`dashboard-acceptance --readiness` measures how long after opening a recording every registered
+widget's default view and the map's first frame can draw while background preparation runs. It
+opens through the data service as the desktop does, with an empty isolated prepared store and the
+content stack from the game and user folders; by default an earlier open with preparation off warms
+the content hash index, and `--readiness-cold-content` skips it. `src/readiness/widgets.json`
+lists each widget's default requests (`--readiness-table` replaces it for one run); a test fails
+when a registered widget has no entry. All requests are in flight at once, as mounted widgets issue
+them, and a pending prepared request is asked again when accepted preparation changes. A reply is
+ready when it is exact or answered beyond accepted coverage by the product's own sampling (flagged
+approximate spans count); a null reply or an event list cut at accepted coverage is pending. JSON
+lines report preparation progress, each request's settle and query time, each widget's ready time
+and gating request, the map, and the overall time, until everything is ready or
+`--readiness-limit` seconds (default 1200) pass.

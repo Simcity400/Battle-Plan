@@ -73,8 +73,8 @@ pub enum Temps {
 
 /// A variable store, as `ScriptVariables`
 /// keys it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Store {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Store {
     /// Global store (scope kind 0).
     Global,
     /// Country store of a canonical slot (kind 1, by the raw country id).

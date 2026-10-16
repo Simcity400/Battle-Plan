@@ -2161,8 +2161,6 @@ fn project_unrelated_lexical_changes_publish_one_country_payload_over_720_hours_
                 .read(&fixture.key, &section(1), ordinal)
                 .unwrap()
                 .unwrap()
-                .metadata()
-                .unwrap()
                 .len()
         })
         .sum();
@@ -2407,4 +2405,63 @@ fn project_holder_change_reuses_unchanged_project_history_link_and_program_table
     for tag in ["opaque-1", "opaque-2", "renamed-holder"] {
         compare(&fixture, &source, &params(tag), &context);
     }
+}
+
+#[test]
+fn prepared_project_events_name_each_presentation_once() {
+    let flag = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let mut frames = vec![
+        frame(100, true, 3),
+        frame(101, true, 3),
+        frame(102, true, 3),
+    ];
+    if let TableView::Complete(TableRows::Projects(rows)) =
+        &mut *frames[1].tables[TableId::Projects.index()]
+    {
+        rows[0].state.current_offset = 0xe8;
+        rows[0].state.not_completed = 0;
+    }
+    frames[2] = frames[1].clone();
+    frames[2].hour = 102;
+    let source = source(&frames);
+    let accepted = decoded(&source);
+    let fixture = Fixture::new();
+    let mut prepared = Prepared::new(source.replay_ref(), 1);
+    for frame in &accepted {
+        prepared.observe(&source, &context, frame, &flag).unwrap();
+    }
+    publish(&fixture, &mut prepared);
+    for tag in ["opaque-1", "opaque-2", "opaque-3"] {
+        compare(&fixture, &source, &params(tag), &context);
+    }
+    let (keys, _) =
+        series::read_catalogue::<Metadata>(&fixture.store, &fixture.key, "special-projects", 1)
+            .unwrap()
+            .unwrap();
+    let mut reader = Reader::new(&fixture.store, &fixture.key, section(1), &flag).unwrap();
+    let mut infos = BTreeSet::new();
+    let mut events = 0;
+    for tag in ["opaque-1", "opaque-2", "opaque-3"] {
+        for row in reader
+            .events(&[keys[tag]], i32::MIN, i32::MAX, 0, 16)
+            .unwrap()
+            .rows
+        {
+            events += 1;
+            for project in row.row["projects"].as_array().unwrap() {
+                // Old events repeated the whole presentation in every row.
+                let info = project[1]["info"].as_u64().expect("a presentation key");
+                assert!(project[1]["person"].is_u64());
+                infos.insert(info);
+            }
+        }
+    }
+    assert_eq!(
+        events, 4,
+        "opaque-1's completion republishes its observation"
+    );
+    assert_eq!(infos.len(), 1, "equal presentations share one key");
+    let info = *infos.first().unwrap();
+    assert_eq!(reader.event_count_through(info, i32::MAX).unwrap(), 1);
 }

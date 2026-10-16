@@ -37,6 +37,8 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[path = "dashboard-acceptance/preparation_measurement.rs"]
 mod preparation_measurement;
+#[path = "dashboard-acceptance/readiness_probe.rs"]
+mod readiness_probe;
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
@@ -83,6 +85,10 @@ struct Options {
     progressive: Option<String>,
     prefix_blocks: usize,
     measurements: Option<PathBuf>,
+    readiness: bool,
+    readiness_limit: Duration,
+    readiness_table: Option<PathBuf>,
+    readiness_cold_content: bool,
 }
 
 fn options() -> io::Result<Options> {
@@ -103,7 +109,19 @@ fn options() -> io::Result<Options> {
     let mut progressive = None;
     let mut prefix_blocks = 13;
     let mut measurements = None;
+    let mut readiness = false;
+    let mut readiness_limit = Duration::from_secs(20 * 60);
+    let mut readiness_table = None;
+    let mut readiness_cold_content = false;
     while let Some(arg) = args.next() {
+        if arg == "--readiness" {
+            readiness = true;
+            continue;
+        }
+        if arg == "--readiness-cold-content" {
+            readiness_cold_content = true;
+            continue;
+        }
         if arg == "--resume" {
             resume = true;
             continue;
@@ -126,6 +144,15 @@ fn options() -> io::Result<Options> {
                 progressive = Some(mode);
             }
             Some("--measurements") => measurements = Some(PathBuf::from(value)),
+            Some("--readiness-table") => readiness_table = Some(PathBuf::from(value)),
+            Some("--readiness-limit") => {
+                readiness_limit = value
+                    .to_str()
+                    .and_then(|value| value.parse().ok())
+                    .filter(|value| *value > 0)
+                    .map(Duration::from_secs)
+                    .ok_or_else(|| invalid("Readiness limit must be positive seconds"))?;
+            }
             Some("--prefix-blocks") => {
                 prefix_blocks = value
                     .to_str()
@@ -208,6 +235,10 @@ fn options() -> io::Result<Options> {
         progressive,
         prefix_blocks,
         measurements,
+        readiness,
+        readiness_limit,
+        readiness_table,
+        readiness_cold_content,
     })
 }
 
@@ -1884,6 +1915,25 @@ fn progressive_measure(options: Options, path: &Path) -> io::Result<bool> {
 
 fn run(options: Options) -> io::Result<bool> {
     let path = isolated(&options.evidence)?;
+    if options.readiness {
+        let (Some(game), Some(user)) = (options.game, options.user) else {
+            return Err(invalid(
+                "Readiness opens with the content stack; supply the game and user folders",
+            ));
+        };
+        return readiness_probe::run(
+            readiness_probe::Settings {
+                recording: options.recording,
+                game,
+                user,
+                allow_unverified: options.allow_unverified,
+                limit: options.readiness_limit,
+                table: options.readiness_table,
+                warm_content: !options.readiness_cold_content,
+            },
+            &path,
+        );
+    }
     if options.progressive.is_some() {
         return progressive_measure(options, &path);
     }

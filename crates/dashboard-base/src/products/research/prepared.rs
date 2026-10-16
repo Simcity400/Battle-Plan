@@ -75,6 +75,7 @@ impl Prepared {
                 rows_changed: [true; replay::frame::TABLE_COUNT],
                 table_read: [true; replay::frame::TABLE_COUNT],
                 slot_read: [true; replay::frame::TABLE_COUNT],
+                updates: None,
             },
         )
     }
@@ -114,6 +115,9 @@ impl Prepared {
                     .is_some_and(|span| span.first_hour == frame.hour),
             );
             let slots = self.slots.entry(tag.clone()).or_default();
+            // Whether progress is shown at this read hour alone: the carried
+            // read would hold it, so the next hour observes the country again.
+            let mut read_only = false;
             for slot in &country.history.slots {
                 let keys = *slots.entry(slot.index).or_insert_with(|| {
                     let keys = SlotKeys {
@@ -154,14 +158,17 @@ impl Prepared {
                         },
                     )?;
                 }
-                let progress = slot.progress.last().filter(|progress| {
-                    progress.last_hour == frame.hour
-                        || state.is_some_and(|state| {
-                            state.token.is_some()
-                                && state.entry_first_observed_hour
-                                    == progress.entry_first_observed_hour
-                        })
-                });
+                let current = |progress: &ResearchProgress| {
+                    state.is_some_and(|state| {
+                        state.token.is_some()
+                            && state.entry_first_observed_hour == progress.entry_first_observed_hour
+                    })
+                };
+                let progress = slot
+                    .progress
+                    .last()
+                    .filter(|progress| progress.last_hour == frame.hour || current(*progress));
+                read_only |= progress.is_some_and(|progress| !current(progress));
                 let value = progress
                     .map(|progress| progress.progress_raw.parse::<i128>())
                     .transpose()
@@ -180,6 +187,9 @@ impl Prepared {
                     self.values
                         .event(keys.progress, frame.hour, &Event::Read { progress })?;
                 }
+            }
+            if read_only && let Some((_, canonical)) = country.identity {
+                self.scan.recheck.insert(canonical);
             }
             retain_open(country, |event| self.values.event(key, frame.hour, &event))?;
             country.charge(&mut self.scan.bytes);

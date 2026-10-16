@@ -78,6 +78,7 @@ impl Prepared {
             slot_read: std::array::from_fn(|index| {
                 slot_read(format, &frame.metrics, TableId::ALL[index], frame.hour)
             }),
+            updates: None,
         };
         self.observe_changed(frame, format, source, &changes)
     }
@@ -410,6 +411,9 @@ impl Prepared {
         if let Some(hour) = self.scan.last {
             self.project_facts(hour, branch, source)?;
         }
+        // That projection repeats the hour the block's end already published:
+        // its touched keys belong to that block's window, not the next one.
+        self.touched.clear();
         self.facts.flush(
             writer,
             &format!("construction-facts-{branch}"),
@@ -1163,6 +1167,71 @@ mod tests {
                 frame
             })
             .collect()
+    }
+
+    #[test]
+    fn restored_construction_publishes_what_continuous_observation_publishes() {
+        // The line's project run is open, carried between reads, at the commit
+        // after hour 147 and ends at hour 148, the first hour after it. Nothing
+        // else names the project after the commit: no output row is recorded.
+        let flag = AtomicBool::new(false);
+        let mut frames = frames();
+        for frame in frames.iter_mut().filter(|frame| frame.hour >= 148) {
+            *frame.tables[TableId::ConstructionLineOutput.index()] =
+                TableView::Complete(TableRows::ConstructionLineOutput(Vec::new()));
+        }
+        let replay =
+            Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap());
+        let source = Source::from_replay(
+            dashboard_base::source::SourceKey {
+                source_id: "construction-restore".into(),
+                revision: "1".into(),
+            },
+            "memory.battleplan".into(),
+            replay.clone(),
+            &flag,
+        )
+        .unwrap();
+        let split = frames.iter().position(|frame| frame.hour == 148).unwrap();
+        let blocks = [&frames[..split], &frames[split..]];
+        let context = LoadContext { content: None };
+        dashboard_base::prepared::observer_tests::assert_restore_continues(
+            replay.format,
+            &blocks,
+            Prepared::default,
+            |prepared, frame, changes, _| {
+                // Every block resumes from the frame before it.
+                if frame.hour == 148 {
+                    prepared.restore_frame(&frames[split - 1]);
+                }
+                prepared
+                    .observe_changed(frame, replay.format, &source, changes)
+                    .unwrap();
+            },
+            |prepared, writer, ordinal| {
+                prepared
+                    .end_block(1, blocks[ordinal].last().unwrap().hour, &source)
+                    .unwrap();
+                prepared.flush(writer, &source, &context, 1, &flag).unwrap();
+                writer
+                    .write_at(
+                        "construction-continuation-1",
+                        0,
+                        serde_json::to_vec(prepared).unwrap().as_slice(),
+                    )
+                    .unwrap();
+            },
+            |fixture| {
+                serde_json::from_reader(
+                    fixture
+                        .store
+                        .read(&fixture.key, "construction-continuation-1", 0)
+                        .unwrap()
+                        .unwrap(),
+                )
+                .unwrap()
+            },
+        );
     }
 
     #[test]

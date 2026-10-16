@@ -11,6 +11,141 @@ struct Observation {
     identity: (u32, u32),
     projects: Option<Vec<(ProjectFacts, Look)>>,
 }
+/// An observation as its event stores it. Each distinct presentation and
+/// person (icons, portraits, names) is published once, as the only event of
+/// its own key, and the observation names that key, so a changed project
+/// republishes its country's small facts rather than every project's art.
+#[derive(Serialize, Deserialize)]
+struct StoredObservation {
+    identity: (u32, u32),
+    projects: Option<Vec<(ProjectFacts, StoredLook)>>,
+}
+#[derive(Serialize, Deserialize)]
+struct StoredLook {
+    needs_scope: bool,
+    program_reference: u64,
+    person: u64,
+    info: u64,
+    warnings: BTreeMap<String, usize>,
+    refusals: catalogue::Refusals,
+    iteration_text: Option<String>,
+    iteration_refusals: catalogue::Refusals,
+}
+/// The key publishing `value`: an earlier one for equal text, else a new key
+/// whose only event is `value`.
+fn look_key(
+    values: &mut Accumulator,
+    looks: &mut BTreeMap<String, u64>,
+    next_key: &mut u64,
+    hour: i32,
+    value: &impl Serialize,
+) -> io::Result<u64> {
+    let hash = blake3::hash(&serde_json::to_vec(value)?)
+        .to_hex()
+        .to_string();
+    if let Some(&key) = looks.get(&hash) {
+        return Ok(key);
+    }
+    let key = *next_key;
+    *next_key += 1;
+    values.event(key, hour, value)?;
+    looks.insert(hash, key);
+    Ok(key)
+}
+/// Publishes `observation` as the event of `key` at `hour`.
+fn emit(
+    values: &mut Accumulator,
+    looks: &mut BTreeMap<String, u64>,
+    next_key: &mut u64,
+    key: u64,
+    hour: i32,
+    observation: &Observation,
+) -> io::Result<()> {
+    let mut projects = None;
+    if let Some(observed) = &observation.projects {
+        let mut stored = Vec::with_capacity(observed.len());
+        for (facts, look) in observed {
+            stored.push((
+                facts.clone(),
+                StoredLook {
+                    needs_scope: look.needs_scope,
+                    program_reference: look.program_reference,
+                    person: look_key(values, looks, next_key, hour, &*look.person)?,
+                    info: look_key(values, looks, next_key, hour, &*look.info)?,
+                    warnings: look.warnings.clone(),
+                    refusals: look.refusals.clone(),
+                    iteration_text: look.iteration_text.clone(),
+                    iteration_refusals: look.iteration_refusals.clone(),
+                },
+            ));
+        }
+        projects = Some(stored);
+    }
+    values.event(
+        key,
+        hour,
+        &StoredObservation {
+            identity: observation.identity,
+            projects,
+        },
+    )
+}
+/// Presentations and people a query has read, by key.
+#[derive(Default)]
+struct Looks {
+    infos: BTreeMap<u64, Arc<ProjectPresentation>>,
+    people: BTreeMap<u64, Arc<ProjectPerson>>,
+}
+fn published<T: serde::de::DeserializeOwned>(
+    reader: &mut Reader<'_>,
+    held: &mut BTreeMap<u64, Arc<T>>,
+    key: u64,
+) -> io::Result<Arc<T>> {
+    if let Some(value) = held.get(&key) {
+        return Ok(Arc::clone(value));
+    }
+    let row = reader
+        .events(&[key], i32::MIN, i32::MAX, 0, 1)?
+        .rows
+        .into_iter()
+        .next()
+        .ok_or_else(|| dashboard_core::invalid("Prepared project presentation is missing"))?;
+    let value = Arc::new(serde_json::from_value(row.row)?);
+    held.insert(key, Arc::clone(&value));
+    Ok(value)
+}
+impl Looks {
+    fn observation(
+        &mut self,
+        reader: &mut Reader<'_>,
+        stored: StoredObservation,
+    ) -> io::Result<Observation> {
+        let mut projects = None;
+        if let Some(stored) = stored.projects {
+            let mut observed = Vec::with_capacity(stored.len());
+            for (facts, look) in stored {
+                observed.push((
+                    facts,
+                    Look {
+                        needs_scope: look.needs_scope,
+                        program_reference: look.program_reference,
+                        person: published(reader, &mut self.people, look.person)?,
+                        info: published(reader, &mut self.infos, look.info)?,
+                        warnings: look.warnings,
+                        refusals: look.refusals,
+                        iteration_text: look.iteration_text,
+                        iteration_refusals: look.iteration_refusals,
+                    },
+                ));
+            }
+            projects = Some(observed);
+        }
+        Ok(Observation {
+            identity: stored.identity,
+            projects,
+        })
+    }
+}
 #[derive(Default, Serialize, Deserialize)]
 struct Country {
     #[serde(skip)]
@@ -70,6 +205,8 @@ pub struct Prepared {
     countries: BTreeMap<String, Country>,
     active_countries: BTreeSet<String>,
     next_key: u64,
+    /// Published presentations and people by text hash, to their keys.
+    looks: BTreeMap<String, u64>,
     lexical: u64,
     metadata: Metadata,
     names: history::NameScan,
@@ -86,6 +223,10 @@ pub struct Prepared {
     content_ready: bool,
     last_hour: Option<i32>,
     next_completion: Option<i32>,
+    /// The content refusals this family's own reads produced and the lazy
+    /// readers they used, whose warnings its metadata reports.
+    #[serde(default)]
+    refusals: catalogue::OwnRefusals,
     #[serde(skip)]
     scoped: bool,
     #[serde(skip)]
@@ -161,7 +302,18 @@ impl Prepared {
         self.lexical_view = Some(frame.tables[TableId::LexicalTokens.index()].identity());
         self.completions.restore_views(frame);
     }
+    /// Runs `run` as this family's own consumer of the shared content
+    /// ([`catalogue::own_refusals`]).
+    fn own<T>(&mut self, run: impl FnOnce(&mut Self) -> T) -> T {
+        let mut own = std::mem::take(&mut self.refusals);
+        let value = catalogue::own_refusals(&mut own, || run(self));
+        self.refusals = own;
+        value
+    }
     pub fn configure(&mut self, source: &Source, context: &LoadContext) -> io::Result<()> {
+        self.own(|state| state.configure_own(source, context))
+    }
+    fn configure_own(&mut self, source: &Source, context: &LoadContext) -> io::Result<()> {
         if self.content_ready {
             return Ok(());
         }
@@ -236,6 +388,14 @@ impl Prepared {
         self.observe_changed(frame, &changes, cancelled)
     }
     pub fn observe_changed(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.own(|state| state.observe_own_changes(frame, changes, cancelled))
+    }
+    fn observe_own_changes(
         &mut self,
         frame: &DecodedFrame,
         changes: &FrameChanges,
@@ -933,7 +1093,14 @@ impl Prepared {
             if !continuing || country.current.as_ref() != Some(&observation) {
                 let hash = *blake3::hash(&serde_json::to_vec(&observation)?).as_bytes();
                 if country.hash != Some(hash) || !continuing {
-                    self.values.event(key, frame.hour, &observation)?;
+                    emit(
+                        &mut self.values,
+                        &mut self.looks,
+                        &mut self.next_key,
+                        key,
+                        frame.hour,
+                        &observation,
+                    )?;
                     #[cfg(any(test, feature = "test-support"))]
                     {
                         self.work.emitted += 1;
@@ -1043,7 +1210,14 @@ impl Prepared {
             let hash = *blake3::hash(&serde_json::to_vec(&observation)?).as_bytes();
             if country.hash != Some(hash) {
                 let key = self.keys[tag];
-                self.values.event(key, frame.hour, &observation)?;
+                emit(
+                    &mut self.values,
+                    &mut self.looks,
+                    &mut self.next_key,
+                    key,
+                    frame.hour,
+                    &observation,
+                )?;
                 self.values
                     .observe(key, frame.hour, Some(i128::from(frame.hour)), false);
                 country.hash = Some(hash);
@@ -1152,6 +1326,14 @@ impl Prepared {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        self.own(|state| state.flush_own(writer, branch, cancelled))
+    }
+    fn flush_own(
+        &mut self,
+        writer: &mut store::Writer,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
         self.completions.flush(
             writer,
             branch,
@@ -1219,6 +1401,7 @@ fn intervals(
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<Interval>> {
     let mut result = Vec::new();
+    let mut looks = Looks::default();
     let mut cursor = 0;
     loop {
         dashboard_text::metadata::check_cancel(cancelled)?;
@@ -1235,10 +1418,11 @@ fn intervals(
             let run = reader.value_at(key, row.hour)?.ok_or_else(|| {
                 dashboard_core::invalid("Prepared project observation has no interval")
             })?;
+            let stored = serde_json::from_value(row.row)?;
             result.push(Interval {
                 first: row.hour,
                 last: run.last_hour,
-                observation: serde_json::from_value(row.row)?,
+                observation: looks.observation(reader, stored)?,
             });
         }
         let Some(next) = page.cursor else {

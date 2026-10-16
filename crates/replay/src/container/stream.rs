@@ -5,6 +5,8 @@ use std::sync::{Arc, mpsc};
 
 #[cfg(test)]
 type ReconstructedHook = Arc<dyn Fn(&DecodedFrame) + Send + Sync>;
+#[cfg(test)]
+type ReadHook = Arc<dyn Fn(&Frame) + Send + Sync>;
 
 /// Accepted block boundary. Appends preserve offsets and append independent blocks.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -20,6 +22,8 @@ pub struct ReplayStream {
     decoder: FrameDecoder,
     #[cfg(test)]
     on_reconstructed: Option<ReconstructedHook>,
+    #[cfg(test)]
+    on_read: Option<ReadHook>,
 }
 
 impl ReplayStream {
@@ -35,6 +39,8 @@ impl ReplayStream {
             tables: selected,
             #[cfg(test)]
             on_reconstructed: None,
+            #[cfg(test)]
+            on_read: None,
         })
     }
 
@@ -72,7 +78,7 @@ impl ReplayStream {
     pub fn next_block_with(
         &mut self,
         replay: &Replay,
-        mut visit: impl FnMut(Frame, &DecodedFrame) -> io::Result<()>,
+        visit: impl FnMut(Frame, &DecodedFrame) -> io::Result<()>,
         mut check: impl FnMut() -> io::Result<()>,
     ) -> io::Result<bool> {
         check()?;
@@ -80,57 +86,32 @@ impl ReplayStream {
         let Some(index) = replay.index.get(self.cursor.next_block) else {
             return Ok(false);
         };
-        // Grouped selected reads return only after the native reader's selected
-        // decoding and first-read section verification succeed. Keep those
-        // admitted frames for one reconstruction pass. Interleaved blocks keep
-        // their bounded payload streaming and admission pass.
-        let grouped = if replay.is_file_backed() {
-            replay.held_grouped(index)?
-        } else {
-            replay.grouped_block(index)?.is_some()
-        };
-        let frames = if grouped {
-            Some(replay.read_block_selected(index, &self.tables)?)
-        } else {
-            replay.visit_block(index, Some(&self.tables), |_| {
-                check()?;
-                Ok(true)
-            })?;
-            None
-        };
-        check()?;
-        let mut decoder = self
-            .decoder
-            .current()
-            .cloned()
-            .map(|frame| FrameDecoder::resume_for_tables(&self.tables, frame))
-            .transpose()?
-            .unwrap_or_else(|| FrameDecoder::for_tables(&self.tables));
-        let mut reconstruct = |frame: Frame| {
-            let decoded = decoder.advance(&frame)?;
-            validate_campaign(decoded, &replay.campaign_id)?;
-            visit(frame, decoded)?;
-            Ok(true)
-        };
-        match frames {
-            Some(frames) => {
-                for frame in frames {
-                    check()?;
-                    reconstruct(frame)?;
-                }
-            }
-            None => replay.visit_block(index, Some(&self.tables), |frame| {
-                check()?;
-                reconstruct(frame)
-            })?,
-        }
+        let tables = &self.tables;
+        let current = &self.decoder;
+        let decoder = reconstruct_block(
+            replay,
+            index,
+            tables,
+            || {
+                current
+                    .current()
+                    .cloned()
+                    .map(|frame| FrameDecoder::resume_for_tables(tables, frame))
+                    .transpose()
+                    .map(|decoder| decoder.unwrap_or_else(|| FrameDecoder::for_tables(tables)))
+            },
+            visit,
+            check,
+        )?;
         self.decoder = decoder;
         self.cursor.next_block += 1;
         self.cursor.previous = Some(index.clone());
         Ok(true)
     }
 
-    /// Reconstruct on one worker and observe in order through one queued frame.
+    /// Read on one worker; reconstruct and observe here, in order. Each
+    /// observed hour is released before the next is reconstructed, so every
+    /// delta applies to rows no observer still holds, in place.
     /// Decoder state and cursor move only after the whole block succeeds.
     pub fn next_block_parallel_with(
         &mut self,
@@ -158,7 +139,9 @@ impl ReplayStream {
         let tables = &self.tables;
         #[cfg(test)]
         let on_reconstructed = self.on_reconstructed.clone();
-        let decoder = std::thread::scope(|scope| -> io::Result<FrameDecoder> {
+        #[cfg(test)]
+        let on_read = self.on_read.clone();
+        std::thread::scope(|scope| -> io::Result<()> {
             // The receiver belongs to the scope body: unwinding drops it before
             // joining a producer blocked on a full frame channel.
             let (sender, receiver) = mpsc::sync_channel(1);
@@ -184,7 +167,21 @@ impl ReplayStream {
                     replay.grouped_block(index)?.is_some()
                 };
                 let frames = if grouped {
-                    Some(replay.read_block_selected(index, tables)?)
+                    // Below-normal workers, as this thread, leave observers their cores.
+                    let lower = || {
+                        #[cfg(windows)]
+                        unsafe {
+                            use windows_sys::Win32::System::Threading::{
+                                GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+                            };
+                            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+                        }
+                    };
+                    let parallel = Parallel {
+                        workers: super::pack::workers(),
+                        on_worker: &lower,
+                    };
+                    Some(replay.read_block_selected_parallel(index, tables, &parallel)?)
                 } else {
                     // Admission verifies a malformed tail before observers see it.
                     replay.visit_block(index, Some(tables), |_| {
@@ -194,35 +191,37 @@ impl ReplayStream {
                     None
                 };
                 check()?;
-                {
-                    let mut reconstruct = |frame: Frame| {
-                        check()?;
-                        let decoded = decoder.advance(&frame)?;
-                        validate_campaign(decoded, &replay.campaign_id)?;
-                        #[cfg(test)]
-                        if let Some(hook) = &on_reconstructed {
-                            hook(decoded);
-                        }
-                        sender
-                            .send((frame, decoded.clone()))
-                            .map_err(|_| io::Error::from(io::ErrorKind::Interrupted))?;
-                        Ok(true)
-                    };
-                    match frames {
-                        Some(frames) => {
-                            for frame in frames {
-                                reconstruct(frame)?;
-                            }
-                        }
-                        None => replay.visit_block(index, Some(tables), &mut reconstruct)?,
+                let mut send = |frame: Frame| {
+                    check()?;
+                    #[cfg(test)]
+                    if let Some(hook) = &on_read {
+                        hook(&frame);
                     }
+                    sender
+                        .send(frame)
+                        .map_err(|_| io::Error::from(io::ErrorKind::Interrupted))?;
+                    Ok(true)
+                };
+                match frames {
+                    Some(frames) => {
+                        for frame in frames {
+                            send(frame)?;
+                        }
+                    }
+                    None => replay.visit_block(index, Some(tables), &mut send)?,
                 }
-                Ok(decoder)
+                Ok(())
             })?;
             let observed = (|| -> io::Result<()> {
-                while let Ok((updates, frame)) = receiver.recv() {
+                while let Ok(frame) = receiver.recv() {
+                    let decoded = decoder.advance(&frame)?;
+                    validate_campaign(decoded, &replay.campaign_id)?;
+                    #[cfg(test)]
+                    if let Some(hook) = &on_reconstructed {
+                        hook(decoded);
+                    }
                     check()?;
-                    visit(updates, &frame)?;
+                    visit(frame, decoded)?;
                 }
                 check()
             })();
@@ -230,11 +229,11 @@ impl ReplayStream {
                 stopped.store(true, Ordering::Release);
             }
             drop(receiver);
-            let reconstructed = worker
+            let read = worker
                 .join()
                 .map_err(|_| io::Error::other("block decode failed"));
             observed?;
-            reconstructed?
+            read?
         })?;
         self.decoder = decoder;
         self.cursor.next_block += 1;
@@ -255,6 +254,92 @@ impl ReplayStream {
         }
         Ok(())
     }
+}
+
+impl Replay {
+    /// One block's selected frames reconstructed from its keyframe alone,
+    /// without any earlier block's decoder state, so blocks can be read in any
+    /// order and on any thread. Every block starts at a keyframe, where the
+    /// decoder keeps nothing of the hour before, so each hour equals what a
+    /// stream continuing from the previous block reconstructs: rows,
+    /// availability, sample hours, metrics and which hours share a table's
+    /// allocation. Anchored keyframes are read from the earlier blocks they
+    /// name, as every read does. Campaign is reconstructed and checked as the
+    /// stream does; other tables are unavailable.
+    pub fn read_block_alone(
+        &self,
+        index: &BlockIndex,
+        tables: &[TableId],
+        visit: impl FnMut(Frame, &DecodedFrame) -> io::Result<()>,
+        mut check: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
+        check()?;
+        let mut selected = engine::allocation::collect_vec(tables.iter().copied())?;
+        if !selected.contains(&TableId::Campaign) {
+            engine::allocation::reserve(&mut selected, 1)?;
+            selected.push(TableId::Campaign);
+        }
+        reconstruct_block(
+            self,
+            index,
+            &selected,
+            || Ok(FrameDecoder::for_tables(&selected)),
+            visit,
+            check,
+        )
+        .map(|_| ())
+    }
+}
+
+/// Read a block's selected frames and reconstruct them with the decoder
+/// `decoder` returns once admission succeeded, handing each to `visit`.
+fn reconstruct_block(
+    replay: &Replay,
+    index: &BlockIndex,
+    tables: &[TableId],
+    decoder: impl FnOnce() -> io::Result<FrameDecoder>,
+    mut visit: impl FnMut(Frame, &DecodedFrame) -> io::Result<()>,
+    mut check: impl FnMut() -> io::Result<()>,
+) -> io::Result<FrameDecoder> {
+    // Grouped selected reads return only after the native reader's selected
+    // decoding and first-read section verification succeed. Keep those
+    // admitted frames for one reconstruction pass. Interleaved blocks keep
+    // their bounded payload streaming and admission pass.
+    let grouped = if replay.is_file_backed() {
+        replay.held_grouped(index)?
+    } else {
+        replay.grouped_block(index)?.is_some()
+    };
+    let frames = if grouped {
+        Some(replay.read_block_selected(index, tables)?)
+    } else {
+        replay.visit_block(index, Some(tables), |_| {
+            check()?;
+            Ok(true)
+        })?;
+        None
+    };
+    check()?;
+    let mut decoder = decoder()?;
+    let mut reconstruct = |frame: Frame| {
+        let decoded = decoder.advance(&frame)?;
+        validate_campaign(decoded, &replay.campaign_id)?;
+        visit(frame, decoded)?;
+        Ok(true)
+    };
+    match frames {
+        Some(frames) => {
+            for frame in frames {
+                check()?;
+                reconstruct(frame)?;
+            }
+        }
+        None => replay.visit_block(index, Some(tables), |frame| {
+            check()?;
+            reconstruct(frame)
+        })?,
+    }
+    Ok(decoder)
 }
 
 #[cfg(test)]
@@ -312,11 +397,20 @@ mod tests {
         receiver
     }
 
-    fn await_decoded(receiver: &mpsc::Receiver<i32>, position: i32) {
+    /// Each hour the worker reads, as it queues the frame.
+    fn reads(stream: &mut ReplayStream) -> mpsc::Receiver<i32> {
+        let (sender, receiver) = mpsc::channel();
+        stream.on_read = Some(Arc::new(move |frame| {
+            let _ = sender.send(frame.hour);
+        }));
+        receiver
+    }
+
+    fn await_read(receiver: &mpsc::Receiver<i32>, position: i32) {
         loop {
             if receiver
                 .recv_timeout(Duration::from_secs(10))
-                .expect("future frame must reconstruct during observation")
+                .expect("future frame must be read during observation")
                 == position
             {
                 return;
@@ -369,13 +463,131 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    /// `recording` with branch 1 continued after branch 2 by an appended
+    /// segment: its first hour follows branch 1's last block, and its keyframe
+    /// is written against the keyframes of earlier blocks.
+    fn continued() -> Replay {
+        let mut segment = records(1, &[1]);
+        segment.truncate(2);
+        let mut encoder = FrameEncoder::new();
+        for hour in [1444, 1445, 1446] {
+            let mut frame = source(1, hour);
+            frame.metrics.table_ns[TableId::Clock.index()] = 1;
+            if hour == 1445 {
+                frame.metrics.table_ns[TableId::WorldTension.index()] = 1;
+                frame.tables[TableId::SunkShips.index()] = TableView::Truncated {
+                    rows: TableRows::SunkShips(vec![SunkShipsRow::default()]),
+                    missing: 2,
+                }
+                .into();
+            }
+            segment.push(Record::Frame(encoder.encode(frame, false).unwrap()));
+        }
+        recording().append(&[segment]).unwrap()
+    }
+
     #[test]
-    fn reconstruction_overlaps_ordered_observation_with_one_queued_frame() {
+    fn blocks_read_alone_equal_the_continuous_stream_in_any_order() {
+        use crate::frame::SharedView;
+        let memory = continued();
+        assert_eq!(memory.index.len(), 5);
+        assert_eq!(
+            (memory.index[4].branch, memory.index[4].first_hour),
+            (1, 1444)
+        );
+        let interleaved = interleaved_copy(&memory);
+        let path =
+            std::env::temp_dir().join(format!("replay-alone-{}.battleplan", std::process::id()));
+        std::fs::write(&path, memory.bytes()).unwrap();
+        let held = Replay::open_path(&path).unwrap();
+        for replay in [&memory, &interleaved, &held] {
+            for tables in [
+                &TableId::ALL[..],
+                &[TableId::Clock, TableId::WorldTension, TableId::SunkShips][..],
+            ] {
+                // Every block alone on its own thread, nothing read before it.
+                let mut alone: Vec<Vec<(Frame, DecodedFrame)>> = std::thread::scope(|scope| {
+                    let reads: Vec<_> = replay
+                        .index
+                        .iter()
+                        .rev()
+                        .map(|index| {
+                            scope.spawn(move || {
+                                let mut frames = Vec::new();
+                                replay
+                                    .read_block_alone(
+                                        index,
+                                        tables,
+                                        |raw, frame| {
+                                            frames.push((raw, frame.clone()));
+                                            Ok(())
+                                        },
+                                        || Ok(()),
+                                    )
+                                    .unwrap();
+                                frames
+                            })
+                        })
+                        .collect();
+                    reads.into_iter().map(|read| read.join().unwrap()).collect()
+                });
+                alone.reverse();
+                let mut continuous = ReplayStream::new(tables).unwrap();
+                for block in &alone {
+                    let mut position = 0;
+                    let mut previous: Option<DecodedFrame> = None;
+                    continuous
+                        .next_block_with(
+                            replay,
+                            |raw, frame| {
+                                let (alone_raw, alone_frame) = &block[position];
+                                assert_eq!(&raw, alone_raw);
+                                assert_frame(alone_frame, frame);
+                                if let Some(previous) = &previous {
+                                    let alone_previous = &block[position - 1].1;
+                                    for table in TableId::ALL {
+                                        let index = table.index();
+                                        assert_eq!(
+                                            SharedView::ptr_eq(
+                                                &alone_previous.tables[index],
+                                                &alone_frame.tables[index]
+                                            ),
+                                            SharedView::ptr_eq(
+                                                &previous.tables[index],
+                                                &frame.tables[index]
+                                            ),
+                                            "{table:?} shares the hour before's allocation in one reader only"
+                                        );
+                                    }
+                                }
+                                previous = Some(frame.clone());
+                                position += 1;
+                                Ok(())
+                            },
+                            || Ok(()),
+                        )
+                        .unwrap();
+                    assert_eq!(position, block.len());
+                }
+                assert_eq!(continuous.cursor().next_block, replay.index.len());
+            }
+        }
+        drop(held);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn reading_overlaps_observation_which_reconstructs_each_hour_after_the_last() {
+        let parallel = std::thread::available_parallelism().map_or(1, usize::from) > 1;
         for replay in [recording(), interleaved_copy(&recording())] {
             let replay = Arc::new(replay);
             let mut stream = ReplayStream::new(&TableId::ALL).unwrap();
             let mut serial = ReplayStream::new(&TableId::ALL).unwrap();
-            let completed = completions(&mut stream);
+            let read = reads(&mut stream);
+            let (sender, reconstructed) = mpsc::channel();
+            stream.on_reconstructed = Some(Arc::new(move |frame| {
+                let _ = sender.send((frame.hour, std::thread::current().id()));
+            }));
             for block in 0..replay.index.len() {
                 let raw = replay
                     .read_block_selected(&replay.index[block], &TableId::ALL)
@@ -394,14 +606,21 @@ mod tests {
                         |updates, frame| {
                             assert_eq!((updates.branch, updates.hour), (frame.branch, frame.hour));
                             assert_eq!(updates, raw[position], "the coordinator owns the admitted update, not a reconstructed placeholder");
-                            if block == 0
-                                && position == 0
-                                && std::thread::available_parallelism().map_or(1, usize::from) > 1
-                            {
-                                await_decoded(&completed, 3);
+                            if parallel {
+                                // Reconstructed here and only once the previous
+                                // hour was released, so no observer holds the
+                                // rows a delta applies to.
+                                assert_eq!(
+                                    reconstructed.try_recv(),
+                                    Ok((frame.hour, std::thread::current().id()))
+                                );
+                                assert!(reconstructed.try_recv().is_err());
+                            }
+                            if block == 0 && position == 0 && parallel {
+                                await_read(&read, 3);
                                 assert!(
-                                    completed.try_recv().is_err(),
-                                    "one queued frame must stop reconstruction advancing again"
+                                    read.try_recv().is_err(),
+                                    "one queued frame must stop reading advancing again"
                                 );
                             }
                             assert_frame(frame, &expected[position]);
@@ -427,14 +646,14 @@ mod tests {
             .unwrap();
         let cursor = stream.cursor().clone();
         let accumulator = stream.accumulator().cloned();
-        let completed = completions(&mut stream);
+        let read = reads(&mut stream);
         let cancelled = AtomicBool::new(false);
         let error = stream
             .next_block_parallel_with(
                 &replay,
                 |_, _| {
                     if std::thread::available_parallelism().map_or(1, usize::from) > 1 {
-                        await_decoded(&completed, 723);
+                        await_read(&read, 723);
                     }
                     cancelled.store(true, Ordering::Release);
                     Ok(())
@@ -606,8 +825,8 @@ mod tests {
         }
         let replay = Arc::new(recording());
         let mut stream = ReplayStream::new(&TableId::ALL).unwrap();
-        stream.on_reconstructed = Some(Arc::new(|frame| {
-            assert_ne!(frame.hour, 1, "synthetic decode worker panic");
+        stream.on_read = Some(Arc::new(|frame| {
+            assert_ne!(frame.hour, 1, "synthetic read worker panic");
         }));
         let error = stream
             .next_block_parallel_with(&replay, |_, _| panic!("failed worker observed"), || Ok(()))
@@ -621,13 +840,13 @@ mod tests {
     fn observer_panic_drops_receiver_before_joining_a_blocked_producer() {
         let replay = Arc::new(recording());
         let mut stream = ReplayStream::new(&TableId::ALL).unwrap();
-        let completed = completions(&mut stream);
+        let read = reads(&mut stream);
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = stream.next_block_parallel_with(
                 &replay,
                 |_, _| {
                     if std::thread::available_parallelism().map_or(1, usize::from) > 1 {
-                        await_decoded(&completed, 3);
+                        await_read(&read, 3);
                     }
                     panic!("synthetic observer panic while producer is blocked");
                 },

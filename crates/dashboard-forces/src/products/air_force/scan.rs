@@ -813,25 +813,27 @@ impl Scan {
             joined,
             ..
         } = self;
+        // The continuation keeps each known variant's token: those variants stay
+        // known, so a later forget ends them as it does in continuous observation.
         let variants = variants.get_or_insert_with(|| {
-            let mut catalogue = VariantCatalogue::default();
-            catalogue.versions = variant_tokens
-                .iter()
-                .map(|(&id, token)| {
-                    (
-                        id,
-                        vec![dashboard_base::products::equipment::VariantVersion {
-                            first_hour: last_hour.unwrap_or(decoded.hour),
-                            raw: Some(dashboard_base::products::equipment::RawVariant {
-                                id,
-                                token: token.clone(),
-                                ..Default::default()
-                            }),
-                        }],
-                    )
-                })
-                .collect();
-            catalogue
+            VariantCatalogue::seeded(
+                variant_tokens
+                    .iter()
+                    .map(|(&id, token)| {
+                        (
+                            id,
+                            vec![dashboard_base::products::equipment::VariantVersion {
+                                first_hour: last_hour.unwrap_or(decoded.hour),
+                                raw: Some(dashboard_base::products::equipment::RawVariant {
+                                    id,
+                                    token: token.clone(),
+                                    ..Default::default()
+                                }),
+                            }],
+                        )
+                    })
+                    .collect(),
+            )
         });
         let hour = decoded.hour;
         let continuous = last_hour.is_some_and(|last| last.checked_add(1) == Some(hour));

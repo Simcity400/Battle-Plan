@@ -750,6 +750,90 @@ fn dynamic_focus_projects_only_changed_results_across_5000_countries_and_long_or
     assert_eq!(measured[0], measured[1]);
 }
 
+/// With check mode off, as in preparation, an hourly evaluation whose every
+/// input reads the same is reused without interpreting; once an input reads
+/// differently each country is evaluated again, and the published
+/// presentation matches the oracle.
+#[test]
+fn reused_focus_evaluations_skip_interpretation_until_an_input_differs() {
+    engine::executable_tables::initialize_for_tests().unwrap();
+    crate::triggers::inputs::reusing(|| -> io::Result<()> {
+        let countries = 50;
+        let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
+            ("common/national_focus/dynamic.txt", "focus_tree={focus={id=\"mod/a\" text=static_title} focus={id=\"mod/current\" text=scoped_title icon={GFX_on={has_global_flag=flip} GFX_off=yes}}}"),
+            ("common/defines/dynamic.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NFocus={FOCUS_POINT_DAYS=7}}"),
+            ("localisation/dynamic_l_english.yml", "\u{feff}l_english:\n static_title:0 \"Static\"\n scoped_title:0 \"[ROOT.GetTag]\"\n scoped_title_desc:0 \"For [ROOT.GetTag]\"\n"),
+        ]);
+        let mut decoded = frame(100, countries, &["mod/a"]);
+        if let TableView::Complete(TableRows::Countries(rows)) = &mut *decoded.tables[TableId::Countries.index()] {
+            for row in rows { row.canonical_slot += 1; }
+        }
+        if let TableView::Complete(TableRows::CountryLinks(rows)) = &mut *decoded.tables[TableId::CountryLinks.index()] {
+            for row in rows { row.canonical_slot += 1; }
+        }
+        *decoded.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![replay::rows::LexicalTokenRow { token: 900, literal: b"flip".to_vec() }]));
+        *decoded.tables[TableId::ScriptFlags.index()] = TableView::Complete(TableRows::ScriptFlags(vec![]));
+        // A recorded global variable store, as every recording has: without
+        // it, its refusal names each hour and so reads differently.
+        *decoded.tables[TableId::ScriptVariables.index()] = TableView::Complete(TableRows::ScriptVariables(vec![replay::rows::ScriptVariablesRow { scope_kind: 0, scope_id: 0, seed: replay::rows::Recorded::Value(Some(7)), ..Default::default() }]));
+        let (source, content) = presentation_source(std::slice::from_ref(&decoded), Arc::new(catalogue), &folder.0);
+        let cancelled = AtomicBool::new(false);
+        let mut evaluator = FocusEvaluator::default();
+        evaluator.configure(&source, &content)?;
+        let path = folder.0.join("dynamic.battleplan");
+        std::fs::write(&path, b"synthetic")?;
+        let key = store::SourceKey::capture(&path, &[])?;
+        let store = store::Store::local(uuid::Uuid::new_v4())?;
+        let mut writer = store.replace(key.clone())?;
+        let mut accumulator = FocusAccumulator::default();
+        let mut index = FocusIndex::default();
+        evaluator.write_test_frame(&mut writer, &source, Some(&content), &decoded, &mut accumulator, &mut index, None, &cancelled)?;
+        // The second hour runs each hourly evaluation and records its inputs.
+        decoded.hour += 1;
+        evaluator.write_test_frame(&mut writer, &source, Some(&content), &decoded, &mut accumulator, &mut index, None, &cancelled)?;
+        let before = observer_work(&source, &content, &evaluator, &index, &accumulator);
+        let reused = evaluator.reuse.reused;
+        for _ in 0..3 {
+            decoded.hour += 1;
+            evaluator.write_test_frame(&mut writer, &source, Some(&content), &decoded, &mut accumulator, &mut index, None, &cancelled)?;
+        }
+        let unchanged = observer_work(&source, &content, &evaluator, &index, &accumulator);
+        assert_eq!(unchanged.interpreter_calls, before.interpreter_calls, "unchanged inputs interpret nothing");
+        assert_eq!(unchanged.emitted, before.emitted);
+        assert_eq!(evaluator.reuse.reused - reused, 3 * u64::from(countries));
+        assert_eq!(evaluator.reuse.checked, 0);
+        // The flag every icon trigger reads is set: no evaluation is reused.
+        let evaluated = evaluator.reuse.evaluated;
+        decoded.hour += 1;
+        *decoded.tables[TableId::ScriptFlags.index()] = TableView::Complete(TableRows::ScriptFlags(vec![replay::rows::ScriptFlagRow { scope_kind: 0, scope_id: 0, token: 900, value: 1, ..Default::default() }]));
+        evaluator.write_test_frame(&mut writer, &source, Some(&content), &decoded, &mut accumulator, &mut index, None, &cancelled)?;
+        let flipped = observer_work(&source, &content, &evaluator, &index, &accumulator);
+        assert_eq!(evaluator.reuse.evaluated - evaluated, u64::from(countries));
+        assert_eq!(flipped.emitted - unchanged.emitted, countries as usize);
+        assert!(flipped.interpreter_calls > unchanged.interpreter_calls);
+        index.flush(&mut writer, &cancelled)?;
+        writer.commit()?;
+        let mut oracle = artwork::Context::load(crate::catalogue::catalogue(&source, &content)?, artwork::Kind::Focus)?;
+        for hour in [decoded.hour - 1, decoded.hour] {
+            let mut at = decoded.clone();
+            at.hour = hour;
+            if hour < decoded.hour {
+                *at.tables[TableId::ScriptFlags.index()] = TableView::Complete(TableRows::ScriptFlags(vec![]));
+            }
+            for tag in ["000", "001"] {
+                let row = query_hour(&store, &key, 1, tag, hour, &cancelled)?.unwrap();
+                let actual = presentation_page(&store, &key, 1, tag, &row.presentation, 0, &cancelled)?.unwrap();
+                let expected = oracle.focus_display_at(&[("mod/a", tag), ("mod/current", tag)], &at, |items| items.map(|(artwork, reason)| PresentedFocus { artwork, reason }).collect());
+                let expected = align_presentation(&accumulator.previous[tag].order, expected)?;
+                crate::prepared::observer_tests::assert_reply_parity(&actual, &expected)?;
+            }
+        }
+        store.clear()?;
+        Ok(())
+    })
+    .unwrap();
+}
+
 #[test]
 fn tree_overrides_skip_unreached_hourly_icons_and_reuse_exact_presentations() {
     engine::executable_tables::initialize_for_tests().unwrap();
@@ -980,18 +1064,14 @@ fn batched_focus_files_and_interpretations_at_scale_and_resume() {
     let directory = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
         .join("HOI4Replay/prepared")
         .join(id.to_string());
-    let files = || {
-        std::fs::read_dir(&directory)
+    // Ranges the manifest lists, whichever packs hold them.
+    let listed = || {
+        store::Listing::open(&directory.join("manifest"))
             .unwrap()
-            .filter(|entry| {
-                entry
-                    .as_ref()
-                    .unwrap()
-                    .path()
-                    .extension()
-                    .is_some_and(|suffix| suffix == "bin")
-            })
-            .count()
+            .unwrap()
+            .sections()
+            .map(|(_, count)| count)
+            .sum::<u64>()
     };
     let mut accumulator = FocusAccumulator::default();
     let mut index = FocusIndex::default();
@@ -1004,7 +1084,7 @@ fn batched_focus_files_and_interpretations_at_scale_and_resume() {
         if hour == 3_000 {
             index.flush(&mut writer, &cancelled).unwrap();
             writer.commit().unwrap();
-            assert_eq!(files(), 6); // Five focus payloads plus the completion-feed catalogue.
+            assert_eq!(listed(), 6); // Five focus payloads plus the completion-feed catalogue.
             assert_eq!(
                 store
                     .range_count(&key, "focus-completions-1-catalogue")
@@ -1207,7 +1287,7 @@ fn batched_focus_files_and_interpretations_at_scale_and_resume() {
             })
             .unwrap();
         let before = evaluator.interpreted;
-        let before_files = files();
+        let before_bytes = writer.bytes_written();
         for (tag, observation) in changed {
             if observation.is_none()
                 && evaluator.reusable(&tag)
@@ -1283,9 +1363,9 @@ fn batched_focus_files_and_interpretations_at_scale_and_resume() {
         if (1..3_000).contains(&hour) {
             assert_eq!(evaluator.interpreted, before);
             assert_eq!(
-                files(),
-                before_files,
-                "unchanged hours and two progress changes write no files"
+                writer.bytes_written(),
+                before_bytes,
+                "unchanged hours and two progress changes write no ranges"
             );
         }
     }
@@ -1307,18 +1387,21 @@ fn batched_focus_files_and_interpretations_at_scale_and_resume() {
         5_000,
         "progress-only hours never emit focus state events"
     );
-    assert_eq!(files(), 9); // Includes both replaced country and completion-feed catalogues.
+    // The completion feed's catalogue is its base plus a short chain of patches.
+    let completions = store
+        .range_count(&key, "focus-completions-1-catalogue")
+        .unwrap()
+        .unwrap();
+    assert!((1..=2).contains(&completions));
+    assert_eq!(listed(), 6 + completions); // The replaced country catalogue stays unlisted.
     let active = store.range_count(&key, "focus-1").unwrap().unwrap()
         + store
             .range_count(&key, "focus-1-catalogue")
             .unwrap()
             .unwrap()
-        + store
-            .range_count(&key, "focus-completions-1-catalogue")
-            .unwrap()
-            .unwrap()
+        + completions
         + 3;
-    assert_eq!(active, 7);
+    assert_eq!(active, 6 + completions);
     eprintln!(
         "focus with dense progress and resume: files before=180011 after=9 (7 active); interpreter calls before=30080000 after={entry_calls}; tokens before=90240000 after={calls}"
     );

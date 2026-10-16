@@ -12,6 +12,10 @@ use serde_json::Value;
 use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
 use ts_rs::TS;
 
+/// The sample field a sampled stability measure is dated by: the supplying
+/// inputs read's hour, kept beside the measures it dates.
+pub const READ_HOUR: &str = "readHour";
+
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MeasureRead {
@@ -147,6 +151,7 @@ pub fn query(
     let params: SeriesParams = serde_json::from_value(params)?;
     let parts = matches!(params.family, Family::Parts { .. });
     let experience = matches!(params.family, Family::Experience { .. });
+    let stability = matches!(params.family, Family::Stability { .. });
     let decimals = if experience { 0 } else { MEASURE_DECIMALS };
     let (measure, balance) = match &params.family {
         Family::Balances { measure } => (
@@ -310,6 +315,20 @@ pub fn query(
                         .iter()
                         .any(|span| span.first_hour <= read.hour && span.last_hour >= read.hour)
                 });
+                // Stability samples date their values by the same frame's supplying read.
+                let sampled_read = progressive
+                    .filter(|_| stability)
+                    .and_then(|(_, values, _, _, _)| {
+                        values
+                            .get(&(read.tag.clone(), READ_HOUR.to_owned()))?
+                            .iter()
+                            .find(|run| run.first_hour <= read.hour && run.last_hour >= read.hour)
+                    })
+                    .map(|run| {
+                        i32::try_from(run.value)
+                            .map_err(|_| crate::invalid("Invalid sampled stability read hour"))
+                    })
+                    .transpose()?;
                 if let Some((_, values, _, identities, _)) = progressive {
                     let lookup = (read.tag.clone(), measure.clone());
                     if let Some(sampled) = values.get(&lookup).and_then(|runs| {
@@ -328,7 +347,7 @@ pub fn query(
                             MeasureHolder {
                                 slot,
                                 country_id,
-                                read_hour: None,
+                                read_hour: sampled_read,
                                 segment_first_hour: None,
                                 experience: None,
                             },
@@ -362,6 +381,8 @@ pub fn query(
                 };
                 let read_hour = if experience {
                     supplying.as_ref().map(|read| read.read_hour)
+                } else if sampled_read.is_some() {
+                    sampled_read
                 } else if !balance {
                     actors
                         .get(&(read.tag.clone(), "readHour".into()))
@@ -384,7 +405,17 @@ pub fn query(
                     available: experience
                         .then(|| actor(&read.tag).is_some_and(|actor| actor.run_count != "0")),
                     read_hour,
-                    recorded: (!balance).then(|| actor(&read.tag).is_some()),
+                    // A transient tail proves a recorded country but never its absence.
+                    recorded: match progressive {
+                        Some((_, _, _, identities, _))
+                            if stability && actor(&read.tag).is_none() =>
+                        {
+                            identities
+                                .contains_key(&(read.tag.clone(), READ_HOUR.to_owned()))
+                                .then_some(true)
+                        }
+                        _ => (!balance).then(|| actor(&read.tag).is_some()),
+                    },
                     tag: read.tag,
                     hour: read.hour,
                     run,

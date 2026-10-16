@@ -674,3 +674,56 @@ fn state_terms_combine_by_denominator_without_rounding_or_lcm_limits() {
         ]
     );
 }
+
+#[test]
+fn restored_breakdown_closes_a_column_unknown_at_the_first_hour_after_a_commit() {
+    use crate::prepared::observer_tests;
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    // States are unreadable at hour 102, the first hour after a commit.
+    let frames: Vec<_> = (100..104)
+        .map(|hour| {
+            let mut frame = frame(hour, 3);
+            if hour == 102 {
+                *frame.tables[TableId::States.index()] = TableView::Unavailable {
+                    reason: "states unavailable".into(),
+                };
+            }
+            frame
+        })
+        .collect();
+    observer_tests::assert_restore_continues(
+        format,
+        &[&frames[..2], &frames[2..]],
+        || Prepared {
+            regions: Some(regions(3)),
+            ..Default::default()
+        },
+        |prepared: &mut Prepared, frame, changes, _| {
+            prepared.observe(frame, format, None, changes).unwrap()
+        },
+        |prepared: &mut Prepared, writer, _| {
+            prepared.flush(writer, 1, &flag).unwrap();
+            writer
+                .write_at(
+                    "regional-continuation",
+                    0,
+                    serde_json::to_vec(&*prepared).unwrap().as_slice(),
+                )
+                .unwrap();
+        },
+        |fixture| {
+            let mut prepared = serde_json::from_reader::<_, Prepared>(
+                fixture
+                    .store
+                    .read(&fixture.key, "regional-continuation", 0)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+            // Preparation configures each block's observer before its first frame.
+            prepared.regions = Some(regions(3));
+            prepared
+        },
+    );
+}

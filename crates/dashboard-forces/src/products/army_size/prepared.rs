@@ -1,10 +1,55 @@
 //! The army scan feeding shared exact series and prepared rank positions.
 use super::*;
-use dashboard_base::prepared::series::{self, Accumulator, Reader, Run};
+use dashboard_base::prepared::{
+    frame_changes::FrameChanges,
+    series::{self, Accumulator, Reader, Run},
+};
 use replay::frame::DecodedFrame;
+
+pub mod block;
+pub use block::FAMILY;
 
 fn scan_state() -> ScanState {
     ScanState::new(true)
+}
+
+/// A country's new composition, published at an hour.
+#[derive(Clone)]
+struct Publication {
+    tag: String,
+    key: u64,
+    hour: i32,
+    /// The composition's parts, serialized.
+    parts: Vec<u8>,
+    starts: bool,
+}
+
+/// Publish a new composition under the country's next version.
+fn publish_mix(
+    mix_ids: &mut BTreeMap<String, i128>,
+    parts: &mut Accumulator,
+    publication: Publication,
+) -> io::Result<()> {
+    let Publication {
+        tag,
+        key,
+        hour,
+        parts: row,
+        starts,
+    } = publication;
+    let version = match mix_ids.get_mut(&tag) {
+        Some(version) => {
+            *version += 1;
+            *version
+        }
+        None => {
+            mix_ids.insert(tag, 1);
+            1
+        }
+    };
+    parts.event_bytes(key, hour, row)?;
+    parts.observe(key, hour, Some(version), starts);
+    Ok(())
 }
 
 pub const TABLES: &[TableId] = &[
@@ -109,6 +154,18 @@ pub struct Prepared {
     last: i32,
     #[serde(skip, default = "scan_state")]
     state: ScanState,
+    /// While a block's extract records its calls, the compositions its fold
+    /// publishes again on the carried versions ([`series::record_family`]).
+    #[serde(skip)]
+    recorded: Option<Vec<Publication>>,
+    /// Hours whose divisions were applied from their changed rows alone.
+    #[cfg(test)]
+    #[serde(skip)]
+    row_hours: usize,
+    /// Observe every hour from the whole tables, never from changed rows.
+    #[cfg(test)]
+    #[serde(skip)]
+    whole_tables: bool,
 }
 impl Default for Prepared {
     fn default() -> Self {
@@ -123,6 +180,11 @@ impl Default for Prepared {
             first: None,
             last: 0,
             state: scan_state(),
+            recorded: None,
+            #[cfg(test)]
+            row_hours: 0,
+            #[cfg(test)]
+            whole_tables: false,
         }
     }
 }
@@ -131,75 +193,123 @@ impl Prepared {
         &mut self,
         decoded: &DecodedFrame,
         replay: &Replay,
-        changes: &dashboard_base::prepared::frame_changes::FrameChanges,
+        changes: &FrameChanges,
     ) -> io::Result<()> {
-        self.first.get_or_insert(decoded.hour);
-        self.last = decoded.hour;
+        #[cfg(test)]
+        let whole = self.whole_tables.then(|| FrameChanges {
+            rows_changed: changes.rows_changed,
+            table_read: changes.table_read,
+            slot_read: changes.slot_read,
+            updates: None,
+        });
+        #[cfg(test)]
+        let changes = whole.as_ref().unwrap_or(changes);
+        let hour = decoded.hour;
+        self.first.get_or_insert(hour);
+        self.last = hour;
         for values in &mut self.values {
-            values.advance(decoded.hour)?;
+            values.advance(hour)?;
         }
-        self.coverage.advance(decoded.hour)?;
-        self.parts.advance(decoded.hour)?;
-        let frame = super::super::parts_race_prepared::updates_changed(
-            decoded,
-            &[
-                TableId::Divisions,
-                TableId::DivisionTemplateIcons,
-                TableId::DivisionLandInputs,
-            ],
-            Some(changes),
-            self.state.applied,
-        );
+        self.coverage.advance(hour)?;
+        self.parts.advance(hour)?;
+        let continues = self
+            .scan
+            .frontier
+            .is_some_and(|at| at.checked_add(1) == Some(hour));
+        let updates = Updates::decoded(changes, self.state.applied, continues);
+        #[cfg(test)]
+        let row_updates = self
+            .state
+            .inventory
+            .as_ref()
+            .map(|inventory| inventory.row_updates()[0]);
         if !self
             .state
-            .step_changes(&mut self.scan, &frame, decoded, replay, Some(changes))
+            .step_updates(&mut self.scan, updates, decoded, replay, Some(changes))
         {
             return Ok(());
         }
-        let observed = self
-            .scan
-            .observed
-            .iter()
-            .chain(&self.scan.removed)
-            .cloned()
-            .collect::<Vec<_>>();
-        for tag in observed {
-            let track = &self.scan.tracks[&tag];
+        #[cfg(test)]
+        {
+            self.row_hours += usize::from(
+                row_updates
+                    != self
+                        .state
+                        .inventory
+                        .as_ref()
+                        .map(|inventory| inventory.row_updates()[0]),
+            );
+        }
+        let observed = self.scan.observed.len();
+        for position in 0..observed + self.scan.removed.len() {
+            let tag = match self.scan.observed.get(position) {
+                Some(&index) => &self.state.identities[index].0,
+                None => &self.scan.removed[position - observed],
+            };
+            let track = &self.scan.tracks[tag];
             #[cfg(test)]
             {
                 self.state.work.emitted += 10;
             }
-            let next = self.tags.len() as u64;
-            let key = *self.tags.entry(tag.clone()).or_insert(next);
-            let run = track.runs.last().filter(|run| run.last == decoded.hour);
-            self.coverage.observe(
-                key,
-                decoded.hour,
-                run.map(|_| 1),
-                run.is_some_and(|run| run.starts && run.first == decoded.hour),
-            );
-            for (index, values) in self.values.iter_mut().enumerate() {
-                values.observe(
-                    key,
-                    decoded.hour,
-                    run.and_then(|run| run.totals.values[index]),
-                    run.is_some_and(|run| run.starts && run.first == decoded.hour),
-                );
-            }
-            if let Some(mix) = track.mix.last().filter(|mix| mix.last == decoded.hour) {
-                let version = self.mix_ids.entry(tag.clone()).or_default();
-                if mix.first == decoded.hour {
-                    *version += 1;
-                    self.parts.event(key, decoded.hour, &mix.parts)?;
+            let key = match self.tags.get(tag) {
+                Some(&key) => key,
+                None => {
+                    let key = self.tags.len() as u64;
+                    self.tags.insert(tag.clone(), key);
+                    key
                 }
-                self.parts.observe(
-                    key,
-                    decoded.hour,
-                    Some(*version),
-                    mix.first == decoded.hour && run.is_some_and(|run| run.starts),
-                );
+            };
+            let run = track.runs.last().filter(|run| run.last == hour);
+            let starts = run.is_some_and(|run| run.starts && run.first == hour);
+            // A run that continues the previous hour's keeps the coverage
+            // series open; the same run keeps every value series open too.
+            let continued = run.is_some_and(|run| run.first < hour);
+            let follows = continued
+                || (run.is_some()
+                    && !starts
+                    && track
+                        .runs
+                        .len()
+                        .checked_sub(2)
+                        .is_some_and(|at| track.runs[at].last.checked_add(1) == Some(hour)));
+            if !follows {
+                self.coverage.observe(key, hour, run.map(|_| 1), starts);
+            }
+            if !continued {
+                for (index, values) in self.values.iter_mut().enumerate() {
+                    values.observe(
+                        key,
+                        hour,
+                        run.and_then(|run| run.totals.values[index]),
+                        starts,
+                    );
+                }
+            }
+            if let Some(mix) = track.mix.last().filter(|mix| mix.last == hour) {
+                // A composition continued from the previous hour keeps its
+                // open version.
+                if mix.first == hour {
+                    let publication = Publication {
+                        tag: tag.clone(),
+                        key,
+                        hour,
+                        parts: serde_json::to_vec(&mix.parts)?,
+                        starts: run.is_some_and(|run| run.starts),
+                    };
+                    match &mut self.recorded {
+                        // A block's extract records the publication for its
+                        // fold to version on the carried counts.
+                        Some(recorded) if series::record_family(recorded.len()) => {
+                            recorded.push(publication.clone());
+                            series::unrecorded(|| {
+                                publish_mix(&mut self.mix_ids, &mut self.parts, publication)
+                            })?;
+                        }
+                        _ => publish_mix(&mut self.mix_ids, &mut self.parts, publication)?,
+                    }
+                }
             } else {
-                self.parts.observe(key, decoded.hour, None, false);
+                self.parts.observe(key, hour, None, false);
             }
         }
         Ok(())

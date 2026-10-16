@@ -899,7 +899,10 @@ impl Scan {
                 self.countries[index].unknown.finish();
             }
             if let Some(before_gap) = self.gap_read.take() {
-                for (&(first, second, _), pair) in &self.pairs {
+                // Key order, not hash order: `touched` is saved state.
+                let mut pairs: Vec<_> = self.pairs.iter().collect();
+                pairs.sort_unstable_by_key(|(key, _)| **key);
+                for (&(first, second, _), pair) in pairs {
                     let read = if self.previous_generation == Some(pair.generation)
                         || (self.previous_generation.is_none()
                             && pair.generation == self.generation)
@@ -1676,6 +1679,71 @@ pub fn same_name_rows(table: TableId, a: &SharedView, b: &SharedView) -> bool {
         _ => a == b,
     }
 }
+/// What naming reads of `frame`, as the census and [`same_name_rows`] compare
+/// it: equal digests mean continued observation would not name again. The
+/// census's Countries fields and whole CountryLinks view, then each naming
+/// input's compared fields when complete, else its whole view.
+fn name_digest(frame: &replay::frame::DecodedFrame) -> [u8; 16] {
+    fn put(hasher: &mut blake3::Hasher, text: &str) {
+        hasher.update(&(text.len() as u64).to_le_bytes());
+        hasher.update(text.as_bytes());
+    }
+    fn rows<T: replay::rows::TableSchema>(
+        hasher: &mut blake3::Hasher,
+        view: &SharedView,
+        fields: impl Fn(&T::Row) -> String,
+    ) {
+        if let TableView::Complete(rows) = &**view
+            && let Some(rows) = rows.rows::<T>()
+        {
+            put(hasher, &format!("complete {}", rows.len()));
+            for row in rows {
+                put(hasher, &fields(row));
+            }
+        } else {
+            put(hasher, &format!("view {:?}", &**view));
+        }
+    }
+    let mut hasher = blake3::Hasher::new();
+    let views = &frame.tables;
+    rows::<tables::Countries>(&mut hasher, &views[TableId::Countries.index()], |row| {
+        format!("{:?}", (row.id, row.canonical_slot, &row.tag))
+    });
+    put(
+        &mut hasher,
+        &format!("view {:?}", &*views[TableId::CountryLinks.index()]),
+    );
+    rows::<tables::CountryAppearance>(
+        &mut hasher,
+        &views[TableId::CountryAppearance.index()],
+        |row| {
+            format!(
+                "{:?}",
+                (
+                    row.country,
+                    &row.cosmetic_tag,
+                    &row.name_tag,
+                    &row.leader_ideology,
+                    row.overlord,
+                )
+            )
+        },
+    );
+    rows::<tables::Politics>(&mut hasher, &views[TableId::Politics.index()], |row| {
+        format!("{:?}", (row.country, row.ruling_party))
+    });
+    rows::<tables::PoliticalParties>(
+        &mut hasher,
+        &views[TableId::PoliticalParties.index()],
+        |row| format!("{:?}", (row.country, row.id, &row.token)),
+    );
+    rows::<tables::Autonomy>(&mut hasher, &views[TableId::Autonomy.index()], |row| {
+        format!("{:?}", (row.subject, &row.state))
+    });
+    let mut digest = [0; 16];
+    digest.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+    digest
+}
 /// `seen` names the last compared hour's views, which already agreed with `a`.
 fn same_name_inputs(
     a: &replay::frame::DecodedFrame,
@@ -1737,8 +1805,10 @@ struct ScanFrames {
     relation_keys: Vec<(u32, u32, i32)>,
     #[serde(skip)]
     current_tags: Vec<Option<String>>,
+    /// The pairs the last processed read supplied. A restored builder has none
+    /// until its first processed read: those pairs carry the scan's generation.
     #[serde(skip)]
-    supplying_pairs: BTreeSet<PairKey>,
+    supplying_pairs: Option<BTreeSet<PairKey>>,
     #[serde(skip)]
     changed_pairs: BTreeSet<PairKey>,
     #[serde(skip)]
@@ -1758,6 +1828,11 @@ struct ScanFrames {
     /// The last compared hour's NAME_INPUTS views, agreeing with the newest snapshot.
     #[serde(skip)]
     name_views: Vec<ViewIdentity>,
+    /// [`name_digest`] of the newest snapshot, which a restored builder keeps
+    /// in its place: it names again only where continued observation would,
+    /// since operand reasons carry the hour they were read.
+    #[serde(default)]
+    name_digest: Option<[u8; 16]>,
 }
 impl ScanFrames {
     fn new(replay: &Replay, branch: u64) -> Self {
@@ -1772,7 +1847,7 @@ impl ScanFrames {
             endpoints: Vec::new(),
             relation_keys: Vec::new(),
             current_tags: Vec::new(),
-            supplying_pairs: BTreeSet::new(),
+            supplying_pairs: Some(BTreeSet::new()),
             changed_pairs: BTreeSet::new(),
             changed_endpoints: BTreeSet::new(),
             changed_tags: BTreeSet::new(),
@@ -1782,6 +1857,7 @@ impl ScanFrames {
             name_snapshot: None,
             name_entries: HashMap::new(),
             name_views: Vec::new(),
+            name_digest: None,
         }
     }
     /// Appends each tag whose naming operands differ from its latest entry. The
@@ -1820,6 +1896,12 @@ impl ScanFrames {
                 .insert(tag.to_owned(), self.scan.names.len());
             self.scan.names.push((tag.to_owned(), inputs));
         }
+    }
+    /// Drops an invalid census. Continued observation names again at the next
+    /// valid read, so a restored builder must too.
+    fn forget_census(&mut self) {
+        self.census = None;
+        self.name_digest = None;
     }
     fn frame(&mut self, decoded: &replay::frame::DecodedFrame, replay: &Replay) {
         self.frame_inputs(decoded, replay, None);
@@ -1893,7 +1975,7 @@ impl ScanFrames {
         }
         if !valid {
             self.changed_tags.extend(self.scan.active.iter().cloned());
-            self.census = None;
+            self.forget_census();
             self.scan.gap();
             return;
         }
@@ -1919,9 +2001,18 @@ impl ScanFrames {
                 .iter()
                 .any(|table| changes.rows_changed[table.index()])
         });
-        if self.name_snapshot.as_ref().is_none_or(|before| {
-            changed || (names_changed && !same_name_inputs(before, decoded, &self.name_views))
-        }) {
+        let rename = match &self.name_snapshot {
+            Some(before) => {
+                changed || (names_changed && !same_name_inputs(before, decoded, &self.name_views))
+            }
+            // A restored builder has no snapshot. Continued observation names
+            // again only when the census or a naming input differs from its
+            // snapshot; re-reading anyway would record reasons for this hour.
+            None => self
+                .name_digest
+                .is_none_or(|saved| saved != name_digest(decoded)),
+        };
+        if rename || self.name_snapshot.is_none() {
             let mut snapshot = decoded.clone();
             for table in TableId::ALL {
                 if !NAME_TABLES.contains(&table) {
@@ -1931,7 +2022,10 @@ impl ScanFrames {
                     .into();
                 }
             }
-            self.names(&snapshot);
+            if rename {
+                self.names(&snapshot);
+                self.name_digest = Some(name_digest(&snapshot));
+            }
             self.name_snapshot = Some(snapshot);
         }
         // Identities spare unchanged views a row comparison without holding
@@ -1981,7 +2075,7 @@ impl ScanFrames {
         }
         if !valid {
             self.changed_tags.extend(self.scan.active.iter().cloned());
-            self.census = None;
+            self.forget_census();
             self.scan.gap();
             return;
         }
@@ -2047,9 +2141,18 @@ impl ScanFrames {
                 }
             }
             self.changed_pairs.extend(supplying.iter().copied());
-            retired.extend(self.supplying_pairs.difference(&supplying).copied());
+            let generation = self.scan.generation;
+            let previous = self.supplying_pairs.take().unwrap_or_else(|| {
+                self.scan
+                    .pairs
+                    .iter()
+                    .filter(|(_, pair)| pair.generation == generation)
+                    .map(|(&key, _)| key)
+                    .collect()
+            });
+            retired.extend(previous.difference(&supplying).copied());
             self.changed_pairs.extend(retired.iter().copied());
-            self.supplying_pairs = supplying;
+            self.supplying_pairs = Some(supplying);
         }
         if self.scan.gap_read.is_some() {
             self.changed_tags.extend(self.scan.active.iter().cloned());

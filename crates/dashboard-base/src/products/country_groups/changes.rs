@@ -99,21 +99,42 @@ impl Prepared {
         context: &crate::products::LoadContext,
     ) -> io::Result<()> {
         let Some((members, wars)) = groups.advance_changed(frame, changes)? else {
-            self.events.through(frame.hour);
-            for rate in &self.rates {
-                let old = self
-                    .refusals
-                    .iter_mut()
-                    .find(|old| old.key == rate.key && old.reason == rate.reason)
-                    .expect("configured group refusal rate");
-                old.count = old
-                    .count
-                    .checked_add(rate.count)
-                    .ok_or_else(|| crate::invalid("Country group refusal count exceeds u64"))?;
-            }
-            return Ok(());
+            return self.quiet(frame.hour, frame.hour);
         };
         self.publish_changes(groups, frame, source, context, members, wars)
+    }
+    /// [`Self::observe_changed`] at every hour `first..=last` in order when
+    /// none of them changes the groups ([`GroupScan::advance_quiet`]), in
+    /// constant time.
+    pub fn advance_quiet(
+        &mut self,
+        groups: &mut GroupScan,
+        first: i32,
+        last: i32,
+    ) -> io::Result<()> {
+        groups.advance_quiet(first, last);
+        self.quiet(first, last)
+    }
+    /// Unchanged hours `first..=last`: the events reach `last` and every
+    /// configured refusal counts each hour.
+    fn quiet(&mut self, first: i32, last: i32) -> io::Result<()> {
+        self.events.through(first);
+        self.events.through(last);
+        let hours = u64::try_from(i64::from(last) - i64::from(first) + 1)
+            .map_err(|_| crate::invalid("Country group hours reversed"))?;
+        for rate in &self.rates {
+            let old = self
+                .refusals
+                .iter_mut()
+                .find(|old| old.key == rate.key && old.reason == rate.reason)
+                .expect("configured group refusal rate");
+            old.count = rate
+                .count
+                .checked_mul(hours)
+                .and_then(|added| old.count.checked_add(added))
+                .ok_or_else(|| crate::invalid("Country group refusal count exceeds u64"))?;
+        }
+        Ok(())
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn observe(
@@ -288,15 +309,22 @@ impl Prepared {
         groups: &GroupScan,
         cancelled: &std::sync::atomic::AtomicBool,
     ) -> io::Result<()> {
-        self.events.flush(
-            writer,
-            &format!("country-group-changes-{branch}"),
-            0,
-            cancelled,
-        )?;
+        self.flush_as(writer, "country-group-changes", branch, groups, cancelled)
+    }
+    /// [`Self::flush`] under the section and catalogue name `family`.
+    pub fn flush_as(
+        &mut self,
+        writer: &mut store::Writer,
+        family: &str,
+        branch: u64,
+        groups: &GroupScan,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> io::Result<()> {
+        self.events
+            .flush(writer, &format!("{family}-{branch}"), 0, cancelled)?;
         crate::prepared::series::write_catalogue(
             writer,
-            "country-group-changes",
+            family,
             branch,
             &BTreeMap::new(),
             &Metadata {

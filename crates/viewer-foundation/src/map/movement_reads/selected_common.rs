@@ -143,7 +143,7 @@ impl<'w, 'a> Moves<'w, 'a> {
         if receiver == 0 || target == 0 {
             return event_shared(
                 self.world.frame(),
-                &self.world.links,
+                self.world.links(),
                 receiver_raw,
                 target_raw,
                 access,
@@ -441,7 +441,7 @@ impl<'w, 'a> Moves<'w, 'a> {
     fn common_area_land_count(&self, label: u32) -> Fact<i32> {
         let counts = get(&self.cells.area_members, || {
             let mut counts = BTreeMap::<u32, i32>::new();
-            for (&province, row) in &self.world.provinces {
+            for (&province, row) in self.world.provinces() {
                 let area = row
                     .controller_area
                     .require("Provinces.controller_area")?

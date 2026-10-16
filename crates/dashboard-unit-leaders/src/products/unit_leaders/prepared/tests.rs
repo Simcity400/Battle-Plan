@@ -15,11 +15,8 @@ fn replay(frames: &[DecodedFrame]) -> Replay {
     Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap()
 }
 fn publish(state: &mut Prepared, fixture: &Fixture, cancelled: &AtomicBool) {
-    let mut reader = Reader::new(&fixture.store, &fixture.key, section(1), cancelled).unwrap();
     let mut writer = fixture.writer();
-    state
-        .flush(&mut writer, 1, None, &mut reader, &[], cancelled)
-        .unwrap();
+    state.flush(&mut writer, 1, None, &[], cancelled).unwrap();
     writer.commit().unwrap();
 }
 fn resume(fixture: &Fixture) -> Prepared {
@@ -38,20 +35,11 @@ fn resume(fixture: &Fixture) -> Prepared {
     )
     .unwrap()
 }
-fn observe(
-    state: &mut Prepared,
-    fixture: &Fixture,
-    replay: &Replay,
-    frames: &[DecodedFrame],
-    cancelled: &AtomicBool,
-) {
-    let mut reader = Reader::new(&fixture.store, &fixture.key, section(1), cancelled).unwrap();
+fn observe(state: &mut Prepared, replay: &Replay, frames: &[DecodedFrame]) {
     let mut tracker = FrameChangeTracker::new();
     for frame in frames {
         let changes = tracker.observe(frame, replay.format);
-        state
-            .observe(frame, replay, None, &mut reader, &changes)
-            .unwrap();
+        state.observe(frame, replay, None, &changes).unwrap();
     }
 }
 fn assert_parity(fixture: &Fixture, replay: &Replay) {
@@ -183,13 +171,7 @@ fn prepared_leaders_match_projection_after_two_commits_resume_gaps_and_identity_
     let mut state = Prepared::new(&replay(&frames), 1);
     for end in [2, 4] {
         let replay = replay(&frames[..end]);
-        observe(
-            &mut state,
-            &fixture,
-            &replay,
-            &frames[end - 2..end],
-            &cancelled,
-        );
+        observe(&mut state, &replay, &frames[end - 2..end]);
         publish(&mut state, &fixture, &cancelled);
         assert_parity(&fixture, &replay);
         state = resume(&fixture);
@@ -207,13 +189,7 @@ fn prepared_leader_outcome_after_commander_changed_keeps_both_careers_and_first_
     for end in [2, 3, 4] {
         let replay = replay(&frames[..end]);
         let begin = if end == 2 { 0 } else { end - 1 };
-        observe(
-            &mut state,
-            &fixture,
-            &replay,
-            &frames[begin..end],
-            &cancelled,
-        );
+        observe(&mut state, &replay, &frames[begin..end]);
         publish(&mut state, &fixture, &cancelled);
         assert_parity(&fixture, &replay);
         state = resume(&fixture);
@@ -246,13 +222,7 @@ fn prepared_leader_conflicting_repeated_outcomes_remain_unresolved_after_resume(
     let mut state = Prepared::new(&replay(&frames), 1);
     for (begin, end) in [(0, 3), (3, 4)] {
         let replay = replay(&frames[..end]);
-        observe(
-            &mut state,
-            &fixture,
-            &replay,
-            &frames[begin..end],
-            &cancelled,
-        );
+        observe(&mut state, &replay, &frames[begin..end]);
         publish(&mut state, &fixture, &cancelled);
         assert_parity(&fixture, &replay);
         state = resume(&fixture);
@@ -350,13 +320,7 @@ fn prepared_naval_leader_source_links_join_late_results_and_permanent_conflicts_
     let mut state = Prepared::new(&replay(&frames), 1);
     for end in 1..=frames.len() {
         let replay = replay(&frames[..end]);
-        observe(
-            &mut state,
-            &fixture,
-            &replay,
-            &frames[end - 1..end],
-            &cancelled,
-        );
+        observe(&mut state, &replay, &frames[end - 1..end]);
         publish(&mut state, &fixture, &cancelled);
         assert_parity(&fixture, &replay);
         state = resume(&fixture);
@@ -397,13 +361,7 @@ fn prepared_leaders_five_thousand_countries_keep_continuation_bounded_by_current
     let mut state = Prepared::new(&replay(&frames), 1);
     for (index, frame) in frames.iter().enumerate() {
         let replay = replay(&frames[..=index]);
-        observe(
-            &mut state,
-            &fixture,
-            &replay,
-            std::slice::from_ref(frame),
-            &cancelled,
-        );
+        observe(&mut state, &replay, std::slice::from_ref(frame));
         publish(&mut state, &fixture, &cancelled);
         assert_parity(&fixture, &replay);
         assert_eq!(state.scan.leaders.len(), 5000);
@@ -429,7 +387,6 @@ fn prepared_leader_long_career_moves_closed_commands_and_battles_out_of_continua
     let cancelled = AtomicBool::new(false);
     let mut state = Prepared::new(&replay, 1);
     for batch in 0..4 {
-        let mut reader = Reader::new(&fixture.store, &fixture.key, section(1), &cancelled).unwrap();
         let mut tracker = FrameChangeTracker::new();
         for offset in 0..256 {
             let hour = 100 + batch * 256 + offset;
@@ -475,9 +432,7 @@ fn prepared_leader_long_career_moves_closed_commands_and_battles_out_of_continua
                 }]),
             );
             let changes = tracker.observe(&next, replay.format);
-            state
-                .observe(&next, &replay, None, &mut reader, &changes)
-                .unwrap();
+            state.observe(&next, &replay, None, &changes).unwrap();
         }
         publish(&mut state, &fixture, &cancelled);
         assert!(state.scan.stored_runs.len() <= 4);
@@ -535,13 +490,7 @@ fn prepared_leader_choices_keep_historical_kind_and_country_admission_without_ca
     let replay = replay(&frames);
     let mut state = Prepared::new(&replay, 1);
     for (begin, end) in [(0, 2), (2, 4)] {
-        observe(
-            &mut state,
-            &fixture,
-            &replay,
-            &frames[begin..end],
-            &cancelled,
-        );
+        observe(&mut state, &replay, &frames[begin..end]);
         publish(&mut state, &fixture, &cancelled);
         state = resume(&fixture);
     }
@@ -718,25 +667,23 @@ fn admission_work(
     let flag = AtomicBool::new(false);
     let mut state = Prepared::new(&replay, 1);
     let mut tracker = FrameChangeTracker::new();
-    let mut reader = Reader::new(&fixture.store, &fixture.key, section(1), &flag)?;
     for frame in &frames[..=closed] {
         let changes = tracker.observe(frame, replay.format);
-        state.observe(frame, &replay, content, &mut reader, &changes)?;
+        state.observe(frame, &replay, content, &changes)?;
     }
     let mut writer = fixture.writer();
-    state.flush(&mut writer, 1, content, &mut reader, &[], &flag)?;
+    state.flush(&mut writer, 1, content, &[], &flag)?;
     writer.commit()?;
     state = resume(&fixture);
-    reader = Reader::new(&fixture.store, &fixture.key, section(1), &flag)?;
     tracker.invalidate();
     let changes = tracker.observe(&first, replay.format);
-    state.observe(&first, &replay, content, &mut reader, &changes)?;
+    state.observe(&first, &replay, content, &changes)?;
     let baseline = work(&state);
     let buffered = state.buffered_bytes();
     let delta = if change.is_some() {
         let next = frames.last().unwrap();
         let changes = tracker.observe(next, replay.format);
-        state.observe(next, &replay, content, &mut reader, &changes)?;
+        state.observe(next, &replay, content, &changes)?;
         let after = work(&state);
         Work {
             content_loads: after.content_loads - baseline.content_loads,
@@ -754,7 +701,7 @@ fn admission_work(
             hours as i32,
             replay.format,
             |frame, changes| {
-                state.observe(frame, &replay, content, &mut reader, changes)?;
+                state.observe(frame, &replay, content, changes)?;
                 Ok(work(&state))
             },
         )?
@@ -767,7 +714,7 @@ fn admission_work(
         );
     }
     let mut writer = fixture.writer();
-    state.flush(&mut writer, 1, content, &mut reader, &[], &flag)?;
+    state.flush(&mut writer, 1, content, &[], &flag)?;
     writer.commit()?;
     state = resume(&fixture);
     assert_eq!(state.scan.leaders.len(), countries as usize + closed);
@@ -945,7 +892,7 @@ fn prepared_leaders_deferred_carry_matches_hourly_oracle_after_append_gap_alias_
     let mut fixture = Fixture::new();
     let initial = replay(&prefix);
     let mut state = Prepared::new(&initial, 1);
-    observe(&mut state, &fixture, &initial, &prefix, &flag);
+    observe(&mut state, &initial, &prefix);
     assert!(
         state.scan.materialized.unwrap() < state.scan.frontier.unwrap(),
         "equal frames must defer current endpoints"
@@ -982,7 +929,7 @@ fn prepared_leaders_deferred_carry_matches_hourly_oracle_after_append_gap_alias_
             tail.clone(),
         )])
         .unwrap();
-    observe(&mut state, &fixture, &grown, &tail, &flag);
+    observe(&mut state, &grown, &tail);
     publish(&mut state, &fixture, &flag);
     assert_parity(&fixture, &grown);
     let actual = query(&fixture.store, &fixture.key, &params, None, &flag)
@@ -1079,4 +1026,148 @@ fn prepared_leaders_repeated_formation_bindings_keep_hourly_command_episodes() {
         &scan(&replay, &params, None, &AtomicBool::new(false)).unwrap(),
     )
     .unwrap();
+}
+
+/// Observation and publication take no reader of the published series, yet
+/// outcomes and naval sources published in one window still join and
+/// conflict in the next.
+#[test]
+fn prepared_leaders_join_outcomes_published_in_earlier_windows() {
+    use replay::rows::{
+        NavalCombatDetailsRow, NavalCombatResultDetailsRow, NavalCombatSideDetails, NavalResultRow,
+        NavalResultSideDetails, NavalResultSourceRow,
+    };
+    let mut naval: Vec<_> = (100..=103).map(|hour| frame(hour, 2)).collect();
+    for frame in &mut naval {
+        if let TableView::Complete(TableRows::UnitLeaders(rows)) =
+            &mut *frame.tables[TableId::UnitLeaders.index()]
+        {
+            for row in rows {
+                row.kind = 2;
+                row.category = 2;
+            }
+        }
+    }
+    set(
+        &mut naval[0],
+        TableRows::NavalCombatDetails(vec![NavalCombatDetailsRow {
+            combat: 91,
+            custom_sea: Some(Vec::new()),
+            sides: [
+                NavalCombatSideDetails {
+                    commander: reference(0),
+                    ..Default::default()
+                },
+                Default::default(),
+            ],
+            ..Default::default()
+        }]),
+    );
+    set(
+        &mut naval[1],
+        TableRows::NavalResultSources(vec![NavalResultSourceRow {
+            id: 1,
+            combat: 91,
+            game_hour: 101,
+            result: 71,
+            ..Default::default()
+        }]),
+    );
+    for (index, frame) in naval.iter_mut().enumerate().skip(2) {
+        set(
+            frame,
+            TableRows::NavalResults(vec![NavalResultRow {
+                id: 71,
+                winning_side: if index == 3 { 2 } else { 1 },
+                ..Default::default()
+            }]),
+        );
+        set(
+            frame,
+            TableRows::NavalCombatResultDetails(vec![NavalCombatResultDetailsRow {
+                result: 71,
+                sides: [
+                    NavalResultSideDetails {
+                        leader: reference(1),
+                        ..Default::default()
+                    },
+                    Default::default(),
+                ],
+            }]),
+        );
+    }
+    for frames in [outcome_frames(false), outcome_frames(true), naval] {
+        let fixture = Fixture::new();
+        let cancelled = AtomicBool::new(false);
+        let mut state = Prepared::new(&replay(&frames), 1);
+        // One frame per window, so every later window reaches keys an
+        // earlier one published.
+        for end in 1..=frames.len() {
+            let replay = replay(&frames[..end]);
+            let changes = FrameChangeTracker::new().observe(&frames[end - 1], replay.format);
+            state
+                .observe(&frames[end - 1], &replay, None, &changes)
+                .unwrap();
+            let mut writer = fixture.writer();
+            state.flush(&mut writer, 1, None, &[], &cancelled).unwrap();
+            writer.commit().unwrap();
+            assert_parity(&fixture, &replay);
+            state = resume(&fixture);
+        }
+    }
+}
+
+/// Changed identity tables re-read only the leaders whose own rows changed:
+/// the others keep the identity they read the hour before, and careers still
+/// match the per-hour oracle.
+#[test]
+fn prepared_leaders_reread_identity_only_for_leaders_whose_rows_changed() {
+    use replay::frame::{FrameDecoder, FrameEncoder};
+    use replay::rows::LexicalTokenRow;
+    let frames: Vec<_> = (100..=103)
+        .map(|hour| {
+            let mut frame = frame(hour, 2);
+            // Each hour adds a token no leader reads.
+            set(
+                &mut frame,
+                TableRows::LexicalTokens(
+                    (100..=hour)
+                        .map(|added| LexicalTokenRow {
+                            token: 5000 + added as u32,
+                            literal: format!("synthetic_token_{added}").into_bytes(),
+                        })
+                        .collect(),
+                ),
+            );
+            // The second leader's character changes once.
+            if hour >= 102
+                && let TableView::Complete(TableRows::Characters(rows)) =
+                    &mut *frame.tables[TableId::Characters.index()]
+            {
+                rows[1].token = b"Renamed synthetic commander".to_vec();
+            }
+            frame
+        })
+        .collect();
+    let fixture = Fixture::new();
+    let cancelled = AtomicBool::new(false);
+    let replay = replay(&frames);
+    let mut state = Prepared::new(&replay, 1);
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    let mut tracker = FrameChangeTracker::new();
+    let mut renewed = Vec::new();
+    for (index, frame) in frames.iter().enumerate() {
+        let wire = encoder.encode(frame.clone(), index == 0).unwrap();
+        let decoded = decoder.advance(&wire).unwrap().clone();
+        let changes = tracker.observe_updates(&decoded, std::sync::Arc::new(wire), replay.format);
+        let before = state.scan.renewed;
+        state.observe(&decoded, &replay, None, &changes).unwrap();
+        renewed.push(state.scan.renewed - before);
+    }
+    // The keyframe has no delta to read. Then each leader keeps the person
+    // it read, except the second at the hour its character changed.
+    assert_eq!(renewed, [0, 2, 1, 2]);
+    publish(&mut state, &fixture, &cancelled);
+    assert_parity(&fixture, &replay);
 }

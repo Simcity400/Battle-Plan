@@ -1,5 +1,6 @@
 //! Shared checks over real observer callbacks, not replacement scans/replies.
 use super::frame_changes::{FrameChangeTracker, FrameChanges};
+use super::series::tests::{Fixture, assert_payloads_equal};
 use replay::format::FormatVersion;
 use replay::frame::DecodedFrame;
 use serde::Serialize;
@@ -99,4 +100,42 @@ pub fn assert_reply_parity(prepared: &impl Serialize, oracle: &impl Serialize) -
         serde_json::to_value(oracle)?
     );
     Ok(())
+}
+
+/// Observes `blocks` with two copies of one family in lockstep, as preparation
+/// does: frame changes are invalidated at every block start and every block
+/// ends at a commit. After each commit the first copy continues in memory and
+/// the second is restored from what it published. Every published payload,
+/// including each saved continuation, must stay byte-identical.
+pub fn assert_restore_continues<T>(
+    format: FormatVersion,
+    blocks: &[&[DecodedFrame]],
+    mut new: impl FnMut() -> T,
+    mut observe: impl FnMut(&mut T, &DecodedFrame, &FrameChanges, &Fixture),
+    mut publish: impl FnMut(&mut T, &mut store::Writer, usize),
+    mut restore: impl FnMut(&Fixture) -> T,
+) {
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut observers = [new(), new()];
+    let mut tracker = FrameChangeTracker::new();
+    for (ordinal, block) in blocks.iter().enumerate() {
+        tracker.invalidate();
+        for frame in *block {
+            let changes = tracker.observe(frame, format);
+            for (observer, fixture) in observers.iter_mut().zip(&fixtures) {
+                observe(observer, frame, &changes, fixture);
+            }
+        }
+        for (observer, fixture) in observers.iter_mut().zip(&fixtures) {
+            let mut writer = fixture.writer();
+            publish(observer, &mut writer, ordinal);
+            writer.commit().unwrap();
+        }
+        assert_payloads_equal(
+            &fixtures[1].payloads(),
+            &fixtures[0].payloads(),
+            &format!("restored vs continuous after commit {ordinal}"),
+        );
+        observers[1] = restore(&fixtures[1]);
+    }
 }

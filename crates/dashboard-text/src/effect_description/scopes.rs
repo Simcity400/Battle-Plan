@@ -382,7 +382,7 @@ impl Renderer<'_, '_, '_> {
                 let state = self
                     .context
                     .world()?
-                    .states
+                    .states()
                     .get(&state)
                     .ok_or("ROOT state owner is not recorded")?;
                 self.context
@@ -532,7 +532,7 @@ impl Renderer<'_, '_, '_> {
                 let mut out = Vec::new();
                 for &id in states {
                     if owned && controlled {
-                        let row = world.states.get(&id).ok_or_else(|| {
+                        let row = world.states().get(&id).ok_or_else(|| {
                             format!("owned-controlled iterator state {id} is not recorded")
                         })?;
                         if slot(row.controller)? != caller {
@@ -684,7 +684,7 @@ impl Renderer<'_, '_, '_> {
                     .map_err(|why| why.to_string())?;
                 // walks game state's state-id vector, not ownership order.
                 Ok(world
-                    .states
+                    .states()
                     .keys()
                     .copied()
                     .filter(|id| *id > 0)
@@ -696,12 +696,8 @@ impl Renderer<'_, '_, '_> {
                 enemy,
                 possible,
             } => {
-                let mut rows = frame
-                    .complete::<tables::Countries>()
-                    .map_err(|why| why.to_string())?
-                    .iter()
-                    .collect::<Vec<_>>();
-                rows.sort_by_key(|row| row.canonical_slot);
+                // Ascending slots.
+                let slots = world.country_slots()?;
                 let caller = if other || enemy {
                     Some(country()?)
                 } else {
@@ -726,8 +722,7 @@ impl Renderer<'_, '_, '_> {
                     }
                 }
                 let mut out = Vec::new();
-                for row in rows {
-                    let target = row.canonical_slot;
+                for target in slots {
                     if target == 0
                         || (!possible && !world.exists(target)?)
                         || (other && Some(target) == caller)
@@ -927,7 +922,7 @@ impl Renderer<'_, '_, '_> {
                 frame
                     .complete::<tables::States>()
                     .map_err(|why| why.to_string())?;
-                if !world.states.contains_key(&state) {
+                if !world.states().contains_key(&state) {
                     return Ok(Vec::new()); // case 2: invalid state.
                 }
                 let order: std::collections::BTreeMap<_, _> = frame

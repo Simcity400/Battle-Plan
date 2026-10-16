@@ -1,6 +1,7 @@
 //! Current reservations, separate from payments. Allocation stores the full
 //! amount in the country; release removes that amount and refunds it.
 use super::*;
+use dashboard_base::prepared::frame_changes::FrameChanges;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
@@ -25,6 +26,56 @@ pub struct LedgerCommandHold {
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(super) struct Holds {
     countries: BTreeMap<String, CountryHolds>,
+    /// The rows naming each country's allocators; none until the first
+    /// snapshot after a resume.
+    #[serde(skip)]
+    names: Option<NameRows>,
+}
+
+/// The unit leader and character rows each country's allocator names were
+/// read from at its last snapshot, so a changed row observes again only the
+/// countries it can rename.
+#[derive(Clone, Default)]
+struct NameRows {
+    leaders: BTreeMap<u128, BTreeSet<String>>,
+    characters: BTreeMap<u32, BTreeSet<String>>,
+    of: BTreeMap<String, (Vec<u128>, Vec<u32>)>,
+    /// Countries holding allocators not yet snapshotted since the resume.
+    unindexed: BTreeSet<String>,
+}
+impl NameRows {
+    fn index(&mut self, tag: &str, rows: (Vec<u128>, Vec<u32>)) {
+        if let Some((leaders, characters)) = self.of.remove(tag) {
+            for key in leaders {
+                unindex(&mut self.leaders, key, tag);
+            }
+            for id in characters {
+                unindex(&mut self.characters, id, tag);
+            }
+        }
+        self.unindexed.remove(tag);
+        if rows.0.is_empty() && rows.1.is_empty() {
+            return;
+        }
+        for &key in &rows.0 {
+            self.leaders.entry(key).or_default().insert(tag.to_owned());
+        }
+        for &id in &rows.1 {
+            self.characters
+                .entry(id)
+                .or_default()
+                .insert(tag.to_owned());
+        }
+        self.of.insert(tag.to_owned(), rows);
+    }
+}
+fn unindex<K: Ord>(index: &mut BTreeMap<K, BTreeSet<String>>, key: K, tag: &str) {
+    if let Some(tags) = index.get_mut(&key) {
+        tags.remove(tag);
+        if tags.is_empty() {
+            index.remove(&key);
+        }
+    }
 }
 impl Holds {
     pub(super) fn known_tags(&self) -> impl Iterator<Item = &String> {
@@ -49,6 +100,77 @@ impl Holds {
                 }
             }
         }
+    }
+    /// The slots of countries holding an allocator whose name this hour's
+    /// characters, unit leaders or lexical dictionary may change: those named
+    /// from a changed row, or from a changed table when its rows are unknown.
+    /// Without `rows_known`, every country named from a changed table is.
+    pub(super) fn naming_slots(&self, changes: &FrameChanges, rows_known: bool) -> Vec<u32> {
+        let changed = [
+            TableId::Characters,
+            TableId::UnitLeaders,
+            TableId::LexicalTokens,
+        ]
+        .map(|table| changes.rows_changed[table.index()]);
+        if !changed.contains(&true) {
+            return Vec::new();
+        }
+        let named_from = |tag: &String| {
+            self.countries.get(tag).is_some_and(|country| {
+                country
+                    .active
+                    .values()
+                    .any(|holder| holder.named_from(changed))
+            })
+        };
+        let rows = (
+            self.names.as_ref().filter(|_| rows_known),
+            changes.rows(TableId::Characters),
+            changes.rows(TableId::UnitLeaders),
+        );
+        let tags: BTreeSet<&String> = match rows {
+            (Some(names), Some(characters), Some(leaders)) if !changed[2] => {
+                let mut tags = BTreeSet::new();
+                for key in characters
+                    .0
+                    .iter()
+                    .map(|row| row.key)
+                    .chain(characters.1.iter().copied())
+                {
+                    if let Ok(id) = u32::try_from(key) {
+                        tags.extend(names.characters.get(&id).into_iter().flatten());
+                    }
+                }
+                for key in leaders
+                    .0
+                    .iter()
+                    .map(|row| row.key)
+                    .chain(leaders.1.iter().copied())
+                {
+                    tags.extend(names.leaders.get(&key).into_iter().flatten());
+                }
+                tags.extend(names.unindexed.iter().filter(|tag| named_from(tag)));
+                tags
+            }
+            _ => self
+                .countries
+                .keys()
+                .filter(|tag| named_from(tag))
+                .collect(),
+        };
+        #[cfg(test)]
+        NAMED.with(|named| named.set(named.get() + tags.len()));
+        tags.into_iter()
+            .filter_map(|tag| self.countries.get(tag)?.slot)
+            .collect()
+    }
+    /// How many countries hold an allocator.
+    #[cfg(test)]
+    pub(super) fn holding(&self) -> usize {
+        self.countries
+            .values()
+            .filter(|country| !country.active.is_empty())
+            .count()
     }
     pub(super) fn retain_open(&mut self) {
         for country in self.countries.values_mut() {
@@ -124,6 +246,55 @@ fn holder_kind(row: &LedgerMutation) -> String {
         row.item.object_kind.clone()
     } else {
         row.cause.clone()
+    }
+}
+
+impl CountryHolds {
+    /// The unit leader keys and character ids naming the allocators, read
+    /// with `leaders`.
+    fn name_rows(&self, leaders: Option<&[UnitLeaderRow]>) -> (Vec<u128>, Vec<u32>) {
+        let mut rows = (Vec::new(), Vec::new());
+        for holder in self.active.values() {
+            let (leader, character) = holder.name_rows(leaders);
+            rows.0.extend(leader);
+            rows.1.extend(character);
+        }
+        rows
+    }
+}
+
+impl Holder {
+    /// The unit leader key and character id [`held_name`] reads to name this
+    /// allocator in a read holding `leaders`.
+    fn name_rows(&self, leaders: Option<&[UnitLeaderRow]>) -> (Option<u128>, Option<u32>) {
+        if self.cause == PowerCause::AbilityActivation || self.item.object_kind == "Ability" {
+            return (None, None);
+        }
+        let reference = (self.item.object_kind == "Leader")
+            .then(|| self.item.object_reference.as_deref()?.parse::<u64>().ok())
+            .flatten();
+        let leader = reference.zip(leaders).and_then(|(reference, leaders)| {
+            let at = leaders
+                .binary_search_by_key(&reference, |row| {
+                    (u64::from(row.id) << 32) | u64::from(row.reference_type)
+                })
+                .ok()?;
+            Some(&leaders[at])
+        });
+        let character = self
+            .item
+            .character
+            .or_else(|| leader.map(|row| row.character_id));
+        (reference.map(u128::from), character)
+    }
+    /// Whether [`held_name`] reads one of the changed tables: characters,
+    /// unit leaders and the lexical dictionary.
+    fn named_from(&self, [characters, leaders, lexical]: [bool; 3]) -> bool {
+        if self.cause == PowerCause::AbilityActivation || self.item.object_kind == "Ability" {
+            return lexical && self.item.key.is_empty();
+        }
+        let leader = self.item.object_kind == "Leader";
+        (leader || self.item.character.is_some()) && (characters || lexical || (leader && leaders))
     }
 }
 
@@ -455,7 +626,36 @@ pub(super) fn observe_holds(
             scan.dirty.insert(tag.clone());
         }
     }
+    // Index the rows naming the allocators of every country observed.
+    let leaders = frame.complete::<tables::UnitLeaders>().ok();
+    let names = holds.names.get_or_insert_with(|| NameRows {
+        unindexed: holds
+            .countries
+            .iter()
+            .filter(|(_, country)| !country.active.is_empty())
+            .map(|(tag, _)| tag.clone())
+            .collect(),
+        ..Default::default()
+    });
+    for tag in &affected {
+        let rows = holds
+            .countries
+            .get(tag)
+            .map(|country| country.name_rows(leaders))
+            .unwrap_or_default();
+        names.index(tag, rows);
+    }
     scan.holds = holds;
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Countries observed again because their allocators may be renamed.
+    static NAMED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+#[cfg(test)]
+pub(super) fn named_count() -> usize {
+    NAMED.with(std::cell::Cell::get)
 }
 
 pub(super) fn history<'a>(scan: &'a Scanned, tag: &str) -> &'a [LedgerCommandHold] {

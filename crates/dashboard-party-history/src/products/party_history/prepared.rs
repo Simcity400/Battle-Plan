@@ -1428,6 +1428,50 @@ mod tests {
     }
 
     #[test]
+    fn restored_party_history_closes_a_holder_that_vanishes_at_the_first_hour_after_a_commit() {
+        // FRA has a ruling party until hour 104, the first hour after a commit.
+        let frames: Vec<_> = (100..108)
+            .map(|hour| {
+                let mut frame = party_frame(hour, 40_00000, 35_00000, "fascism", 10);
+                if hour >= 104
+                    && let TableView::Complete(TableRows::Countries(rows)) =
+                        &mut *frame.tables[TableId::Countries.index()]
+                {
+                    rows.retain(|row| row.id != 44);
+                }
+                frame
+            })
+            .collect();
+        let flag = AtomicBool::new(false);
+        dashboard_base::prepared::observer_tests::assert_restore_continues(
+            replay::format::FormatVersion::CURRENT,
+            &[&frames[..4], &frames[4..]],
+            Prepared::default,
+            |state, frame, changes, _| state.observe_changes(frame, changes).unwrap(),
+            |state, writer, _| {
+                state.flush(writer, 1, &flag).unwrap();
+                writer
+                    .write_at(
+                        "party-history-1",
+                        0,
+                        state.saved_bytes().unwrap().as_slice(),
+                    )
+                    .unwrap();
+            },
+            |fixture| {
+                Prepared::read(
+                    fixture
+                        .store
+                        .read(&fixture.key, "party-history-1", 0)
+                        .unwrap()
+                        .unwrap(),
+                )
+                .unwrap()
+            },
+        );
+    }
+
+    #[test]
     fn prepared_party_replies_match_oracle_after_two_commits_resume_and_append() {
         engine::executable_tables::initialize_for_tests().unwrap();
         let root =
@@ -2123,23 +2167,23 @@ mod tests {
                 ]
             );
         }
-        let files = [
-            "party-series-1",
-            "party-history-1",
-            "party-history-1-catalogue",
-        ]
-        .into_iter()
-        .map(|section| {
+        let count = |section| {
             fixture
                 .store
                 .range_count(&fixture.key, section)
                 .unwrap()
                 .unwrap()
-        })
-        .sum::<u64>();
+        };
+        let catalogue = count("party-history-1-catalogue");
+        assert!(
+            (1..=4).contains(&catalogue),
+            "a catalogue is its base plus a short chain of patches"
+        );
+        let files = count("party-series-1") + count("party-history-1") + catalogue;
         assert_eq!(
-            files, 5,
-            "three batches and two compact snapshots, regardless of hours or countries"
+            files - catalogue,
+            4,
+            "three batches and a compact snapshot, regardless of hours or countries"
         );
         println!(
             "party history 5000 countries x 2000 hours: events {initial_events} -> {stable_events}; country observations 10005000 -> {calls}; A JSON unflushed {initial_json}, published {}, steady {stable_json}; zstd {}; payload files {files}; series files {}",

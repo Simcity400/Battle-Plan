@@ -1235,6 +1235,7 @@ impl ProductionAccumulator {
             rows_changed: [true; replay::frame::TABLE_COUNT],
             table_read: [true; replay::frame::TABLE_COUNT],
             slot_read: [true; replay::frame::TABLE_COUNT],
+            updates: None,
         };
         self.ingest_changed(format, frame, named, cancelled, &changes)
     }
@@ -2614,89 +2615,218 @@ pub fn read_at(
     hour: i32,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<EndpointPage>> {
-    let (mut low, mut high) = (0, count);
-    while low < high {
-        check_cancel(cancelled)?;
-        let mid = low + (high - low) / 2;
-        let Some(file) = store.read(key, &section(TIMES, branch), mid)? else {
-            return Ok(None);
-        };
-        let entry: TimeEntry = serde_json::from_reader(io::BufReader::new(file))?;
-        if hour < entry.first {
-            high = mid;
-        } else if hour > entry.last {
-            low = mid + 1;
-        } else {
-            let Some(mut page) = crate::prepared::series::read_reply::<EndpointPage>(
-                store,
-                key,
-                &section(ENDPOINTS, branch),
-                entry.endpoint,
-            )?
-            else {
-                return Ok(None);
-            };
-            if page.schema != 1 || page.branch_id != branch.to_string() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Prepared production schema or branch mismatch",
-                ));
-            }
-            let Some(catalogue) = read_catalogue(store, key, branch)? else {
-                return Ok(None);
-            };
-            let mut reader = crate::prepared::series::Reader::new(
-                store,
-                key,
-                format!("production-spent-{branch}"),
-                cancelled,
-            )?;
-            let mut amounts: BTreeMap<(usize, bool), BTreeMap<(u64, bool), Amount>> =
-                BTreeMap::new();
-            for (token, &leaf_key) in &catalogue.spent_keys {
-                let (tag, rocket, _, variant): (String, bool, bool, u64) =
-                    serde_json::from_str(token)?;
-                let Ok(index) = page.countries.binary_search_by(|row| row.tag.cmp(&tag)) else {
-                    continue;
-                };
-                let row = &page.countries[index];
-                let Some(source) = (if rocket { &row.rocket } else { &row.equipment }) else {
-                    continue;
-                };
-                let Some((_, value)) = reader.latest_event(leaf_key, hour)? else {
-                    continue;
-                };
-                let Some(leaf) = serde_json::from_value::<Option<LeafEndpoint>>(value)? else {
-                    continue;
-                };
-                if leaf.holder == source.holder() {
-                    amounts
-                        .entry((index, rocket))
-                        .or_default()
-                        .insert((variant, leaf.amount.refit), leaf.amount);
-                }
-            }
-            for ((index, rocket), values) in amounts {
-                let row = &mut page.countries[index];
-                let source = if rocket {
-                    &mut row.rocket
-                } else {
-                    &mut row.equipment
-                };
-                source.as_mut().expect("selected production source").amounts =
-                    values.into_values().collect();
-            }
-            for (&variant, &classification_key) in &catalogue.classification_keys {
-                if let Some((_, value)) = reader.latest_event(classification_key, hour)? {
-                    page.classifications
-                        .insert(variant, serde_json::from_value(value)?);
-                }
-            }
-            page.render_warnings(hour);
-            return Ok(Some(page));
+    Endpoints::new(store, key, branch, count, cancelled).page(hour, Leaves::All)
+}
+
+/// Which leaves an endpoint read restores onto its page.
+#[derive(Clone, Copy)]
+pub(crate) enum Leaves<'a> {
+    /// Every country's equipment and Rocket amounts, and the hour's classifications.
+    All,
+    /// One country's equipment and Rocket amounts, and the hour's classifications.
+    Country(&'a str),
+    /// These countries' Rocket amounts only. Other amounts stay empty and the
+    /// page's classifications are not read.
+    Rockets(&'a BTreeSet<String>),
+}
+
+/// One query's reads of a branch's endpoint pages. The catalogue, its parsed
+/// leaf tokens and the leaf reader (with the directories and blobs it has read)
+/// are shared by every hour the query reads, and each read looks up only the
+/// leaves it restores, all at once.
+pub(crate) struct Endpoints<'a> {
+    store: &'a store::Store,
+    key: &'a store::SourceKey,
+    branch: u64,
+    count: u64,
+    cancelled: &'a AtomicBool,
+    /// None until read; then the branch's catalogue, if it has one.
+    catalogue: Option<Option<ProductionCatalogue>>,
+    /// The catalogue's leaf tokens in catalogue order: tag, Rocket, variant, leaf key.
+    tokens: Vec<(String, bool, u64, u64)>,
+    reader: Option<crate::prepared::series::Reader<'a>>,
+}
+
+impl<'a> Endpoints<'a> {
+    pub(crate) fn new(
+        store: &'a store::Store,
+        key: &'a store::SourceKey,
+        branch: u64,
+        count: u64,
+        cancelled: &'a AtomicBool,
+    ) -> Self {
+        Self {
+            store,
+            key,
+            branch,
+            count,
+            cancelled,
+            catalogue: None,
+            tokens: Vec::new(),
+            reader: None,
         }
     }
-    Ok(None)
+
+    pub(crate) fn catalogue(&mut self) -> io::Result<Option<&ProductionCatalogue>> {
+        if self.catalogue.is_none() {
+            let catalogue = read_catalogue(self.store, self.key, self.branch)?;
+            if let Some(catalogue) = &catalogue {
+                self.tokens = catalogue
+                    .spent_keys
+                    .iter()
+                    .map(|(token, &leaf)| {
+                        let (tag, rocket, _, variant): (String, bool, bool, u64) =
+                            serde_json::from_str(token)?;
+                        Ok((tag, rocket, variant, leaf))
+                    })
+                    .collect::<io::Result<_>>()?;
+            }
+            self.catalogue = Some(catalogue);
+        }
+        Ok(self.catalogue.as_ref().and_then(Option::as_ref))
+    }
+
+    /// The branch's leaf reader, opened once.
+    pub(crate) fn reader(&mut self) -> io::Result<&mut crate::prepared::series::Reader<'a>> {
+        if self.reader.is_none() {
+            self.reader = Some(crate::prepared::series::Reader::new(
+                self.store,
+                self.key,
+                format!("production-spent-{}", self.branch),
+                self.cancelled,
+            )?);
+        }
+        Ok(self.reader.as_mut().expect("leaf reader opened above"))
+    }
+
+    /// The page holding `hour`, with the requested leaves restored at `hour`.
+    pub(crate) fn page(
+        &mut self,
+        hour: i32,
+        leaves: Leaves<'_>,
+    ) -> io::Result<Option<EndpointPage>> {
+        let (store, key, branch) = (self.store, self.key, self.branch);
+        let (mut low, mut high) = (0, self.count);
+        while low < high {
+            check_cancel(self.cancelled)?;
+            let mid = low + (high - low) / 2;
+            let Some(file) = store.read(key, &section(TIMES, branch), mid)? else {
+                return Ok(None);
+            };
+            let entry: TimeEntry = serde_json::from_reader(io::BufReader::new(file))?;
+            if hour < entry.first {
+                high = mid;
+            } else if hour > entry.last {
+                low = mid + 1;
+            } else {
+                let Some(mut page) = crate::prepared::series::read_reply::<EndpointPage>(
+                    store,
+                    key,
+                    &section(ENDPOINTS, branch),
+                    entry.endpoint,
+                )?
+                else {
+                    return Ok(None);
+                };
+                if page.schema != 1 || page.branch_id != branch.to_string() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Prepared production schema or branch mismatch",
+                    ));
+                }
+                if self.catalogue()?.is_none() {
+                    return Ok(None);
+                }
+                self.restore(&mut page, hour, leaves)?;
+                page.render_warnings(hour);
+                return Ok(Some(page));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Each requested leaf's latest event at `hour`, kept when it is the
+    /// page's current holder's; then the hour's classifications.
+    fn restore(
+        &mut self,
+        page: &mut EndpointPage,
+        hour: i32,
+        leaves: Leaves<'_>,
+    ) -> io::Result<()> {
+        let mut selected = Vec::new();
+        for (tag, rocket, variant, leaf) in &self.tokens {
+            let wanted = match leaves {
+                Leaves::All => true,
+                Leaves::Country(only) => tag == only,
+                Leaves::Rockets(tags) => *rocket && tags.contains(tag),
+            };
+            if !wanted {
+                continue;
+            }
+            let Ok(index) = page.countries.binary_search_by(|row| row.tag.cmp(tag)) else {
+                continue;
+            };
+            let row = &page.countries[index];
+            if (if *rocket { &row.rocket } else { &row.equipment }).is_none() {
+                continue;
+            }
+            selected.push((index, *rocket, *variant, *leaf));
+        }
+        let keys: Vec<u64> = selected.iter().map(|&(.., leaf)| leaf).collect();
+        let rows = self.reader()?.latest_event_rows(&keys, hour)?;
+        let mut amounts: BTreeMap<(usize, bool), BTreeMap<(u64, bool), Amount>> = BTreeMap::new();
+        for ((index, rocket, variant, _), row) in selected.into_iter().zip(rows) {
+            let Some((_, bytes)) = row else {
+                continue;
+            };
+            let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+            let Some(leaf) = serde_json::from_value::<Option<LeafEndpoint>>(value)? else {
+                continue;
+            };
+            let row = &page.countries[index];
+            let source = if rocket { &row.rocket } else { &row.equipment };
+            if source
+                .as_ref()
+                .is_some_and(|source| leaf.holder == source.holder())
+            {
+                amounts
+                    .entry((index, rocket))
+                    .or_default()
+                    .insert((variant, leaf.amount.refit), leaf.amount);
+            }
+        }
+        for ((index, rocket), values) in amounts {
+            let row = &mut page.countries[index];
+            let source = if rocket {
+                &mut row.rocket
+            } else {
+                &mut row.equipment
+            };
+            source.as_mut().expect("selected production source").amounts =
+                values.into_values().collect();
+        }
+        if matches!(leaves, Leaves::Rockets(_)) {
+            return Ok(());
+        }
+        let (variants, keys): (Vec<u64>, Vec<u64>) = self
+            .catalogue
+            .as_ref()
+            .and_then(Option::as_ref)
+            .expect("catalogue read before restoring leaves")
+            .classification_keys
+            .iter()
+            .map(|(&variant, &key)| (variant, key))
+            .unzip();
+        let rows = self.reader()?.latest_event_rows(&keys, hour)?;
+        for (variant, row) in variants.into_iter().zip(rows) {
+            if let Some((_, bytes)) = row {
+                let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+                page.classifications
+                    .insert(variant, serde_json::from_value(value)?);
+            }
+        }
+        Ok(())
+    }
 }
 
 pub fn endpoint_count(
@@ -2755,24 +2885,32 @@ pub(crate) fn read_catalogue(
 
 /// Amounts remain independent on disk; equipment-produced projects its Rocket
 /// source to the equipment supplying read using the original dated join.
+/// Each supplying read hour is read once, restoring only the Rocket amounts of
+/// the countries joined at it.
 fn bind_equipment_rockets(
-    store: &store::Store,
-    key: &store::SourceKey,
-    branch: u64,
-    count: u64,
+    endpoints: &mut Endpoints<'_>,
     page: &mut EndpointPage,
-    cancelled: &AtomicBool,
 ) -> io::Result<()> {
-    let mut reads = BTreeMap::new();
+    let mut joined: BTreeMap<i32, BTreeSet<String>> = BTreeMap::new();
     for row in &mut page.countries {
         let Some(equipment) = row.equipment.as_ref().filter(|_| row.rocket_joined) else {
             row.rocket = None;
             continue;
         };
+        joined
+            .entry(equipment.read_hour)
+            .or_default()
+            .insert(row.tag.clone());
+    }
+    let mut reads = BTreeMap::new();
+    for (&hour, tags) in &joined {
+        reads.insert(hour, endpoints.page(hour, Leaves::Rockets(tags))?);
+    }
+    for row in &mut page.countries {
+        let Some(equipment) = row.equipment.as_ref().filter(|_| row.rocket_joined) else {
+            continue;
+        };
         let hour = equipment.read_hour;
-        if let std::collections::btree_map::Entry::Vacant(entry) = reads.entry(hour) {
-            entry.insert(read_at(store, key, branch, count, hour, cancelled)?);
-        }
         row.rocket = country(reads[&hour].as_ref(), &row.tag).and_then(|row| row.rocket.clone());
     }
     Ok(())
@@ -2835,34 +2973,36 @@ fn select_at_ordered(
         return Ok(Some(selection));
     }
     let count = endpoint_count(store, key, branch)?;
-    let Some(mut current) = read_at(store, key, branch, count, hour, cancelled)? else {
+    let mut endpoints = Endpoints::new(store, key, branch, count, cancelled);
+    let Some(mut current) = endpoints.page(hour, Leaves::All)? else {
         return Ok(None);
     };
-    bind_equipment_rockets(store, key, branch, count, &mut current, cancelled)?;
-    if let Some(catalogue) = read_catalogue(store, key, branch)? {
-        for (variant, mut kind) in catalogue.classifications {
+    bind_equipment_rockets(&mut endpoints, &mut current)?;
+    if let Some(catalogue) = endpoints.catalogue()? {
+        for (&variant, kind) in &catalogue.classifications {
+            let mut kind = kind.clone();
             // Type identity is stable; recorded naming stays at this endpoint's read.
             if let Some(at_hour) = current.classifications.get(&variant) {
                 kind.names = at_hour.names.clone();
             }
             current.classifications.insert(variant, kind);
         }
-        current.warnings = catalogue.warnings;
+        current.warnings = catalogue.warnings.clone();
     }
     let equipment_before = current
         .equipment_read
         .and_then(|hour| predecessor(hour, params.measure))
-        .map(|hour| read_at(store, key, branch, count, hour, cancelled))
+        .map(|hour| endpoints.page(hour, Leaves::All))
         .transpose()?
         .flatten();
     let mut rocket_before = current
         .rocket_read
         .and_then(|hour| predecessor(hour, params.measure))
-        .map(|hour| read_at(store, key, branch, count, hour, cancelled))
+        .map(|hour| endpoints.page(hour, Leaves::All))
         .transpose()?
         .flatten();
     if let Some(page) = &mut rocket_before {
-        bind_equipment_rockets(store, key, branch, count, page, cancelled)?;
+        bind_equipment_rockets(&mut endpoints, page)?;
     }
     select_ordered(
         &current,

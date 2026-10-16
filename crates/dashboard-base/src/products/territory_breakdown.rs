@@ -920,11 +920,18 @@ impl Prepared {
     ) -> io::Result<()> {
         self.facts.advance(frame.hour)?;
         self.observed.advance(frame.hour)?;
-        let was_observed = self
-            .builder
-            .available
-            .unwrap_or([false; 8])
-            .map(|known| known && self.builder.hour.is_some());
+        // A restored builder keeps no freshness; publication sealed the span of
+        // each column observed at its last complete hour there.
+        let was_observed: [bool; 8] = match self.builder.available {
+            Some(available) => available.map(|known| known && self.builder.hour.is_some()),
+            None => std::array::from_fn(|column| {
+                self.builder.hour.is_some_and(|hour| {
+                    self.scan.observed[column]
+                        .last()
+                        .is_some_and(|span| span.last_hour == hour)
+                })
+            }),
+        };
         let contiguous = self.builder.hour.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
         let Some(regions) = &self.regions else {
             return Ok(());

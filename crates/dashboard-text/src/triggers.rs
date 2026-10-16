@@ -29,20 +29,21 @@ mod collections;
 pub mod description;
 mod eval;
 pub(crate) mod event_scopes;
+pub mod inputs;
 pub use event_scopes::EventGraphGuard;
 pub(crate) use event_scopes::event_tooltip_target;
 mod load;
 mod operands;
-pub(crate) mod saved_event_targets;
+pub mod saved_event_targets;
 pub mod scripted_localisation;
 #[cfg(test)]
 mod tests;
 mod variables;
-pub(crate) mod world;
+pub mod world;
 
 pub use eval::{Combat, Evaluator, VariableSession};
 pub use operands::{Selected, Selector, compare, scope_selector, shown, trigger_boolean};
-pub use variables::Temps;
+pub use variables::{Store, Temps};
 pub(crate) use world::{AuthoredStates, GeographyInputs, PreparedContent};
 pub use world::{
     ContentFacts, LeaderRoles, NULL_STATE, PartyLeader, PartyLeaders, RecordedTemplate, World,

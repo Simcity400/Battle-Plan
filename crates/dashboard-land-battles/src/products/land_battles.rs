@@ -517,6 +517,10 @@ pub struct Census {
     #[serde(skip)]
     catalogue: Option<Arc<dashboard_text::catalogue::Catalogue>>,
     content_warnings: Vec<String>,
+    /// The content refusals prepared observation's own reads produced, which
+    /// its published warnings report.
+    #[serde(default)]
+    refusals: dashboard_text::catalogue::OwnRefusals,
     designs: losses::Designs,
     pages: BTreeMap<String, u64>,
     windows: dashboard_base::prepared::series::Accumulator,
@@ -710,7 +714,21 @@ impl Census {
     ) -> io::Result<()> {
         self.observe_with_changes(frame, Some(changes))
     }
+    /// Observes as one consumer of the shared content: its published
+    /// warnings name the refusals of its own reads.
     fn observe_with_changes(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
+    ) -> io::Result<()> {
+        let mut own = std::mem::take(&mut self.refusals);
+        let observed = dashboard_text::catalogue::own_refusals(&mut own, || {
+            self.observe_own_changes(frame, changes)
+        });
+        self.refusals = own;
+        observed
+    }
+    fn observe_own_changes(
         &mut self,
         frame: &DecodedFrame,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,

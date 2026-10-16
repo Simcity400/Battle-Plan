@@ -71,11 +71,47 @@ the next block; visitors stage their own outputs until success.
 borrowed reconstructed hour, so preparation can store selected updates without
 decoding them again. `next_block` keeps its decoded-hour-only visitor.
 
-Preparation reconstructs each block sequentially on one worker while observers
-receive decoded frames in source order through a channel retaining one queued
-frame. The decoder, queued frame and currently observed frame share unchanged
-table allocations. The channel waits without polling. Selected reads finish
-admission before observation; errors keep their block boundary. Cancellation and
+`Replay::read_block_alone` reconstructs one block's selected frames from its
+keyframe with a fresh decoder, so blocks read in any order and on any thread.
+Nothing of a decoder crosses a block: every block starts at a keyframe, where
+the decoder keeps no earlier baseline, and the index already orders each
+branch's blocks. Each hour therefore equals the continuing stream's, including
+availability, sample hours, metrics and which hours share a table's allocation;
+anchored keyframes are read from the blocks they name, as every read does.
+
+`Replay::read_block_changes` ([container/changes.rs](src/container/changes.rs))
+reads a block as `read_block_alone` does for a selection of tables and, per
+table, the fields its consumer reads (`TableFields`: a mask over the table's
+schema fields; none watches only row keys and availability). It decodes only
+the selected tables' grouped sections, keeps each table's updates by table
+instead of assembling a frame of every table each hour, and advances each
+selected table's view with the decoder's own per-table step, so delta rows
+apply in place and unchanged hours share the view. It builds a frame only at
+the block's first hour and at each hour a watched field, row key or
+availability changes (a truncated table's missing count and an unavailable
+table's reason included), equal to `read_block_alone`'s frame there, sharing
+allocations exactly as its frames do. A field moving by its prediction or
+ramp has no entry but reaches the reader as the same reconstructed delta row
+with the field in its mask, so it is visited every hour it moves. The hours in
+between are reported as quiet spans with each hour's metrics and each
+selected table's sample hour, without their rows; unwatched fields may change
+there. A replaced view (a snapshot or truncated read) is compared field by
+field through its plain delta, and rows an older format cannot encode that
+way count as changed. A table watched when read (`TableFields::when_read`)
+is also visited at every hour its metrics say it was read, for consumers of
+daily or sliced reads whose rows stay equal. Every hour, changed or quiet, also names the tables its
+update rebuilt rather than carried unchanged: where a reader holding the hour
+before's frame finds a new allocation, even of equal rows (an unwatched
+field's delta, or an incompatible table decoded again), so a consumer that
+tells changes by allocation can follow the hours it is not given.
+
+Preparation reads each block on one below-normal-priority worker, decoding a
+grouped block's selected tables in parallel, and sends its frames in source order
+through a channel retaining one queued frame. The observing thread reconstructs
+each hour only after observers released the previous one, so a delta applies in
+place to rows no observer holds. The channel waits without polling. Selected
+reads finish admission before observation; errors keep their block boundary.
+Cancellation is checked after each hour is reconstructed, before it is observed. Cancellation and
 observer failure drop the receiver, release unaccepted frames and join the worker.
 An observer panic also drops the receiver before joining a blocked producer.
 Only complete successful observation advances the decoder and cursor. Single-core

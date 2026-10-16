@@ -340,6 +340,99 @@ fn static_casualty_label_is_bound_once_for_success_empty_text_and_refusal() {
 }
 
 #[test]
+fn restored_casualties_publish_what_continuous_observation_publishes() {
+    // A war ends at the first read after the first commit, and an endpoint is
+    // renamed at the first read after the second. Country 000's naming
+    // operands are refused with the hour they were read, so a restored scan
+    // that named again at an unchanged hour would publish a refusal the
+    // continued one never makes.
+    let frames: Vec<_> = (10..22)
+        .map(|hour| {
+            let mut next = frame(hour, 6);
+            if hour >= 14
+                && let TableView::Complete(TableRows::WarRelations(rows)) =
+                    &mut *next.tables[TableId::WarRelations.index()]
+            {
+                rows.truncate(2);
+            }
+            if hour >= 18
+                && let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *next.tables[TableId::Countries.index()]
+            {
+                rows[0].tag = b"mod renamed endpoint".to_vec();
+            }
+            next
+        })
+        .collect();
+    let source = source(&frames);
+    let (catalogue, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
+        "localisation/english/casualty_l_english.yml",
+        "\u{feff}l_english:\n",
+    )]);
+    let catalogue = Arc::new(catalogue);
+    let options = dashboard_core::config::ContentOptions {
+        options: installed_content::ResolveOptions {
+            game_dir: folder.0.clone(),
+            user_dir: folder.0.clone(),
+            cache_dir: folder.0.join("cache"),
+        },
+        allow_unverified: true,
+    };
+    dashboard_base::catalogue::set_test_catalogue(&source, &options, Arc::clone(&catalogue));
+    let content = prepared_content(
+        &source,
+        &LoadContext {
+            content: Some(options),
+        },
+    )
+    .unwrap();
+    assert!(matches!(content, Ok(Some(_))));
+    let replay = source.replay_ref();
+    let flag = AtomicBool::new(false);
+    let blocks = [&frames[..4], &frames[4..8], &frames[8..]];
+    let mut commits = 0;
+    dashboard_base::prepared::observer_tests::assert_restore_continues(
+        replay.format,
+        &blocks,
+        || Prepared::new(replay, 1),
+        |observer, frame, changes, _| {
+            observer.configure(&content);
+            observer
+                .observe_changes(frame, replay, &flag, changes)
+                .unwrap();
+        },
+        |observer, writer, ordinal| {
+            let block = blocks[ordinal];
+            observer
+                .finish_block(writer, 1, block[0].hour, block.last().unwrap().hour)
+                .unwrap();
+            observer.flush(writer, 1, &flag).unwrap();
+            let saved = serde_json::to_vec(observer).unwrap();
+            writer
+                .write_at("casualty-continuation-1", 0, saved.as_slice())
+                .unwrap();
+        },
+        |fixture| {
+            // Before the next block another family refuses a text in the
+            // shared content; no casualty naming input changes.
+            catalogue.refuse(
+                "Synthetic text refused by another family",
+                &format!("another family's text {commits}"),
+            );
+            commits += 1;
+            serde_json::from_reader(
+                fixture
+                    .store
+                    .read(&fixture.key, "casualty-continuation-1", 0)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap()
+        },
+    );
+}
+
+#[test]
 fn catalogue_refusal_is_bound_before_casualty_observation() {
     use dashboard_base::prepared::observer_tests::{Work, unchanged_frames};
     let first = frame(10, 2);

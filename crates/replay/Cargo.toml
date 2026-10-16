@@ -16,6 +16,7 @@ slow-tests = []
 [dependencies]
 replay-data.workspace = true
 crc32fast = "1"
+foldhash = "0.2"
 engine.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

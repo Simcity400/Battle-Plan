@@ -649,16 +649,33 @@ impl HistoryScan {
             frame.complete::<tables::CountryLinks>(),
         ) else {
             self.account();
-            if let Some(hour) = previous_hour {
-                for history in std::mem::take(&mut self.open) {
-                    self.seal_country(history, hour);
+            let open = match previous_hour {
+                Some(hour) => {
+                    let open = std::mem::take(&mut self.open);
+                    for &history in &open {
+                        self.seal_country(history, hour);
+                    }
+                    open
                 }
-            }
+                None => BTreeSet::new(),
+            };
             if let Some(read) = &self.read {
                 for (_, _, _, _, tag) in &read.holders {
                     if !tag.is_empty() {
                         observed(tag, None, false);
                         #[cfg(any(test, feature = "test-support"))]
+                        {
+                            self.work.emitted += 1;
+                        }
+                    }
+                }
+            } else {
+                // A restored scan keeps no join; its open histories are the
+                // holders that join last named.
+                for (tag, history) in &self.names {
+                    if open.contains(history) && !tag.is_empty() {
+                        observed(tag, None, false);
+                        #[cfg(test)]
                         {
                             self.work.emitted += 1;
                         }

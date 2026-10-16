@@ -7,6 +7,7 @@ pub mod prepared;
 pub mod prepared_focus;
 pub use dashboard_stability::prepared_stability;
 pub mod products;
+pub mod readiness;
 pub mod reply_cache;
 mod reply_dto;
 pub mod service;

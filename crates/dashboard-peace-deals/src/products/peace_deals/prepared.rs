@@ -53,6 +53,7 @@ impl Prepared {
                 rows_changed: [true; replay::frame::TABLE_COUNT],
                 table_read: [true; replay::frame::TABLE_COUNT],
                 slot_read: [true; replay::frame::TABLE_COUNT],
+                updates: None,
             },
         )
     }

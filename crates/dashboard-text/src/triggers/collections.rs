@@ -26,34 +26,24 @@ impl Evaluator<'_, '_> {
                 _ => return Err("game:scope collection object is not supported".into()),
             },
             Input::Countries { possible } => {
-                let mut rows = world
-                    .frame()
-                    .complete::<tables::Countries>()
-                    .map_err(|why| why.to_string())?
-                    .iter()
-                    .collect::<Vec<_>>();
-                rows.sort_by_key(|row| row.canonical_slot); // Physical country-array order.
-                if *possible && !rows.iter().any(|row| row.canonical_slot == 0) {
+                let slots = world.country_slots()?; // Physical country-array order.
+                if *possible && !slots.contains(&0) {
                     source.push(Scope::Country(0)); // The native possible-country vector includes its null slot.
                 }
-                for row in rows {
-                    if *possible || world.exists(row.canonical_slot)? {
-                        source.push(Scope::Country(row.canonical_slot));
+                for slot in slots {
+                    if *possible || world.exists(slot)? {
+                        source.push(Scope::Country(slot));
                     }
                 }
             }
             Input::States => {
-                let mut rows = world
-                    .frame()
-                    .complete::<tables::States>()
-                    .map_err(|why| why.to_string())?
-                    .iter()
-                    .collect::<Vec<_>>();
-                rows.sort_by_key(|row| row.id); // State-array order, skips index zero.
+                // State-array order, skips index zero.
                 source.extend(
-                    rows.into_iter()
-                        .filter(|row| row.id != 0)
-                        .map(|row| Scope::State(row.id)),
+                    world
+                        .state_ids()?
+                        .into_iter()
+                        .filter(|id| *id != 0)
+                        .map(Scope::State),
                 );
             }
             Input::Constant(path) => {
@@ -63,10 +53,7 @@ impl Evaluator<'_, '_> {
                     .script_constants()?
                     .collection(&text.split('.').collect::<Vec<_>>())?
                 {
-                    world
-                        .frame()
-                        .complete::<tables::Countries>()
-                        .map_err(|why| why.to_string())?;
+                    world.table_status(replay::rows::TableId::Countries)?;
                     let country = |tag: &[u8]| {
                         std::str::from_utf8(installed_content::parser::c_string(tag))
                             .ok()
@@ -74,11 +61,9 @@ impl Evaluator<'_, '_> {
                             .unwrap_or(0)
                     };
                     let state = |id: i32| {
-                        world
-                            .frame()
-                            .complete::<tables::States>()
-                            .map_err(|why| why.to_string())?;
-                        if id > 0 && world.states.contains_key(&(id as u32)) {
+                        // Completeness is checked whatever the id, as before.
+                        let present = world.state_exists(id as u32)?;
+                        if id > 0 && present {
                             Ok(Scope::State(id as u32))
                         } else {
                             Err(format!(

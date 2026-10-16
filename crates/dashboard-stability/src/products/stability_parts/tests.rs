@@ -722,3 +722,102 @@ fn five_thousand_country_continuation_saves_equal_fresh_naming_reads_once() {
         serde_json::from_slice(&after).unwrap();
     assert_eq!(serde_json::to_vec(&resumed).unwrap(), after);
 }
+
+/// GER's one idea line, carried from the hour-100 read, at `hour`: its lines
+/// recorded or not, and its CountryAppearance row with this cosmetic tag (None:
+/// no row).
+fn appearance_frame(hour: i32, lined: bool, cosmetic: Option<&str>) -> DecodedFrame {
+    let idea = replay::rows::CountryStabilityLineRow {
+        country: 9001,
+        line: 0,
+        key: 0x8d,
+        kind: replay::rows::CountryStabilityLineRow::IDEA,
+        identity: b"idea_a".to_vec(),
+        value: 10_000,
+        ..Default::default()
+    };
+    let mut frame = stability_frame(hour, stability_inputs(), 100, vec![idea]);
+    if !lined {
+        *frame.tables[TableId::CountryStabilityLines.index()] = TableView::Unavailable {
+            reason: "fixture".into(),
+        };
+    }
+    *frame.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(
+            cosmetic
+                .into_iter()
+                .map(|cosmetic| replay::rows::CountryAppearanceRow {
+                    country: 9001,
+                    cosmetic_tag: cosmetic.as_bytes().to_vec(),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    frame
+}
+
+/// Prepares `frames` in blocks `..4` and `4..`, one copy continued in memory
+/// and one restored from its saved continuation, as preparation does.
+fn assert_parts_restore_continues(frames: &[DecodedFrame]) {
+    use super::*;
+    let flag = AtomicBool::new(false);
+    dashboard_base::prepared::observer_tests::assert_restore_continues(
+        replay::format::FormatVersion::CURRENT,
+        &[&frames[..4], &frames[4..]],
+        Prepared::default,
+        |prepared, frame, changes, _| prepared.observe_changes(frame, changes).unwrap(),
+        |prepared, writer, _| {
+            prepared.flush(writer, 1, &flag).unwrap();
+            writer
+                .write_at(
+                    "parts-continuation-1",
+                    0,
+                    serde_json::to_vec(&*prepared).unwrap().as_slice(),
+                )
+                .unwrap();
+        },
+        |fixture| {
+            serde_json::from_reader::<_, Prepared>(
+                fixture
+                    .store
+                    .read(&fixture.key, "parts-continuation-1", 0)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap()
+        },
+    );
+}
+
+#[test]
+fn restored_parts_rename_a_country_whose_appearance_row_is_gone_at_the_first_hour_after_a_commit() {
+    // GER's CountryAppearance row is gone from hour 104, the first hour after a commit.
+    let frames: Vec<_> = (100..108)
+        .map(|hour| appearance_frame(hour, true, (hour < 104).then_some("GER_X")))
+        .collect();
+    assert_parts_restore_continues(&frames);
+}
+
+#[test]
+fn parts_rename_a_country_whose_appearance_changed_at_an_hour_without_lines() {
+    use super::*;
+    // GER's appearance changes at hour 103, whose lines were not recorded; the
+    // commit falls after it and hour 104 records the lines again.
+    let frames: Vec<_> = (100..108)
+        .map(|hour| {
+            let cosmetic = if hour < 103 { "GER_X" } else { "GER_Y" };
+            appearance_frame(hour, hour != 103, Some(cosmetic))
+        })
+        .collect();
+    assert_parts_restore_continues(&frames);
+    // Continued alone, hour 104's part is named with hour 104's appearance.
+    let mut prepared = Prepared::default();
+    for frame in &frames[..5] {
+        prepared.observe(frame).unwrap();
+    }
+    let country = &frames[4].complete::<tables::Countries>().unwrap()[0];
+    assert_eq!(
+        prepared.countries["GER"].measures[0].parts["line:idea:idea_a:0:0"].country,
+        NamingCountry::read(&frames[4], country)
+    );
+}

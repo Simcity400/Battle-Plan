@@ -187,6 +187,25 @@ impl Channel {
 }
 
 impl Prepared {
+    /// The holders live at the last observed hour, for an observer restored
+    /// without them. Only live holders keep an open per-holder value: a holder
+    /// that leaves has every value closed. Any other previous holder has no
+    /// open value, and closing a value that is not open changes nothing.
+    fn open_holders(&self) -> io::Result<BTreeSet<Identity>> {
+        let shared = [field_key(0, 4), field_key(0, 5)];
+        let holders: BTreeSet<u64> = self
+            .channels
+            .iter()
+            .flat_map(|state| state.values.active())
+            .filter(|key| !shared.contains(key))
+            .map(|key| key / FIELDS)
+            .collect();
+        self.actors
+            .iter()
+            .filter(|&(_, holder)| holders.contains(holder))
+            .map(|(key, _)| serde_json::from_str::<Identity>(key).map_err(io::Error::from))
+            .collect()
+    }
     pub fn observe_changes(
         &mut self,
         scan: &sinkings::Scanned,
@@ -206,12 +225,14 @@ impl Prepared {
             for (tag, identity) in holders {
                 live.entry(*identity).or_default().push(tag.clone());
             }
+            let previous: BTreeSet<Identity> = match &self.live {
+                Some(old) => old.keys().copied().collect(),
+                None => self.open_holders()?,
+            };
             removed.extend(
-                self.live
-                    .iter()
-                    .flat_map(|old| old.keys())
-                    .filter(|identity| !live.contains_key(*identity))
-                    .copied(),
+                previous
+                    .into_iter()
+                    .filter(|identity| !live.contains_key(identity)),
             );
             self.live = Some(live);
         }
@@ -224,6 +245,7 @@ impl Prepared {
             self.tags.entry(tag.clone()).or_insert(next);
         }
         let live = self.live.as_ref().expect("configured holders");
+        let live_tags: BTreeSet<&str> = live.values().flatten().map(String::as_str).collect();
         for index in 0..12 {
             check_cancel(flag)?;
             let params = selection(0, index);
@@ -346,7 +368,11 @@ impl Prepared {
                 if let Some(previous) = previous {
                     state.extend_ranks(previous);
                 }
-                state.rank_tail.clear();
+                // Every live tag's rank is written again below, continuing its
+                // tail when unchanged, as an observer that kept its holders would.
+                state
+                    .rank_tail
+                    .retain(|tag, _| live_tags.contains(tag.as_str()));
                 affected.extend(live.keys().copied());
             }
             if !contiguous || changed_read {

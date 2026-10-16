@@ -122,7 +122,21 @@ pub(super) struct Scanned {
     shared: facts::Shared,
     modifier_definitions: Option<BTreeMap<String, ModifierDefinitionRow>>,
     modifier_views: Option<(replay::frame::ViewIdentity, replay::frame::ViewIdentity)>,
+    /// The previous read: whole, or only its naming tables
+    /// ([`naming_frame`]) when `replay` can decode it again.
     previous: Option<DecodedFrame>,
+    previous_whole: bool,
+    /// The recording the reads come from. A row dated at the previous read
+    /// is described from that read decoded again, so no whole read is held
+    /// between hours: holding one would make the decoder copy every table
+    /// the next hour changes instead of changing it in place.
+    replay: Option<Arc<replay::container::Replay>>,
+    /// Previous reads decoded again.
+    #[cfg(test)]
+    reads_again: usize,
+    /// Event keys and rows visited to publish and settle this observer's reads.
+    #[cfg(test)]
+    publication_visits: usize,
     #[cfg(any(test, feature = "test-support"))]
     dated: Option<BTreeSet<i32>>,
     warnings: BTreeMap<Option<String>, BTreeMap<String, u64>>,
@@ -132,6 +146,18 @@ pub(super) struct Scanned {
     holds: holds::Holds,
     first_hour: Option<i32>,
     last_hour: Option<i32>,
+    /// Power and cost row keys not recorded as events, once known.
+    pending: [BTreeSet<u128>; 2],
+    pending_known: bool,
+    /// Countries whose capture and holds an accepted read observed.
+    #[cfg(test)]
+    country_visits: usize,
+    /// Join every hour from the whole tables, never from changed rows.
+    #[cfg(test)]
+    whole_tables: bool,
+    /// Hours joined from their changed rows alone.
+    #[cfg(test)]
+    row_hours: usize,
 }
 #[cfg(any(test, feature = "test-support"))]
 pub mod oracle;
@@ -285,7 +311,8 @@ impl Scanned {
     }
 
     pub(super) fn resume(&mut self, frame: &DecodedFrame) {
-        self.previous = Some(frame.clone());
+        self.retain_previous(frame);
+        self.pending_known = false;
         self.clock.stable = false;
         self.clock.holders = self.holds.known_tags().cloned().collect();
         // A census lost on the next read is a holder transition, as without
@@ -296,6 +323,25 @@ impl Scanned {
         // real holder removal from a replay/resume recheck of an old tag.
         Arc::make_mut(&mut self.inputs).refresh(frame, None);
         self.clock.active = self.inputs.tag_slots.keys().cloned().collect();
+    }
+
+    /// Keep the read just observed for the next read: whole when no
+    /// recording can decode it again, otherwise only its naming tables.
+    fn retain_previous(&mut self, frame: &DecodedFrame) {
+        let whole = self.replay.is_none();
+        // The oracle holds whole only a read the next read dates a row at.
+        #[cfg(any(test, feature = "test-support"))]
+        let whole = whole
+            && self
+                .dated
+                .as_ref()
+                .is_none_or(|hours| hours.contains(&frame.hour));
+        self.previous = Some(if whole {
+            frame.clone()
+        } else {
+            naming_frame(frame)
+        });
+        self.previous_whole = whole;
     }
 
     fn retain_open(&mut self, frame: &DecodedFrame, selected: &BTreeSet<String>) {
@@ -422,25 +468,60 @@ impl Scanned {
         // Native change publications advance their sequence cursor within an
         // epoch. Daily costs replace the latest published day. A key removed
         // by a complete publication cannot return; failed reads prove no removal.
+        // An hour joined from its changed rows publishes again only the
+        // countries whose rows changed; the others publish what they did.
         let mut removed = BTreeSet::new();
-        if self.inputs.power_changed && frame.complete::<tables::CountryPowerChanges>().is_ok() {
-            let rows = &self.inputs.power;
-            let current = rows
-                .iter()
-                .map(|row| (row.country, row.instance, row.epoch, row.sequence))
-                .collect();
-            removed.extend(self.published_events[0].difference(&current).copied());
-            self.published_events[0] = current;
+        let inputs = Arc::clone(&self.inputs);
+        let changed = inputs.changed_rows.as_ref();
+        if inputs.power_changed && frame.complete::<tables::CountryPowerChanges>().is_ok() {
+            let visits = publish_events(
+                &mut self.published_events[0],
+                &mut removed,
+                changed.map(|changed| &changed[0]),
+                |country| {
+                    inputs
+                        .power_of(country)
+                        .map(|row| (row.country, row.instance, row.epoch, row.sequence))
+                        .collect()
+                },
+                || {
+                    inputs
+                        .power()
+                        .iter()
+                        .map(|row| (row.country, row.instance, row.epoch, row.sequence))
+                        .collect()
+                },
+            );
+            #[cfg(test)]
+            {
+                self.publication_visits += visits;
+            }
+            let _ = visits;
         }
-        if self.inputs.governments_changed && frame.complete::<tables::GovernmentChanges>().is_ok()
-        {
-            let rows = &self.inputs.governments;
-            let current = rows
-                .iter()
-                .map(|row| (row.country, row.instance, row.epoch, row.sequence))
-                .collect();
-            removed.extend(self.published_events[1].difference(&current).copied());
-            self.published_events[1] = current;
+        if inputs.governments_changed && frame.complete::<tables::GovernmentChanges>().is_ok() {
+            let visits = publish_events(
+                &mut self.published_events[1],
+                &mut removed,
+                changed.map(|changed| &changed[1]),
+                |country| {
+                    inputs
+                        .governments_of(country)
+                        .map(|row| (row.country, row.instance, row.epoch, row.sequence))
+                        .collect()
+                },
+                || {
+                    inputs
+                        .governments()
+                        .iter()
+                        .map(|row| (row.country, row.instance, row.epoch, row.sequence))
+                        .collect()
+                },
+            );
+            #[cfg(test)]
+            {
+                self.publication_visits += visits;
+            }
+            let _ = visits;
         }
         for key in removed {
             if !self.published_events[0].contains(&key) && !self.published_events[1].contains(&key)
@@ -600,6 +681,116 @@ impl Scanned {
         }
     }
 }
+/// A read the next read dates no row at, as that read uses it: to name
+/// countries (`CountryNames`, `Look::read`) and government tokens. Its other
+/// tables share one unavailable view: holding them would copy each one the
+/// decoder changes for the next read.
+fn naming_frame(frame: &DecodedFrame) -> DecodedFrame {
+    use replay::frame::{SharedView, TABLE_COUNT, TableView};
+    // The civil-war operands of a country's look, then government token spellings.
+    let read = [
+        TableId::CountryCivilWars,
+        TableId::CountryCounterInputs,
+        TableId::CountryWars,
+        TableId::WarRelations,
+        TableId::LexicalTokens,
+    ];
+    let unread = SharedView::from(TableView::Unavailable {
+        reason: "not retained after its read".into(),
+    });
+    let mut tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| unread.clone());
+    for table in installed_content::country_names::TABLES.into_iter().chain(read) {
+        tables[table.index()] = frame.tables[table.index()].clone();
+    }
+    DecodedFrame {
+        branch: frame.branch,
+        hour: frame.hour,
+        tables,
+        metrics: frame.metrics.clone(),
+    }
+}
+
+type EventKey = (u32, u32, u64, u64);
+
+/// Replace a table's published event keys with this read's, collecting those
+/// it no longer publishes: those of the `changed` countries only, when only
+/// their rows changed, otherwise every key. The keys visited.
+fn publish_events(
+    published: &mut BTreeSet<EventKey>,
+    removed: &mut BTreeSet<EventKey>,
+    changed: Option<&BTreeSet<u32>>,
+    current_of: impl Fn(u32) -> BTreeSet<EventKey>,
+    all: impl FnOnce() -> BTreeSet<EventKey>,
+) -> usize {
+    let Some(changed) = changed else {
+        let current = all();
+        let visits = current.len() + published.len();
+        removed.extend(published.difference(&current).copied());
+        *published = current;
+        return visits;
+    };
+    let mut visits = 0;
+    for &country in changed {
+        let current = current_of(country);
+        let old: Vec<_> = published
+            .range((country, 0, 0, 0)..=(country, u32::MAX, u64::MAX, u64::MAX))
+            .copied()
+            .collect();
+        visits += current.len() + old.len();
+        for key in old {
+            if !current.contains(&key) {
+                published.remove(&key);
+                removed.insert(key);
+            }
+        }
+        published.extend(current);
+    }
+    visits
+}
+
+/// Whether this read observes a power or cost row dated at `hour` that is not
+/// yet recorded and names a known country.
+fn dated_at(scan: &Scanned, native: &inputs::Inputs, hour: i32) -> bool {
+    let power = (native.power_changed || native.identity_changed)
+        && native.power_rows().any(|row| {
+            row.hour == hour
+                && !scan
+                    .events
+                    .contains(&(row.country, row.instance, row.epoch, row.sequence))
+                && scan
+                    .tag_at(row.country, row.instance, row.epoch, row.hour)
+                    .is_some()
+        });
+    let costs = native.costs_changed || native.identity_changed;
+    power
+        || costs
+            && native.cost_rows().any(|row| {
+                row.day_hour == hour
+                    && !scan.costs.contains(&(
+                        row.country,
+                        row.instance,
+                        row.epoch,
+                        row.day_hour,
+                        row.ordinal,
+                    ))
+                    && scan
+                        .tag_at(row.country, row.instance, row.epoch, row.day_hour)
+                        .is_some()
+            })
+}
+
+/// A read decoded again from the recording, every table as preparation
+/// decodes it.
+fn read_again(replay: &replay::container::Replay, read: &DecodedFrame) -> io::Result<DecodedFrame> {
+    match replay.seek(read.branch, read.hour)? {
+        replay::container::SeekResult::Frame(frame) => Ok(*frame),
+        replay::container::SeekResult::Gap { reason, .. } => Err(dashboard_core::invalid(format!(
+            "Politics ledger could not read hour {} again: {reason}",
+            read.hour
+        ))),
+    }
+}
+
 fn merge_coverage(rows: &mut Vec<LedgerCoverage>, value: LedgerCoverage) {
     if let Some(old) = rows.last_mut()
         && old.country == value.country
@@ -902,6 +1093,10 @@ fn observe_accounting(
     {
         let tag = std::str::from_utf8(&country.tag)
             .expect("recorded country tags validated at scan entry");
+        #[cfg(test)]
+        {
+            scan.country_visits += 1;
+        }
         let witness = by_slot.get(&country.canonical_slot);
         let value = witness.map_or_else(
             || LedgerCoverage {
@@ -1050,7 +1245,27 @@ fn observe_accounting(
                 && event_hour <= row.through_hour
         })
     };
-    let previous = scan.previous.take();
+    let mut previous = scan.previous.take();
+    // A row dated at a previous read held only by its naming tables is
+    // described from that read decoded again.
+    let again = match &previous {
+        Some(read)
+            if !scan.previous_whole && read.hour != hour && dated_at(scan, &native, read.hour) =>
+        {
+            scan.replay
+                .as_ref()
+                .map(|replay| read_again(replay, read))
+                .transpose()?
+        }
+        _ => None,
+    };
+    if again.is_some() {
+        #[cfg(test)]
+        {
+            scan.reads_again += 1;
+        }
+        previous = again;
+    }
     let current_texts = FrameTexts::default();
     let previous_texts = FrameTexts::default();
     if native.power_changed || native.identity_changed {
@@ -1282,15 +1497,7 @@ fn observe_accounting(
     holds::observe_holds(frame, scan, content);
     scan.first_hour.get_or_insert(hour);
     scan.last_hour = Some(scan.last_hour.map_or(hour, |last| last.max(hour)));
-    scan.previous = Some(frame.clone());
-    #[cfg(any(test, feature = "test-support"))]
-    if scan
-        .dated
-        .as_ref()
-        .is_some_and(|hours| !hours.contains(&hour))
-    {
-        scan.previous = Some(oracle::naming_frame(frame));
-    }
+    scan.retain_previous(frame);
     Ok(())
 }
 fn cancelled_request(cancelled: &AtomicBool) -> io::Result<()> {

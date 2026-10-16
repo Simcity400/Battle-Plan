@@ -553,7 +553,7 @@ impl Renderer<'_, '_, '_> {
                     if let Some(Scope::State(state)) = object
                         && state > 0
                         && state != NULL_STATE
-                        && self.context.world()?.states.contains_key(&state)
+                        && self.context.world()?.states().contains_key(&state)
                         && evaluator
                             .evaluate(
                                 &definition.target_trigger,
@@ -569,7 +569,7 @@ impl Renderer<'_, '_, '_> {
                 let state = evaluator.scoped_state_id(operand, scopes)? as u32;
                 if state > 0
                     && state != NULL_STATE
-                    && self.context.world()?.states.contains_key(&state)
+                    && self.context.world()?.states().contains_key(&state)
                     && evaluator
                         .evaluate(
                             &definition.target_trigger,
@@ -585,7 +585,7 @@ impl Renderer<'_, '_, '_> {
             for &state in self
                 .context
                 .world()?
-                .states
+                .states()
                 .keys()
                 .filter(|state| **state > 0)
             {

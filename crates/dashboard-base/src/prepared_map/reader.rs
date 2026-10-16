@@ -173,7 +173,7 @@ impl Reader {
             return self.gap(branch, hour).map(Some);
         };
         let file = self.page(branch, range)?;
-        self.checkpoint_bytes = file.metadata()?.len();
+        self.checkpoint_bytes = file.len();
         let checkpoint = decode_checkpoint(file, &self.selected)?;
         if checkpoint.frame.hour != checkpoint_hour {
             return Err(invalid("map checkpoint search differs from its header"));
@@ -229,7 +229,7 @@ impl Reader {
             .is_some_and(|(b, h)| b == branch && h.checked_add(1) == Some(hour))
     }
 
-    fn page(&self, branch: BranchId, range: u64) -> io::Result<std::fs::File> {
+    fn page(&self, branch: BranchId, range: u64) -> io::Result<store::Range> {
         self.store
             .read(&self.key, &section(branch), range)?
             .ok_or_else(|| invalid("map checkpoint page is missing"))

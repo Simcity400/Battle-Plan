@@ -1122,7 +1122,14 @@ impl TopicScan {
         let hour = decoded.hour;
         let previous = self.hour;
         let adjacent = previous.and_then(|at| at.checked_add(1)) == Some(hour);
+        // A restored scan has no holders of the hour before, so the tags it still
+        // holds open are visited as those holders would be. Otherwise a fresh
+        // join holds none open.
+        let fresh = self.native.keys.is_none();
         let mut dirty = self.native.refresh(decoded, changes);
+        if fresh {
+            dirty.extend(self.active.iter().cloned());
+        }
         self.updated.clear();
         self.removed.clear();
         if !adjacent {

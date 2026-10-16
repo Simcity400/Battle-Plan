@@ -156,10 +156,26 @@ fn read_pages(
     end: i32,
     cancel: &AtomicBool,
 ) -> io::Result<Option<Value>> {
-    let Some(catalogue) = pages::read_catalogue(store, key, branch)? else {
+    // One reader serves the endpoint reads and the peaks; each endpoint read
+    // restores only the requested country's leaves.
+    let count = pages::endpoint_count(store, key, branch)?;
+    let mut reads = pages::Endpoints::new(store, key, branch, count, cancel);
+    let Some(catalogue) = reads.catalogue()? else {
         return Ok(None);
     };
-    let count = pages::endpoint_count(store, key, branch)?;
+    let mut inventory: BTreeMap<bool, BTreeSet<u64>> = BTreeMap::new();
+    let mut selected = Vec::new();
+    for (token, &id) in &catalogue.spent_keys {
+        let (tag, rocket, refits, variant): (String, bool, bool, u64) =
+            serde_json::from_str(token)?;
+        if tag == input.tag && refits == (rocket || input.refits) {
+            inventory.entry(rocket).or_default().insert(variant);
+            selected.push((rocket, variant, id));
+        }
+    }
+    let mut scanned = catalogue.spending.scanned(&input.tag);
+    let mut classes = catalogue.classifications.clone();
+    let variant_warnings = catalogue.variant_warnings.clone();
     let dates: BTreeSet<_> = [
         Some(hour),
         Some(end),
@@ -170,22 +186,8 @@ fn read_pages(
     .collect();
     let mut endpoints = BTreeMap::new();
     for &date in &dates {
-        endpoints.insert(
-            date,
-            pages::read_at(store, key, branch, count, date, cancel)?,
-        );
+        endpoints.insert(date, reads.page(date, pages::Leaves::Country(&input.tag))?);
     }
-    let mut inventory: BTreeMap<bool, BTreeSet<u64>> = BTreeMap::new();
-    let mut selected = Vec::new();
-    for (token, id) in catalogue.spent_keys {
-        let (tag, rocket, refits, variant): (String, bool, bool, u64) =
-            serde_json::from_str(&token)?;
-        if tag == input.tag && refits == (rocket || input.refits) {
-            inventory.entry(rocket).or_default().insert(variant);
-            selected.push((rocket, variant, id));
-        }
-    }
-    let mut scanned = catalogue.spending.scanned(&input.tag);
     for (&rocket, variants) in &inventory {
         let tags = if rocket {
             &mut scanned.rocket.tags
@@ -197,7 +199,6 @@ fn read_pages(
             track.cost_changes.entry((variant, false)).or_default();
         }
     }
-    let mut classes = catalogue.classifications;
     for kind in classes.values_mut() {
         kind.names.clear();
     }
@@ -311,7 +312,7 @@ fn read_pages(
         &scanned,
         &params,
         (&classes, &eq_scope, &ro_scope),
-        catalogue.variant_warnings,
+        variant_warnings,
         cancel,
     )?;
     for run in &mut reply.production {
@@ -345,13 +346,13 @@ fn read_pages(
             );
         }
     }
-    let mut reader = Reader::new(store, key, format!("production-spent-{branch}"), cancel)?;
+    let reader = reads.reader()?;
     let first = input.from.unwrap_or(bounds.0).max(bounds.0);
     let last = end.min(bounds.1);
     let mut peaks = BTreeMap::new();
     if first <= last {
         for (rocket, variant, id) in selected {
-            if let Some(value) = maximum(&mut reader, id, first, last)? {
+            if let Some(value) = maximum(reader, id, first, last)? {
                 peaks.insert(
                     serde_json::to_string(&(variant.to_string(), rocket))?,
                     value.to_string(),

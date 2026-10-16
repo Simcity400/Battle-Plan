@@ -2242,3 +2242,588 @@ fn progressive_game_score_sampler_matches_observer_at_five_thousand_countries() 
     }
     assert!(!values.contains_key(&("unseen country".into(), "total".into())));
 }
+
+/// The recording codec: each input hour is encoded and decoded as the
+/// preparation pipeline reads it, with its recorded updates.
+struct Recorded {
+    encoder: replay::frame::FrameEncoder,
+    decoder: FrameDecoder,
+}
+
+impl Recorded {
+    fn new() -> Self {
+        Self {
+            encoder: replay::frame::FrameEncoder::new(),
+            decoder: FrameDecoder::new(),
+        }
+    }
+    fn next(
+        &mut self,
+        input: &DecodedFrame,
+        keyframe: bool,
+    ) -> (DecodedFrame, std::sync::Arc<replay::frame::Frame>) {
+        let wire = self.encoder.encode(input.clone(), keyframe).unwrap();
+        let decoded = self.decoder.advance(&wire).unwrap().clone();
+        (decoded, std::sync::Arc::new(wire))
+    }
+}
+
+/// One score preparation fed recorded hours with their changes, as the
+/// pipeline feeds them.
+struct Lane<'a> {
+    observer: ScoreObserver<'a>,
+    prepared: prepared::Prepared,
+    tracker: dashboard_base::prepared::frame_changes::FrameChangeTracker,
+}
+
+impl<'a> Lane<'a> {
+    fn new(naming: &'a Naming, replay: &'a Replay) -> Self {
+        Self {
+            observer: naming.observer(replay),
+            prepared: prepared::Prepared::default(),
+            tracker: dashboard_base::prepared::frame_changes::FrameChangeTracker::new(),
+        }
+    }
+
+    /// Observe one recorded hour. Gives the countries whose facts were
+    /// computed, whether the hour was read from its changed rows, and the
+    /// preparation's country visits, observed countries and emitted keys.
+    fn observe(
+        &mut self,
+        (decoded, wire): &(DecodedFrame, std::sync::Arc<replay::frame::Frame>),
+        replay: &Replay,
+        naming: &Naming,
+    ) -> (usize, usize, [usize; 3]) {
+        let before = (
+            self.observer.computed,
+            self.observer.row_hours,
+            self.prepared.work(),
+        );
+        let changes =
+            self.tracker
+                .observe_updates(decoded, std::sync::Arc::clone(wire), replay.format);
+        self.prepared
+            .observe(decoded, replay, &mut self.observer, naming, &changes)
+            .unwrap();
+        let work = self.prepared.work();
+        (
+            self.observer.computed - before.0,
+            self.observer.row_hours - before.1,
+            [
+                work.row_visits - before.2.row_visits,
+                work.history_visits - before.2.history_visits,
+                work.emitted - before.2.emitted,
+            ],
+        )
+    }
+}
+
+fn rows<T: replay::rows::TableSchema>(frame: &mut DecodedFrame) -> &mut Vec<T::Row> {
+    match &mut *frame.tables[T::ID.index()] {
+        TableView::Complete(rows) => rows.rows_mut::<T>().expect("fixture rows"),
+        _ => unreachable!("fixture tables are complete"),
+    }
+}
+
+fn site(base: u64, access: u8) -> GameScoreAirSite {
+    GameScoreAirSite {
+        base,
+        access,
+        error: Vec::new(),
+    }
+}
+
+fn wing(id: u64, planes: i32) -> AirWingGameScoreStatsRow {
+    AirWingGameScoreStatsRow {
+        id,
+        planes: Some(planes),
+        stat_raw: Some(2 * Q + 7),
+        mission_index: Some(0),
+        ..Default::default()
+    }
+}
+
+fn registration(base: u64, slot: u32, wings: Vec<u64>) -> AirBaseRegistrationRow {
+    AirBaseRegistrationRow {
+        base,
+        slot,
+        capacity_raw: Q,
+        wings,
+        ..Default::default()
+    }
+}
+
+/// `count` countries: every tenth flies one wing from its own base, and the
+/// first five share a faction.
+fn row_score_frame(count: u32) -> DecodedFrame {
+    let mut frame = scale_score_frame(count);
+    let air: Vec<u32> = (0..count).step_by(10).collect();
+    for &index in &air {
+        let row = &mut rows::<tables::CountryGameScoreInputs>(&mut frame)[index as usize];
+        row.air_state = CountryGameScoreInputRow::AIR_PRESENT;
+        row.first_sites = vec![site(u64::from(index) + 500, GameScoreAirSite::ACCESS_TRUE)];
+    }
+    set(
+        &mut frame,
+        TableRows::AirBaseRegistrations(
+            air.iter()
+                .map(|&index| {
+                    registration(
+                        u64::from(index) + 500,
+                        index + 1,
+                        vec![u64::from(index) + 7000],
+                    )
+                })
+                .collect(),
+        ),
+    );
+    set(
+        &mut frame,
+        TableRows::AirWingGameScoreStats(
+            air.iter()
+                .map(|&index| wing(u64::from(index) + 7000, 10))
+                .collect(),
+        ),
+    );
+    set(
+        &mut frame,
+        TableRows::Factions(vec![FactionRow {
+            id: 1,
+            name: b"Allies".to_vec(),
+            ..Default::default()
+        }]),
+    );
+    set(
+        &mut frame,
+        TableRows::FactionMembers(
+            (0..count.min(5))
+                .map(|index| FactionMemberRow {
+                    country: 100_000 + index,
+                    faction: 1,
+                    ordinal: index,
+                })
+                .collect(),
+        ),
+    );
+    frame
+}
+
+fn assert_one_country_hour_observes_only_it(count: u32) {
+    let mut input = row_score_frame(count);
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![input.clone()])]).unwrap();
+    let naming = prepared_naming();
+    let mut lane = Lane::new(&naming, &replay);
+    let mut recorded = Recorded::new();
+    let (computed, _, work) = lane.observe(&recorded.next(&input, false), &replay, &naming);
+    assert_eq!(
+        computed, count as usize,
+        "the first hour reads every country"
+    );
+    assert_eq!(work[1], count as usize + 1, "with the multipliers");
+    let mut next = |change: &dyn Fn(&mut DecodedFrame)| {
+        input.hour += 1;
+        change(&mut input);
+        lane.observe(&recorded.next(&input, false), &replay, &naming)
+    };
+    let index = |part: u32| (count / part) as usize;
+    // One country computed, read from changed rows, and observed alone.
+    let one = (1, 1, [1, 1, 7]);
+    assert_eq!(
+        next(&|frame| {
+            rows::<tables::CountryGameScoreInputs>(frame)[index(2)].army_count = Some(40);
+        }),
+        one,
+        "an army change observes only its country"
+    );
+    assert_eq!(
+        next(&|frame| rows::<tables::AirWingGameScoreStats>(frame)[1].planes = Some(11)),
+        one,
+        "a wing's planes observe only the country flying it"
+    );
+    assert_eq!(
+        next(&|frame| {
+            rows::<tables::CountryFactories>(frame)[index(3)].military_used += 1;
+            rows::<tables::CountryGameScoreInputs>(frame)[index(3)].fleets[0].fleet += 1;
+            rows::<tables::AirWingGameScoreStats>(frame)[0].mission_index = Some(1);
+            rows::<tables::Politics>(frame)[index(3)].last_election += 1;
+            rows::<tables::Factions>(frame)[0].color_red += 1;
+        }),
+        (0, 1, [0, 0, 0]),
+        "fields no score part reads observe no country"
+    );
+    assert_eq!(
+        next(&|frame| {
+            rows::<tables::CountryAppearance>(frame)[index(4)].red = 0.5_f32.to_bits();
+        }),
+        one,
+        "a colour change observes only its country"
+    );
+    assert_eq!(
+        next(&|frame| {
+            let hour = i64::from(frame.hour);
+            for row in rows::<tables::Countries>(frame) {
+                row.political_power_raw = Some(hour);
+            }
+        }),
+        (0, 1, [0, 0, 0]),
+        "every country's balance changing observes none"
+    );
+    assert_eq!(
+        next(&|frame| {
+            let members = rows::<tables::FactionMembers>(frame);
+            members.push(FactionMemberRow {
+                country: 100_007,
+                faction: 1,
+                ordinal: 5,
+            });
+            members.sort_by_key(|row| row.country);
+        }),
+        one,
+        "joining a faction observes only the joining country"
+    );
+    assert_eq!(
+        next(&|frame| {
+            rows::<tables::CountryAppearance>(frame)[index(5)].cosmetic_tag = b"COS".to_vec();
+        }),
+        (1, 1, [0, 0, 0]),
+        "a naming change names only its country again, unchanged without localisation"
+    );
+}
+
+#[test]
+fn prepared_game_score_one_changed_country_observes_only_that_country() {
+    assert_one_country_hour_observes_only_it(200);
+}
+
+#[test]
+#[cfg(feature = "slow-tests")]
+fn prepared_game_score_one_changed_country_observes_only_it_at_five_thousand_countries() {
+    assert_one_country_hour_observes_only_it(5000);
+}
+
+/// Six countries: a subject named after its overlord, two air forces with
+/// an inaccessible base, and a faction one member joins through an alias link.
+fn parity_frame() -> DecodedFrame {
+    let mut frame = frame(100);
+    let tags: [&[u8]; 6] = [b"AAA", b"BBB", b"CCC", b"DDD", b"EEE", b"FFF"];
+    set(
+        &mut frame,
+        TableRows::Countries(
+            (1..=6)
+                .map(|slot| CountryRow {
+                    id: 1000 + slot,
+                    canonical_slot: slot,
+                    tag: tags[slot as usize - 1].to_vec(),
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    let mut links: Vec<_> = (1..=6)
+        .map(|slot| CountryLinkRow {
+            id: 1000 + slot,
+            canonical_slot: slot,
+        })
+        .collect();
+    links.push(CountryLinkRow {
+        id: 2006,
+        canonical_slot: 6,
+    });
+    set(&mut frame, TableRows::CountryLinks(links));
+    set(
+        &mut frame,
+        TableRows::CountryGameScoreInputs((1..=6).map(|slot| input(1000 + slot)).collect()),
+    );
+    set(
+        &mut frame,
+        TableRows::CountryFactories((1..=6).map(|slot| factories(1000 + slot)).collect()),
+    );
+    let mut appearances: Vec<_> = (1..=6).map(|slot| appearance(1000 + slot, b"")).collect();
+    appearances[2].overlord = 1001;
+    set(&mut frame, TableRows::CountryAppearance(appearances));
+    set(
+        &mut frame,
+        TableRows::Politics(
+            (1..=6)
+                .map(|slot| replay::rows::PoliticsRow {
+                    country: 1000 + slot,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    set(&mut frame, TableRows::PoliticalParties(Vec::new()));
+    set(
+        &mut frame,
+        TableRows::Autonomy(vec![replay::rows::AutonomyRow {
+            subject: 1003,
+            state: b"autonomy_puppet".to_vec(),
+            ..Default::default()
+        }]),
+    );
+    let inputs = rows::<tables::CountryGameScoreInputs>(&mut frame);
+    inputs[3].air_state = CountryGameScoreInputRow::AIR_PRESENT;
+    inputs[3].first_sites = vec![
+        site(900, GameScoreAirSite::ACCESS_TRUE),
+        site(901, GameScoreAirSite::ACCESS_FALSE),
+    ];
+    inputs[4].air_state = CountryGameScoreInputRow::AIR_PRESENT;
+    inputs[4].first_sites = vec![site(902, GameScoreAirSite::ACCESS_TRUE)];
+    set(
+        &mut frame,
+        TableRows::AirBaseRegistrations(vec![
+            registration(900, 4, vec![70, 71]),
+            registration(901, 4, vec![72]),
+            registration(902, 5, vec![73]),
+        ]),
+    );
+    set(
+        &mut frame,
+        TableRows::AirWingGameScoreStats(vec![wing(70, 5), wing(71, 6), wing(72, 7), wing(73, 8)]),
+    );
+    set(
+        &mut frame,
+        TableRows::Factions(vec![
+            FactionRow {
+                id: 10,
+                name: b"Axis".to_vec(),
+                ..Default::default()
+            },
+            FactionRow {
+                id: 11,
+                name: b"Allies".to_vec(),
+                ..Default::default()
+            },
+        ]),
+    );
+    set(
+        &mut frame,
+        TableRows::FactionMembers(vec![
+            FactionMemberRow {
+                country: 1001,
+                faction: 10,
+                ordinal: 0,
+            },
+            FactionMemberRow {
+                country: 1003,
+                faction: 10,
+                ordinal: 1,
+            },
+            FactionMemberRow {
+                country: 2006,
+                faction: 11,
+                ordinal: 0,
+            },
+        ]),
+    );
+    frame
+}
+
+#[test]
+fn prepared_game_score_changed_rows_match_whole_tables_and_history_across_keyframe_gap_and_resume()
+{
+    use dashboard_base::prepared::series::tests::{Fixture, assert_payloads_equal};
+    let mut localisation: Localisation = [
+        ("AAA", "Alpha"),
+        ("AAA_ADJ", "Alphan"),
+        ("COSA", "Cosmetic Alpha"),
+        ("COSA_ADJ", "Cosmetic Alphan"),
+        ("BBB", "Beta"),
+        ("BBB_neutrality", "Neutral Beta"),
+        ("CCC_AAA_autonomy_puppet", "$OVERLORDADJ$ Gamma"),
+        ("DDD", "Delta"),
+        ("EEE", "Epsilon"),
+        ("FFF", "Phi"),
+        ("GGG", "Gimel"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+    .collect();
+    localisation.language = "english".into();
+    let mut hourly = parity_frame();
+    let mut inputs = Vec::new();
+    for hour in 100..=126 {
+        hourly.hour = hour;
+        let frame = &mut hourly;
+        match hour {
+            101 => rows::<tables::AirWingGameScoreStats>(frame)[0].planes = Some(10),
+            102 => rows::<tables::CountryGameScoreInputs>(frame)[0].army_count = Some(9),
+            // Fields no score part reads.
+            103 => {
+                rows::<tables::CountryFactories>(frame)[1].military_used += 1;
+                rows::<tables::Politics>(frame)[2].last_election += 1;
+                rows::<tables::AirWingGameScoreStats>(frame)[0].mission_index = Some(1);
+            }
+            // The overlord's adjective names its subject.
+            104 => rows::<tables::CountryAppearance>(frame)[0].cosmetic_tag = b"COSA".to_vec(),
+            105 => {
+                rows::<tables::Politics>(frame)[1].ruling_party = Some(5);
+                set(
+                    frame,
+                    TableRows::PoliticalParties(vec![replay::rows::PoliticalPartyRow {
+                        country: 1002,
+                        id: 5,
+                        token: b"neutrality".to_vec(),
+                        ..Default::default()
+                    }]),
+                );
+            }
+            // A wing moves base and is reinforced in the same hour.
+            106 => {
+                let registrations = rows::<tables::AirBaseRegistrations>(frame);
+                registrations[0].wings = vec![70];
+                registrations[2].wings = vec![71, 73];
+                rows::<tables::AirWingGameScoreStats>(frame)[1].planes = Some(7);
+            }
+            // A holder's total becomes unknown, then known again.
+            107 => {
+                let row = &mut rows::<tables::CountryGameScoreInputs>(frame)[4];
+                row.army_count = None;
+                row.army_error = b"fixture unread army".to_vec();
+            }
+            108 => {
+                let row = &mut rows::<tables::CountryGameScoreInputs>(frame)[4];
+                row.army_count = Some(4);
+                row.army_error = Vec::new();
+            }
+            109 => rows::<tables::CountryGameScoreInputs>(frame)[3].army_count = Some(12),
+            110 => rows::<tables::Factions>(frame)[0].name = b"Axis Powers".to_vec(),
+            111 => rows::<tables::FactionMembers>(frame).retain(|row| row.country != 2006),
+            // An input row no link names, then gone, beside a colour change.
+            112 => rows::<tables::CountryGameScoreInputs>(frame).push(input(3000)),
+            113 => {
+                rows::<tables::CountryGameScoreInputs>(frame).retain(|row| row.country != 3000);
+                rows::<tables::CountryAppearance>(frame)[1].green = 0.125_f32.to_bits();
+            }
+            114 => continue,
+            115 => rows::<tables::CountryGameScoreInputs>(frame)[2].land_count = Some(20),
+            // A wing at an inaccessible base.
+            116 => rows::<tables::AirWingGameScoreStats>(frame)[2].planes = Some(10),
+            117 => {
+                let hour = i64::from(hour);
+                for row in rows::<tables::Countries>(frame) {
+                    row.political_power_raw = Some(hour);
+                }
+            }
+            118 => rows::<tables::CountryGameScoreInputs>(frame)[0].army_count = Some(10),
+            // An unresolved membership leaves every non-member unknown.
+            119 => rows::<tables::FactionMembers>(frame).push(FactionMemberRow {
+                country: 4000,
+                faction: 11,
+                ordinal: 1,
+            }),
+            120 => rows::<tables::FactionMembers>(frame).retain(|row| row.country != 4000),
+            121 => {
+                rows::<tables::Countries>(frame).push(CountryRow {
+                    id: 1007,
+                    canonical_slot: 7,
+                    tag: b"GGG".to_vec(),
+                    ..Default::default()
+                });
+                let links = rows::<tables::CountryLinks>(frame);
+                links.push(CountryLinkRow {
+                    id: 1007,
+                    canonical_slot: 7,
+                });
+                links.sort_by_key(|row| row.id);
+                rows::<tables::CountryGameScoreInputs>(frame).push(input(1007));
+                rows::<tables::CountryFactories>(frame).push(factories(1007));
+                rows::<tables::CountryAppearance>(frame).push(appearance(1007, b""));
+                rows::<tables::Politics>(frame).push(replay::rows::PoliticsRow {
+                    country: 1007,
+                    ..Default::default()
+                });
+            }
+            122 => rows::<tables::CountryGameScoreInputs>(frame)[6].army_count = Some(1),
+            123 => rows::<tables::GameScoreMultipliers>(frame)[0].army_raw = Some(2 * Q),
+            125 => {
+                rows::<tables::CountryGameScoreInputs>(frame)[3].first_sites[1].access =
+                    GameScoreAirSite::ACCESS_TRUE;
+            }
+            126 => rows::<tables::CountryLinks>(frame).retain(|row| row.id != 2006),
+            _ => {}
+        }
+        inputs.push((hourly.clone(), hour == 109));
+    }
+    let frames: Vec<_> = inputs.iter().map(|(frame, _)| frame.clone()).collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+    let naming = Naming {
+        localisation: Ok(std::sync::Arc::new(localisation.clone())),
+        templates: Err("Faction content unavailable".into()),
+        fallback: prepared_naming().fallback,
+        warnings: Vec::new(),
+    };
+    let fixtures = [Fixture::new(), Fixture::new()];
+    // Observed from changed rows, and from the whole tables every hour.
+    let mut lanes = [Lane::new(&naming, &replay), Lane::new(&naming, &replay)];
+    lanes[1].observer.whole_tables = true;
+    let mut recorded = Recorded::new();
+    let mut row_hours = 0;
+    for (index, (input, keyframe)) in inputs.iter().enumerate() {
+        let hour = input.hour;
+        let read = recorded.next(input, *keyframe);
+        for lane in &mut lanes {
+            lane.observe(&read, &replay, &naming);
+        }
+        if ![108, 117, 126].contains(&hour) {
+            continue;
+        }
+        for (lane, fixture) in lanes.iter_mut().zip(&fixtures) {
+            let mut writer = fixture.writer();
+            lane.prepared
+                .flush(&mut writer, 1, &AtomicBool::new(false))
+                .unwrap();
+            writer.commit().unwrap();
+        }
+        assert_payloads_equal(
+            &fixtures[0].payloads(),
+            &fixtures[1].payloads(),
+            &format!("changed rows vs whole tables through hour {hour}"),
+        );
+        let saved = lanes
+            .each_ref()
+            .map(|lane| serde_json::to_vec(&lane.prepared).unwrap());
+        assert!(
+            saved[0] == saved[1],
+            "continuations differ through hour {hour}"
+        );
+        let reference = scan_frames(frames[..=index].to_vec(), Some(&localisation));
+        for read in 100..=hour {
+            assert_prepared_score_at(&fixtures[0], &reference, read);
+        }
+        // Resume both from what they published.
+        row_hours += lanes[0].observer.row_hours;
+        for (lane, saved) in lanes.iter_mut().zip(&saved) {
+            let whole_tables = lane.observer.whole_tables;
+            lane.prepared = serde_json::from_slice(saved).unwrap();
+            lane.observer = naming.observer(&replay);
+            lane.observer.whole_tables = whole_tables;
+            lane.tracker.invalidate();
+        }
+    }
+    assert!(
+        row_hours >= 15,
+        "most hours are read from their changed rows, not {row_hours}"
+    );
+    assert_eq!(lanes[1].observer.row_hours, 0);
+}
+
+#[test]
+fn game_score_change_masks_name_only_recorded_fields() {
+    // A mask naming a field its table lacks reads every field.
+    for mask in [
+        *HOLDER_FIELDS,
+        *INPUT_FIELDS,
+        *FACTORY_FIELDS,
+        *WING_FIELDS,
+        *REGISTRATION_FIELDS,
+        *COLOUR_FIELDS,
+        *APPEARANCE_NAME_FIELDS,
+        *RULING_PARTY_FIELDS,
+        *PARTY_TOKEN_FIELDS,
+        *AUTONOMY_FIELDS,
+        *FACTION_NAME_FIELDS,
+    ] {
+        assert_ne!(mask, u64::MAX);
+    }
+}

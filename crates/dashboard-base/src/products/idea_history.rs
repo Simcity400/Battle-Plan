@@ -1192,7 +1192,15 @@ impl Scan {
                 };
             }
         }
+        // A restored scan has no holders of the hour before, so the tags it still
+        // holds open are visited as those holders would be. Otherwise a fresh
+        // join holds none open.
+        let fresh = self.native.keys.is_none();
         let mut dirty = self.native.refresh(decoded, changes, &mut self.refused);
+        if fresh {
+            dirty.extend(self.active.iter().cloned());
+            dirty.extend(self.unresolved.iter().cloned());
+        }
         if !adjacent {
             dirty.extend(self.native.holders.keys().cloned());
         }

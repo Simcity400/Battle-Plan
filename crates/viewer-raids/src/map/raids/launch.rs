@@ -1502,7 +1502,7 @@ impl<'w, 'a> Context<'w, 'a> {
             ours,
             country,
             raws: world
-                .links
+                .links()
                 .iter()
                 .filter(|&(_, &slot)| slot == ours)
                 .map(|(&raw, _)| raw)
@@ -2299,7 +2299,7 @@ impl<'w, 'a> Context<'w, 'a> {
             return Ok(0);
         }
         table::<tables::Provinces>(self.world)?;
-        Ok(if self.world.provinces.contains_key(&stored) {
+        Ok(if self.world.provinces().contains_key(&stored) {
             stored
         } else {
             0
@@ -2673,7 +2673,7 @@ impl<'w, 'a> Context<'w, 'a> {
                         }
                         continue;
                     }
-                    if !self.world.states.contains_key(&state) {
+                    if !self.world.states().contains_key(&state) {
                         if !visit(Source::unknown(format!(
                             "ReservedCountryNaming.launch_sources.owned_states state {state} has no States row"
                         ))) {
@@ -2788,7 +2788,7 @@ impl<'w, 'a> Context<'w, 'a> {
                         by_province.entry(province).or_default().push((kind, count));
                     }
                 }
-                for (&state, provinces) in self.world.state_provinces.iter() {
+                for (&state, provinces) in self.world.state_provinces().iter() {
                     let listed: Vec<_> = provinces
                         .iter()
                         .flat_map(|&province| {
@@ -2819,7 +2819,7 @@ impl<'w, 'a> Context<'w, 'a> {
             indexes.owned_states.get_or_insert_with(key, || {
                 let mut out = Owned::default();
                 // `World::states` iterates in id order.
-                for state in self.world.states.values() {
+                for state in self.world.states().values() {
                     match self.world.slot(state.owner) {
                         Some(owner) => out.0.entry(owner).or_default().push(state.id),
                         None if state.owner != 0 => out.1.push((state.id, state.owner)),

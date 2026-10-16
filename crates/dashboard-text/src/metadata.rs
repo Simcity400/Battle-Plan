@@ -305,6 +305,33 @@ struct ReadFrom {
     link_slots: HashMap<u32, u32>,
 }
 
+impl ReadFrom {
+    fn tags(&self) -> HashMap<u32, String> {
+        // Raw aliases use the canonical slot's current tag, even when the
+        // Countries row's own raw id is absent from the recorded link table.
+        let slots: HashMap<u32, &[u8]> = self
+            .slots
+            .iter()
+            .map(|(slot, tag)| (*slot, tag.as_slice()))
+            .collect();
+        self.link_slots
+            .iter()
+            .filter_map(|(&raw, slot)| {
+                let tag = std::str::from_utf8(slots.get(slot)?).ok()?;
+                (!tag.is_empty()).then(|| (raw, tag.to_owned()))
+            })
+            .collect()
+    }
+}
+
+/// Each country's canonical slot and tag, and each raw link's slot, that
+/// [`LinkTags`] were built from.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct LinkProjection {
+    slots: Vec<(u32, Vec<u8>)>,
+    links: Vec<(u32, u32)>,
+}
+
 impl LinkTags {
     /// Reads this hour's country tables: `Ok(true)` when the tags were rebuilt,
     /// `Ok(false)` when their country identities are unchanged, and an error when
@@ -365,18 +392,7 @@ impl LinkTags {
         {
             return Ok(false);
         }
-        // Raw aliases use the canonical slot's current tag, even when the
-        // Countries row's own raw id is absent from the recorded link table.
-        let slots: HashMap<u32, &[u8]> =
-            countries.iter().map(|(_, slot, tag)| (slot, tag)).collect();
-        self.tags = links
-            .iter()
-            .filter_map(|(&raw, slot)| {
-                let tag = std::str::from_utf8(slots.get(slot)?).ok()?;
-                (!tag.is_empty()).then(|| (raw, tag.to_owned()))
-            })
-            .collect();
-        self.from = Some(ReadFrom {
+        let from = ReadFrom {
             countries: None,
             links: None,
             slots: countries
@@ -384,8 +400,42 @@ impl LinkTags {
                 .map(|(_, slot, tag)| (slot, tag.to_vec()))
                 .collect(),
             link_slots: links.clone(),
-        });
+        };
+        self.tags = from.tags();
+        self.from = Some(from);
         Ok(true)
+    }
+
+    /// The country projection the tags were last built from, for state saved
+    /// beside them: an update after [`LinkTags::from_projection`] compares
+    /// against it as a continued scan compares against its last read.
+    pub fn projection(&self) -> Option<LinkProjection> {
+        self.from.as_ref().map(|from| {
+            let mut links: Vec<_> = from
+                .link_slots
+                .iter()
+                .map(|(&raw, &slot)| (raw, slot))
+                .collect();
+            links.sort_unstable();
+            LinkProjection {
+                slots: from.slots.clone(),
+                links,
+            }
+        })
+    }
+
+    /// Tags built from a saved [`LinkTags::projection`].
+    pub fn from_projection(projection: LinkProjection) -> Self {
+        let from = ReadFrom {
+            countries: None,
+            links: None,
+            slots: projection.slots,
+            link_slots: projection.links.into_iter().collect(),
+        };
+        Self {
+            tags: from.tags(),
+            from: Some(from),
+        }
     }
 
     /// The tag a raw link id names, if any.

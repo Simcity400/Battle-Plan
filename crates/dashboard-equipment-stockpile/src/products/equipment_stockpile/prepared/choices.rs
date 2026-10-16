@@ -118,6 +118,9 @@ pub(super) struct Choices {
     work: dashboard_base::prepared::observer_tests::Work,
     #[serde(skip)]
     content: Content,
+    /// Each classified variant's two groups while its classification holds.
+    #[serde(skip)]
+    variant_groups: BTreeMap<u64, [String; 2]>,
 }
 
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
@@ -373,6 +376,192 @@ fn evaluate(
     ])
 }
 
+/// [`evaluate`] of every group at once, from one pass over the members: a
+/// variant adds to its two groups and a logistics representative to its type
+/// and domain, so the work is the members and the groups, not their product.
+/// Each group's sums are taken in [`evaluate`]'s order.
+fn evaluate_groups(
+    groups: &BTreeSet<String>,
+    variants: &[(u64, &Classification, &[String; 2])],
+    logistics: &[(u32, &Classification, [String; 2])],
+    stock_known: bool,
+    balance_known: bool,
+    retained: &Logistics,
+    read: impl Fn(usize, u64) -> Operand,
+) -> io::Result<Vec<[Option<i128>; 4]>> {
+    struct Sums {
+        stock: Option<i128>,
+        balance: Option<i128>,
+        need: Option<i128>,
+        recorded_required: usize,
+        evidence: LogisticsEvidence,
+    }
+    let mut sums: BTreeMap<&str, Sums> = groups
+        .iter()
+        .map(|group| {
+            let evidence = retained.groups.get(group).copied().unwrap_or_default();
+            let balance = (balance_known && evidence.own > 0).then_some(0_i128);
+            (
+                group.as_str(),
+                Sums {
+                    stock: stock_known.then_some(0_i128),
+                    balance,
+                    need: balance,
+                    recorded_required: 0,
+                    evidence,
+                },
+            )
+        })
+        .collect();
+    // An unresolved variant holding stock leaves every group's stock unknown.
+    let mut unresolved_stock = false;
+    for &(id, classification, keys) in variants {
+        let value = read(0, id);
+        if classification.kind.is_none() && value.present && value.value != Some(0) {
+            unresolved_stock = true;
+        }
+        for key in keys {
+            if let Some(sums) = sums.get_mut(key.as_str()) {
+                sums.stock = sums
+                    .stock
+                    .and_then(|sum| value.value.map(|value| sum + value));
+            }
+        }
+    }
+    // The UI key map uses the last logistics token for a duplicate archetype.
+    let types: BTreeMap<&str, (u32, &Classification, &[String; 2])> = logistics
+        .iter()
+        .filter(|(id, _, keys)| {
+            retained
+                .representatives
+                .get(&keys[0])
+                .is_some_and(|(representative, _)| representative == id)
+        })
+        .map(|(id, classification, keys)| (keys[0].as_str(), (*id, *classification, keys)))
+        .collect();
+    for &(id, classification, keys) in types.values() {
+        let b = read(5, u64::from(id)).value;
+        let s = read(6, u64::from(id)).value;
+        let available = read(7, u64::from(id));
+        let required = classification
+            .kind
+            .as_ref()
+            .is_none_or(|kind| kind.requires_available)
+            && available.present
+            && available.value.is_some();
+        let derived = b.zip(s).and_then(|(b, s)| {
+            let available = available
+                .present
+                .then_some(available.value)
+                .flatten()
+                .or_else(|| {
+                    classification
+                        .kind
+                        .as_ref()
+                        .filter(|kind| !kind.requires_available)
+                        .map(|_| s.max(0))
+                })?;
+            let value = (available as i64).wrapping_sub(b as i64);
+            (value.unsigned_abs() < NEED_BOUND_RAW as u64).then_some(i128::from(value))
+        });
+        for key in keys {
+            if let Some(sums) = sums.get_mut(key.as_str()) {
+                sums.balance = sums
+                    .balance
+                    .and_then(|sum| b.zip(s).map(|(value, _)| sum + value));
+                sums.recorded_required += usize::from(required);
+                sums.need = sums.need.and_then(|sum| derived.map(|value| sum + value));
+            }
+        }
+    }
+    // Unresolved logistics rows leave every resolved domain's totals unknown.
+    let (mut unresolved_balance, mut unresolved_need) = (false, false);
+    for &(id, classification, _) in logistics {
+        if classification.kind.is_some() {
+            continue;
+        }
+        let b = read(5, u64::from(id));
+        let s = read(6, u64::from(id));
+        if (b.present && b.value != Some(0)) || (s.present && s.value != Some(0)) {
+            unresolved_balance = true;
+        }
+        if b.present || s.present {
+            unresolved_need = true;
+        }
+    }
+    groups
+        .iter()
+        .map(|group| {
+            let (grouping, key): (String, String) = serde_json::from_str(group)?;
+            let Sums {
+                mut stock,
+                mut balance,
+                mut need,
+                recorded_required,
+                evidence,
+            } = sums
+                .remove(group.as_str())
+                .expect("evaluated stockpile group");
+            if unresolved_stock || evidence.unresolved > 0 {
+                stock = None;
+            }
+            if recorded_required < evidence.required {
+                need = None;
+            }
+            if grouping == "domain" && key != "unresolved" {
+                if unresolved_balance {
+                    balance = None;
+                }
+                if unresolved_need {
+                    need = None;
+                }
+            }
+            if balance.is_none() {
+                need = None;
+            }
+            Ok([
+                stock,
+                balance,
+                need,
+                (stock_known || balance_known).then_some(i128::from(
+                    balance.is_some() && need.is_some_and(|need| need > 0),
+                )),
+            ])
+        })
+        .collect()
+}
+
+impl Numbers {
+    /// A holder's three completeness keys, allocated together where they are
+    /// first used.
+    fn complete_keys(&mut self, tag: &str) -> [u64; 3] {
+        let Numbers { keys, resolved, .. } = self;
+        *holder_keys(resolved, tag).complete.get_or_insert_with(|| {
+            std::array::from_fn(|slot| {
+                allocate(
+                    keys,
+                    tag,
+                    &group_key(&series::field_key("complete", ""), MEASURES[slot]),
+                )
+            })
+        })
+    }
+    /// A holder's four measure keys of `group`, allocated together where they
+    /// are first used.
+    fn group_keys(&mut self, tag: &str, group: &str) -> [u64; 4] {
+        let Numbers { keys, resolved, .. } = self;
+        let holder = holder_keys(resolved, tag);
+        if let Some(&found) = holder.groups.get(group) {
+            return found;
+        }
+        let found = std::array::from_fn(|measure| {
+            allocate(keys, tag, &group_key(group, MEASURES[measure]))
+        });
+        holder.groups.insert(group.to_owned(), found);
+        found
+    }
+}
+
 impl Choices {
     pub(super) fn advance(&mut self, hour: i32) -> io::Result<()> {
         self.metadata.first.get_or_insert(hour);
@@ -460,10 +649,18 @@ impl Choices {
                 last: hour,
                 classification,
             };
+            self.variant_groups.remove(&id);
         } else {
             current.last = hour;
         }
         Ok(())
+    }
+    /// Whether the variant's classification, and so its groups, changed at `hour`.
+    pub(super) fn reclassified(&self, id: u64, hour: i32) -> bool {
+        self.metadata
+            .current
+            .get(&id)
+            .is_some_and(|span| span.first == hour)
     }
     pub(super) fn observe(
         &mut self,
@@ -479,7 +676,8 @@ impl Choices {
                 self.classify_one(id, names.token(id), hour)?;
             }
         }
-        let variants: BTreeMap<_, _> = scanned
+        let current_logistics = self.logistics(tag, holder, scanned, hour);
+        let ids: BTreeSet<u64> = scanned
             .stock
             .runs
             .keys()
@@ -492,22 +690,38 @@ impl Choices {
                         .is_some_and(|run| run.last_hour == hour)
                 })
             })
-            .map(|id| (*id, self.metadata.current[id].classification.clone()))
+            .copied()
             .collect();
-        let logistics = self.logistics(tag, holder, scanned, hour);
+        for &id in &ids {
+            if !self.variant_groups.contains_key(&id) {
+                let groups = self.metadata.current[&id].classification.groups(Some(id));
+                self.variant_groups.insert(id, groups);
+            }
+        }
+        let variants: Vec<(u64, &Classification, &[String; 2])> = ids
+            .iter()
+            .map(|id| {
+                (
+                    *id,
+                    &self.metadata.current[id].classification,
+                    &self.variant_groups[id],
+                )
+            })
+            .collect();
+        let logistics: Vec<(u32, &Classification, [String; 2])> = current_logistics
+            .iter()
+            .map(|(&id, classification)| (id, classification, classification.groups(None)))
+            .collect();
         let retained = &self.logistics[tag];
-        let current_groups: BTreeSet<_> = variants
+        let current_groups: BTreeSet<&str> = variants
             .iter()
-            .flat_map(|(&id, classification)| classification.groups(Some(id)))
-            .chain(
-                logistics
-                    .values()
-                    .flat_map(|classification| classification.groups(None)),
-            )
+            .flat_map(|(_, _, groups)| groups.iter())
+            .chain(logistics.iter().flat_map(|(_, _, groups)| groups.iter()))
+            .map(String::as_str)
             .collect();
-        let mut groups: BTreeSet<_> = current_groups
+        let mut groups: BTreeSet<String> = current_groups
             .iter()
-            .cloned()
+            .map(|group| (*group).to_owned())
             .chain(self.active_groups.get(tag).into_iter().flatten().cloned())
             .chain(retained.dirty.iter().cloned())
             .collect();
@@ -526,22 +740,20 @@ impl Choices {
             || [&scanned.stock.spans, &scanned.balance.spans]
                 .iter()
                 .any(|spans| spans.last().is_some_and(|span| span.first_hour == hour))
-            || variants
-                .keys()
-                .any(|id| self.metadata.current[id].first == hour)
+            || ids.iter().any(|id| self.metadata.current[id].first == hour)
             || groups
                 .iter()
                 .any(|group| !holder.groups.contains_key(group));
         // Before a group first appears its stock is zero only with complete coverage.
         let complete = stock_known
-            && variants.iter().all(|(&id, classification)| {
+            && variants.iter().all(|&(id, classification, _)| {
                 let value = operand(&scanned.stock, id, hour);
                 classification.kind.is_some() || !value.present || value.value == Some(0)
             });
-        let key = numbers.key(tag, &group_key(&series::field_key("complete", ""), "stock"));
+        let complete_keys = numbers.complete_keys(tag);
         observe_numeric(
             &mut self.values[0],
-            key,
+            complete_keys[0],
             hour,
             complete.then_some(0),
             scanned
@@ -553,10 +765,10 @@ impl Choices {
         );
         let mut complete_balance = balance_known;
         let mut complete_need = balance_known;
-        for (&id, _) in logistics
-            .iter()
-            .filter(|(_, classification)| classification.kind.is_none())
-        {
+        for &(id, classification, _) in &logistics {
+            if classification.kind.is_some() {
+                continue;
+            }
             let b = operand(&scanned.balance, id, hour);
             let v = operand(&scanned.logistics_stock, id, hour);
             if (b.present && b.value != Some(0)) || (v.present && v.value != Some(0)) {
@@ -570,13 +782,9 @@ impl Choices {
             (1, complete_balance),
             (2, complete_balance && complete_need),
         ] {
-            let key = numbers.key(
-                tag,
-                &group_key(&series::field_key("complete", ""), MEASURES[slot]),
-            );
             observe_numeric(
                 &mut self.values[slot],
-                key,
+                complete_keys[slot],
                 hour,
                 complete.then_some(0),
                 scanned
@@ -592,8 +800,13 @@ impl Choices {
             complete_balance,
             complete_balance && complete_need,
         ];
-        let completeness_changed =
-            self.completeness.insert(tag.to_owned(), completeness) != Some(completeness);
+        let completeness_changed = match self.completeness.get_mut(tag) {
+            Some(previous) => std::mem::replace(previous, completeness) != completeness,
+            None => {
+                self.completeness.insert(tag.to_owned(), completeness);
+                true
+            }
+        };
         if completeness_changed
             || [&scanned.stock.spans, &scanned.balance.spans]
                 .iter()
@@ -601,50 +814,83 @@ impl Choices {
         {
             groups.extend(holder.groups.keys().cloned());
         }
-        for group in groups {
-            holder.groups.entry(group.clone()).or_insert(hour);
-            if !changed {
-                continue;
-            }
-            #[cfg(test)]
-            {
-                self.work.history_visits += 1;
-            }
-            let values = evaluate(
-                &group,
+        let read = |field: usize, id: u64| match field {
+            0 => operand(&scanned.stock, id, hour),
+            5 => operand(&scanned.balance, id as u32, hour),
+            6 => operand(&scanned.logistics_stock, id as u32, hour),
+            7 => operand(&scanned.available, id as u32, hour),
+            _ => unreachable!(),
+        };
+        let measured = if changed {
+            evaluate_groups(
+                &groups,
                 &variants,
                 &logistics,
                 stock_known,
                 balance_known,
-                Some(retained),
-                |field, id| {
-                    Ok(match field {
-                        0 => operand(&scanned.stock, id, hour),
-                        5 => operand(&scanned.balance, id as u32, hour),
-                        6 => operand(&scanned.logistics_stock, id as u32, hour),
-                        7 => operand(&scanned.available, id as u32, hour),
-                        _ => unreachable!(),
-                    })
-                },
-            )?;
-            for (index, value) in values.into_iter().enumerate() {
-                let key = numbers.key(tag, &group_key(&group, MEASURES[index]));
-                let coverage = if index == 0 {
+                retained,
+                &read,
+            )?
+        } else {
+            Vec::new()
+        };
+        // The one-pass totals are each group's own evaluation.
+        #[cfg(test)]
+        if changed {
+            let all: BTreeMap<_, _> = variants
+                .iter()
+                .map(|&(id, classification, _)| (id, classification.clone()))
+                .collect();
+            for (group, values) in groups.iter().zip(&measured) {
+                let expected = evaluate(
+                    group,
+                    &all,
+                    &current_logistics,
+                    stock_known,
+                    balance_known,
+                    Some(retained),
+                    |field, id| Ok(read(field, id)),
+                )?;
+                assert_eq!(*values, expected, "{tag} {group} at {hour}");
+            }
+        }
+        for (index, group) in groups.iter().enumerate() {
+            if !holder.groups.contains_key(group) {
+                holder.groups.insert(group.clone(), hour);
+            }
+            let Some(values) = measured.get(index) else {
+                continue;
+            };
+            #[cfg(test)]
+            {
+                self.work.history_visits += 1;
+            }
+            let keys = numbers.group_keys(tag, group);
+            for (measure, value) in values.iter().enumerate() {
+                let coverage = if measure == 0 {
                     &scanned.stock.spans
                 } else {
                     &scanned.balance.spans
                 };
                 observe_numeric(
-                    &mut self.values[index],
-                    key,
+                    &mut self.values[measure],
+                    keys[measure],
                     hour,
-                    value,
+                    *value,
                     coverage.last().is_some_and(|span| span.first_hour == hour),
                     false,
                 );
             }
         }
-        self.active_groups.insert(tag.to_owned(), current_groups);
+        if self.active_groups.get(tag).is_none_or(|active| {
+            !active
+                .iter()
+                .map(String::as_str)
+                .eq(current_groups.iter().copied())
+        }) {
+            let current = current_groups.into_iter().map(str::to_owned).collect();
+            self.active_groups.insert(tag.to_owned(), current);
+        }
         for values in &mut self.values {
             values.through(hour);
         }

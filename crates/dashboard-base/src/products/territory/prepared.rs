@@ -2478,4 +2478,167 @@ mod phase_b_tests {
             assert_eq!(values.value_at(*actor, 200).unwrap().unwrap().value, 1);
         }
     }
+
+    /// Publishes every territory section and the saved continuation, as a commit does.
+    fn commit_with_continuation(
+        prepared: &mut Prepared,
+        writer: &mut store::Writer,
+        flag: &AtomicBool,
+    ) {
+        prepared.flush(writer, 1, flag).unwrap();
+        writer
+            .write_at(
+                "territory-continuation",
+                0,
+                serde_json::to_vec(&*prepared).unwrap().as_slice(),
+            )
+            .unwrap();
+    }
+
+    fn restore_continuation(fixture: &crate::prepared::series::tests::Fixture) -> Prepared {
+        serde_json::from_reader::<_, Prepared>(
+            fixture
+                .store
+                .read(&fixture.key, "territory-continuation", 0)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn restored_territory_adds_no_value_key_for_a_holder_unresolved_across_a_commit() {
+        use replay::{
+            frame::TableView,
+            rows::{CountryRow, TableRows},
+        };
+        let format = replay::format::FormatVersion::CURRENT;
+        let flag = AtomicBool::new(false);
+        // No link names this row's id: its tag is held, by an unknown country,
+        // at every hour, so it never has a value.
+        let frames: Vec<_> = (100..104)
+            .map(|hour| {
+                let mut frame = super::super::tests::frame(hour, 3, 8);
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *frame.tables[TableId::Countries.index()]
+                {
+                    rows.push(CountryRow {
+                        id: 900_000,
+                        canonical_slot: 7,
+                        tag: b"unresolved realm".to_vec(),
+                        ..Default::default()
+                    });
+                }
+                frame
+            })
+            .collect();
+        observer_tests::assert_restore_continues(
+            format,
+            &[&frames[..2], &frames[2..]],
+            Prepared::default,
+            |prepared: &mut Prepared, frame, changes, _| {
+                prepared.observe(frame, format, &flag, changes).unwrap()
+            },
+            |prepared: &mut Prepared, writer, _| commit_with_continuation(prepared, writer, &flag),
+            restore_continuation,
+        );
+    }
+
+    #[test]
+    fn restored_territory_closes_holders_at_an_unreadable_first_hour_after_a_commit() {
+        use replay::frame::TableView;
+        let format = replay::format::FormatVersion::CURRENT;
+        let flag = AtomicBool::new(false);
+        // Countries are unreadable at hour 102, the first hour after a commit.
+        let frames: Vec<_> = (100..104)
+            .map(|hour| {
+                let mut frame = super::super::tests::frame(hour, 3, 8);
+                if hour == 102 {
+                    *frame.tables[TableId::Countries.index()] = TableView::Unavailable {
+                        reason: "countries unavailable".into(),
+                    };
+                }
+                frame
+            })
+            .collect();
+        observer_tests::assert_restore_continues(
+            format,
+            &[&frames[..2], &frames[2..]],
+            Prepared::default,
+            |prepared: &mut Prepared, frame, changes, _| {
+                prepared.observe(frame, format, &flag, changes).unwrap()
+            },
+            |prepared: &mut Prepared, writer, _| commit_with_continuation(prepared, writer, &flag),
+            restore_continuation,
+        );
+    }
+
+    #[test]
+    fn restored_owned_states_close_at_an_unreadable_first_hour_after_a_commit() {
+        use crate::products::country_history::HistoryScan;
+        use replay::{
+            frame::TableView,
+            rows::{CountryCounterInputRow, TableRows},
+        };
+        let format = replay::format::FormatVersion::CURRENT;
+        let flag = AtomicBool::new(false);
+        // Every country holds a native owned-state count; Countries are
+        // unreadable at hour 102, the first hour after a commit.
+        let frames: Vec<_> = (100..104)
+            .map(|hour| {
+                let mut frame = super::super::tests::frame(hour, 3, 8);
+                *frame.tables[TableId::CountryCounterInputs.index()] =
+                    TableView::Complete(TableRows::CountryCounterInputs(
+                        (0..3)
+                            .map(|slot| CountryCounterInputRow {
+                                country: 100_000 + slot,
+                                owned_state_count: 5,
+                                ..Default::default()
+                            })
+                            .collect(),
+                    ));
+                if hour == 102 {
+                    *frame.tables[TableId::Countries.index()] = TableView::Unavailable {
+                        reason: "countries unavailable".into(),
+                    };
+                }
+                frame
+            })
+            .collect();
+        observer_tests::assert_restore_continues(
+            format,
+            &[&frames[..2], &frames[2..]],
+            || (Prepared::default(), HistoryScan::new(false, &[])),
+            |state: &mut (Prepared, HistoryScan), frame, changes, _| {
+                let (prepared, identities) = state;
+                prepared
+                    .observe_owned_states(frame, identities, Some(changes))
+                    .unwrap();
+                prepared.observe(frame, format, &flag, changes).unwrap();
+            },
+            |state: &mut (Prepared, HistoryScan), writer, _| {
+                let (prepared, identities) = state;
+                identities.seal();
+                writer
+                    .write_at(
+                        "country-identities-1",
+                        0,
+                        serde_json::to_vec(&*identities).unwrap().as_slice(),
+                    )
+                    .unwrap();
+                commit_with_continuation(prepared, writer, &flag);
+            },
+            |fixture| {
+                let identities = fixture
+                    .store
+                    .read(&fixture.key, "country-identities-1", 0)
+                    .unwrap()
+                    .unwrap();
+                (
+                    restore_continuation(fixture),
+                    serde_json::from_reader::<_, HistoryScan>(identities).unwrap(),
+                )
+            },
+        );
+    }
 }

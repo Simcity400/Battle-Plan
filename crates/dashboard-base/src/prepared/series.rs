@@ -7,8 +7,7 @@ use crate::prepared_chart::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs::File,
+    collections::{BTreeMap, BTreeSet, HashMap},
     io::{self, Read, Seek, SeekFrom},
     sync::atomic::AtomicBool,
 };
@@ -139,11 +138,221 @@ impl Run {
 }
 /// Only a canonical open run, counters and partial summaries survive a commit.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(try_from = "SavedKeyState", into = "SavedKeyState")]
 pub struct KeyState {
     pub last: Option<Run>,
     pub runs: u64,
     pub events: u64,
-    partial: [Option<(i64, ChartBucket)>; 4],
+    partial: [Option<Partial>; 4],
+}
+/// A level's open summary bucket. Most keys hold one value through a bucket's
+/// whole open span, so such a bucket is kept as that span and made again, bit
+/// for bit, when the next flush merges into it.
+#[derive(Clone, Copy, Debug)]
+enum Partial {
+    Span {
+        aligned: i64,
+        first: i32,
+        last: i32,
+        value: i128,
+        first_break: bool,
+    },
+    Bucket {
+        aligned: i64,
+        bucket: ChartBucket,
+    },
+}
+impl Partial {
+    fn aligned(self) -> i64 {
+        match self {
+            Self::Span { aligned, .. } | Self::Bucket { aligned, .. } => aligned,
+        }
+    }
+    fn bucket(self, decimals: u8) -> ChartBucket {
+        match self {
+            Self::Span {
+                first,
+                last,
+                value,
+                first_break,
+                ..
+            } => constant_bucket(value, first, last, first_break, decimals),
+            Self::Bucket { bucket, .. } => bucket,
+        }
+    }
+    /// The span form when it makes `bucket` again exactly (a series keeps its
+    /// decimals), else the bucket itself.
+    fn of(aligned: i64, bucket: ChartBucket, run: Option<Run>, decimals: u8) -> Self {
+        #[cfg(test)]
+        if WHOLE_BUCKETS.with(std::cell::Cell::get) {
+            return Self::Bucket { aligned, bucket };
+        }
+        if let Some(run) = run {
+            let span = Self::Span {
+                aligned,
+                first: bucket.first_hour,
+                last: bucket.last_hour,
+                value: run.value,
+                first_break: bucket.first_break,
+            };
+            if same_bucket(&span.bucket(decimals), &bucket) {
+                return span;
+            }
+        }
+        Self::Bucket { aligned, bucket }
+    }
+    /// Whether this is the span a level's open bucket covers when it ends the
+    /// open run `last`.
+    fn ends(self, last: Run) -> bool {
+        match (self, tail_span(self.aligned(), last)) {
+            (
+                Self::Span {
+                    first,
+                    last: end,
+                    value,
+                    first_break,
+                    ..
+                },
+                Self::Span {
+                    first: tail_first,
+                    last: tail_end,
+                    value: tail_value,
+                    first_break: tail_break,
+                    ..
+                },
+            ) => (first, end, value, first_break) == (tail_first, tail_end, tail_value, tail_break),
+            _ => false,
+        }
+    }
+}
+#[cfg(test)]
+thread_local! {
+    /// Keep every open bucket whole, as before spans: the reference in tests.
+    pub(crate) static WHOLE_BUCKETS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+/// Buckets equal field for field, values bit for bit.
+fn same_bucket(a: &ChartBucket, b: &ChartBucket) -> bool {
+    let bits = |bucket: &ChartBucket| {
+        [
+            bucket.first_value,
+            bucket.last_value,
+            bucket.min_value,
+            bucket.max_value,
+        ]
+        .map(f64::to_bits)
+    };
+    a == b && bits(a) == bits(b)
+}
+/// The span a level's open bucket covers when it ends the open run `last`.
+fn tail_span(aligned: i64, last: Run) -> Partial {
+    let first = aligned.max(i64::from(last.first_hour)) as i32;
+    Partial::Span {
+        aligned,
+        first,
+        last: last.last_hour,
+        value: last.value,
+        first_break: last.break_before && first == last.first_hour,
+    }
+}
+/// A key's saved state: runs as tuples, and a span ending the open run as its
+/// alignment alone.
+#[derive(Serialize, Deserialize)]
+struct SavedKeyState {
+    #[serde(rename = "l")]
+    last: Option<(i32, i32, i128, bool)>,
+    #[serde(rename = "r")]
+    runs: u64,
+    #[serde(rename = "e")]
+    events: u64,
+    #[serde(rename = "p")]
+    partial: [Option<SavedPartial>; 4],
+}
+#[derive(Serialize, Deserialize)]
+struct SavedPartial {
+    #[serde(rename = "a")]
+    aligned: i64,
+    #[serde(rename = "s", default, skip_serializing_if = "Option::is_none")]
+    span: Option<(i32, i32, i128, bool)>,
+    #[serde(rename = "b", default, skip_serializing_if = "Option::is_none")]
+    bucket: Option<ChartBucket>,
+}
+impl From<KeyState> for SavedKeyState {
+    fn from(state: KeyState) -> Self {
+        let partial = state.partial.map(|partial| {
+            partial.map(|partial| match partial {
+                Partial::Span {
+                    aligned,
+                    first,
+                    last,
+                    value,
+                    first_break,
+                } => SavedPartial {
+                    aligned,
+                    span: state.last.is_none_or(|run| !partial.ends(run)).then_some((
+                        first,
+                        last,
+                        value,
+                        first_break,
+                    )),
+                    bucket: None,
+                },
+                Partial::Bucket { aligned, bucket } => SavedPartial {
+                    aligned,
+                    span: None,
+                    bucket: Some(bucket),
+                },
+            })
+        });
+        Self {
+            last: state
+                .last
+                .map(|run| (run.first_hour, run.last_hour, run.value, run.break_before)),
+            runs: state.runs,
+            events: state.events,
+            partial,
+        }
+    }
+}
+impl TryFrom<SavedKeyState> for KeyState {
+    type Error = String;
+    fn try_from(saved: SavedKeyState) -> Result<Self, String> {
+        let last = saved
+            .last
+            .map(|(first_hour, last_hour, value, break_before)| Run {
+                first_hour,
+                last_hour,
+                value,
+                break_before,
+            });
+        let mut partial = [None; 4];
+        for (slot, saved) in partial.iter_mut().zip(saved.partial) {
+            let Some(saved) = saved else {
+                continue;
+            };
+            *slot = Some(match (saved.span, saved.bucket, last) {
+                (Some((first, end, value, first_break)), None, _) => Partial::Span {
+                    aligned: saved.aligned,
+                    first,
+                    last: end,
+                    value,
+                    first_break,
+                },
+                (None, Some(bucket), _) => Partial::Bucket {
+                    aligned: saved.aligned,
+                    bucket,
+                },
+                // An alignment alone is the span ending the open run.
+                (None, None, Some(run)) => tail_span(saved.aligned, run),
+                _ => return Err("saved series bucket names no span or bucket".into()),
+            });
+        }
+        Ok(Self {
+            last,
+            runs: saved.runs,
+            events: saved.events,
+            partial,
+        })
+    }
 }
 #[derive(Default)]
 struct Rows {
@@ -167,13 +376,51 @@ pub struct Accumulator {
     active: BTreeSet<u64>,
     #[serde(skip)]
     batch: Batch,
+    /// The series number this accumulator's calls are recorded under, while
+    /// a block's extract records them ([`with_recording`]).
+    #[serde(skip)]
+    recorded: Option<u8>,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     pub key_visits: usize,
 }
 impl Accumulator {
+    /// Record this accumulator's calls as series `series` while a recording
+    /// is active on the calling thread.
+    pub fn record_as(&mut self, series: u8) {
+        self.recorded = Some(series);
+    }
+    fn record(&self, call: impl FnOnce(u8) -> Call) {
+        if let Some(series) = self.recorded {
+            RECORDING.with(|recording| {
+                if let Some(recording) = recording.borrow_mut().as_mut() {
+                    recording.push(call(series));
+                }
+            });
+        }
+    }
+    /// [`Self::advance`] at every hour `first..=last` in order, in constant time.
+    pub(crate) fn advance_span(&mut self, first: i32, last: i32) -> io::Result<()> {
+        self.advance(first)?;
+        if last > first {
+            self.previous = Some(last - 1);
+            self.frontier = Some(last);
+            self.batch.through(last);
+        }
+        Ok(())
+    }
+    /// [`Self::event`] with its row already serialized.
+    pub fn event_bytes(&mut self, key: u64, hour: i32, row: Vec<u8>) -> io::Result<()> {
+        self.batch.through(hour);
+        self.batch
+            .event_bytes(key, self.states.entry(key).or_default(), hour, row)
+    }
     pub fn state(&self, key: u64) -> Option<&KeyState> {
         self.states.get(&key)
+    }
+    /// Keys holding an authenticated value, in key order.
+    pub fn active(&self) -> impl Iterator<Item = u64> + '_ {
+        self.active.iter().copied()
     }
     /// This batch's runs for `key`, not yet readable through a `Reader`.
     pub fn pending_runs(&self, key: u64) -> &[Run] {
@@ -183,6 +430,7 @@ impl Accumulator {
             .map_or(&[], |rows| rows.runs.as_slice())
     }
     pub fn through(&mut self, hour: i32) {
+        self.record(|series| Call::Through { series, hour });
         self.batch.through(hour);
     }
     /// Authenticate one accepted frame before applying its changed keys. Repeated
@@ -199,6 +447,13 @@ impl Accumulator {
                 self.seal();
                 self.active.clear();
             }
+        }
+        if let Some(series) = self.recorded {
+            RECORDING.with(|recording| {
+                if let Some(recording) = recording.borrow_mut().as_mut() {
+                    recording.advance(series, hour);
+                }
+            });
         }
         self.previous = self.frontier;
         self.frontier = Some(hour);
@@ -237,6 +492,12 @@ impl Accumulator {
     }
     /// A supplying read can start a new canonical run without an identity break.
     pub fn push_boundary(&mut self, key: u64, run: Run, boundary: bool) {
+        self.record(|series| Call::Push {
+            series,
+            key,
+            run,
+            boundary,
+        });
         self.batch.through(run.first_hour);
         self.batch.through(run.last_hour);
         let state = self.states.entry(key).or_default();
@@ -268,6 +529,14 @@ impl Accumulator {
         starts: bool,
         boundary: bool,
     ) {
+        self.record(|series| Call::Observe {
+            series,
+            key,
+            hour,
+            value,
+            starts,
+            boundary,
+        });
         self.batch.through(hour);
         #[cfg(any(test, feature = "test-support"))]
         {
@@ -299,9 +568,18 @@ impl Accumulator {
         }
     }
     pub fn event(&mut self, key: u64, hour: i32, row: &impl Serialize) -> io::Result<()> {
-        self.batch.through(hour);
-        self.batch
-            .event(key, self.states.entry(key).or_default(), hour, row)
+        self.event_raw(key, hour, serde_json::to_vec(row)?)
+    }
+    /// [`Self::event`] with a row in its family's own byte form, read back
+    /// through [`Reader::event_raw`] rather than as JSON.
+    pub fn event_raw(&mut self, key: u64, hour: i32, row: Vec<u8>) -> io::Result<()> {
+        self.record(|series| Call::Event {
+            series,
+            key,
+            hour,
+            row: row.clone().into_boxed_slice(),
+        });
+        self.event_bytes(key, hour, row)
     }
     pub fn bytes(&self) -> usize {
         self.batch.bytes()
@@ -326,6 +604,241 @@ impl Accumulator {
     }
 }
 
+/// The accumulator calls a block's extract made after the block's first hour,
+/// in call order, so its fold makes them again on the carried accumulators
+/// ([`Recording::replay`]). Every recorded accumulator of one family shares
+/// one recording, numbered by series; a family's own calls that need its
+/// carried state are recorded as their index ([`record_family`]). Unchanged
+/// hours cost nothing: consecutive advances of a series are one span.
+#[derive(Default)]
+pub struct Recording {
+    calls: Vec<Call>,
+    /// Each series' open advance span, extended while no other call of that
+    /// series follows it.
+    spans: BTreeMap<u8, usize>,
+}
+
+enum Call {
+    Advance {
+        series: u8,
+        first: i32,
+        last: i32,
+    },
+    Through {
+        series: u8,
+        hour: i32,
+    },
+    Observe {
+        series: u8,
+        key: u64,
+        hour: i32,
+        value: Option<i128>,
+        starts: bool,
+        boundary: bool,
+    },
+    Push {
+        series: u8,
+        key: u64,
+        run: Run,
+        boundary: bool,
+    },
+    Event {
+        series: u8,
+        key: u64,
+        hour: i32,
+        row: Box<[u8]>,
+    },
+    Family(usize),
+}
+
+impl Call {
+    fn series(&self) -> Option<u8> {
+        match *self {
+            Self::Advance { series, .. }
+            | Self::Through { series, .. }
+            | Self::Observe { series, .. }
+            | Self::Push { series, .. }
+            | Self::Event { series, .. } => Some(series),
+            Self::Family(_) => None,
+        }
+    }
+}
+
+/// The carried accumulators a [`Recording`] is made again on.
+pub trait ReplayTarget {
+    /// The carried accumulator recorded as `series`.
+    fn series(&mut self, series: u8) -> &mut Accumulator;
+    /// The carried key of the extract's `key` in `series`.
+    fn key(&self, series: u8, key: u64) -> u64;
+    /// The family's own recorded call `index`, made on the carried state.
+    fn family(&mut self, index: usize) -> io::Result<()>;
+}
+
+impl Recording {
+    /// Recorded calls, advance spans included.
+    pub fn len(&self) -> usize {
+        self.calls.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.calls.is_empty()
+    }
+    fn advance(&mut self, series: u8, hour: i32) {
+        if let Some(&at) = self.spans.get(&series)
+            && let Some(Call::Advance { last, .. }) = self.calls.get_mut(at)
+        {
+            if *last == hour {
+                return;
+            }
+            if last.checked_add(1) == Some(hour) {
+                *last = hour;
+                return;
+            }
+        }
+        self.spans.insert(series, self.calls.len());
+        self.calls.push(Call::Advance {
+            series,
+            first: hour,
+            last: hour,
+        });
+    }
+    fn push(&mut self, call: Call) {
+        match call.series() {
+            Some(series) => {
+                self.spans.remove(&series);
+            }
+            // A family call may touch any series, each at its current hour.
+            None => self.spans.clear(),
+        }
+        self.calls.push(call);
+    }
+    /// Make every recorded call again, in order, on `target`'s accumulators.
+    pub fn replay(self, target: &mut impl ReplayTarget) -> io::Result<()> {
+        for call in self.calls {
+            match call {
+                Call::Advance {
+                    series,
+                    first,
+                    last,
+                } => target.series(series).advance_span(first, last)?,
+                Call::Through { series, hour } => target.series(series).through(hour),
+                Call::Observe {
+                    series,
+                    key,
+                    hour,
+                    value,
+                    starts,
+                    boundary,
+                } => {
+                    let key = target.key(series, key);
+                    target
+                        .series(series)
+                        .observe_boundary(key, hour, value, starts, boundary);
+                }
+                Call::Push {
+                    series,
+                    key,
+                    run,
+                    boundary,
+                } => {
+                    let key = target.key(series, key);
+                    target.series(series).push_boundary(key, run, boundary);
+                }
+                Call::Event {
+                    series,
+                    key,
+                    hour,
+                    row,
+                } => {
+                    let key = target.key(series, key);
+                    target
+                        .series(series)
+                        .event_bytes(key, hour, row.into_vec())?;
+                }
+                Call::Family(index) => target.family(index)?,
+            }
+        }
+        Ok(())
+    }
+}
+
+thread_local! {
+    static RECORDING: std::cell::RefCell<Option<Recording>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `run` with `recording` receiving the calls of every accumulator marked
+/// [`Accumulator::record_as`] on this thread.
+pub fn with_recording<T>(recording: &mut Recording, run: impl FnOnce() -> T) -> T {
+    struct Restore<'a>(&'a mut Recording, Option<Recording>);
+    impl Drop for Restore<'_> {
+        fn drop(&mut self) {
+            let outer = self.1.take();
+            *self.0 = RECORDING
+                .with(|recording| recording.replace(outer))
+                .unwrap_or_default();
+        }
+    }
+    let taken = std::mem::take(recording);
+    let outer = RECORDING.with(|current| current.replace(Some(taken)));
+    let _restore = Restore(recording, outer);
+    run()
+}
+
+/// Run `run` without recording: a family's own call records itself
+/// ([`record_family`]) and makes its accumulator calls on the carried state.
+pub fn unrecorded<T>(run: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Recording>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let recording = self.0.take();
+            RECORDING.with(|current| *current.borrow_mut() = recording);
+        }
+    }
+    let _restore = Restore(RECORDING.with(|current| current.borrow_mut().take()));
+    run()
+}
+
+/// Record a family's own call `index` when a recording is active here.
+pub fn record_family(index: usize) -> bool {
+    RECORDING.with(|recording| match recording.borrow_mut().as_mut() {
+        Some(recording) => {
+            recording.push(Call::Family(index));
+            true
+        }
+        None => false,
+    })
+}
+
+/// A first-seen key catalogue's names in key order (key `k` is the `k`th
+/// name first seen).
+pub fn catalogue_names(keys: &BTreeMap<String, u64>) -> io::Result<Vec<String>> {
+    let mut names = vec![None; keys.len()];
+    for (name, &key) in keys {
+        let slot = usize::try_from(key)
+            .ok()
+            .and_then(|key| names.get_mut(key))
+            .ok_or_else(|| invalid("Series key catalogue is not numbered first seen"))?;
+        *slot = Some(name.clone());
+    }
+    names
+        .into_iter()
+        .map(|name| name.ok_or_else(|| invalid("Series key catalogue is not numbered first seen")))
+        .collect()
+}
+
+/// Number `names`, in the order first seen, into a carried first-seen
+/// catalogue: a known name keeps its key and a new one takes the next, as
+/// the calls that first saw them would have.
+pub fn number_names(keys: &mut BTreeMap<String, u64>, names: &[String]) -> Vec<u64> {
+    names
+        .iter()
+        .map(|name| {
+            let next = keys.len() as u64;
+            *keys.entry(name.clone()).or_insert(next)
+        })
+        .collect()
+}
+
 /// Tag-to-key lookups and the metadata needed by a family's own reply builder.
 pub type Catalogue<T> = (BTreeMap<String, u64>, T);
 
@@ -334,7 +847,16 @@ pub fn field_key(tag: &str, measure: &str) -> String {
     serde_json::to_string(&(tag, measure)).expect("string keys")
 }
 
-/// All families publish the same catalogue shape.
+fn catalogue_section(family: &str, branch: u64) -> String {
+    format!("{family}-{branch}-catalogue")
+}
+fn parse_catalogue<T: DeserializeOwned>(text: Option<Vec<u8>>) -> io::Result<Option<Catalogue<T>>> {
+    text.map(|text| serde_json::from_slice(&text).map_err(io::Error::from))
+        .transpose()
+}
+/// All families publish the same catalogue shape, the JSON text of
+/// `(keys, metadata)`. A flush writes only what changed in that text since
+/// the last flush (a base range, then patches: `series/catalogue.rs`).
 pub fn write_catalogue(
     writer: &mut store::Writer,
     family: &str,
@@ -342,10 +864,10 @@ pub fn write_catalogue(
     keys: &BTreeMap<String, u64>,
     metadata: &impl Serialize,
 ) -> io::Result<()> {
-    writer.write_at(
-        &format!("{family}-{branch}-catalogue"),
-        0,
-        serde_json::to_vec(&(keys, metadata))?.as_slice(),
+    catalogue::write(
+        writer,
+        &catalogue_section(family, branch),
+        &serde_json::to_vec(&(keys, metadata))?,
     )
 }
 pub fn read_catalogue<T: DeserializeOwned>(
@@ -354,10 +876,44 @@ pub fn read_catalogue<T: DeserializeOwned>(
     family: &str,
     branch: u64,
 ) -> io::Result<Option<Catalogue<T>>> {
-    store
-        .read(key, &format!("{family}-{branch}-catalogue"), 0)?
-        .map(|file| serde_json::from_reader(io::BufReader::new(file)).map_err(io::Error::from))
-        .transpose()
+    let Some(session) = store.session(key)? else {
+        return Ok(None);
+    };
+    let section = catalogue_section(family, branch);
+    parse_catalogue(catalogue::read(|range| session.read(&section, range))?)
+}
+/// The catalogue as `saved` published it when that is an earlier key whose
+/// prefix this preparation continues, else as `key` published it.
+pub fn read_saved_catalogue<T: DeserializeOwned>(
+    store: &store::Store,
+    key: &store::SourceKey,
+    saved: Option<&store::SourceKey>,
+    family: &str,
+    branch: u64,
+) -> io::Result<Option<Catalogue<T>>> {
+    match saved {
+        Some(previous) if previous != key => {
+            let section = catalogue_section(family, branch);
+            parse_catalogue(catalogue::read(|range| {
+                store.read_prefix(previous, key, &section, range)
+            })?)
+        }
+        _ => read_catalogue(store, key, family, branch),
+    }
+}
+/// The identities of the ranges a published catalogue reads, which change
+/// whenever its text does; None when it is not published.
+pub fn catalogue_ranges(
+    store: &store::Store,
+    key: &store::SourceKey,
+    family: &str,
+    branch: u64,
+) -> io::Result<Option<Vec<store::RangeId>>> {
+    let Some(session) = store.session(key)? else {
+        return Ok(None);
+    };
+    let section = catalogue_section(family, branch);
+    catalogue::stamps(|range| session.read(&section, range))
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, TS)]
@@ -497,7 +1053,16 @@ impl Batch {
         hour: i32,
         row: &impl Serialize,
     ) -> io::Result<()> {
-        let bytes = serde_json::to_vec(row)?;
+        self.event_bytes(key, state, hour, serde_json::to_vec(row)?)
+    }
+    /// [`Self::event`] with its row already serialized.
+    pub fn event_bytes(
+        &mut self,
+        key: u64,
+        state: &mut KeyState,
+        hour: i32,
+        bytes: Vec<u8>,
+    ) -> io::Result<()> {
         self.bytes += bytes.len() * 2 + 32;
         state.events += 1;
         let rows = self.keys.entry(key).or_insert_with(|| Rows {
@@ -594,11 +1159,12 @@ impl Batch {
                         hour = end + 1;
                     }
                 }
-                if let Some((aligned, _)) = rows.state.partial[level] {
-                    buckets.entry(aligned).or_insert(None);
+                if let Some(partial) = rows.state.partial[level] {
+                    buckets.entry(partial.aligned()).or_insert(None);
                 }
                 var(&mut raw, buckets.len() as u128);
-                let mut pending = rows.state.partial[level];
+                let mut pending = rows.state.partial[level]
+                    .map(|partial| (partial.aligned(), partial.bucket(decimals)));
                 let mut previous = 0_i64;
                 for (aligned, mut bucket) in buckets {
                     if let Some(bucket) = &mut bucket {
@@ -622,9 +1188,12 @@ impl Batch {
                     pending = Some((aligned, prefix));
                 }
                 let tail = i64::from(self.last).div_euclid(size) * size;
-                rows.state.partial[level] = pending.filter(|(aligned, _)| {
-                    *aligned == tail && i64::from(self.last) < tail + size - 1
-                });
+                let last = rows.state.last;
+                rows.state.partial[level] = pending
+                    .filter(|(aligned, _)| {
+                        *aligned == tail && i64::from(self.last) < tail + size - 1
+                    })
+                    .map(|(aligned, bucket)| Partial::of(aligned, bucket, last, decimals));
                 let mut counts = BTreeMap::<i64, u64>::new();
                 for (hour, _) in &rows.events {
                     *counts
@@ -711,9 +1280,25 @@ fn blob(bytes: &mut Vec<u8>, at: usize, raw: &[u8]) -> io::Result<()> {
     Ok(())
 }
 fn run_bucket(run: Run, first: i32, last: i32, decimals: u8) -> ChartBucket {
-    let value = run.value as f64 / 10_f64.powi(i32::from(decimals));
+    constant_bucket(
+        run.value,
+        first,
+        last,
+        run.break_before && first == run.first_hour,
+        decimals,
+    )
+}
+/// The bucket of one raw value held from `first` through `last`.
+fn constant_bucket(
+    raw: i128,
+    first: i32,
+    last: i32,
+    first_break: bool,
+    decimals: u8,
+) -> ChartBucket {
+    let value = raw as f64 / 10_f64.powi(i32::from(decimals));
     ChartBucket {
-        absolute_total: run.value.unsigned_abs() * (i64::from(last) - i64::from(first) + 1) as u128,
+        absolute_total: raw.unsigned_abs() * (i64::from(last) - i64::from(first) + 1) as u128,
         first_hour: first,
         last_hour: last,
         first_value: value,
@@ -723,7 +1308,7 @@ fn run_bucket(run: Run, first: i32, last: i32, decimals: u8) -> ChartBucket {
         min_value: value,
         max_hour: first,
         max_value: value,
-        first_break: run.break_before && first == run.first_hour,
+        first_break,
         has_break: false,
     }
 }
@@ -904,7 +1489,9 @@ fn i32_at(bytes: &[u8], at: usize) -> i32 {
 fn u64_at(bytes: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
 }
-fn read<const N: usize>(file: &mut File, at: u64) -> io::Result<[u8; N]> {
+fn read<const N: usize>(file: &mut (impl Read + Seek), at: u64) -> io::Result<[u8; N]> {
+    #[cfg(test)]
+    directory_tests::SMALL_READS.set(directory_tests::SMALL_READS.get() + 1);
     file.seek(SeekFrom::Start(at))?;
     let mut bytes = [0; N];
     file.read_exact(&mut bytes)?;
@@ -936,7 +1523,7 @@ impl Directory {
         self.run_count.saturating_sub(self.run_rows) + 1
     }
 }
-fn directory(file: &mut File, key: u64) -> io::Result<Directory> {
+fn directory(file: &mut (impl Read + Seek), key: u64) -> io::Result<Directory> {
     let count = u64_at(&read::<16>(file, 0)?, 8);
     // A damaged or foreign file can claim any count; its entries then lie past the end.
     let entry = |index: u64| {
@@ -964,26 +1551,78 @@ fn directory(file: &mut File, key: u64) -> io::Result<Directory> {
         last_end: i32_at(&bytes, 56),
     })
 }
+/// One batch's whole directory, read at once: its entries in key order.
+struct Table(Vec<u8>);
+impl Table {
+    /// The batch's directory in one read, or None when the count its header
+    /// claims does not fit the batch (a damaged file), which single-key
+    /// searches then answer exactly as before.
+    fn read(file: &mut store::Range) -> io::Result<Option<Self>> {
+        let count = u64_at(&read::<16>(file, 0)?, 8);
+        let Some(bytes) = count
+            .checked_mul(DIRECTORY)
+            .filter(|bytes| {
+                bytes
+                    .checked_add(HEADER)
+                    .is_some_and(|end| end <= file.len())
+            })
+            .and_then(|bytes| usize::try_from(bytes).ok())
+        else {
+            return Ok(None);
+        };
+        #[cfg(test)]
+        directory_tests::SMALL_READS.set(directory_tests::SMALL_READS.get() + 1);
+        let mut table = vec![0; bytes];
+        file.seek(SeekFrom::Start(HEADER))?;
+        file.read_exact(&mut table)?;
+        Ok(Some(Self(table)))
+    }
+    /// The entry [`directory`] finds for `key`, searched the same way in memory.
+    fn entry(&self, key: u64) -> io::Result<Directory> {
+        let at = |index: u64| (index * DIRECTORY) as usize;
+        let count = self.0.len() as u64 / DIRECTORY;
+        let index = lower(count, |index| Ok(u64_at(&self.0, at(index)) < key))?;
+        if index == count {
+            return Ok(Directory::default());
+        }
+        let bytes = &self.0[at(index)..at(index + 1)];
+        if u64_at(bytes, 0) != key {
+            return Ok(Directory::default());
+        }
+        Ok(Directory {
+            blob: (u64_at(bytes, 8), u64_at(bytes, 16)),
+            run_rows: u64_at(bytes, 24),
+            run_count: u64_at(bytes, 32),
+            event_base: u64_at(bytes, 40),
+            event_rows: u64_at(bytes, 48),
+            last_end: i32_at(bytes, 56),
+        })
+    }
+}
+/// Single-key searches in one batch before a reader considers reading its
+/// whole directory instead.
+const DIRECTORY_SEARCHES: u64 = 16;
+/// A batch's whole directory is read once it has had one single-key search
+/// per this many entries (and at least [`DIRECTORY_SEARCHES`]). A search is
+/// about log2(entries) separate small reads; the whole directory is one read
+/// of 64 bytes per entry, so by then the searches have cost about as much as
+/// the read, and a reader never spends more than about twice the cheaper way.
+const ENTRIES_PER_SEARCH: u64 = 256;
+/// Whole-directory bytes a reader keeps before it drops them and counts its
+/// searches again.
+const DIRECTORY_TABLE_BYTES: usize = 64 << 20;
+
+#[cfg(test)]
+pub(crate) mod directory_tests;
+
 struct Cached {
-    batch: u64,
-    key: u64,
-    dir: Directory,
     runs: Vec<Run>,
     buckets: [Vec<(i64, ChartBucket)>; 4],
     events: Vec<(i32, Vec<u8>)>,
 }
-fn decode(
-    raw: &[u8],
-    batch: u64,
-    key: u64,
-    dir: Directory,
-    cancelled: &AtomicBool,
-) -> io::Result<Cached> {
+fn decode(raw: &[u8], dir: Directory, cancelled: &AtomicBool) -> io::Result<Cached> {
     let mut bytes = raw;
     let mut cached = Cached {
-        batch,
-        key,
-        dir,
         runs: Vec::new(),
         buckets: Default::default(),
         events: Vec::new(),
@@ -1040,15 +1679,32 @@ fn decode(
     }
     Ok(cached)
 }
-/// One open file and one requested key's decoded blobs are retained per query.
+/// Decoded blobs a reader keeps before it starts again.
+const DECODED_BLOBS: usize = 256;
+
+/// One query's view of a section's batches. It verifies the source key and
+/// reads the manifest once (through a [`store::Session`]); keeps every batch's
+/// range handle and hour bounds once read, so batch searches run in memory; and
+/// keeps directory entries and decoded blobs it has read. A batch it searches
+/// for many keys has its whole directory read once and searched in memory.
 pub struct Reader<'a> {
     store: &'a store::Store,
     key: &'a store::SourceKey,
     section: String,
     count: u64,
     cancelled: &'a AtomicBool,
-    held: Option<(u64, File)>,
-    cached: Option<Cached>,
+    session: Option<store::Session>,
+    files: HashMap<u64, store::Range>,
+    hours: HashMap<u64, (i32, i32)>,
+    directories: HashMap<(u64, u64), Directory>,
+    cached: HashMap<(u64, u64), Cached>,
+    /// Each batch's single-key directory searches so far, and the entry count
+    /// its header claims once read.
+    searches: HashMap<u64, (u64, Option<u64>)>,
+    /// Whole batch directories read so far; None for a batch whose header
+    /// claims more entries than it holds.
+    tables: HashMap<u64, Option<Table>>,
+    table_bytes: usize,
 }
 impl<'a> Reader<'a> {
     pub fn from_first_file(
@@ -1056,7 +1712,7 @@ impl<'a> Reader<'a> {
         key: &'a store::SourceKey,
         section: String,
         count: u64,
-        first: Option<File>,
+        first: Option<store::Range>,
         cancelled: &'a AtomicBool,
     ) -> Self {
         Self {
@@ -1065,8 +1721,14 @@ impl<'a> Reader<'a> {
             section,
             count,
             cancelled,
-            held: first.map(|file| (0, file)),
-            cached: None,
+            session: None,
+            files: first.map(|file| (0, file)).into_iter().collect(),
+            hours: HashMap::new(),
+            directories: HashMap::new(),
+            cached: HashMap::new(),
+            searches: HashMap::new(),
+            tables: HashMap::new(),
+            table_bytes: 0,
         }
     }
 
@@ -1076,47 +1738,104 @@ impl<'a> Reader<'a> {
         section: String,
         cancelled: &'a AtomicBool,
     ) -> io::Result<Self> {
-        let count = store.range_count(key, &section)?.unwrap_or(0);
+        let session = store.session(key)?;
+        let count = session
+            .as_ref()
+            .and_then(|session| session.range_count(&section))
+            .unwrap_or(0);
         Ok(Self {
             store,
             key,
             section,
             count,
             cancelled,
-            held: None,
-            cached: None,
+            session,
+            files: HashMap::new(),
+            hours: HashMap::new(),
+            directories: HashMap::new(),
+            cached: HashMap::new(),
+            searches: HashMap::new(),
+            tables: HashMap::new(),
+            table_bytes: 0,
         })
     }
-    fn file(&mut self, batch: u64) -> io::Result<&mut File> {
+    fn file(&mut self, batch: u64) -> io::Result<&mut store::Range> {
         check_cancel(self.cancelled)?;
-        if self.held.as_ref().is_none_or(|(index, _)| *index != batch) {
-            self.held = Some((
-                batch,
-                self.store
-                    .read(self.key, &self.section, batch)?
-                    .ok_or_else(|| invalid("series batch is missing"))?,
-            ));
+        if !self.files.contains_key(&batch) {
+            if self.session.is_none() {
+                self.session = self.store.session(self.key)?;
+            }
+            let file = self
+                .session
+                .as_ref()
+                .map(|session| session.read(&self.section, batch))
+                .transpose()?
+                .flatten()
+                .ok_or_else(|| invalid("series batch is missing"))?;
+            self.files.insert(batch, file);
         }
-        Ok(&mut self.held.as_mut().unwrap().1)
+        Ok(self.files.get_mut(&batch).unwrap())
+    }
+    /// A batch's first and last hour, read from its header once.
+    fn hours(&mut self, batch: u64) -> io::Result<(i32, i32)> {
+        if let Some(&hours) = self.hours.get(&batch) {
+            return Ok(hours);
+        }
+        let header = read::<16>(self.file(batch)?, 0)?;
+        let hours = (i32_at(&header, 0), i32_at(&header, 4));
+        self.hours.insert(batch, hours);
+        Ok(hours)
     }
     fn info(&mut self, batch: u64, key: u64) -> io::Result<Directory> {
         check_cancel(self.cancelled)?;
-        if let Some(cached) = self
-            .cached
-            .as_ref()
-            .filter(|cached| (cached.batch, cached.key) == (batch, key))
-        {
-            return Ok(cached.dir);
+        if let Some(&dir) = self.directories.get(&(batch, key)) {
+            return Ok(dir);
         }
-        directory(self.file(batch)?, key)
+        if let Some(table) = self.table(batch)? {
+            return table.entry(key);
+        }
+        let dir = directory(self.file(batch)?, key)?;
+        self.directories.insert((batch, key), dir);
+        Ok(dir)
+    }
+    /// The batch's whole directory, once its single-key searches have cost
+    /// about as much as reading it; None until then. Counts this search.
+    fn table(&mut self, batch: u64) -> io::Result<Option<&Table>> {
+        if self.tables.contains_key(&batch) {
+            return Ok(self.tables[&batch].as_ref());
+        }
+        let (searches, count) = *self.searches.entry(batch).or_default();
+        let searches = searches + 1;
+        let count = match count {
+            Some(count) => Some(count),
+            None if searches >= DIRECTORY_SEARCHES => {
+                Some(u64_at(&read::<16>(self.file(batch)?, 0)?, 8))
+            }
+            None => None,
+        };
+        self.searches.insert(batch, (searches, count));
+        if count.is_none_or(|count| searches < DIRECTORY_SEARCHES.max(count / ENTRIES_PER_SEARCH)) {
+            return Ok(None);
+        }
+        let table = Table::read(self.file(batch)?)?;
+        let bytes = table.as_ref().map_or(0, |table| table.0.len());
+        if bytes > DIRECTORY_TABLE_BYTES {
+            // Too large to keep: this batch keeps single-key searches.
+            self.tables.insert(batch, None);
+            return Ok(None);
+        }
+        if self.table_bytes + bytes > DIRECTORY_TABLE_BYTES {
+            self.tables.clear();
+            self.searches.clear();
+            self.table_bytes = 0;
+        }
+        self.table_bytes += bytes;
+        self.tables.insert(batch, table);
+        Ok(self.tables[&batch].as_ref())
     }
     fn data(&mut self, batch: u64, key: u64) -> io::Result<&Cached> {
-        let dir = self.info(batch, key)?;
-        if self
-            .cached
-            .as_ref()
-            .is_none_or(|cached| (cached.batch, cached.key) != (batch, key))
-        {
+        if !self.cached.contains_key(&(batch, key)) {
+            let dir = self.info(batch, key)?;
             let raw = if dir.blob.1 == 0 {
                 Vec::new()
             } else {
@@ -1126,17 +1845,17 @@ impl<'a> Reader<'a> {
                 file.take(dir.blob.1).read_to_end(&mut compressed)?;
                 decompress(&compressed)?
             };
-            self.cached = Some(decode(&raw, batch, key, dir, self.cancelled)?);
+            let decoded = decode(&raw, dir, self.cancelled)?;
+            if self.cached.len() >= DECODED_BLOBS {
+                self.cached.clear();
+            }
+            self.cached.insert((batch, key), decoded);
         }
-        Ok(self.cached.as_ref().unwrap())
+        Ok(&self.cached[&(batch, key)])
     }
     fn batches(&mut self, from: i32, to: i32) -> io::Result<std::ops::Range<u64>> {
-        let first = lower(self.count, |batch| {
-            Ok(i32_at(&read::<16>(self.file(batch)?, 0)?, 4) < from)
-        })?;
-        let last = lower(self.count, |batch| {
-            Ok(i32_at(&read::<16>(self.file(batch)?, 0)?, 0) <= to)
-        })?;
+        let first = lower(self.count, |batch| Ok(self.hours(batch)?.1 < from))?;
+        let last = lower(self.count, |batch| Ok(self.hours(batch)?.0 <= to))?;
         Ok(first..last)
     }
     /// Read amounts from the hour's batch once, without reconstructing run bounds.
@@ -1226,7 +1945,7 @@ impl<'a> Reader<'a> {
                 return Ok(value.last_hour.checked_add(1));
             }
             let batch = lower(self.count, |batch| {
-                Ok(f64::from(i32_at(&read::<16>(self.file(batch)?, 0)?, 4)) <= hour)
+                Ok(f64::from(self.hours(batch)?.1) <= hour)
             })?;
             if batch == self.count {
                 return Ok(None);
@@ -1250,7 +1969,7 @@ impl<'a> Reader<'a> {
             ))
         } else {
             let end = lower(self.count, |batch| {
-                Ok(f64::from(i32_at(&read::<16>(self.file(batch)?, 0)?, 0)) < hour)
+                Ok(f64::from(self.hours(batch)?.0) < hour)
             })?;
             if end == 0 {
                 return Ok(None);
@@ -1456,7 +2175,7 @@ impl<'a> Reader<'a> {
         let published_last = if self.count == 0 {
             None
         } else {
-            Some(i32_at(&read::<16>(self.file(self.count - 1)?, 0)?, 4))
+            Some(self.hours(self.count - 1)?.1)
         };
         for (first, last) in bins {
             let end = published_last.map_or(i64::from(first) - 1, |published| {
@@ -1521,9 +2240,7 @@ impl<'a> Reader<'a> {
                     hour.rem_euclid(**size) == 0 && hour + **size - 1 <= i64::from(to)
                 }) {
                 let end = (hour + size - 1) as i32;
-                let batch = lower(self.count, |batch| {
-                    Ok(i32_at(&read::<16>(self.file(batch)?, 0)?, 4) < end)
-                })?;
+                let batch = lower(self.count, |batch| Ok(self.hours(batch)?.1 < end))?;
                 let mut value = None;
                 if batch < self.count {
                     let values = &self.data(batch, key)?.buckets[level];
@@ -1567,9 +2284,7 @@ impl<'a> Reader<'a> {
         Ok(result)
     }
     pub fn event_count_through(&mut self, key: u64, hour: i32) -> io::Result<u64> {
-        let end = lower(self.count, |batch| {
-            Ok(i32_at(&read::<16>(self.file(batch)?, 0)?, 0) <= hour)
-        })?;
+        let end = lower(self.count, |batch| Ok(self.hours(batch)?.0 <= hour))?;
         if end == 0 {
             return Ok(0);
         }
@@ -1585,8 +2300,7 @@ impl<'a> Reader<'a> {
             let dir = self.info(batch, key)?;
             Ok(dir.event_base + dir.event_rows <= ordinal)
         })?;
-        let dir = self.info(batch, key)?;
-        let (hour, row) = &self.data(batch, key)?.events[(ordinal - dir.event_base) as usize];
+        let (hour, row) = self.event_row(batch, key, ordinal)?;
         Ok(DatedRow {
             key,
             hour: *hour,
@@ -1601,6 +2315,50 @@ impl<'a> Reader<'a> {
         }
         let row = self.event_at(key, count - 1)?;
         Ok(Some((row.hour, row.row)))
+    }
+    /// [`Self::latest_event`] of each key at one hour, each row still
+    /// serialized. The hour's batch is found once. A key's row comes from that
+    /// batch when the key has events there, else from the batch holding it; a
+    /// key without events in the hour's batch is not decoded there.
+    pub fn latest_event_rows(
+        &mut self,
+        keys: &[u64],
+        hour: i32,
+    ) -> io::Result<Vec<Option<(i32, Vec<u8>)>>> {
+        let end = lower(self.count, |batch| Ok(self.hours(batch)?.0 <= hour))?;
+        let mut rows = Vec::with_capacity(keys.len());
+        for &key in keys {
+            check_cancel(self.cancelled)?;
+            let Some(last) = end.checked_sub(1) else {
+                rows.push(None);
+                continue;
+            };
+            let dir = self.info(last, key)?;
+            let within = if dir.event_rows == 0 {
+                0
+            } else {
+                self.data(last, key)?
+                    .events
+                    .partition_point(|(date, _)| *date <= hour) as u64
+            };
+            let Some(ordinal) = (dir.event_base + within).checked_sub(1) else {
+                rows.push(None);
+                continue;
+            };
+            // Event ordinals only grow from batch to batch, so a row at or
+            // after this batch's base is in this batch.
+            let batch = if ordinal >= dir.event_base {
+                last
+            } else {
+                lower(self.count, |batch| {
+                    let dir = self.info(batch, key)?;
+                    Ok(dir.event_base + dir.event_rows <= ordinal)
+                })?
+            };
+            let (date, row) = self.event_row(batch, key, ordinal)?;
+            rows.push(Some((*date, row.clone())));
+        }
+        Ok(rows)
     }
     fn event_count(&mut self, keys: &[u64], hour: i32) -> io::Result<u64> {
         keys.iter().try_fold(0_u64, |total, &key| {
@@ -1796,13 +2554,34 @@ impl<'a> Reader<'a> {
             clusters,
         })
     }
-    fn event_date(&mut self, key: u64, ordinal: u64) -> io::Result<i32> {
+    /// The hour of a key's event at a native ordinal.
+    pub fn event_date(&mut self, key: u64, ordinal: u64) -> io::Result<i32> {
         let batch = lower(self.count, |batch| {
             let dir = self.info(batch, key)?;
             Ok(dir.event_base + dir.event_rows <= ordinal)
         })?;
+        Ok(self.event_row(batch, key, ordinal)?.0)
+    }
+    /// A key's event at a native ordinal with its row as stored, for rows a
+    /// family writes in its own byte form ([`Accumulator::event_raw`]).
+    pub fn event_raw(&mut self, key: u64, ordinal: u64) -> io::Result<(i32, Vec<u8>)> {
+        let batch = lower(self.count, |batch| {
+            let dir = self.info(batch, key)?;
+            Ok(dir.event_base + dir.event_rows <= ordinal)
+        })?;
+        let (hour, row) = self.event_row(batch, key, ordinal)?;
+        Ok((*hour, row.clone()))
+    }
+    /// A key's event at a native ordinal, within the batch that should hold it.
+    fn event_row(&mut self, batch: u64, key: u64, ordinal: u64) -> io::Result<&(i32, Vec<u8>)> {
         let dir = self.info(batch, key)?;
-        Ok(self.data(batch, key)?.events[(ordinal - dir.event_base) as usize].0)
+        let index = ordinal
+            .checked_sub(dir.event_base)
+            .and_then(|index| usize::try_from(index).ok());
+        let data = self.data(batch, key)?;
+        index
+            .and_then(|index| data.events.get(index))
+            .ok_or_else(|| invalid("prepared event ordinal is outside its batch"))
     }
 }
 #[derive(Debug)]
@@ -1874,6 +2653,7 @@ pub fn event_window(
         .ok_or_else(|| invalid("invalid event page size"))?;
     Ok((from.ceil() as i32, to.floor() as i32, cursor, page_size))
 }
+mod catalogue;
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests;
 

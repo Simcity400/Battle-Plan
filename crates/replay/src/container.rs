@@ -25,8 +25,10 @@ const HEADER_MAGIC: &[u8; 4] = b"H4RP";
 const TRAILER_MAGIC: &[u8; 4] = b"H4TR";
 const FOOTER_MAGIC: &[u8; 4] = b"H4FT";
 const FOOTER_SIZE: usize = 24;
+mod changes;
 mod file_backed;
 mod stream;
+pub use changes::{BlockChange, QuietHours, TableFields};
 pub use stream::{ReplayCursor, ReplayStream};
 // A decoder allocation bound, not a campaign-size or frame-count limit.
 // V1E branch 6 held 720 valid frames (~5.95 GB raw) between keyframes;
@@ -1111,8 +1113,29 @@ impl Replay {
         index: &BlockIndex,
         tables: &[crate::rows::TableId],
     ) -> io::Result<Vec<Frame>> {
+        self.read_block_selected_inner(index, tables, None)
+    }
+
+    /// [`Replay::read_block_selected`], decoding a grouped block's tables on
+    /// `parallel`'s workers. The same frames and the same first error;
+    /// interleaved blocks keep their sequential payload streaming.
+    pub fn read_block_selected_parallel(
+        &self,
+        index: &BlockIndex,
+        tables: &[TableId],
+        parallel: &Parallel<'_>,
+    ) -> io::Result<Vec<Frame>> {
+        self.read_block_selected_inner(index, tables, Some(parallel))
+    }
+
+    fn read_block_selected_inner(
+        &self,
+        index: &BlockIndex,
+        tables: &[TableId],
+        parallel: Option<&Parallel<'_>>,
+    ) -> io::Result<Vec<Frame>> {
         let mut frames = Vec::new();
-        self.visit_block(index, Some(tables), |frame| {
+        self.visit_block_inner(index, Some(tables), parallel, |frame| {
             engine::allocation::reserve(&mut frames, 1)?;
             frames.push(frame);
             Ok(true)
@@ -1201,11 +1224,23 @@ impl Replay {
         &self,
         index: &BlockIndex,
         selected: Option<&[TableId]>,
+        visit: impl FnMut(Frame) -> io::Result<bool>,
+    ) -> io::Result<()> {
+        self.visit_block_inner(index, selected, None, visit)
+    }
+
+    fn visit_block_inner(
+        &self,
+        index: &BlockIndex,
+        selected: Option<&[TableId]>,
+        parallel: Option<&Parallel<'_>>,
         mut visit: impl FnMut(Frame) -> io::Result<bool>,
     ) -> io::Result<()> {
         if let Some(block) = self.grouped_block(index)? {
-            let frames =
-                check_block_frames(index, grouped::read(self, index, &block, selected, None)?)?;
+            let frames = check_block_frames(
+                index,
+                grouped::read(self, index, &block, selected, parallel)?,
+            )?;
             for frame in frames {
                 if !visit(frame)? {
                     break;
@@ -1800,7 +1835,12 @@ fn finish_file(
 }
 
 fn validate_campaign(frame: &DecodedFrame, campaign_id: &[u8]) -> io::Result<()> {
-    if let TableView::Complete(rows) = &*frame.tables[TableId::Campaign.index()]
+    validate_campaign_view(&frame.tables[TableId::Campaign.index()], campaign_id)
+}
+
+/// [`validate_campaign`] of an hour's Campaign view.
+fn validate_campaign_view(view: &TableView, campaign_id: &[u8]) -> io::Result<()> {
+    if let TableView::Complete(rows) = view
         && (rows.len() != 1
             || !matches!(rows, TableRows::Campaign(values) if values[0].id == campaign_id))
     {

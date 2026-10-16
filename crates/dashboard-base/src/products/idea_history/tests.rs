@@ -1688,3 +1688,58 @@ fn unchanged_missing_character_template_dates_match_the_hourly_oracle_after_resu
             .contains("hour 120")
     );
 }
+
+#[test]
+fn restored_idea_history_closes_a_holder_that_vanishes_at_the_first_hour_after_a_commit() {
+    use super::{PreparedChanges, Scan};
+    // FRA holds an idea until hour 104, the first hour after a commit.
+    let frames: Vec<_> = (100..108)
+        .map(|hour| {
+            let mut frame = idea_frame(hour, &["mod_a"]);
+            if hour >= 104
+                && let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *frame.tables[TableId::Countries.index()]
+            {
+                rows.retain(|row| row.id != 44);
+            }
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+    let flag = AtomicBool::new(false);
+    crate::prepared::observer_tests::assert_restore_continues(
+        replay.format,
+        &[&frames[..4], &frames[4..]],
+        || (Scan::new(&replay, 1), PreparedChanges::default()),
+        |(scan, changes), frame, facts, _| {
+            scan.prepare_changes_in(frame, facts, changes, None)
+                .unwrap()
+        },
+        |(scan, changes), writer, _| {
+            scan.flush_changes(writer, 1, changes, &flag).unwrap();
+            writer
+                .write_at("idea-history-1", 0, scan.saved_bytes().unwrap().as_slice())
+                .unwrap();
+            writer
+                .write_at(
+                    "idea-changes-continuation-1",
+                    0,
+                    serde_json::to_vec(changes).unwrap().as_slice(),
+                )
+                .unwrap();
+        },
+        |fixture| {
+            let read = |section: &str| {
+                fixture
+                    .store
+                    .read(&fixture.key, section, 0)
+                    .unwrap()
+                    .unwrap()
+            };
+            (
+                Scan::read(read("idea-history-1")).unwrap(),
+                serde_json::from_reader(read("idea-changes-continuation-1")).unwrap(),
+            )
+        },
+    );
+}

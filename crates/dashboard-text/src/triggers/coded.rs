@@ -58,8 +58,8 @@ impl Evaluator<'_, '_> {
         ) {
             // These getters read country identities and their own tables,
             // independently of the map.
-            table::<tables::Countries>(world.frame())?;
-            table::<tables::CountryLinks>(world.frame())?;
+            world.table_status(replay::rows::TableId::Countries)?;
+            world.table_status(replay::rows::TableId::CountryLinks)?;
             let raw = world
                 .raw_country(slot)
                 .ok_or_else(|| format!("Countries lacks country slot {slot}"))?;
@@ -274,13 +274,8 @@ impl Evaluator<'_, '_> {
                 let raw = world
                     .raw_country(slot)
                     .ok_or_else(|| format!("country slot {slot} has no Countries row"))?;
-                let row = table::<tables::Focus>(world.frame())?
-                    .iter()
-                    .find(|row| row.country == raw)
-                    .ok_or_else(|| format!("country {raw} has no Focus row"))?;
-                Some(Eval::from_bool(
-                    row.tree.as_deref() == Some(wanted.as_bytes()),
-                ))
+                let tree = world.focus_tree(raw)?;
+                Some(Eval::from_bool(tree.as_deref() == Some(wanted.as_bytes())))
             }
             "has_naval_invasion_against_state" => {
                 Some(self.naval_invasion_against(item, slot, scopes)?)
@@ -316,15 +311,7 @@ impl Evaluator<'_, '_> {
                     "continent {wanted} has no recorded-content declaration"
                 )));
             }
-            table::<tables::States>(world.frame())?;
-            let row = world
-                .states
-                .get(&state)
-                .ok_or_else(|| format!("state {state} is not recorded"))?;
-            let token = row
-                .continent
-                .require("States.continent")?
-                .ok_or("the native state-template continent capture failed")?;
+            let token = world.state_continent_token(state)?;
             let actual = if token == 0 {
                 None
             } else {
@@ -354,7 +341,7 @@ impl Evaluator<'_, '_> {
             .ok_or_else(|| format!("state {state} is not recorded"))?;
         let country = || self.country_operand(item, scopes);
         let provinces = world
-            .state_provinces
+            .state_provinces()
             .get(&state)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
@@ -618,7 +605,7 @@ impl Evaluator<'_, '_> {
             }
             let touches = order.path.iter().any(|province| {
                 world
-                    .provinces
+                    .provinces()
                     .get(province)
                     .is_some_and(|row| row.state == state)
             });

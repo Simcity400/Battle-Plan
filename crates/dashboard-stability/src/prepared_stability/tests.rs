@@ -566,24 +566,20 @@ fn five_thousand_countries_keep_runs_and_files_proportional_to_changes_and_batch
             .unwrap(),
         Some(3)
     );
-    assert_eq!(
-        fixture
-            .store
-            .range_count(&fixture.key, "stability-1-catalogue")
-            .unwrap(),
-        Some(1)
-    );
-    let files = std::fs::read_dir(&fixture.directory)
-        .unwrap()
-        .filter(|entry| {
-            entry
-                .as_ref()
+    // Each catalogue is its base plus a short chain of patches.
+    let catalogues: u64 = ["stability-1-catalogue", "parts-1-catalogue"]
+        .into_iter()
+        .map(|section| {
+            fixture
+                .store
+                .range_count(&fixture.key, section)
                 .unwrap()
-                .path()
-                .extension()
-                .is_some_and(|extension| extension == "bin")
+                .unwrap()
         })
-        .count();
+        .inspect(|count| assert!((1..=4).contains(count)))
+        .sum();
+    // Ranges the manifest lists, whichever packs hold them.
+    let ranges = fixture.payloads().len();
     assert_eq!(accumulator.parts.calculated_reads(), 5000);
     assert_eq!(
         fixture.store.range_count(&fixture.key, "parts-1").unwrap(),
@@ -608,9 +604,9 @@ fn five_thousand_countries_keep_runs_and_files_proportional_to_changes_and_batch
     assert_eq!(part_runs, catalogue.len() as u64);
     assert_eq!(part_events, part_runs);
     println!(
-        "Parts: 500000 country-hours / 5000 computed reads, {part_runs} canonical runs, {part_events} provenance events; {files} combined physical files / 9 active (4 stability, 5 parts)"
+        "Parts: 500000 country-hours / 5000 computed reads, {part_runs} canonical runs, {part_events} provenance events; {ranges} listed ranges (3 stability, 4 parts, {catalogues} catalogue)"
     );
-    assert_eq!(files, 12);
+    assert_eq!(ranges as u64, 7 + catalogues);
     println!(
         "5000 countries x 100 hours: stability {runs} canonical runs, {events} provenance events"
     );
@@ -855,18 +851,16 @@ mod experience {
         assert_eq!(catalogue.len(), 50000);
         assert_eq!(runs, 220000);
         assert_eq!(events, runs);
-        let files = std::fs::read_dir(&fixture.directory)
+        // The catalogue is its base plus a short chain of patches.
+        let catalogue = fixture
+            .store
+            .range_count(&fixture.key, "experience-1-catalogue")
             .unwrap()
-            .filter(|entry| {
-                entry
-                    .as_ref()
-                    .unwrap()
-                    .path()
-                    .extension()
-                    .is_some_and(|extension| extension == "bin")
-            })
-            .count();
-        assert_eq!(files, 5);
+            .unwrap();
+        assert!((1..=4).contains(&catalogue));
+        // Ranges the manifest lists, whichever packs hold them.
+        let ranges = fixture.payloads().len() as u64;
+        assert_eq!(ranges, 3 + catalogue);
         let summary = query("series-summary",json!({"branchId":"1","family":{"kind":"country-experience","measure":"army-banked"},"tags":[key],"from":slot_base(),"to":slot_base()+99,"width":100}),&fixture.store,&fixture.key, None,&flag).unwrap();
         assert_eq!(
             summary["series"][0]["summary"]["runs"]
@@ -881,7 +875,7 @@ mod experience {
             Some((i128::from(i64::MAX) * 24) as f64)
         );
         println!(
-            "5000 countries x 100 hours: {runs} supplying runs, {events} provenance events, {files} physical files / 4 active (3 batches + catalogue); zero interpreter calls"
+            "5000 countries x 100 hours: {runs} supplying runs, {events} provenance events, {ranges} listed ranges (3 batches + catalogue); zero interpreter calls"
         );
     }
 }

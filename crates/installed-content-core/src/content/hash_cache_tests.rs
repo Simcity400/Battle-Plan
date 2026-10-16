@@ -3,6 +3,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
+/// Every probed content path and the thread that probed it.
+pub(super) static PROBED: std::sync::Mutex<Vec<(PathBuf, std::thread::ThreadId)>> =
+    std::sync::Mutex::new(Vec::new());
+
 struct Fixture {
     root: PathBuf,
     identity: Identity,
@@ -11,6 +15,11 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Self {
+        Self::with_files(name, 0)
+    }
+
+    /// The fixture with `extra` more covered files in `common`.
+    fn with_files(name: &str, extra: usize) -> Self {
         let root = std::env::temp_dir().join(format!(
             "hoi4_hash_cache_{name}_{}_{:?}_{}_{}",
             std::process::id(),
@@ -31,6 +40,13 @@ impl Fixture {
         fs::write(game_dir.join("hoi4.exe"), executable).unwrap();
         fs::write(game_dir.join("common/a.txt"), b"original").unwrap();
         fs::write(game_dir.join("common/z.txt"), b"last").unwrap();
+        for index in 0..extra {
+            fs::write(
+                game_dir.join(format!("common/f{index:04}.txt")),
+                format!("file {index}"),
+            )
+            .unwrap();
+        }
         fs::write(user_dir.join("settings.txt"), b"language=l_english").unwrap();
         fs::write(
             user_dir.join("dlc_load.json"),
@@ -109,6 +125,39 @@ fn unchanged_warm_hash_cache_preserves_bytes_and_verification() {
             .contains("Game vanilla: content hash mismatch")
     );
     assert_eq!(fs::read(fixture.cache_path()).unwrap(), expected);
+}
+
+#[test]
+fn cold_content_hashes_are_read_on_several_threads() {
+    let fixture = Fixture::with_files("parallel", 256);
+    let expected = fixture.cache();
+    fs::remove_file(fixture.cache_path()).unwrap();
+    let before = PROBED.lock().unwrap().len();
+    let resolved = resolve(&fixture.identity, &fixture.options).unwrap();
+    assert_eq!(resolved.stats.files, 259);
+    assert_eq!(resolved.stats.files_read, resolved.stats.files);
+    assert_eq!(fixture.cache().entries.len(), expected.entries.len());
+    // Probed paths are canonical; the fixture's folder name is unique.
+    let folder = fixture
+        .root
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let probed: Vec<_> = PROBED.lock().unwrap()[before..]
+        .iter()
+        .filter(|(path, _)| path.to_string_lossy().contains(&folder))
+        .map(|(_, thread)| *thread)
+        .collect();
+    assert_eq!(probed.len(), 259);
+    let threads: std::collections::HashSet<_> = probed.into_iter().collect();
+    let cores = std::thread::available_parallelism().map_or(1, |count| count.get());
+    assert!(
+        threads.len() > 1 || cores == 1,
+        "{} probing threads on {cores} cores",
+        threads.len()
+    );
 }
 
 #[test]

@@ -414,6 +414,63 @@ fn cells(
     ))
 }
 
+/// A moment beyond accepted preparation, read from its own frame: the
+/// identity join preparation runs on that frame, and the stateless factory
+/// sample. An unrecorded hour reads nothing, so every cell stays unknown.
+fn sample_moment(
+    source: &Source,
+    branch: u64,
+    hour: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<(
+    country_history::RecordedHistories,
+    crate::prepared::query::progressive::Samples,
+)> {
+    let frame = crate::prepared::query::progressive::frame_at(
+        source,
+        branch,
+        hour,
+        country_factories::prepared::TABLES,
+        cancelled,
+    )?;
+    let mut identities = country_history::HistoryScan::new(false, &[]);
+    let mut samples = crate::prepared::query::progressive::Samples::new();
+    if let Some(frame) = &frame {
+        identities.observe(frame);
+        samples = country_factories::prepared::sample(frame, None)?;
+    }
+    check_cancel(cancelled)?;
+    Ok((identities.finish(), samples))
+}
+
+/// Factory cells from one sampled frame, dated as the prepared channel dates them.
+fn sampled_cells(
+    samples: &crate::prepared::query::progressive::Samples,
+    column: ScoreboardColumnKey,
+    rows: &[(String, CountryIdentityRun)],
+    hour: i32,
+    with_reads: bool,
+) -> io::Result<Vec<Cell>> {
+    let mode = column
+        .factory_count()
+        .ok_or_else(|| crate::invalid("Missing sampled scoreboard supplier"))?;
+    rows.iter()
+        .map(|(tag, identity)| {
+            let amount = country_factories::prepared::sampled_count(
+                samples,
+                tag,
+                (identity.slot, identity.country_id),
+                mode,
+            )?;
+            Ok(Cell {
+                amount,
+                read_hour: amount.filter(|_| with_reads).map(|_| hour),
+                at_least: false,
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn query(
     source: &Source,
     value: Value,
@@ -451,14 +508,132 @@ pub(crate) fn query(
         {
             return Err(crate::invalid("Invalid scoreboard index selection"));
         }
-        let Some(history) = country_history::prepared_branch_histories(
+        let accepted = match crate::prepared::pipeline::coverage(
+            source,
+            context.content.as_ref(),
+            branch,
+            cancelled,
+        ) {
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
+            other => other?,
+        };
+        let complete = accepted.as_ref().is_some_and(|coverage| coverage.complete);
+        // Beyond accepted preparation a moment answers only when one frame
+        // proves every cell it needs: the native factory counts. Other
+        // columns carry cumulative or carried facts and stay pending.
+        let needed: Vec<ScoreboardColumnKey> = if params.index {
+            std::iter::once(params.sort)
+                .chain(
+                    params
+                        .selection
+                        .columns
+                        .iter()
+                        .copied()
+                        .filter(|_| params.bars),
+                )
+                .collect()
+        } else {
+            params.selection.columns.clone()
+        };
+        let sampled = if accepted
+            .as_ref()
+            .is_some_and(|coverage| coverage.complete || params.hour <= coverage.last_hour)
+        {
+            None
+        } else if needed.iter().all(|column| column.factory_count().is_some()) {
+            Some(sample_moment(source, branch, params.hour, cancelled)?)
+        } else {
+            return Ok(Value::Null);
+        };
+        let history = if complete {
+            let Some(history) = country_history::prepared_branch_histories(
+                source,
+                branch,
+                context.content.as_ref(),
+                cancelled,
+            )?
+            else {
+                return Ok(Value::Null);
+            };
+            history
+        } else if let Some(history) = country_history::prepared_branch_histories(
             source,
             branch,
             context.content.as_ref(),
             cancelled,
-        )?
-        else {
+        )? {
+            // The whole branch's identities, prepared before the other columns.
+            history
+        } else if params.selection.top.is_none()
+            && params.index
+            && !params.selection.tags.is_empty()
+        {
+            // A tag selection of the index names every holder the tags ever
+            // had, which only the whole branch's identities know.
             return Ok(Value::Null);
+        } else {
+            // The accepted prefix's identities, joined with the sampled frame's
+            // own identity join at the moment.
+            let exact: BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>> = sampled
+                .as_ref()
+                .map(|(moment, _)| {
+                    moment
+                        .countries
+                        .iter()
+                        .map(|(tag, country)| {
+                            (
+                                (tag.clone(), String::new()),
+                                country
+                                    .identities
+                                    .iter()
+                                    .map(|run| {
+                                        (run.first_hour, run.last_hour, run.slot, run.country_id)
+                                    })
+                                    .collect(),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut joined = crate::prepared::query::progressive::histories(
+                store,
+                source_key,
+                branch,
+                accepted.as_ref(),
+                &BTreeMap::new(),
+                &exact,
+                source.replay_ref(),
+                &params.selection.tags,
+                cancelled,
+            )?;
+            if let Some((moment, _)) = &sampled {
+                joined.unreadable_territory += moment.unreadable_territory;
+                joined.unresolved_countries += moment.unresolved_countries;
+                joined.unnamed += moment.unnamed;
+            }
+            std::sync::Arc::new(joined)
+        };
+        let column_cells = |column: ScoreboardColumnKey,
+                            rows: &[(String, CountryIdentityRun)],
+                            with_reads: bool,
+                            warnings: &mut Vec<String>|
+         -> io::Result<Option<Vec<Cell>>> {
+            match &sampled {
+                Some((_, samples)) => {
+                    sampled_cells(samples, column, rows, params.hour, with_reads).map(Some)
+                }
+                None => cells(
+                    store,
+                    source_key,
+                    branch,
+                    column,
+                    rows,
+                    params.hour,
+                    with_reads,
+                    warnings,
+                    cancelled,
+                ),
+            }
         };
         let selected = (params.selection.top.is_none() && params.index)
             .then(|| country_history::selected_identities(&history, &params.selection.tags));
@@ -493,18 +668,7 @@ pub(crate) fn query(
         };
         let mut reached = BTreeMap::new();
         if params.index {
-            let Some(sort) = cells(
-                store,
-                source_key,
-                branch,
-                params.sort,
-                &rows,
-                params.hour,
-                false,
-                &mut reply.warnings,
-                cancelled,
-            )?
-            else {
+            let Some(sort) = column_cells(params.sort, &rows, false, &mut reply.warnings)? else {
                 return Ok(Value::Null);
             };
             let mut ranked: Vec<_> = rows.into_iter().zip(sort).collect();
@@ -524,17 +688,7 @@ pub(crate) fn query(
                     let values = if *column == params.sort {
                         reached.get(column).cloned()
                     } else {
-                        cells(
-                            store,
-                            source_key,
-                            branch,
-                            *column,
-                            &rows,
-                            params.hour,
-                            false,
-                            &mut reply.warnings,
-                            cancelled,
-                        )?
+                        column_cells(*column, &rows, false, &mut reply.warnings)?
                     };
                     let Some(values) = values else {
                         return Ok(Value::Null);
@@ -553,18 +707,7 @@ pub(crate) fn query(
             }
         } else {
             for column in &params.selection.columns {
-                let Some(values) = cells(
-                    store,
-                    source_key,
-                    branch,
-                    *column,
-                    &rows,
-                    params.hour,
-                    true,
-                    &mut reply.warnings,
-                    cancelled,
-                )?
-                else {
+                let Some(values) = column_cells(*column, &rows, true, &mut reply.warnings)? else {
                     return Ok(Value::Null);
                 };
                 reached.insert(*column, values);

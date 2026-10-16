@@ -669,15 +669,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(String::new());
         }
         let countries: std::collections::BTreeSet<_> = std::iter::once(0)
-            .chain(
-                self.context
-                    .text
-                    .frame()
-                    .complete::<tables::Countries>()
-                    .map_err(|why| why.to_string())?
-                    .iter()
-                    .map(|row| row.canonical_slot),
-            )
+            .chain(self.context.world()?.country_slots()?)
             .collect();
         let empty = Modifiers::default();
         let mut text = String::new();

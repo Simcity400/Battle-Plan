@@ -97,6 +97,8 @@ pub struct Prepared {
     corrected: BTreeSet<u64>,
     reads: Accumulator,
     last: Option<i32>,
+    /// Not saved: a restored observer takes the holders with an open value as
+    /// the holders it continues from.
     #[serde(skip)]
     live: Option<BTreeMap<Identity, Vec<String>>>,
 }
@@ -132,7 +134,21 @@ impl Channel {
                 .min(run.first_hour.saturating_sub(1));
             self.extend_rank(tag, to);
         }
-        self.rank_tail.insert(tag.to_owned(), run.clone());
+        // A run equal to the tail it follows continues it, as an observer that
+        // never wrote it again would hold (a restored one writes every holder).
+        match self.rank_tail.get_mut(tag) {
+            Some(tail)
+                if !run.starts_segment
+                    && tail.last_hour.checked_add(1) == Some(run.first_hour)
+                    && tail.ships == run.ships
+                    && tail.convoys == run.convoys =>
+            {
+                tail.last_hour = run.last_hour;
+            }
+            _ => {
+                self.rank_tail.insert(tag.to_owned(), run.clone());
+            }
+        }
         let runs = self.rank_inputs.entry(tag.to_owned()).or_default();
         if let Some(previous) = runs.last_mut()
             && !run.starts_segment

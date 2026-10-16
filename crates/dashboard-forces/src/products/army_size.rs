@@ -19,6 +19,7 @@
 //! (regiments and support companies) use their authored content group, never
 //! either representative. No per-battalion HP is recorded, so HP stays unsplit.
 
+use dashboard_base::prepared::frame_changes::{FrameChanges, field_mask};
 use dashboard_base::{
     products::{
         Product,
@@ -33,14 +34,14 @@ use dashboard_text::metadata::{
 };
 use replay::{
     container::Replay,
-    frame::TableUpdate,
-    rows::{CountryLinkRow, DivisionRow, TableId, tables},
+    frame::{DecodedFrame, Frame, TableUpdate},
+    rows::{CountryLinkRow, DeltaRow, DivisionCensusRow, DivisionRow, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
     io,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, LazyLock, atomic::AtomicBool},
 };
 use ts_rs::TS;
 #[cfg(any(test, feature = "test-support"))]
@@ -205,6 +206,11 @@ struct Track {
     segments: Vec<HourSpan>,
     last_identity: IdentityTrack,
     mix: Vec<RawMixRun>,
+    /// The composition version of the in-memory inventory that `mix`'s last
+    /// run was read at. It names that inventory's counters, which a restored
+    /// observer starts afresh, so it is never saved: a restored track compares
+    /// its first composition by parts.
+    #[serde(skip)]
     mix_version: Option<(u64, u64, [bool; 2])>,
 }
 impl Track {
@@ -246,8 +252,10 @@ struct Scan {
     live: std::collections::BTreeSet<String>,
     #[serde(skip)]
     removed: Vec<String>,
+    /// The identities observed at the last hour, by their index among the
+    /// scan state's identities.
     #[serde(skip)]
-    observed: Vec<String>,
+    observed: Vec<usize>,
 }
 impl Scan {
     fn seal(&mut self) {
@@ -261,6 +269,35 @@ impl Scan {
         }
     }
 }
+
+/// The Divisions fields the totals and composition read; the id is the key.
+static DIVISION_FIELDS: LazyLock<u64> = LazyLock::new(|| {
+    field_mask(
+        TableId::Divisions,
+        &[
+            "roster_owner",
+            "expeditionary_owner",
+            "template",
+            "hit_points",
+        ],
+    )
+});
+
+/// The DivisionTemplateIcons fields a composition reads; the template is the key.
+static TEMPLATE_FIELDS: LazyLock<u64> = LazyLock::new(|| {
+    field_mask(
+        TableId::DivisionTemplateIcons,
+        &["subunits", "model_unreadable"],
+    )
+});
+
+/// The DivisionLandInputs fields the manpower total reads; the division is the key.
+static LAND_FIELDS: LazyLock<u64> =
+    LazyLock::new(|| field_mask(TableId::DivisionLandInputs, &["manpower"]));
+
+/// The Countries fields a country's identity is read from; its id is the key.
+static HOLDER_FIELDS: LazyLock<u64> =
+    LazyLock::new(|| field_mask(TableId::Countries, &["canonical_slot", "tag"]));
 
 /// Census owner rule: positive signed expeditionary owner, otherwise roster owner.
 fn owner(row: &DivisionRow) -> u32 {
@@ -340,6 +377,8 @@ struct ScanState {
     links: Option<replay::frame::ViewIdentity>,
     unreadable_tags: usize,
     keys: Option<dashboard_text::metadata::CountryKeys>,
+    /// How many Countries rows `keys` were read from.
+    country_rows: Option<usize>,
     identity_changed: bool,
     applied: Option<i32>,
     reads: Option<[bool; 4]>,
@@ -350,6 +389,12 @@ struct ScanState {
     census_unreadable: usize,
     census_dirty: std::collections::BTreeSet<u32>,
     census_ready: Option<bool>,
+    /// Each census row's slot and division count, by country.
+    census_rows: HashMap<u32, (Option<u32>, i64)>,
+    /// Each slot's census rows and their summed division count.
+    census_sums: HashMap<u32, (usize, i128)>,
+    /// The hour whose census `census_rows` hold, while they hold one.
+    census_hour: Option<i32>,
     restriction: Option<bool>,
     composition_rates: HashMap<String, usize>,
     composition_rate: usize,
@@ -360,27 +405,45 @@ struct ScanState {
 
 impl ScanState {
     #[cfg(any(test, feature = "test-support"))]
-    fn step(
-        &mut self,
-        result: &mut Scan,
-        frame: &replay::frame::Frame,
-        decoded: &replay::frame::DecodedFrame,
-        replay: &Replay,
-    ) {
+    fn step(&mut self, result: &mut Scan, frame: &Frame, decoded: &DecodedFrame, replay: &Replay) {
         self.step_changes(result, frame, decoded, replay, None);
         result.seal();
     }
+    #[cfg(any(test, feature = "test-support"))]
     fn step_changes(
         &mut self,
         result: &mut Scan,
-        frame: &replay::frame::Frame,
-        decoded: &replay::frame::DecodedFrame,
+        frame: &Frame,
+        decoded: &DecodedFrame,
         replay: &Replay,
-        changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
+        changes: Option<&FrameChanges>,
+    ) -> bool {
+        self.step_updates(result, Updates::recorded(frame), decoded, replay, changes)
+    }
+    /// Observe one hour whose inventory tables reached it by `updates`.
+    /// False when nothing the army reads changed since the previous hour.
+    fn step_updates(
+        &mut self,
+        result: &mut Scan,
+        updates: Updates<'_>,
+        decoded: &DecodedFrame,
+        replay: &Replay,
+        changes: Option<&FrameChanges>,
     ) -> bool {
         result.observed.clear();
         result.removed.clear();
-        let valid = self.identities(decoded);
+        let continuous = result
+            .frontier
+            .is_some_and(|at| at.checked_add(1) == Some(decoded.hour));
+        // Recorded changes to no country's key, slot or tag keep the
+        // identities read at the previous hour.
+        let kept = continuous
+            && changes
+                .and_then(|changes| changes.rows(TableId::Countries))
+                .is_some_and(|(changed, deleted)| {
+                    deleted.is_empty() && changed.iter().all(|row| row.mask & *HOLDER_FIELDS == 0)
+                });
+        let valid = self.identities_kept(decoded, kept);
         let identity_changed = self.identity_changed;
         let reads = [
             TableId::DivisionCensus,
@@ -389,9 +452,6 @@ impl ScanState {
             TableId::DivisionLandInputs,
         ]
         .map(|id| slot_read(replay.format, &decoded.metrics, id, decoded.hour));
-        let continuous = result
-            .frontier
-            .is_some_and(|at| at.checked_add(1) == Some(decoded.hour));
         let unchanged = continuous
             && valid
             && !self.identity_changed
@@ -413,6 +473,13 @@ impl ScanState {
             for (key, &count) in &self.rates.2 {
                 *result.invalid_table_reads.entry(key.clone()).or_default() += count;
             }
+            // The census held is still this hour's.
+            if self
+                .census_hour
+                .is_some_and(|at| at.checked_add(1) == Some(decoded.hour))
+            {
+                self.census_hour = Some(decoded.hour);
+            }
             result.frontier = Some(decoded.hour);
             return false;
         }
@@ -428,7 +495,7 @@ impl ScanState {
         });
         let unreadable = result.unreadable;
         let composition = result.composition_unreadable;
-        self.apply_changes(frame, decoded);
+        self.apply_updates(updates, decoded);
         self.compose(decoded);
         let gap = replay.gaps.iter().any(|gap| {
             gap.branch == decoded.branch
@@ -447,21 +514,7 @@ impl ScanState {
         }
         #[cfg(test)]
         {
-            self.work.row_visits += [
-                TableId::Divisions,
-                TableId::DivisionTemplateIcons,
-                TableId::DivisionLandInputs,
-            ]
-            .iter()
-            .filter(|id| !matches!(frame.tables[id.index()], TableUpdate::Unchanged { .. }))
-            .map(|id| match &frame.tables[id.index()] {
-                TableUpdate::Snapshot(rows) | TableUpdate::Truncated { rows, .. } => rows.len(),
-                TableUpdate::Delta {
-                    changed, deleted, ..
-                } => changed.len() + deleted.len(),
-                _ => 0,
-            })
-            .sum::<usize>();
+            self.work.row_visits += updates.row_visits(decoded);
         }
         let after_inventory = self.inventory.as_ref().map(|inventory| {
             (
@@ -477,7 +530,7 @@ impl ScanState {
                 && self.reads == Some(reads)
                 && before_inventory == after_inventory,
         );
-        observe_totals(result, decoded, frame, replay.format, gap, self, changes);
+        observe_updates(result, decoded, updates, replay.format, gap, self, changes);
         self.rates = (
             result.unreadable - unreadable,
             result.composition_unreadable - composition,
@@ -508,21 +561,26 @@ impl ScanState {
             ..Default::default()
         }
     }
-    fn apply_changes(
-        &mut self,
-        frame: &replay::frame::Frame,
-        decoded: &replay::frame::DecodedFrame,
-    ) {
+    fn apply_changes(&mut self, frame: &Frame, decoded: &DecodedFrame) {
+        self.apply_updates(Updates::recorded(frame), decoded);
+    }
+    fn apply_updates(&mut self, updates: Updates<'_>, decoded: &DecodedFrame) {
         if let Some(inventory) = &mut self.inventory {
-            inventory.apply_changes(frame, decoded);
+            inventory.apply_updates(updates, decoded);
         }
     }
-    fn compose(&mut self, decoded: &replay::frame::DecodedFrame) {
+    fn compose(&mut self, decoded: &DecodedFrame) {
         if let Some(inventory) = &mut self.inventory {
             inventory.compose(decoded);
         }
     }
-    fn identities(&mut self, decoded: &replay::frame::DecodedFrame) -> bool {
+    fn identities(&mut self, decoded: &DecodedFrame) -> bool {
+        self.identities_kept(decoded, false)
+    }
+    /// Read the hour's country identities. `kept`: the Countries rows changed
+    /// from the previous hour's, which the held keys were read from, by
+    /// recorded rows that change no key, slot or tag.
+    fn identities_kept(&mut self, decoded: &DecodedFrame, kept: bool) -> bool {
         self.identity_changed = false;
         let (Ok(countries), Ok(links)) = (
             decoded.complete::<tables::Countries>(),
@@ -533,6 +591,7 @@ impl ScanState {
             self.identity_changed = true;
             self.identities.clear();
             self.keys = None;
+            self.country_rows = None;
             return false;
         };
         let country_view = &decoded.tables[TableId::Countries.index()];
@@ -545,8 +604,11 @@ impl ScanState {
         {
             return true;
         }
+        // Without deletions, the same row count means no country was added.
         if self.links.as_ref().is_some_and(|old| old.is(link_view))
-            && self.keys.as_ref().is_some_and(|keys| keys.same(countries))
+            && self.keys.as_ref().is_some_and(|keys| {
+                (kept && self.country_rows == Some(countries.len())) || keys.same(countries)
+            })
         {
             self.countries = Some(country_view.identity());
             return true;
@@ -577,18 +639,215 @@ impl ScanState {
         self.countries = Some(country_view.identity());
         self.links = Some(link_view.identity());
         self.keys = Some(dashboard_text::metadata::CountryKeys::read(countries));
+        self.country_rows = Some(countries.len());
         true
+    }
+    /// Read the census whole: each slot's division count, the slots whose
+    /// count changed, and the rows no link resolves.
+    fn read_census(
+        &mut self,
+        census: Option<&[DivisionCensusRow]>,
+        links: &[CountryLinkRow],
+        hour: i32,
+    ) {
+        let mut counts = HashMap::<u32, Option<i64>>::new();
+        let mut invalid = false;
+        let mut unreadable = 0;
+        self.census_rows.clear();
+        self.census_sums.clear();
+        for row in census.into_iter().flatten() {
+            #[cfg(test)]
+            {
+                self.work.row_visits += 1;
+            }
+            let slot = link_slot(links, row.country);
+            let value = i64::from(row.grouped) + i64::from(row.ungrouped);
+            self.census_rows.insert(row.country, (slot, value));
+            if let Some(slot) = slot {
+                add(counts.entry(slot).or_insert(Some(0)), value);
+                let sum = self.census_sums.entry(slot).or_default();
+                sum.0 += 1;
+                sum.1 += i128::from(value);
+            } else if row.grouped != 0 || row.ungrouped != 0 {
+                invalid = true;
+                unreadable += 1;
+            }
+        }
+        self.census_dirty.extend(
+            self.census_counts
+                .keys()
+                .chain(counts.keys())
+                .filter(|slot| self.census_counts.get(slot) != counts.get(slot))
+                .copied(),
+        );
+        if self.census_invalid != invalid {
+            self.restriction = Some(false);
+        }
+        self.census_counts = counts;
+        self.census_invalid = invalid;
+        self.census_unreadable = unreadable;
+        // The held rows answer a later hour's changed rows only when each
+        // country had one row.
+        self.census_hour = census
+            .filter(|census| census.len() == self.census_rows.len())
+            .map(|_| hour);
+    }
+    /// Apply the census rows that changed from the previous hour's, which
+    /// `census_rows` hold, through the same links: only their slots' counts
+    /// can change. False, changing nothing, when a changed row is not in the
+    /// census or a deleted key is not held: the census is then read whole.
+    fn apply_census_rows(
+        &mut self,
+        census: &[DivisionCensusRow],
+        links: &[CountryLinkRow],
+        (changed, deleted): (&[DeltaRow], &[u128]),
+        hour: i32,
+    ) -> bool {
+        let mut read = Vec::with_capacity(changed.len());
+        let mut from = 0;
+        for change in changed {
+            let Some(at) = inventory::find_from(census, from, change.key) else {
+                return false;
+            };
+            from = at;
+            read.push(&census[from]);
+        }
+        let Some(deleted) = deleted
+            .iter()
+            .map(|&key| {
+                u32::try_from(key)
+                    .ok()
+                    .filter(|key| self.census_rows.contains_key(key))
+            })
+            .collect::<Option<Vec<_>>>()
+        else {
+            return false;
+        };
+        #[cfg(test)]
+        {
+            self.work.row_visits += read.len() + deleted.len();
+        }
+        let mut slots = Vec::new();
+        let mut unlinked = self.census_unreadable;
+        for country in deleted {
+            let held = self.census_rows.remove(&country).expect("held census row");
+            census_edit(
+                &mut self.census_sums,
+                &mut unlinked,
+                &mut slots,
+                held,
+                false,
+            );
+        }
+        for row in read {
+            let value = i64::from(row.grouped) + i64::from(row.ungrouped);
+            let slot = link_slot(links, row.country);
+            if let Some(held) = self.census_rows.insert(row.country, (slot, value)) {
+                census_edit(
+                    &mut self.census_sums,
+                    &mut unlinked,
+                    &mut slots,
+                    held,
+                    false,
+                );
+            }
+            census_edit(
+                &mut self.census_sums,
+                &mut unlinked,
+                &mut slots,
+                (slot, value),
+                true,
+            );
+        }
+        for slot in slots {
+            // Counts are not negative, so a running sum overflows exactly
+            // when the slot's whole sum does.
+            let count = self
+                .census_sums
+                .get(&slot)
+                .map(|&(_, sum)| i64::try_from(sum).ok());
+            if self.census_counts.get(&slot) != count.as_ref() {
+                self.census_dirty.insert(slot);
+                match count {
+                    Some(count) => self.census_counts.insert(slot, count),
+                    None => self.census_counts.remove(&slot),
+                };
+            }
+        }
+        let invalid = unlinked > 0;
+        if self.census_invalid != invalid {
+            self.restriction = Some(false);
+        }
+        self.census_invalid = invalid;
+        self.census_unreadable = unlinked;
+        self.census_hour = Some(hour);
+        true
+    }
+}
+
+/// Count one held census row in (`adding`) or out: in its slot's sum, or
+/// among the unresolved rows when no link names it and it counts divisions.
+fn census_edit(
+    sums: &mut HashMap<u32, (usize, i128)>,
+    unlinked: &mut usize,
+    slots: &mut Vec<u32>,
+    (slot, value): (Option<u32>, i64),
+    adding: bool,
+) {
+    match slot {
+        Some(slot) => {
+            let sum = sums.entry(slot).or_default();
+            if adding {
+                sum.0 += 1;
+                sum.1 += i128::from(value);
+            } else {
+                sum.0 -= 1;
+                sum.1 -= i128::from(value);
+            }
+            if sum.0 == 0 {
+                sums.remove(&slot);
+            }
+            slots.push(slot);
+        }
+        None if value != 0 => {
+            if adding {
+                *unlinked += 1;
+            } else {
+                *unlinked -= 1;
+            }
+        }
+        None => {}
     }
 }
 
 fn observe_totals(
     result: &mut Scan,
-    decoded: &replay::frame::DecodedFrame,
-    frame: &replay::frame::Frame,
+    decoded: &DecodedFrame,
+    frame: &Frame,
     format: replay::format::FormatVersion,
     gap: bool,
     state: &mut ScanState,
-    changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
+    changes: Option<&FrameChanges>,
+) {
+    observe_updates(
+        result,
+        decoded,
+        Updates::recorded(frame),
+        format,
+        gap,
+        state,
+        changes,
+    );
+}
+
+fn observe_updates(
+    result: &mut Scan,
+    decoded: &DecodedFrame,
+    updates: Updates<'_>,
+    format: replay::format::FormatVersion,
+    gap: bool,
+    state: &mut ScanState,
+    changes: Option<&FrameChanges>,
 ) {
     let hour = decoded.hour;
     if let Some(inventory) = &state.inventory {
@@ -599,29 +858,20 @@ fn observe_totals(
                 .or_default() += 1;
         }
     }
-    let division_read = matches!(
-        &frame.tables[TableId::Divisions.index()],
-        TableUpdate::Snapshot(_) | TableUpdate::Delta { .. } | TableUpdate::Unchanged { .. }
-    ) && slot_read(format, &decoded.metrics, TableId::Divisions, hour);
-    let template_read = matches!(
-        &frame.tables[TableId::DivisionTemplateIcons.index()],
-        TableUpdate::Snapshot(_) | TableUpdate::Delta { .. } | TableUpdate::Unchanged { .. }
-    ) && slot_read(
-        format,
-        &decoded.metrics,
-        TableId::DivisionTemplateIcons,
-        hour,
-    );
+    let division_read = updates.read(TableId::Divisions, decoded)
+        && slot_read(format, &decoded.metrics, TableId::Divisions, hour);
+    let template_read = updates.read(TableId::DivisionTemplateIcons, decoded)
+        && slot_read(
+            format,
+            &decoded.metrics,
+            TableId::DivisionTemplateIcons,
+            hour,
+        );
     if division_read {
         result.strength = true;
         result.divisions = true;
         result.manpower |= slot_read(format, &decoded.metrics, TableId::DivisionLandInputs, hour)
-            && matches!(
-                &frame.tables[TableId::DivisionLandInputs.index()],
-                TableUpdate::Snapshot(_)
-                    | TableUpdate::Delta { .. }
-                    | TableUpdate::Unchanged { .. }
-            );
+            && updates.read(TableId::DivisionLandInputs, decoded);
         result.battalions |= template_read;
     }
     if gap || !state.identities(decoded) {
@@ -643,39 +893,31 @@ fn observe_totals(
                 || changes.rows_changed[TableId::CountryLinks.index()]
         });
     if census_changed {
-        let mut counts = HashMap::<u32, Option<i64>>::new();
-        let mut invalid = false;
-        let mut unreadable = 0;
-        for row in census.into_iter().flatten() {
-            #[cfg(test)]
-            {
-                state.work.row_visits += 1;
-            }
-            if let Some(slot) = link_slot(links, row.country) {
-                add(
-                    counts.entry(slot).or_insert(Some(0)),
-                    i64::from(row.grouped) + i64::from(row.ungrouped),
-                );
-            } else if row.grouped != 0 || row.ungrouped != 0 {
-                invalid = true;
-                unreadable += 1;
-            }
+        // The previous hour's census, held, changed by recorded rows
+        // through the same links.
+        let rows = census
+            .filter(|_| {
+                state.census_ready == Some(true)
+                    && state
+                        .census_hour
+                        .is_some_and(|at| at.checked_add(1) == Some(hour))
+            })
+            .zip(
+                changes
+                    .filter(|changes| !changes.rows_changed[TableId::CountryLinks.index()])
+                    .and_then(|changes| changes.rows(TableId::DivisionCensus)),
+            );
+        if !rows
+            .is_some_and(|(census, changed)| state.apply_census_rows(census, links, changed, hour))
+        {
+            state.read_census(census, links, hour);
         }
-        state.census_dirty.extend(
-            state
-                .census_counts
-                .keys()
-                .chain(counts.keys())
-                .filter(|slot| state.census_counts.get(slot) != counts.get(slot))
-                .copied(),
-        );
-        if state.census_invalid != invalid {
-            state.restriction = Some(false);
-        }
-        state.census_counts = counts;
-        state.census_invalid = invalid;
-        state.census_unreadable = unreadable;
         state.census_ready = Some(census.is_some());
+    } else if state
+        .census_hour
+        .is_some_and(|at| at.checked_add(1) == Some(hour))
+    {
+        state.census_hour = Some(hour);
     }
     result.divisions |= census.is_some();
     result.unreadable += state.census_unreadable;
@@ -748,7 +990,7 @@ fn observe_totals(
             *identity,
             hour,
         );
-        result.observed.push(tag.clone());
+        result.observed.push(index);
         let composition_notes = composition.map_or(0, |inventory| {
             inventory
                 .parts_version(slot)
@@ -757,10 +999,15 @@ fn observe_totals(
                 .filter(|known| !**known)
                 .count()
         });
-        let before_notes = state
-            .composition_rates
-            .insert(tag.clone(), composition_notes)
-            .unwrap_or(0);
+        let before_notes = match state.composition_rates.get_mut(tag) {
+            Some(notes) => std::mem::replace(notes, composition_notes),
+            None => {
+                state
+                    .composition_rates
+                    .insert(tag.clone(), composition_notes);
+                0
+            }
+        };
         state.composition_rate = state.composition_rate + composition_notes - before_notes;
         result.composition_unreadable =
             result.composition_unreadable + composition_notes - before_notes;
@@ -1445,7 +1692,7 @@ pub mod prepared;
 pub use composition::check_content;
 use composition::{RawMixRun, composition_reply};
 mod inventory;
-use inventory::Inventory;
+use inventory::{Inventory, Updates};
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_fixtures;

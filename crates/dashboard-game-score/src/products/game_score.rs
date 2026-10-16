@@ -13,7 +13,10 @@ use dashboard_base::{
     products::table_missing_reason,
 };
 
-use dashboard_base::{Source, catalogue, content};
+use dashboard_base::{
+    Source, catalogue, content,
+    prepared::frame_changes::{FrameChanges, field_mask},
+};
 use dashboard_text::{
     faction_names,
     metadata::{self, TaggedCountry, tagged_countries},
@@ -22,18 +25,25 @@ use dashboard_wars::products::war_casualties::same_name_rows;
 use installed_content::country_names::{self, CountryNames};
 use installed_content::{faction_templates::Catalog, localisation::Localisation};
 use replay::{
+    BranchId,
     container::Replay,
+    format::FormatVersion,
     frame::{DecodedFrame, FrameDecoder, SharedView, ViewIdentity},
     rows::{
-        AirWingGameScoreStatsRow, CountryFactoriesRow, CountryGameScoreInputRow, CountryRow,
-        FactionMemberRow, GameScoreAirSite, GameScoreMultiplierRow, TableId, tables,
+        AirWingGameScoreStatsRow, CountryFactoriesRow, CountryGameScoreInputRow, CountryLinkRow,
+        CountryRow, DeltaRow, FactionMemberRow, GameScoreAirSite, GameScoreMultiplierRow, TableId,
+        full_mask, tables,
     },
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        LazyLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use ts_rs::TS;
 
@@ -563,9 +573,7 @@ fn sample(
         let inputs = unique_by_slot(input_rows.into_iter().flatten(), links, |row| row.country);
         for row in input_rows.into_iter().flatten() {
             if metadata::link_slot(links, row.country).is_none() {
-                *warnings.entry((GameScoreMissingKind::Recording, format!(
-                    "CountryGameScoreInputs country raw reference {} has no CountryLinks identity at this read", row.country
-                ))).or_default() += 1;
+                *warnings.entry(orphan_input(row.country)).or_default() += 1;
             }
         }
         let factories = unique_by_slot(
@@ -795,21 +803,127 @@ fn faction_names_at(
     )
 }
 
+/// A country's faction membership: known none, one membership row, or
+/// unknown because a membership link is unresolved or names it twice.
+enum Membership<'r> {
+    NoFaction,
+    Member(&'r FactionMemberRow),
+    Unknown,
+}
+
+/// The membership `unique_by_slot` gives `slot`.
+fn membership<'r>(members: &SlotRows<'r, FactionMemberRow>, slot: u32) -> Membership<'r> {
+    match members.rows.get(&slot) {
+        None if members.unresolved_rows == 0 => Membership::NoFaction,
+        Some(Some(member)) => Membership::Member(member),
+        _ => Membership::Unknown,
+    }
+}
+
+/// A slot's row by the rule of `unique_by_slot`: no row, one row, or several
+/// rows whose raw references name the slot.
+enum SlotRow<'r, T> {
+    Absent,
+    One(&'r T),
+    Ambiguous,
+}
+
+impl<'r, T> SlotRow<'r, T> {
+    fn one(self) -> Option<&'r T> {
+        match self {
+            Self::One(row) => Some(row),
+            Self::Absent | Self::Ambiguous => None,
+        }
+    }
+}
+
+/// [`SlotRow`] of one slot, from the raw link ids naming it and a complete
+/// table, whose rows ascend by their unique raw reference.
+fn slot_row<'r, T>(rows: &'r [T], ids: &[u32], raw: impl Fn(&T) -> u32) -> SlotRow<'r, T> {
+    let mut found = SlotRow::Absent;
+    for id in ids {
+        if let Ok(index) = rows.binary_search_by_key(id, &raw) {
+            found = match found {
+                SlotRow::Absent => SlotRow::One(&rows[index]),
+                SlotRow::One(_) | SlotRow::Ambiguous => return SlotRow::Ambiguous,
+            };
+        }
+    }
+    found
+}
+
+/// A country's map colour and why it is missing.
+fn colour(
+    frame: &DecodedFrame,
+    color: Option<[u8; 3]>,
+) -> (Option<[u8; 3]>, Option<GameScoreMissing>) {
+    let missing = color.is_none().then(|| {
+        recording_missing(
+            table_missing_reason(frame, TableId::CountryAppearance).unwrap_or_else(|| {
+                "CountryAppearance has no unambiguous colour for this country".into()
+            }),
+        )
+    });
+    (color, missing)
+}
+
+/// The map colour of the CountryAppearance row of native country `country`,
+/// as [`HourStyles::read`] gives it from rows ascending by their unique key.
+fn appearance_colour(frame: &DecodedFrame, country: u32) -> io::Result<Option<[u8; 3]>> {
+    let rows = metadata::recorded_rows::<tables::CountryAppearance>(frame)?;
+    Ok(rows
+        .binary_search_by_key(&country, |row| row.country)
+        .ok()
+        .map(|index| rows[index].map_color()))
+}
+
+fn orphan_input(raw: u32) -> (GameScoreMissingKind, String) {
+    (
+        GameScoreMissingKind::Recording,
+        format!(
+            "CountryGameScoreInputs country raw reference {raw} has no CountryLinks identity at this read"
+        ),
+    )
+}
+
+/// Every missing reason a country's facts note in an hour's warnings.
+fn notes<'v>(
+    values: &'v GameScoreValues,
+    identity: &'v GameScoreIdentity,
+) -> impl Iterator<Item = &'v GameScoreMissing> {
+    values
+        .amounts()
+        .into_iter()
+        .filter_map(|amount| amount.missing.as_ref())
+        .chain(
+            [
+                identity.name_missing.as_ref(),
+                identity.color_missing.as_ref(),
+                identity.faction_missing.as_ref(),
+                identity
+                    .faction
+                    .as_ref()
+                    .and_then(|faction| faction.name_missing.as_ref()),
+            ]
+            .into_iter()
+            .flatten(),
+        )
+}
+
 fn faction(
-    members: Option<&SlotRows<'_, FactionMemberRow>>,
+    members: Option<Membership<'_>>,
     names: Option<&HashMap<u64, FactionName>>,
-    slot: u32,
 ) -> (Option<GameScoreFaction>, Option<GameScoreMissing>) {
-    let Some(mapped) = members else {
-        return (
-            None,
-            Some(recording_missing("FactionMembers is not complete")),
-        );
-    };
-    let member = match mapped.rows.get(&slot) {
-        None if mapped.unresolved_rows == 0 => return (None, None),
-        Some(Some(member)) => *member,
-        _ => {
+    let member = match members {
+        None => {
+            return (
+                None,
+                Some(recording_missing("FactionMembers is not complete")),
+            );
+        }
+        Some(Membership::NoFaction) => return (None, None),
+        Some(Membership::Member(member)) => member,
+        Some(Membership::Unknown) => {
             return (
                 None,
                 Some(recording_missing(
@@ -1152,6 +1266,18 @@ pub struct ScoreObserver<'a> {
     previous: Option<(i32, Vec<ViewIdentity>)>,
     country_keys: Option<dashboard_text::metadata::CountryKeys>,
     current: Option<FrameScores>,
+    /// What the current facts were read from, so that the next hour can be
+    /// read from its changed rows.
+    held: Option<Held>,
+    /// Read every changed hour from the whole tables, never from changed rows.
+    #[cfg(test)]
+    pub(super) whole_tables: bool,
+    /// Countries whose facts were computed.
+    #[cfg(test)]
+    pub(super) computed: usize,
+    /// Hours read from their changed rows.
+    #[cfg(test)]
+    pub(super) row_hours: usize,
 }
 pub(crate) struct FrameScores {
     projected: i32,
@@ -1159,6 +1285,257 @@ pub(crate) struct FrameScores {
     countries: BTreeMap<String, (GameScoreValues, GameScoreIdentity)>,
     warnings: BTreeMap<(GameScoreMissingKind, String), u64>,
 }
+
+/// What an observed hour changed in the facts.
+pub(crate) enum Change {
+    /// Nothing: the facts are the previous hour's.
+    Same,
+    /// Every country was read again; any may have changed, appeared or gone.
+    All,
+    /// Only these countries' facts and these warnings' counts changed. The
+    /// countries present and the multipliers are the previous hour's.
+    Countries {
+        tags: Vec<String>,
+        warnings: Vec<(GameScoreMissingKind, String)>,
+    },
+}
+
+/// Fields each part of the facts reads, by table. A changed row that changes
+/// none of them, and adds no row, reads nothing again.
+static HOLDER_FIELDS: LazyLock<u64> =
+    LazyLock::new(|| field_mask(TableId::Countries, &["canonical_slot", "tag"]));
+static INPUT_FIELDS: LazyLock<u64> = LazyLock::new(|| {
+    field_mask(
+        TableId::CountryGameScoreInputs,
+        &[
+            "army_count",
+            "army_error",
+            "navy_count",
+            "navy_error",
+            "land_count",
+            "land_error",
+            "air_state",
+            "air_error",
+            "first_sites",
+        ],
+    )
+});
+static FACTORY_FIELDS: LazyLock<u64> = LazyLock::new(|| {
+    field_mask(
+        TableId::CountryFactories,
+        &[
+            "naval_total_raw",
+            "civilian_total_raw",
+            "military_total_raw",
+            "civilian_to_others",
+            "civilian_to_overlord",
+            "military_to_others",
+            "military_to_overlord",
+        ],
+    )
+});
+static WING_FIELDS: LazyLock<u64> = LazyLock::new(|| {
+    field_mask(
+        TableId::AirWingGameScoreStats,
+        &["planes", "planes_error", "stat_raw", "stat_error"],
+    )
+});
+static REGISTRATION_FIELDS: LazyLock<u64> =
+    LazyLock::new(|| field_mask(TableId::AirBaseRegistrations, &["wings"]));
+static COLOUR_FIELDS: LazyLock<u64> =
+    LazyLock::new(|| field_mask(TableId::CountryAppearance, &["red", "green", "blue"]));
+/// The naming operands `same_name_rows` compares.
+static APPEARANCE_NAME_FIELDS: LazyLock<u64> = LazyLock::new(|| {
+    field_mask(
+        TableId::CountryAppearance,
+        &["cosmetic_tag", "name_tag", "leader_ideology", "overlord"],
+    )
+});
+static RULING_PARTY_FIELDS: LazyLock<u64> =
+    LazyLock::new(|| field_mask(TableId::Politics, &["ruling_party"]));
+static PARTY_TOKEN_FIELDS: LazyLock<u64> =
+    LazyLock::new(|| field_mask(TableId::PoliticalParties, &["token"]));
+static AUTONOMY_FIELDS: LazyLock<u64> = LazyLock::new(|| field_mask(TableId::Autonomy, &["state"]));
+static FACTION_NAME_FIELDS: LazyLock<u64> =
+    LazyLock::new(|| field_mask(TableId::Factions, &["name", "template_token"]));
+
+/// The tables besides Countries and CountryLinks whose changed rows an hour
+/// is read from.
+const ROW_TABLES: [TableId; 12] = [
+    TableId::GameScoreMultipliers,
+    TableId::CountryGameScoreInputs,
+    TableId::CountryFactories,
+    TableId::AirBaseRegistrations,
+    TableId::AirWingGameScoreStats,
+    TableId::CountryAppearance,
+    TableId::Politics,
+    TableId::PoliticalParties,
+    TableId::Autonomy,
+    TableId::FactionMembers,
+    TableId::Factions,
+    TableId::LexicalTokens,
+];
+
+/// Whether a changed row is new, or changes a field in `fields`. A new row
+/// carries every recorded field.
+fn reads(row: &DeltaRow, fields: u64) -> bool {
+    row.mask & fields != 0 || row.mask == full_mask(row.recorded_fields)
+}
+
+/// Whether a table's changed rows add, remove or change a field in `fields`.
+fn touches((changed, deleted): (&[DeltaRow], &[u128]), fields: u64) -> bool {
+    !deleted.is_empty() || changed.iter().any(|row| reads(row, fields))
+}
+
+/// Whether a slot's name operands, or those of an overlord its name can
+/// reach, differ between two reads. A name reads nothing else.
+fn chain_changed(before: &CountryNames<'_>, after: &CountryNames<'_>, slot: u32) -> bool {
+    let mut next = Some(slot);
+    let mut visited = BTreeSet::new();
+    while let Some(slot) = next {
+        if !visited.insert(slot) {
+            return false;
+        }
+        let operands = after.operands(slot);
+        if before.operands(slot) != operands {
+            return true;
+        }
+        next = operands
+            .and_then(|operands| operands.as_ref().ok())
+            .and_then(|operands| operands.overlord);
+    }
+    false
+}
+
+/// The operands the current facts were read from, by what reads them, so that
+/// an hour's changed rows name the countries whose facts they change.
+struct Held {
+    branch: BranchId,
+    hour: i32,
+    countries: usize,
+    /// Found tags by canonical slot.
+    slot_tags: HashMap<u32, Vec<String>>,
+    /// Found tags by the native id of the Countries row their colour is read from.
+    colour_tags: HashMap<u32, Vec<String>>,
+    /// The raw link ids naming each canonical slot.
+    link_ids: HashMap<u32, Vec<u32>>,
+    /// Raw references of score input rows that no link names.
+    orphans: HashSet<u32>,
+    /// Each registration's wings, and the slots registering each wing.
+    registrations: HashMap<(u64, u32), Vec<u64>>,
+    wing_slots: HashMap<u64, HashMap<u32, usize>>,
+    /// Faction names, when Factions is complete.
+    factions: Option<HashMap<u64, FactionName>>,
+    /// Raw references of membership rows that no link names.
+    unresolved_members: HashSet<u32>,
+    /// Each of `ROW_TABLES` that was not complete, as it was. Such a table is
+    /// read whole every hour, so it has no changed rows, and is unchanged
+    /// when it holds the same.
+    incomplete: [Option<SharedView>; ROW_TABLES.len()],
+}
+
+/// The table's view when it is not complete.
+fn incomplete(frame: &DecodedFrame, table: TableId) -> Option<SharedView> {
+    let view = &frame.tables[table.index()];
+    (!matches!(**view, replay::frame::TableView::Complete(_))).then(|| view.clone())
+}
+
+impl Held {
+    fn read(
+        frame: &DecodedFrame,
+        countries: usize,
+        links: &[CountryLinkRow],
+        slot_tags: HashMap<u32, Vec<String>>,
+        colour_tags: HashMap<u32, Vec<String>>,
+        factions: Option<HashMap<u64, FactionName>>,
+    ) -> Self {
+        let mut link_ids = HashMap::<u32, Vec<u32>>::new();
+        for link in links {
+            link_ids
+                .entry(link.canonical_slot)
+                .or_default()
+                .push(link.id);
+        }
+        let unlinked = |raw: &u32| metadata::link_slot(links, *raw).is_none();
+        let mut held = Self {
+            branch: frame.branch,
+            hour: frame.hour,
+            countries,
+            slot_tags,
+            colour_tags,
+            link_ids,
+            orphans: frame
+                .complete::<tables::CountryGameScoreInputs>()
+                .ok()
+                .into_iter()
+                .flatten()
+                .map(|row| row.country)
+                .filter(unlinked)
+                .collect(),
+            registrations: HashMap::new(),
+            wing_slots: HashMap::new(),
+            factions,
+            unresolved_members: frame
+                .complete::<tables::FactionMembers>()
+                .ok()
+                .into_iter()
+                .flatten()
+                .map(|row| row.country)
+                .filter(unlinked)
+                .collect(),
+            incomplete: ROW_TABLES.map(|table| incomplete(frame, table)),
+        };
+        for row in frame
+            .complete::<tables::AirBaseRegistrations>()
+            .ok()
+            .into_iter()
+            .flatten()
+        {
+            held.register((row.base, row.slot), row.wings.clone());
+        }
+        held
+    }
+
+    /// Index a registration's wings in place of those it listed before; no
+    /// wings remove it.
+    fn register(&mut self, key: (u64, u32), wings: Vec<u64>) {
+        for wing in self.registrations.remove(&key).unwrap_or_default() {
+            if let Some(slots) = self.wing_slots.get_mut(&wing) {
+                if let Some(count) = slots.get_mut(&key.1) {
+                    *count -= 1;
+                    if *count == 0 {
+                        slots.remove(&key.1);
+                    }
+                }
+                if slots.is_empty() {
+                    self.wing_slots.remove(&wing);
+                }
+            }
+        }
+        for &wing in &wings {
+            *self
+                .wing_slots
+                .entry(wing)
+                .or_default()
+                .entry(key.1)
+                .or_default() += 1;
+        }
+        if !wings.is_empty() {
+            self.registrations.insert(key, wings);
+        }
+    }
+}
+
+/// The parts of one country's facts an hour's changed rows reach.
+#[derive(Default)]
+struct Parts {
+    values: bool,
+    name: bool,
+    faction: bool,
+    /// The native country whose appearance row holds its colour.
+    colour: Option<u32>,
+}
+
 impl<'a> ScoreObserver<'a> {
     pub(crate) fn new(
         localisation: Option<&'a Localisation>,
@@ -1176,6 +1553,13 @@ impl<'a> ScoreObserver<'a> {
             previous: None,
             country_keys: None,
             current: None,
+            held: None,
+            #[cfg(test)]
+            whole_tables: false,
+            #[cfg(test)]
+            computed: 0,
+            #[cfg(test)]
+            row_hours: 0,
         }
     }
     pub(crate) fn observe(
@@ -1184,7 +1568,48 @@ impl<'a> ScoreObserver<'a> {
         replay: &Replay,
         old_multipliers: &mut impl FnMut() -> GameScoreValues,
     ) -> io::Result<&FrameScores> {
-        if self.previous.as_ref().is_some_and(|(hour, views)| {
+        self.observe_changed(decoded, replay, old_multipliers, None)
+            .map(|(facts, _)| facts)
+    }
+
+    /// The hour's facts and what changed in them. With the hour's changed
+    /// rows, only the countries whose read rows changed are computed again.
+    pub(crate) fn observe_changed(
+        &mut self,
+        decoded: &DecodedFrame,
+        replay: &Replay,
+        old_multipliers: &mut impl FnMut() -> GameScoreValues,
+        changes: Option<&FrameChanges>,
+    ) -> io::Result<(&FrameScores, Change)> {
+        if let Some(changes) = changes
+            && let Some(change) = self.observe_rows(decoded, replay.format, changes)?
+        {
+            let facts = self.current.as_ref().expect("facts read from changed rows");
+            return Ok((facts, change));
+        }
+        if self.reuses(decoded) {
+            let previous = self.previous.as_mut().expect("previous score read");
+            previous.0 = decoded.hour;
+            if let Some(index) = SCORE_TABLES
+                .iter()
+                .position(|table| *table == TableId::Countries)
+            {
+                previous.1[index] = decoded.tables[TableId::Countries.index()].identity();
+            }
+            if let Some(held) = &mut self.held {
+                held.hour = decoded.hour;
+            }
+            let facts = self.current.as_ref().expect("previous score facts");
+            return Ok((facts, Change::Same));
+        }
+        let samples = sample(decoded, replay.format, old_multipliers);
+        Ok((self.present(decoded, samples)?, Change::All))
+    }
+
+    /// Whether every table the facts read is the previous hour's; Countries
+    /// need only hold the same country keys.
+    fn reuses(&self, decoded: &DecodedFrame) -> bool {
+        self.previous.as_ref().is_some_and(|(hour, views)| {
             hour.checked_add(1) == Some(decoded.hour)
                 && views.iter().zip(SCORE_TABLES).all(|(before, table)| {
                     before.is(&decoded.tables[table.index()])
@@ -1202,19 +1627,401 @@ impl<'a> ScoreObserver<'a> {
                                         .is_some_and(|keys| keys.same(rows))
                                 }))
                 })
-        }) {
-            let previous = self.previous.as_mut().expect("previous score read");
-            previous.0 = decoded.hour;
-            if let Some(index) = SCORE_TABLES
-                .iter()
-                .position(|table| *table == TableId::Countries)
-            {
-                previous.1[index] = decoded.tables[TableId::Countries.index()].identity();
-            }
-            return Ok(self.current.as_ref().expect("previous score facts"));
+        })
+    }
+
+    /// Read the hour from its changed rows alone: possible when it continues
+    /// the held hour with the same countries, links and multipliers, every
+    /// changed table it reads changed by one recorded delta, and no name
+    /// reaches slot zero. Computes again only the parts of the countries
+    /// whose read rows changed. None when the whole tables are needed.
+    fn observe_rows(
+        &mut self,
+        decoded: &DecodedFrame,
+        format: FormatVersion,
+        changes: &FrameChanges,
+    ) -> io::Result<Option<Change>> {
+        #[cfg(test)]
+        if self.whole_tables {
+            return Ok(None);
         }
-        let samples = sample(decoded, replay.format, old_multipliers);
-        self.present(decoded, samples)
+        let (Some(held), Some(names), Some(_)) = (&self.held, &self.names, &self.current) else {
+            return Ok(None);
+        };
+        if held.branch != decoded.branch
+            || held.hour.checked_add(1) != Some(decoded.hour)
+            || names.views.is_empty()
+            || changes.rows_changed[TableId::CountryLinks.index()]
+        {
+            return Ok(None);
+        }
+        let Some(countries) = changes.rows(TableId::Countries) else {
+            return Ok(None);
+        };
+        if touches(countries, *HOLDER_FIELDS) {
+            return Ok(None);
+        }
+        let (Ok(country_rows), Ok(links)) = (
+            decoded.complete::<tables::Countries>(),
+            decoded.complete::<tables::CountryLinks>(),
+        ) else {
+            return Ok(None);
+        };
+        if country_rows.len() != held.countries {
+            return Ok(None);
+        }
+        let mut rows: [(&[DeltaRow], &[u128]); ROW_TABLES.len()] = [(&[], &[]); ROW_TABLES.len()];
+        for ((rows, table), before) in rows.iter_mut().zip(ROW_TABLES).zip(&held.incomplete) {
+            *rows = match changes.rows(table) {
+                Some(changed) => changed,
+                None if before
+                    .as_ref()
+                    .is_some_and(|before| *before == decoded.tables[table.index()]) =>
+                {
+                    (&[], &[])
+                }
+                None => return Ok(None),
+            };
+        }
+        let [
+            multipliers,
+            inputs,
+            factories,
+            registrations,
+            wings,
+            appearance,
+            politics,
+            parties,
+            autonomy,
+            members,
+            factions,
+            tokens,
+        ] = rows;
+        if touches(multipliers, u64::MAX) {
+            return Ok(None);
+        }
+        let fresh_names = if touches(appearance, *APPEARANCE_NAME_FIELDS)
+            || touches(politics, *RULING_PARTY_FIELDS)
+            || touches(parties, *PARTY_TOKEN_FIELDS)
+            || touches(autonomy, *AUTONOMY_FIELDS)
+        {
+            let fresh = HourNames::read(
+                decoded,
+                country_rows,
+                self.localisation.unwrap_or(self.fallback),
+            );
+            // Names that reach slot zero are read whole, every hour.
+            if fresh.views.is_empty() {
+                return Ok(None);
+            }
+            Some(fresh)
+        } else {
+            None
+        };
+        #[cfg(test)]
+        {
+            self.row_hours += 1;
+        }
+        self.previous = Some((
+            decoded.hour,
+            SCORE_TABLES
+                .iter()
+                .map(|table| decoded.tables[table.index()].identity())
+                .collect(),
+        ));
+        let Self {
+            localisation,
+            fallback,
+            templates,
+            recorded_language,
+            lexical,
+            names,
+            current,
+            held,
+            ..
+        } = self;
+        let held = held.as_mut().expect("held score operands");
+        held.hour = decoded.hour;
+        held.incomplete = ROW_TABLES.map(|table| incomplete(decoded, table));
+        // A change to Countries alone, without a holder change, reads nothing.
+        if !SCORE_TABLES
+            .iter()
+            .any(|table| *table != TableId::Countries && changes.rows_changed[table.index()])
+        {
+            return Ok(Some(Change::Same));
+        }
+        let mut name_slots = HashSet::new();
+        if let Some(fresh) = fresh_names {
+            let before = names.as_ref().expect("held names");
+            name_slots.extend(
+                held.slot_tags
+                    .keys()
+                    .copied()
+                    .filter(|slot| chain_changed(&before.names, &fresh.names, *slot)),
+            );
+            *names = Some(fresh);
+        }
+        let names = names.as_mut().expect("held names");
+        let mut value_slots = HashSet::new();
+        let mut faction_slots = HashSet::new();
+        let mut noted = BTreeMap::<(GameScoreMissingKind, String), i64>::new();
+        for row in inputs.0 {
+            let raw = row.key as u32;
+            match metadata::link_slot(links, raw) {
+                Some(slot) => {
+                    if reads(row, *INPUT_FIELDS) {
+                        value_slots.insert(slot);
+                    }
+                }
+                None => {
+                    if held.orphans.insert(raw) {
+                        *noted.entry(orphan_input(raw)).or_default() += 1;
+                    }
+                }
+            }
+        }
+        for &key in inputs.1 {
+            let raw = key as u32;
+            match metadata::link_slot(links, raw) {
+                Some(slot) => {
+                    value_slots.insert(slot);
+                }
+                None => {
+                    if held.orphans.remove(&raw) {
+                        *noted.entry(orphan_input(raw)).or_default() -= 1;
+                    }
+                }
+            }
+        }
+        for raw in factories
+            .0
+            .iter()
+            .filter(|row| reads(row, *FACTORY_FIELDS))
+            .map(|row| row.key)
+            .chain(factories.1.iter().copied())
+        {
+            value_slots.extend(metadata::link_slot(links, raw as u32));
+        }
+        let registered = decoded.complete::<tables::AirBaseRegistrations>().ok();
+        for row in registrations.0 {
+            if !reads(row, *REGISTRATION_FIELDS) {
+                continue;
+            }
+            let key = ((row.key >> 32) as u64, row.key as u32);
+            let wings = registered
+                .and_then(|rows| {
+                    rows.binary_search_by_key(&key, |row| (row.base, row.slot))
+                        .ok()
+                        .map(|index| rows[index].wings.clone())
+                })
+                .unwrap_or_default();
+            held.register(key, wings);
+            value_slots.insert(key.1);
+        }
+        for &key in registrations.1 {
+            let key = ((key >> 32) as u64, key as u32);
+            held.register(key, Vec::new());
+            value_slots.insert(key.1);
+        }
+        for wing in wings
+            .0
+            .iter()
+            .filter(|row| reads(row, *WING_FIELDS))
+            .map(|row| row.key)
+            .chain(wings.1.iter().copied())
+        {
+            if let Some(slots) = held.wing_slots.get(&(wing as u64)) {
+                value_slots.extend(slots.keys().copied());
+            }
+        }
+        let colour_ids: HashSet<u32> = appearance
+            .0
+            .iter()
+            .filter(|row| reads(row, *COLOUR_FIELDS))
+            .map(|row| row.key as u32)
+            .chain(appearance.1.iter().map(|key| *key as u32))
+            .collect();
+        let unresolved = !held.unresolved_members.is_empty();
+        for (raw, present) in members
+            .0
+            .iter()
+            .map(|row| (row.key as u32, true))
+            .chain(members.1.iter().map(|key| (*key as u32, false)))
+        {
+            match metadata::link_slot(links, raw) {
+                Some(slot) => {
+                    faction_slots.insert(slot);
+                }
+                None if present => {
+                    held.unresolved_members.insert(raw);
+                }
+                None => {
+                    held.unresolved_members.remove(&raw);
+                }
+            }
+        }
+        // Known no-faction needs every membership link resolved.
+        let mut all_factions = unresolved != !held.unresolved_members.is_empty();
+        if touches(factions, *FACTION_NAME_FIELDS) || touches(tokens, u64::MAX) {
+            if lexical.as_ref().is_none_or(|previous| {
+                !previous
+                    .tokens
+                    .matches(&decoded.tables[TableId::LexicalTokens.index()])
+            }) {
+                *lexical = Some(FactionLexical::new(decoded));
+            }
+            let fresh = lexical.as_ref().and_then(|lexical| {
+                faction_names_at(
+                    decoded,
+                    *localisation,
+                    *fallback,
+                    *recorded_language,
+                    templates.as_ref().copied().map_err(Clone::clone),
+                    lexical,
+                )
+            });
+            match (&held.factions, &fresh) {
+                (Some(before), Some(after)) => {
+                    let renamed: HashSet<u64> = before
+                        .keys()
+                        .chain(after.keys())
+                        .filter(|id| before.get(id) != after.get(id))
+                        .copied()
+                        .collect();
+                    if !renamed.is_empty() {
+                        for row in decoded
+                            .complete::<tables::FactionMembers>()
+                            .ok()
+                            .into_iter()
+                            .flatten()
+                            .filter(|row| renamed.contains(&row.faction))
+                        {
+                            faction_slots.extend(metadata::link_slot(links, row.country));
+                        }
+                    }
+                }
+                (None, None) => {}
+                _ => all_factions = true,
+            }
+            held.factions = fresh;
+        }
+        let held = &*held;
+        let mut dirty = BTreeMap::<&str, Parts>::new();
+        let mut reach = |slots: &mut dyn Iterator<Item = u32>, part: fn(&mut Parts)| {
+            for slot in slots {
+                for tag in held.slot_tags.get(&slot).into_iter().flatten() {
+                    part(dirty.entry(tag.as_str()).or_default());
+                }
+            }
+        };
+        reach(&mut value_slots.into_iter(), |parts| parts.values = true);
+        reach(&mut name_slots.into_iter(), |parts| parts.name = true);
+        if all_factions {
+            reach(&mut held.slot_tags.keys().copied(), |parts| {
+                parts.faction = true;
+            });
+        } else {
+            reach(&mut faction_slots.into_iter(), |parts| parts.faction = true);
+        }
+        for id in colour_ids {
+            for tag in held.colour_tags.get(&id).into_iter().flatten() {
+                dirty.entry(tag.as_str()).or_default().colour = Some(id);
+            }
+        }
+        let current = current.as_mut().expect("held score facts");
+        let multipliers = current.multipliers.clone();
+        let input_refusal = format.table_refusal(TableId::CountryGameScoreInputs);
+        let context = ScoreContext {
+            frame: decoded,
+            multipliers: &multipliers,
+            input_refusal: input_refusal.as_deref(),
+            wings: decoded.complete::<tables::AirWingGameScoreStats>().ok(),
+            registrations: decoded.complete::<tables::AirBaseRegistrations>().ok(),
+        };
+        let input_rows = decoded.complete::<tables::CountryGameScoreInputs>().ok();
+        let factory_rows = decoded.complete::<tables::CountryFactories>().ok();
+        let member_rows = decoded.complete::<tables::FactionMembers>().ok();
+        let mut changed = Vec::new();
+        #[cfg(test)]
+        let mut computed = 0;
+        for (tag, parts) in dirty {
+            let Some(before) = current.countries.get(tag) else {
+                continue;
+            };
+            let Some(slot) = before.1.canonical_slot else {
+                continue;
+            };
+            #[cfg(test)]
+            {
+                computed += 1;
+            }
+            let ids = held.link_ids.get(&slot).map_or(&[][..], Vec::as_slice);
+            let (mut values, mut identity) = before.clone();
+            if parts.values {
+                values = context.scores(
+                    input_rows.and_then(|rows| slot_row(rows, ids, |row| row.country).one()),
+                    slot,
+                    factory_rows.and_then(|rows| slot_row(rows, ids, |row| row.country).one()),
+                );
+            }
+            if parts.name {
+                (identity.name, identity.name_missing) = names.name(slot);
+            }
+            if let Some(country) = parts.colour {
+                (identity.color, identity.color_missing) =
+                    colour(decoded, appearance_colour(decoded, country)?);
+            }
+            if parts.faction {
+                let membership =
+                    member_rows.map(|rows| match slot_row(rows, ids, |row| row.country) {
+                        SlotRow::Absent if held.unresolved_members.is_empty() => {
+                            Membership::NoFaction
+                        }
+                        SlotRow::One(member) => Membership::Member(member),
+                        SlotRow::Absent | SlotRow::Ambiguous => Membership::Unknown,
+                    });
+                (identity.faction, identity.faction_missing) =
+                    faction(membership, held.factions.as_ref());
+            }
+            if (&values, &identity) == (&before.0, &before.1) {
+                continue;
+            }
+            for missing in notes(&before.0, &before.1) {
+                *noted
+                    .entry((missing.kind.clone(), missing.reason.clone()))
+                    .or_default() -= 1;
+            }
+            for missing in notes(&values, &identity) {
+                *noted
+                    .entry((missing.kind.clone(), missing.reason.clone()))
+                    .or_default() += 1;
+            }
+            current.countries.insert(tag.to_owned(), (values, identity));
+            changed.push(tag.to_owned());
+        }
+        let mut warnings = Vec::new();
+        for (key, delta) in noted {
+            if delta == 0 {
+                continue;
+            }
+            let count = current.warnings.entry(key.clone()).or_default();
+            *count = count
+                .checked_add_signed(delta)
+                .ok_or_else(|| dashboard_core::invalid("game_score warning count underflow"))?;
+            if *count == 0 {
+                current.warnings.remove(&key);
+            }
+            warnings.push(key);
+        }
+        current.projected = decoded.hour;
+        #[cfg(test)]
+        {
+            self.computed += computed;
+        }
+        Ok(Some(Change::Countries {
+            tags: changed,
+            warnings,
+        }))
     }
 
     /// One hour can prove its appearance, but cannot prove prior race continuity.
@@ -1234,6 +2041,7 @@ impl<'a> ScoreObserver<'a> {
             decoded.complete::<tables::CountryLinks>(),
         ) else {
             self.previous = None;
+            self.held = None;
             self.current = Some(FrameScores {
                 projected: decoded.hour,
                 multipliers,
@@ -1273,6 +2081,16 @@ impl<'a> ScoreObserver<'a> {
             ));
         }
         let names = self.names.as_mut().expect("names agree with this hour");
+        // A tag's colour is read from the first Countries row with its
+        // (lossy) tag, as the shared style reader keys them.
+        let mut style_rows = HashMap::<Cow<'_, str>, u32>::new();
+        for row in country_rows {
+            style_rows
+                .entry(String::from_utf8_lossy(&row.tag))
+                .or_insert(row.id);
+        }
+        let mut slot_tags = HashMap::<u32, Vec<String>>::new();
+        let mut colour_tags = HashMap::<u32, Vec<String>>::new();
         for (tag, country) in tagged_countries(country_rows, links) {
             let tag = match std::str::from_utf8(tag) {
                 Ok(tag) => tag.to_owned(),
@@ -1283,20 +2101,17 @@ impl<'a> ScoreObserver<'a> {
                 .expect("score sampler covers tagged countries");
             let identity = match country {
                 TaggedCountry::Found(country, slot) => {
-                    let (faction, faction_missing) =
-                        faction(members.as_ref(), factions.as_ref(), slot);
-                    let style = styles.get(&tag);
+                    slot_tags.entry(slot).or_default().push(tag.clone());
+                    if let Some(&id) = style_rows.get(tag.as_str()) {
+                        colour_tags.entry(id).or_default().push(tag.clone());
+                    }
+                    let (faction, faction_missing) = faction(
+                        members.as_ref().map(|members| membership(members, slot)),
+                        factions.as_ref(),
+                    );
                     let (name, name_missing) = names.name(slot);
-                    let color = style.and_then(|style| style.color);
-                    let color_missing = color.is_none().then(|| {
-                        recording_missing(
-                            table_missing_reason(decoded, TableId::CountryAppearance)
-                                .unwrap_or_else(|| {
-                                    "CountryAppearance has no unambiguous colour for this country"
-                                        .into()
-                                }),
-                        )
-                    });
+                    let (color, color_missing) =
+                        colour(decoded, styles.get(&tag).and_then(|style| style.color));
                     GameScoreIdentity {
                         canonical_slot: Some(slot),
                         native_country: Some(country.id),
@@ -1339,12 +2154,24 @@ impl<'a> ScoreObserver<'a> {
             }
             countries.insert(tag, (values, identity));
         }
+        #[cfg(test)]
+        {
+            self.computed += countries.len();
+        }
         self.previous = Some((
             decoded.hour,
             SCORE_TABLES
                 .iter()
                 .map(|table| decoded.tables[table.index()].identity())
                 .collect(),
+        ));
+        self.held = Some(Held::read(
+            decoded,
+            country_rows.len(),
+            links,
+            slot_tags,
+            colour_tags,
+            factions,
         ));
         self.current = Some(FrameScores {
             projected: decoded.hour,

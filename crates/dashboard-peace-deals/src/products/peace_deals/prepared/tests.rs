@@ -296,3 +296,60 @@ fn peace_events_preserve_five_thousand_countries_and_finalized_rows_leave_the_ch
     );
     assert!(after <= before + 128);
 }
+
+/// Fresh observers of one recording write the same continuation bytes: each
+/// owner's states and each overlord's subjects are listed in order, not hashed.
+#[test]
+fn peace_fresh_observers_write_the_same_continuation() {
+    use replay::{
+        frame::TableView,
+        rows::{SubjectRow, TableRows},
+    };
+    let recording = replay(vec![frame(100, 64, false, &[9])]);
+    let mut first = frame(100, 64, false, &[9]);
+    if let TableView::Complete(TableRows::States(rows)) =
+        &mut *first.tables[TableId::States.index()]
+    {
+        for row in rows.iter_mut() {
+            row.owner = 1_001 + row.id % 3;
+        }
+    }
+    if let TableView::Complete(TableRows::Subjects(rows)) =
+        &mut *first.tables[TableId::Subjects.index()]
+    {
+        rows.extend((2..=64).map(|subject| SubjectRow {
+            overlord: 1_001,
+            subject: 1_000 + subject,
+            start_hour: 90,
+            state: b"authored subject".to_vec(),
+            ..Default::default()
+        }));
+    }
+    let mut second = first.clone();
+    second.hour = 101;
+    let continuations: Vec<_> = (0..2)
+        .map(|_| {
+            let mut prepared = Prepared::new(&recording, 1);
+            for frame in [&first, &second] {
+                prepared.observe(frame).unwrap();
+            }
+            let previous = prepared.scan.previous.as_ref().unwrap();
+            assert_eq!(previous.states_by_owner.len(), 3);
+            assert_eq!(previous.subject_targets["country/1"].len(), 63);
+            assert!(
+                previous
+                    .states_by_owner
+                    .values()
+                    .all(|states| states.windows(2).all(|pair| pair[0] < pair[1]))
+            );
+            assert!(
+                previous
+                    .subject_targets
+                    .values()
+                    .all(|subjects| subjects.windows(2).all(|pair| pair[0] < pair[1]))
+            );
+            serde_json::to_vec(&(&prepared.scan, &prepared.ordinals)).unwrap()
+        })
+        .collect();
+    assert_eq!(continuations[0], continuations[1]);
+}

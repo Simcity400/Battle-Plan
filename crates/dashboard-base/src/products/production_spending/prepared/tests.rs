@@ -378,6 +378,7 @@ fn production_spending_shared_runs_keep_new_refit_and_rocket_source_extrema_dist
 #[cfg(feature = "slow-tests")]
 #[test]
 fn production_spending_preserves_all_5000_country_endpoints_and_sparse_leaf_keys() {
+    use replay::rows::{CountryLinkRow, CountryRow, ProductionLineOutputRow, ProductionLineRow};
     let flag = AtomicBool::new(false);
     let mut frame = day(0, vec![], Some(vec![])).remove(0);
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(

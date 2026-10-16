@@ -157,6 +157,10 @@ struct FamilyScan {
     leaves: BTreeMap<LeafKey, BTreeMap<(i32, i32), i128>>,
     warnings: BTreeMap<String, usize>,
     last_event: Option<u64>,
+    /// The first hour of an unread event interval since the last read with
+    /// events: the collector may restart its event identities across it.
+    #[serde(default)]
+    unread_since: Option<i32>,
     presence_through: Option<i32>,
     #[serde(skip)]
     identities: Option<IdentityOperands>,
@@ -177,6 +181,26 @@ struct IdentityOperands {
 impl FamilyScan {
     fn note(&mut self, reason: impl Into<String>) {
         *self.warnings.entry(reason.into()).or_default() += 1;
+    }
+
+    /// An event table not read completely this hour.
+    fn unread(&mut self, hour: i32) {
+        self.unread_since.get_or_insert(hour);
+    }
+
+    /// The first read with events after an unread interval starts a new
+    /// identity epoch when its identities restart and every event in it is
+    /// dated within or after that interval: those events were never read
+    /// before. Any other backwards identity still refuses.
+    fn begin_read(&mut self, first: Option<u64>, earliest: Option<i32>) {
+        let (Some(first), Some(earliest), Some(since)) = (first, earliest, self.unread_since)
+        else {
+            return;
+        };
+        self.unread_since = None;
+        if self.last_event.is_some_and(|last| first <= last) && earliest >= since {
+            self.last_event = None;
+        }
     }
 
     fn event(&mut self, id: u64) -> io::Result<()> {
@@ -299,6 +323,9 @@ impl FamilyScan {
             || frame.complete::<tables::Countries>().is_err()
             || frame.complete::<tables::CountryLinks>().is_err()
         {
+            if !complete {
+                self.unread(frame.hour);
+            }
             self.seal_presence();
             self.identities = None;
             self.presence_through = None;
@@ -408,6 +435,7 @@ fn event_country(
 #[cfg(any(test, feature = "test-support"))]
 fn air_frame(scan: &mut FamilyScan, frame: &DecodedFrame) -> io::Result<()> {
     if frame.complete::<tables::AirLossEvents>().is_err() {
+        scan.unread(frame.hour);
         return Ok(());
     }
     let countries = match scan.identity_read(frame) {
@@ -425,6 +453,10 @@ fn air_events(
     countries: &BTreeMap<u32, (String, String)>,
 ) -> io::Result<()> {
     let rows = frame.complete::<tables::AirLossEvents>()?;
+    scan.begin_read(
+        rows.first().map(|row| row.id),
+        rows.iter().map(|row| row.game_hour).min(),
+    );
     for row in rows {
         #[cfg(test)]
         {
@@ -469,6 +501,7 @@ fn air_events(
 #[cfg(any(test, feature = "test-support"))]
 fn bombing_frame(scan: &mut FamilyScan, frame: &DecodedFrame) -> io::Result<()> {
     if frame.complete::<tables::BuildingBombingDamage>().is_err() {
+        scan.unread(frame.hour);
         return Ok(());
     }
     let countries = match scan.identity_read(frame) {
@@ -486,6 +519,10 @@ fn bombing_events(
     countries: &BTreeMap<u32, (String, String)>,
 ) -> io::Result<()> {
     let rows = frame.complete::<tables::BuildingBombingDamage>()?;
+    scan.begin_read(
+        rows.first().map(|row| row.id),
+        rows.iter().map(|row| row.game_hour).min(),
+    );
     if rows
         .iter()
         .any(|row| row.cause == BuildingBombingDamageCause::Unknown)

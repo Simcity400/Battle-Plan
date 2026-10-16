@@ -3104,6 +3104,80 @@ fn hours_reading_one_lexer_table_share_its_folds() {
     ));
 }
 
+/// A claimant evaluation on a world whose claims are already built records
+/// the claims it read, as the core-owner trigger records cores, so a later
+/// hour whose claims changed does not confirm a reused result.
+#[test]
+fn claimed_by_on_a_warmed_world_records_the_claims_it_read() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    use crate::triggers::inputs::{Key, capture};
+    use replay::rows::StateCoreRow;
+    let with_claims = |claims: Vec<u32>| {
+        let mut f = with_variables(frame(&original_countries(), &[]), &[]);
+        *f.tables[TableId::StateCores.index()] =
+            TableView::Complete(TableRows::StateCores(vec![StateCoreRow {
+                state: 64,
+                cores: vec![104],
+                claims: claims.into(),
+            }]));
+        f
+    };
+    let (before, after) = (with_claims(vec![104]), with_claims(Vec::new()));
+    let dlcs = BTreeSet::new();
+    let names = TriggerNames::default();
+    let aliases = Arc::new(TagAliases::default());
+    let world = World::read(&before, ContentFacts::content_only(&dlcs, &names, &aliases));
+    let body = items("is_claimed_by = FRA");
+    let scopes = || Scopes::of(Scope::State(64));
+    // The first evaluation builds the world's claims; the second reuses them.
+    assert_eq!(world.evaluate(&body, scopes()), Eval::True);
+    let (eval, inputs) = capture(&before, || world.evaluate(&body, scopes()));
+    assert_eq!(eval, Eval::True);
+    let later = World::read(&after, ContentFacts::content_only(&dlcs, &names, &aliases));
+    let reread = |world: &World<'_>, key: &Key| match key {
+        Key::World(query) => Some(world.reread(query)),
+        Key::Scopes(query) => Some(world.recorded().reread(query)),
+        _ => None,
+    };
+    assert!(inputs.confirm(&before, |key| reread(&world, key)));
+    assert!(!inputs.confirm(&after, |key| reread(&later, key)));
+}
+
+/// An invasion-preparation read on a world whose index is already built still
+/// records the table, so a later hour whose preparation progressed does not
+/// confirm a reused result.
+#[test]
+fn invasion_preparation_on_a_warmed_world_records_its_table() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    use crate::triggers::inputs::capture;
+    use replay::rows::InvasionPreparationRow;
+    let with_progress = |progress| {
+        let mut f = with_variables(frame(&original_countries(), &[]), &[]);
+        *f.tables[TableId::InvasionPreparations.index()] =
+            TableView::Complete(TableRows::InvasionPreparations(vec![
+                InvasionPreparationRow {
+                    owner_group: 7,
+                    instance: 1,
+                    progress,
+                    ..Default::default()
+                },
+            ]));
+        f
+    };
+    let (before, after) = (with_progress(5), with_progress(6));
+    let dlcs = BTreeSet::new();
+    let names = TriggerNames::default();
+    let aliases = Arc::new(TagAliases::default());
+    let world = World::read(&before, ContentFacts::content_only(&dlcs, &names, &aliases));
+    // The first read builds the index; the second reuses it.
+    let _ = world.invasion_preparation((7, 1));
+    let (_, inputs) = capture(&before, || world.invasion_preparation((7, 1)));
+    assert!(inputs.confirm(&before, |_| None));
+    assert!(!inputs.confirm(&after, |_| None));
+}
+
 /// The claimant trigger tests the state's recorded claims by canonical slot,
 /// an alias included, as the core-owner trigger tests cores; a recording
 /// without claims leaves it unknown. Before claims were recorded the name

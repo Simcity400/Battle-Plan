@@ -11,6 +11,75 @@ use dashboard_base::{
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
 
+/// The complete recorded tables the stateless stability sampler reads.
+pub const TABLES: &[replay::rows::TableId] = &[
+    replay::rows::TableId::Countries,
+    replay::rows::TableId::CountryLinks,
+    replay::rows::TableId::CountryStabilityInputs,
+    replay::rows::TableId::CountryCommandPower,
+    replay::rows::TableId::SliceReads,
+];
+/// Displayed measures, in the order the production step yields them.
+const MEASURES: [&str; 3] = ["stability", "warSupport", "maxCommandPower"];
+/// The supplying inputs read's hour, kept beside the measures it dates.
+use dashboard_base::prepared_measure::query::READ_HOUR;
+
+/// Stateless extraction shared by preparation and direct progressive queries:
+/// the observer's production step over one frame with no carried state.
+/// Requested measures add their country's supplying read hour. A measure the
+/// frame cannot compute has no holder, so it ends the native segment exactly
+/// as the observer's unknown value does.
+pub fn sample(
+    frame: &replay::frame::DecodedFrame,
+    requested: Option<&[(String, String)]>,
+) -> io::Result<dashboard_base::prepared::query::progressive::Samples> {
+    if requested.is_some_and(|keys| {
+        keys.iter()
+            .any(|(_, field)| field != READ_HOUR && !MEASURES.contains(&field.as_str()))
+    }) {
+        return Err(dashboard_core::invalid("Unknown stability sample measure"));
+    }
+    let wanted = requested.map(|keys| {
+        keys.iter()
+            .flat_map(|(tag, field)| [(tag.as_str(), field.as_str()), (tag.as_str(), READ_HOUR)])
+            .collect::<std::collections::BTreeSet<_>>()
+    });
+    let tags = requested.map(|keys| {
+        keys.iter()
+            .map(|(tag, _)| tag.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+    });
+    let mut result = dashboard_base::prepared::query::progressive::Samples::new();
+    country_stability::Scan::default().step(
+        frame,
+        tags.as_ref(),
+        None,
+        |tag, row, slot, read, values, _, _| {
+            let identity = (slot, row.country);
+            for (field, value) in std::iter::once((READ_HOUR, Some(i64::from(read))))
+                .chain(MEASURES.into_iter().zip(values))
+            {
+                if wanted
+                    .as_ref()
+                    .is_none_or(|keys| keys.contains(&(tag, field)))
+                {
+                    result.insert(
+                        (tag.to_owned(), field.to_owned()),
+                        (value.map(|_| identity), value.map(i128::from)),
+                    );
+                }
+            }
+            Ok(())
+        },
+    )?;
+    for (tag, field) in wanted.into_iter().flatten() {
+        result
+            .entry((tag.to_owned(), field.to_owned()))
+            .or_insert((None, None));
+    }
+    Ok(result)
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Actor {
     tag: String,

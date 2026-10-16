@@ -567,22 +567,16 @@ struct Snapshot {
     #[serde(with = "dashboard_core::map_pairs::shared")]
     wars: Arc<HashMap<(String, String), (i32, i32)>>,
     unresolved_wars: Arc<Vec<(u32, u32)>>,
-    #[serde(
-        serialize_with = "dashboard_core::map_pairs::ordered_shared_optional_map"
-    )]
+    #[serde(serialize_with = "dashboard_core::map_pairs::ordered_shared_optional_map")]
     vps: Option<Arc<HashMap<u32, i64>>>,
     #[serde(with = "dashboard_core::map_pairs::shared")]
     subjects: Arc<HashMap<(String, String), (i32, String)>>,
     subjects_known: bool,
     #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
     subject_targets: Arc<HashMap<String, Vec<String>>>,
-    #[serde(
-        serialize_with = "dashboard_core::map_pairs::ordered_shared_optional_map"
-    )]
+    #[serde(serialize_with = "dashboard_core::map_pairs::ordered_shared_optional_map")]
     governments: Option<Arc<HashMap<Tag, PeaceGovernment>>>,
-    #[serde(
-        serialize_with = "dashboard_core::map_pairs::ordered_shared_optional_map"
-    )]
+    #[serde(serialize_with = "dashboard_core::map_pairs::ordered_shared_optional_map")]
     exists: Option<Arc<HashMap<Tag, bool>>>,
     state_action_key: Option<String>,
 }
@@ -713,6 +707,10 @@ impl SnapshotInputs {
                     for (&id, tag) in &owners {
                         by_owner.entry(tag.clone()).or_default().push(id);
                     }
+                    // State order, not hash order: the continuation stores these lists.
+                    for states in by_owner.values_mut() {
+                        states.sort_unstable();
+                    }
                     (Arc::new(owners), Arc::new(by_owner), Arc::new(unresolved))
                 });
         }
@@ -777,6 +775,10 @@ impl SnapshotInputs {
                         let mut targets = HashMap::<String, Vec<String>>::new();
                         for (a, b) in subjects.keys() {
                             targets.entry(a.clone()).or_default().push(b.clone());
+                        }
+                        // Tag order, not hash order: the continuation stores these lists.
+                        for subjects in targets.values_mut() {
+                            subjects.sort_unstable();
                         }
                         Some((Arc::new(subjects), Arc::new(targets)))
                     });
@@ -1184,6 +1186,7 @@ impl Scan {
                 rows_changed: [true; replay::frame::TABLE_COUNT],
                 table_read: [true; replay::frame::TABLE_COUNT],
                 slot_read: [true; replay::frame::TABLE_COUNT],
+                updates: None,
             },
         )
     }
@@ -1663,8 +1666,9 @@ fn populate(
             deal.limitations.push(format!("WarRelations pairs are unresolved or conflicting at hour {} (raw countries): {:?}; those pairs cannot attribute transfers.", sample.hour, sample.unresolved_wars));
         }
     }
-    let mut winners = HashSet::new();
-    let mut losers = HashSet::new();
+    // Ordered: per-country limitations and items are listed in tag order.
+    let mut winners = std::collections::BTreeSet::new();
+    let mut losers = std::collections::BTreeSet::new();
     let mut removed_war = false;
     for item in &items {
         if let PeaceChange::StateTransfer { from, to, .. } = &item.change {
@@ -1837,9 +1841,7 @@ fn populate(
         deal.limitations.push("The outcome reads span several hours; only their net difference is known, not individual action times.".into());
     }
     deal.winners = winners.into_iter().collect();
-    deal.winners.sort();
     deal.losers = losers.into_iter().collect();
-    deal.losers.sort();
     items.sort_by(|a, b| item_order(a).cmp(&item_order(b)));
     let mut graph = GraphBuilder::default();
     for item in &items {

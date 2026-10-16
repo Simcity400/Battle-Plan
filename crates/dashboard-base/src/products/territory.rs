@@ -730,12 +730,25 @@ fn observe(
         if deferred {
             builder.seal(scan);
         }
-        if builder.previous_hour.is_some()
-            && let Some(index) = &builder.lineage
-        {
-            builder
-                .changed
-                .extend(index.present.iter().cloned().map(|tag| (tag, [true; 8])));
+        if let Some(hour) = builder.previous_hour {
+            match &builder.lineage {
+                Some(index) => builder
+                    .changed
+                    .extend(index.present.iter().cloned().map(|tag| (tag, [true; 8]))),
+                // A restored builder has no join; publication sealed the present
+                // spans of that hour's holders at it.
+                None => builder.changed.extend(
+                    scan.series
+                        .iter()
+                        .filter(|(_, track)| {
+                            track
+                                .present
+                                .last()
+                                .is_some_and(|span| span.last_hour == hour)
+                        })
+                        .map(|(tag, _)| (Arc::clone(tag), [true; 8])),
+                ),
+            }
         }
         scan.incomplete += 1;
         builder.previous_hour = None;
@@ -765,13 +778,6 @@ fn observe(
     }
     if deferred {
         builder.seal_world(scan);
-    }
-    // A restored builder has no decoder projections. Its persisted open facts
-    // are materialized at publication, so this one cold pass closes removed keys.
-    if deferred && builder.lineage.is_none() {
-        builder
-            .changed
-            .extend(scan.series.keys().cloned().map(|tag| (tag, [true; 8])));
     }
     let replaced = if same {
         None
@@ -867,6 +873,26 @@ fn observe(
                 }
                 record_hour(&mut track.present, frame.hour);
                 builder.changed.insert(Arc::clone(tag), [true; 8]);
+            }
+        }
+        // A restored builder has no previous join, but publication sealed it
+        // into the tracks at `previous_hour`: that hour's holders end a present
+        // span there and its resolved holders a native identity. Close exactly
+        // what that join would close; other keys keep their published state.
+        if before.is_none()
+            && let Some(hour) = builder.previous_hour
+        {
+            for (tag, track) in &scan.series {
+                let was_present = track
+                    .present
+                    .last()
+                    .is_some_and(|span| span.last_hour == hour);
+                let was_resolved = track.last.as_ref().is_some_and(|(_, seen)| *seen == hour);
+                if (was_present && !present.contains(tag))
+                    || (was_resolved && present.contains(tag) && !resolved.contains(tag.as_ref()))
+                {
+                    builder.changed.insert(Arc::clone(tag), [true; 8]);
+                }
             }
         }
     }

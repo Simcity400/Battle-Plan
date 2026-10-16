@@ -7,6 +7,7 @@ pub mod frame_changes;
 pub mod group_sum;
 #[cfg(any(test, feature = "test-support"))]
 pub mod observer_tests;
+pub mod prepass;
 pub mod series;
 mod store;
 pub mod timing;

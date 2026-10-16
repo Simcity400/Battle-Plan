@@ -17,6 +17,14 @@ pub struct Prepared {
     active: std::collections::BTreeSet<u64>,
     frontier: Option<i32>,
     observed: Option<i32>,
+    /// The observed hour's holders, so that an hour's changed countries are
+    /// observed alone. A restored state reads them at its next whole hour.
+    #[serde(skip)]
+    holders: Option<Holders>,
+    /// Each present warning's count per hour, added to the catalogue's
+    /// observations when it changes and at publication.
+    #[serde(skip)]
+    counting: Option<Counting>,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
@@ -44,6 +52,85 @@ pub struct GameScoreStateReply {
     /// Direct frame values beyond accepted preparation have no proven race continuity.
     pub approximate: bool,
 }
+
+/// Each country's native holder and whether its total is known, at the
+/// observed hour.
+#[derive(Default)]
+struct Holders {
+    /// Each country's holder key, when found, and whether its total is known.
+    tags: HashMap<String, (Option<String>, bool)>,
+    /// Countries by holder key.
+    countries: HashMap<String, Vec<String>>,
+    /// Countries of each holder whose total is known.
+    live: HashMap<String, usize>,
+}
+
+impl Holders {
+    fn insert(&mut self, tag: &str, holder: Option<String>, known: bool) {
+        if let Some(holder) = &holder {
+            self.countries
+                .entry(holder.clone())
+                .or_default()
+                .push(tag.to_owned());
+            if known {
+                *self.live.entry(holder.clone()).or_default() += 1;
+            }
+        }
+        self.tags.insert(tag.to_owned(), (holder, known));
+    }
+
+    /// Whether any of the holder's countries has a known total.
+    fn is_live(&self, holder: &str) -> bool {
+        self.live.get(holder).is_some_and(|count| *count > 0)
+    }
+}
+
+/// Observed hours, and each present warning's per-hour count with the hour
+/// count through which it was added to the catalogue.
+#[derive(Default)]
+struct Counting {
+    hours: u64,
+    counts: BTreeMap<(GameScoreMissingKind, String), (u64, u64)>,
+}
+
+/// The native holder a country's continuity is keyed by.
+fn holder(identity: &GameScoreIdentity) -> io::Result<Option<String>> {
+    match (identity.canonical_slot, identity.native_country) {
+        (Some(slot), Some(country)) => Ok(Some(serde_json::to_string(&(slot, country))?)),
+        _ => Ok(None),
+    }
+}
+
+fn same_holder(before: Option<&GameScoreIdentity>, identity: &GameScoreIdentity) -> bool {
+    before.is_some_and(|before| {
+        before.canonical_slot == identity.canonical_slot
+            && before.native_country == identity.native_country
+    })
+}
+
+/// Add observations of one warning, keeping the catalogue in reason order.
+fn add_observations(
+    warnings: &mut Vec<GameScoreWarning>,
+    (kind, reason): &(GameScoreMissingKind, String),
+    observations: u64,
+) {
+    if observations == 0 {
+        return;
+    }
+    match warnings.binary_search_by(|warning| (&warning.kind, &warning.reason).cmp(&(kind, reason)))
+    {
+        Ok(index) => warnings[index].observations += observations,
+        Err(index) => warnings.insert(
+            index,
+            GameScoreWarning {
+                kind: kind.clone(),
+                reason: reason.clone(),
+                observations,
+            },
+        ),
+    }
+}
+
 impl Prepared {
     pub fn observe(
         &mut self,
@@ -60,11 +147,16 @@ impl Prepared {
             self.metadata.content_warnings = naming.warnings.clone();
             self.metadata.initialized = true;
         }
-        let facts = observer.observe(frame, replay, &mut || {
-            // Prepared recordings use the current format's captured multipliers.
-            unreachable!("Prepared score inputs require the current recording format")
-        })?;
-        self.add_warnings(&facts.warnings);
+        let (facts, change) = observer.observe_changed(
+            frame,
+            replay,
+            &mut || {
+                // Prepared recordings use the current format's captured multipliers.
+                unreachable!("Prepared score inputs require the current recording format")
+            },
+            Some(changes),
+        )?;
+        self.count_warnings(facts, &change);
         let hour = frame.hour;
         let continuous = self
             .frontier
@@ -72,25 +164,35 @@ impl Prepared {
         self.frontier = Some(hour);
         self.series.advance(hour)?;
         if continuous
-            && (facts.projected != hour
+            && (matches!(change, Change::Same)
                 || !SCORE_TABLES
                     .iter()
                     .any(|table| changes.rows_changed[table.index()]))
         {
             return Ok(());
         }
+        match change {
+            Change::Countries { tags, .. } if continuous && self.holders.is_some() => {
+                self.observe_countries(hour, facts, &tags)
+            }
+            _ => self.observe_all(hour, facts, continuous),
+        }
+    }
+
+    /// Every country, as at a gap, a new country set or a whole read.
+    fn observe_all(&mut self, hour: i32, facts: &FrameScores, continuous: bool) -> io::Result<()> {
+        self.normalize();
         let previous = continuous.then_some(self.observed).flatten();
-        for (values, identity) in facts.countries.values() {
+        let mut holders = Holders::default();
+        for (tag, (values, identity)) in &facts.countries {
             #[cfg(test)]
             {
                 self.work.row_visits += 1;
             }
-            if values.total.raw.is_some()
-                && let (Some(slot), Some(country)) =
-                    (identity.canonical_slot, identity.native_country)
-            {
-                let entity = serde_json::to_string(&(slot, country))?;
-                let span = self.entities.entry(entity).or_insert(HourSpan {
+            let entity = holder(identity)?;
+            let known = values.total.raw.is_some();
+            if known && let Some(entity) = &entity {
+                let span = self.entities.entry(entity.clone()).or_insert(HourSpan {
                     first_hour: hour,
                     last_hour: hour,
                 });
@@ -101,8 +203,13 @@ impl Prepared {
                     span.last_hour = hour;
                 }
             }
+            holders.insert(tag, entity, known);
         }
-        self.values(0, hour, &facts.multipliers, None, None, previous)?;
+        let boundary = self
+            .last
+            .get(&0)
+            .is_none_or(|(last, _)| Some(*last) != previous);
+        self.values(0, hour, &facts.multipliers, None, None, boundary)?;
         let mut active = std::collections::BTreeSet::new();
         for (tag, (values, identity)) in &facts.countries {
             #[cfg(test)]
@@ -122,45 +229,13 @@ impl Prepared {
             };
             active.insert(base);
             let same = self.last.get(&base).is_some_and(|(last, before)| {
-                Some(*last) == previous
-                    && before.identity.as_ref().is_some_and(|before| {
-                        before.canonical_slot == identity.canonical_slot
-                            && before.native_country == identity.native_country
-                    })
+                Some(*last) == previous && same_holder(before.identity.as_ref(), identity)
             });
-            let current = self.stretches.entry(base).or_insert((hour, None, hour));
-            if !same {
-                current.0 = hour;
-                current.1 = None;
-            }
-            if values.total.raw.is_some() {
-                current.1.get_or_insert(hour);
-            } else {
-                current.1 = None;
-            }
-            current.2 = hour;
-            let stretch = if let (Some(slot), Some(country)) =
-                (identity.canonical_slot, identity.native_country)
-            {
-                let key = serde_json::to_string(&(slot, country))?;
-                serde_json::to_string(&(
-                    key.clone(),
-                    self.entities
-                        .get(&key)
-                        .filter(|span| span.last_hour == hour)
-                        .map(|span| span.first_hour),
-                ))?
-            } else {
-                serde_json::to_string(&(current.0, current.1))?
-            };
-            self.values(
-                base,
-                hour,
-                values,
-                Some(identity.clone()),
-                Some(stretch),
-                previous,
-            )?;
+            let entity = holders
+                .tags
+                .get(tag)
+                .and_then(|(entity, _)| entity.as_deref());
+            self.observe_country(base, hour, values, identity, same, entity)?;
         }
         for &base in self.active.difference(&active) {
             for key in base..=base + 6 {
@@ -173,28 +248,251 @@ impl Prepared {
         }
         self.active = active;
         self.observed = Some(hour);
+        self.holders = Some(holders);
         Ok(())
     }
-    fn add_warnings(&mut self, warnings: &BTreeMap<(GameScoreMissingKind, String), u64>) {
-        for ((kind, reason), count) in warnings {
-            if let Some(warning) = self
-                .metadata
-                .warnings
-                .iter_mut()
-                .find(|warning| warning.kind == *kind && warning.reason == *reason)
+
+    /// Only the countries whose facts changed, and those sharing a holder
+    /// whose total became known or unknown. The countries present, their
+    /// holders and the multipliers are the observed hour's.
+    fn observe_countries(
+        &mut self,
+        hour: i32,
+        facts: &FrameScores,
+        tags: &[String],
+    ) -> io::Result<()> {
+        let mut holders = self.holders.take().expect("holders of the observed hour");
+        let result = self.observe_holders(hour, facts, tags, &mut holders);
+        self.holders = Some(holders);
+        result?;
+        self.observed = Some(hour);
+        Ok(())
+    }
+
+    fn observe_holders(
+        &mut self,
+        hour: i32,
+        facts: &FrameScores,
+        tags: &[String],
+        holders: &mut Holders,
+    ) -> io::Result<()> {
+        let country = |tag: &str| {
+            facts
+                .countries
+                .get(tag)
+                .ok_or_else(|| dashboard_core::invalid("Changed score country is not observed"))
+        };
+        // Whether each holder whose known totals changed was live before.
+        let mut before = BTreeMap::<String, bool>::new();
+        for tag in tags {
+            let known = country(tag)?.0.total.raw.is_some();
+            let (entity, was) = holders
+                .tags
+                .get_mut(tag)
+                .ok_or_else(|| dashboard_core::invalid("Changed score country has no holder"))?;
+            if *was == known {
+                continue;
+            }
+            *was = known;
+            if let Some(entity) = entity {
+                let count = holders.live.entry(entity.clone()).or_default();
+                before.entry(entity.clone()).or_insert(*count > 0);
+                if known {
+                    *count += 1;
+                } else {
+                    *count -= 1;
+                }
+            }
+        }
+        let flipped: BTreeSet<String> = before
+            .into_iter()
+            .filter(|(entity, was)| *was != holders.is_live(entity))
+            .map(|(entity, _)| entity)
+            .collect();
+        let mut dirty: BTreeSet<&str> = tags.iter().map(String::as_str).collect();
+        for entity in &flipped {
+            dirty.extend(
+                holders
+                    .countries
+                    .get(entity)
+                    .into_iter()
+                    .flatten()
+                    .map(String::as_str),
+            );
+        }
+        // A holder's span runs while any of its countries' totals is known,
+        // and ended at the previous observed hour when none is any longer.
+        for entity in &flipped {
+            if !holders.is_live(entity)
+                && let (Some(span), Some(observed)) = (self.entities.get_mut(entity), self.observed)
             {
-                warning.observations += count;
-            } else {
-                self.metadata.warnings.push(GameScoreWarning {
-                    kind: kind.clone(),
-                    reason: reason.clone(),
-                    observations: *count,
+                span.last_hour = observed;
+            }
+        }
+        for tag in &dirty {
+            if let Some((Some(entity), _)) = holders.tags.get(*tag)
+                && holders.is_live(entity)
+            {
+                let span = self.entities.entry(entity.clone()).or_insert(HourSpan {
+                    first_hour: hour,
+                    last_hour: hour,
+                });
+                if flipped.contains(entity) {
+                    span.first_hour = hour;
+                }
+                span.last_hour = hour;
+            }
+        }
+        for tag in dirty {
+            #[cfg(test)]
+            {
+                self.work.row_visits += 1;
+            }
+            let (values, identity) = country(tag)?;
+            let base = *self
+                .keys
+                .get(tag)
+                .ok_or_else(|| dashboard_core::invalid("Changed score country has no key"))?;
+            let same = self.active.contains(&base)
+                && self
+                    .last
+                    .get(&base)
+                    .is_some_and(|(_, before)| same_holder(before.identity.as_ref(), identity));
+            let entity = holders
+                .tags
+                .get(tag)
+                .and_then(|(entity, _)| entity.as_deref());
+            self.observe_country(base, hour, values, identity, same, entity)?;
+        }
+        Ok(())
+    }
+
+    /// One country's stretches and values. `same` continues its identity from
+    /// the previous observed hour.
+    fn observe_country(
+        &mut self,
+        base: u64,
+        hour: i32,
+        values: &GameScoreValues,
+        identity: &GameScoreIdentity,
+        same: bool,
+        entity: Option<&str>,
+    ) -> io::Result<()> {
+        let current = self.stretches.entry(base).or_insert((hour, None, hour));
+        if !same {
+            current.0 = hour;
+            current.1 = None;
+        }
+        if values.total.raw.is_some() {
+            current.1.get_or_insert(hour);
+        } else {
+            current.1 = None;
+        }
+        current.2 = hour;
+        let stretch = match entity {
+            Some(key) => serde_json::to_string(&(
+                key,
+                self.entities
+                    .get(key)
+                    .filter(|span| span.last_hour == hour)
+                    .map(|span| span.first_hour),
+            ))?,
+            None => serde_json::to_string(&(current.0, current.1))?,
+        };
+        self.values(
+            base,
+            hour,
+            values,
+            Some(identity.clone()),
+            Some(stretch),
+            !same,
+        )
+    }
+
+    /// Date every retained hour marker at the observed hour, as observing
+    /// every country then would: active countries, the multipliers and live
+    /// holders. Between whole observations only changed countries' markers move.
+    fn normalize(&mut self) {
+        let (Some(observed), Some(holders)) = (self.observed, &self.holders) else {
+            return;
+        };
+        for base in self.active.iter().copied().chain([0]) {
+            if let Some((last, _)) = self.last.get_mut(&base) {
+                *last = observed;
+            }
+        }
+        for base in &self.active {
+            if let Some(stretch) = self.stretches.get_mut(base) {
+                stretch.2 = observed;
+            }
+        }
+        for (entity, count) in &holders.live {
+            if *count > 0
+                && let Some(span) = self.entities.get_mut(entity)
+            {
+                span.last_hour = observed;
+            }
+        }
+    }
+
+    /// Count this hour's warnings: each counts once per observed hour.
+    fn count_warnings(&mut self, facts: &FrameScores, change: &Change) {
+        match change {
+            Change::Same if self.counting.is_some() => {}
+            Change::Countries { warnings, .. } if self.counting.is_some() => {
+                let counting = self.counting.as_mut().expect("counted warnings");
+                for key in warnings {
+                    if let Some((count, since)) = counting.counts.remove(key) {
+                        add_observations(
+                            &mut self.metadata.warnings,
+                            key,
+                            count * (counting.hours - since),
+                        );
+                    }
+                    if let Some(&count) = facts.warnings.get(key) {
+                        counting.counts.insert(key.clone(), (count, counting.hours));
+                    }
+                }
+            }
+            _ => {
+                self.add_counted();
+                let hours = self.counting.as_ref().map_or(0, |counting| counting.hours);
+                self.counting = Some(Counting {
+                    hours,
+                    counts: facts
+                        .warnings
+                        .iter()
+                        .map(|(key, count)| (key.clone(), (*count, hours)))
+                        .collect(),
                 });
             }
         }
-        self.metadata
-            .warnings
-            .sort_by(|a, b| (&a.kind, &a.reason).cmp(&(&b.kind, &b.reason)));
+        if let Some(counting) = &mut self.counting {
+            counting.hours += 1;
+        }
+    }
+
+    /// Add every held warning's hours since it was last added.
+    fn add_counted(&mut self) {
+        let Some(counting) = &mut self.counting else {
+            return;
+        };
+        for (key, (count, since)) in &mut counting.counts {
+            if counting.hours > *since {
+                add_observations(
+                    &mut self.metadata.warnings,
+                    key,
+                    *count * (counting.hours - *since),
+                );
+                *since = counting.hours;
+            }
+        }
+    }
+
+    fn add_warnings(&mut self, warnings: &BTreeMap<(GameScoreMissingKind, String), u64>) {
+        for (key, count) in warnings {
+            add_observations(&mut self.metadata.warnings, key, *count);
+        }
     }
     fn values(
         &mut self,
@@ -203,7 +501,7 @@ impl Prepared {
         values: &GameScoreValues,
         identity: Option<GameScoreIdentity>,
         stretch: Option<String>,
-        previous: Option<i32>,
+        boundary: bool,
     ) -> io::Result<()> {
         let amounts = values.amounts();
         let facts = Facts {
@@ -212,17 +510,6 @@ impl Prepared {
             read_each: amounts.map(|amount| amount.read_each_hour),
             stretch,
         };
-        let boundary = self.last.get(&base).is_none_or(|(last, before)| {
-            Some(*last) != previous
-                || before
-                    .identity
-                    .as_ref()
-                    .map(|v| (v.canonical_slot, v.native_country))
-                    != facts
-                        .identity
-                        .as_ref()
-                        .map(|v| (v.canonical_slot, v.native_country))
-        });
         if boundary
             || self
                 .last
@@ -261,6 +548,8 @@ impl Prepared {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        self.add_counted();
+        self.normalize();
         self.series
             .flush(writer, &format!("game-score-{branch}"), 5, cancelled)?;
         series::write_catalogue(writer, "game-score", branch, &self.keys, &self.metadata)

@@ -111,7 +111,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 Scope::State(state) if state != NULL_STATE && state != 0 => {
                     let world = self.context.world()?;
                     let state = world
-                        .states
+                        .states()
                         .get(&state)
                         .ok_or("ROOT state is not recorded")?;
                     if state.owner as i32 > 0 {

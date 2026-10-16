@@ -33,9 +33,10 @@ use replay::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet, VecDeque},
     io,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, LazyLock, atomic::AtomicBool},
 };
 use ts_rs::TS;
 
@@ -1165,6 +1166,42 @@ pub fn research_branch(
         .collect())
 }
 
+/// The Countries fields a country's research holder is read from; its id is
+/// the row key.
+static HOLDER_FIELDS: LazyLock<u64> = LazyLock::new(|| {
+    crate::prepared::frame_changes::field_mask(TableId::Countries, &["canonical_slot", "tag"])
+});
+
+/// One owner's rows of a table keyed country first.
+fn owned<'a, T>(rows: &'a [T], owner: u32, country: impl Fn(&T) -> u32) -> &'a [T] {
+    let first = rows.partition_point(|row| country(row) < owner);
+    let count = rows[first..].partition_point(|row| country(row) == owner);
+    &rows[first..first + count]
+}
+
+/// Each owner's rows of a table keyed country first, for the owners holding
+/// any: with `owners` ascending, a slot's rows in table order.
+fn owner_rows<'a, T>(
+    rows: &'a [T],
+    owners: &[u32],
+    country: impl Fn(&T) -> u32 + Copy,
+) -> Vec<&'a [T]> {
+    owners
+        .iter()
+        .map(|&owner| owned(rows, owner, country))
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
+/// The parts as one slice, borrowed unless several owners hold rows.
+fn joined<'a, T: Clone>(parts: &[&'a [T]]) -> Cow<'a, [T]> {
+    match parts {
+        [] => Cow::Owned(Vec::new()),
+        [part] => Cow::Borrowed(*part),
+        parts => Cow::Owned(parts.concat()),
+    }
+}
+
 #[derive(Default, Serialize, Deserialize)]
 pub(crate) struct Scan {
     countries: BTreeMap<String, Country>,
@@ -1173,18 +1210,31 @@ pub(crate) struct Scan {
     bytes: usize,
     #[serde(skip)]
     country_reads: Option<super::territory::CountryReads>,
+    /// How many Countries rows `country_reads` was read from.
+    #[serde(skip)]
+    country_count: usize,
     #[serde(skip)]
     country_rows: BTreeMap<u32, Vec<(usize, u32, Vec<u8>)>>,
     #[serde(skip)]
     owners: BTreeMap<u32, Vec<u32>>,
+    /// The canonical slots whose owners hold ResearchInputs rows.
     #[serde(skip)]
-    by_slot: BTreeMap<u32, Vec<usize>>,
+    input_slots: BTreeSet<u32>,
     #[serde(skip)]
     input_dates: BTreeMap<u32, Vec<(u32, i32)>>,
+    /// The latest ResearchInputs read hour seen later than the hour holding
+    /// it. Until that hour passes, an hour is observed from its whole tables:
+    /// such a read becomes fresh without any row changing.
     #[serde(skip)]
-    bonuses_by_slot: Option<BTreeMap<u32, Vec<usize>>>,
+    future_read: Option<i32>,
+    /// Slots observed again at the next hour although no row of theirs
+    /// changes: a read whose owners' read hours do not all prove it carries
+    /// only until then, and progress shown at its read hour alone ends then.
     #[serde(skip)]
-    modifiers_by_slot: Option<BTreeMap<u32, Vec<usize>>>,
+    recheck: BTreeSet<u32>,
+    /// The hour whose rows the indexes above were refreshed from.
+    #[serde(skip)]
+    indexed: Option<i32>,
     #[serde(skip)]
     deadlines: BTreeSet<(i32, String)>,
     #[serde(skip)]
@@ -1194,6 +1244,14 @@ pub(crate) struct Scan {
     #[cfg(test)]
     #[serde(skip)]
     work: crate::prepared::observer_tests::Work,
+    /// Hours whose indexes changed by their recorded rows alone.
+    #[cfg(test)]
+    #[serde(skip)]
+    row_hours: usize,
+    /// Refresh every changed table's index from its whole rows.
+    #[cfg(test)]
+    #[serde(skip)]
+    whole_tables: bool,
 }
 impl Scan {
     #[cfg(test)]
@@ -1248,6 +1306,7 @@ impl Scan {
                 rows_changed: [true; replay::frame::TABLE_COUNT],
                 table_read: [true; replay::frame::TABLE_COUNT],
                 slot_read: [true; replay::frame::TABLE_COUNT],
+                updates: None,
             },
             false,
         )
@@ -1305,6 +1364,8 @@ impl Scan {
         ) else {
             self.close_held(previous);
             self.last_bad = Some(frame.hour);
+            // Indexes this hour's rows did not refresh are rebuilt at the next.
+            self.ready = false;
             return Ok(());
         };
         let inventory = frame.complete::<tables::ResearchTechnologies>().ok();
@@ -1314,18 +1375,50 @@ impl Scan {
         let Ok(reads) = frame.complete::<tables::SliceReads>() else {
             self.close_held(previous);
             self.last_bad = Some(frame.hour);
+            self.ready = false;
             return Ok(());
         };
         let read_hour = |table, owner| replay::sliced::read_hour(reads, table, owner);
         let forced = !self.ready;
         let links_changed = forced || changes.rows_changed[TableId::CountryLinks.index()];
+        // The indexes hold the previous hour's rows, with the same links, so a
+        // table its recorded rows changed changes them by those rows alone.
+        // A pending read dated after its hour becomes fresh with no row
+        // changing, so until it passes the whole tables are observed.
+        let narrow = deferred
+            && !links_changed
+            && self.indexed.and_then(|hour| hour.checked_add(1)) == Some(frame.hour)
+            && self.future_read.is_none_or(|read| read < frame.hour);
+        #[cfg(test)]
+        let narrow = narrow && !self.whole_tables;
+        let changed_rows = |table: TableId| if narrow { changes.rows(table) } else { None };
+        #[cfg(test)]
+        let mut rebuilt = !narrow;
         let countries_changed =
             if forced || links_changed || changes.rows_changed[TableId::Countries.index()] {
+                // Recorded changes that add or delete no country and touch no
+                // holder field keep the previous hour's holders.
+                let kept = self.country_count == rows.len()
+                    && changed_rows(TableId::Countries).is_some_and(|(changed, deleted)| {
+                        deleted.is_empty()
+                            && changed.iter().all(|row| row.mask & *HOLDER_FIELDS == 0)
+                    });
+                #[cfg(test)]
+                {
+                    if !kept && self.country_reads.is_some() {
+                        self.work.row_visits += rows.len();
+                    }
+                }
                 let same = self
                     .country_reads
                     .as_ref()
-                    .is_some_and(|seen| seen.matches(frame, rows));
+                    .is_some_and(|seen| kept || seen.matches(frame, rows));
                 if !same {
+                    #[cfg(test)]
+                    {
+                        rebuilt = true;
+                    }
+                    self.country_count = rows.len();
                     self.country_reads =
                         Some(if !links_changed && let Some(seen) = &self.country_reads {
                             super::territory::CountryReads::from_slots(
@@ -1360,78 +1453,142 @@ impl Scan {
                     .push(link.id);
             }
         }
-        let slots = self.country_reads.as_ref().unwrap().slots();
+        let slots = Arc::clone(self.country_reads.as_ref().unwrap().slots());
         let mut dirty = BTreeSet::new();
         if forced || links_changed || changes.rows_changed[TableId::ResearchInputs.index()] {
-            dirty.extend(self.by_slot.keys().copied());
-            self.by_slot.clear();
-            for (index, input) in inputs.iter().enumerate() {
-                #[cfg(test)]
+            if let Some((changed, deleted)) = changed_rows(TableId::ResearchInputs) {
+                // Only the slots of the changed rows, each keyed by its country.
+                let mut touched = BTreeSet::new();
+                for key in changed
+                    .iter()
+                    .map(|row| row.key)
+                    .chain(deleted.iter().copied())
                 {
-                    self.work.row_visits += 1;
-                }
-                if let Some(&slot) = slots.get(&input.country) {
-                    self.by_slot.entry(slot).or_default().push(index);
-                }
-            }
-            dirty.extend(self.by_slot.keys().copied());
-        }
-        if forced || links_changed || changes.rows_changed[TableId::ResearchAppliedBonuses.index()]
-        {
-            self.bonuses_by_slot = bonuses.map(|rows| {
-                let mut grouped = BTreeMap::<u32, Vec<usize>>::new();
-                for (index, row) in rows.iter().enumerate() {
                     #[cfg(test)]
                     {
                         self.work.row_visits += 1;
                     }
-                    if let Some(&slot) = slots.get(&row.country) {
-                        grouped.entry(slot).or_default().push(index);
+                    if let Some(&slot) = slots.get(&((key >> 32) as u32)) {
+                        touched.insert(slot);
                     }
                 }
-                grouped
-            });
-        }
-        if forced || links_changed || changes.rows_changed[TableId::ResearchModifiers.index()] {
-            self.modifiers_by_slot = modifier_rows.map(|rows| {
-                let mut grouped = BTreeMap::<u32, Vec<usize>>::new();
-                for (index, row) in rows.iter().enumerate() {
-                    #[cfg(test)]
-                    {
-                        self.work.row_visits += 1;
+                for slot in touched {
+                    let held = self.owners.get(&slot).is_some_and(|owners| {
+                        owners
+                            .iter()
+                            .any(|&owner| !owned(inputs, owner, |row| row.country).is_empty())
+                    });
+                    if held {
+                        self.input_slots.insert(slot);
+                    } else {
+                        self.input_slots.remove(&slot);
                     }
-                    if let Some(&slot) = slots.get(&row.country) {
-                        grouped.entry(slot).or_default().push(index);
-                    }
-                }
-                grouped
-            });
-        }
-        if forced || links_changed || changes.rows_changed[TableId::SliceReads.index()] {
-            let mut dates = BTreeMap::<u32, Vec<(u32, i32)>>::new();
-            for row in reads
-                .iter()
-                .filter(|row| row.table == TableId::ResearchInputs.index() as u32)
-            {
-                if let Some(&slot) = slots.get(&row.owner) {
-                    dates
-                        .entry(slot)
-                        .or_default()
-                        .push((row.owner, row.sample_hour));
-                }
-            }
-            for (&slot, values) in &dates {
-                if self.input_dates.get(&slot) != Some(values) {
                     dirty.insert(slot);
                 }
+            } else {
+                #[cfg(test)]
+                {
+                    rebuilt = true;
+                }
+                dirty.extend(self.input_slots.iter().copied());
+                self.input_slots.clear();
+                for input in inputs {
+                    #[cfg(test)]
+                    {
+                        self.work.row_visits += 1;
+                    }
+                    if let Some(&slot) = slots.get(&input.country) {
+                        self.input_slots.insert(slot);
+                    }
+                }
+                dirty.extend(self.input_slots.iter().copied());
             }
-            dirty.extend(
-                self.input_dates
-                    .keys()
-                    .filter(|slot| !dates.contains_key(*slot))
-                    .copied(),
-            );
-            self.input_dates = dates;
+        }
+        if forced || links_changed || changes.rows_changed[TableId::SliceReads.index()] {
+            let table = TableId::ResearchInputs.index() as u32;
+            if let Some((changed, deleted)) = changed_rows(TableId::SliceReads) {
+                // Only the slots whose owners' read rows changed; each key is
+                // its table and owner.
+                let mut touched = BTreeSet::new();
+                for key in changed
+                    .iter()
+                    .map(|row| row.key)
+                    .chain(deleted.iter().copied())
+                    .filter(|key| (key >> 32) as u32 == table)
+                {
+                    #[cfg(test)]
+                    {
+                        self.work.row_visits += 1;
+                    }
+                    if let Some(&slot) = slots.get(&(key as u32)) {
+                        touched.insert(slot);
+                    }
+                }
+                for slot in touched {
+                    // The slot's dates as the whole table gives them: by owner.
+                    let dates: Vec<_> = self
+                        .owners
+                        .get(&slot)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|&owner| {
+                            read_hour(TableId::ResearchInputs, owner).map(|read| (owner, read))
+                        })
+                        .collect();
+                    if let Some(&(_, read)) = dates.iter().max_by_key(|(_, read)| *read)
+                        && read > frame.hour
+                    {
+                        self.future_read = self.future_read.max(Some(read));
+                    }
+                    let dates = (!dates.is_empty()).then_some(dates);
+                    if self.input_dates.get(&slot) != dates.as_ref() {
+                        dirty.insert(slot);
+                        match dates {
+                            Some(dates) => {
+                                self.input_dates.insert(slot, dates);
+                            }
+                            None => {
+                                self.input_dates.remove(&slot);
+                            }
+                        }
+                    }
+                }
+            } else {
+                #[cfg(test)]
+                {
+                    rebuilt = true;
+                }
+                let first = reads.partition_point(|row| row.table < table);
+                let count = reads[first..].partition_point(|row| row.table == table);
+                let mut dates = BTreeMap::<u32, Vec<(u32, i32)>>::new();
+                for row in &reads[first..first + count] {
+                    #[cfg(test)]
+                    {
+                        self.work.row_visits += 1;
+                    }
+                    if let Some(&slot) = slots.get(&row.owner) {
+                        dates
+                            .entry(slot)
+                            .or_default()
+                            .push((row.owner, row.sample_hour));
+                        if row.sample_hour > frame.hour {
+                            self.future_read = self.future_read.max(Some(row.sample_hour));
+                        }
+                    }
+                }
+                for (&slot, values) in &dates {
+                    if self.input_dates.get(&slot) != Some(values) {
+                        dirty.insert(slot);
+                    }
+                }
+                dirty.extend(
+                    self.input_dates
+                        .keys()
+                        .filter(|slot| !dates.contains_key(*slot))
+                        .copied(),
+                );
+                self.input_dates = dates;
+            }
         }
         if countries_changed || !deferred {
             dirty.extend(self.country_rows.keys().copied());
@@ -1460,6 +1617,12 @@ impl Scan {
             }
         }
         self.ready = true;
+        self.indexed = Some(frame.hour);
+        #[cfg(test)]
+        {
+            self.row_hours += usize::from(!rebuilt);
+        }
+        dirty.extend(std::mem::take(&mut self.recheck));
         let mut selected: Vec<_> = dirty
             .iter()
             .flat_map(|slot| {
@@ -1475,6 +1638,13 @@ impl Scan {
             if selected_tag.is_some_and(|selected| selected.as_bytes() != tag_bytes) {
                 continue;
             }
+            // Ascending ids, as CountryLinks orders them: each table keyed
+            // country first holds the slot's rows in this order.
+            let owners = self
+                .owners
+                .get(&canonical)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
             let fresh = self
                 .input_dates
                 .get(&canonical)
@@ -1486,7 +1656,7 @@ impl Scan {
                     if let Some(through) = previous {
                         state.materialize(through);
                     }
-                    let mut held = self.owners[&canonical]
+                    let mut held = owners
                         .iter()
                         .filter_map(|&owner| read_hour(TableId::ResearchInputs, owner));
                     let first = held.next();
@@ -1518,12 +1688,9 @@ impl Scan {
             if tag.is_empty() || tag.len() > 512 {
                 continue;
             }
-            let inputs: Vec<_> = self
-                .by_slot
-                .get(&canonical)
+            let inputs: Vec<_> = owner_rows(inputs, owners, |row| row.country)
                 .into_iter()
                 .flatten()
-                .map(|&index| &inputs[index])
                 .collect();
             // Rows keep the hour they were read at. Observe a read only in
             // the frame of its own hour; carried rows add nothing.
@@ -1565,36 +1732,24 @@ impl Scan {
                     && i64::from(read) - i64::from(last)
                         <= i64::from(replay::cadence::STAGGER_PERIOD)
             });
-            // Bonuses and modifiers join only when they come from the same read.
+            // Bonuses and modifiers join only when they come from the same
+            // read; every row of one owner has that owner's read hour.
             let bonuses = bonuses
-                .zip(self.bonuses_by_slot.as_ref())
-                .map(|(rows, grouped)| {
-                    grouped
-                        .get(&canonical)
-                        .into_iter()
-                        .flatten()
-                        .map(|&index| rows[index].clone())
-                        .collect::<Vec<_>>()
-                })
-                .filter(|rows| {
-                    rows.iter().all(|row| {
-                        read_hour(TableId::ResearchAppliedBonuses, row.country) == Some(read)
+                .map(|rows| owner_rows(rows, owners, |row| row.country))
+                .filter(|parts| {
+                    parts.iter().all(|part| {
+                        read_hour(TableId::ResearchAppliedBonuses, part[0].country) == Some(read)
                     })
-                });
-            let modifier_rows = modifier_rows
-                .zip(self.modifiers_by_slot.as_ref())
-                .map(|(rows, grouped)| {
-                    grouped
-                        .get(&canonical)
-                        .into_iter()
-                        .flatten()
-                        .map(|&index| rows[index].clone())
-                        .collect::<Vec<_>>()
                 })
-                .filter(|rows| {
-                    rows.iter()
-                        .all(|row| read_hour(TableId::ResearchModifiers, row.country) == Some(read))
-                });
+                .map(|parts| joined(&parts));
+            let modifier_rows = modifier_rows
+                .map(|rows| owner_rows(rows, owners, |row| row.country))
+                .filter(|parts| {
+                    parts.iter().all(|part| {
+                        read_hour(TableId::ResearchModifiers, part[0].country) == Some(read)
+                    })
+                })
+                .map(|parts| joined(&parts));
             state.observe_inputs(
                 (*country_id, canonical),
                 read,
@@ -1615,6 +1770,16 @@ impl Scan {
                 .and_then(|_| read.checked_add(replay::cadence::STAGGER_PERIOD - 1));
             if let Some(due) = state.carry_until.and_then(|until| until.checked_add(1)) {
                 self.deadlines.insert((due, tag.to_owned()));
+            }
+            // A carried read the owners' read hours do not all prove ends at
+            // the next hour, whose rows need not change.
+            if state.carry_until.is_some() {
+                let mut held = owners
+                    .iter()
+                    .filter_map(|&owner| read_hour(TableId::ResearchInputs, owner));
+                if !(held.next() == Some(read) && held.all(|hour| hour == read)) {
+                    self.recheck.insert(canonical);
+                }
             }
             self.observed.insert(tag.to_owned());
             state.charge(&mut self.bytes);

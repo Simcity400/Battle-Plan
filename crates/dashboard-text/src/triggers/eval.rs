@@ -1588,7 +1588,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             // character, whose current role need not be the original handle.
             scope @ (Scope::Character(_) | Scope::Leader(_) | Scope::CountryLeader { .. }) => {
                 let character = self.character_of(scope).map_err(fail)?;
-                let tables = &self.world.character_tables;
+                let tables = &self.world.character_tables();
                 return tables
                     .tag(character, tagged, |raw| self.canonical(raw))
                     .map(Eval::from_bool)
@@ -1657,7 +1657,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             // scope has no combat, so it is the character's unit leader's
             // skill level, compared as an integer.
             "skill" => {
-                let skill = self.world.character_tables.skill(character)?;
+                let skill = self.world.character_tables().skill(character)?;
                 let required = self.required(bytes, item.quoted(), false, scopes)?;
                 Eval::from_bool(compare(
                     i64::from(skill) * ONE,
@@ -1672,7 +1672,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 if character == 0
                     || self
                         .world
-                        .character_tables
+                        .character_tables()
                         .retired(character, |raw| self.canonical(raw))?
                 {
                     Eval::False
@@ -1710,7 +1710,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                     }
                 }
             }
-            "has_trait" => Eval::from_bool(self.world.character_tables.has_trait(
+            "has_trait" => Eval::from_bool(self.world.character_tables().has_trait(
                 character,
                 bytes,
                 &self.trait_names()?,
@@ -1729,7 +1729,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         operand: &[u8],
         assigned: impl FnOnce() -> Result<Option<Vec<i32>>, String>,
     ) -> Result<bool, String> {
-        self.world.character_tables.character_traits(
+        self.world.character_tables().character_traits(
             character,
             operand,
             &self.trait_names()?,

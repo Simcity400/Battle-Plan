@@ -39,14 +39,16 @@ use dashboard_base::products::{
     country_history::{self, CountryIdentityRun, Identity, RecordedHistories},
     resources::{Learned, RESOURCE_DECIMALS, resource_infos},
 };
-use dashboard_base::{products::country_groups::HourSpan, source::Source};
+use dashboard_base::{
+    prepared::frame_changes::field_mask, products::country_groups::HourSpan, source::Source,
+};
 use dashboard_core::{config::LoadContext, protocol::validate_tag};
-use replay::rows::{TableId, tables};
+use replay::rows::{DeltaRow, TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, LazyLock, atomic::AtomicBool},
 };
 use ts_rs::TS;
 
@@ -203,34 +205,81 @@ impl Terms {
     }
 }
 
-/// Native fields in recorded order. Re-resolving aliases must not regroup
-/// these operands before checked addition: signed partial sums can overflow.
-fn exchange_operands(rows: &[replay::rows::ResourceExchangeRow]) -> Vec<(u32, u32, u32, Terms)> {
+/// An exchange's seller and buyer links, its resource and its terms.
+type Operand = (u32, u32, u32, Terms);
+/// A flow: its native seller holder, native buyer holder and resource.
+type FlowKey = (Identity, Identity, u32);
+
+/// The ResourceExchanges fields an [`Operand`] reads; its id is the row key.
+static EXCHANGE_FIELDS: LazyLock<u64> = LazyLock::new(|| {
+    field_mask(
+        TableId::ResourceExchanges,
+        &[
+            "exporter",
+            "importer",
+            "resource",
+            "delivered",
+            "assigned_factories",
+            "convoys_assigned",
+            "convoys_required",
+        ],
+    )
+});
+
+/// The Countries fields the holders are read from; a country's id is the key.
+static HOLDER_FIELDS: LazyLock<u64> =
+    LazyLock::new(|| field_mask(TableId::Countries, &["canonical_slot", "tag"]));
+
+fn exchange_operand(row: &replay::rows::ResourceExchangeRow) -> Operand {
+    (
+        row.exporter,
+        row.importer,
+        row.resource,
+        Terms {
+            delivered: row.delivered,
+            factories: row.assigned_factories,
+            assigned: row.convoys_assigned,
+            required: row.convoys_required,
+            deals: 1,
+        },
+    )
+}
+
+/// Native fields in recorded order, each with its row key. Re-resolving
+/// aliases must not regroup these operands before checked addition: signed
+/// partial sums can overflow.
+fn exchange_operands(rows: &[replay::rows::ResourceExchangeRow]) -> Vec<(u128, Operand)> {
     rows.iter()
-        .map(|row| {
-            (
-                row.exporter,
-                row.importer,
-                row.resource,
-                Terms {
-                    delivered: row.delivered,
-                    factories: row.assigned_factories,
-                    assigned: row.convoys_assigned,
-                    required: row.convoys_required,
-                    deals: 1,
-                },
-            )
-        })
+        .map(|row| (row.key(), exchange_operand(row)))
         .collect()
 }
+
+/// The resources recorded definitions and tokens name this hour.
+fn read_names(frame: &replay::frame::DecodedFrame) -> Option<Learned> {
+    frame
+        .complete::<tables::ResourceDefinitions>()
+        .ok()
+        .zip(frame.complete::<tables::LexicalTokens>().ok())
+        .map(|(definitions, lexical)| {
+            let mut names = Learned::default();
+            names.learn(definitions, lexical);
+            names
+        })
+}
+
 #[derive(Default)]
 struct Inputs {
     countries: Option<dashboard_base::products::territory::CountryReads>,
-    exchanges: Option<Vec<(u32, u32, u32, Terms)>>,
+    /// How many Countries rows `countries` was read from.
+    country_rows: Option<usize>,
+    exchanges: Option<Vec<(u128, Operand)>>,
     names: Option<Learned>,
     ready: bool,
     #[cfg(test)]
     row_visits: usize,
+    /// Countries rows compared with or read into `countries`.
+    #[cfg(test)]
+    country_visits: usize,
 }
 impl Inputs {
     fn refresh(
@@ -245,12 +294,17 @@ impl Inputs {
             || changes.rows_changed[TableId::CountryLinks.index()]
         {
             let rows = frame.complete::<tables::Countries>().ok();
+            #[cfg(test)]
+            {
+                self.country_visits += rows.map_or(0, |rows| rows.len());
+            }
             let same = rows.is_some_and(|rows| {
                 self.countries
                     .as_ref()
                     .is_some_and(|seen| seen.matches(frame, rows))
             });
             if !same {
+                self.country_rows = rows.map(|rows| rows.len());
                 self.countries = rows.map(|rows| {
                     if !forced
                         && !changes.rows_changed[TableId::CountryLinks.index()]
@@ -314,7 +368,84 @@ impl Inputs {
         }
         ids
     }
+    /// Whether this frame names every resource as the current names do.
+    fn same_names(&mut self, frame: &replay::frame::DecodedFrame) -> bool {
+        #[cfg(test)]
+        {
+            self.row_visits += frame
+                .complete::<tables::ResourceDefinitions>()
+                .map_or(0, |definitions| definitions.len());
+        }
+        match (read_names(frame), &self.names) {
+            (Some(names), Some(current)) => names.list() == current.list(),
+            _ => false,
+        }
+    }
+    /// The flow an exchange counts toward, with `holders` naming each slot's
+    /// holder (tag and country id); None when [`flow_rows`] leaves it out: a
+    /// seller or buyer the links do not resolve, or a resource the names do
+    /// not name.
+    fn attribute(
+        &self,
+        holders: &HashMap<u32, (String, u32)>,
+        &(exporter, importer, resource, _): &Operand,
+    ) -> Option<FlowKey> {
+        let slots = self.countries.as_ref()?.slots();
+        let side = |raw: u32| {
+            slots
+                .get(&raw)
+                .and_then(|&slot| holders.get(&slot).map(|&(_, id)| (slot, id)))
+        };
+        let (seller, buyer) = (side(exporter)?, side(importer)?);
+        self.names
+            .as_ref()?
+            .contains(resource)
+            .then_some((seller, buyer, resource))
+    }
 }
+
+/// What observing an hour from its changed rows keeps between hours, under
+/// the holders and names of the last whole-table observation.
+struct RowIndex {
+    /// Each slot's holder: the tag and country id flows name it by.
+    holders: HashMap<u32, (String, u32)>,
+    /// Each active flow's exchanges by row key, ascending: the table's order.
+    members: HashMap<FlowKey, Vec<u128>>,
+    /// How many active flows name each slot as seller or buyer.
+    named: HashMap<u32, usize>,
+}
+
+/// Count one more active flow naming `slot`; the first lists it in `carried`.
+fn name_slot(
+    named: &mut HashMap<u32, usize>,
+    carried: &mut Vec<(u32, String, u32)>,
+    holders: &HashMap<u32, (String, u32)>,
+    slot: u32,
+) {
+    let count = named.entry(slot).or_default();
+    *count += 1;
+    if *count == 1
+        && let Err(at) = carried.binary_search_by_key(&slot, |&(slot, _, _)| slot)
+    {
+        let (tag, id) = &holders[&slot];
+        carried.insert(at, (slot, tag.clone(), *id));
+    }
+}
+
+/// Count one fewer active flow naming `slot`; the last unlists it.
+fn unname_slot(named: &mut HashMap<u32, usize>, carried: &mut Vec<(u32, String, u32)>, slot: u32) {
+    let Some(count) = named.get_mut(&slot) else {
+        return;
+    };
+    *count -= 1;
+    if *count == 0 {
+        named.remove(&slot);
+        if let Ok(at) = carried.binary_search_by_key(&slot, |&(slot, _, _)| slot) {
+            carried.remove(at);
+        }
+    }
+}
+
 /// Native aggregation shared by history, preparation and stateless sampling.
 #[allow(clippy::type_complexity)]
 fn flow_rows<'a>(
@@ -330,7 +461,7 @@ fn flow_rows<'a>(
     };
     let slots = countries.slots();
     let mut read = BTreeMap::new();
-    for &(exporter, importer, resource, operand) in exchanges {
+    for &(_, (exporter, importer, resource, operand)) in exchanges {
         let side = |raw| {
             slots
                 .get(&raw)
@@ -560,6 +691,10 @@ pub(crate) struct Scan {
     materialized: Option<i32>,
     #[serde(skip)]
     inputs: Inputs,
+    /// Kept while hours are observed from their changed rows; any
+    /// whole-table observation drops it.
+    #[serde(skip)]
+    row_index: Option<RowIndex>,
 }
 impl Scan {
     #[cfg(test)]
@@ -580,6 +715,7 @@ impl Scan {
                 rows_changed: [true; replay::frame::TABLE_COUNT],
                 table_read: [true; replay::frame::TABLE_COUNT],
                 slot_read: [true; replay::frame::TABLE_COUNT],
+                updates: None,
             },
         );
         let sampled = sample::sample_inputs(decoded, requested.as_deref(), &self.inputs)?;
@@ -645,6 +781,7 @@ impl Scan {
             active,
             materialized,
             inputs,
+            row_index: _,
         } = self;
         rejected.clear();
         active.clear();
@@ -784,6 +921,258 @@ impl Scan {
         }
         result.resources = learned.list();
         Ok(())
+    }
+    /// The row index of the current operands, holders and active flows; None
+    /// when the operands are not in key order, or do not group into exactly
+    /// the active flows.
+    fn index_rows(&self) -> Option<RowIndex> {
+        let exchanges = self.inputs.exchanges.as_ref()?;
+        if !exchanges.windows(2).all(|pair| pair[0].0 < pair[1].0) {
+            return None;
+        }
+        let holders: HashMap<u32, (String, u32)> = self
+            .inputs
+            .identities()
+            .into_iter()
+            .map(|(slot, (tag, id))| (slot, (tag.to_owned(), id)))
+            .collect();
+        let mut members = HashMap::<FlowKey, Vec<u128>>::new();
+        for (key, operand) in exchanges {
+            if let Some(flow) = self.inputs.attribute(&holders, operand) {
+                members.entry(flow).or_default().push(*key);
+            }
+        }
+        let mut named = HashMap::<u32, usize>::new();
+        for &index in &self.active {
+            let flow = &self.result.flows[index];
+            for slot in [flow.seller_identity.0, flow.buyer_identity.0] {
+                *named.entry(slot).or_default() += 1;
+            }
+        }
+        let exact = members.len() == self.active.len()
+            && named.len() == self.carried.len()
+            && members.keys().all(|flow| {
+                self.index
+                    .get(flow)
+                    .is_some_and(|index| self.active.contains(index))
+            });
+        exact.then_some(RowIndex {
+            holders,
+            members,
+            named,
+        })
+    }
+    /// Observe a known hour continuing the last observed one, whose exchanges
+    /// differ from the previous hour's by exactly the recorded `changed` and
+    /// `deleted` rows, with the holders and names unchanged: the hour
+    /// [`Self::observe_sampled`] makes of the whole tables, regrouping only
+    /// the flows those rows name before or after the hour. Every other flow
+    /// continues. Returns each flow observed again, with whether it was active
+    /// before. None, changing nothing, when a changed row is not at hand, or
+    /// is or was left out of the flows: what an hour leaves out is counted
+    /// from the whole tables.
+    fn observe_rows(
+        &mut self,
+        frame: &replay::frame::DecodedFrame,
+        changed: &[DeltaRow],
+        deleted: &[u128],
+    ) -> io::Result<Option<BTreeMap<usize, bool>>> {
+        let hour = frame.hour;
+        if !self.known
+            || self.wanted.is_some()
+            || self.last_hour.and_then(|last| last.checked_add(1)) != Some(hour)
+        {
+            return Ok(None);
+        }
+        if self.row_index.is_none() {
+            #[cfg(test)]
+            {
+                self.inputs.row_visits += self.inputs.exchanges.as_ref().map_or(0, Vec::len);
+            }
+            self.row_index = self.index_rows();
+        }
+        let (Some(index), Some(exchanges)) = (&self.row_index, &self.inputs.exchanges) else {
+            return Ok(None);
+        };
+        let at = |key: u128| exchanges.binary_search_by_key(&key, |&(key, _)| key);
+        // Read every changed operand before changing anything. A change to
+        // fields no operand reads leaves the operand as it was.
+        let mut updates = BTreeMap::<u128, Option<Operand>>::new();
+        if !changed.is_empty() {
+            let Ok(rows) = frame.complete::<tables::ResourceExchanges>() else {
+                return Ok(None);
+            };
+            for change in changed {
+                if change.mask & *EXCHANGE_FIELDS == 0 && at(change.key).is_ok() {
+                    continue;
+                }
+                let Ok(row) = rows.binary_search_by_key(&change.key, |row| row.key()) else {
+                    return Ok(None);
+                };
+                updates.insert(change.key, Some(exchange_operand(&rows[row])));
+            }
+        }
+        updates.extend(deleted.iter().map(|&key| (key, None)));
+        // Each changed exchange's flow before the hour and after it.
+        let mut moves = Vec::with_capacity(updates.len());
+        for (&key, operand) in &updates {
+            let before = at(key).ok().map(|position| &exchanges[position].1);
+            let mut flows: [Option<FlowKey>; 2] = [None; 2];
+            for (flow, side) in flows.iter_mut().zip([before, operand.as_ref()]) {
+                if let Some(side) = side {
+                    let Some(attributed) = self.inputs.attribute(&index.holders, side) else {
+                        return Ok(None);
+                    };
+                    *flow = Some(attributed);
+                }
+            }
+            moves.push(flows);
+        }
+        #[cfg(test)]
+        {
+            self.inputs.row_visits += updates.len();
+        }
+        let index = self.row_index.as_mut().expect("trade row index");
+        let exchanges = self.inputs.exchanges.as_mut().expect("trade exchanges");
+        let mut regrouped = BTreeSet::<FlowKey>::new();
+        for ((key, operand), [before, after]) in updates.into_iter().zip(moves) {
+            match (
+                exchanges.binary_search_by_key(&key, |&(key, _)| key),
+                operand,
+            ) {
+                (Ok(position), Some(operand)) => exchanges[position].1 = operand,
+                (Err(position), Some(operand)) => exchanges.insert(position, (key, operand)),
+                (Ok(position), None) => {
+                    exchanges.remove(position);
+                }
+                (Err(_), None) => {}
+            }
+            if let Some(flow) = before {
+                if let Some(keys) = index.members.get_mut(&flow) {
+                    if let Ok(position) = keys.binary_search(&key) {
+                        keys.remove(position);
+                    }
+                    if keys.is_empty() {
+                        index.members.remove(&flow);
+                    }
+                }
+                regrouped.insert(flow);
+            }
+            if let Some(flow) = after {
+                let keys = index.members.entry(flow).or_default();
+                if let Err(position) = keys.binary_search(&key) {
+                    keys.insert(position, key);
+                }
+                regrouped.insert(flow);
+            }
+        }
+        // Each regrouped flow's terms, summed over its exchanges in table
+        // order as the whole tables sum them; none once no exchange counts
+        // toward it.
+        let mut sums = Vec::with_capacity(regrouped.len());
+        for flow in regrouped {
+            let mut terms: Option<Terms> = None;
+            for key in index.members.get(&flow).into_iter().flatten() {
+                let position = exchanges
+                    .binary_search_by_key(key, |&(key, _)| key)
+                    .expect("grouped trade exchange");
+                terms = Some(
+                    terms
+                        .unwrap_or_default()
+                        .add(exchanges[position].1.3)
+                        .ok_or_else(|| {
+                            dashboard_core::invalid("recorded trade terms overflow their sum")
+                        })?,
+                );
+            }
+            sums.push((flow, terms));
+        }
+        self.seal();
+        self.materialized = Some(hour);
+        self.last_hour = Some(hour);
+        let mut skipped = 0_u32;
+        for (pair, count) in &self.rejected {
+            if pair.is_some() {
+                self.result.unnamed += *count as usize;
+            } else {
+                self.result.unresolved += *count as usize;
+            }
+            skipped = skipped.saturating_add(*count);
+        }
+        self.result.reads.push(hour);
+        mark(&mut self.result.known, hour);
+        if skipped > 0 {
+            mark_partial(&mut self.result.partial, hour, skipped);
+        }
+        let Self {
+            result,
+            index: flows,
+            carried,
+            active,
+            row_index,
+            ..
+        } = self;
+        let index = row_index.as_mut().expect("trade row index");
+        let mut touched = BTreeMap::new();
+        for (flow, terms) in sums {
+            let existing = flows.get(&flow).copied();
+            let was_active = existing.is_some_and(|at| active.contains(&at));
+            let Some(terms) = terms else {
+                if let Some(at) = existing.filter(|_| was_active) {
+                    active.remove(&at);
+                    for slot in [flow.0.0, flow.1.0] {
+                        unname_slot(&mut index.named, carried, slot);
+                    }
+                    touched.insert(at, true);
+                }
+                continue;
+            };
+            let seller = &index.holders[&flow.0.0].0;
+            let buyer = &index.holders[&flow.1.0].0;
+            let at = *flows.entry(flow).or_insert_with(|| {
+                result.flows.push(Flow {
+                    seller: seller.clone(),
+                    buyer: buyer.clone(),
+                    seller_identity: flow.0,
+                    buyer_identity: flow.1,
+                    resource: flow.2,
+                    runs: Vec::new(),
+                });
+                result.flows.len() - 1
+            });
+            active.insert(at);
+            let runs = &mut result.flows[at].runs;
+            match runs.last_mut() {
+                Some(run)
+                    if run.last_hour.checked_add(1) == Some(hour)
+                        && run.terms == terms
+                        && run.seller_tag == *seller
+                        && run.buyer_tag == *buyer =>
+                {
+                    run.last_hour = hour
+                }
+                _ => runs.push(Run {
+                    first_hour: hour,
+                    last_hour: hour,
+                    terms,
+                    seller_tag: seller.clone(),
+                    buyer_tag: buyer.clone(),
+                }),
+            }
+            if !was_active {
+                for slot in [flow.0.0, flow.1.0] {
+                    name_slot(&mut index.named, carried, &index.holders, slot);
+                }
+            }
+            touched.insert(at, was_active);
+        }
+        // Every other active flow continues with the same terms and holders.
+        for &at in active.iter() {
+            if let Some(run) = result.flows[at].runs.last_mut() {
+                run.last_hour = hour;
+            }
+        }
+        Ok(Some(touched))
     }
 }
 

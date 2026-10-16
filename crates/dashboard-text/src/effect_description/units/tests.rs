@@ -382,15 +382,19 @@ fn unit_fixture() -> Fixture {
     if let TableView::Complete(TableRows::ScriptVariables(rows)) =
         &mut *fixture.frame.tables[TableId::ScriptVariables.index()]
     {
-        rows.push(ScriptVariablesRow {
-            scope_kind: 0,
-            scope_id: 0,
-            entries: vec![ScriptVariableEntry {
-                name: b"syn_amount".to_vec(),
-                value_raw: 25_000,
-            }],
-            ..Default::default()
-        });
+        // The global store, first in key order: scope kind, then id.
+        rows.insert(
+            0,
+            ScriptVariablesRow {
+                scope_kind: 0,
+                scope_id: 0,
+                entries: vec![ScriptVariableEntry {
+                    name: b"syn_amount".to_vec(),
+                    value_raw: 25_000,
+                }],
+                ..Default::default()
+            },
+        );
     }
     fixture
 }

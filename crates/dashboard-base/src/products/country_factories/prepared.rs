@@ -80,6 +80,36 @@ pub fn sample(
     Ok(result)
 }
 
+/// One sampled country's native count over every factory group, as the
+/// prepared all-group channel for `mode` holds it. It is unknown unless the
+/// frame read every part for exactly this native holder.
+pub fn sampled_count(
+    samples: &progressive::Samples,
+    tag: &str,
+    holder: (u32, u32),
+    mode: FactoryCount,
+) -> io::Result<Option<i128>> {
+    let mut values = Vec::with_capacity(fields().len());
+    for ordinal in 0..fields().len() {
+        let Some(&(identity, Some(value))) = samples.get(&(tag.to_owned(), ordinal.to_string()))
+        else {
+            return Ok(None);
+        };
+        if identity != Some(holder) {
+            return Ok(None);
+        }
+        values.push(i32::try_from(value).map_err(io::Error::other)?);
+    }
+    Ok(Some(i128::from(count_for(
+        &values,
+        &FactoryTop {
+            count: 1,
+            mode,
+            groups: Vec::new(),
+        },
+    ))))
+}
+
 fn rank_selection(index: usize) -> FactoryTop {
     FactoryTop {
         count: 1,

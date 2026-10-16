@@ -17,6 +17,10 @@ pub struct Prepared {
     first: Option<i32>,
     last: i32,
     next_window: usize,
+    /// The content refusals this family's own reads produced, which its
+    /// published warnings report.
+    #[serde(default)]
+    refusals: catalogue::OwnRefusals,
     #[serde(skip)]
     catalogue: Option<Arc<Catalogue>>,
     #[serde(skip)]
@@ -54,7 +58,25 @@ impl Prepared {
         self.observe_frame(frame, format, Some(changes))
     }
 
+    /// Runs `run` as this family's own consumer of the shared content
+    /// ([`catalogue::own_refusals`]).
+    fn own<T>(&mut self, run: impl FnOnce(&mut Self) -> T) -> T {
+        let mut own = std::mem::take(&mut self.refusals);
+        let value = catalogue::own_refusals(&mut own, || run(self));
+        self.refusals = own;
+        value
+    }
+
     fn observe_frame(
+        &mut self,
+        frame: &DecodedFrame,
+        format: replay::format::FormatVersion,
+        changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
+    ) -> io::Result<()> {
+        self.own(|state| state.observe_own_frame(frame, format, changes))
+    }
+
+    fn observe_own_frame(
         &mut self,
         frame: &DecodedFrame,
         format: replay::format::FormatVersion,
@@ -150,6 +172,16 @@ impl Prepared {
     }
 
     fn write_window(
+        &mut self,
+        writer: &mut store::Writer,
+        branch: u64,
+        window: usize,
+        interval: HourSpan,
+    ) -> io::Result<()> {
+        self.own(|state| state.write_own_window(writer, branch, window, interval))
+    }
+
+    fn write_own_window(
         &mut self,
         writer: &mut store::Writer,
         branch: u64,

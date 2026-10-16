@@ -9,7 +9,10 @@ use replay::{
     frame::{DecodedFrame, SharedView, TableView},
     rows::{TableRows, tables},
 };
-use std::{collections::BTreeMap, sync::OnceLock};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex, OnceLock, Weak},
+};
 
 /// Spell the template operand recorded at this hour. A null template needs no
 /// dictionary; unread tokens remain errors. Lexer tokens are sorted by token.
@@ -69,12 +72,19 @@ pub fn name(
 /// Each folded lexer name to its one token, or why it names none.
 type ReverseIndex = Result<BTreeMap<Vec<u8>, Result<u32, String>>, String>;
 
+/// A dictionary's token rows as changed or deleted from the dictionary saved
+/// before it.
+type SavedChanges = Arc<Vec<(u32, Option<Vec<u8>>)>>;
+
 /// The lexical dictionary behind a name read. Its reverse index is built only
 /// for bound token arguments and shared by factions from the same table read.
 #[derive(Debug)]
 pub struct LexicalNames {
     table: SharedView,
     names: OnceLock<ReverseIndex>,
+    /// Its changes from the dictionary saved before it (none for the first),
+    /// kept since a history saves every dictionary again at each commit.
+    saved: Mutex<Option<(Option<Weak<LexicalNames>>, SavedChanges)>>,
 }
 
 impl Default for LexicalNames {
@@ -84,10 +94,19 @@ impl Default for LexicalNames {
 }
 
 impl LexicalNames {
+    /// The empty dictionary every saved history starts from. All saves share
+    /// this one allocation, so the first saved dictionary's changes from it
+    /// stay kept between saves.
+    pub fn empty() -> Arc<Self> {
+        static EMPTY: OnceLock<Arc<LexicalNames>> = OnceLock::new();
+        Arc::clone(EMPTY.get_or_init(|| Arc::new(Self::default())))
+    }
+
     pub fn new(table: SharedView) -> Self {
         Self {
             table,
             names: OnceLock::new(),
+            saved: Mutex::new(None),
         }
     }
 
@@ -147,53 +166,105 @@ impl LexicalNames {
 /// Persist historical dictionaries as changed/deleted token rows, not full copies.
 pub mod dictionary_history {
     use super::*;
+    use replay::rows::LexicalTokenRow;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::sync::Arc;
 
     type Changes<T> = Result<Vec<(u32, Option<T>)>, String>;
 
+    #[cfg(test)]
+    thread_local! {
+        /// Dictionaries whose changes were computed on this thread.
+        pub(super) static COMPUTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Each dictionary's changes from the complete one before it. A history
+    /// only grows, so each dictionary's changes are computed once and kept
+    /// with it, rather than every dictionary being compared again at every
+    /// save.
     pub fn serialize<S: Serializer>(
         dictionaries: &[Arc<LexicalNames>],
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        let mut previous = BTreeMap::new();
-        let mut versions: Vec<Changes<&[u8]>> = Vec::new();
+        let mut previous: Option<&Arc<LexicalNames>> = None;
+        let mut kept = Vec::with_capacity(dictionaries.len());
         for dictionary in dictionaries {
-            let rows = match &*dictionary.table {
-                TableView::Complete(TableRows::LexicalTokens(rows)) => rows,
-                TableView::Unavailable { reason } => {
-                    versions.push(Err(reason.clone()));
-                    continue;
+            kept.push(match &*dictionary.table {
+                TableView::Complete(TableRows::LexicalTokens(rows)) => {
+                    let changes = changes_from(dictionary, rows, previous);
+                    previous = Some(dictionary);
+                    Ok(changes)
                 }
-                TableView::Truncated { missing, .. } => {
-                    versions.push(Err(format!("{missing} rows missing")));
-                    continue;
-                }
+                TableView::Unavailable { reason } => Err(reason.clone()),
+                TableView::Truncated { missing, .. } => Err(format!("{missing} rows missing")),
                 _ => {
                     return Err(serde::ser::Error::custom(
                         "LexicalTokens has the wrong table layout",
                     ));
                 }
-            };
-            let current: BTreeMap<_, _> = rows
+            });
+        }
+        let versions: Vec<Changes<&[u8]>> = kept
+            .iter()
+            .map(|version| match version {
+                Ok(changes) => Ok(changes
+                    .iter()
+                    .map(|(token, literal)| (*token, literal.as_deref()))
+                    .collect()),
+                Err(reason) => Err(reason.clone()),
+            })
+            .collect();
+        versions.serialize(serializer)
+    }
+
+    /// `dictionary`'s rows as changed or deleted from `previous`'s, kept on
+    /// the dictionary for the same `previous`.
+    fn changes_from(
+        dictionary: &LexicalNames,
+        rows: &[LexicalTokenRow],
+        previous: Option<&Arc<LexicalNames>>,
+    ) -> SavedChanges {
+        let mut saved = dictionary
+            .saved
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some((from, changes)) = saved.as_ref()
+            && match (from, previous) {
+                // The weak handle keeps the earlier dictionary's allocation
+                // reserved, so an equal address is that dictionary.
+                (Some(from), Some(previous)) => from.as_ptr() == Arc::as_ptr(previous),
+                (None, None) => true,
+                _ => false,
+            }
+        {
+            return Arc::clone(changes);
+        }
+        #[cfg(test)]
+        COMPUTED.with(|computed| computed.set(computed.get() + 1));
+        let before: BTreeMap<u32, &[u8]> = match previous.map(|previous| &*previous.table) {
+            Some(TableView::Complete(TableRows::LexicalTokens(rows))) => rows
                 .iter()
                 .map(|row| (row.token, row.literal.as_slice()))
-                .collect();
-            let mut changes: Vec<_> = current
-                .iter()
-                .filter(|(token, literal)| previous.get(*token) != Some(*literal))
-                .map(|(token, literal)| (*token, Some(*literal)))
-                .collect();
-            changes.extend(
-                previous
-                    .keys()
-                    .filter(|token| !current.contains_key(*token))
-                    .map(|token| (*token, None)),
-            );
-            versions.push(Ok(changes));
-            previous = current;
-        }
-        versions.serialize(serializer)
+                .collect(),
+            _ => BTreeMap::new(),
+        };
+        let current: BTreeMap<_, _> = rows
+            .iter()
+            .map(|row| (row.token, row.literal.as_slice()))
+            .collect();
+        let mut changes: Vec<_> = current
+            .iter()
+            .filter(|(token, literal)| before.get(*token) != Some(*literal))
+            .map(|(token, literal)| (*token, Some(literal.to_vec())))
+            .collect();
+        changes.extend(
+            before
+                .keys()
+                .filter(|token| !current.contains_key(*token))
+                .map(|token| (*token, None)),
+        );
+        let changes = Arc::new(changes);
+        *saved = Some((previous.map(Arc::downgrade), Arc::clone(&changes)));
+        changes
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(
@@ -435,6 +506,96 @@ mod tests {
                 |_| panic!("unread template input must stop before arguments"),
             ),
             Err("dictionary gap".into()),
+        );
+    }
+
+    #[test]
+    fn dictionary_histories_compute_each_dictionarys_changes_once_across_saves() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct Saved {
+            #[serde(with = "dictionary_history")]
+            history: Vec<Arc<LexicalNames>>,
+        }
+        let row = |token, literal: &[u8]| replay::rows::LexicalTokenRow {
+            token,
+            literal: literal.to_vec(),
+        };
+        let dictionary = |rows| {
+            Arc::new(LexicalNames::new(
+                TableView::Complete(TableRows::LexicalTokens(rows)).into(),
+            ))
+        };
+        let saved = Saved {
+            history: vec![
+                dictionary(vec![row(1, b"a"), row(2, b"b")]),
+                Arc::new(LexicalNames::new(
+                    TableView::Unavailable {
+                        reason: "gap".into(),
+                    }
+                    .into(),
+                )),
+                dictionary(vec![row(1, b"a"), row(2, b"B"), row(3, b"c")]),
+                dictionary(vec![row(2, b"B"), row(3, b"c")]),
+            ],
+        };
+        dictionary_history::COMPUTED.with(|computed| computed.set(0));
+        let first = serde_json::to_vec(&saved).unwrap();
+        let second = serde_json::to_vec(&saved).unwrap();
+        assert_eq!(first, second);
+        // Each complete dictionary is compared once with the one before it.
+        assert_eq!(dictionary_history::COMPUTED.with(std::cell::Cell::get), 3);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&first).unwrap()["history"],
+            serde_json::json!([
+                {"Ok": [[1, [97]], [2, [98]]]},
+                {"Err": "gap"},
+                {"Ok": [[2, [66]], [3, [99]]]},
+                {"Ok": [[1, null]]}
+            ])
+        );
+        let restored: Saved = serde_json::from_slice(&first).unwrap();
+        assert_eq!(restored.history.len(), saved.history.len());
+        for (restored, original) in restored.history.iter().zip(&saved.history) {
+            assert!(restored.holds(&original.table));
+        }
+    }
+
+    #[test]
+    fn saved_histories_rebuilt_from_the_shared_empty_dictionary_keep_every_change() {
+        let row = |token, literal: &[u8]| replay::rows::LexicalTokenRow {
+            token,
+            literal: literal.to_vec(),
+        };
+        let dictionary = |rows| {
+            Arc::new(LexicalNames::new(
+                TableView::Complete(TableRows::LexicalTokens(rows)).into(),
+            ))
+        };
+        let first = dictionary(vec![row(1, b"a"), row(2, b"b")]);
+        let second = dictionary(vec![row(1, b"a"), row(2, b"B")]);
+        // A save lists the dictionaries again each time, starting from the
+        // empty one, as the country groups' saved state does.
+        let save = || {
+            #[derive(serde::Serialize)]
+            struct Saved {
+                #[serde(with = "dictionary_history")]
+                history: Vec<Arc<LexicalNames>>,
+            }
+            serde_json::to_vec(&Saved {
+                history: vec![LexicalNames::empty(), first.clone(), second.clone()],
+            })
+            .unwrap()
+        };
+        assert!(Arc::ptr_eq(&LexicalNames::empty(), &LexicalNames::empty()));
+        dictionary_history::COMPUTED.with(|computed| computed.set(0));
+        let before = save();
+        let computed = dictionary_history::COMPUTED.with(std::cell::Cell::get);
+        assert!(computed > 0);
+        assert_eq!(save(), before);
+        assert_eq!(
+            dictionary_history::COMPUTED.with(std::cell::Cell::get),
+            computed,
+            "a later save computes no dictionary's changes again"
         );
     }
 

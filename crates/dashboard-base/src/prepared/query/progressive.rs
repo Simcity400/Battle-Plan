@@ -385,6 +385,33 @@ pub fn navigate(
     }))
 }
 
+/// One reached hour's selected tables, decoded directly from its block for a
+/// whole-frame state answer; none at an unrecorded hour or inside a recorded gap.
+pub fn frame_at(
+    source: &Source,
+    branch: u64,
+    hour: i32,
+    tables: &[TableId],
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Box<DecodedFrame>>> {
+    check_cancel(cancelled)?;
+    let replay = source.replay_ref();
+    if replay
+        .gaps
+        .iter()
+        .any(|gap| gap.branch == branch && gap.first_hour <= hour && gap.last_hour >= hour)
+    {
+        return Ok(None);
+    }
+    let frame =
+        match replay.seek_selected_with(branch, hour, Some(tables), || check_cancel(cancelled))? {
+            SeekResult::Frame(frame) => Some(frame),
+            SeekResult::Gap { .. } => None,
+        };
+    check_cancel(cancelled)?;
+    Ok(frame)
+}
+
 /// About one year: the owner's ~2 s exact-zoom target. This is not a country or reply cap.
 const EXACT_ZOOM_BLOCKS: usize = 13;
 

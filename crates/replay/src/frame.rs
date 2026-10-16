@@ -16,6 +16,7 @@ mod encoder;
 mod provenance;
 mod wire;
 
+pub(crate) use self::decoder::{advance_table, not_selected};
 pub(crate) use self::wire::decode_update;
 pub use self::{
     decoder::FrameDecoder,
@@ -108,6 +109,13 @@ impl SharedView {
         self.1
     }
 
+    /// This allocation with another last acquisition: the view a frame of a
+    /// later hour holds when the table was carried there unchanged, read or
+    /// not (as a quiet hour of `Replay::read_block_changes` reports it).
+    pub fn with_sampled_at(self, hour: Option<Hour>) -> Self {
+        Self(self.0, hour)
+    }
+
     /// Whether two views are the same allocation, not just equal rows.
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
         Arc::ptr_eq(&a.0, &b.0)
@@ -153,6 +161,11 @@ impl ViewIdentity {
     pub fn is(&self, view: &SharedView) -> bool {
         std::ptr::eq(self.0.as_ptr(), Arc::as_ptr(&view.0))
     }
+
+    /// Whether both name one allocation.
+    pub fn same(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
 }
 
 impl PartialEq for ViewIdentity {
@@ -164,7 +177,121 @@ impl PartialEq for ViewIdentity {
 impl std::ops::Deref for SharedView {
     type Target = TableView;
     fn deref(&self) -> &TableView {
+        if view_reads::RECORDING.with(std::cell::Cell::get) {
+            view_reads::note(self);
+        }
         &self.0
+    }
+}
+
+/// The table views a computation on this thread reads, for consumers that
+/// reuse a computation's result while every view it read is unchanged.
+pub mod view_reads {
+    use super::{SharedView, ViewIdentity};
+    use std::cell::{Cell, RefCell};
+
+    thread_local! {
+        pub(super) static RECORDING: Cell<bool> = const { Cell::new(false) };
+        static READS: RefCell<Vec<ViewIdentity>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn note(view: &SharedView) {
+        READS.with(|reads| {
+            let mut reads = reads.borrow_mut();
+            if !reads.iter().any(|read| read.is(view)) {
+                reads.push(view.identity());
+            }
+        });
+    }
+
+    /// Run `compute` without recording the views it reads: a caller that
+    /// records `compute`'s result itself already holds everything it used.
+    pub fn unrecorded<T>(compute: impl FnOnce() -> T) -> T {
+        let was = RECORDING.with(|recording| recording.replace(false));
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                RECORDING.with(|recording| recording.set(self.0));
+            }
+        }
+        let _restore = Restore(was);
+        compute()
+    }
+
+    /// Run `compute`, returning the views it read, each once. Recording
+    /// nests: an enclosing recording also holds the views read inside.
+    pub fn record<T>(compute: impl FnOnce() -> T) -> (T, Vec<ViewIdentity>) {
+        let outer = READS.with(|reads| std::mem::take(&mut *reads.borrow_mut()));
+        let was = RECORDING.with(|recording| recording.replace(true));
+        // Restore the enclosing recording even when `compute` unwinds.
+        struct Restore(Option<Vec<ViewIdentity>>, bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                RECORDING.with(|recording| recording.set(self.1));
+                if let Some(outer) = self.0.take() {
+                    READS.with(|reads| *reads.borrow_mut() = outer);
+                }
+            }
+        }
+        let mut restore = Restore(Some(outer), was);
+        let value = compute();
+        let inner = READS.with(|reads| std::mem::take(&mut *reads.borrow_mut()));
+        let mut outer = restore.0.take().unwrap_or_default();
+        // Only an enclosing recording holds the views read inside; an
+        // outermost recording leaves nothing behind on this thread.
+        if was {
+            for view in &inner {
+                if !outer.iter().any(|read| read.same(view)) {
+                    outer.push(view.clone());
+                }
+            }
+        }
+        READS.with(|reads| *reads.borrow_mut() = outer);
+        drop(restore);
+        (value, inner)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::frame::TableView;
+
+        fn view() -> SharedView {
+            TableView::Unavailable {
+                reason: "test view".into(),
+            }
+            .into()
+        }
+
+        fn held() -> usize {
+            READS.with(|reads| reads.borrow().len())
+        }
+
+        #[test]
+        fn independent_recordings_hold_nothing_after_they_return() {
+            let views: Vec<_> = (0..100).map(|_| view()).collect();
+            for view in &views {
+                let ((), read) = record(|| {
+                    let _ = &**view;
+                });
+                assert_eq!(read.len(), 1);
+                assert_eq!(held(), 0);
+            }
+        }
+
+        #[test]
+        fn a_nested_recording_also_holds_its_reads_in_the_enclosing_one() {
+            let (first, second) = (view(), view());
+            let (((), inner), outer) = record(|| {
+                let _ = &*first;
+                record(|| {
+                    let _ = &*second;
+                })
+            });
+            assert_eq!(inner.len(), 1);
+            assert_eq!(outer.len(), 2);
+            assert_eq!(held(), 0);
+        }
     }
 }
 
@@ -411,6 +538,20 @@ fn validate_rows(table: TableId, rows: &TableRows) -> io::Result<()> {
         ));
     }
     rows.validate_keys()?;
+    validate_slots(rows)
+}
+/// [`validate_complete`] of rows whose keys a validated delta application
+/// already checked.
+fn validate_applied(table: TableId, rows: &TableRows, hour: Hour) -> io::Result<()> {
+    if rows.table() != table {
+        return Err(invalid(
+            "table rows must have matching types and unique ascending keys",
+        ));
+    }
+    validate_slots(rows)?;
+    validate_singleton(table, rows, hour)
+}
+fn validate_slots(rows: &TableRows) -> io::Result<()> {
     if let TableRows::Countries(countries) = rows {
         let mut slots = allocation::vec(countries.len())?;
         slots.extend(countries.iter().map(|country| country.canonical_slot));

@@ -23,7 +23,7 @@ engine.workspace = true
 installed-content.workspace = true
 replay.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 store = { path = "../store" }
 ts-rs = "11.1"
 uuid = { workspace = true, features = ["v4"] }

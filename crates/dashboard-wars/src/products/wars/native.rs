@@ -7,6 +7,7 @@ pub(super) fn pair(a: u32, b: u32) -> Pair {
     if a < b { (a, b) } else { (b, a) }
 }
 
+#[derive(Clone)]
 pub(super) struct World {
     pub owned: HashMap<u32, Vec<u32>>,
     pub relations: HashMap<Pair, WarRelationRow>,

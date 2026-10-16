@@ -223,11 +223,17 @@ impl Census {
                 .iter()
                 .filter_map(|combat| self.open.get(combat).map(|at| (*combat, *at)))
                 .collect(),
-            None => self
-                .open
-                .iter()
-                .map(|(&combat, &at)| (combat, at))
-                .collect(),
+            None => {
+                // Combat order, as LandCombatProgress lists them: a design's
+                // first read numbers it for the branch, never hash order.
+                let mut open: Vec<_> = self
+                    .open
+                    .iter()
+                    .map(|(&combat, &at)| (combat, at))
+                    .collect();
+                open.sort_unstable();
+                open
+            }
         };
         for (combat, at) in open {
             #[cfg(test)]

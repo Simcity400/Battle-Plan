@@ -190,6 +190,28 @@ mod trait_indices {
     }
 }
 
+mod owner_projection {
+    use super::*;
+    use dashboard_text::metadata::LinkProjection;
+
+    pub fn serialize<S: serde::Serializer>(
+        tags: &LinkTags,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        tags.projection().serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<LinkTags, D::Error> {
+        Option::<LinkProjection>::deserialize(deserializer).map(|projection| {
+            projection
+                .map(LinkTags::from_projection)
+                .unwrap_or_default()
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, TS)]
 #[ts(
     type = "[number, number, number, number, number | null, [number, number, number, number], number[] | null]"
@@ -661,13 +683,135 @@ struct VisibilityRead {
     noted: bool,
 }
 
-/// Whether the roster shows a leader; `Err(None)` repeats an unknown already
-/// noted for it. `epoch` is `None` when Characters or LexicalTokens is
-/// incomplete, whose refusal names the hour.
+/// A leader's last visibility evaluation in its owner's scope, reused while
+/// every input it read reads the same value ([`dashboard_text::triggers::inputs`]):
+/// the verdict is a function of the owner, the role it decides and those
+/// reads.
+struct Evaluation {
+    owner: u32,
+    visibility: LeaderVisibility,
+    value: Eval,
+    inputs: dashboard_text::triggers::inputs::Inputs,
+    /// The last hour whose verdict this evaluation gave.
+    hour: i32,
+}
+
+use dashboard_text::triggers::inputs::{ReuseCounts, check_reuse};
+
+/// The hour's rereads of recorded inputs, each key read once however many
+/// leaders' evaluations read it.
+type Rereads = HashMap<dashboard_text::triggers::inputs::Key, Option<u64>>;
+
+/// The digest `key` reads in the hour's `world`. An evaluation in an
+/// owner's scope reads the World and its recorded scopes; a key it cannot
+/// read again here is evaluated again.
+fn reread(
+    rereads: &mut Rereads,
+    world: &World<'_>,
+    frame: &DecodedFrame,
+    key: &dashboard_text::triggers::inputs::Key,
+) -> Option<u64> {
+    use dashboard_text::triggers::inputs::{Key, digest};
+    if let Some(&read) = rereads.get(key) {
+        return read;
+    }
+    let read = match key {
+        Key::World(query) => Some(world.reread(query)),
+        Key::Scopes(query) => Some(world.recorded().reread(query)),
+        Key::ClockSeed => Some(digest(&dashboard_text::scripted_text::clock_seed(frame))),
+        Key::Table(_) | Key::Names(_) | Key::Text(_) | Key::FocusTag(_) => None,
+    };
+    rereads.insert(key.clone(), read);
+    read
+}
+
+/// What deciding a leader's visibility reuses: its last evaluation, the
+/// hour's rereads and the counts.
+struct Reuse<'r> {
+    evaluation: &'r mut Option<Evaluation>,
+    rereads: &'r mut Rereads,
+    counts: &'r mut ReuseCounts,
+}
+
+impl Reuse<'_> {
+    /// `visibility` decided in the owner's scope: the last evaluation's
+    /// verdict while every input it read reads the same, else evaluated.
+    fn decide(
+        self,
+        world: &World<'_>,
+        frame: &DecodedFrame,
+        row: &UnitLeaderRow,
+        visibility: &LeaderVisibility,
+    ) -> Eval {
+        let Self {
+            evaluation,
+            rereads,
+            counts,
+        } = self;
+        let confirmed = evaluation.as_ref().is_some_and(|last| {
+            last.owner == row.owner
+                && last.visibility == *visibility
+                && last
+                    .inputs
+                    .confirm(frame, |key| reread(rereads, world, frame, key))
+        });
+        if confirmed {
+            counts.reused += 1;
+            if !check_reuse() {
+                let last = evaluation.as_mut().expect("confirmed evaluation");
+                last.hour = frame.hour;
+                return last.value.clone();
+            }
+        }
+        let (value, inputs) = dashboard_text::triggers::inputs::capture(frame, || {
+            Evaluator::new(world, None).decide_leader_visibility(row, visibility.clone(), true)
+        });
+        if confirmed {
+            // Check mode: the reused evaluation, run anyway, must not change.
+            counts.checked += 1;
+            if evaluation.as_ref().is_some_and(|last| last.value != value) {
+                counts.mismatched += 1;
+                #[cfg(test)]
+                panic!(
+                    "leader {}: a reused visibility evaluation changed at hour {}",
+                    row.id, frame.hour
+                );
+            }
+        } else {
+            counts.evaluated += 1;
+        }
+        *evaluation = Some(Evaluation {
+            owner: row.owner,
+            visibility: visibility.clone(),
+            value: value.clone(),
+            inputs,
+            hour: frame.hour,
+        });
+        value
+    }
+}
+
+/// [`visible_reusing`] evaluating in the owner's scope every time.
+#[cfg(test)]
 fn visible(
     row: &UnitLeaderRow,
     hour: Option<&HourWorld<'_>>,
     read: &mut Option<VisibilityRead>,
+    epoch: Option<u64>,
+    linked: bool,
+) -> Result<bool, Option<String>> {
+    visible_reusing(row, hour, read, None, epoch, linked)
+}
+
+/// Whether the roster shows a leader; `Err(None)` repeats an unknown already
+/// noted for it. `epoch` is `None` when Characters or LexicalTokens is
+/// incomplete, whose refusal names the hour. In the owner's scope it decides
+/// through `reuse` when given, else evaluates.
+fn visible_reusing(
+    row: &UnitLeaderRow,
+    hour: Option<&HourWorld<'_>>,
+    read: &mut Option<VisibilityRead>,
+    reuse: Option<Reuse<'_>>,
     epoch: Option<u64>,
     linked: bool,
 ) -> Result<bool, Option<String>> {
@@ -711,7 +855,14 @@ fn visible(
         LeaderVisibility::Unconditioned if linked => Eval::True,
         visibility => {
             let world = hour.get()?;
-            Evaluator::new(world, None).decide_leader_visibility(row, visibility.clone(), true)
+            match reuse {
+                Some(reuse) => reuse.decide(world, hour.frame, row, visibility),
+                None => Evaluator::new(world, None).decide_leader_visibility(
+                    row,
+                    visibility.clone(),
+                    true,
+                ),
+            }
         }
     };
     value.decided().map_err(Some)
@@ -883,6 +1034,98 @@ struct LastRead {
     holder: Option<(u32, u32)>,
 }
 
+/// The identity table rows an hour changed, each table's keys sorted, when
+/// every identity table changed by exactly its recorded delta: a leader whose
+/// own rows are not among them reads the identity it read the hour before.
+struct IdentityChanges {
+    characters: Vec<u128>,
+    portraits: Vec<u128>,
+    tokens: Vec<u128>,
+}
+
+impl IdentityChanges {
+    fn read(changes: &FrameChanges) -> Option<Self> {
+        let keys = |table: TableId| {
+            changes.rows(table).map(|(changed, deleted)| {
+                let mut keys: Vec<u128> = changed
+                    .iter()
+                    .map(|row| row.key)
+                    .chain(deleted.iter().copied())
+                    .collect();
+                keys.sort_unstable();
+                keys
+            })
+        };
+        Some(Self {
+            characters: keys(TableId::Characters)?,
+            portraits: keys(TableId::CharacterPortraits)?,
+            tokens: keys(TableId::LexicalTokens)?,
+        })
+    }
+
+    fn has(keys: &[u128], key: Option<u32>) -> bool {
+        key.is_some_and(|key| keys.binary_search(&u128::from(key)).is_ok())
+    }
+
+    /// Carry `state`'s identity reads from epoch `before`, the hour before's
+    /// tables, to this hour's when none of the rows they read changed: the
+    /// leader's character, its portrait holder, and the tokens spelling its
+    /// name and template tag. Returns how many reads it carried.
+    fn renew(
+        &self,
+        state: &mut LeaderState,
+        row: &UnitLeaderRow,
+        characters: Option<&[CharacterRow]>,
+        before: u64,
+        epoch: u64,
+        visibility_epoch: Option<u64>,
+    ) -> usize {
+        if Self::has(&self.characters, Some(row.character_id)) {
+            return 0;
+        }
+        // Unchanged this hour, so the row the earlier reads read.
+        let character = characters.and_then(|rows| {
+            rows.binary_search_by_key(&row.character_id, |character| character.id)
+                .ok()
+                .map(|at| &rows[at])
+        });
+        let mut renewed = 0;
+        if let Some(read) = &mut state.visibility
+            && visibility_epoch.is_some()
+            && read.key
+                == (
+                    Some(before),
+                    row.character_id,
+                    row.visibility_choice,
+                    row.template_visibility,
+                )
+            && !Self::has(
+                &self.tokens,
+                character
+                    .filter(|character| character.template_present != 0)
+                    .map(|character| character.template_tag),
+            )
+        {
+            read.key.0 = visibility_epoch;
+            renewed += 1;
+        }
+        if let Some(last) = &mut state.last_read
+            && last.person_epoch == before
+            && last.row.character_id == row.character_id
+            && last.row.kind == row.kind
+            && !Self::has(&self.portraits, Some(row.character_id))
+            && !Self::has(
+                &self.tokens,
+                character.and_then(|character| u32::try_from(character.name_token_id).ok()),
+            )
+        {
+            last.person_epoch = epoch;
+            renewed += 1;
+        }
+        renewed
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct LeaderState {
     reference: u64,
@@ -893,6 +1136,9 @@ struct LeaderState {
     last_read: Option<LastRead>,
     #[serde(skip)]
     visibility: Option<VisibilityRead>,
+    /// Runtime state: empty on resume, when the next read evaluates.
+    #[serde(skip)]
+    evaluation: Option<Evaluation>,
     visible_hour: Option<i32>,
     admitted: bool,
     last_run: Option<usize>,
@@ -922,6 +1168,7 @@ impl LeaderState {
             command_indices: HashMap::new(),
             last_read: None,
             visibility: None,
+            evaluation: None,
             visible_hour: None,
             admitted: false,
             last_run: None,
@@ -1095,6 +1342,23 @@ pub(crate) struct Scan {
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
+    /// Whether visibility evaluations are reused while their inputs read the
+    /// same; preparation sets it, the per-hour oracle evaluates every hour.
+    #[serde(skip)]
+    reuse_evaluations: bool,
+    #[serde(skip)]
+    reuse: ReuseCounts,
+    /// The leaders whose last read's verdict an evaluation gave.
+    #[serde(skip)]
+    evaluated: Vec<usize>,
+    /// The core-table refusal the last read's verdicts read, `None` when
+    /// none read it.
+    #[serde(skip)]
+    read_gap: Option<Option<String>>,
+    /// Identity reads carried across changed identity tables.
+    #[cfg(test)]
+    #[serde(skip)]
+    renewed: usize,
 
     #[serde(skip)]
     leader_indices: HashMap<u64, usize>,
@@ -1109,7 +1373,9 @@ pub(crate) struct Scan {
     identity_epoch: u64,
     #[serde(skip)]
     identity_tables: Option<[ViewIdentity; 3]>,
-    #[serde(skip)]
+    /// Saved as the projection it was built from, so a restored scan keeps
+    /// its cached owners exactly when a continued one would.
+    #[serde(with = "owner_projection", default)]
     owner_tags: LinkTags,
     owner_epoch: u64,
     #[serde(skip)]
@@ -1139,7 +1405,8 @@ pub(crate) struct Scan {
     naval_sources: BTreeMap<u64, NavalSource>,
     results_recorded: bool,
     missing_battles: [Option<i32>; 2],
-    previous_combats: [Option<(i32, BTreeSet<u64>)>; 2],
+    /// Each kind's combats at the last read, sorted.
+    previous_combats: [Option<(i32, Vec<u64>)>; 2],
 }
 impl Scan {
     fn recount_pending(&mut self) {
@@ -1342,8 +1609,7 @@ impl Scan {
                     .any(|row| row.visibility_choice != 0 || row.template_visibility != 0)
             });
         }
-        if (!self.scoped_visibility || content.is_none())
-            && self.commands_continuous
+        let carried = self.commands_continuous
             && !holders_changed
             && self
                 .frontier
@@ -1351,7 +1617,10 @@ impl Scan {
             && self.read_mask == Some(mask)
             && !inputs
                 .clone()
-                .any(|table| changes.rows_changed[table.index()])
+                .any(|table| changes.rows_changed[table.index()]);
+        if carried
+            && (!self.scoped_visibility
+                || content.is_none_or(|content| self.visibility_carries(decoded, content)))
         {
             self.advance(decoded.hour);
             return Ok(());
@@ -1360,10 +1629,58 @@ impl Scan {
         self.frontier = Some(decoded.hour);
         self.materialized = Some(decoded.hour);
         self.read_mask = Some(mask);
-        self.observe_read(decoded, replay, params, content, admit)
+        self.observe_rows(decoded, replay, params, content, Some(changes), admit)
     }
 
-    /// The per-hour oracle and changed-frame preparation share this exact step.
+    /// Whether every visibility verdict of the last read holds this hour,
+    /// whose leader inputs are unchanged: the core tables refuse as they did,
+    /// and every evaluation that gave a verdict reads the same inputs.
+    fn visibility_carries(&mut self, decoded: &DecodedFrame, content: &Content) -> bool {
+        if !self.reuse_evaluations {
+            return false;
+        }
+        if self
+            .read_gap
+            .as_ref()
+            .is_some_and(|gap| core_gap(decoded) != *gap)
+        {
+            return false;
+        }
+        if self.evaluated.is_empty() {
+            return true;
+        }
+        let Ok(scripted) = content.catalogue.scripted_content() else {
+            return false;
+        };
+        let hour = HourWorld {
+            content: scripted,
+            frame: decoded,
+            world: OnceCell::new(),
+            gap: OnceCell::new(),
+        };
+        let Ok(world) = hour.get() else {
+            return false;
+        };
+        let mut rereads = Rereads::new();
+        let leaders = &self.leaders;
+        let carried = self.evaluated.iter().all(|&index| {
+            leaders[index]
+                .evaluation
+                .as_ref()
+                .is_some_and(|evaluation| {
+                    evaluation
+                        .inputs
+                        .confirm(decoded, |key| reread(&mut rereads, world, decoded, key))
+                })
+        });
+        if carried {
+            self.reuse.reused += self.evaluated.len() as u64;
+        }
+        carried
+    }
+
+    /// The per-hour oracle's step: every hour read, every evaluation run.
+    #[cfg(any(test, feature = "test-support"))]
     fn observe_read(
         &mut self,
         decoded: &DecodedFrame,
@@ -1372,8 +1689,26 @@ impl Scan {
         content: Option<&Content>,
         admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
     ) -> io::Result<()> {
+        self.observe_rows(decoded, replay, params, content, None, admit)
+    }
+
+    /// The per-hour oracle and changed-frame preparation share this exact
+    /// step; `changes` lets a leader whose own identity rows did not change
+    /// keep its identity reads.
+    fn observe_rows(
+        &mut self,
+        decoded: &DecodedFrame,
+        replay: &Replay,
+        params: &UnitLeadersParams,
+        content: Option<&Content>,
+        changes: Option<&FrameChanges>,
+        admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
+    ) -> io::Result<()> {
         self.active_commands.clear();
         self.commands_continuous = true;
+        self.evaluated.clear();
+        self.read_gap = None;
+        let reusing = self.reuse_evaluations;
         let start = self.reply.first_hour;
         let career = params.view == LeaderView::Career;
         let choices = params.view == LeaderView::Choices;
@@ -1422,8 +1757,13 @@ impl Scan {
             scoped_visibility,
             frontier,
             pending_bytes,
+            reuse: reuse_counts,
+            evaluated,
+            read_gap,
             #[cfg(test)]
             work,
+            #[cfg(test)]
+                renewed: renewed_reads,
             ..
         } = self;
         let hour = decoded.hour;
@@ -1523,6 +1863,7 @@ impl Scan {
             TableId::LexicalTokens,
         ]
         .map(|t| &decoded.tables[t.index()]);
+        let identity_before = *identity_epoch;
         if identity_tables.as_ref().is_none_or(|last| {
             last.iter()
                 .zip(now_identity)
@@ -1533,6 +1874,13 @@ impl Scan {
         }
         let visibility_epoch =
             (characters.is_some() && lexical.is_some()).then_some(*identity_epoch);
+        // A changed identity table changes few rows: a leader whose own rows
+        // are not among them keeps the identity it read the hour before.
+        let identity_changes = changes
+            .filter(|_| *identity_epoch != identity_before)
+            .and_then(IdentityChanges::read);
+        // The hour's rereads of recorded inputs, shared by every evaluation.
+        let mut rereads = Rereads::new();
         let land = decoded
             .complete::<tables::LandCombatDetails>()
             .ok()
@@ -1692,6 +2040,22 @@ impl Scan {
                 index
             };
             let state = &mut leaders[index];
+            if let Some(identity) = &identity_changes {
+                let renewed = identity.renew(
+                    state,
+                    row,
+                    characters,
+                    identity_before,
+                    *identity_epoch,
+                    visibility_epoch,
+                );
+                #[cfg(test)]
+                {
+                    *renewed_reads += renewed;
+                }
+                #[cfg(not(test))]
+                let _ = renewed;
+            }
             let owner_unchanged = state.last_read.as_ref().is_some_and(|last| {
                 last.owner_epoch == *owner_epoch && last.row.owner == row.owner
             });
@@ -1724,13 +2088,30 @@ impl Scan {
             {
                 state.admitted = true;
             }
-            match visible(
+            let decided = visible_reusing(
                 row,
                 world.as_ref(),
                 &mut state.visibility,
+                if reusing {
+                    Some(Reuse {
+                        evaluation: &mut state.evaluation,
+                        rereads: &mut rereads,
+                        counts: &mut *reuse_counts,
+                    })
+                } else {
+                    None
+                },
                 visibility_epoch,
                 owner_slot.is_some(),
-            ) {
+            );
+            if state
+                .evaluation
+                .as_ref()
+                .is_some_and(|evaluation| reusing && evaluation.hour == hour)
+            {
+                evaluated.push(index);
+            }
+            match decided {
                 Ok(true) => {}
                 Ok(false) => {
                     continue;
@@ -2027,6 +2408,7 @@ impl Scan {
             }
         }
         row_indices.truncate(rows.len());
+        *read_gap = world.as_ref().and_then(|world| world.gap.get().cloned());
         if land_commands {
             let plans = decoded
                 .complete::<tables::OrdersGroupPlans>()
@@ -2180,8 +2562,8 @@ impl Scan {
         );
         if !choices {
             let combat_sets = [
-                land.map(|rows| rows.iter().map(|c| c.combat).collect::<BTreeSet<_>>()),
-                navy.map(|rows| rows.iter().map(|c| c.combat).collect::<BTreeSet<_>>()),
+                land.map(|rows| sorted_combats(rows.iter().map(|c| c.combat))),
+                navy.map(|rows| sorted_combats(rows.iter().map(|c| c.combat))),
             ];
             let sides =
                 land.into_iter()
@@ -2274,7 +2656,8 @@ impl Scan {
                         && previous_combats[usize::from(kind - 1)]
                             .as_ref()
                             .is_some_and(|(h, set)| {
-                                h.checked_add(1) == Some(hour) && !set.contains(&combat)
+                                h.checked_add(1) == Some(hour)
+                                    && set.binary_search(&combat).is_err()
                             });
                     battle_indices.insert((commander, kind, combat), reads.len());
                     reads.push((
@@ -2775,6 +3158,14 @@ fn formation_name<'n>(
 }
 
 type BattleOutcomes = BTreeMap<(u8, u64), Option<(i32, i32, u8)>>;
+
+/// An hour's combat handles, sorted once for its lookups.
+fn sorted_combats(combats: impl Iterator<Item = u64>) -> Vec<u64> {
+    let mut combats: Vec<u64> = combats.collect();
+    combats.sort_unstable();
+    combats.dedup();
+    combats
+}
 
 fn record_outcome(outcomes: &mut BattleOutcomes, key: (u8, u64), result: (i32, i32, u8)) -> bool {
     match outcomes.entry(key) {

@@ -110,8 +110,7 @@ pub use entries::{
 };
 mod properties;
 pub mod random;
-
-use properties::Party;
+pub mod recorded_names;
 
 // Nesting backstop: each scripted entry restarts text processing at
 // depth zero, independently of the content recursion limit.
@@ -124,8 +123,8 @@ fn nesting_refusal(name: &str) -> String {
 }
 
 /// A localisation context object.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Object {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Object {
     /// Faction environment: copied event scope and faction.
     FactionEnvironment(Option<u64>),
     /// A faction selected from the environment.
@@ -152,7 +151,7 @@ pub enum Link {
 }
 
 /// What an event scope holds, as text reads it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EventObject {
     Country(u32),
     /// A combat context retains only the combat object.
@@ -206,6 +205,10 @@ pub struct EventScope {
     /// Missing input to these lanes; copies retain it, fresh constructors clear it.
     /// Only a random selection needs this input.
     pub random_seed_refusal: Option<&'static str>,
+    /// The Clock seed, recorded or not, the lanes were derived from; a draw
+    /// reads it ([`crate::triggers::inputs::Key::ClockSeed`]). None for lanes
+    /// no recorded seed set.
+    pub clock_seed: Option<Option<u32>>,
 }
 
 impl EventScope {
@@ -220,10 +223,14 @@ impl EventScope {
             random_seed: 1, // Setters preserve the seed words.
             random_counter: 0x5ea6_ba9e,
             random_seed_refusal: None,
+            clock_seed: None,
         }
     }
 
     pub(crate) fn require_random_seed(&self) -> Result<u32, String> {
+        if let Some(seed) = &self.clock_seed {
+            crate::triggers::inputs::read(crate::triggers::inputs::Key::ClockSeed, seed);
+        }
         match self.random_seed_refusal {
             Some(why) => Err(why.into()),
             None => Ok(self.random_seed),
@@ -569,7 +576,7 @@ pub struct ScriptedText<'a> {
     localisation: &'a Localisation,
     content: &'a ScriptedContent,
     scopes: RecordedScopes,
-    names: CountryNames<'a>,
+    names: recorded_names::RecordedNames<'a>,
     lexical_names: crate::faction_names::LexicalNames,
     frame: &'a DecodedFrame,
     root: u32,
@@ -599,6 +606,169 @@ fn rows<T: TableSchema>(frame: &DecodedFrame) -> (&[T::Row], String) {
         ),
         TableView::Unavailable { reason } => (&[], format!("the table is unavailable: {reason}")),
     }
+}
+
+/// A recorded query of a scripted text's own hour reads ([`crate::triggers::inputs`]).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum TextQuery {
+    CountryName(u32, bool),
+    CountryTag(u32),
+    CharacterProperty(u32, String),
+    CharacterName(u32),
+    Capital(u32, bool),
+    Overlord(u32),
+    StateRecord(u32),
+    StateCountry(u32, bool),
+    CharacterCountry(u32),
+    EventObject(EventObject, String),
+    LocalPlayer,
+    RulingParty(u32, String, bool),
+    FactionName(u32),
+    FactionNameById(u64),
+    CharacterNamed(Object, String, EventObject),
+    StateNameFor(u32, bool),
+    ProvinceDisplayNamePrimary(u32),
+    ProvinceDisplayName(u32),
+    ProvinceNameOverride(u32),
+    ProvinceVictoryPointName(u32),
+    PartySupport(u32),
+    /// A country's ruling party's (`None`) or a group's first party's leader.
+    PartyLeader(u32, Option<String>),
+    /// The long name of a country's first party of an exact group, as `tag`.
+    NamedPartyName(u32, String, String),
+    LastElection(u32),
+    Manpower(u32),
+    Agency(u32),
+    OldName(u32, String, String),
+    CharacterGender(u32),
+    CountryPronoun(u32, String),
+    DateProperty(String),
+    CountriesGap,
+}
+
+impl ScriptedText<'_> {
+    /// The digest `query` reads at this text's hour.
+    pub fn reread_text(&self, query: &TextQuery) -> u64 {
+        match query {
+            TextQuery::CountryName(country, definite) => {
+                crate::triggers::inputs::digest(&self.country_name_unrecorded(*country, *definite))
+            }
+            TextQuery::CountryTag(country) => {
+                crate::triggers::inputs::digest(&self.country_tag_unrecorded(*country))
+            }
+            TextQuery::CharacterProperty(id, name) => {
+                crate::triggers::inputs::digest(&self.character_property_unrecorded(*id, name))
+            }
+            TextQuery::CharacterName(id) => {
+                crate::triggers::inputs::digest(&self.character_name_unrecorded(*id))
+            }
+            TextQuery::Capital(slot, original) => {
+                crate::triggers::inputs::digest_debug(&self.capital_unrecorded(*slot, *original))
+            }
+            TextQuery::Overlord(slot) => {
+                crate::triggers::inputs::digest(&self.overlord_unrecorded(*slot))
+            }
+            TextQuery::StateRecord(id) => {
+                crate::triggers::inputs::digest(&self.state_record_unrecorded(*id))
+            }
+            TextQuery::StateCountry(id, owner) => {
+                crate::triggers::inputs::digest_debug(&self.state_country_unrecorded(*id, *owner))
+            }
+            TextQuery::CharacterCountry(id) => {
+                crate::triggers::inputs::digest_debug(&self.character_country_unrecorded(*id))
+            }
+            TextQuery::EventObject(object, name) => {
+                crate::triggers::inputs::digest_debug(&self.event_object_unrecorded(*object, name))
+            }
+            TextQuery::LocalPlayer => {
+                crate::triggers::inputs::digest(&self.local_player_unrecorded())
+            }
+            TextQuery::RulingParty(slot, tag, long) => {
+                crate::triggers::inputs::digest(&self.ruling_party_unrecorded(*slot, tag, *long))
+            }
+            TextQuery::FactionName(slot) => {
+                crate::triggers::inputs::digest(&self.faction_name_unrecorded(*slot))
+            }
+            TextQuery::FactionNameById(id) => {
+                crate::triggers::inputs::digest(&self.faction_name_by_id_unrecorded(*id))
+            }
+            TextQuery::CharacterNamed(object, segment, event) => crate::triggers::inputs::digest(
+                &self.character_named_unrecorded(*object, segment, *event),
+            ),
+            TextQuery::StateNameFor(id, plain) => {
+                crate::triggers::inputs::digest(&self.state_name_for_unrecorded(*id, *plain))
+            }
+            TextQuery::ProvinceDisplayNamePrimary(id) => {
+                crate::triggers::inputs::digest(&self.province_display_name_primary_unrecorded(*id))
+            }
+            TextQuery::ProvinceDisplayName(id) => {
+                crate::triggers::inputs::digest(&self.province_display_name_unrecorded(*id))
+            }
+            TextQuery::ProvinceNameOverride(id) => {
+                crate::triggers::inputs::digest(&self.province_name_override_unrecorded(*id))
+            }
+            TextQuery::ProvinceVictoryPointName(id) => {
+                crate::triggers::inputs::digest(&self.province_victory_point_name_unrecorded(*id))
+            }
+            TextQuery::PartySupport(slot) => {
+                crate::triggers::inputs::digest(&self.party_support_unrecorded(*slot))
+            }
+            TextQuery::PartyLeader(slot, group) => crate::triggers::inputs::digest(
+                &self.party_leader_unrecorded(*slot, group.as_deref()),
+            ),
+            TextQuery::NamedPartyName(slot, group, tag) => crate::triggers::inputs::digest(
+                &self.named_party_name_unrecorded(*slot, group, tag),
+            ),
+            TextQuery::LastElection(slot) => {
+                crate::triggers::inputs::digest(&self.last_election_unrecorded(*slot))
+            }
+            TextQuery::Manpower(slot) => {
+                crate::triggers::inputs::digest(&self.manpower_unrecorded(*slot))
+            }
+            TextQuery::Agency(slot) => {
+                crate::triggers::inputs::digest(&self.agency_unrecorded(*slot))
+            }
+            TextQuery::OldName(slot, entry, suffix) => {
+                crate::triggers::inputs::digest(&self.old_name_unrecorded(*slot, entry, suffix))
+            }
+            TextQuery::CharacterGender(id) => {
+                crate::triggers::inputs::digest(&self.character_gender_unrecorded(*id))
+            }
+            TextQuery::CountryPronoun(slot, name) => {
+                crate::triggers::inputs::digest(&self.country_pronoun_unrecorded(*slot, name))
+            }
+            TextQuery::DateProperty(name) => {
+                crate::triggers::inputs::digest(&self.date_property_unrecorded(name))
+            }
+            TextQuery::CountriesGap => {
+                crate::triggers::inputs::digest(&self.countries_gap_unrecorded())
+            }
+        }
+    }
+}
+
+impl ScriptedText<'_> {
+    /// Why Countries is not complete this hour, None when it is.
+    pub(crate) fn countries_gap(&self) -> Option<String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::CountriesGap),
+            || self.countries_gap_unrecorded(),
+        )
+    }
+
+    pub(crate) fn countries_gap_unrecorded(&self) -> Option<String> {
+        (!complete::<tables::Countries>(self.frame))
+            .then(|| rows::<tables::Countries>(self.frame).1)
+    }
+}
+
+/// The hour's Clock random seed, if recorded.
+pub fn clock_seed(frame: &DecodedFrame) -> Option<u32> {
+    frame
+        .complete::<tables::Clock>()
+        .ok()
+        .and_then(|rows| rows.first())
+        .map(|clock| clock.seed as u32)
 }
 
 impl<'a> ScriptedText<'a> {
@@ -634,7 +804,7 @@ impl<'a> ScriptedText<'a> {
             localisation,
             content,
             scopes,
-            names: CountryNames::read(frame, localisation),
+            names: recorded_names::RecordedNames(CountryNames::read(frame, localisation)),
             lexical_names: crate::faction_names::LexicalNames::new(
                 frame.tables[replay::rows::TableId::LexicalTokens.index()].clone(),
             ),
@@ -798,7 +968,21 @@ impl<'a> ScriptedText<'a> {
         self.content
     }
 
-    pub(crate) fn country_names(&self) -> &CountryNames<'_> {
+    /// The digest a recorded query reads in this hour's world, scopes or
+    /// names; None for a whole table ([`crate::triggers::inputs`]).
+    pub fn reread(&self, key: &crate::triggers::inputs::Key) -> Option<u64> {
+        use crate::triggers::inputs::Key;
+        match key {
+            Key::Table(_) | Key::FocusTag(_) => None,
+            Key::ClockSeed => Some(crate::triggers::inputs::digest(&clock_seed(self.frame))),
+            Key::World(query) => self.trigger_world().ok().map(|world| world.reread(query)),
+            Key::Scopes(query) => Some(self.scopes.reread(query)),
+            Key::Names(query) => Some(self.names.reread(query)),
+            Key::Text(query) => Some(self.reread_text(query)),
+        }
+    }
+
+    pub(crate) fn country_names(&self) -> &recorded_names::RecordedNames<'_> {
         &self.names
     }
 
@@ -812,6 +996,17 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(crate) fn country_name(&self, country: u32, definite: bool) -> Result<String, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::CountryName(country, definite)),
+            || self.country_name_unrecorded(country, definite),
+        )
+    }
+
+    pub(crate) fn country_name_unrecorded(
+        &self,
+        country: u32,
+        definite: bool,
+    ) -> Result<String, String> {
         if definite {
             self.names.name_with(country, "_DEF")
         } else {
@@ -821,6 +1016,13 @@ impl<'a> ScriptedText<'a> {
 
     /// Tag lookup uses database slot zero for raw zero.
     pub(crate) fn country_tag(&self, country: u32) -> Result<&str, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::CountryTag(country)),
+            || self.country_tag_unrecorded(country),
+        )
+    }
+
+    pub(crate) fn country_tag_unrecorded(&self, country: u32) -> Result<&str, String> {
         if country == 0 {
             installed_content::country_names::reserved_zero_tag(self.frame)
         } else {
@@ -875,14 +1077,17 @@ impl<'a> ScriptedText<'a> {
     ) -> Result<String, String> {
         let mut expanded = scopes.clone();
         expanded.on_large_stack = true;
-        let (result, session) = std::thread::scope(|thread_scope| {
+        let ((result, session), noted) = std::thread::scope(|thread_scope| {
             std::thread::Builder::new()
                 .name("scripted-localisation".into())
                 // Reserve 64 KiB per backstop level for the entry's debug call frames.
                 .stack_size(MAX_SCRIPTED_NESTING * 64 * 1024)
                 .spawn_scoped(thread_scope, move || {
-                    let result = expand(&expanded);
-                    (result, expanded.session.into_inner())
+                    // The expansion's catalogue notes belong to the calling consumer.
+                    crate::catalogue::capture(move || {
+                        let result = expand(&expanded);
+                        (result, expanded.session.into_inner())
+                    })
                 })
                 .map_err(|error| {
                     format!("scripted localisation expansion thread could not start: {error}")
@@ -890,6 +1095,7 @@ impl<'a> ScriptedText<'a> {
                 .join()
                 .map_err(|_| "scripted localisation expansion thread failed".to_owned())
         })?;
+        crate::catalogue::credit(&noted);
         scopes.session.replace(session);
         result
     }
@@ -1131,8 +1337,7 @@ impl<'a> ScriptedText<'a> {
         if let Some(refusal) = self.scopes.alias(segment) {
             return Err(refusal);
         }
-        if !complete::<tables::Countries>(self.frame) {
-            let (_, gap) = rows::<tables::Countries>(self.frame);
+        if let Some(gap) = self.countries_gap() {
             return Err(format!(
                 "{segment}: whether it is a country tag is unknown: Countries {gap}"
             ));
@@ -1149,11 +1354,11 @@ impl<'a> ScriptedText<'a> {
                 // Consumed, the context unchanged.
                 return Ok(object);
             }
-            let (states, gap) = rows::<tables::States>(self.frame);
-            if states.iter().any(|state| state.id == id as u32) {
+            let (found, complete, gap) = self.state_record(id as u32);
+            if found {
                 return Ok(Object::State(Some(id as u32)));
             }
-            if complete::<tables::States>(self.frame) {
+            if complete {
                 // A positive id no state holds is a null state object.
                 return Ok(Object::State(None));
             }
@@ -1195,9 +1400,8 @@ impl<'a> ScriptedText<'a> {
                 if id <= 0 {
                     return Ok(Object::State(None));
                 }
-                let (states, gap) = rows::<tables::States>(self.frame);
-                let found = states.iter().any(|r| r.id == id as u32);
-                if !found && !complete::<tables::States>(self.frame) {
+                let (found, complete, gap) = self.state_record(id as u32);
+                if !found && !complete {
                     return Err(format!(
                         "saved event target {name}: state {id} is unknown: States {gap}"
                     ));
@@ -1348,23 +1552,15 @@ impl<'a> ScriptedText<'a> {
         } else if is("GetRulingParty") || is("GetRulingPartyLong") {
             self.ruling_party(slot, &tag, is("GetRulingPartyLong"))?
         } else if is("GetLeader") {
-            self.party_leader(slot, Party::Ruling)?
+            self.party_leader(slot, None)?
         } else if let Some(group) = properties::leader_group(name) {
-            self.party_leader(slot, Party::Token(group))?
+            self.party_leader(slot, Some(group))?
         } else if let Some(group) = properties::party_group(name) {
-            match self.party(slot, Party::Named(group))? {
-                Some(party) => self.party_name(party, &tag, true)?,
-                None => String::new(),
-            }
+            self.named_party_name(slot, group, &tag)?
         } else if is("GetPartySupport") {
             self.party_support(slot)?
         } else if is("GetLastElection") {
-            let (politics, gap) = rows::<tables::Politics>(self.frame);
-            let row = politics
-                .iter()
-                .find(|row| self.scopes.slot(row.country) == Some(slot))
-                .ok_or_else(|| format!("GetLastElection: Politics {gap}"))?;
-            self.date_text(row.last_election)?
+            self.last_election(slot)?
         } else if PRONOUNS.iter().any(|entry| is(entry)) {
             self.country_pronoun(slot, name)?
         } else if is("GetManpower") {
@@ -1381,6 +1577,22 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn character_property(&self, id: u32, name: &str) -> Result<Option<String>, String> {
+        crate::triggers::inputs::query(
+            || {
+                crate::triggers::inputs::Key::Text(TextQuery::CharacterProperty(
+                    id,
+                    name.to_owned(),
+                ))
+            },
+            || self.character_property_unrecorded(id, name),
+        )
+    }
+
+    pub(crate) fn character_property_unrecorded(
+        &self,
+        id: u32,
+        name: &str,
+    ) -> Result<Option<String>, String> {
         let is = |entry: &str| named(name, entry);
         if is("GetName") {
             // Character GetName copies the stored name directly;
@@ -1409,6 +1621,13 @@ impl<'a> ScriptedText<'a> {
 
     /// The stored character name, else the saved name key through the localiser.
     fn character_name(&self, id: u32) -> Result<String, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::CharacterName(id)),
+            || self.character_name_unrecorded(id),
+        )
+    }
+
+    pub(crate) fn character_name_unrecorded(&self, id: u32) -> Result<String, String> {
         let (characters, gap) = rows::<tables::Characters>(self.frame);
         let row = characters
             .iter()
@@ -1426,6 +1645,13 @@ impl<'a> ScriptedText<'a> {
     /// Capital or original capital, falling back to capital: a null state
     /// when invalid, so a property then reads `NULL`.
     fn capital(&self, slot: u32, original: bool) -> Result<Object, String> {
+        crate::triggers::inputs::query_debug(
+            || crate::triggers::inputs::Key::Text(TextQuery::Capital(slot, original)),
+            || self.capital_unrecorded(slot, original),
+        )
+    }
+
+    pub(crate) fn capital_unrecorded(&self, slot: u32, original: bool) -> Result<Object, String> {
         let (politics, gap) = rows::<tables::Politics>(self.frame);
         let row = politics
             .iter()
@@ -1444,6 +1670,13 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn overlord(&self, slot: u32) -> Result<Option<u32>, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::Overlord(slot)),
+            || self.overlord_unrecorded(slot),
+        )
+    }
+
+    pub(crate) fn overlord_unrecorded(&self, slot: u32) -> Result<Option<u32>, String> {
         let (appearance, gap) = rows::<tables::CountryAppearance>(self.frame);
         let row = appearance
             .iter()
@@ -1498,7 +1731,32 @@ impl<'a> ScriptedText<'a> {
         Ok(None)
     }
 
+    /// Whether States records a state `id`, whether States is complete, and
+    /// why not.
+    fn state_record(&self, id: u32) -> (bool, bool, String) {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::StateRecord(id)),
+            || self.state_record_unrecorded(id),
+        )
+    }
+
+    pub(crate) fn state_record_unrecorded(&self, id: u32) -> (bool, bool, String) {
+        let (states, gap) = rows::<tables::States>(self.frame);
+        (
+            states.iter().any(|state| state.id == id),
+            complete::<tables::States>(self.frame),
+            gap,
+        )
+    }
+
     fn state_country(&self, id: u32, owner: bool) -> Result<Object, String> {
+        crate::triggers::inputs::query_debug(
+            || crate::triggers::inputs::Key::Text(TextQuery::StateCountry(id, owner)),
+            || self.state_country_unrecorded(id, owner),
+        )
+    }
+
+    pub(crate) fn state_country_unrecorded(&self, id: u32, owner: bool) -> Result<Object, String> {
         let (states, gap) = rows::<tables::States>(self.frame);
         let state = states
             .iter()
@@ -1512,6 +1770,13 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn character_country(&self, id: u32) -> Result<Object, String> {
+        crate::triggers::inputs::query_debug(
+            || crate::triggers::inputs::Key::Text(TextQuery::CharacterCountry(id)),
+            || self.character_country_unrecorded(id),
+        )
+    }
+
+    pub(crate) fn character_country_unrecorded(&self, id: u32) -> Result<Object, String> {
         let (characters, gap) = rows::<tables::Characters>(self.frame);
         let row = characters
             .iter()
@@ -1531,6 +1796,17 @@ impl<'a> ScriptedText<'a> {
     /// Select the context from an event scope: its character first,
     /// then its country, then its state.
     fn event_object(&self, object: EventObject, name: &str) -> Result<Object, String> {
+        crate::triggers::inputs::query_debug(
+            || crate::triggers::inputs::Key::Text(TextQuery::EventObject(object, name.to_owned())),
+            || self.event_object_unrecorded(object, name),
+        )
+    }
+
+    pub(crate) fn event_object_unrecorded(
+        &self,
+        object: EventObject,
+        name: &str,
+    ) -> Result<Object, String> {
         Ok(match object {
             EventObject::Country(slot) | EventObject::CountryState { country: slot, .. } => {
                 Object::Country(slot)
@@ -1571,6 +1847,13 @@ impl<'a> ScriptedText<'a> {
     /// country, through CountryLinks; refused by name where the hour
     /// does not say.
     fn local_player(&self) -> Result<u32, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::LocalPlayer),
+            || self.local_player_unrecorded(),
+        )
+    }
+
+    pub(crate) fn local_player_unrecorded(&self) -> Result<u32, String> {
         let (players, gap) = rows::<tables::LocalPlayer>(self.frame);
         if !complete::<tables::LocalPlayer>(self.frame) {
             return Err(format!(
@@ -1612,6 +1895,24 @@ impl<'a> ScriptedText<'a> {
         segment: &str,
         event: EventObject,
     ) -> Result<Option<u32>, String> {
+        crate::triggers::inputs::query(
+            || {
+                crate::triggers::inputs::Key::Text(TextQuery::CharacterNamed(
+                    object,
+                    segment.to_owned(),
+                    event,
+                ))
+            },
+            || self.character_named_unrecorded(object, segment, event),
+        )
+    }
+
+    pub(crate) fn character_named_unrecorded(
+        &self,
+        object: Object,
+        segment: &str,
+        event: EventObject,
+    ) -> Result<Option<u32>, String> {
         let country = match (object, event) {
             (Object::Country(slot), _)
             | (
@@ -1638,22 +1939,39 @@ impl<'a> ScriptedText<'a> {
         let (characters, gap) = rows::<tables::Characters>(self.frame);
         let (lexical, lexical_gap) = rows::<tables::LexicalTokens>(self.frame);
         let links_whole = complete::<tables::CountryLinks>(self.frame);
+        // With every link recorded, a character is the country's exactly when
+        // its link is one of the country's links: other rows are skipped
+        // without resolving them.
+        let country_links: Option<Vec<u32>> = country.filter(|_| links_whole).map(|slot| {
+            rows::<tables::CountryLinks>(self.frame)
+                .0
+                .iter()
+                .filter(|link| link.canonical_slot == slot)
+                .map(|link| link.id)
+                .collect()
+        });
         let mut unknown = None;
         for row in characters {
-            match self.scopes.slot(row.country) {
-                _ if country.is_none() => {}
-                Some(slot) if Some(slot) == country => {}
-                None if !links_whole => {
-                    let (_, links) = rows::<tables::CountryLinks>(self.frame);
-                    unknown.get_or_insert_with(|| {
-                        format!(
-                            "character {}'s country link {} resolves to no country: CountryLinks {links}",
-                            row.id, row.country
-                        )
-                    });
+            if let Some(links) = &country_links {
+                if !links.contains(&row.country) {
                     continue;
                 }
-                _ => continue,
+            } else {
+                match self.scopes.slot(row.country) {
+                    _ if country.is_none() => {}
+                    Some(slot) if Some(slot) == country => {}
+                    None if !links_whole => {
+                        let (_, links) = rows::<tables::CountryLinks>(self.frame);
+                        unknown.get_or_insert_with(|| {
+                            format!(
+                                "character {}'s country link {} resolves to no country: CountryLinks {links}",
+                                row.id, row.country
+                            )
+                        });
+                        continue;
+                    }
+                    _ => continue,
+                }
             }
             // A negative token id is no token.
             let Ok(token) = u32::try_from(row.name_token_id) else {
@@ -1698,6 +2016,24 @@ impl<'a> ScriptedText<'a> {
 
     /// The ruling party's name or its long form.
     fn ruling_party(&self, slot: u32, tag: &str, long: bool) -> Result<String, String> {
+        crate::triggers::inputs::query(
+            || {
+                crate::triggers::inputs::Key::Text(TextQuery::RulingParty(
+                    slot,
+                    tag.to_owned(),
+                    long,
+                ))
+            },
+            || self.ruling_party_unrecorded(slot, tag, long),
+        )
+    }
+
+    pub(crate) fn ruling_party_unrecorded(
+        &self,
+        slot: u32,
+        tag: &str,
+        long: bool,
+    ) -> Result<String, String> {
         let (politics, gap) = rows::<tables::Politics>(self.frame);
         let politics = politics
             .iter()
@@ -1776,6 +2112,13 @@ impl<'a> ScriptedText<'a> {
     /// The faction's name, else `NO_FACTION` through the localiser,
     /// which copies the key as its bytes when the content lacks it.
     fn faction_name(&self, slot: u32) -> Result<String, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::FactionName(slot)),
+            || self.faction_name_unrecorded(slot),
+        )
+    }
+
+    pub(crate) fn faction_name_unrecorded(&self, slot: u32) -> Result<String, String> {
         let Some(faction) = self.scopes.faction(slot)? else {
             return self.localise(NO_FACTION);
         };
@@ -1784,6 +2127,13 @@ impl<'a> ScriptedText<'a> {
 
     /// Effect descriptions name the same faction without a country lookup.
     pub(crate) fn faction_name_by_id(&self, id: u64) -> Result<String, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::FactionNameById(id)),
+            || self.faction_name_by_id_unrecorded(id),
+        )
+    }
+
+    pub(crate) fn faction_name_by_id_unrecorded(&self, id: u64) -> Result<String, String> {
         let (factions, gap) = rows::<tables::Factions>(self.frame);
         let faction = factions
             .iter()
@@ -1791,6 +2141,7 @@ impl<'a> ScriptedText<'a> {
             .ok_or_else(|| format!("faction {id} has no Factions row: {gap}"))?;
         // Only a nonnull fallback template needs content or a lexer dictionary.
         let (spelling, templates) = if faction.name.is_empty() && faction.template_token.is_some() {
+            crate::catalogue::used(crate::catalogue::Reader::FactionTemplates);
             (
                 crate::faction_names::template_spelling(self.frame, faction.template_token),
                 self.content.layers.layers.faction_templates(),

@@ -1632,3 +1632,46 @@ fn prepared_land_ranking_keeps_gap_endings_and_census_reads_in_unrecorded_window
         );
     }
 }
+
+/// Fresh censuses of one recording number equipment designs in combat order,
+/// so their ranking pages and saved state match byte for byte.
+#[test]
+fn land_battles_fresh_censuses_number_designs_in_combat_order() {
+    let combats = 64;
+    let mut sample = frame(100, 70, combats);
+    set_progress(
+        &mut sample,
+        (1..=u64::from(combats))
+            .map(|combat| LandCombatProgressRow {
+                combat,
+                attacker_manpower_loss: 4.into(),
+                defender_manpower_loss: 5.into(),
+                attacker_equipment_losses: vec![LandEquipmentLoss {
+                    variant: 1_000 + combat,
+                    amount_raw: -100_000,
+                }]
+                .into(),
+                ..Default::default()
+            })
+            .collect(),
+    );
+    let states: Vec<_> = (0..2)
+        .map(|_| {
+            let mut census = Census::default();
+            census.observe(&sample).unwrap();
+            assert_eq!(
+                census
+                    .designs
+                    .values
+                    .iter()
+                    .map(|design| design.variant.clone())
+                    .collect::<Vec<_>>(),
+                (1..=u64::from(combats))
+                    .map(|combat| (1_000 + combat).to_string())
+                    .collect::<Vec<_>>()
+            );
+            serde_json::to_vec(&census).unwrap()
+        })
+        .collect();
+    assert_eq!(states[0], states[1]);
+}

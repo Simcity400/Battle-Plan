@@ -6,6 +6,9 @@ use dashboard_base::prepared::series::{self, Accumulator, Reader};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
+pub mod block;
+pub use block::FAMILY;
+
 #[derive(Default, Serialize, Deserialize)]
 pub struct Prepared {
     scan: Scan,
@@ -16,10 +19,26 @@ pub struct Prepared {
     values: [Accumulator; 11],
     memberships: BTreeMap<String, Vec<u64>>,
     maxima: BTreeMap<String, i128>,
+    /// While a block's extract records its calls, the deal publications its
+    /// fold makes again on the carried state ([`series::record_family`]).
+    #[serde(skip)]
+    recorded: Option<Vec<Membership>>,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
+    /// Hours observed from their changed rows alone.
+    #[cfg(test)]
+    #[serde(skip)]
+    row_hours: usize,
+    /// Observe every hour from the whole tables, never from changed rows.
+    #[cfg(test)]
+    #[serde(skip)]
+    whole_tables: bool,
 }
+
+/// The Countries fields a country's holder is read from; its id is the key.
+static HOLDER_FIELDS: LazyLock<u64> =
+    LazyLock::new(|| field_mask(TableId::Countries, &["canonical_slot", "tag"]));
 
 fn pool_name(tag: &str, resource: u32) -> String {
     series::field_key(tag, &format!("pool:{resource}"))
@@ -53,8 +72,64 @@ fn observe_value(
         EMISSIONS.with(|count| count.set(count.get() + 1));
     }
 }
+/// One country's open deal keys of one resource, published at an hour.
+#[derive(Clone)]
+struct Membership {
+    name: String,
+    id: u64,
+    members: Vec<u64>,
+    /// A member's deal published a new run this hour.
+    changed: bool,
+    /// The country's deals are known this hour.
+    open: bool,
+    /// The hour starts the country's known deal span.
+    starts: bool,
+    hour: i32,
+}
+
+/// Close members that left, publish the membership when it or a member's run
+/// changed, and its version (the count of publications) while deals are known.
+fn publish_membership(
+    memberships: &mut BTreeMap<String, Vec<u64>>,
+    deals: &mut Accumulator,
+    known: &mut Accumulator,
+    membership: Membership,
+) -> io::Result<()> {
+    let Membership {
+        name,
+        id,
+        members,
+        changed,
+        open,
+        starts,
+        hour,
+    } = membership;
+    for &removed in memberships
+        .get(&name)
+        .into_iter()
+        .flatten()
+        .filter(|id| !members.contains(id))
+    {
+        deals.observe(removed, hour, None, false);
+    }
+    if memberships.get(&name) != Some(&members) || changed {
+        known.event(id, hour, &members)?;
+        memberships.insert(name, members);
+    }
+    let version = known.state(id).map_or(0, |state| state.events);
+    observe_value(known, id, hour, open.then_some(i128::from(version)), starts);
+    Ok(())
+}
+
 #[cfg(test)]
 thread_local! { static EMISSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(any(test, feature = "test-support"))]
+thread_local! { static OBSERVED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+/// Hours this thread's resource observers observed.
+#[cfg(any(test, feature = "test-support"))]
+pub fn observed_hours() -> usize {
+    OBSERVED.with(std::cell::Cell::get)
+}
 impl Prepared {
     #[cfg(test)]
     pub fn observe(&mut self, frame: &replay::frame::DecodedFrame) -> io::Result<()> {
@@ -64,6 +139,7 @@ impl Prepared {
                 rows_changed: [true; replay::frame::TABLE_COUNT],
                 table_read: [true; replay::frame::TABLE_COUNT],
                 slot_read: [true; replay::frame::TABLE_COUNT],
+                updates: None,
             },
         )
     }
@@ -72,6 +148,8 @@ impl Prepared {
         frame: &replay::frame::DecodedFrame,
         changes: &FrameChanges,
     ) -> io::Result<()> {
+        #[cfg(any(test, feature = "test-support"))]
+        OBSERVED.with(|count| count.set(count.get() + 1));
         self.pools.advance(frame.hour)?;
         self.deals.advance(frame.hour)?;
         self.known.advance(frame.hour)?;
@@ -85,13 +163,26 @@ impl Prepared {
             || !continuous
         {
             let rows = frame.complete::<tables::Countries>().ok();
+            // Recorded changes that delete no country and touch no holder
+            // field keep the previous hour's holders.
+            let kept = continuous
+                && !changes.rows_changed[TableId::CountryLinks.index()]
+                && changes
+                    .rows(TableId::Countries)
+                    .is_some_and(|(changed, deleted)| {
+                        deleted.is_empty()
+                            && changed.iter().all(|row| row.mask & *HOLDER_FIELDS == 0)
+                    });
+            #[cfg(test)]
+            let kept = kept && !self.whole_tables;
             let same = rows.is_some_and(|rows| {
-                self.scan
-                    .country_reads
-                    .as_ref()
-                    .is_some_and(|seen| seen.matches(frame, rows))
+                self.scan.country_reads.as_ref().is_some_and(|seen| {
+                    (kept && self.scan.country_rows == Some(rows.len()))
+                        || seen.matches(frame, rows)
+                })
             });
             if !same {
+                self.scan.country_rows = rows.map(|rows| rows.len());
                 self.scan.country_reads = rows.map(|rows| {
                     if !changes.rows_changed[TableId::CountryLinks.index()]
                         && let Some(reads) = &self.scan.country_reads
@@ -127,25 +218,32 @@ impl Prepared {
         }
         #[cfg(test)]
         let emitted_before = EMISSIONS.with(std::cell::Cell::get);
-        let names_changed = !self.scan.inputs_ready
-            || changes.rows_changed[TableId::ResourceDefinitions.index()]
-            || changes.rows_changed[TableId::LexicalTokens.index()];
-        let changed = [
-            !self.scan.inputs_ready || changes.rows_changed[TableId::CountryResources.index()],
-            !self.scan.inputs_ready || changes.rows_changed[TableId::ResourceExchanges.index()],
-        ];
-        self.scan
-            .refresh_inputs(frame, [changed[0], changed[1], names_changed]);
-        let touched = self.scan.observe_resolved(
-            frame,
-            names_changed,
-            if countries_changed || names_changed || !continuous {
-                [true; 2]
-            } else {
-                changed
-            },
-            countries_changed || !continuous,
-        )?;
+        let touched = match self.observe_rows(frame, changes, continuous && !countries_changed)? {
+            Some(touched) => touched,
+            None => {
+                let names_changed = !self.scan.inputs_ready
+                    || changes.rows_changed[TableId::ResourceDefinitions.index()]
+                    || changes.rows_changed[TableId::LexicalTokens.index()];
+                let changed = [
+                    !self.scan.inputs_ready
+                        || changes.rows_changed[TableId::CountryResources.index()],
+                    !self.scan.inputs_ready
+                        || changes.rows_changed[TableId::ResourceExchanges.index()],
+                ];
+                self.scan
+                    .refresh_inputs(frame, [changed[0], changed[1], names_changed]);
+                self.scan.observe_resolved(
+                    frame,
+                    names_changed,
+                    if countries_changed || names_changed || !continuous {
+                        [true; 2]
+                    } else {
+                        changed
+                    },
+                    countries_changed || !continuous,
+                )?
+            }
+        };
         #[cfg(test)]
         {
             self.work.history_visits = self.scan.history_visits;
@@ -164,8 +262,23 @@ impl Prepared {
                         .series
                         .get_mut(&resource)
                         .expect("changed resource pool");
-                    let name = pool_name(tag, resource);
-                    let id = key(&mut self.keys, name.clone());
+                    let ids = match country.pool_ids.get(&resource) {
+                        Some(&ids) => ids,
+                        None => {
+                            // The pool key, then its values' keys: the order
+                            // they are first written in.
+                            let mut ids = [key(&mut self.keys, pool_name(tag, resource)); 12];
+                            for (index, id) in ids.iter_mut().enumerate().skip(1) {
+                                *id = key(
+                                    &mut self.keys,
+                                    series::field_key(tag, &sample::field(resource, index - 1)),
+                                );
+                            }
+                            country.pool_ids.insert(resource, ids);
+                            ids
+                        }
+                    };
+                    let id = ids[0];
                     let run = runs.last().filter(|run| run.last_hour == frame.hour);
                     if let Some(run) = run
                         && self
@@ -185,7 +298,6 @@ impl Prepared {
                     );
                     let native = run.map(resource_values).transpose()?.unwrap_or([0; 11]);
                     for (index, accumulator) in self.values.iter_mut().enumerate() {
-                        let field = sample::field(resource, index);
                         let amount = run
                             .filter(|_| {
                                 self.scan
@@ -194,10 +306,9 @@ impl Prepared {
                                     .is_some_and(|names| names.contains(resource))
                             })
                             .map(|_| native[index]);
-                        let value_key = key(&mut self.keys, series::field_key(tag, &field));
                         observe_value(
                             accumulator,
-                            value_key,
+                            ids[index + 1],
                             frame.hour,
                             amount,
                             run.is_some_and(|run| {
@@ -206,7 +317,7 @@ impl Prepared {
                         );
                     }
                     if run.is_some() {
-                        let maximum = self.maxima.entry(name).or_default();
+                        let maximum = self.maxima.entry(pool_name(tag, resource)).or_default();
                         *maximum = (*maximum).max(native[0]).max(native[1]);
                     }
                     if runs.len() > 1 {
@@ -217,6 +328,13 @@ impl Prepared {
             if !changed[1] {
                 continue;
             }
+            // Without a narrower set every resource's deals publish again.
+            let dirty = country.dirty_deals.take();
+            let unchanged = |resource: u32| {
+                dirty
+                    .as_ref()
+                    .is_some_and(|dirty| !dirty.contains(&resource))
+            };
             let country_key = key(&mut self.keys, series::field_key(tag, "deals"));
             observe_value(
                 &mut self.known,
@@ -233,6 +351,9 @@ impl Prepared {
             let mut changed = BTreeSet::new();
             for &index in country.open_trades.values() {
                 let run = &country.result.trades[index];
+                if unchanged(run.resource) {
+                    continue;
+                }
                 let id = key(&mut self.keys, deal_name(tag, &run.deal, run.resource)?);
                 if self
                     .deals
@@ -253,35 +374,47 @@ impl Prepared {
                 active.entry(run.resource).or_default().push(id);
             }
             for &(resource, _) in &country.result.resources {
+                if unchanged(resource) {
+                    continue;
+                }
                 let name = series::field_key(tag, &format!("deals:{resource}"));
                 let id = key(&mut self.keys, name.clone());
                 let mut members = active.remove(&resource).unwrap_or_default();
                 members.sort_unstable();
-                for &removed in self
-                    .memberships
-                    .get(&name)
-                    .into_iter()
-                    .flatten()
-                    .filter(|id| !members.contains(id))
-                {
-                    self.deals.observe(removed, frame.hour, None, false);
-                }
-                if self.memberships.get(&name) != Some(&members) || changed.contains(&resource) {
-                    self.known.event(id, frame.hour, &members)?;
-                    self.memberships.insert(name, members);
-                }
-                let version = self.known.state(id).map_or(0, |state| state.events);
-                observe_value(
-                    &mut self.known,
+                let membership = Membership {
+                    name,
                     id,
-                    frame.hour,
-                    country.deals_open.then_some(i128::from(version)),
-                    country
+                    members,
+                    changed: changed.contains(&resource),
+                    open: country.deals_open,
+                    starts: country
                         .result
                         .deal_hours
                         .last()
                         .is_some_and(|span| span.first_hour == frame.hour),
-                );
+                    hour: frame.hour,
+                };
+                match &mut self.recorded {
+                    // A block's extract records the publication for its fold to
+                    // make on the carried memberships, versions and deals.
+                    Some(recorded) if series::record_family(recorded.len()) => {
+                        recorded.push(membership.clone());
+                        series::unrecorded(|| {
+                            publish_membership(
+                                &mut self.memberships,
+                                &mut self.deals,
+                                &mut self.known,
+                                membership,
+                            )
+                        })?;
+                    }
+                    _ => publish_membership(
+                        &mut self.memberships,
+                        &mut self.deals,
+                        &mut self.known,
+                        membership,
+                    )?,
+                }
             }
             if country.result.deal_hours.len() > 1 {
                 country
@@ -295,6 +428,47 @@ impl Prepared {
             self.work.emitted += EMISSIONS.with(std::cell::Cell::get) - emitted_before;
         }
         Ok(())
+    }
+
+    /// Observe the hour from its changed pool and deal rows alone: possible
+    /// when it continues the previous hour with the same holders, both tables
+    /// changed by exactly their recorded rows, and any dictionary change left
+    /// every resource named as before. None when the whole tables are needed.
+    fn observe_rows(
+        &mut self,
+        frame: &replay::frame::DecodedFrame,
+        changes: &FrameChanges,
+        holders_kept: bool,
+    ) -> io::Result<Option<BTreeMap<String, [bool; 2]>>> {
+        if !holders_kept || !self.scan.inputs_ready {
+            return Ok(None);
+        }
+        #[cfg(test)]
+        {
+            if self.whole_tables {
+                return Ok(None);
+            }
+        }
+        let (Some(pools), Some(deals)) = (
+            changes.rows(TableId::CountryResources),
+            changes.rows(TableId::ResourceExchanges),
+        ) else {
+            return Ok(None);
+        };
+        let names = changes.rows_changed[TableId::ResourceDefinitions.index()]
+            || changes.rows_changed[TableId::LexicalTokens.index()];
+        if names && !self.scan.same_names(frame) {
+            return Ok(None);
+        }
+        // Any change to the pool table, or the names, observes a slot whose
+        // rows repeat a resource again, as the whole table would.
+        let repeats = names || changes.rows_changed[TableId::CountryResources.index()];
+        let touched = self.scan.observe_rows(frame, pools, deals, repeats)?;
+        #[cfg(test)]
+        {
+            self.row_hours += usize::from(touched.is_some());
+        }
+        Ok(touched)
     }
 
     pub fn bytes(&self) -> usize {
@@ -1391,6 +1565,526 @@ mod tests {
             .unwrap()["hour"],
             103.0
         );
+    }
+
+    fn pools(
+        frame: &mut replay::frame::DecodedFrame,
+    ) -> &mut Vec<replay::rows::CountryResourceRow> {
+        match &mut *frame.tables[TableId::CountryResources.index()] {
+            TableView::Complete(replay::rows::TableRows::CountryResources(rows)) => rows,
+            _ => unreachable!("fixture pools are complete"),
+        }
+    }
+    fn exchanges(
+        frame: &mut replay::frame::DecodedFrame,
+    ) -> &mut Vec<replay::rows::ResourceExchangeRow> {
+        match &mut *frame.tables[TableId::ResourceExchanges.index()] {
+            TableView::Complete(replay::rows::TableRows::ResourceExchanges(rows)) => rows,
+            _ => unreachable!("fixture deals are complete"),
+        }
+    }
+    fn pool(
+        frame: &mut replay::frame::DecodedFrame,
+        country: u32,
+        resource: u32,
+    ) -> &mut replay::rows::CountryResourceRow {
+        pools(frame)
+            .iter_mut()
+            .find(|row| row.country == country && row.resource == resource)
+            .expect("fixture pool")
+    }
+    fn add_pool(frame: &mut replay::frame::DecodedFrame, row: replay::rows::CountryResourceRow) {
+        let rows = pools(frame);
+        rows.push(row);
+        rows.sort_by_key(|row| (row.country, row.resource));
+    }
+    fn deal(
+        frame: &mut replay::frame::DecodedFrame,
+        id: u64,
+    ) -> &mut replay::rows::ResourceExchangeRow {
+        exchanges(frame)
+            .iter_mut()
+            .find(|row| row.id == id)
+            .expect("fixture deal")
+    }
+    fn country(frame: &mut replay::frame::DecodedFrame, id: u32) -> &mut replay::rows::CountryRow {
+        match &mut *frame.tables[TableId::Countries.index()] {
+            TableView::Complete(replay::rows::TableRows::Countries(rows)) => rows
+                .iter_mut()
+                .find(|row| row.id == id)
+                .expect("fixture country"),
+            _ => unreachable!("fixture countries are complete"),
+        }
+    }
+
+    /// The recording codec: each input hour is encoded and decoded as the
+    /// preparation pipeline reads it, with its recorded updates.
+    struct Recorded {
+        encoder: replay::frame::FrameEncoder,
+        decoder: replay::frame::FrameDecoder,
+    }
+    impl Recorded {
+        fn new() -> Self {
+            Self {
+                encoder: replay::frame::FrameEncoder::new(),
+                decoder: replay::frame::FrameDecoder::new(),
+            }
+        }
+        fn next(
+            &mut self,
+            input: &replay::frame::DecodedFrame,
+            keyframe: bool,
+        ) -> (replay::frame::DecodedFrame, Arc<replay::frame::Frame>) {
+            let wire = self.encoder.encode(input.clone(), keyframe).unwrap();
+            let decoded = self.decoder.advance(&wire).unwrap().clone();
+            (decoded, Arc::new(wire))
+        }
+    }
+
+    /// `count` countries holding two pools each, each exporting steel to the next.
+    fn many_countries(count: u32) -> replay::frame::DecodedFrame {
+        use replay::rows::{
+            CountryLinkRow, CountryResourceRow, CountryRow, ResourceExchangeRow, TableRows,
+        };
+        let mut frame = resource_frame(100, 0, 9001, &[]);
+        *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+            (1..=count)
+                .map(|id| CountryRow {
+                    canonical_slot: id,
+                    id,
+                    tag: format!("mod country {id}").into_bytes(),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        *frame.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(
+                (1..=count)
+                    .map(|id| CountryLinkRow {
+                        id,
+                        canonical_slot: id,
+                    })
+                    .collect(),
+            ));
+        *frame.tables[TableId::CountryResources.index()] =
+            TableView::Complete(TableRows::CountryResources(
+                (1..=count)
+                    .flat_map(|country| {
+                        [1, 2].map(|resource| CountryResourceRow {
+                            country,
+                            resource,
+                            produced: i64::from(country) * 1_000 + i64::from(resource),
+                            ..Default::default()
+                        })
+                    })
+                    .collect(),
+            ));
+        *frame.tables[TableId::ResourceExchanges.index()] =
+            TableView::Complete(TableRows::ResourceExchanges(
+                (1..count)
+                    .map(|id| ResourceExchangeRow {
+                        id: u64::from(id),
+                        exporter: id,
+                        importer: id + 1,
+                        resource: 1,
+                        delivered: 100,
+                        assigned_factories: 1,
+                        required_factories: 1,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ));
+        frame
+    }
+
+    fn assert_rows_observe_only_changed_countries(count: u32) {
+        use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests::Work};
+        let format = replay::format::FormatVersion::CURRENT;
+        let mut recorded = Recorded::new();
+        let mut tracker = FrameChangeTracker::new();
+        let mut step = |prepared: &mut Prepared, frame: &replay::frame::DecodedFrame| {
+            let before = (prepared.work, prepared.row_hours);
+            let (decoded, wire) = recorded.next(frame, false);
+            let changes = tracker.observe_updates(&decoded, wire, format);
+            prepared.observe_changed(&decoded, &changes).unwrap();
+            let work = Work {
+                row_visits: prepared.work.row_visits - before.0.row_visits,
+                history_visits: prepared.work.history_visits - before.0.history_visits,
+                emitted: prepared.work.emitted - before.0.emitted,
+                ..Default::default()
+            };
+            (work, prepared.row_hours - before.1)
+        };
+        let mut prepared = Prepared::default();
+        let mut frame = many_countries(count);
+        let (first, _) = step(&mut prepared, &frame);
+        assert_eq!(
+            first.history_visits, count as usize,
+            "the first hour reads every country"
+        );
+
+        frame.hour = 101;
+        pool(&mut frame, count / 2, 2).produced += 5;
+        let (work, rows) = step(&mut prepared, &frame);
+        assert_eq!(rows, 1, "the hour is observed from its changed rows");
+        assert_eq!(work.row_visits, 1, "only the changed pool row is read");
+        assert_eq!(work.history_visits, 1, "only its country is observed again");
+        assert!(
+            (1..=12).contains(&work.emitted),
+            "only its pool's values are written"
+        );
+
+        frame.hour = 102;
+        deal(&mut frame, u64::from(count / 3)).delivered += 1;
+        let (work, rows) = step(&mut prepared, &frame);
+        assert_eq!(rows, 1);
+        assert_eq!(work.row_visits, 1, "only the changed deal row is read");
+        assert_eq!(
+            work.history_visits, 2,
+            "only its exporter and importer are observed again"
+        );
+
+        // A recorded field no pool reads, and a country field no holder reads.
+        frame.hour = 103;
+        pool(&mut frame, count / 4, 1).base_export += 7;
+        country(&mut frame, count / 4).political_power_raw = Some(7);
+        let (work, rows) = step(&mut prepared, &frame);
+        assert_eq!(rows, 1);
+        assert_eq!(
+            (work.row_visits, work.history_visits, work.emitted),
+            (0, 0, 0),
+            "nothing a pool, deal or holder reads changed"
+        );
+
+        // The holders stay those read before while a country's own fields change.
+        frame.hour = 104;
+        country(&mut frame, count / 5).political_power_raw = Some(9);
+        pool(&mut frame, count / 5, 1).imported += 3;
+        let (work, rows) = step(&mut prepared, &frame);
+        assert_eq!(rows, 1);
+        assert_eq!((work.row_visits, work.history_visits), (1, 1));
+    }
+
+    #[test]
+    fn resource_hour_changing_one_country_observes_only_that_country() {
+        assert_rows_observe_only_changed_countries(200);
+    }
+
+    #[test]
+    #[cfg(feature = "slow-tests")]
+    fn resource_hour_changing_one_of_5000_countries_observes_only_that_country() {
+        assert_rows_observe_only_changed_countries(5000);
+    }
+
+    #[test]
+    fn resource_operand_masks_name_every_field_they_read() {
+        assert_eq!(POOL_FIELDS.count_ones(), 8);
+        assert_eq!(DEAL_FIELDS.count_ones(), 7);
+        assert_eq!(HOLDER_FIELDS.count_ones(), 2);
+        let base_export = (0..64)
+            .position(|field| TableId::CountryResources.field_name(field) == Some("base_export"))
+            .unwrap();
+        assert_eq!(
+            *POOL_FIELDS & (1 << base_export),
+            0,
+            "no pool reads base_export"
+        );
+    }
+
+    fn pages(
+        fixture: &dashboard_base::prepared::series::tests::Fixture,
+        tag: &str,
+        last: i32,
+        width: Option<u32>,
+    ) -> Value {
+        let mut input = json!({"branchId":"1","tag":tag,"from":100,"to":last});
+        if let Some(width) = width {
+            input["width"] = json!(width);
+        }
+        read_pages(
+            &fixture.store,
+            &fixture.key,
+            1,
+            serde_json::from_value(input.clone()).unwrap(),
+            input,
+            last,
+            true,
+            None,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    #[test]
+    fn resource_rows_observation_matches_whole_tables_and_scan_across_keyframe_gap_and_resume() {
+        use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+        use replay::rows::{
+            CountryLinkRow, CountryResourceRow, CountryRow, LexicalTokenRow, ResourceDefinitionRow,
+            ResourceExchangeRow, TableRows,
+        };
+        let format = replay::format::FormatVersion::CURRENT;
+        let flag = AtomicBool::new(false);
+        let mut frame = resource_frame(100, 30, 9001, &[(51, 21, 9001, 12), (52, 11, 31, 5)]);
+        // A fourth country holding no resources, renamed later.
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            rows.push(CountryRow {
+                id: 41,
+                canonical_slot: 10,
+                tag: b"FRA".to_vec(),
+                ..Default::default()
+            });
+            rows.sort_by_key(|row| row.id);
+        }
+        if let TableView::Complete(TableRows::CountryLinks(rows)) =
+            &mut *frame.tables[TableId::CountryLinks.index()]
+        {
+            rows.push(CountryLinkRow {
+                id: 41,
+                canonical_slot: 10,
+            });
+            rows.sort_by_key(|row| row.id);
+        }
+        let mut inputs = Vec::new();
+        let (mut stashed_pools, mut stashed_deals) = (None, None);
+        for hour in 100..=135 {
+            frame.hour = hour;
+            match hour {
+                102 | 125 | 135 => pool(&mut frame, 11, 1).produced += 1_000,
+                103 => deal(&mut frame, 51).delivered += 1,
+                // A recorded field no pool reads.
+                104 => pool(&mut frame, 21, 1).base_export += 7,
+                105 => add_pool(
+                    &mut frame,
+                    CountryResourceRow {
+                        country: 31,
+                        resource: 2,
+                        produced: 400,
+                        used: 400,
+                        special_total: 400,
+                        ..Default::default()
+                    },
+                ),
+                106 => pools(&mut frame).retain(|row| (row.country, row.resource) != (11, 2)),
+                // Germany's other link names steel too: its slot repeats a resource.
+                107 => add_pool(
+                    &mut frame,
+                    CountryResourceRow {
+                        country: 9001,
+                        resource: 1,
+                        produced: 5,
+                        ..Default::default()
+                    },
+                ),
+                108 | 128 => pool(&mut frame, 21, 1).produced += 1,
+                // A token no definition names: every resource keeps its name.
+                109 => {
+                    if let TableView::Complete(TableRows::LexicalTokens(rows)) =
+                        &mut *frame.tables[TableId::LexicalTokens.index()]
+                    {
+                        rows.push(LexicalTokenRow {
+                            token: 503,
+                            literal: b"rubber".to_vec(),
+                        });
+                    }
+                }
+                110 => deal(&mut frame, 52).exporter = 21,
+                111 => exchanges(&mut frame).retain(|row| row.id != 51),
+                112 => exchanges(&mut frame).push(ResourceExchangeRow {
+                    id: 53,
+                    exporter: 31,
+                    importer: 21,
+                    resource: 1,
+                    delivered: 9,
+                    assigned_factories: 1,
+                    required_factories: 1,
+                    ..Default::default()
+                }),
+                113 | 132 => country(&mut frame, 21).political_power_raw = Some(i64::from(hour)),
+                114 => {
+                    pool(&mut frame, 11, 1).produced += 1_000;
+                    deal(&mut frame, 53).delivered += 1;
+                    country(&mut frame, 21).political_power_raw = Some(114);
+                }
+                115 | 116 => pool(&mut frame, 31, 2).produced += 1,
+                117 => pools(&mut frame).retain(|row| row.country != 9001),
+                // A new resource: the names change.
+                118 => {
+                    if let TableView::Complete(TableRows::ResourceDefinitions(rows)) =
+                        &mut *frame.tables[TableId::ResourceDefinitions.index()]
+                    {
+                        rows.push(ResourceDefinitionRow {
+                            id: 3,
+                            token: 503,
+                            active: 1,
+                            factory_cost: 12_500,
+                        });
+                    }
+                }
+                119 => add_pool(
+                    &mut frame,
+                    CountryResourceRow {
+                        country: 21,
+                        resource: 3,
+                        produced: 77,
+                        used: 77,
+                        special_total: 77,
+                        ..Default::default()
+                    },
+                ),
+                120 => deal(&mut frame, 53).convoys_assigned = 2,
+                121 => country(&mut frame, 41).tag = b"VIC".to_vec(),
+                122 => pool(&mut frame, 21, 3).produced += 1,
+                123 | 131 => deal(&mut frame, 52).delivered += 1,
+                124 => continue,
+                126 => {
+                    stashed_pools = Some(std::mem::take(pools(&mut frame)));
+                    *frame.tables[TableId::CountryResources.index()] = TableView::Unavailable {
+                        reason: "synthetic missing pools".into(),
+                    };
+                }
+                127 => {
+                    *frame.tables[TableId::CountryResources.index()] = TableView::Complete(
+                        TableRows::CountryResources(stashed_pools.take().unwrap()),
+                    );
+                    pool(&mut frame, 21, 1).produced += 1;
+                }
+                129 => {
+                    stashed_deals = Some(std::mem::take(exchanges(&mut frame)));
+                    *frame.tables[TableId::ResourceExchanges.index()] = TableView::Unavailable {
+                        reason: "synthetic missing deals".into(),
+                    };
+                }
+                130 => {
+                    *frame.tables[TableId::ResourceExchanges.index()] = TableView::Complete(
+                        TableRows::ResourceExchanges(stashed_deals.take().unwrap()),
+                    );
+                    deal(&mut frame, 53).delivered += 1;
+                }
+                133 => {
+                    pool(&mut frame, 31, 2).used += 3;
+                    deal(&mut frame, 52).importer = 9001;
+                }
+                _ => {}
+            }
+            inputs.push((frame.clone(), hour == 115));
+        }
+        let replay = Arc::new(
+            Replay::from_records(
+                CAMPAIGN.into(),
+                &[records(
+                    1,
+                    inputs.iter().map(|(frame, _)| frame.clone()).collect(),
+                )],
+            )
+            .unwrap(),
+        );
+        let source = Source::from_replay(
+            dashboard_base::source::SourceKey {
+                source_id: "resource-rows".into(),
+                revision: "1".into(),
+            },
+            "memory.battleplan".into(),
+            replay.clone(),
+            &flag,
+        )
+        .unwrap();
+        let context = LoadContext { content: None };
+        let fixtures = [
+            dashboard_base::prepared::series::tests::Fixture::new(),
+            dashboard_base::prepared::series::tests::Fixture::new(),
+        ];
+        // Observed from changed rows, and from the whole tables every hour.
+        let mut observers = [
+            Prepared::default(),
+            Prepared {
+                whole_tables: true,
+                ..Default::default()
+            },
+        ];
+        let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+        let mut recorded = Recorded::new();
+        for (input, keyframe) in &inputs {
+            let (decoded, wire) = recorded.next(input, *keyframe);
+            for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
+                let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), format);
+                observer.observe_changed(&decoded, &changes).unwrap();
+            }
+            if ![110, 121, 135].contains(&decoded.hour) {
+                continue;
+            }
+            for (observer, fixture) in observers.iter_mut().zip(&fixtures) {
+                let mut writer = fixture.writer();
+                observer
+                    .flush(&mut writer, &source, &context, 1, &flag)
+                    .unwrap();
+                writer.commit().unwrap();
+            }
+            let [incremental, whole] = &observers;
+            assert_eq!(
+                incremental.keys, whole.keys,
+                "keys are allocated in one order"
+            );
+            assert_eq!(incremental.memberships, whole.memberships);
+            assert_eq!(incremental.maxima, whole.maxima);
+            let states = |observer: &Prepared| {
+                [&observer.pools, &observer.deals, &observer.known]
+                    .into_iter()
+                    .chain(&observer.values)
+                    .map(|accumulator| serde_json::to_value(accumulator).unwrap())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(states(incremental), states(whole));
+            for tag in ["GER", "ITA", "SPR", "FRA", "VIC"] {
+                for width in [None, Some(4)] {
+                    assert_eq!(
+                        pages(&fixtures[0], tag, decoded.hour, width),
+                        pages(&fixtures[1], tag, decoded.hour, width),
+                        "{tag} published through hour {}",
+                        decoded.hour
+                    );
+                }
+            }
+            // Resume both from their checkpoints.
+            for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
+                let (whole_tables, row_hours) = (observer.whole_tables, observer.row_hours);
+                *observer =
+                    serde_json::from_slice(&serde_json::to_vec(&*observer).unwrap()).unwrap();
+                observer.whole_tables = whole_tables;
+                observer.row_hours = row_hours;
+                tracker.invalidate();
+            }
+        }
+        assert!(
+            observers[0].row_hours >= 15,
+            "most hours are observed from their changed rows, not {}",
+            observers[0].row_hours
+        );
+        assert_eq!(observers[1].row_hours, 0);
+        for tag in ["ITA", "SPR"] {
+            let mut expected = super::super::reply(
+                &source,
+                &CountryParams {
+                    branch_id: "1".into(),
+                    tag: tag.into(),
+                },
+                &context,
+                &scan(&replay, 1, tag, &flag).unwrap(),
+                &flag,
+            )
+            .unwrap();
+            let mut actual: ResourceBalanceReply =
+                serde_json::from_value(pages(&fixtures[0], tag, 135, None)).unwrap();
+            assert_eq!(actual.series, expected.series, "{tag}");
+            assert_eq!(actual.deal_hours, expected.deal_hours, "{tag}");
+            for trades in [&mut actual.trades, &mut expected.trades] {
+                trades.sort_by_key(|run| (run.first_hour, run.deal.clone()));
+            }
+            assert_eq!(actual.trades, expected.trades, "{tag}");
+            assert_eq!(actual.warnings, expected.warnings, "{tag}");
+        }
     }
 
     #[test]

@@ -16,6 +16,7 @@ slow-tests = []
 test-support = ["dashboard-base/test-support"]
 
 [dependencies]
+blake3.workspace = true
 dashboard-base.workspace = true
 dashboard-core.workspace = true
 dashboard-text.workspace = true

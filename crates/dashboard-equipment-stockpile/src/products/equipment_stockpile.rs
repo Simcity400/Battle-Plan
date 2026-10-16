@@ -368,9 +368,24 @@ thread_local! { static ROW_VISITS: std::cell::Cell<usize> = const { std::cell::C
 pub(crate) struct ScanState {
     pub(crate) result: ScannedStockpile,
     track: IdentityTrack,
+    /// The last hour this holder was stepped through while it held its
+    /// identity; none when it is current (restored or new) or has none.
+    #[serde(skip)]
+    advanced: Option<i32>,
 }
 impl ScanState {
+    /// Step the accepted hours after the last one this holder was stepped
+    /// through, up to `through`, as if each had been advanced in turn: hours
+    /// whose rows left the holder unchanged are not visited when they pass.
+    pub(crate) fn catch_up(&mut self, through: Option<i32>) {
+        if let (Some(from), Some(through)) = (self.advanced, through) {
+            for hour in from.saturating_add(1)..=through {
+                self.advance(hour);
+            }
+        }
+    }
     pub(crate) fn advance(&mut self, hour: i32) {
+        self.advanced = Some(hour);
         self.track.advance(hour);
         for rows in [
             &mut self.result.stock,
@@ -417,6 +432,8 @@ impl ScanState {
     ) {
         let decoded = input.frame;
         let hour = decoded.hour;
+        // A holder without an identity is not stepped again until it has one.
+        self.advanced = identity.map(|_| hour);
         let result = &mut self.result;
         let continues = self.track.step(identity, hour);
         let stock = input.stock.as_ref();

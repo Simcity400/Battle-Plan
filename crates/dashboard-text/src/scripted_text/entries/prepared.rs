@@ -60,6 +60,8 @@ impl ScriptedContent {
             .map_err(String::as_str)
     }
     fn prepared_states(&self) -> Result<&PreparedStates, &str> {
+        // Its warnings are the state templates' warnings.
+        crate::catalogue::used(crate::catalogue::Reader::States);
         let environment = self.prepared_environment()?;
         environment
             .prepared

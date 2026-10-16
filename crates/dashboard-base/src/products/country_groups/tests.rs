@@ -3416,3 +3416,55 @@ fn group_quiet_missing_coverage_holds_its_snapshot_until_publication() {
     )
     .unwrap();
 }
+
+#[test]
+fn restored_group_scan_saves_what_continuous_observation_saves() {
+    // A template-only faction name whose token the recorded LexicalTokens
+    // does not spell: its template never resolves or reads the dictionary.
+    let frames: Vec<_> = (100..108)
+        .map(|hour| {
+            let mut frame = template_frame(hour, "", Some((17, "demo")));
+            *frame.tables[TableId::LexicalTokens.index()] =
+                TableView::Complete(TableRows::LexicalTokens(vec![
+                    replay::rows::LexicalTokenRow {
+                        token: 3,
+                        literal: b"other".to_vec(),
+                    },
+                ]));
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+    let blocks = [&frames[..4], &frames[4..]];
+    crate::prepared::observer_tests::assert_restore_continues(
+        replay.format,
+        &blocks,
+        || super::Scan::new(&replay, 1),
+        |scan, frame, changes, _| {
+            if blocks.iter().any(|block| block[0].hour == frame.hour) {
+                scan.begin_block();
+            }
+            scan.advance_changed(frame, changes).unwrap();
+        },
+        |scan, writer, _| {
+            scan.finish(&replay, 1);
+            writer
+                .write_at(
+                    "country-groups-1",
+                    0,
+                    scan.saved_bytes().unwrap().as_slice(),
+                )
+                .unwrap();
+        },
+        |fixture| {
+            super::Scan::read(
+                fixture
+                    .store
+                    .read(&fixture.key, "country-groups-1", 0)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap()
+        },
+    );
+}

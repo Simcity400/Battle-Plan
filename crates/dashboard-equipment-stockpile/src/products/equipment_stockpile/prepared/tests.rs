@@ -711,3 +711,615 @@ fn measured_real_recording_stockpile_bytes_and_token_stability() {
     eprintln!("stockpile profile {}: {report}", output.display());
     store.clear().unwrap();
 }
+
+/// The recording codec: each input hour is encoded and decoded as the
+/// preparation pipeline reads it, with its recorded updates.
+struct Recorded {
+    encoder: replay::frame::FrameEncoder,
+    decoder: replay::frame::FrameDecoder,
+}
+impl Recorded {
+    fn new() -> Self {
+        Self {
+            encoder: replay::frame::FrameEncoder::new(),
+            decoder: replay::frame::FrameDecoder::new(),
+        }
+    }
+    fn next(
+        &mut self,
+        input: &DecodedFrame,
+        keyframe: bool,
+    ) -> (DecodedFrame, Arc<replay::frame::Frame>) {
+        let wire = self.encoder.encode(input.clone(), keyframe).unwrap();
+        let decoded = self.decoder.advance(&wire).unwrap().clone();
+        (decoded, Arc::new(wire))
+    }
+}
+
+fn stock_rows(frame: &mut DecodedFrame) -> &mut Vec<replay::rows::StockpileRow> {
+    match &mut *frame.tables[TableId::Stockpiles.index()] {
+        TableView::Complete(TableRows::Stockpiles(rows)) => rows,
+        _ => unreachable!("fixture stock is complete"),
+    }
+}
+fn line_rows(frame: &mut DecodedFrame) -> &mut Vec<replay::rows::ProductionLineRow> {
+    match &mut *frame.tables[TableId::ProductionLines.index()] {
+        TableView::Complete(TableRows::ProductionLines(rows)) => rows,
+        _ => unreachable!("fixture lines are complete"),
+    }
+}
+fn logistics_rows(frame: &mut DecodedFrame) -> &mut Vec<LogisticsEquipmentRow> {
+    match &mut *frame.tables[TableId::LogisticsEquipment.index()] {
+        TableView::Complete(TableRows::LogisticsEquipment(rows)) => rows,
+        _ => unreachable!("fixture logistics are complete"),
+    }
+}
+fn stock_row(
+    frame: &mut DecodedFrame,
+    country: u32,
+    ordinal: u32,
+) -> &mut replay::rows::StockpileRow {
+    stock_rows(frame)
+        .iter_mut()
+        .find(|row| (row.country, row.ordinal) == (country, ordinal))
+        .expect("fixture stock row")
+}
+fn line_row(frame: &mut DecodedFrame, handle: u64) -> &mut replay::rows::ProductionLineRow {
+    line_rows(frame)
+        .iter_mut()
+        .find(|row| row.handle == handle)
+        .expect("fixture line")
+}
+fn logistics_row(
+    frame: &mut DecodedFrame,
+    country: u32,
+    archetype: u32,
+) -> &mut LogisticsEquipmentRow {
+    logistics_rows(frame)
+        .iter_mut()
+        .find(|row| (row.country, row.archetype) == (country, archetype))
+        .expect("fixture logistics row")
+}
+fn country_row(frame: &mut DecodedFrame, id: u32) -> &mut replay::rows::CountryRow {
+    match &mut *frame.tables[TableId::Countries.index()] {
+        TableView::Complete(TableRows::Countries(rows)) => rows
+            .iter_mut()
+            .find(|row| row.id == id)
+            .expect("fixture country"),
+        _ => unreachable!("fixture countries are complete"),
+    }
+}
+fn variant_row(frame: &mut DecodedFrame, id: u64) -> &mut replay::rows::VariantDefinitionRow {
+    match &mut *frame.tables[TableId::VariantDefinitions.index()] {
+        TableView::Complete(TableRows::VariantDefinitions(rows)) => rows
+            .iter_mut()
+            .find(|row| row.id == id)
+            .expect("fixture variant"),
+        _ => unreachable!("fixture variants are complete"),
+    }
+}
+fn logistics(
+    country: u32,
+    archetype: u32,
+    token: u32,
+    balance_raw: i64,
+    stock_raw: i64,
+) -> LogisticsEquipmentRow {
+    LogisticsEquipmentRow {
+        country,
+        archetype,
+        token,
+        balance_raw,
+        stock_raw,
+        available_raw: replay::rows::Recorded::Value(Some(stock_raw.max(0))),
+    }
+}
+
+/// `count` holders (native references 100,000 and up), each holding two
+/// variants, making one of them on a line, and with one logistics row; every
+/// hour reads the stockpile and the logistics record.
+fn counted_frame(hour: i32, count: u32) -> DecodedFrame {
+    use replay::rows::{LexicalTokenRow, ProductionLineRow, StockpileRow};
+    let mut frame = dashboard_base::test_fixtures::scale_frame(1, hour, count);
+    *frame.tables[TableId::Stockpiles.index()] = TableView::Complete(TableRows::Stockpiles(
+        (0..count)
+            .flat_map(|index| {
+                [10, 20]
+                    .into_iter()
+                    .zip(0..)
+                    .map(move |(variant_handle, ordinal)| StockpileRow {
+                        country: 100_000 + index,
+                        ordinal,
+                        variant_handle,
+                        amount_raw: i64::from(index + 1) * 100_000,
+                    })
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::ProductionLines.index()] =
+        TableView::Complete(TableRows::ProductionLines(
+            (0..count)
+                .map(|index| ProductionLineRow {
+                    handle: u64::from(index) + 1,
+                    country: 100_000 + index,
+                    kind: engine::cequipment_production_line::KIND_MILITARY,
+                    variant: 10,
+                    speed_raw: 100_000,
+                    cost_raw: 50_000,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    *frame.tables[TableId::LogisticsEquipment.index()] =
+        TableView::Complete(TableRows::LogisticsEquipment(
+            (0..count)
+                .map(|index| logistics(100_000 + index, 1, 1, -5, 7))
+                .collect(),
+        ));
+    *frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 1,
+            literal: b"infantry_equipment_1".to_vec(),
+        }]));
+    frame.metrics.table_ns[TableId::Stockpiles.index()] = 1;
+    frame.metrics.table_ns[TableId::LogisticsEquipment.index()] = 1;
+    frame
+}
+
+fn assert_changed_rows_observe_only_their_holder(count: u32) {
+    use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests::Work};
+    let format = replay::format::FormatVersion::CURRENT;
+    let mut recorded = Recorded::new();
+    let mut tracker = FrameChangeTracker::new();
+    let mut step = |prepared: &mut Prepared, frame: &DecodedFrame| {
+        let before = (prepared.work, prepared.row_hours);
+        let (decoded, wire) = recorded.next(frame, false);
+        let changes = tracker.observe_updates(&decoded, wire, format);
+        prepared
+            .observe_changed(format, &decoded, &changes)
+            .unwrap();
+        let work = Work {
+            row_visits: prepared.work.row_visits - before.0.row_visits,
+            history_visits: prepared.work.history_visits - before.0.history_visits,
+            ..Default::default()
+        };
+        (work, prepared.row_hours - before.1)
+    };
+    let mut prepared = Prepared::default();
+    let mut frame = counted_frame(100, count);
+    let (first, _) = step(&mut prepared, &frame);
+    assert_eq!(
+        first.history_visits, count as usize,
+        "the first hour reads every holder"
+    );
+    let holder = |index: u32| 100_000 + index;
+
+    // A read of unchanged rows repeats every holder's read without visiting it.
+    frame.hour = 101;
+    let (work, rows) = step(&mut prepared, &frame);
+    assert_eq!(rows, 1, "the hour is observed from its changed rows");
+    assert_eq!((work.row_visits, work.history_visits), (0, 0));
+
+    frame.hour = 102;
+    stock_row(&mut frame, holder(count / 2), 1).amount_raw += 1;
+    let (work, rows) = step(&mut prepared, &frame);
+    assert_eq!(rows, 1);
+    assert_eq!(work.history_visits, 1, "only its holder is observed again");
+    assert_eq!(
+        work.row_visits, 4,
+        "only its holder's two stock rows, line and logistics row are read"
+    );
+
+    // A line field and a country field no holder reads.
+    frame.hour = 103;
+    line_row(&mut frame, u64::from(count / 3) + 1).efficiency_raw += 7;
+    country_row(&mut frame, holder(count / 4)).political_power_raw = Some(7);
+    let (work, rows) = step(&mut prepared, &frame);
+    assert_eq!(rows, 1);
+    assert_eq!(
+        (work.row_visits, work.history_visits),
+        (0, 0),
+        "nothing a holder reads changed"
+    );
+
+    frame.hour = 104;
+    line_row(&mut frame, u64::from(count / 5) + 1).speed_raw += 1;
+    let (work, rows) = step(&mut prepared, &frame);
+    assert_eq!(rows, 1);
+    assert_eq!((work.row_visits, work.history_visits), (4, 1));
+
+    frame.hour = 105;
+    logistics_row(&mut frame, holder(count / 6), 1).balance_raw -= 1;
+    let (work, rows) = step(&mut prepared, &frame);
+    assert_eq!(rows, 1);
+    assert_eq!((work.row_visits, work.history_visits), (4, 1));
+
+    // A changed row an hour does not read waits for its holder's next read.
+    frame.hour = 106;
+    frame.metrics.table_ns.fill(0);
+    stock_row(&mut frame, holder(count / 7), 0).amount_raw += 1;
+    let (work, rows) = step(&mut prepared, &frame);
+    assert_eq!(rows, 1);
+    assert_eq!((work.row_visits, work.history_visits), (0, 0));
+    frame.hour = 107;
+    frame.metrics.table_ns[TableId::Stockpiles.index()] = 1;
+    frame.metrics.table_ns[TableId::LogisticsEquipment.index()] = 1;
+    let (work, rows) = step(&mut prepared, &frame);
+    assert_eq!(rows, 1);
+    assert_eq!((work.row_visits, work.history_visits), (4, 1));
+}
+
+#[test]
+fn stockpile_hour_changing_one_holder_observes_only_that_holder() {
+    assert_changed_rows_observe_only_their_holder(200);
+}
+
+#[test]
+#[cfg(feature = "slow-tests")]
+fn stockpile_hour_changing_one_of_5000_holders_observes_only_that_holder() {
+    assert_changed_rows_observe_only_their_holder(5000);
+}
+
+#[test]
+fn stockpile_row_masks_name_every_field_they_read() {
+    assert_eq!(HOLDER_FIELDS.count_ones(), 2);
+    assert_eq!(LINE_FIELDS.count_ones(), 5);
+    let efficiency = (0..64)
+        .position(|field| TableId::ProductionLines.field_name(field) == Some("efficiency_raw"))
+        .unwrap();
+    assert_eq!(
+        *LINE_FIELDS & (1 << efficiency),
+        0,
+        "no holder reads a line's efficiency"
+    );
+}
+
+/// Germany (canonical slot 7) through links 11 and 9001, Italy (21, slot 8),
+/// France (31, slot 9) and Sweden (41, slot 10), each through one link.
+fn holders_frame(hour: i32) -> DecodedFrame {
+    use engine::cequipment_production_line::{KIND_MILITARY, KIND_NAVAL};
+    use replay::rows::{
+        CountryLinkRow, CountryRow, LexicalTokenRow, ProductionLineRow, StockpileRow,
+        VariantDefinitionRow,
+    };
+    let mut frame = dashboard_base::test_fixtures::source(1, hour, Some(1));
+    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        [
+            (21, 8, "ITA"),
+            (31, 9, "FRA"),
+            (41, 10, "SWE"),
+            (9001, 7, "GER"),
+        ]
+        .into_iter()
+        .map(|(id, canonical_slot, tag)| CountryRow {
+            id,
+            canonical_slot,
+            tag: tag.as_bytes().to_vec(),
+            ..Default::default()
+        })
+        .collect(),
+    ));
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        [(11, 7), (21, 8), (31, 9), (41, 10), (9001, 7)]
+            .into_iter()
+            .map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
+            .collect(),
+    ));
+    let stock = |country, ordinal, variant_handle, amount_raw| StockpileRow {
+        country,
+        ordinal,
+        variant_handle,
+        amount_raw,
+    };
+    *frame.tables[TableId::Stockpiles.index()] = TableView::Complete(TableRows::Stockpiles(vec![
+        stock(11, 0, 10, 100_000),
+        stock(11, 1, 20, 5),
+        stock(21, 0, 10, 999),
+        stock(31, 0, 20, 7_000),
+        stock(9001, 0, 30, 3),
+    ]));
+    let line = |handle, country, variant, speed_raw, cost_raw, kind| ProductionLineRow {
+        handle,
+        country,
+        kind,
+        variant,
+        speed_raw,
+        cost_raw,
+        ..Default::default()
+    };
+    *frame.tables[TableId::ProductionLines.index()] =
+        TableView::Complete(TableRows::ProductionLines(vec![
+            line(1, 9001, 10, 360_045, 2_250_000, KIND_MILITARY),
+            line(2, 21, 10, 100_000, 50_000, KIND_MILITARY),
+            line(3, 11, 20, 100_000, 0, KIND_MILITARY),
+            line(4, 31, 30, 50_000, 10_000, KIND_NAVAL),
+        ]));
+    *frame.tables[TableId::LogisticsEquipment.index()] =
+        TableView::Complete(TableRows::LogisticsEquipment(vec![
+            logistics(21, 1, 1, -5, 7),
+            logistics(9001, 1, 1, 3, 9),
+            logistics(9001, 2, 2, 0, 0),
+        ]));
+    *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(
+        [(1, "infantry_equipment_1"), (2, "destroyer_1")]
+            .into_iter()
+            .map(|(token, literal)| LexicalTokenRow {
+                token,
+                literal: literal.as_bytes().to_vec(),
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(
+            [(10, 1, ""), (20, 1, "Gewehr 43"), (30, 2, "")]
+                .into_iter()
+                .map(|(id, equipment_token, name)| VariantDefinitionRow {
+                    id,
+                    equipment_token,
+                    creator_link: 9001,
+                    display_name: name.as_bytes().to_vec(),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    frame
+}
+
+/// A prepared window of `tag` through `to`, with the given width and groups.
+fn window(
+    source: &Source,
+    fixture: &dashboard_base::prepared::series::tests::Fixture,
+    tag: &str,
+    to: i32,
+    width: Option<u32>,
+    groups: &[String],
+) -> serde_json::Value {
+    let mut request = serde_json::json!({
+        "branchId": "1", "tag": tag, "from": 100, "to": to, "groups": groups,
+    });
+    if let Some(width) = width {
+        request["width"] = width.into();
+    }
+    read_window(
+        source,
+        serde_json::from_value(request).unwrap(),
+        &LoadContext { content: None },
+        &fixture.store,
+        &fixture.key,
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+    .unwrap()
+}
+
+/// What an observer continues from. A closed run set's frontier is never read
+/// again: its next read starts anew, and carrying or advancing it does nothing,
+/// so a holder stepped through hours it was not visited may hold any.
+fn continuation(observer: &Prepared) -> serde_json::Value {
+    fn closed(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                if fields.get("carried") == Some(&serde_json::Value::Bool(false)) {
+                    fields.insert("frontier".into(), serde_json::Value::Null);
+                }
+                fields.values_mut().for_each(closed);
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(closed),
+            _ => {}
+        }
+    }
+    let mut value = serde_json::to_value(observer).unwrap();
+    closed(&mut value);
+    value
+}
+
+#[test]
+fn stockpile_rows_observation_matches_whole_tables_and_legacy_across_keyframe_gap_and_resume() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    use engine::cequipment_production_line::KIND_NAVAL;
+    use replay::rows::{ProductionLineRow, StockpileRow};
+    const TAGS: [&str; 5] = ["GER", "ITA", "FRA", "SWE", "NOR"];
+    const PUBLISHED: [i32; 4] = [108, 121, 135, 150];
+    let mut frame = holders_frame(100);
+    let mut inputs = Vec::new();
+    let mut stashed = None;
+    for hour in 100..=150 {
+        frame.hour = hour;
+        frame.metrics.table_ns.fill(0);
+        frame.metrics.table_ns[TableId::Countries.index()] = 1;
+        frame.metrics.table_ns[TableId::Stockpiles.index()] = u64::from(hour % 4 == 0);
+        frame.metrics.table_ns[TableId::LogisticsEquipment.index()] = u64::from(hour % 6 == 0);
+        frame.metrics.table_ns[TableId::VariantDefinitions.index()] = u64::from(hour % 10 == 0);
+        match hour {
+            // Changed before its read, read at the next one.
+            101 | 145 => stock_row(&mut frame, 11, 0).amount_raw += 1,
+            // Fields no holder reads.
+            102 | 131 => country_row(&mut frame, 21).political_power_raw = Some(i64::from(hour)),
+            103 => line_row(&mut frame, 1).efficiency_raw += 1,
+            105 => {
+                stock_row(&mut frame, 21, 0).amount_raw += 10;
+                line_row(&mut frame, 2).speed_raw += 1_000;
+            }
+            106 => {
+                stock_rows(&mut frame).push(StockpileRow {
+                    country: 31,
+                    ordinal: 1,
+                    variant_handle: 10,
+                    amount_raw: 50,
+                });
+                stock_rows(&mut frame).sort_by_key(|row| (row.country, row.ordinal));
+            }
+            107 => {
+                stock_rows(&mut frame).push(StockpileRow {
+                    country: 41,
+                    ordinal: 0,
+                    variant_handle: 10,
+                    amount_raw: 1,
+                });
+                stock_rows(&mut frame).sort_by_key(|row| (row.country, row.ordinal));
+            }
+            110 => variant_row(&mut frame, 20).display_name = b"Gewehr 43/1".to_vec(),
+            111 => logistics_row(&mut frame, 9001, 1).balance_raw -= 4,
+            // A line moves from Germany's other link to Italy.
+            112 => line_row(&mut frame, 3).country = 21,
+            113 => stock_rows(&mut frame).retain(|row| (row.country, row.ordinal) != (21, 0)),
+            // Italy is AI-controlled at this read.
+            114 => logistics_rows(&mut frame).retain(|row| row.country != 21),
+            115 => stock_row(&mut frame, 31, 0).amount_raw += 1,
+            116 => stock_row(&mut frame, 9001, 0).amount_raw += 2,
+            117 => {
+                line_rows(&mut frame).push(ProductionLineRow {
+                    handle: 5,
+                    country: 31,
+                    variant: 20,
+                    speed_raw: 1,
+                    cost_raw: 1,
+                    ..Default::default()
+                });
+                line_rows(&mut frame).sort_by_key(|row| row.handle);
+            }
+            // At its read, variant 10 changes type: its holders change groups.
+            118 => variant_row(&mut frame, 10).equipment_token = 2,
+            119 => continue,
+            121 => {
+                stashed = Some(std::mem::take(stock_rows(&mut frame)));
+                *frame.tables[TableId::Stockpiles.index()] = TableView::Unavailable {
+                    reason: "synthetic missing stock".into(),
+                };
+            }
+            122 => {
+                *frame.tables[TableId::Stockpiles.index()] =
+                    TableView::Complete(TableRows::Stockpiles(stashed.take().unwrap()));
+                stock_row(&mut frame, 11, 1).amount_raw += 1;
+            }
+            // A holder renamed: the holders change.
+            123 => country_row(&mut frame, 41).tag = b"NOR".to_vec(),
+            124 => line_rows(&mut frame).retain(|row| row.handle != 2),
+            126 => {
+                logistics_row(&mut frame, 9001, 2).available_raw =
+                    replay::rows::Recorded::Value(None);
+            }
+            127 => {
+                logistics_rows(&mut frame).push(logistics(21, 1, 1, -9, 2));
+                logistics_rows(&mut frame).sort_by_key(|row| (row.country, row.archetype));
+            }
+            // A total that does not fit: its count repeats with every read.
+            129 => {
+                stock_rows(&mut frame).push(StockpileRow {
+                    country: 9001,
+                    ordinal: 1,
+                    variant_handle: 10,
+                    amount_raw: i64::MAX,
+                });
+                stock_rows(&mut frame).sort_by_key(|row| (row.country, row.ordinal));
+            }
+            133 => line_row(&mut frame, 1).cost_raw = 0,
+            137 => stock_row(&mut frame, 41, 0).amount_raw += 5,
+            138 => line_row(&mut frame, 5).kind = KIND_NAVAL,
+            140 => stock_rows(&mut frame).retain(|row| row.country != 41),
+            _ => {}
+        }
+        inputs.push((frame.clone(), hour == 115));
+    }
+    let flag = AtomicBool::new(false);
+    let source = Source::from_replay(
+        dashboard_base::source::SourceKey {
+            source_id: "stockpile-rows".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        Arc::new(replay(
+            inputs.iter().map(|(frame, _)| frame.clone()).collect(),
+        )),
+        &flag,
+    )
+    .unwrap();
+    let format = source.replay_ref().format;
+    let fixtures = [
+        dashboard_base::prepared::series::tests::Fixture::new(),
+        dashboard_base::prepared::series::tests::Fixture::new(),
+    ];
+    // Observed from changed rows, and from the whole tables every hour.
+    let mut observers = [
+        Prepared::default(),
+        Prepared {
+            whole_tables: true,
+            ..Default::default()
+        },
+    ];
+    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+    let mut recorded = Recorded::new();
+    for (input, keyframe) in &inputs {
+        let (decoded, wire) = recorded.next(input, *keyframe);
+        for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
+            let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), format);
+            observer
+                .observe_changed(format, &decoded, &changes)
+                .unwrap();
+        }
+        if !PUBLISHED.contains(&decoded.hour) {
+            continue;
+        }
+        for (observer, fixture) in observers.iter_mut().zip(&fixtures) {
+            let mut writer = fixture.writer();
+            observer.flush(&mut writer, 1, &flag).unwrap();
+            writer.commit().unwrap();
+        }
+        dashboard_base::prepared::series::tests::assert_payloads_equal(
+            &fixtures[0].payloads(),
+            &fixtures[1].payloads(),
+            &format!("published through hour {}", decoded.hour),
+        );
+        assert_eq!(
+            continuation(&observers[0]),
+            continuation(&observers[1]),
+            "continuation through hour {}",
+            decoded.hour
+        );
+        for tag in TAGS {
+            let groups: Vec<String> = observers[1]
+                .holders
+                .get(tag)
+                .map(|holder| holder.groups.keys().cloned().collect())
+                .unwrap_or_default();
+            for (width, groups) in [(None, &[][..]), (Some(4), &[][..]), (Some(4), &groups[..])] {
+                assert_eq!(
+                    window(&source, &fixtures[0], tag, decoded.hour, width, groups),
+                    window(&source, &fixtures[1], tag, decoded.hour, width, groups),
+                    "{tag} through hour {} at width {width:?}",
+                    decoded.hour
+                );
+            }
+        }
+        // Resume both from what they published.
+        for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
+            let (whole_tables, row_hours) = (observer.whole_tables, observer.row_hours);
+            *observer = serde_json::from_slice(&serde_json::to_vec(&*observer).unwrap()).unwrap();
+            observer.whole_tables = whole_tables;
+            observer.row_hours = row_hours;
+            tracker.invalidate();
+        }
+    }
+    assert!(
+        observers[0].row_hours >= 30,
+        "most hours are observed from their changed rows, not {}",
+        observers[0].row_hours
+    );
+    assert_eq!(observers[1].row_hours, 0);
+    let context = LoadContext { content: None };
+    for tag in TAGS {
+        let legacy = EquipmentStockpile::load(
+            &source,
+            &CountryParams {
+                branch_id: "1".into(),
+                tag: tag.into(),
+            },
+            &context,
+            &flag,
+        )
+        .unwrap();
+        let mut actual = window(&source, &fixtures[0], tag, 150, None, &[]);
+        actual.as_object_mut().unwrap().remove("prepared");
+        assert_eq!(actual, serde_json::to_value(legacy).unwrap(), "{tag}");
+    }
+}

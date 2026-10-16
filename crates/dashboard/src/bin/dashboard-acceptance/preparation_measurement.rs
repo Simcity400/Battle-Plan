@@ -2,7 +2,7 @@
 use super::*;
 use dashboard::prepared::pipeline::MeasuredBlock;
 use dashboard_base::prepared::timing::FamilyTimings;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader};
 
 pub(super) fn family_rows(families: &BTreeMap<&str, FamilyTimings>, wall: Duration) -> Vec<Value> {
     let mut rows: Vec<_> = families.iter().collect();
@@ -273,11 +273,11 @@ impl BlockEvidence {
     }
 }
 
-// Compare immutable file identities with the prior committed manifest and hash
-// only new/replaced payloads. Histories are streamed, not loaded or rehashed on
-// every block; one small digest row per changed range goes straight to disk.
+// Compare range identities (pack, offset, length) with the prior committed
+// manifest and hash only new/replaced payloads. Histories are streamed, not
+// loaded or rehashed on every block; one small digest row per changed range goes
+// straight to disk.
 fn write_payload_changes(evidence: &Path, ordinal: u64) -> io::Result<String> {
-    use std::io::{Seek, SeekFrom};
     let output_name = format!("payload-{ordinal}.jsonl");
     let output_path = evidence.join(&output_name);
     if output_path.is_file() {
@@ -294,88 +294,36 @@ fn write_payload_changes(evidence: &Path, ordinal: u64) -> io::Result<String> {
         if !directory.is_dir() {
             continue;
         }
-        let manifest_path = directory.join("manifest");
-        let mut manifest = BufReader::new(File::open(&manifest_path)?);
-        let mut length = [0; 8];
-        manifest.read_exact(&mut length)?;
-        let length = u64::from_le_bytes(length);
-        if length > manifest.get_ref().metadata()?.len().saturating_sub(8) {
-            return Err(invalid("Truncated payload manifest header"));
-        }
-        let header: Value = serde_json::from_reader((&mut manifest).take(length))?;
+        let listing = store::Listing::open(&directory.join("manifest"))?
+            .ok_or_else(|| invalid("Missing payload manifest"))?;
         let snapshot = evidence.join(format!(
             "payload-manifest-{}",
             directory.file_name().unwrap().to_string_lossy()
         ));
-        let mut prior = match File::open(&snapshot) {
-            Ok(file) => Some(BufReader::new(file)),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error),
-        };
-        let mut prior_sections = BTreeMap::new();
-        if let Some(prior) = &mut prior {
-            let mut length = [0; 8];
-            prior.read_exact(&mut length)?;
-            let length = u64::from_le_bytes(length);
-            let header: Value = serde_json::from_reader((&mut *prior).take(length))?;
-            let mut offset = 8 + length;
-            for section in header["sections"]
-                .as_array()
-                .ok_or_else(|| invalid("Missing prior section names"))?
-            {
-                let name = section["name"]
-                    .as_str()
-                    .ok_or_else(|| invalid("Missing prior section name"))?;
-                let count = section["count"]
-                    .as_u64()
-                    .ok_or_else(|| invalid("Missing prior section count"))?;
-                prior_sections.insert(name.to_owned(), (offset, count));
-                offset += count * 16;
-            }
-        }
-        for (section_index, section) in header["sections"]
-            .as_array()
-            .ok_or_else(|| invalid("Missing payload sections"))?
+        // A missing snapshot, or one of an older store layout, hashes everything.
+        let prior = store::Listing::open(&snapshot)?;
+        let prior_sections: BTreeMap<String, (usize, u64)> = prior
             .iter()
-            .enumerate()
-        {
-            let name = section["name"]
-                .as_str()
-                .ok_or_else(|| invalid("Missing payload section name"))?;
-            let count = section["count"]
-                .as_u64()
-                .ok_or_else(|| invalid("Missing payload section count"))?;
-            let prior_count = if let (Some(prior), Some(&(offset, prior_count))) =
-                (&mut prior, prior_sections.get(name))
-            {
-                prior.seek(SeekFrom::Start(offset))?;
-                prior_count
-            } else {
-                0
-            };
+            .flat_map(|prior| prior.sections().enumerate())
+            .map(|(index, (name, count))| (name.to_owned(), (index, count)))
+            .collect();
+        for (section_index, (name, count)) in listing.sections().enumerate() {
+            let prior_section = prior_sections.get(name);
             for range in 0..count {
-                let mut id = [0; 16];
-                manifest.read_exact(&mut id)?;
-                let same = if let Some(prior) = &mut prior {
-                    if range < prior_count {
-                        let mut previous = [0; 16];
-                        prior.read_exact(&mut previous)?;
-                        previous == id
-                    } else {
-                        false
+                let id = listing
+                    .range(section_index, range)?
+                    .ok_or_else(|| invalid("Missing payload range"))?;
+                let same = match (&prior, prior_section) {
+                    (Some(prior), Some(&(index, prior_count))) if range < prior_count => {
+                        prior.range(index, range)? == Some(id)
                     }
-                } else {
-                    false
+                    _ => false,
                 };
                 if same {
                     continue;
                 }
-                let payload_path = directory.join(format!(
-                    "{section_index}_{range}_{}.bin",
-                    uuid::Uuid::from_bytes(id).simple()
-                ));
-                let mut payload = File::open(&payload_path)?;
-                let bytes = payload.metadata()?.len();
+                let mut payload = id.open(&directory)?;
+                let bytes = payload.len();
                 let mut digest = blake3::Hasher::new();
                 digest.update_reader(&mut payload)?;
                 serde_json::to_writer(
@@ -459,8 +407,9 @@ fn write_json(path: &Path, value: &Value) -> io::Result<()> {
     replay::publication::replace_file(&temporary, path)
 }
 
-// Read-only disk accounting of the isolated prepared directory. The manifest's
-// public documented header associates numeric file prefixes with section names.
+// Read-only disk accounting of the isolated prepared directory. Each section
+// is charged its listed range bytes; the manifest, stamps and pack bytes no
+// range lists are store metadata.
 fn store_sizes(evidence: &Path) -> io::Result<(u64, BTreeMap<String, u64>)> {
     let root = evidence.join("cache/local/HOI4Replay/prepared");
     let mut total = 0;
@@ -470,36 +419,26 @@ fn store_sizes(evidence: &Path) -> io::Result<(u64, BTreeMap<String, u64>)> {
         if !directory.is_dir() {
             continue;
         }
-        let mut manifest = File::open(directory.join("manifest"))?;
-        let mut length = [0; 8];
-        manifest.read_exact(&mut length)?;
-        let length = u64::from_le_bytes(length);
-        if length > manifest.metadata()?.len().saturating_sub(8) {
-            return Err(invalid("Truncated measurement store header"));
-        }
-        let header: Value = serde_json::from_reader(manifest.take(length))?;
-        let names = header["sections"]
-            .as_array()
-            .ok_or_else(|| invalid("Missing store section names"))?;
-        for file in fs::read_dir(&directory)? {
-            let file = file?;
-            let metadata = file.metadata()?;
-            if !metadata.is_file() {
-                continue;
+        let listing = store::Listing::open(&directory.join("manifest"))?
+            .ok_or_else(|| invalid("Missing measurement store manifest"))?;
+        let mut listed = 0;
+        for (index, (name, count)) in listing.sections().enumerate() {
+            let mut bytes = 0;
+            for range in 0..count {
+                bytes += listing.range(index, range)?.map_or(0, |id| id.len());
             }
-            let bytes = metadata.len();
-            total += bytes;
-            let file_name = file.file_name();
-            let name = file_name.to_string_lossy();
-            let section = name
-                .split('_')
-                .next()
-                .and_then(|index| index.parse::<usize>().ok())
-                .and_then(|index| names.get(index))
-                .and_then(|row| row["name"].as_str())
-                .unwrap_or("store-metadata");
-            *sections.entry(section.to_owned()).or_insert(0) += bytes;
+            *sections.entry(name.to_owned()).or_insert(0) += bytes;
+            listed += bytes;
         }
+        let mut on_disk = 0;
+        for file in fs::read_dir(&directory)? {
+            let metadata = file?.metadata()?;
+            if metadata.is_file() {
+                on_disk += metadata.len();
+            }
+        }
+        total += on_disk;
+        *sections.entry("store-metadata".to_owned()).or_insert(0) += on_disk.saturating_sub(listed);
     }
     Ok((total, sections))
 }

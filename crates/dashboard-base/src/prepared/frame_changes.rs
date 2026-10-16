@@ -2,9 +2,10 @@
 use replay::{
     BranchId, Hour,
     format::FormatVersion,
-    frame::{DecodedFrame, TABLE_COUNT, ViewIdentity},
-    rows::TableId,
+    frame::{DecodedFrame, Frame, TABLE_COUNT, TableUpdate, TableView, ViewIdentity},
+    rows::{DeltaRow, TableId},
 };
+use std::sync::Arc;
 
 /// Row identity and read evidence are separate: a fresh equal acquisition
 /// keeps its allocation, so its read shows only in table_read/slot_read.
@@ -14,6 +15,88 @@ pub struct FrameChanges {
     pub rows_changed: [bool; TABLE_COUNT],
     pub table_read: [bool; TABLE_COUNT],
     pub slot_read: [bool; TABLE_COUNT],
+    /// The hour's recorded updates, when it continues the previous hour.
+    pub updates: Option<RowUpdates>,
+}
+
+/// An hour's recorded updates and the tables whose decoded rows are the
+/// previous hour's changed by exactly their delta.
+pub struct RowUpdates {
+    frame: Arc<Frame>,
+    exact: [bool; TABLE_COUNT],
+}
+
+/// The change-mask bits of `table`'s fields named `names`, for testing a
+/// changed row's mask from [`FrameChanges::rows`]; every bit when the table
+/// does not name each of them, so a renamed field is never missed.
+pub fn field_mask(table: TableId, names: &[&str]) -> u64 {
+    let mask = (0..64)
+        .filter(|&index| {
+            table
+                .field_name(index)
+                .is_some_and(|name| names.contains(&name))
+        })
+        .fold(0_u64, |mask, index| mask | (1_u64 << index));
+    if mask.count_ones() as usize == names.len() {
+        mask
+    } else {
+        u64::MAX
+    }
+}
+
+impl FrameChanges {
+    /// The facts of an hour observed with no hour before it, as preparation
+    /// observes the first hour of every block: any row may have changed.
+    pub fn alone(frame: &DecodedFrame, format: FormatVersion) -> Self {
+        Self {
+            rows_changed: [true; TABLE_COUNT],
+            table_read: std::array::from_fn(|index| frame.metrics.table_ns[index] != 0),
+            slot_read: TableId::ALL
+                .map(|table| crate::metadata::slot_read(format, &frame.metrics, table, frame.hour)),
+            updates: None,
+        }
+    }
+
+    /// The facts of an hour of a block read by its changes
+    /// (`Replay::read_block_changes`), equal to those a tracker of the block
+    /// read alone finds: when the hour follows the hour before (`continues`),
+    /// a table changed exactly when the hour's update rebuilt it (`rebuilt`,
+    /// the reader's evidence), which is when that tracker sees a new
+    /// allocation; after a gap, every table, as [`Self::alone`]. The hour's
+    /// recorded updates are not kept.
+    pub fn rebuilt(
+        frame: &DecodedFrame,
+        format: FormatVersion,
+        continues: bool,
+        rebuilt: impl Fn(TableId) -> bool,
+    ) -> Self {
+        let mut changes = Self::alone(frame, format);
+        if continues {
+            changes.rows_changed = TableId::ALL.map(rebuilt);
+        }
+        changes
+    }
+
+    /// The rows of `table` that changed this hour, each with the fields that
+    /// changed, and the keys it deleted. None when any row may have changed:
+    /// the table was rebuilt rather than changed by one delta from the
+    /// previous hour, or an observer marked it changed itself.
+    pub fn rows(&self, table: TableId) -> Option<(&[DeltaRow], &[u128])> {
+        let index = table.index();
+        if !self.rows_changed[index] {
+            return Some((&[], &[]));
+        }
+        let updates = self
+            .updates
+            .as_ref()
+            .filter(|updates| updates.exact[index])?;
+        match &updates.frame.tables[index] {
+            TableUpdate::Delta {
+                changed, deleted, ..
+            } => Some((changed, deleted)),
+            _ => None,
+        }
+    }
 }
 
 struct Previous {
@@ -45,6 +128,37 @@ impl FrameChangeTracker {
         self.previous = None;
     }
 
+    /// [`Self::observe`] with the hour's recorded updates, which give each
+    /// changed table's rows ([`FrameChanges::rows`]).
+    pub fn observe_updates(
+        &mut self,
+        frame: &DecodedFrame,
+        updates: Arc<Frame>,
+        format: FormatVersion,
+    ) -> FrameChanges {
+        let continuous = self.continues(frame);
+        let mut changes = self.observe(frame, format);
+        if continuous && updates.branch == frame.branch && updates.hour == frame.hour {
+            // The decoder applies a delta to the previous hour's rows; a
+            // failed one leaves the table unavailable instead.
+            let exact = std::array::from_fn(|index| {
+                matches!(updates.tables[index], TableUpdate::Delta { .. })
+                    && matches!(*frame.tables[index], TableView::Complete(_))
+            });
+            changes.updates = Some(RowUpdates {
+                frame: updates,
+                exact,
+            });
+        }
+        changes
+    }
+
+    fn continues(&self, frame: &DecodedFrame) -> bool {
+        self.previous.as_ref().is_some_and(|previous| {
+            previous.branch == frame.branch && previous.hour.checked_add(1) == Some(frame.hour)
+        })
+    }
+
     pub fn observe(&mut self, frame: &DecodedFrame, format: FormatVersion) -> FrameChanges {
         #[cfg(any(test, feature = "test-support"))]
         OBSERVATIONS.with(|count| count.set(count.get() + 1));
@@ -64,6 +178,7 @@ impl FrameChangeTracker {
             table_read: std::array::from_fn(|index| frame.metrics.table_ns[index] != 0),
             slot_read: TableId::ALL
                 .map(|table| crate::metadata::slot_read(format, &frame.metrics, table, frame.hour)),
+            updates: None,
         };
         self.previous = Some(Previous {
             tables: std::array::from_fn(|index| frame.tables[index].identity()),

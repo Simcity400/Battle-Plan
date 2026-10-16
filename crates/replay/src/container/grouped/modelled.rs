@@ -324,7 +324,7 @@ pub(super) struct Model {
     /// In key order.
     hot: Vec<Hot>,
     /// Each stored row's last mask.
-    last: HashMap<u128, u64>,
+    last: HashMap<u128, u64, foldhash::fast::RandomState>,
     /// The latest first.
     recent: Vec<u64>,
     /// By whether the row was stored by the last entry, by the one before,
@@ -407,7 +407,7 @@ impl Model {
         Self {
             fields,
             hot: Vec::new(),
-            last: HashMap::new(),
+            last: HashMap::default(),
             recent: Vec::new(),
             changed: [EVEN; 8],
             gaps: Golomb::new(GAP_BUCKETS),

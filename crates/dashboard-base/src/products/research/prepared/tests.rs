@@ -3,8 +3,10 @@ use crate::prepared::series::tests::Fixture;
 use crate::products::research::test_fixtures::sliced_research_frame;
 use replay::frame::TableView;
 use replay::rows::{
-    CountryLinkRow, CountryRow, ResearchInputRow, SliceReadRow, TableId, TableRows,
+    CountryLinkRow, CountryRow, ResearchAppliedBonusRow, ResearchInputRow, ResearchModifierRow,
+    ResearchTechnologyRow, SliceReadRow, TableId, TableRows,
 };
+use std::sync::Arc;
 
 #[test]
 fn research_deadlines_expire_exactly_across_carried_spans_gaps_commits_resume_and_append() {
@@ -382,4 +384,523 @@ fn research_observes_five_thousand_countries_once_and_checkpoints_only_continuat
     assert!(after <= before + 128);
     prepared.flush(&mut writer, 2, &flag).unwrap();
     writer.commit().unwrap();
+}
+
+/// The first research owner's id; owner `index` holds canonical slot `index`.
+const FIRST_OWNER: u32 = 100_000;
+
+fn complete(frame: &mut DecodedFrame, table: TableId) -> &mut TableRows {
+    match &mut *frame.tables[table.index()] {
+        TableView::Complete(rows) => rows,
+        _ => unreachable!("fixture research tables are complete"),
+    }
+}
+fn countries(frame: &mut DecodedFrame) -> &mut Vec<CountryRow> {
+    match complete(frame, TableId::Countries) {
+        TableRows::Countries(rows) => rows,
+        _ => unreachable!(),
+    }
+}
+fn links(frame: &mut DecodedFrame) -> &mut Vec<CountryLinkRow> {
+    match complete(frame, TableId::CountryLinks) {
+        TableRows::CountryLinks(rows) => rows,
+        _ => unreachable!(),
+    }
+}
+fn inputs(frame: &mut DecodedFrame) -> &mut Vec<ResearchInputRow> {
+    match complete(frame, TableId::ResearchInputs) {
+        TableRows::ResearchInputs(rows) => rows,
+        _ => unreachable!(),
+    }
+}
+fn technologies(frame: &mut DecodedFrame) -> &mut Vec<ResearchTechnologyRow> {
+    match complete(frame, TableId::ResearchTechnologies) {
+        TableRows::ResearchTechnologies(rows) => rows,
+        _ => unreachable!(),
+    }
+}
+fn modifiers(frame: &mut DecodedFrame) -> &mut Vec<ResearchModifierRow> {
+    match complete(frame, TableId::ResearchModifiers) {
+        TableRows::ResearchModifiers(rows) => rows,
+        _ => unreachable!(),
+    }
+}
+fn bonuses(frame: &mut DecodedFrame) -> &mut Vec<ResearchAppliedBonusRow> {
+    match complete(frame, TableId::ResearchAppliedBonuses) {
+        TableRows::ResearchAppliedBonuses(rows) => rows,
+        _ => unreachable!(),
+    }
+}
+fn slice_reads(frame: &mut DecodedFrame) -> &mut Vec<SliceReadRow> {
+    match complete(frame, TableId::SliceReads) {
+        TableRows::SliceReads(rows) => rows,
+        _ => unreachable!(),
+    }
+}
+
+/// `count` countries researching one technology each, all read at `hour`;
+/// the first holds an applied bonus.
+fn research_world(count: u32, hour: i32) -> DecodedFrame {
+    let owner = |index: u32| FIRST_OWNER + index;
+    let mut frame = crate::test_fixtures::source(1, hour, Some(1));
+    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        (0..count)
+            .map(|index| CountryRow {
+                id: owner(index),
+                canonical_slot: index,
+                tag: crate::test_fixtures::scale_tag(index),
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        (0..count)
+            .map(|index| CountryLinkRow {
+                id: owner(index),
+                canonical_slot: index,
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::ResearchInputs.index()] =
+        TableView::Complete(TableRows::ResearchInputs(
+            (0..count)
+                .map(|index| ResearchInputRow {
+                    country: owner(index),
+                    index: 0,
+                    technology_handle: 1,
+                    database_index: replay::rows::Recorded::Value(1),
+                    technology_present: 1,
+                    token: b"synthetic_project".to_vec(),
+                    classifier: engine::ctechnology::CLASSIFIER_ACTIVE,
+                    cost_raw: 10_000_000,
+                    cost_scale_raw: 100_000,
+                    research_speed_raw: 100_000,
+                    bonus_count: u32::from(index == 0),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    *frame.tables[TableId::ResearchTechnologies.index()] =
+        TableView::Complete(TableRows::ResearchTechnologies(
+            (0..count)
+                .map(|index| ResearchTechnologyRow {
+                    country: owner(index),
+                    database_index: 1,
+                    technology_handle: 1,
+                    classifier: engine::ctechnology::CLASSIFIER_ACTIVE,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    *frame.tables[TableId::ResearchModifiers.index()] =
+        TableView::Complete(TableRows::ResearchModifiers(
+            (0..count)
+                .map(|index| ResearchModifierRow {
+                    country: owner(index),
+                    index: u32::MAX,
+                    ordinal: 0,
+                    kind: ResearchModifierRow::COUNTRY_SPEED,
+                    raw: 10_000,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    *frame.tables[TableId::ResearchAppliedBonuses.index()] =
+        TableView::Complete(TableRows::ResearchAppliedBonuses(vec![
+            ResearchAppliedBonusRow {
+                country: owner(0),
+                index: 0,
+                ordinal: 0,
+                technology_handle: 1,
+                id: 7,
+                resolved: 1,
+                name: b"synthetic_bonus".to_vec(),
+                speed_bonus_raw: 50_000,
+                ..Default::default()
+            },
+        ]));
+    let mut reads: Vec<_> = [
+        TableId::ResearchInputs,
+        TableId::ResearchAppliedBonuses,
+        TableId::ResearchModifiers,
+        TableId::ResearchTechnologies,
+    ]
+    .into_iter()
+    .flat_map(|table| {
+        (0..count).map(move |index| SliceReadRow {
+            table: table.index() as u32,
+            owner: owner(index),
+            sample_hour: hour,
+        })
+    })
+    .collect();
+    reads.sort_by_key(|row| (row.table, row.owner));
+    *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(reads));
+    frame
+}
+
+/// Owner `index`'s research read at `hour`: its progress advances.
+fn read_at(frame: &mut DecodedFrame, index: u32, hour: i32) {
+    let owner = FIRST_OWNER + index;
+    for row in inputs(frame)
+        .iter_mut()
+        .filter(|row| row.country == owner && row.technology_present != 0)
+    {
+        row.progress_raw += 1_000;
+    }
+    for row in technologies(frame)
+        .iter_mut()
+        .filter(|row| row.country == owner)
+    {
+        row.progress_raw += 1_000;
+    }
+    for row in slice_reads(frame)
+        .iter_mut()
+        .filter(|row| row.owner == owner)
+    {
+        row.sample_hour = hour;
+    }
+}
+
+/// The recording codec: each input hour is encoded and decoded as the
+/// preparation pipeline reads it, with its recorded updates.
+struct Recorded {
+    encoder: replay::frame::FrameEncoder,
+    decoder: replay::frame::FrameDecoder,
+}
+impl Recorded {
+    fn new() -> Self {
+        Self {
+            encoder: replay::frame::FrameEncoder::new(),
+            decoder: replay::frame::FrameDecoder::new(),
+        }
+    }
+    fn next(
+        &mut self,
+        input: &DecodedFrame,
+        keyframe: bool,
+    ) -> (DecodedFrame, Arc<replay::frame::Frame>) {
+        let wire = self.encoder.encode(input.clone(), keyframe).unwrap();
+        let decoded = self.decoder.advance(&wire).unwrap().clone();
+        (decoded, Arc::new(wire))
+    }
+}
+
+fn assert_one_read_observes_one_country(count: u32) {
+    use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests::Work};
+    let format = replay::format::FormatVersion::CURRENT;
+    let mut recorded = Recorded::new();
+    let mut tracker = FrameChangeTracker::new();
+    let mut step = |prepared: &mut Prepared, frame: &DecodedFrame| {
+        let before = (prepared.scan.work, prepared.scan.row_hours);
+        let (decoded, wire) = recorded.next(frame, false);
+        let changes = tracker.observe_updates(&decoded, wire, format);
+        prepared.observe_changed(&decoded, &changes).unwrap();
+        let work = Work {
+            row_visits: prepared.scan.work.row_visits - before.0.row_visits,
+            history_visits: prepared.scan.work.history_visits - before.0.history_visits,
+            ..Default::default()
+        };
+        (work, prepared.scan.row_hours - before.1)
+    };
+    let mut prepared = Prepared::default();
+    let mut frame = research_world(count, 100);
+    let (first, _) = step(&mut prepared, &frame);
+    assert_eq!(
+        first.history_visits, count as usize,
+        "the first hour reads every country"
+    );
+
+    // One country's read changes its technology's progress.
+    frame.hour = 101;
+    read_at(&mut frame, count / 2, 101);
+    let (work, rows) = step(&mut prepared, &frame);
+    assert_eq!(rows, 1, "the hour is observed from its changed rows");
+    assert_eq!(work.history_visits, 1, "only the read country is observed");
+    assert_eq!(
+        work.row_visits, 2,
+        "only its input row and its input read row are visited"
+    );
+
+    // Rows no read is joined by: another technology, a modifier and a
+    // country field no holder is read from.
+    frame.hour = 102;
+    technologies(&mut frame)[(count / 3) as usize].progress_raw += 7;
+    modifiers(&mut frame)[(count / 4) as usize].raw += 7;
+    countries(&mut frame)[(count / 5) as usize].political_power_raw = Some(7);
+    let (work, rows) = step(&mut prepared, &frame);
+    assert_eq!(rows, 1);
+    assert_eq!(
+        (work.row_visits, work.history_visits),
+        (0, 0),
+        "nothing a research read reads changed"
+    );
+
+    // A read beside a change to its own country's other fields.
+    frame.hour = 103;
+    read_at(&mut frame, count / 3, 103);
+    countries(&mut frame)[(count / 3) as usize].political_power_raw = Some(9);
+    let (work, rows) = step(&mut prepared, &frame);
+    assert_eq!(rows, 1);
+    assert_eq!((work.row_visits, work.history_visits), (2, 1));
+}
+
+#[test]
+fn research_hour_reading_one_country_observes_only_that_country() {
+    assert_one_read_observes_one_country(200);
+}
+
+#[test]
+#[cfg(feature = "slow-tests")]
+fn research_hour_reading_one_of_5000_countries_observes_only_that_country() {
+    assert_one_read_observes_one_country(5_000);
+}
+
+#[test]
+fn research_holder_mask_names_both_holder_fields() {
+    assert_eq!(super::super::HOLDER_FIELDS.count_ones(), 2);
+}
+
+/// Everything a publication holds for an observer's keys: each key's runs
+/// and every event, in key order.
+#[allow(clippy::type_complexity)]
+fn published(
+    fixture: &Fixture,
+    observer: &Prepared,
+) -> (
+    Vec<(u64, Vec<series::Run>)>,
+    Vec<(u64, i32, u64, serde_json::Value)>,
+) {
+    let flag = AtomicBool::new(false);
+    let mut reader = Reader::new(&fixture.store, &fixture.key, section(1), &flag).unwrap();
+    let mut keys: Vec<u64> = observer.keys.values().copied().collect();
+    keys.extend(
+        observer
+            .slots
+            .values()
+            .flat_map(BTreeMap::values)
+            .flat_map(|keys| [keys.available, keys.state, keys.progress]),
+    );
+    keys.sort_unstable();
+    let runs = keys
+        .iter()
+        .map(|&key| (key, reader.runs(key, i32::MIN, i32::MAX).unwrap()))
+        .collect();
+    let mut events = Vec::new();
+    let mut cursor = 0;
+    loop {
+        let page = reader
+            .events(&keys, i32::MIN, i32::MAX, cursor, 256)
+            .unwrap();
+        events.extend(
+            page.rows
+                .into_iter()
+                .map(|row| (row.key, row.hour, row.ordinal, row.row)),
+        );
+        let Some(next) = page.cursor else {
+            break;
+        };
+        assert!(next > cursor, "event pages advance");
+        cursor = next;
+    }
+    (runs, events)
+}
+
+#[test]
+fn research_rows_observation_matches_whole_tables_and_reference_across_keyframe_gap_and_resume() {
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    let count = 6;
+    let owner = |index: u32| FIRST_OWNER + index;
+    let mut frame = research_world(count, 100);
+    // The second country's slot has another owner, read on another day and
+    // holding no rows: no read of that country proves its carry.
+    links(&mut frame).push(CountryLinkRow {
+        id: 200_001,
+        canonical_slot: 1,
+    });
+    slice_reads(&mut frame).push(SliceReadRow {
+        table: TableId::ResearchInputs.index() as u32,
+        owner: 200_001,
+        sample_hour: 90,
+    });
+    slice_reads(&mut frame).sort_by_key(|row| (row.table, row.owner));
+    let fixtures = [Fixture::new(), Fixture::new()];
+    // Observed from changed rows, and from the whole tables every hour.
+    let mut observers = [
+        Prepared::default(),
+        Prepared {
+            scan: Scan {
+                whole_tables: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    ];
+    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+    let mut reference = Scan::default();
+    let mut recorded = Recorded::new();
+    let mut stashed: Option<Vec<ResearchInputRow>> = None;
+    for hour in 100..=172 {
+        if hour == 150 {
+            // Never recorded: a gap.
+            continue;
+        }
+        frame.hour = hour;
+        // Each country is read once a day, four hours after the one before;
+        // the sixth misses its read at 144.
+        let due = (hour > 100)
+            .then_some((hour - 100) % 24)
+            .filter(|offset| offset % 4 == 0)
+            .map(|offset| (offset / 4) as u32)
+            .filter(|&index| index < count && (index, hour) != (5, 144));
+        if let Some(index) = due {
+            read_at(&mut frame, index, hour);
+            if index == 1 {
+                // Its states never merge across the hours its carry ends.
+                inputs(&mut frame)
+                    .iter_mut()
+                    .find(|row| row.country == owner(1))
+                    .unwrap()
+                    .research_speed_raw += 1_000;
+            }
+        }
+        match hour {
+            // Rows no read joins: a modifier and a technology between reads.
+            106 => {
+                modifiers(&mut frame)[0].raw += 1;
+                technologies(&mut frame)[2].progress_raw += 1;
+            }
+            // The third country switches technology at its read.
+            108 => {
+                let row = inputs(&mut frame)
+                    .iter_mut()
+                    .find(|row| row.country == owner(2))
+                    .unwrap();
+                row.technology_handle = 2;
+                row.database_index = replay::rows::Recorded::Value(2);
+                row.token = b"synthetic_other".to_vec();
+                row.progress_raw = 0;
+                let technologies = technologies(&mut frame);
+                let at = technologies
+                    .partition_point(|row| (row.country, row.database_index) <= (owner(2), 1));
+                technologies.insert(
+                    at,
+                    ResearchTechnologyRow {
+                        country: owner(2),
+                        database_index: 2,
+                        technology_handle: 2,
+                        classifier: engine::ctechnology::CLASSIFIER_ACTIVE,
+                        ..Default::default()
+                    },
+                );
+            }
+            // A country field no holder is read from.
+            110 => countries(&mut frame)[3].political_power_raw = Some(110),
+            // The fourth country gains an empty slot at its read, and loses it.
+            112 => {
+                let inputs = inputs(&mut frame);
+                let at = inputs.partition_point(|row| (row.country, row.index) <= (owner(3), 0));
+                inputs.insert(
+                    at,
+                    ResearchInputRow {
+                        country: owner(3),
+                        index: 1,
+                        ..Default::default()
+                    },
+                );
+            }
+            136 => inputs(&mut frame).retain(|row| (row.country, row.index) != (owner(3), 1)),
+            // The first country's bonus changes at its read.
+            124 => bonuses(&mut frame)[0].speed_bonus_raw += 1,
+            // The fifth country's holder is renamed.
+            130 => countries(&mut frame)[4].tag = b"VIC".to_vec(),
+            // An unobservable hour, holding the fifth country's read.
+            140 => {
+                stashed = Some(std::mem::take(inputs(&mut frame)));
+                *frame.tables[TableId::ResearchInputs.index()] = TableView::Unavailable {
+                    reason: "synthetic missing research inputs".into(),
+                };
+            }
+            141 => {
+                *frame.tables[TableId::ResearchInputs.index()] =
+                    TableView::Complete(TableRows::ResearchInputs(stashed.take().unwrap()));
+            }
+            // After its missed read, the sixth country's technology is done but
+            // still in its slot: its progress shows at this read hour alone.
+            168 => {
+                inputs(&mut frame)
+                    .iter_mut()
+                    .find(|row| row.country == owner(5))
+                    .unwrap()
+                    .classifier = engine::ctechnology::CLASSIFIER_COMPLETED;
+                let technology = technologies(&mut frame)
+                    .iter_mut()
+                    .find(|row| row.country == owner(5))
+                    .unwrap();
+                technology.classifier = engine::ctechnology::CLASSIFIER_COMPLETED;
+                technology.researched = 1;
+            }
+            // Another read the hour after, so the whole tables observe every
+            // country again.
+            169 => read_at(&mut frame, 0, 169),
+            _ => {}
+        }
+        let (decoded, wire) = recorded.next(&frame, hour == 126);
+        reference.observe_selected(&decoded, None).unwrap();
+        for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
+            let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), format);
+            observer.observe_changed(&decoded, &changes).unwrap();
+        }
+        if ![113, 135, 160, 172].contains(&hour) {
+            continue;
+        }
+        for (observer, fixture) in observers.iter_mut().zip(&fixtures) {
+            let mut writer = fixture.writer();
+            observer.flush(&mut writer, 1, &flag).unwrap();
+            writer.commit().unwrap();
+        }
+        let [incremental, whole] = &observers;
+        assert_eq!(
+            incremental.keys, whole.keys,
+            "keys are allocated in one order"
+        );
+        assert_eq!(
+            serde_json::to_value(&incremental.slots).unwrap(),
+            serde_json::to_value(&whole.slots).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&incremental.values).unwrap(),
+            serde_json::to_value(&whole.values).unwrap(),
+            "open values through hour {hour}"
+        );
+        assert_eq!(
+            published(&fixtures[0], incremental),
+            published(&fixtures[1], whole),
+            "published through hour {hour}"
+        );
+        for tag in reference.countries.keys() {
+            compare(&fixtures[0], &reference, tag);
+            compare(&fixtures[1], &reference, tag);
+        }
+        // Resume both from their checkpoints.
+        for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
+            let (whole_tables, row_hours) = (observer.scan.whole_tables, observer.scan.row_hours);
+            *observer = serde_json::from_slice(&serde_json::to_vec(&*observer).unwrap()).unwrap();
+            observer.scan.whole_tables = whole_tables;
+            observer.scan.row_hours = row_hours;
+            tracker.invalidate();
+        }
+    }
+    assert!(
+        observers[0].scan.row_hours >= 40,
+        "most hours are observed from their changed rows, not {}",
+        observers[0].scan.row_hours
+    );
+    assert_eq!(observers[1].scan.row_hours, 0);
+    assert!(
+        reference.countries.contains_key("VIC"),
+        "the renamed holder is read"
+    );
 }

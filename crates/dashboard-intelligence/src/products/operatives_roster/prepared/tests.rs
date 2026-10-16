@@ -371,6 +371,113 @@ fn intel_shared_driver_roster_equal_reads_are_flat_and_exact() {
 }
 
 #[test]
+fn restored_intelligence_observer_publishes_what_continuous_observation_publishes() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for metadata tables");
+    let (catalogue, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
+        "common/defines/00_fixture.lua",
+        "NDefines = { NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { \"fixture\" } } }",
+    )]);
+    let catalogue = std::sync::Arc::new(catalogue);
+    // A held cooldown's progress is a single-precision ratio of whole days.
+    let operative = OperativeMembershipRow {
+        assignment: 1,
+        cooldown_kind: Some(3).into(),
+        cooldown_start_hour: Some(base()).into(),
+        cooldown_end_hour: Some(base() + 300).into(),
+        ..row(1)
+    };
+    let operative_content = super::super::super::operative_content::test_content_from_catalogue(
+        std::sync::Arc::clone(&catalogue),
+    );
+    let progress = |hour: i32| {
+        operative_content
+            .cooldown_status(3, base(), base() + 300, base() + hour)
+            .progress
+            .map(f64::from)
+    };
+    // The held projection reaches 3/13 at hour 60, between the daily reads; the
+    // read at hour 72 supplies that same progress again. Widened, 3/13 needs
+    // seventeen significant digits, so the committed continuation stores it
+    // as its shortest seventeen-digit decimal.
+    assert_ne!(progress(59), progress(60));
+    assert_eq!(progress(60), progress(72));
+    assert_eq!(progress(72).unwrap().to_string().len(), "0.".len() + 17);
+    let frames: Vec<_> = (0..=96)
+        .map(|hour| frame(hour, hour % 24 == 0, vec![operative.clone()]))
+        .collect();
+    // Two recorded blocks, committed separately after hour 65: inside the 3/13
+    // day and before its read.
+    let original = test_fixtures::records(1, frames[..66].to_vec());
+    let first = Replay::from_records(
+        test_fixtures::CAMPAIGN.into(),
+        std::slice::from_ref(&original),
+    )
+    .unwrap();
+    let continued = test_fixtures::continuation_records(&first, 1, frames[66..].to_vec());
+    let source = Source::from_replay(
+        dashboard_base::source::SourceKey {
+            source_id: "prepared-roster-restore".into(),
+            revision: "synthetic".into(),
+        },
+        "fixtures/roster-restore.battleplan".into(),
+        std::sync::Arc::new(
+            Replay::from_records(test_fixtures::CAMPAIGN.into(), &[original, continued]).unwrap(),
+        ),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(source.replay_ref().index.len(), 2);
+    let options = dashboard_core::config::ContentOptions {
+        options: installed_content::ResolveOptions {
+            game_dir: folder.0.clone(),
+            user_dir: folder.0.join("user"),
+            cache_dir: folder.0.join("cache"),
+        },
+        allow_unverified: true,
+    };
+    dashboard_base::catalogue::set_test_catalogue(
+        &source,
+        &options,
+        std::sync::Arc::clone(&catalogue),
+    );
+    let content = crate::products::intelligence_prepared::Content::load(
+        &source,
+        &LoadContext {
+            content: Some(options),
+        },
+    )
+    .unwrap();
+    use crate::products::intelligence_prepared::Observer;
+    let flag = AtomicBool::new(false);
+    dashboard_base::prepared::observer_tests::assert_restore_continues(
+        source.replay_ref().format,
+        &[&frames[..66], &frames[66..]],
+        Observer::default,
+        |observer, input, changes, fixture| {
+            observer
+                .observe(
+                    &source,
+                    &content,
+                    input,
+                    changes,
+                    &fixture.store,
+                    &fixture.key,
+                    &flag,
+                )
+                .unwrap()
+        },
+        |observer, writer, ordinal| {
+            observer
+                .finish_block(&source, writer, 1, ordinal, &flag)
+                .unwrap();
+            observer.flush(writer, 1, &flag).unwrap();
+        },
+        |fixture| Observer::load(&fixture.store, &fixture.key, Some(&fixture.key), 1).unwrap(),
+    );
+}
+
+#[test]
 fn intel_shared_driver_roster_one_row_ignores_ten_times_departed_handles() {
     use crate::products::intelligence_prepared::{measured, work};
     use dashboard_base::prepared::observer_tests;

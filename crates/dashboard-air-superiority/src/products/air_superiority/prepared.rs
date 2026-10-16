@@ -588,22 +588,31 @@ impl Prepared {
         }
         .ok_or_else(|| invalid("Prepared air-superiority continuation is missing"))?;
         let mut state: Self = serde_json::from_reader(zstd::stream::Decoder::new(file)?)?;
-        let catalogue: Option<series::Catalogue<()>> = match saved {
-            Some(previous) if previous != key => store
-                .read_prefix(
-                    previous,
-                    key,
-                    &format!("air-superiority-{branch}-catalogue"),
-                    0,
-                )?
-                .map(|file| serde_json::from_reader(io::BufReader::new(file)))
-                .transpose()?,
-            _ => series::read_catalogue(store, key, "air-superiority", branch)?,
-        };
+        let catalogue: Option<series::Catalogue<()>> =
+            series::read_saved_catalogue(store, key, saved, "air-superiority", branch)?;
         for (index, choice) in state.choices.iter().enumerate() {
             state
                 .choice_indices
                 .insert(serde_json::to_string(&choice.operand)?, index);
+        }
+        // Every committed block ends with a terminal publication, which leaves
+        // its clean choice pending; resume from that choice as continuing does.
+        if state.previous_hour.is_some() && !state.choice_dirty {
+            state.choice_input = state
+                .pending_choice
+                .as_ref()
+                .map(|read| Arc::clone(&read.operand));
+            state.choice_key = state
+                .choice_input
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?;
+            state.choice_index = state
+                .choice_key
+                .as_ref()
+                .and_then(|key| state.choice_indices.get(key))
+                .copied();
+            state.choice_ready = true;
         }
         state.keys = catalogue
             .ok_or_else(|| invalid("Prepared air-superiority catalogue is missing"))?
@@ -1385,7 +1394,18 @@ mod tests {
             state.publish_day(&groups, true).unwrap();
             state.flush(&mut writer, 1, &flag).unwrap();
             writer.commit().unwrap();
+            // The restored observer resumes from the same daily choice.
+            let cache = |state: &Prepared| {
+                (
+                    state.choice_ready,
+                    state.choice_dirty,
+                    state.choice_key.clone(),
+                    state.choice_index,
+                )
+            };
+            let continued = cache(&state);
             state = Prepared::read(&fixture.store, &fixture.key, None, 1).unwrap();
+            assert_eq!(cache(&state), continued);
         }
         parity(&fixture, &frames[..3], None);
         parity(&fixture, &frames[..3], Some(vec!["700".into()]));

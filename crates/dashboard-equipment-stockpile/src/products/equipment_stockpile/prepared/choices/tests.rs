@@ -481,8 +481,11 @@ impl Scenario {
                 )
                 .unwrap();
             for (key, value) in ["a", "b"].into_iter().zip(observed) {
-                let actor =
-                    numbers.key("GER", &group_key(&series::field_key("type", key), "stock"));
+                let actor = allocate(
+                    &mut numbers.keys,
+                    "GER",
+                    &group_key(&series::field_key("type", key), "stock"),
+                );
                 groups[0].observe(actor, hour, *value, false);
             }
             for group in &mut groups {
@@ -785,4 +788,112 @@ fn display_selection_reads_exact_members_but_dense_types_use_only_aggregates() {
     let variant = [series::field_key("variant", "1")];
     assert!(query.relevant(0, 1, &variant, true));
     assert!(!query.relevant(0, 2, &variant, true));
+}
+
+#[test]
+fn one_pass_group_totals_are_each_groups_own_evaluation() {
+    let unresolved = |token: &str| Classification {
+        token: token.into(),
+        kind: None,
+    };
+    let mut truck = classification("truck");
+    truck.kind.as_mut().unwrap().requires_available = true;
+    let mut fighter = classification("fighter");
+    fighter.kind.as_mut().unwrap().domain = Domain::Air;
+    let variants = BTreeMap::from([
+        (1, classification("infantry")),
+        (2, classification("infantry")),
+        (3, fighter.clone()),
+        (4, truck.clone()),
+        (5, unresolved("mod_gun")),
+        (6, unresolved("")),
+    ]);
+    // Two rows of one archetype, of which the last is its representative.
+    let logistics = BTreeMap::from([
+        (11, classification("infantry")),
+        (12, classification("infantry")),
+        (13, truck),
+        (14, fighter),
+        (15, unresolved("mod_type")),
+    ]);
+    let mut retained = Logistics::default();
+    for (&id, classification) in &logistics {
+        retained.observe(id, classification.clone());
+    }
+    let mut groups: BTreeSet<String> = variants
+        .iter()
+        .flat_map(|(&id, classification)| classification.groups(Some(id)))
+        .chain(
+            logistics
+                .values()
+                .flat_map(|classification| classification.groups(None)),
+        )
+        .collect();
+    groups.insert(series::field_key("type", "absent"));
+    groups.insert(series::field_key("domain", "naval"));
+    groups.insert(series::field_key("domain", "unresolved"));
+    for scenario in 0..256_u64 {
+        let mix = |field: u64, id: u64| {
+            (scenario * 1_000_003 + field * 7_919 + id * 104_729)
+                .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                >> 33
+        };
+        let read = |field: usize, id: u64| {
+            let hash = mix(field as u64, id);
+            Operand {
+                present: hash % 3 != 0,
+                value: match hash % 5 {
+                    0 => None,
+                    1 => Some(0),
+                    _ => Some(i128::from(hash % 1_000) - 500),
+                },
+            }
+        };
+        let current: BTreeMap<u64, Classification> = variants
+            .iter()
+            .filter(|(id, _)| mix(97, **id) % 4 != 0)
+            .map(|(&id, classification)| (id, classification.clone()))
+            .collect();
+        let current_logistics: BTreeMap<u32, Classification> = logistics
+            .iter()
+            .filter(|(id, _)| mix(98, u64::from(**id)) % 3 != 0)
+            .map(|(&id, classification)| (id, classification.clone()))
+            .collect();
+        let variant_groups: Vec<_> = current
+            .iter()
+            .map(|(&id, classification)| (id, classification, classification.groups(Some(id))))
+            .collect();
+        let members: Vec<_> = variant_groups
+            .iter()
+            .map(|(id, classification, groups)| (*id, *classification, groups))
+            .collect();
+        let logistic_members: Vec<_> = current_logistics
+            .iter()
+            .map(|(&id, classification)| (id, classification, classification.groups(None)))
+            .collect();
+        let (stock_known, balance_known) = (scenario & 1 != 0, scenario & 2 != 0);
+        let measured = evaluate_groups(
+            &groups,
+            &members,
+            &logistic_members,
+            stock_known,
+            balance_known,
+            &retained,
+            &read,
+        )
+        .unwrap();
+        for (group, values) in groups.iter().zip(&measured) {
+            let expected = evaluate(
+                group,
+                &current,
+                &current_logistics,
+                stock_known,
+                balance_known,
+                Some(&retained),
+                |field, id| Ok(read(field, id)),
+            )
+            .unwrap();
+            assert_eq!(*values, expected, "{group} in scenario {scenario}");
+        }
+    }
 }

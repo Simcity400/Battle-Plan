@@ -37,6 +37,10 @@ pub(super) struct DetailPreparation {
     #[serde(skip)]
     pending_named: BTreeMap<u64, Vec<PreparedShip>>,
     ship_pages: BTreeMap<String, u64>,
+    /// The content refusals this family's own reads produced, which its
+    /// sinking pages, titles and details report.
+    #[serde(default)]
+    refusals: catalogue::OwnRefusals,
     #[serde(skip)]
     cat: Option<Arc<catalogue::Catalogue>>,
     #[serde(skip)]
@@ -95,7 +99,25 @@ impl Scan {
         self.details.ships.resume(frame);
     }
 
+    /// Observes as one consumer of the shared content: what it publishes
+    /// names the refusals of its own reads ([`catalogue::own_refusals`]).
     pub fn observe_details(
+        &mut self,
+        source: &Source,
+        context: &LoadContext,
+        frame: &DecodedFrame,
+        cancelled: &AtomicBool,
+        frame_changes: &FrameChanges,
+    ) -> io::Result<()> {
+        let mut own = std::mem::take(&mut self.details.refusals);
+        let observed = catalogue::own_refusals(&mut own, || {
+            self.observe_own_details(source, context, frame, cancelled, frame_changes)
+        });
+        self.details.refusals = own;
+        observed
+    }
+
+    fn observe_own_details(
         &mut self,
         source: &Source,
         context: &LoadContext,
@@ -328,6 +350,23 @@ impl Scan {
         }
     }
     pub fn publish_block(
+        &mut self,
+        source: &Source,
+        context: &LoadContext,
+        writer: &mut store::Writer,
+        branch: u64,
+        ordinal: usize,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        let mut own = std::mem::take(&mut self.details.refusals);
+        let published = catalogue::own_refusals(&mut own, || {
+            self.publish_own_block(source, context, writer, branch, ordinal, cancelled)
+        });
+        self.details.refusals = own;
+        published
+    }
+
+    fn publish_own_block(
         &mut self,
         source: &Source,
         context: &LoadContext,

@@ -173,6 +173,27 @@ impl Source {
         }
     }
 
+    /// The resolved stack's live diagnostics, which every consumer's reads add
+    /// to at its own pace: artwork-effect notes, then the uncovered-read set.
+    /// They belong to the reply being served, never to a prepared family's
+    /// published payloads ([`crate::catalogue::own_refusals`]), so a prepared
+    /// reply reports the current ones, as a product reply reports the read set.
+    pub fn append_stack_warnings(&self, warnings: &mut Vec<String>) {
+        if let Some((_, content, reads)) = self
+            .content
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
+            for line in content.layers.shader_warning_lines() {
+                if !warnings.contains(&line) {
+                    warnings.push(line);
+                }
+            }
+            reads.append_to(warnings);
+        }
+    }
+
     /// Whether content outside the recorded coverage has been read for this source.
     pub fn reads_uncovered(&self) -> bool {
         self.content

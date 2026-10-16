@@ -20,11 +20,23 @@ pub struct Prepared {
     portrait_through: Option<i32>,
     portrait_active: BTreeSet<u64>,
     read_active: bool,
+    /// The content refusals this family's own reads produced, which its
+    /// published windows report.
+    #[serde(default)]
+    refusals: catalogue::OwnRefusals,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
 }
 impl Prepared {
+    /// Runs `run` as this family's own consumer of the shared content
+    /// ([`catalogue::own_refusals`]).
+    fn own<T>(&mut self, run: impl FnOnce(&mut Self) -> T) -> T {
+        let mut own = std::mem::take(&mut self.refusals);
+        let value = catalogue::own_refusals(&mut own, || run(self));
+        self.refusals = own;
+        value
+    }
     #[cfg(test)]
     pub fn observe(&mut self, frame: &DecodedFrame, replay: &Replay) -> io::Result<()> {
         let changes = dashboard_base::prepared::frame_changes::FrameChangeTracker::new()
@@ -32,6 +44,14 @@ impl Prepared {
         self.observe_changed(frame, replay, &changes)
     }
     pub fn observe_changed(
+        &mut self,
+        frame: &DecodedFrame,
+        replay: &Replay,
+        changes: &dashboard_base::prepared::frame_changes::FrameChanges,
+    ) -> io::Result<()> {
+        self.own(|state| state.observe_own_changes(frame, replay, changes))
+    }
+    fn observe_own_changes(
         &mut self,
         frame: &DecodedFrame,
         replay: &Replay,
@@ -141,6 +161,17 @@ impl Prepared {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        self.own(|state| state.finish_own_block(writer, source, replay, block, context, cancelled))
+    }
+    fn finish_own_block(
+        &mut self,
+        writer: &mut store::Writer,
+        source: &Source,
+        replay: &Replay,
+        block: usize,
+        context: &LoadContext,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
         self.seal_portraits();
         let index = &replay.index[block];
         let window = replay.index[..block]
@@ -235,13 +266,8 @@ impl Prepared {
         branch: u64,
     ) -> io::Result<Self> {
         let mut state = Self::read(store, key, saved, branch)?;
-        let catalogue: Option<series::Catalogue<()>> = match saved {
-            Some(previous) if previous != key => store
-                .read_prefix(previous, key, &format!("air-aces-{branch}-catalogue"), 0)?
-                .map(|file| serde_json::from_reader(io::BufReader::new(file)))
-                .transpose()?,
-            _ => series::read_catalogue(store, key, "air-aces", branch)?,
-        };
+        let catalogue: Option<series::Catalogue<()>> =
+            series::read_saved_catalogue(store, key, saved, "air-aces", branch)?;
         state.keys = catalogue
             .ok_or_else(|| dashboard_core::invalid("Prepared ace catalogue is missing"))?
             .0;
@@ -671,7 +697,7 @@ mod tests {
                 .unwrap();
             map.accept(
                 writer,
-                update,
+                &update,
                 frame,
                 dashboard_base::prepared_map::Position {
                     block,

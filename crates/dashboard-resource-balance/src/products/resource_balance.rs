@@ -44,15 +44,17 @@ use dashboard_base::products::{
     CountryParams, Product,
     resources::{Learned, resource_infos},
 };
-use dashboard_base::{products::country_groups::HourSpan, source::Source};
+use dashboard_base::{
+    prepared::frame_changes::field_mask, products::country_groups::HourSpan, source::Source,
+};
 use dashboard_core::config::LoadContext;
 use dashboard_text::metadata::IdentityTrack;
-use replay::rows::{TableId, tables};
+use replay::rows::{DeltaRow, TableId, tables};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, LazyLock, atomic::AtomicBool},
 };
 use ts_rs::TS;
 
@@ -249,6 +251,151 @@ impl From<&replay::rows::ResourceExchangeRow> for DealOperand {
     }
 }
 
+/// The CountryResources fields a [`PoolOperand`] reads.
+static POOL_FIELDS: LazyLock<u64> = LazyLock::new(|| {
+    field_mask(
+        TableId::CountryResources,
+        &[
+            "produced",
+            "adjustment",
+            "imported",
+            "to_export",
+            "exported",
+            "used",
+            "special_total",
+            "production_demand",
+        ],
+    )
+});
+
+/// The ResourceExchanges fields a [`DealOperand`] reads; its id is the row key.
+static DEAL_FIELDS: LazyLock<u64> = LazyLock::new(|| {
+    field_mask(
+        TableId::ResourceExchanges,
+        &[
+            "exporter",
+            "importer",
+            "resource",
+            "delivered",
+            "assigned_factories",
+            "convoys_assigned",
+            "convoys_required",
+        ],
+    )
+});
+
+/// The canonical slots a deal names, each once.
+fn deal_slots(slots: &HashMap<u32, u32>, deal: &DealOperand) -> [Option<u32>; 2] {
+    let exporter = slots.get(&deal.exporter).copied();
+    let importer = slots
+        .get(&deal.importer)
+        .copied()
+        .filter(|&slot| Some(slot) != exporter);
+    [exporter, importer]
+}
+
+/// Each canonical slot's operand row keys, ascending: the table's own order.
+type SlotRows = BTreeMap<u32, Vec<u128>>;
+
+fn insert_slot_row(index: &mut SlotRows, slot: u32, key: u128) {
+    let keys = index.entry(slot).or_default();
+    if let Err(at) = keys.binary_search(&key) {
+        keys.insert(at, key);
+    }
+}
+
+fn remove_slot_row(index: &mut SlotRows, slot: u32, key: u128) {
+    if let Some(keys) = index.get_mut(&slot) {
+        if let Ok(at) = keys.binary_search(&key) {
+            keys.remove(at);
+        }
+        if keys.is_empty() {
+            index.remove(&slot);
+        }
+    }
+}
+
+/// Whether a slot's pool rows name one resource more than once (rows of two
+/// countries the links join into the slot). Observing such a slot again
+/// starts new runs even when its rows are unchanged.
+fn repeats_resource(operands: &BTreeMap<u128, PoolOperand>, keys: &[u128]) -> bool {
+    let country = |key: &u128| operands.get(key).map(|row| row.country);
+    if keys.first().map(country) == keys.last().map(country) {
+        // One country's rows have distinct keys, so distinct resources.
+        return false;
+    }
+    let mut resources: Vec<_> = keys
+        .iter()
+        .filter_map(|key| operands.get(key).map(|row| row.resource))
+        .collect();
+    resources.sort_unstable();
+    resources.windows(2).any(|pair| pair[0] == pair[1])
+}
+
+/// Group operands by the slot their rows name.
+fn index_pools(
+    operands: Option<&BTreeMap<u128, PoolOperand>>,
+    slots: &HashMap<u32, u32>,
+) -> (SlotRows, BTreeSet<u32>) {
+    let mut index = SlotRows::new();
+    for (&key, row) in operands.into_iter().flatten() {
+        if let Some(&slot) = slots.get(&row.country) {
+            index.entry(slot).or_default().push(key);
+        }
+    }
+    let repeated = operands.map_or_else(BTreeSet::new, |operands| {
+        index
+            .iter()
+            .filter(|(_, keys)| repeats_resource(operands, keys))
+            .map(|(&slot, _)| slot)
+            .collect()
+    });
+    (index, repeated)
+}
+
+fn index_deals(
+    operands: Option<&BTreeMap<u128, DealOperand>>,
+    slots: &HashMap<u32, u32>,
+) -> SlotRows {
+    let mut index = SlotRows::new();
+    for (&key, row) in operands.into_iter().flatten() {
+        for slot in deal_slots(slots, row).into_iter().flatten() {
+            index.entry(slot).or_default().push(key);
+        }
+    }
+    index
+}
+
+/// One slot's operands in table order; none outside a regrouped table.
+fn slot_operands<'a, T>(
+    operands: Option<&'a BTreeMap<u128, T>>,
+    index: &SlotRows,
+    slot: Option<u32>,
+    grouped: bool,
+) -> Option<Vec<&'a T>> {
+    operands.map(|operands| {
+        slot.filter(|_| grouped)
+            .and_then(|slot| index.get(&slot))
+            .into_iter()
+            .flatten()
+            .map(|key| operands.get(key).expect("indexed resource row"))
+            .collect()
+    })
+}
+
+/// The resources recorded definitions and tokens name this hour.
+fn read_names(frame: &replay::frame::DecodedFrame) -> Option<Learned> {
+    frame
+        .complete::<tables::ResourceDefinitions>()
+        .ok()
+        .zip(frame.complete::<tables::LexicalTokens>().ok())
+        .map(|(definitions, lexical)| {
+            let mut names = Learned::default();
+            names.learn(definitions, lexical);
+            names
+        })
+}
+
 fn resource_values(run: &PoolRun) -> io::Result<[i128; 11]> {
     let raw = |value: &str| {
         value
@@ -381,9 +528,16 @@ struct CountryScan {
     open_trades: BTreeMap<u64, usize>,
     diagnostic_rate: [usize; 3],
     materialized: Option<i32>,
-    pool_keys: std::collections::BTreeSet<u32>,
+    pool_keys: BTreeSet<u32>,
     #[serde(skip)]
-    dirty_pools: std::collections::BTreeSet<u32>,
+    dirty_pools: BTreeSet<u32>,
+    /// The resources whose open deals changed at the last observation, when
+    /// only those need publishing again; None when every resource does.
+    #[serde(skip)]
+    dirty_deals: Option<BTreeSet<u32>>,
+    /// Each resource's pool key and its eleven value keys, once allocated.
+    #[serde(skip)]
+    pool_ids: BTreeMap<u32, [u64; 12]>,
 }
 impl CountryScan {
     fn advance(&mut self, from: i32, through: i32) {
@@ -419,6 +573,9 @@ impl CountryScan {
         }
         self.materialized = Some(through);
     }
+    /// Observe the country's rows this hour. `narrow` marks dirty only the
+    /// pools and deals that changed: those with a new run, or no longer
+    /// recorded. Otherwise every recorded pool, and every deal, is dirty.
     #[allow(clippy::too_many_arguments)]
     fn observe(
         &mut self,
@@ -426,15 +583,77 @@ impl CountryScan {
         identity: Option<(u32, u32)>,
         pools: Option<&Vec<&PoolOperand>>,
         deals: Option<&Vec<&DealOperand>>,
-        slots: &std::collections::HashMap<u32, u32>,
+        slots: &HashMap<u32, u32>,
         partners: &BTreeMap<u32, Option<String>>,
         names: Option<&Learned>,
         names_changed: bool,
         changed: [bool; 2],
+        narrow: bool,
+    ) -> io::Result<()> {
+        let previous_pools = (narrow && changed[0]).then(|| self.pool_keys.clone());
+        let previous_deals =
+            (narrow && changed[1] && self.deals_open).then(|| self.open_trades.clone());
+        let result = self.observe_tables(
+            decoded,
+            identity,
+            pools,
+            deals,
+            slots,
+            partners,
+            names,
+            names_changed,
+            changed,
+            narrow,
+        );
+        for resource in previous_pools.into_iter().flatten() {
+            if !self.pool_keys.contains(&resource) {
+                self.dirty_pools.insert(resource);
+            }
+        }
+        // Unchanged deals need no publishing only while the deals stay known
+        // through an hour that does not start their span.
+        self.dirty_deals = previous_deals
+            .filter(|_| {
+                self.deals_open
+                    && self
+                        .result
+                        .deal_hours
+                        .last()
+                        .is_some_and(|span| span.first_hour != decoded.hour)
+            })
+            .map(|previous| {
+                let mut dirty = BTreeSet::new();
+                for (deal, &index) in &previous {
+                    if self.open_trades.get(deal) != Some(&index) {
+                        dirty.insert(self.result.trades[index].resource);
+                    }
+                }
+                for (deal, &index) in &self.open_trades {
+                    if previous.get(deal) != Some(&index) {
+                        dirty.insert(self.result.trades[index].resource);
+                    }
+                }
+                dirty
+            });
+        result
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn observe_tables(
+        &mut self,
+        decoded: &replay::frame::DecodedFrame,
+        identity: Option<(u32, u32)>,
+        pools: Option<&Vec<&PoolOperand>>,
+        deals: Option<&Vec<&DealOperand>>,
+        slots: &HashMap<u32, u32>,
+        partners: &BTreeMap<u32, Option<String>>,
+        names: Option<&Learned>,
+        names_changed: bool,
+        changed: [bool; 2],
+        narrow: bool,
     ) -> io::Result<()> {
         let hour = decoded.hour;
         self.dirty_pools.clear();
-        if changed[0] {
+        if changed[0] && !narrow {
             self.dirty_pools.extend(self.pool_keys.iter().copied());
         }
         let before = [self.result.unnamed, self.result.unresolved];
@@ -484,7 +703,9 @@ impl CountryScan {
                     }
                     let values = row.run(hour);
                     self.pool_keys.insert(row.resource);
-                    self.dirty_pools.insert(row.resource);
+                    if !narrow {
+                        self.dirty_pools.insert(row.resource);
+                    }
                     let series = self.result.series.entry(row.resource).or_default();
                     let follows = pools_continue
                         && series
@@ -497,6 +718,7 @@ impl CountryScan {
                                 starts_segment: !follows,
                                 ..values
                             });
+                            self.dirty_pools.insert(row.resource);
                         }
                     }
                 }
@@ -599,25 +821,38 @@ pub(crate) struct Scan {
     selected: Option<String>,
     countries: BTreeMap<String, CountryScan>,
     frontier: Option<i32>,
-    active: std::collections::BTreeSet<String>,
+    active: BTreeSet<String>,
     #[serde(skip)]
     country_reads: Option<dashboard_base::products::territory::CountryReads>,
+    /// How many Countries rows `country_reads` was read from.
+    #[serde(skip)]
+    country_rows: Option<usize>,
     #[serde(skip)]
     inputs_ready: bool,
+    /// The current operands by row key, so in table order.
     #[serde(skip)]
-    pool_operands: Option<Vec<PoolOperand>>,
+    pool_operands: Option<BTreeMap<u128, PoolOperand>>,
     #[serde(skip)]
-    deal_operands: Option<Vec<DealOperand>>,
+    deal_operands: Option<BTreeMap<u128, DealOperand>>,
     #[serde(skip)]
     current_names: Option<Learned>,
+    /// Whether every country with a holder has learned every current name,
+    /// so observing it again with them would learn nothing.
     #[serde(skip)]
-    pool_slots: std::collections::BTreeSet<u32>,
+    names_kept: bool,
+    /// The pool rows and the deal rows naming each slot.
+    #[serde(skip)]
+    slot_rows: [SlotRows; 2],
+    /// Whether `slot_rows` groups the current operands by the current links.
+    #[serde(skip)]
+    indexed: [bool; 2],
+    /// Slots whose pool rows name one resource more than once.
+    #[serde(skip)]
+    repeated: BTreeSet<u32>,
     #[serde(skip)]
     slot_tags: BTreeMap<u32, Vec<String>>,
     #[serde(skip)]
     availability_changed: [bool; 2],
-    #[serde(skip)]
-    deal_slots: std::collections::BTreeSet<u32>,
     #[cfg(test)]
     #[serde(skip)]
     row_visits: usize,
@@ -661,8 +896,11 @@ impl Scan {
                     {
                         self.row_visits += rows.len();
                     }
-                    rows.iter().map(PoolOperand::from).collect()
+                    rows.iter()
+                        .map(|row| (row.key(), PoolOperand::from(row)))
+                        .collect()
                 });
+            self.indexed[0] = false;
             self.availability_changed[0] = available != self.pool_operands.is_some();
         }
         if changed[1] || !self.inputs_ready {
@@ -675,26 +913,46 @@ impl Scan {
                     {
                         self.row_visits += rows.len();
                     }
-                    rows.iter().map(DealOperand::from).collect()
+                    rows.iter()
+                        .map(|row| (row.key(), DealOperand::from(row)))
+                        .collect()
                 });
+            self.indexed[1] = false;
             self.availability_changed[1] = available != self.deal_operands.is_some();
         }
         if changed[2] || !self.inputs_ready {
-            self.current_names = frame
-                .complete::<tables::ResourceDefinitions>()
-                .ok()
-                .zip(frame.complete::<tables::LexicalTokens>().ok())
-                .map(|(definitions, lexical)| {
-                    #[cfg(test)]
-                    {
-                        self.row_visits += definitions.len();
-                    }
-                    let mut names = Learned::default();
-                    names.learn(definitions, lexical);
-                    names
-                });
+            let names = read_names(frame);
+            #[cfg(test)]
+            {
+                if names.is_some() {
+                    self.row_visits += frame
+                        .complete::<tables::ResourceDefinitions>()
+                        .map_or(0, |definitions| definitions.len());
+                }
+            }
+            self.current_names = names;
         }
         self.inputs_ready = true;
+    }
+    /// Whether this frame names its resources as the current names do, and
+    /// every country with a holder has learned them all: observing the
+    /// countries again with this frame's names would change nothing.
+    fn same_names(&self, frame: &replay::frame::DecodedFrame) -> bool {
+        self.names_kept
+            && match (read_names(frame), &self.current_names) {
+                (Some(names), Some(current)) => names.list() == current.list(),
+                _ => false,
+            }
+    }
+    fn every_name_learned(&self) -> bool {
+        self.current_names.as_ref().is_some_and(|names| {
+            let names = names.list();
+            self.slot_tags.values().flatten().all(|tag| {
+                self.countries.get(tag).is_some_and(|country| {
+                    country.names_ready && names.iter().all(|&(id, _)| country.learned.contains(id))
+                })
+            })
+        })
     }
     fn observe_resolved(
         &mut self,
@@ -734,50 +992,27 @@ impl Scan {
                 }
             }
         }
-        let mut pools = BTreeMap::<u32, Vec<&PoolOperand>>::new();
-        if changed[0] || holders_changed {
-            for row in self.pool_operands.iter().flatten() {
-                if let Some(&slot) = slots.get(&row.country) {
-                    pools.entry(slot).or_default().push(row);
-                }
-            }
+        // Regroup a changed table's rows, keeping the slots they named before.
+        let grouped = [changed[0] || holders_changed, changed[1] || holders_changed];
+        let mut previous: [BTreeSet<u32>; 2] = Default::default();
+        if grouped[0] {
+            previous[0] = self.slot_rows[0].keys().copied().collect();
+            let (index, repeated) = index_pools(self.pool_operands.as_ref(), slots);
+            self.slot_rows[0] = index;
+            self.repeated = repeated;
+            self.indexed[0] = true;
         }
-        let mut deals = BTreeMap::<u32, Vec<&DealOperand>>::new();
-        if changed[1] || holders_changed {
-            for row in self.deal_operands.iter().flatten() {
-                let exporter = slots.get(&row.exporter).copied();
-                let importer = slots.get(&row.importer).copied();
-                for slot in [exporter, importer]
-                    .into_iter()
-                    .flatten()
-                    .collect::<std::collections::BTreeSet<_>>()
-                {
-                    deals.entry(slot).or_default().push(row);
-                }
-            }
+        if grouped[1] {
+            previous[1] = self.slot_rows[1].keys().copied().collect();
+            self.slot_rows[1] = index_deals(self.deal_operands.as_ref(), slots);
+            self.indexed[1] = true;
         }
-        let empty_pools = Vec::new();
-        let empty_deals = Vec::new();
         let mut touched = BTreeMap::<String, [bool; 2]>::new();
-        for (index, supplying_slots) in [
-            pools
-                .keys()
-                .copied()
-                .collect::<std::collections::BTreeSet<_>>(),
-            deals.keys().copied().collect(),
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        for (index, previous) in previous.iter().enumerate() {
             if !changed[index] {
                 continue;
             }
-            let previous = if index == 0 {
-                &self.pool_slots
-            } else {
-                &self.deal_slots
-            };
-            for slot in supplying_slots.iter().chain(previous.iter()) {
+            for slot in self.slot_rows[index].keys().chain(previous) {
                 for tag in self.slot_tags.get(slot).into_iter().flatten() {
                     touched.entry(tag.clone()).or_default()[index] = true;
                 }
@@ -824,35 +1059,222 @@ impl Scan {
             }
             let identity = identities.get(tag).copied().flatten();
             let slot = identity.map(|identity| identity.0);
+            let pools = slot_operands(
+                self.pool_operands.as_ref(),
+                &self.slot_rows[0],
+                slot,
+                grouped[0],
+            );
+            let deals = slot_operands(
+                self.deal_operands.as_ref(),
+                &self.slot_rows[1],
+                slot,
+                grouped[1],
+            );
             country.observe(
                 frame,
                 identity,
-                self.pool_operands.as_ref().map(|_| {
-                    slot.and_then(|slot| pools.get(&slot))
-                        .unwrap_or(&empty_pools)
-                }),
-                self.deal_operands.as_ref().map(|_| {
-                    slot.and_then(|slot| deals.get(&slot))
-                        .unwrap_or(&empty_deals)
-                }),
+                pools.as_ref(),
+                deals.as_ref(),
                 slots,
                 partners,
                 self.current_names.as_ref(),
                 names_changed,
                 flags,
+                false,
             )?;
         }
         self.frontier = Some(frame.hour);
-        if changed[0] || holders_changed {
-            self.pool_slots = pools.keys().copied().collect();
-        }
-        if changed[1] || holders_changed {
-            self.deal_slots = deals.keys().copied().collect();
-        }
         if holders_changed {
             self.active = self.slot_tags.values().flatten().cloned().collect();
         }
+        // Countries learn names only at these observations.
+        if holders_changed || names_changed {
+            self.names_kept = self.every_name_learned();
+        }
         Ok(touched)
+    }
+    /// Observe an hour whose operand tables each differ from the previous
+    /// observed hour by exactly the recorded rows given, with the holders and
+    /// resource names unchanged. Only the slots those rows name, before or
+    /// after the hour, are observed again; with `repeats`, so is every slot
+    /// whose rows name a resource twice, as the whole tables would observe
+    /// it. Observing any other slot again would only extend its open runs.
+    /// None, changing nothing, when the grouped rows or a changed row are not
+    /// at hand: the caller then observes the whole tables.
+    fn observe_rows(
+        &mut self,
+        frame: &replay::frame::DecodedFrame,
+        pools: (&[DeltaRow], &[u128]),
+        deals: (&[DeltaRow], &[u128]),
+        repeats: bool,
+    ) -> io::Result<Option<BTreeMap<String, [bool; 2]>>> {
+        let (Some(pool_operands), Some(deal_operands), Some(reads)) = (
+            &self.pool_operands,
+            &self.deal_operands,
+            &self.country_reads,
+        ) else {
+            return Ok(None);
+        };
+        if self.indexed != [true; 2] || self.selected.is_some() || self.current_names.is_none() {
+            return Ok(None);
+        }
+        // Read every changed operand before changing anything. A change to
+        // fields no operand reads leaves the operand as it was.
+        let mut pool_updates = Vec::new();
+        if !pools.0.is_empty() {
+            let Ok(rows) = frame.complete::<tables::CountryResources>() else {
+                return Ok(None);
+            };
+            for change in pools.0 {
+                if change.mask & *POOL_FIELDS == 0 && pool_operands.contains_key(&change.key) {
+                    continue;
+                }
+                let Ok(at) = rows.binary_search_by_key(&change.key, |row| row.key()) else {
+                    return Ok(None);
+                };
+                pool_updates.push((change.key, Some(PoolOperand::from(&rows[at]))));
+            }
+        }
+        pool_updates.extend(pools.1.iter().map(|&key| (key, None)));
+        let mut deal_updates = Vec::new();
+        if !deals.0.is_empty() {
+            let Ok(rows) = frame.complete::<tables::ResourceExchanges>() else {
+                return Ok(None);
+            };
+            for change in deals.0 {
+                if change.mask & *DEAL_FIELDS == 0 && deal_operands.contains_key(&change.key) {
+                    continue;
+                }
+                let Ok(at) = rows.binary_search_by_key(&change.key, |row| row.key()) else {
+                    return Ok(None);
+                };
+                deal_updates.push((change.key, Some(DealOperand::from(&rows[at]))));
+            }
+        }
+        deal_updates.extend(deals.1.iter().map(|&key| (key, None)));
+        let slots = Arc::clone(reads.slots());
+        #[cfg(test)]
+        {
+            self.row_visits += pool_updates.len() + deal_updates.len();
+        }
+        let mut changed: [BTreeSet<u32>; 2] = Default::default();
+        if let Some(operands) = &mut self.pool_operands {
+            for (key, operand) in pool_updates {
+                let country = operand.as_ref().map(|row| row.country);
+                let previous = match operand {
+                    Some(row) => operands.insert(key, row),
+                    None => operands.remove(&key),
+                };
+                let Some(&slot) = country
+                    .or_else(|| previous.map(|row| row.country))
+                    .and_then(|country| slots.get(&country))
+                else {
+                    continue;
+                };
+                if operands.contains_key(&key) {
+                    insert_slot_row(&mut self.slot_rows[0], slot, key);
+                } else {
+                    remove_slot_row(&mut self.slot_rows[0], slot, key);
+                }
+                changed[0].insert(slot);
+            }
+            let operands: &BTreeMap<_, _> = operands;
+            for &slot in &changed[0] {
+                if self.slot_rows[0]
+                    .get(&slot)
+                    .is_some_and(|keys| repeats_resource(operands, keys))
+                {
+                    self.repeated.insert(slot);
+                } else {
+                    self.repeated.remove(&slot);
+                }
+            }
+        }
+        if repeats {
+            changed[0].extend(self.repeated.iter().copied());
+        }
+        if let Some(operands) = &mut self.deal_operands {
+            for (key, operand) in deal_updates {
+                let current = operand.as_ref().map(|row| deal_slots(&slots, row));
+                let previous = match operand {
+                    Some(row) => operands.insert(key, row),
+                    None => operands.remove(&key),
+                };
+                for slot in previous
+                    .map(|row| deal_slots(&slots, &row))
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                {
+                    remove_slot_row(&mut self.slot_rows[1], slot, key);
+                    changed[1].insert(slot);
+                }
+                for slot in current.into_iter().flatten().flatten() {
+                    insert_slot_row(&mut self.slot_rows[1], slot, key);
+                    changed[1].insert(slot);
+                }
+            }
+        }
+        let mut touched = BTreeMap::<String, [bool; 2]>::new();
+        for (index, changed) in changed.iter().enumerate() {
+            for slot in changed {
+                for tag in self.slot_tags.get(slot).into_iter().flatten() {
+                    touched.entry(tag.clone()).or_default()[index] = true;
+                }
+            }
+        }
+        let empty_identities = BTreeMap::new();
+        let identities = self.country_reads.as_ref().map_or(
+            &empty_identities,
+            dashboard_base::products::territory::CountryReads::holders,
+        );
+        let empty_partners = BTreeMap::new();
+        let partners = self.country_reads.as_ref().map_or(
+            &empty_partners,
+            dashboard_base::products::territory::CountryReads::partners,
+        );
+        for (tag, &flags) in &touched {
+            #[cfg(test)]
+            {
+                self.history_visits += 1;
+            }
+            let country = self
+                .countries
+                .get_mut(tag)
+                .expect("resource observed country");
+            if let Some(through) = self.frontier {
+                country.seal(through);
+            }
+            let identity = identities.get(tag).copied().flatten();
+            let slot = identity.map(|identity| identity.0);
+            let pools = slot_operands(
+                self.pool_operands.as_ref(),
+                &self.slot_rows[0],
+                slot,
+                flags[0],
+            );
+            let deals = slot_operands(
+                self.deal_operands.as_ref(),
+                &self.slot_rows[1],
+                slot,
+                flags[1],
+            );
+            country.observe(
+                frame,
+                identity,
+                pools.as_ref(),
+                deals.as_ref(),
+                &slots,
+                partners,
+                self.current_names.as_ref(),
+                false,
+                flags,
+                true,
+            )?;
+        }
+        self.frontier = Some(frame.hour);
+        Ok(Some(touched))
     }
 }
 

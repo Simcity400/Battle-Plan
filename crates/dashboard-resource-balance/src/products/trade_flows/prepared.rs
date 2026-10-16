@@ -21,9 +21,27 @@ pub struct Prepared {
     pattern_totals: Accumulator,
     current_refusals: BTreeMap<u64, u32>,
     current_pattern: Option<u64>,
+    /// Each flow's catalogue key, by flow index, once looked up.
+    #[serde(skip)]
+    flow_ids: Vec<u64>,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
+    /// Hours observed from their changed rows alone.
+    #[cfg(test)]
+    #[serde(skip)]
+    row_hours: usize,
+    /// Observe every hour from the whole tables, never from changed rows.
+    #[cfg(test)]
+    #[serde(skip)]
+    whole_tables: bool,
+}
+/// An hour observed from its changed rows alone.
+enum RowHour {
+    /// Nothing the flows read changed: they only continue.
+    Unchanged,
+    /// The flows observed again, each with whether it was active before.
+    Changed(BTreeMap<usize, bool>),
 }
 #[derive(Serialize, Deserialize)]
 struct Metadata {
@@ -40,6 +58,21 @@ fn flow_key(flow: &Flow) -> String {
 }
 fn catalogue_key(flow: &Flow) -> String {
     series::field_key(&flow_key(flow), "delivered")
+}
+/// The catalogue key of flow `index`, allocated when the flow is first
+/// published; `ids` keeps every flow's key by index.
+fn flow_id(
+    keys: &mut BTreeMap<String, u64>,
+    ids: &mut Vec<u64>,
+    flows: &[Flow],
+    index: usize,
+) -> u64 {
+    while ids.len() <= index {
+        let next = keys.len() as u64;
+        let id = *keys.entry(catalogue_key(&flows[ids.len()])).or_insert(next);
+        ids.push(id);
+    }
+    ids[index]
 }
 fn cumulative(values: &mut Accumulator, key: u64, hour: i32, total: i128) {
     if let Some(previous) = values.state(key).and_then(|state| state.last)
@@ -62,6 +95,7 @@ impl Prepared {
                 rows_changed: [true; replay::frame::TABLE_COUNT],
                 table_read: [true; replay::frame::TABLE_COUNT],
                 slot_read: [true; replay::frame::TABLE_COUNT],
+                updates: None,
             },
         )
     }
@@ -72,7 +106,6 @@ impl Prepared {
     ) -> io::Result<()> {
         let continuous =
             self.scan.last_hour.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
-        let changed = self.scan.inputs.refresh(frame, changes) || !continuous;
         for values in self.totals.iter_mut().chain(self.coverage.iter_mut()) {
             values.advance(frame.hour)?;
         }
@@ -80,101 +113,19 @@ impl Prepared {
         self.values.advance(frame.hour)?;
         self.refusal_counts.advance(frame.hour)?;
         self.pattern_totals.advance(frame.hour)?;
-        if changed {
-            self.scan.seal();
-            let previous = self.scan.active.clone();
-            let sampled = sample::sample_inputs(frame, None, &self.scan.inputs)?;
-            self.scan.observe_sampled(frame, &sampled)?;
-            #[cfg(test)]
-            {
-                self.work.row_visits = self.scan.inputs.row_visits;
-            }
-            let known = self.scan.known;
-            self.coverage[0].observe(0, frame.hour, known.then_some(1), false);
-            let mut rejected = BTreeMap::<u64, u32>::new();
-            for (pair, count) in &self.scan.rejected {
-                let next = self.refusal_keys.len() as u64;
-                let id = *self
-                    .refusal_keys
-                    .entry(serde_json::to_string(pair)?)
-                    .or_insert(next);
-                *rejected.entry(id).or_default() += count;
-            }
-            let touched: BTreeSet<_> = self
-                .current_refusals
-                .keys()
-                .chain(rejected.keys())
-                .copied()
-                .collect();
-            for id in touched {
-                let value = rejected.get(&id).copied();
-                if !continuous || self.current_refusals.get(&id).copied() != value {
-                    self.refusal_counts
-                        .observe(id, frame.hour, value.map(i128::from), false);
-                    #[cfg(test)]
-                    {
-                        self.work.emitted += 1;
-                    }
-                }
-            }
-            self.current_refusals = rejected;
-            let members: Vec<_> = self.current_refusals.keys().copied().collect();
-            self.current_pattern = if members.is_empty() {
-                None
-            } else {
-                let next = self.pattern_keys.len() as u64;
-                Some(
-                    *self
-                        .pattern_keys
-                        .entry(serde_json::to_string(&members)?)
-                        .or_insert(next),
-                )
-            };
-            let touched: BTreeSet<_> = previous.union(&self.scan.active).copied().collect();
-            for index in touched {
+        match self.observe_rows(frame, changes, continuous)? {
+            Some(RowHour::Unchanged) => self.scan.advance(frame.hour),
+            Some(RowHour::Changed(touched)) => {
                 #[cfg(test)]
                 {
-                    self.work.history_visits += 1;
+                    self.work.row_visits = self.scan.inputs.row_visits;
                 }
-                let flow = &mut self.scan.result.flows[index];
-                let next = self.keys.len() as u64;
-                let id = *self.keys.entry(catalogue_key(flow)).or_insert(next);
-                let run = self
-                    .scan
-                    .active
-                    .contains(&index)
-                    .then(|| flow.runs.last().expect("active trade run"));
-                if let Some(run) = run {
-                    self.aliases
-                        .extend([run.seller_tag.clone(), run.buyer_tag.clone()]);
-                    if run.first_hour == frame.hour {
-                        self.facts.event(id, frame.hour, run)?;
-                    }
-                }
-                let fact = run.map(|run| i128::from(run.first_hour));
-                let daily = run.map(|run| i128::from(run.terms.delivered));
-                for (values, amount) in [(&mut self.facts, fact), (&mut self.values, daily)] {
-                    if !continuous
-                        || !previous.contains(&index)
-                        || values
-                            .state(id)
-                            .and_then(|state| state.last)
-                            .is_none_or(|last| Some(last.value) != amount)
-                        || amount.is_none()
-                    {
-                        values.observe(id, frame.hour, amount, false);
-                        #[cfg(test)]
-                        {
-                            self.work.emitted += 1;
-                        }
-                    }
-                }
-                if flow.runs.len() > 1 {
-                    flow.runs.drain(..flow.runs.len() - 1);
-                }
+                // A known read continuing a known read, as the whole tables
+                // observe it; what it leaves out is as before.
+                self.coverage[0].observe(0, frame.hour, Some(1), false);
+                self.publish_flows(frame.hour, continuous, touched)?;
             }
-        } else {
-            self.scan.advance(frame.hour);
+            None => self.observe_tables(frame, changes, continuous)?,
         }
         // These native integrals genuinely change at every accepted known hour.
         // Retired flows and refusal patterns carry through the shared frontier.
@@ -198,9 +149,16 @@ impl Prepared {
             cumulative(&mut self.pattern_totals, id, frame.hour, before + 1);
         }
         for &index in &self.scan.active {
-            let flow = &self.scan.result.flows[index];
-            let id = self.keys[&catalogue_key(flow)];
-            let run = flow.runs.last().expect("current native trade terms");
+            let id = flow_id(
+                &mut self.keys,
+                &mut self.flow_ids,
+                &self.scan.result.flows,
+                index,
+            );
+            let run = self.scan.result.flows[index]
+                .runs
+                .last()
+                .expect("current native trade terms");
             let amounts = sample::amounts(run.terms).into_iter().chain([1]);
             for (values, amount) in self.totals.iter_mut().zip(amounts) {
                 if amount == 0 && continuous && values.state(id).is_some() {
@@ -236,6 +194,207 @@ impl Prepared {
         }
         Ok(())
     }
+
+    /// Observe the hour from its changed rows alone: possible when it
+    /// continues a known read with the same links and holders, any dictionary
+    /// change leaves every resource named as before, and the exchanges changed
+    /// by exactly their recorded rows. None when the whole tables are needed.
+    fn observe_rows(
+        &mut self,
+        frame: &replay::frame::DecodedFrame,
+        changes: &FrameChanges,
+        continuous: bool,
+    ) -> io::Result<Option<RowHour>> {
+        #[cfg(test)]
+        {
+            if self.whole_tables {
+                return Ok(None);
+            }
+        }
+        if !continuous
+            || !self.scan.inputs.ready
+            || !self.scan.known
+            || changes.rows_changed[TableId::CountryLinks.index()]
+            || frame.complete::<tables::CountryLinks>().is_err()
+        {
+            return Ok(None);
+        }
+        // Recorded changes that delete no country and touch no holder field
+        // keep the holders the flows were attributed with, without comparing
+        // every country.
+        let holders_kept = changes
+            .rows(TableId::Countries)
+            .is_some_and(|(changed, deleted)| {
+                deleted.is_empty() && changed.iter().all(|row| row.mask & *HOLDER_FIELDS == 0)
+            })
+            && (!changes.rows_changed[TableId::Countries.index()]
+                || frame
+                    .complete::<tables::Countries>()
+                    .ok()
+                    .map(|rows| rows.len())
+                    == self.scan.inputs.country_rows);
+        if !holders_kept {
+            return Ok(None);
+        }
+        let names = changes.rows_changed[TableId::ResourceDefinitions.index()]
+            || changes.rows_changed[TableId::LexicalTokens.index()];
+        if names && !self.scan.inputs.same_names(frame) {
+            return Ok(None);
+        }
+        let Some((changed, deleted)) = changes.rows(TableId::ResourceExchanges) else {
+            return Ok(None);
+        };
+        // The whole tables observe again whenever the exchanges or the
+        // dictionary change; otherwise the flows only continue.
+        let observed = if names || changes.rows_changed[TableId::ResourceExchanges.index()] {
+            self.scan
+                .observe_rows(frame, changed, deleted)?
+                .map(RowHour::Changed)
+        } else {
+            Some(RowHour::Unchanged)
+        };
+        #[cfg(test)]
+        {
+            self.row_hours += usize::from(observed.is_some());
+        }
+        Ok(observed)
+    }
+
+    /// Observe the hour from the whole tables.
+    fn observe_tables(
+        &mut self,
+        frame: &replay::frame::DecodedFrame,
+        changes: &FrameChanges,
+        continuous: bool,
+    ) -> io::Result<()> {
+        // The row index groups the operands under the holders and names the
+        // flows were attributed with; the whole tables may change any of them.
+        self.scan.row_index = None;
+        if !self.scan.inputs.refresh(frame, changes) && continuous {
+            self.scan.advance(frame.hour);
+            return Ok(());
+        }
+        self.scan.seal();
+        let previous = self.scan.active.clone();
+        let sampled = sample::sample_inputs(frame, None, &self.scan.inputs)?;
+        self.scan.observe_sampled(frame, &sampled)?;
+        #[cfg(test)]
+        {
+            self.work.row_visits = self.scan.inputs.row_visits;
+        }
+        let known = self.scan.known;
+        self.coverage[0].observe(0, frame.hour, known.then_some(1), false);
+        self.observe_refusals(frame.hour, continuous)?;
+        let touched: Vec<_> = previous
+            .union(&self.scan.active)
+            .map(|&index| (index, previous.contains(&index)))
+            .collect();
+        self.publish_flows(frame.hour, continuous, touched)
+    }
+
+    /// Publish the deals the last read left out, by seller and buyer pair,
+    /// and the set of pairs it left out.
+    fn observe_refusals(&mut self, hour: i32, continuous: bool) -> io::Result<()> {
+        let mut rejected = BTreeMap::<u64, u32>::new();
+        for (pair, count) in &self.scan.rejected {
+            let next = self.refusal_keys.len() as u64;
+            let id = *self
+                .refusal_keys
+                .entry(serde_json::to_string(pair)?)
+                .or_insert(next);
+            *rejected.entry(id).or_default() += count;
+        }
+        let touched: BTreeSet<_> = self
+            .current_refusals
+            .keys()
+            .chain(rejected.keys())
+            .copied()
+            .collect();
+        for id in touched {
+            let value = rejected.get(&id).copied();
+            if !continuous || self.current_refusals.get(&id).copied() != value {
+                self.refusal_counts
+                    .observe(id, hour, value.map(i128::from), false);
+                #[cfg(test)]
+                {
+                    self.work.emitted += 1;
+                }
+            }
+        }
+        self.current_refusals = rejected;
+        let members: Vec<_> = self.current_refusals.keys().copied().collect();
+        self.current_pattern = if members.is_empty() {
+            None
+        } else {
+            let next = self.pattern_keys.len() as u64;
+            Some(
+                *self
+                    .pattern_keys
+                    .entry(serde_json::to_string(&members)?)
+                    .or_insert(next),
+            )
+        };
+        Ok(())
+    }
+
+    /// Publish the flows an observation touched, in index order, each with
+    /// whether it was active before: a run's start, its daily amount, and
+    /// its end.
+    fn publish_flows(
+        &mut self,
+        hour: i32,
+        continuous: bool,
+        touched: impl IntoIterator<Item = (usize, bool)>,
+    ) -> io::Result<()> {
+        for (index, was_active) in touched {
+            #[cfg(test)]
+            {
+                self.work.history_visits += 1;
+            }
+            let id = flow_id(
+                &mut self.keys,
+                &mut self.flow_ids,
+                &self.scan.result.flows,
+                index,
+            );
+            let flow = &mut self.scan.result.flows[index];
+            let run = self
+                .scan
+                .active
+                .contains(&index)
+                .then(|| flow.runs.last().expect("active trade run"));
+            if let Some(run) = run {
+                self.aliases
+                    .extend([run.seller_tag.clone(), run.buyer_tag.clone()]);
+                if run.first_hour == hour {
+                    self.facts.event(id, hour, run)?;
+                }
+            }
+            let fact = run.map(|run| i128::from(run.first_hour));
+            let daily = run.map(|run| i128::from(run.terms.delivered));
+            for (values, amount) in [(&mut self.facts, fact), (&mut self.values, daily)] {
+                if !continuous
+                    || !was_active
+                    || values
+                        .state(id)
+                        .and_then(|state| state.last)
+                        .is_none_or(|last| Some(last.value) != amount)
+                    || amount.is_none()
+                {
+                    values.observe(id, hour, amount, false);
+                    #[cfg(test)]
+                    {
+                        self.work.emitted += 1;
+                    }
+                }
+            }
+            if flow.runs.len() > 1 {
+                flow.runs.drain(..flow.runs.len() - 1);
+            }
+        }
+        Ok(())
+    }
+
     pub fn bytes(&self) -> usize {
         self.facts.bytes()
             + self.values.bytes()
@@ -1608,9 +1767,11 @@ fn read_pages(
 mod tests {
     use super::*;
     use dashboard_core::test_fixtures::{CAMPAIGN, records, resource_frame};
-    #[cfg(feature = "slow-tests")]
     use replay::rows::{CountryLinkRow, CountryRow, ResourceExchangeRow};
-    use replay::{frame::TableView, rows::TableRows};
+    use replay::{
+        frame::{DecodedFrame, TableView},
+        rows::TableRows,
+    };
 
     #[test]
     fn trade_observer_work_is_flat_over_unchanged_hours_and_retired_flows() {
@@ -2325,5 +2486,466 @@ mod tests {
         );
         store.clear().unwrap();
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn exchanges(frame: &mut DecodedFrame) -> &mut Vec<ResourceExchangeRow> {
+        match &mut *frame.tables[TableId::ResourceExchanges.index()] {
+            TableView::Complete(TableRows::ResourceExchanges(rows)) => rows,
+            _ => unreachable!("fixture deals are complete"),
+        }
+    }
+    fn deal(frame: &mut DecodedFrame, id: u64) -> &mut ResourceExchangeRow {
+        exchanges(frame)
+            .iter_mut()
+            .find(|row| row.id == id)
+            .expect("fixture deal")
+    }
+    fn add_deal(frame: &mut DecodedFrame, row: ResourceExchangeRow) {
+        let rows = exchanges(frame);
+        rows.push(row);
+        rows.sort_by_key(|row| row.id);
+    }
+    fn country(frame: &mut DecodedFrame, id: u32) -> &mut CountryRow {
+        match &mut *frame.tables[TableId::Countries.index()] {
+            TableView::Complete(TableRows::Countries(rows)) => rows
+                .iter_mut()
+                .find(|row| row.id == id)
+                .expect("fixture country"),
+            _ => unreachable!("fixture countries are complete"),
+        }
+    }
+    /// A steel deal from `exporter`'s link to `importer`'s.
+    fn steel(id: u64, exporter: u32, importer: u32, delivered: i64) -> ResourceExchangeRow {
+        ResourceExchangeRow {
+            id,
+            exporter,
+            importer,
+            resource: 1,
+            delivered,
+            assigned_factories: 1,
+            required_factories: 1,
+            ..Default::default()
+        }
+    }
+
+    /// The recording codec: each input hour is encoded and decoded as the
+    /// preparation pipeline reads it, with its recorded updates.
+    struct Recorded {
+        encoder: replay::frame::FrameEncoder,
+        decoder: replay::frame::FrameDecoder,
+    }
+    impl Recorded {
+        fn new() -> Self {
+            Self {
+                encoder: replay::frame::FrameEncoder::new(),
+                decoder: replay::frame::FrameDecoder::new(),
+            }
+        }
+        fn next(
+            &mut self,
+            input: &DecodedFrame,
+            keyframe: bool,
+        ) -> (DecodedFrame, Arc<replay::frame::Frame>) {
+            let wire = self.encoder.encode(input.clone(), keyframe).unwrap();
+            let decoded = self.decoder.advance(&wire).unwrap().clone();
+            (decoded, Arc::new(wire))
+        }
+    }
+
+    /// `count` countries, each selling steel to the next.
+    fn trade_world(count: u32) -> DecodedFrame {
+        let mut frame = resource_frame(100, 0, 9001, &[]);
+        *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+            (1..=count)
+                .map(|id| CountryRow {
+                    id,
+                    canonical_slot: id,
+                    tag: format!("mod country {id}").into_bytes(),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        *frame.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(
+                (1..=count)
+                    .map(|id| CountryLinkRow {
+                        id,
+                        canonical_slot: id,
+                    })
+                    .collect(),
+            ));
+        *frame.tables[TableId::ResourceExchanges.index()] =
+            TableView::Complete(TableRows::ResourceExchanges(
+                (1..count)
+                    .map(|id| steel(u64::from(id), id, id + 1, i64::from(id) * 100))
+                    .collect(),
+            ));
+        frame
+    }
+
+    fn assert_rows_observe_only_changed_flows(count: u32) {
+        use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+        let format = replay::format::FormatVersion::CURRENT;
+        let mut recorded = Recorded::new();
+        let mut tracker = FrameChangeTracker::new();
+        // Each hour's exchange rows read, flows published, values written,
+        // countries compared, and whether it was observed from changed rows.
+        let mut step = |prepared: &mut Prepared, frame: &DecodedFrame| {
+            let before = (
+                prepared.scan.inputs.row_visits,
+                prepared.work.history_visits,
+                prepared.work.emitted,
+                prepared.scan.inputs.country_visits,
+                prepared.row_hours,
+            );
+            let (decoded, wire) = recorded.next(frame, false);
+            let changes = tracker.observe_updates(&decoded, wire, format);
+            prepared.observe_changed(&decoded, &changes).unwrap();
+            (
+                prepared.scan.inputs.row_visits - before.0,
+                prepared.work.history_visits - before.1,
+                prepared.work.emitted - before.2,
+                prepared.scan.inputs.country_visits - before.3,
+                prepared.row_hours - before.4,
+            )
+        };
+        let flows = count as usize - 1;
+        let mut prepared = Prepared::default();
+        let mut frame = trade_world(count);
+        let (_, published, ..) = step(&mut prepared, &frame);
+        assert_eq!(published, flows, "the first hour publishes every flow");
+
+        // A recorded field no flow reads.
+        frame.hour = 101;
+        deal(&mut frame, 1).efficiency_a += 7;
+        let (_, published, emitted, compared, rows) = step(&mut prepared, &frame);
+        assert_eq!(rows, 1, "the hour is observed from its changed rows");
+        assert_eq!((published, emitted, compared), (0, 0, 0));
+
+        frame.hour = 102;
+        deal(&mut frame, u64::from(count / 2)).delivered += 1;
+        assert_eq!(
+            step(&mut prepared, &frame),
+            (1, 1, 2, 0, 1),
+            "only the changed deal is read and only its flow publishes its start and amount"
+        );
+
+        // Its seller's own fields change too: no country is compared.
+        frame.hour = 103;
+        country(&mut frame, count / 3).political_power_raw = Some(7);
+        deal(&mut frame, u64::from(count / 3)).delivered += 1;
+        assert_eq!(step(&mut prepared, &frame), (1, 1, 2, 0, 1));
+
+        // Fields no flow and no holder reads.
+        frame.hour = 104;
+        deal(&mut frame, u64::from(count / 4)).efficiency_b += 1;
+        country(&mut frame, count / 4).political_power_raw = Some(9);
+        assert_eq!(step(&mut prepared, &frame), (0, 0, 0, 0, 1));
+
+        // An ended deal ends only its flow.
+        frame.hour = 105;
+        exchanges(&mut frame).retain(|row| row.id != u64::from(count / 5));
+        assert_eq!(step(&mut prepared, &frame), (1, 1, 2, 0, 1));
+
+        // A new deal starts only its flow.
+        frame.hour = 106;
+        add_deal(
+            &mut frame,
+            ResourceExchangeRow {
+                resource: 2,
+                ..steel(u64::from(count) + 1, 1, count, 5)
+            },
+        );
+        assert_eq!(step(&mut prepared, &frame), (1, 1, 2, 0, 1));
+
+        // Countries alone changing: the flows only continue.
+        frame.hour = 107;
+        country(&mut frame, 1).political_power_raw = Some(11);
+        assert_eq!(step(&mut prepared, &frame), (0, 0, 0, 0, 1));
+        assert_eq!(
+            prepared.scan.active.len(),
+            flows,
+            "one flow ended and one started"
+        );
+    }
+
+    #[test]
+    fn trade_hour_changing_one_deal_reads_and_publishes_only_its_flow() {
+        assert_rows_observe_only_changed_flows(200);
+    }
+
+    #[test]
+    #[cfg(feature = "slow-tests")]
+    fn trade_hour_changing_one_of_5000_countries_deals_publishes_only_its_flow() {
+        assert_rows_observe_only_changed_flows(5000);
+    }
+
+    #[test]
+    fn trade_operand_masks_name_every_field_they_read() {
+        assert_eq!(EXCHANGE_FIELDS.count_ones(), 7);
+        assert_eq!(HOLDER_FIELDS.count_ones(), 2);
+        let efficiency = (0..64)
+            .position(|field| TableId::ResourceExchanges.field_name(field) == Some("efficiency_a"))
+            .unwrap();
+        assert_eq!(
+            *EXCHANGE_FIELDS & (1 << efficiency),
+            0,
+            "no flow reads a deal's efficiency"
+        );
+    }
+
+    #[test]
+    fn trade_rows_observation_matches_whole_tables_and_scan_across_keyframe_gap_and_resume() {
+        use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+        use replay::rows::{LexicalTokenRow, ResourceDefinitionRow};
+        let format = replay::format::FormatVersion::CURRENT;
+        let flag = AtomicBool::new(false);
+        let mut frame = resource_frame(100, 0, 9001, &[(51, 21, 9001, 12), (52, 11, 31, 5)]);
+        // A fourth country, renamed later.
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            rows.push(CountryRow {
+                id: 41,
+                canonical_slot: 10,
+                tag: b"FRA".to_vec(),
+                ..Default::default()
+            });
+            rows.sort_by_key(|row| row.id);
+        }
+        if let TableView::Complete(TableRows::CountryLinks(rows)) =
+            &mut *frame.tables[TableId::CountryLinks.index()]
+        {
+            rows.push(CountryLinkRow {
+                id: 41,
+                canonical_slot: 10,
+            });
+            rows.sort_by_key(|row| row.id);
+        }
+        let oil = |deal: ResourceExchangeRow| ResourceExchangeRow {
+            resource: 2,
+            ..deal
+        };
+        let mut inputs = Vec::new();
+        let mut stashed = None;
+        for hour in 100..=140 {
+            frame.hour = hour;
+            match hour {
+                102 | 123 | 128 | 133 | 134 | 140 => deal(&mut frame, 51).delivered += 1,
+                // A recorded field no flow reads.
+                103 => deal(&mut frame, 52).efficiency_a += 7,
+                // A second deal of one flow: the flow sums both.
+                104 => add_deal(&mut frame, steel(53, 21, 9001, 9)),
+                105 => deal(&mut frame, 53).delivered += 1,
+                106 => deal(&mut frame, 52).resource = 2,
+                // A country field no holder reads.
+                107 | 131 => country(&mut frame, 21).political_power_raw = Some(i64::from(hour)),
+                108 => {
+                    country(&mut frame, 31).political_power_raw = Some(108);
+                    deal(&mut frame, 51).convoys_assigned = 2;
+                }
+                // A token no definition names: every resource keeps its name.
+                109 => {
+                    if let TableView::Complete(TableRows::LexicalTokens(rows)) =
+                        &mut *frame.tables[TableId::LexicalTokens.index()]
+                    {
+                        rows.push(LexicalTokenRow {
+                            token: 503,
+                            literal: b"rubber".to_vec(),
+                        });
+                    }
+                }
+                110 => deal(&mut frame, 52).exporter = 41,
+                111 => exchanges(&mut frame).retain(|row| row.id != 51),
+                112 => exchanges(&mut frame).retain(|row| row.id != 53),
+                113 => add_deal(&mut frame, steel(51, 21, 9001, 20)),
+                // A seller the links do not resolve: the read leaves it out.
+                114 => add_deal(&mut frame, steel(54, 0xdead, 9001, 3)),
+                115 => deal(&mut frame, 54).delivered += 1,
+                116 => deal(&mut frame, 54).exporter = 31,
+                // A resource the definitions do not name.
+                117 => deal(&mut frame, 54).resource = 999,
+                // A new resource: the names change.
+                118 => {
+                    if let TableView::Complete(TableRows::ResourceDefinitions(rows)) =
+                        &mut *frame.tables[TableId::ResourceDefinitions.index()]
+                    {
+                        rows.push(ResourceDefinitionRow {
+                            id: 3,
+                            token: 503,
+                            active: 1,
+                            factory_cost: 12_500,
+                        });
+                    }
+                }
+                119 => deal(&mut frame, 54).resource = 3,
+                120 => country(&mut frame, 41).tag = b"VIC".to_vec(),
+                121 | 125 => deal(&mut frame, 52).delivered += 1,
+                124 => continue,
+                126 => {
+                    stashed = Some(std::mem::take(exchanges(&mut frame)));
+                    *frame.tables[TableId::ResourceExchanges.index()] = TableView::Unavailable {
+                        reason: "synthetic missing deals".into(),
+                    };
+                }
+                127 => {
+                    *frame.tables[TableId::ResourceExchanges.index()] =
+                        TableView::Complete(TableRows::ResourceExchanges(stashed.take().unwrap()));
+                    deal(&mut frame, 54).delivered += 1;
+                }
+                129 => {
+                    deal(&mut frame, 52).convoys_required = 4;
+                    deal(&mut frame, 54).importer = 41;
+                }
+                130 => {
+                    exchanges(&mut frame).retain(|row| row.id != 52);
+                    add_deal(&mut frame, oil(steel(55, 11, 21, 4)));
+                }
+                132 => {
+                    deal(&mut frame, 51).delivered += 1;
+                    deal(&mut frame, 55).delivered += 1;
+                    country(&mut frame, 31).political_power_raw = Some(132);
+                }
+                // Germany's other link sells oil to Italy too: one flow of
+                // two links' deals.
+                135 => add_deal(&mut frame, oil(steel(56, 9001, 21, 6))),
+                136 => deal(&mut frame, 55).delivered = -4,
+                137 => exchanges(&mut frame).retain(|row| row.id != 55),
+                // Italy sells to itself.
+                139 => deal(&mut frame, 56).exporter = 21,
+                _ => {}
+            }
+            inputs.push((frame.clone(), hour == 115));
+        }
+        let replay = Arc::new(
+            Replay::from_records(
+                CAMPAIGN.into(),
+                &[records(
+                    1,
+                    inputs.iter().map(|(frame, _)| frame.clone()).collect(),
+                )],
+            )
+            .unwrap(),
+        );
+        let source = Source::from_replay(
+            dashboard_base::source::SourceKey {
+                source_id: "trade-rows".into(),
+                revision: "1".into(),
+            },
+            "memory.battleplan".into(),
+            replay.clone(),
+            &flag,
+        )
+        .unwrap();
+        let context = LoadContext { content: None };
+        let history = country_history::scan_histories(&replay, 1, false, &[], &flag).unwrap();
+        let pages = |fixture: &dashboard_base::prepared::series::tests::Fixture,
+                     last: i32,
+                     width: Option<u32>| {
+            let mut input = json!({"branchId":"1","tags":null,"from":100,"to":last,"basis":100});
+            if let Some(width) = width {
+                input["width"] = json!(width);
+            }
+            read_pages(
+                &fixture.store,
+                &fixture.key,
+                1,
+                serde_json::from_value(input.clone()).unwrap(),
+                input,
+                &history,
+                last,
+                true,
+                None,
+                &flag,
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let fixtures = [
+            dashboard_base::prepared::series::tests::Fixture::new(),
+            dashboard_base::prepared::series::tests::Fixture::new(),
+        ];
+        // Observed from changed rows, and from the whole tables every hour.
+        let mut observers = [
+            Prepared::default(),
+            Prepared {
+                whole_tables: true,
+                ..Default::default()
+            },
+        ];
+        let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+        let mut recorded = Recorded::new();
+        for (input, keyframe) in &inputs {
+            let (decoded, wire) = recorded.next(input, *keyframe);
+            for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
+                let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), format);
+                observer.observe_changed(&decoded, &changes).unwrap();
+            }
+            let [changed, whole] = &observers;
+            assert_eq!(
+                serde_json::to_value(changed).unwrap(),
+                serde_json::to_value(whole).unwrap(),
+                "observer state after hour {}",
+                decoded.hour
+            );
+            assert_eq!(
+                changed.bytes(),
+                whole.bytes(),
+                "pending publication after hour {}",
+                decoded.hour
+            );
+            if ![110, 121, 135, 140].contains(&decoded.hour) {
+                continue;
+            }
+            for (observer, fixture) in observers.iter_mut().zip(&fixtures) {
+                let mut writer = fixture.writer();
+                observer
+                    .flush(&mut writer, &source, &context, 1, &flag)
+                    .unwrap();
+                writer.commit().unwrap();
+            }
+            for width in [None, Some(4)] {
+                assert_eq!(
+                    pages(&fixtures[0], decoded.hour, width),
+                    pages(&fixtures[1], decoded.hour, width),
+                    "published through hour {}",
+                    decoded.hour
+                );
+            }
+            // Resume both from their checkpoints.
+            for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
+                let (whole_tables, row_hours) = (observer.whole_tables, observer.row_hours);
+                *observer =
+                    serde_json::from_slice(&serde_json::to_vec(&*observer).unwrap()).unwrap();
+                observer.whole_tables = whole_tables;
+                observer.row_hours = row_hours;
+                tracker.invalidate();
+            }
+        }
+        assert!(
+            observers[0].row_hours >= 20,
+            "most hours are observed from their changed rows, not {}",
+            observers[0].row_hours
+        );
+        assert_eq!(observers[1].row_hours, 0);
+        let expected = super::super::reply(
+            &source,
+            &TradeFlowParams {
+                branch_id: "1".into(),
+                tags: None,
+            },
+            &context,
+            &scan(&replay, 1, None, &flag).unwrap(),
+            &flag,
+        )
+        .unwrap();
+        let actual: TradeFlowsReply =
+            serde_json::from_value(pages(&fixtures[0], 140, None)).unwrap();
+        assert_eq!(actual.flows, expected.flows);
+        assert_eq!(actual.countries, expected.countries);
+        assert_eq!(actual.known, expected.known);
+        assert_eq!(actual.reads, expected.reads);
+        assert_eq!(actual.partial, expected.partial);
+        assert_eq!(actual.warnings, expected.warnings);
     }
 }

@@ -40,6 +40,13 @@ impl ScriptedText<'_> {
     /// Normalizes the ruling group's stored popularity by the sum of every
     /// party before trimmed fixed5 formatting, without a `%`.
     pub(super) fn party_support(&self, slot: u32) -> Result<String, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::PartySupport(slot)),
+            || self.party_support_unrecorded(slot),
+        )
+    }
+
+    pub(crate) fn party_support_unrecorded(&self, slot: u32) -> Result<String, String> {
         let ruling = self
             .party(slot, Party::Ruling)?
             .ok_or("GetPartySupport: ruling-party pointer is absent")?;
@@ -81,6 +88,13 @@ impl ScriptedText<'_> {
     /// no recorded province names as its state is refused, since its count
     /// is not recorded.
     pub(super) fn manpower(&self, slot: u32) -> Result<i32, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::Manpower(slot)),
+            || self.manpower_unrecorded(slot),
+        )
+    }
+
+    pub(crate) fn manpower_unrecorded(&self, slot: u32) -> Result<i32, String> {
         let (countries, gap) = rows::<tables::Countries>(self.frame);
         let country = countries
             .iter()
@@ -124,6 +138,13 @@ impl ScriptedText<'_> {
     /// localisation key `AGENCY_NAME`. Every country holds an agency object,
     /// so a missing row is a gap, not "no agency".
     pub(super) fn agency(&self, slot: u32) -> Result<String, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::Agency(slot)),
+            || self.agency_unrecorded(slot),
+        )
+    }
+
+    pub(crate) fn agency_unrecorded(&self, slot: u32) -> Result<String, String> {
         let agency = self
             .country_row::<tables::IntelligenceAgencies>(slot, |row| row.country)
             .map_err(|reason| format!("GetAgency: {reason}"))?
@@ -141,6 +162,24 @@ impl ScriptedText<'_> {
     /// Copies the retained old name, definite name or adjective,
     /// or the current text when it is empty.
     pub(super) fn old_name(&self, slot: u32, entry: &str, suffix: &str) -> Result<String, String> {
+        crate::triggers::inputs::query(
+            || {
+                crate::triggers::inputs::Key::Text(TextQuery::OldName(
+                    slot,
+                    entry.to_owned(),
+                    suffix.to_owned(),
+                ))
+            },
+            || self.old_name_unrecorded(slot, entry, suffix),
+        )
+    }
+
+    pub(crate) fn old_name_unrecorded(
+        &self,
+        slot: u32,
+        entry: &str,
+        suffix: &str,
+    ) -> Result<String, String> {
         let row = self
             .country_row::<tables::CountryAppearance>(slot, |row| row.country)
             .map_err(|reason| format!("{entry}: {reason}"))?
@@ -160,6 +199,13 @@ impl ScriptedText<'_> {
     }
 
     pub(super) fn character_gender(&self, id: u32) -> Result<u32, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::CharacterGender(id)),
+            || self.character_gender_unrecorded(id),
+        )
+    }
+
+    pub(crate) fn character_gender_unrecorded(&self, id: u32) -> Result<u32, String> {
         let (characters, gap) = rows::<tables::Characters>(self.frame);
         characters
             .iter()
@@ -170,6 +216,17 @@ impl ScriptedText<'_> {
 
     // A missing party, leader or parent is gender 0.
     pub(super) fn country_pronoun(&self, slot: u32, name: &str) -> Result<String, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::CountryPronoun(slot, name.to_owned())),
+            || self.country_pronoun_unrecorded(slot, name),
+        )
+    }
+
+    pub(crate) fn country_pronoun_unrecorded(
+        &self,
+        slot: u32,
+        name: &str,
+    ) -> Result<String, String> {
         let mut female = false;
         if let Some(party) = self.party(slot, Party::Ruling)? {
             let (leaders, gap) = rows::<tables::PartyLeaders>(self.frame);
@@ -261,9 +318,80 @@ impl ScriptedText<'_> {
         }
     }
 
+    /// The leader of the ruling party (`group` none) or of the group's first
+    /// party.
+    pub(super) fn party_leader(&self, slot: u32, group: Option<&str>) -> Result<String, String> {
+        crate::triggers::inputs::query(
+            || {
+                crate::triggers::inputs::Key::Text(TextQuery::PartyLeader(
+                    slot,
+                    group.map(str::to_owned),
+                ))
+            },
+            || self.party_leader_unrecorded(slot, group),
+        )
+    }
+
+    pub(crate) fn party_leader_unrecorded(
+        &self,
+        slot: u32,
+        group: Option<&str>,
+    ) -> Result<String, String> {
+        self.first_party_leader(slot, group.map_or(Party::Ruling, Party::Token))
+    }
+
+    /// The long name of the country's first party of exactly `group`, or
+    /// empty text where the frame proves there is none.
+    pub(super) fn named_party_name(
+        &self,
+        slot: u32,
+        group: &str,
+        tag: &str,
+    ) -> Result<String, String> {
+        crate::triggers::inputs::query(
+            || {
+                crate::triggers::inputs::Key::Text(TextQuery::NamedPartyName(
+                    slot,
+                    group.to_owned(),
+                    tag.to_owned(),
+                ))
+            },
+            || self.named_party_name_unrecorded(slot, group, tag),
+        )
+    }
+
+    pub(crate) fn named_party_name_unrecorded(
+        &self,
+        slot: u32,
+        group: &str,
+        tag: &str,
+    ) -> Result<String, String> {
+        match self.party(slot, Party::Named(group))? {
+            Some(party) => self.party_name(party, tag, true),
+            None => Ok(String::new()),
+        }
+    }
+
+    /// The date text of the country's last election.
+    pub(super) fn last_election(&self, slot: u32) -> Result<String, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::LastElection(slot)),
+            || self.last_election_unrecorded(slot),
+        )
+    }
+
+    pub(crate) fn last_election_unrecorded(&self, slot: u32) -> Result<String, String> {
+        let (politics, gap) = rows::<tables::Politics>(self.frame);
+        let row = politics
+            .iter()
+            .find(|row| self.scopes.slot(row.country) == Some(slot))
+            .ok_or_else(|| format!("GetLastElection: Politics {gap}"))?;
+        self.date_text(row.last_election)
+    }
+
     /// Selects vector entry zero. A null character gives empty text,
     /// rather than falling through to the next leader.
-    pub(super) fn party_leader(&self, slot: u32, which: Party<'_>) -> Result<String, String> {
+    fn first_party_leader(&self, slot: u32, which: Party<'_>) -> Result<String, String> {
         let Some(party) = self.party(slot, which)? else {
             return Ok(String::new());
         };
@@ -285,6 +413,13 @@ impl ScriptedText<'_> {
 
     /// The event scope's date properties use the sampled date.
     pub(super) fn date_property(&self, name: &str) -> Result<Option<String>, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::DateProperty(name.to_owned())),
+            || self.date_property_unrecorded(name),
+        )
+    }
+
+    pub(crate) fn date_property_unrecorded(&self, name: &str) -> Result<Option<String>, String> {
         let date = date_parts(self.frame.hour);
         Ok(Some(if named(name, "GetDateText") {
             self.date_text(self.frame.hour)?

@@ -1,7 +1,10 @@
 #[cfg(test)]
 use super::*;
+use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::{fs, path::PathBuf};
 
 pub struct Fixture {
@@ -51,6 +54,30 @@ impl Fixture {
         self.key = self.key.recapture().unwrap();
         self.store.append(&previous, self.key.clone()).unwrap()
     }
+    /// Every committed payload by section and range: the documented manifest
+    /// header names them, and each is opened through the real store reader.
+    pub fn payloads(&self) -> BTreeMap<(String, u64), Vec<u8>> {
+        let mut manifest = fs::File::open(self.directory.join("manifest")).unwrap();
+        let mut length = [0; 8];
+        manifest.read_exact(&mut length).unwrap();
+        let header: Value =
+            serde_json::from_reader(manifest.take(u64::from_le_bytes(length))).unwrap();
+        let mut payloads = BTreeMap::new();
+        for section in header["sections"].as_array().unwrap() {
+            let name = section["name"].as_str().unwrap();
+            for range in 0..section["count"].as_u64().unwrap() {
+                let mut bytes = Vec::new();
+                self.store
+                    .read(&self.key, name, range)
+                    .unwrap()
+                    .unwrap()
+                    .read_to_end(&mut bytes)
+                    .unwrap();
+                payloads.insert((name.to_owned(), range), bytes);
+            }
+        }
+        payloads
+    }
     #[cfg(test)]
     fn publish(&self, batch: Batch, states: &mut BTreeMap<u64, KeyState>) {
         let mut batch = batch;
@@ -64,6 +91,41 @@ impl Fixture {
         writer.commit().unwrap();
     }
 }
+/// Names each differing section and range with its first differing offset,
+/// rather than dumping the payloads.
+pub fn assert_payloads_equal(
+    actual: &BTreeMap<(String, u64), Vec<u8>>,
+    expected: &BTreeMap<(String, u64), Vec<u8>>,
+    label: &str,
+) {
+    let keys: BTreeSet<_> = actual.keys().chain(expected.keys()).collect();
+    let mut differences = Vec::new();
+    for key in keys {
+        let (left, right) = (actual.get(key), expected.get(key));
+        if left == right {
+            continue;
+        }
+        let first = left.zip(right).map(|(left, right)| {
+            left.iter()
+                .zip(right)
+                .position(|(left, right)| left != right)
+                .unwrap_or(left.len().min(right.len()))
+        });
+        differences.push(format!(
+            "{} range={} lengths={:?}/{:?} first-offset={first:?}",
+            key.0,
+            key.1,
+            left.map(Vec::len),
+            right.map(Vec::len)
+        ));
+    }
+    assert!(
+        differences.is_empty(),
+        "{label}:\n{}",
+        differences.join("\n")
+    );
+}
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.store.clear().unwrap();
@@ -1325,7 +1387,7 @@ fn events_keep_duplicate_order_every_row_and_exact_screen_counts() {
 }
 
 #[test]
-fn events_reject_a_page_shorter_than_its_ordinal_interval() {
+fn events_reject_an_ordinal_count_their_batch_does_not_hold() {
     let fixture = Fixture::new();
     let flag = AtomicBool::new(false);
     let mut values = Accumulator::default();
@@ -1337,14 +1399,14 @@ fn events_reject_a_page_shorter_than_its_ordinal_interval() {
     writer.commit().unwrap();
     let mut reader = Reader::new(&fixture.store, &fixture.key, "events".into(), &flag).unwrap();
     reader.data(0, 1).unwrap();
-    // Make the cached ordinal count disagree with the two stored rows. Reading
-    // the other key evicts this directory, so the merge drains after two rows.
-    reader.cached.as_mut().unwrap().dir.event_base += 1;
+    // Make the directory's ordinal count disagree with the two stored rows:
+    // the page then claims a row its batch does not hold.
+    reader.directories.get_mut(&(0, 1)).unwrap().event_base += 1;
     let error = reader.events(&[1, 2], i32::MIN, 0, 0, 10).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     assert_eq!(
         error.to_string(),
-        "event page rows do not match its ordinal interval"
+        "prepared event ordinal is outside its batch"
     );
 }
 
@@ -1500,8 +1562,6 @@ fn hourly_dense_runs_use_compact_key_blobs_and_keep_wide_values_exact() {
         .store
         .read(&fixture.key, "test", 0)
         .unwrap()
-        .unwrap()
-        .metadata()
         .unwrap()
         .len();
     println!(
@@ -1844,6 +1904,299 @@ fn a_damaged_series_directory_count_refuses_instead_of_overflowing() {
     let mut bytes = vec![0_u8; 16];
     bytes[8..16].copy_from_slice(&(u64::MAX / 2).to_le_bytes());
     fs::write(&path, &bytes).unwrap();
-    let mut file = File::open(&path).unwrap();
+    let mut file = fs::File::open(&path).unwrap();
     assert!(directory(&mut file, 7).is_err());
+}
+
+#[test]
+fn saved_continuations_read_back_every_float_exactly() {
+    // A restored observer compares values it saved with values it computes
+    // again. A widened single-precision ratio and a product of two decimals
+    // both need seventeen significant digits.
+    for value in [f64::from(3.0f32 / 13.0), 1.35 * 7.0] {
+        let text = serde_json::to_string(&value).unwrap();
+        let read: f64 = serde_json::from_str(&text).unwrap();
+        assert_eq!(read.to_bits(), value.to_bits(), "{text}");
+    }
+}
+
+/// Each accumulator's saved state and its published payload.
+#[cfg(test)]
+fn published(accumulator: &mut Accumulator) -> (Value, BTreeMap<(String, u64), Vec<u8>>) {
+    let state = serde_json::to_value(&*accumulator).unwrap();
+    let fixture = Fixture::new();
+    let mut writer = fixture.writer();
+    accumulator
+        .flush(&mut writer, "test", 0, &AtomicBool::new(false))
+        .unwrap();
+    writer.commit().unwrap();
+    (state, fixture.payloads())
+}
+
+#[test]
+fn an_advance_span_equals_advancing_every_hour() {
+    // Continuing, repeating the frontier, after a gap, and in a fresh batch.
+    for (first, last, flushed) in [
+        (3, 3, false),
+        (3, 9, false),
+        (2, 6, false),
+        (6, 9, false),
+        (3, 9, true),
+    ] {
+        let setup = || {
+            let mut accumulator = Accumulator::default();
+            accumulator.advance(1).unwrap();
+            accumulator.observe(1, 1, Some(5), true);
+            accumulator.advance(2).unwrap();
+            accumulator.observe(2, 2, Some(6), false);
+            if flushed {
+                published(&mut accumulator);
+            }
+            accumulator
+        };
+        let mut hourly = setup();
+        for hour in first..=last {
+            hourly.advance(hour).unwrap();
+        }
+        hourly.observe(1, last, Some(7), false);
+        let mut span = setup();
+        span.advance_span(first, last).unwrap();
+        span.observe(1, last, Some(7), false);
+        assert_eq!(
+            published(&mut span),
+            published(&mut hourly),
+            "{first}..={last}"
+        );
+    }
+}
+
+/// Calls made on a recording accumulator and made again on a carried one
+/// under other keys equal the same calls made there directly.
+#[test]
+fn recorded_calls_made_again_on_a_carried_accumulator_equal_direct_calls() {
+    struct Target<'a>(&'a mut Accumulator, [u64; 3], Vec<usize>);
+    impl ReplayTarget for Target<'_> {
+        fn series(&mut self, series: u8) -> &mut Accumulator {
+            assert_eq!(series, 4);
+            self.0
+        }
+        fn key(&self, _: u8, key: u64) -> u64 {
+            self.1[key as usize]
+        }
+        fn family(&mut self, index: usize) -> io::Result<()> {
+            self.2.push(index);
+            self.0.observe(self.1[2], 25, None, false);
+            Ok(())
+        }
+    }
+    let history = |accumulator: &mut Accumulator| {
+        for hour in 0..5 {
+            accumulator.advance(hour).unwrap();
+        }
+        accumulator.observe(10, 1, Some(7), true);
+        accumulator.observe(12, 3, Some(3), false);
+    };
+    let calls =
+        |accumulator: &mut Accumulator, key: [u64; 3], family: &mut dyn FnMut(&mut Accumulator)| {
+            for hour in 5..40 {
+                if hour == 20 {
+                    continue;
+                }
+                accumulator.advance(hour).unwrap();
+                match hour {
+                    6 => accumulator.observe(key[0], hour, Some(9), false),
+                    12 => {
+                        accumulator.observe(key[1], hour, Some(4), true);
+                        accumulator
+                            .event(key[0], hour, &json!({"hour": hour}))
+                            .unwrap();
+                    }
+                    21 => accumulator.push(key[1], Run::new(hour, hour + 2, 4, false)),
+                    25 => family(accumulator),
+                    30 => accumulator.through(hour + 5),
+                    _ => {}
+                }
+            }
+        };
+    let carried_keys = [10, 11, 12];
+    let mut direct = Accumulator::default();
+    history(&mut direct);
+    calls(&mut direct, carried_keys, &mut |accumulator| {
+        accumulator.observe(12, 25, None, false)
+    });
+    let mut extract = Accumulator::default();
+    extract.record_as(4);
+    let mut recording = Recording::default();
+    with_recording(&mut recording, || {
+        calls(&mut extract, [0, 1, 2], &mut |accumulator| {
+            assert!(record_family(0));
+            // The family's own call makes its accumulator calls unrecorded.
+            unrecorded(|| accumulator.observe(2, 25, None, false));
+        })
+    });
+    assert!(!record_family(1), "no recording outside with_recording");
+    // Unchanged hours are spans: far fewer calls than hours.
+    assert!(recording.len() < 20, "{} calls", recording.len());
+    let mut carried = Accumulator::default();
+    history(&mut carried);
+    let mut target = Target(&mut carried, carried_keys, Vec::new());
+    recording.replay(&mut target).unwrap();
+    assert_eq!(target.2, [0]);
+    assert_eq!(published(&mut carried), published(&mut direct));
+}
+
+#[test]
+fn first_seen_catalogues_number_carried_and_new_names_in_order() {
+    let mut local = BTreeMap::new();
+    for name in ["b", "a", "c"] {
+        let next = local.len() as u64;
+        local.entry(name.to_owned()).or_insert(next);
+    }
+    let names = catalogue_names(&local).unwrap();
+    assert_eq!(names, ["b", "a", "c"]);
+    let mut carried = BTreeMap::from([("z".to_owned(), 0), ("a".to_owned(), 1)]);
+    assert_eq!(number_names(&mut carried, &names), [2, 1, 3]);
+    local.insert("gap".to_owned(), 9);
+    assert!(catalogue_names(&local).is_err());
+}
+
+#[test]
+fn a_reader_checks_its_key_once_and_searches_batch_hours_in_memory() {
+    // 64 committed batches of 16 hours each; key 0 changes every 4 hours.
+    let fixture = Fixture::new();
+    let mut states = BTreeMap::from([(0, KeyState::default())]);
+    for batch_index in 0..64 {
+        let first = batch_index * 16;
+        let mut batch = Batch::default();
+        batch.through(first);
+        batch.through(first + 15);
+        for part in 0..4 {
+            let start = first + part * 4;
+            batch.push(
+                0,
+                states.get_mut(&0).unwrap(),
+                Run::new(start, start + 3, i128::from(start % 7), start == 0),
+            );
+        }
+        fixture.publish(batch, &mut states);
+    }
+    let flag = AtomicBool::new(false);
+    let view = (0.0, 1023.0, 300);
+    let before = store::counters::now();
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "test".into(), &flag).unwrap();
+    let summary = reader.summary(0, (0, 1023), view, 0).unwrap();
+    let work = store::counters::now() - before;
+    // One key check and manifest read for the whole summary; each batch's pack
+    // is opened once, however many buckets search the batches.
+    assert_eq!((work.stats, work.manifest_reads), (1, 1));
+    assert!(work.pack_opens <= 64, "{work:?}");
+    assert!(summary.buckets.len() >= 300, "{}", summary.buckets.len());
+    let before = store::counters::now();
+    let again = reader.summary(0, (0, 1023), view, 0).unwrap();
+    assert_eq!(
+        store::counters::now() - before,
+        store::counters::Counters::default()
+    );
+    assert_eq!(
+        serde_json::to_value(&again).unwrap(),
+        serde_json::to_value(&summary).unwrap()
+    );
+    // Every bucket equals one read on its own by a fresh reader.
+    for (index, bucket) in summary.buckets.iter().enumerate().step_by(37) {
+        let hours = (
+            bucket.map(|bucket| bucket.first_hour),
+            bucket.map(|bucket| bucket.last_hour),
+        );
+        let (Some(first), Some(last)) = hours else {
+            continue;
+        };
+        let mut single = Reader::new(&fixture.store, &fixture.key, "test".into(), &flag).unwrap();
+        let alone = single
+            .summary(0, (0, 1023), (f64::from(first), f64::from(last), 1), 0)
+            .unwrap();
+        assert_eq!(
+            alone.buckets[0].map(|bucket| (bucket.min_value, bucket.max_value)),
+            summary.buckets[index].map(|bucket| (bucket.min_value, bucket.max_value)),
+            "bucket {index}"
+        );
+    }
+    // A store scope serves every reader of the same key without further checks.
+    let scope = fixture.store.scope(&fixture.key).unwrap();
+    let before = store::counters::now();
+    for _ in 0..3 {
+        let mut reader = Reader::new(&fixture.store, &fixture.key, "test".into(), &flag).unwrap();
+        reader.summary(0, (0, 1023), view, 0).unwrap();
+    }
+    let work = store::counters::now() - before;
+    assert_eq!((work.stats, work.manifest_reads), (0, 0));
+    drop(scope);
+}
+
+#[test]
+fn constant_open_buckets_save_as_alignments_and_publish_as_whole_buckets_do() {
+    // 2,000 keys: even keys hold one value; odd keys change, break, go
+    // unknown and return. Three flushes with a save and restore before the
+    // last, once keeping every open bucket whole (the old state) and once
+    // keeping constant ones as spans.
+    let observe = |accumulator: &mut Accumulator, hours: std::ops::RangeInclusive<i32>| {
+        for hour in hours {
+            accumulator.advance(hour).unwrap();
+            for key in 0..2000_u64 {
+                let (value, starts) = if key % 2 == 0 {
+                    (Some(7_000_000_000_000_i128), false)
+                } else if hour % 37 == 0 {
+                    (None, false)
+                } else {
+                    (
+                        Some(i128::from(hour / 3) * (key as i128 % 5 - 2)),
+                        hour % 29 == 0,
+                    )
+                };
+                accumulator.observe(key, hour, value, starts);
+            }
+        }
+    };
+    let run = |whole: bool| {
+        super::WHOLE_BUCKETS.with(|cell| cell.set(whole));
+        let mut accumulator = Accumulator::default();
+        observe(&mut accumulator, 100..=140);
+        let first = published(&mut accumulator);
+        observe(&mut accumulator, 141..=190);
+        let second = published(&mut accumulator);
+        let saved = serde_json::to_vec(&accumulator).unwrap();
+        let mut restored: Accumulator = serde_json::from_slice(&saved).unwrap();
+        observe(&mut accumulator, 191..=300);
+        observe(&mut restored, 191..=300);
+        let continued = published(&mut accumulator).1;
+        assert_eq!(
+            published(&mut restored).1,
+            continued,
+            "restored vs continued, whole {whole}"
+        );
+        super::WHOLE_BUCKETS.with(|cell| cell.set(false));
+        (first.1, second.1, continued, saved)
+    };
+    let (whole_first, whole_second, whole_third, whole_saved) = run(true);
+    let (first, second, third, saved) = run(false);
+    assert_eq!(first, whole_first);
+    assert_eq!(second, whole_second);
+    assert_eq!(third, whole_third);
+    // A constant key keeps each open bucket as its alignment alone.
+    let value: Value = serde_json::from_slice(&saved).unwrap();
+    let partial = value["states"]["0"]["p"].as_array().unwrap();
+    let open: Vec<_> = partial.iter().filter(|bucket| !bucket.is_null()).collect();
+    assert!(!open.is_empty());
+    assert!(
+        open.iter()
+            .all(|bucket| bucket.as_object().unwrap().len() == 1),
+        "{open:?}"
+    );
+    let whole: Value = serde_json::from_slice(&whole_saved).unwrap();
+    let size = |state: &Value| serde_json::to_vec(state).unwrap().len();
+    let (compact, kept) = (size(&value["states"]["0"]), size(&whole["states"]["0"]));
+    assert!(
+        compact * 5 < kept,
+        "constant key saved {compact} vs whole {kept} bytes"
+    );
+    assert!(saved.len() < whole_saved.len());
 }

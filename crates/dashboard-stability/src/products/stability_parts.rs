@@ -392,6 +392,10 @@ struct Scan {
     naming_ticks: usize,
     #[serde(skip)]
     appearances: BTreeMap<u32, replay::rows::CountryAppearanceRow>,
+    /// Whether `appearances` is this scan's own read. A new or restored scan
+    /// knows no earlier appearance, so its first read renames every country.
+    #[serde(skip)]
+    appearances_read: bool,
     #[serde(skip)]
     line_dates: BTreeMap<u32, i32>,
 }
@@ -506,13 +510,20 @@ impl Scan {
                     )
                 })
                 .collect();
-            naming_changed.extend(
-                self.appearances
-                    .keys()
-                    .chain(next.keys())
-                    .copied()
-                    .filter(|id| self.appearances.get(id) != next.get(id)),
-            );
+            if self.appearances_read {
+                naming_changed.extend(
+                    self.appearances
+                        .keys()
+                        .chain(next.keys())
+                        .copied()
+                        .filter(|id| self.appearances.get(id) != next.get(id)),
+                );
+            } else {
+                // Without an earlier read, a row gone since the saved hour is
+                // unknown: every country's naming is read again.
+                naming_changed.extend(self.native.roster.keys().copied());
+                self.appearances_read = true;
+            }
             self.appearances = next;
         }
         if changed(TableId::ReservedCountryNaming) {
@@ -601,6 +612,9 @@ impl Scan {
             {
                 track.unlined.insert(read);
                 track.available = false;
+                // Naming is not read at this hour, so a change to it here
+                // would go unseen: the next lined hour reads it again.
+                track.naming = None;
                 self.clock_names.remove(&id);
                 self.removed.push(tag.to_owned());
                 continue;

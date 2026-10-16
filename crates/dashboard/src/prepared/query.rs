@@ -1,5 +1,7 @@
 //! Host-direct reads of the integrated slice's prepared pages.
 
+#[cfg(test)]
+mod profile_tests;
 pub(crate) use dashboard_base::prepared::query::progressive;
 
 #[cfg(test)]
@@ -83,15 +85,21 @@ fn branch(source: &Source, value: &str) -> io::Result<u64> {
     Ok(id)
 }
 
+/// Whether `product`'s data on `branch` is accepted through `hour`, or
+/// completely: the coverage of the family prepared on its own that gates
+/// the product, or the branch's ([`super::pipeline::product_coverage`]).
 fn coverage(
     source: &Source,
     content: Option<&ContentOptions>,
+    product: &str,
     branch: u64,
     hour: Option<i32>,
     require_complete: bool,
     cancelled: &AtomicBool,
 ) -> io::Result<bool> {
-    let Some(coverage) = super::pipeline::coverage(source, content, branch, cancelled)? else {
+    let Some(coverage) =
+        super::pipeline::product_coverage(source, content, branch, product, cancelled)?
+    else {
         return Ok(false);
     };
     if !coverage.complete
@@ -156,7 +164,13 @@ fn query_data(
                 .and_then(Value::as_str)
                 .ok_or_else(|| crate::invalid("Missing party branch"))?;
             let branch = branch(source, id)?;
-            let accepted = match super::pipeline::coverage(source, content, branch, cancelled) {
+            let accepted = match super::pipeline::product_coverage(
+                source,
+                content,
+                branch,
+                &request.product,
+                cancelled,
+            ) {
                 Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
                 other => other?,
             };
@@ -210,7 +224,15 @@ fn query_data(
                 .and_then(Value::as_str)
                 .ok_or_else(|| crate::invalid("Invalid battle branch"))?;
             let branch = branch(source, id)?;
-            if !coverage(source, content, branch, None, true, cancelled)? {
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                None,
+                true,
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             crate::products::land_battles::prepared::query(
@@ -232,7 +254,15 @@ fn query_data(
                 .and_then(Value::as_str)
                 .ok_or_else(|| crate::invalid("Invalid battle branch"))?;
             let branch = branch(source, id)?;
-            if !coverage(source, content, branch, None, true, cancelled)? {
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                None,
+                true,
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             crate::products::naval_battles::prepared::query(
@@ -254,7 +284,15 @@ fn query_data(
                 .and_then(Value::as_str)
                 .ok_or_else(|| crate::invalid("Invalid division log branch"))?;
             let branch = branch(source, id)?;
-            if !coverage(source, content, branch, None, true, cancelled)? {
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                None,
+                true,
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             crate::products::division_log::prepared::query(
@@ -273,7 +311,15 @@ fn query_data(
                 .and_then(Value::as_str)
                 .ok_or_else(|| crate::invalid("Invalid ships sunk branch"))?;
             let branch = branch(source, id)?;
-            if !coverage(source, content, branch, None, true, cancelled)? {
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                None,
+                true,
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             crate::products::ships_sunk::prepared::query(
@@ -292,7 +338,15 @@ fn query_data(
                 .and_then(Value::as_str)
                 .ok_or_else(|| crate::invalid("Invalid naval loss branch"))?;
             let branch = branch(source, id)?;
-            if !coverage(source, content, branch, None, true, cancelled)? {
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                None,
+                true,
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             crate::products::naval_losses::prepared::query(
@@ -340,10 +394,11 @@ fn query_data(
                     .ok_or_else(|| crate::invalid("Invalid force branch"))?;
                 reply.insert(
                     "coverage".into(),
-                    serde_json::to_value(super::pipeline::coverage(
+                    serde_json::to_value(super::pipeline::product_coverage(
                         source,
                         content,
                         branch(source, id)?,
+                        &request.product,
                         cancelled,
                     )?)?,
                 );
@@ -354,7 +409,13 @@ fn query_data(
             let params: crate::products::event_feed::prepared::query::Params =
                 serde_json::from_value(request.params.clone())?;
             let branch = branch(source, &params.branch_id)?;
-            let accepted = super::pipeline::coverage(source, content, branch, cancelled)?;
+            let accepted = super::pipeline::product_coverage(
+                source,
+                content,
+                branch,
+                &request.product,
+                cancelled,
+            )?;
             if !accepted
                 .as_ref()
                 .is_some_and(|coverage| coverage.complete || params.last_hour <= coverage.last_hour)
@@ -407,7 +468,15 @@ fn query_data(
             let params: CountryParams = serde_json::from_value(request.params.clone())?;
             params.validate().map_err(crate::invalid)?;
             let branch = branch(source, &params.branch_id)?;
-            if !coverage(source, content, branch, None, true, cancelled)? {
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                None,
+                true,
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             let Some(file) = store.read(&key, &format!("idea-history-{branch}"), 0)? else {
@@ -461,7 +530,15 @@ fn query_data(
                     .and_then(Value::as_str)
                     .ok_or_else(|| crate::invalid("Invalid ledger branch"))?,
             )?;
-            if !coverage(source, content, branch, None, true, cancelled)? {
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                None,
+                true,
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             crate::products::military_air_ledger::prepared::query(
@@ -497,7 +574,15 @@ fn query_data(
                         .ok_or_else(|| crate::invalid("Invalid prepared intelligence hour"))
                 })
                 .transpose()?;
-            if !coverage(source, content, branch, last, last.is_none(), cancelled)? {
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                last,
+                last.is_none(),
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             match product {
@@ -610,7 +695,15 @@ fn query_data(
             let params: crate::products::war_casualties::breakdown::CasualtyBreakdownParams =
                 serde_json::from_value(request.params.clone())?;
             let branch = branch(source, &params.branch_id)?;
-            if !coverage(source, content, branch, None, true, cancelled)? {
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                None,
+                true,
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             serde_json::to_value(crate::products::war_casualties::breakdown::prepared::query(
@@ -637,7 +730,15 @@ fn query_data(
                 .and_then(Value::as_str)
                 .ok_or_else(|| crate::invalid("Missing prepared wars branch"))?;
             let branch = branch(source, id)?;
-            if !coverage(source, content, branch, None, true, cancelled)? {
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                None,
+                true,
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             crate::products::wars::prepared::query(
@@ -655,7 +756,15 @@ fn query_data(
             let params: crate::products::subjects::SubjectParams =
                 serde_json::from_value(request.params.clone())?;
             let branch = branch(source, &params.branch_id)?;
-            if !coverage(source, content, branch, None, true, cancelled)? {
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                None,
+                true,
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             let Some(file) = store.read(&key, &format!("subjects-{branch}"), 0)? else {
@@ -701,6 +810,7 @@ fn query_data(
             if !coverage(
                 source,
                 content,
+                &request.product,
                 branch,
                 hour,
                 product == "occupied-states-manifest",
@@ -723,7 +833,15 @@ fn query_data(
             let params: UnitLeadersParams = serde_json::from_value(request.params.clone())?;
             UnitLeaders::validate(&params).map_err(crate::invalid)?;
             let branch = branch(source, &params.branch_id)?;
-            if !coverage(source, content, branch, None, true, cancelled)? {
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                None,
+                true,
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             let history = if matches!(
@@ -757,7 +875,15 @@ fn query_data(
             crate::products::special_projects::SpecialProjects::validate(&params)
                 .map_err(crate::invalid)?;
             let branch = branch(source, &params.branch_id)?;
-            if !coverage(source, content, branch, None, true, cancelled)? {
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                None,
+                true,
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             crate::products::special_projects::prepared::query(
@@ -771,7 +897,16 @@ fn query_data(
             let params: crate::products::country_groups::CountryGroupParams =
                 serde_json::from_value(request.params.clone())?;
             let branch = branch(source, &params.branch_id)?;
-            if !coverage(source, content, branch, None, true, cancelled)? {
+            // The groups' own coverage: they are prepared before other families.
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                None,
+                true,
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             let Some(file) = store.read(&key, &format!("country-groups-{branch}"), 0)? else {
@@ -805,7 +940,15 @@ fn query_data(
                         .ok_or_else(|| crate::invalid("Invalid politics ledger hour"))
                 })
                 .transpose()?;
-            if !coverage(source, content, branch, hour, hour.is_none(), cancelled)? {
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                hour,
+                hour.is_none(),
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             crate::products::politics_ledger::prepared::query(
@@ -835,7 +978,15 @@ fn query_data(
             let params: FocusPoint = serde_json::from_value(request.params.clone())?;
             crate::products::validate_tag(&params.tag).map_err(crate::invalid)?;
             let branch = branch(source, &params.branch_id)?;
-            if !coverage(source, content, branch, Some(params.hour), false, cancelled)? {
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                Some(params.hour),
+                false,
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             serde_json::to_value(crate::prepared_focus::query_hour(
@@ -850,7 +1001,15 @@ fn query_data(
         "focus-unavailable" => {
             let params: FocusUnavailable = serde_json::from_value(request.params.clone())?;
             let branch = branch(source, &params.branch_id)?;
-            if !coverage(source, content, branch, Some(params.hour), false, cancelled)? {
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                Some(params.hour),
+                false,
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             serde_json::to_value(crate::prepared_focus::query_unavailable(
@@ -865,7 +1024,15 @@ fn query_data(
             let params: FocusPage = serde_json::from_value(request.params.clone())?;
             crate::products::validate_tag(&params.tag).map_err(crate::invalid)?;
             let branch = branch(source, &params.branch_id)?;
-            if !coverage(source, content, branch, Some(params.hour), false, cancelled)? {
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                Some(params.hour),
+                false,
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             let page = params
@@ -891,7 +1058,15 @@ fn query_data(
             let branch = branch(source, &params.selection.branch_id)?;
             // The reference joins Rocket knownness over a completed equipment
             // read interval and resolves stable type facts over the branch.
-            if !coverage(source, content, branch, Some(params.hour), true, cancelled)? {
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                Some(params.hour),
+                true,
+                cancelled,
+            )? {
                 return Ok(Value::Null);
             }
             let offset = params
@@ -1001,7 +1176,13 @@ fn query_data(
                 _ => {}
             }
             let (hour, complete) = series_coverage(product, &request.params)?;
-            let accepted = match super::pipeline::coverage(source, content, branch, cancelled) {
+            let accepted = match super::pipeline::product_coverage(
+                source,
+                content,
+                branch,
+                &request.product,
+                cancelled,
+            ) {
                 Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
                 other => other?,
             };
@@ -1012,6 +1193,10 @@ fn query_data(
                 Some("country-measure") => Some((
                     crate::prepared_measure::TABLES,
                     &crate::prepared_measure::sample,
+                )),
+                Some("country-stability") => Some((
+                    crate::prepared_stability::TABLES,
+                    &crate::prepared_stability::sample,
                 )),
                 _ => None,
             };
@@ -1031,7 +1216,15 @@ fn query_data(
                     family,
                     Some("army-size" | "supply-health" | "air-force-size" | "navy-size")
                 )
-                && !coverage(source, content, branch, hour, complete, cancelled)?
+                && !coverage(
+                    source,
+                    content,
+                    &request.product,
+                    branch,
+                    hour,
+                    complete,
+                    cancelled,
+                )?
             {
                 return Ok(Value::Null);
             }
@@ -1270,7 +1463,15 @@ fn query_data(
                 Some("peace-deals") => {
                     // This adapter builds complete outcomes from earlier reads;
                     // a partial event prefix cannot answer an unprepared span.
-                    if !coverage(source, content, branch, hour, complete, cancelled)? {
+                    if !coverage(
+                        source,
+                        content,
+                        &request.product,
+                        branch,
+                        hour,
+                        complete,
+                        cancelled,
+                    )? {
                         return Ok(Value::Null);
                     }
                     crate::products::peace_deals::prepared::query(
@@ -1287,7 +1488,15 @@ fn query_data(
                 Some("research") => {
                     // Complete assignment history and carried slot state need
                     // the scan, including when requested through events-page.
-                    if !coverage(source, content, branch, hour, complete, cancelled)? {
+                    if !coverage(
+                        source,
+                        content,
+                        &request.product,
+                        branch,
+                        hour,
+                        complete,
+                        cancelled,
+                    )? {
                         return Ok(Value::Null);
                     }
                     crate::products::research::prepared::query(
@@ -1406,6 +1615,86 @@ fn query_data(
     })
 }
 
+/// Where each prepared reply keeps its content warnings, as paths from the
+/// reply's root (`*` is each element of an array), for `product` routed as
+/// `name` (its series family kind, or else the product key). Battle and
+/// division logs keep them in `contentWarnings`, beside a `warnings` list of
+/// recorded battle warnings; the sinking manifest in `contentWarnings` and its
+/// classes reply, which the log shows; wrapped replies in the reply they wrap;
+/// fuel series in each country's reply; naval loss summaries in the sampled
+/// reply they carry. Every other reply keeps them in its
+/// root `warnings`, or, when it answers a tag selection with one reply per
+/// tag, in each of those replies.
+fn content_warning_paths(product: &str, name: &str) -> &'static [&'static [&'static str]] {
+    match (product, name) {
+        (
+            "land-battles"
+            | "land-battles-manifest"
+            | "land-battles-ranking"
+            | "land-battle-course"
+            | "naval-battles"
+            | "naval-battles-manifest"
+            | "naval-battles-ranking"
+            | "division-log"
+            | "division-log-manifest",
+            _,
+        ) => &[&["contentWarnings"]],
+        ("ships-sunk-manifest", _) => &[&["contentWarnings"], &["classes", "warnings"]],
+        ("ships-sunk" | "party-history" | "event-feed", _) | ("series-state", "game-score") => {
+            &[&["reply", "warnings"]]
+        }
+        ("scoreboard", _) => &[&["data", "warnings"]],
+        ("series-state" | "series-summary", "country-fuel") => &[&["replies", "*", "warnings"]],
+        ("series-summary", "naval-losses") => &[&["warnings"], &["sampled", "warnings"]],
+        _ => &[&["warnings"], &["*", "warnings"]],
+    }
+}
+
+/// Visits every value at `path` below `value`.
+fn each_at(value: &mut Value, path: &[&str], visit: &mut dyn FnMut(&mut Value)) {
+    match path.split_first() {
+        None => visit(value),
+        Some((&"*", rest)) => {
+            for item in value.as_array_mut().into_iter().flatten() {
+                each_at(item, rest, visit);
+            }
+        }
+        Some((key, rest)) => {
+            if let Some(next) = value.get_mut(*key) {
+                each_at(next, rest, visit);
+            }
+        }
+    }
+}
+
+/// The content stack's live diagnostics join a reply's content warnings, at
+/// each place the reply keeps them ([`content_warning_paths`]), where it is
+/// served ([`Source::append_stack_warnings`]): published payloads leave them
+/// out, since other consumers' reads add to them at their own pace.
+pub(in crate::prepared) fn append_stack_warnings(
+    source: &Source,
+    product: &str,
+    name: &str,
+    data: &mut Value,
+) {
+    for path in content_warning_paths(product, name) {
+        each_at(data, path, &mut |lines| {
+            let Value::Array(lines) = lines else {
+                return;
+            };
+            let mut warnings: Vec<String> = lines
+                .iter()
+                .filter_map(|line| line.as_str().map(str::to_owned))
+                .collect();
+            if warnings.len() != lines.len() {
+                return;
+            }
+            source.append_stack_warnings(&mut warnings);
+            *lines = warnings.into_iter().map(Value::String).collect();
+        });
+    }
+}
+
 pub fn query(
     source: &Source,
     request: &ProductRequest,
@@ -1416,6 +1705,10 @@ pub fn query(
     if source.key().revision != request.revision {
         return Err(crate::invalid("Prepared query recording revision changed"));
     }
+    // The whole query reads one verified manifest: the source key is checked
+    // once, and ranges in one pack share a handle.
+    let (store, key) = super::files(source, content)?;
+    let _scope = store.scope(&key)?;
     // A query routes by its series family kind, or else by its product key.
     let name = match request.product.as_str() {
         "series-state" | "series-summary" | "series-next-change" | "events-page"
@@ -1438,8 +1731,9 @@ pub fn query(
     }
     // Null is a query result whose coverage has not been accepted yet. Clients
     // inspect real preparation status and retry; it is not an empty history.
-    let data = query_data(source, request, content, cancelled)?;
+    let mut data = query_data(source, request, content, cancelled)?;
     check_cancel(cancelled)?;
+    append_stack_warnings(source, &request.product, name, &mut data);
     bounded_json(
         &Reply {
             source_id: &request.source_id,

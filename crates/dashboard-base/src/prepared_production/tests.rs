@@ -1049,3 +1049,89 @@ fn global_value_extent_includes_off_page_signed_rows_exactly() {
     assert_eq!(selected.countries.len(), 1);
     assert_eq!(selected.countries[0].tag, "B");
 }
+
+#[test]
+fn endpoint_reads_search_each_leaf_directory_once_and_restore_only_requested_leaves() {
+    use crate::prepared::series::{directory_tests::SMALL_READS, tests::Fixture};
+    let flag = AtomicBool::new(false);
+    let fixture = Fixture::new();
+    let mut writer = fixture.writer();
+    let mut state = ProductionAccumulator::new(replay::FORMAT_VERSION, 1, 0);
+    let tags: Vec<String> = (0..1000).map(|index| format!("T{index:04}")).collect();
+    let mut published = Vec::new();
+    // Three batches; every leaf changes in each, the classifications never do.
+    for block in 0..3 {
+        let read = block * 720;
+        let mut current = page(read, Vec::new());
+        current.last_hour = read + 719;
+        current.countries = tags
+            .iter()
+            .enumerate()
+            .map(|(index, tag)| {
+                let units = i128::from(block) * 1000 + index as i128;
+                CountryEndpoint {
+                    tag: tag.clone(),
+                    equipment: Some(source(
+                        read,
+                        vec![
+                            amount(1, units, true, false),
+                            amount(2, -units, true, false),
+                        ],
+                    )),
+                    rocket: Some(source(read, vec![amount(3, units, true, false)])),
+                    rocket_joined: true,
+                }
+            })
+            .collect();
+        state.classifications = current.classifications.clone();
+        publish_endpoint(&mut writer, &mut state, &current).unwrap();
+        write_state(&mut writer, &mut state).unwrap();
+        published.push(current);
+    }
+    writer.commit().unwrap();
+    let count = endpoint_count(&fixture.store, &fixture.key, 1).unwrap();
+    for (block, original) in published.iter().enumerate() {
+        let hour = original.first_hour + 5;
+        let mut wanted = original.clone();
+        wanted.render_warnings(hour);
+        let before = SMALL_READS.get();
+        let restored = read_at(&fixture.store, &fixture.key, 1, count, hour, &flag)
+            .unwrap()
+            .unwrap();
+        let reads = SMALL_READS.get() - before;
+        assert_eq!(restored, wanted, "block {block}");
+        // Searching each of the 3,003 leaves' directory entries on its own
+        // takes about 14 small reads per leaf (42,000).
+        assert!(reads <= 1_500, "{reads} small reads restoring every leaf");
+
+        let mut endpoints = Endpoints::new(&fixture.store, &fixture.key, 1, count, &flag);
+        let tag = tags[517].as_str();
+        let before = SMALL_READS.get();
+        let one = endpoints.page(hour, Leaves::Country(tag)).unwrap().unwrap();
+        let reads = SMALL_READS.get() - before;
+        assert!(reads <= 400, "{reads} small reads restoring one country");
+        assert_eq!(one.classifications, restored.classifications);
+        for (row, full) in one.countries.iter().zip(&restored.countries) {
+            if row.tag == tag {
+                assert_eq!(row, full);
+            } else {
+                assert!(row.equipment.as_ref().unwrap().amounts.is_empty());
+                assert!(row.rocket.as_ref().unwrap().amounts.is_empty());
+            }
+        }
+        let joined = BTreeSet::from([tags[3].clone(), tags[999].clone()]);
+        let rockets = endpoints
+            .page(hour, Leaves::Rockets(&joined))
+            .unwrap()
+            .unwrap();
+        assert!(rockets.classifications.is_empty());
+        for (row, full) in rockets.countries.iter().zip(&restored.countries) {
+            assert!(row.equipment.as_ref().unwrap().amounts.is_empty());
+            if joined.contains(&row.tag) {
+                assert_eq!(row.rocket, full.rocket);
+            } else {
+                assert!(row.rocket.as_ref().unwrap().amounts.is_empty());
+            }
+        }
+    }
+}

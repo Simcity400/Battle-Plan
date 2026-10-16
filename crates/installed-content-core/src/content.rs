@@ -871,11 +871,15 @@ impl ResolvedLayer {
         let mut hashes = BTreeMap::new();
         match &self.source {
             LayerSource::Folder(root) => {
-                for relative in self.files.keys() {
-                    hashes.insert(
-                        relative.clone(),
-                        cache.file(&root.join(folder_text(relative)?), stats)?,
-                    );
+                let paths = self
+                    .files
+                    .keys()
+                    .map(|relative| Ok(root.join(folder_text(relative)?)))
+                    .collect::<io::Result<Vec<_>>>()?;
+                // Files before the first failing one keep their digests, as
+                // hashing them one by one would.
+                for (relative, probe) in self.files.keys().zip(cache.probe_all(&paths)) {
+                    hashes.insert(relative.clone(), cache.settle(probe?, stats));
                 }
             }
             LayerSource::Archive(path) => {
@@ -2351,13 +2355,27 @@ impl HashCache {
     }
 
     fn file(&mut self, path: &Path, stats: &mut HashStats) -> io::Result<[u8; 32]> {
+        let probe = self.probe(path)?;
+        Ok(self.settle(probe, stats))
+    }
+
+    /// A file's stamp and digest, from the cache or read now; the cache is
+    /// changed only by [`HashCache::settle`].
+    fn probe(&self, path: &Path) -> io::Result<Probe> {
+        #[cfg(test)]
+        hash_cache_tests::PROBED
+            .lock()
+            .expect("probed paths")
+            .push((path.to_owned(), std::thread::current().id()));
         let stamp = Stamp::read(path)?;
-        let key = text_path(path)?;
-        stats.files += 1;
-        stats.bytes += stamp.size;
-        if let Some(hash) = self.get(key, &stamp) {
-            stats.cache_hits += 1;
-            return Ok(hash);
+        let key = text_path(path)?.to_owned();
+        if let Some(hash) = self.get(&key, &stamp) {
+            return Ok(Probe {
+                key,
+                stamp,
+                hash,
+                read: false,
+            });
         }
         let (hash, size) = digest_reader(&mut File::open(path)?)?;
         if size != stamp.size || Stamp::read(path)? != stamp {
@@ -2366,11 +2384,77 @@ impl HashCache {
                 path.display()
             )));
         }
-        stats.files_read += 1;
-        stats.bytes_read += size;
-        self.insert(key.to_owned(), stamp, hash);
-        Ok(hash)
+        Ok(Probe {
+            key,
+            stamp,
+            hash,
+            read: true,
+        })
     }
+
+    /// Probes every path on the machine's cores, returning each result in
+    /// path order.
+    fn probe_all(&self, paths: &[PathBuf]) -> Vec<io::Result<Probe>> {
+        let workers = std::thread::available_parallelism()
+            .map_or(1, |count| count.get())
+            .min(paths.len());
+        if workers <= 1 {
+            return paths.iter().map(|path| self.probe(path)).collect();
+        }
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let mut probes: Vec<Option<io::Result<Probe>>> = Vec::new();
+        probes.resize_with(paths.len(), || None);
+        std::thread::scope(|scope| {
+            let tasks: Vec<_> = (0..workers)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut done = Vec::new();
+                        loop {
+                            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(path) = paths.get(index) else {
+                                return done;
+                            };
+                            done.push((index, self.probe(path)));
+                        }
+                    })
+                })
+                .collect();
+            for task in tasks {
+                let done = task
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+                for (index, probe) in done {
+                    probes[index] = Some(probe);
+                }
+            }
+        });
+        probes
+            .into_iter()
+            .map(|probe| probe.expect("every path probed"))
+            .collect()
+    }
+
+    /// Counts a probe and keeps a digest read now.
+    fn settle(&mut self, probe: Probe, stats: &mut HashStats) -> [u8; 32] {
+        stats.files += 1;
+        stats.bytes += probe.stamp.size;
+        if probe.read {
+            stats.files_read += 1;
+            stats.bytes_read += probe.stamp.size;
+            self.insert(probe.key, probe.stamp, probe.hash);
+        } else {
+            stats.cache_hits += 1;
+        }
+        probe.hash
+    }
+}
+
+/// One content file's stamp and digest, and whether its bytes were read.
+struct Probe {
+    key: String,
+    stamp: Stamp,
+    hash: [u8; 32],
+    read: bool,
 }
 
 fn digest_reader(input: &mut impl Read) -> io::Result<([u8; 32], u64)> {

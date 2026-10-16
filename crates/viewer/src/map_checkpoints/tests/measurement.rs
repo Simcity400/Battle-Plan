@@ -14,6 +14,9 @@ mod prefixes;
 mod recording;
 mod resources;
 
+/// A prepared manifest entry: the range's pack, offset and length.
+const MANIFEST_ENTRY_BYTES: u64 = 24;
+
 fn micros(started: Instant) -> u64 {
     started.elapsed().as_micros().try_into().unwrap()
 }
@@ -268,7 +271,7 @@ fn measure_recording(
                         };
                         let checkpoint = checkpoint_due(builder, decoded.branch);
                         let started = Instant::now();
-                        builder.accept(writer, update, decoded, position)?;
+                        builder.accept(writer, &update, decoded, position)?;
                         let elapsed = micros(started);
                         builder_us[ordinal] += elapsed;
                         if checkpoint {
@@ -354,7 +357,7 @@ fn measure_recording(
                     .read(&fixture.key, &section(branch), ordinal)
                     .unwrap()
                     .unwrap();
-                let bytes = file.metadata().unwrap().len();
+                let bytes = file.len();
                 let (_, checkpoint_hour) = header(file).unwrap();
                 checkpoint_hours.insert((branch, checkpoint_hour));
                 let checkpoint = probe.seek(branch, checkpoint_hour).unwrap().unwrap();
@@ -529,8 +532,6 @@ fn measure_recording(
             .read(&fixture.key, "map.resume", 0)
             .unwrap()
             .unwrap()
-            .metadata()
-            .unwrap()
             .len();
         let gap_bytes: u64 = progress
             .gaps
@@ -540,8 +541,6 @@ fn measure_recording(
                     .store
                     .read(&fixture.key, &format!("map.gaps.{branch}"), page.range)
                     .unwrap()
-                    .unwrap()
-                    .metadata()
                     .unwrap()
                     .len()
             })
@@ -558,9 +557,10 @@ fn measure_recording(
             .values()
             .map(|state| state.checkpoints)
             .sum::<u64>()
-            * 16;
+            * MANIFEST_ENTRY_BYTES;
         let scalable = checkpoint_bytes + gap_bytes + manifest_bytes;
-        let fixed_base_bytes = initial_checkpoint_bytes + progress.branches.len() as u64 * 16;
+        let fixed_base_bytes =
+            initial_checkpoint_bytes + progress.branches.len() as u64 * MANIFEST_ENTRY_BYTES;
         let projected = (scalable - fixed_base_bytes) as f64 / frames as f64 * 438_000.0
             + (total_bytes - scalable + fixed_base_bytes) as f64;
         let direct = if stride == interval {
@@ -887,7 +887,7 @@ fn checkpoint_accept_timing_measurement() {
                         let started = Instant::now();
                         builder.accept(
                             &mut writer,
-                            source,
+                            &source,
                             frame,
                             Position { block, next_frame },
                         )?;

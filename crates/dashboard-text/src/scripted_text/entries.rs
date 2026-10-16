@@ -365,6 +365,7 @@ impl ScriptedContent {
     }
 
     pub(crate) fn cached_states(&self) -> Result<&StateContent, &str> {
+        crate::catalogue::used(crate::catalogue::Reader::States);
         self.state_content
             .get_or_init(|| {
                 read_state_content(&self.layers.layers).map_err(|error| error.to_string())
@@ -429,7 +430,9 @@ impl<'a> ScriptedText<'a> {
     /// The hour's trigger inputs; missing tables refuse only predicates that use them.
     pub fn trigger_world(&self) -> Result<&World<'a>, String> {
         self.world
-            .get_or_init(|| self.content.lazy_world(self.frame))
+            .get_or_init(|| {
+                crate::triggers::inputs::unrecorded(|| self.content.lazy_world(self.frame))
+            })
             .as_ref()
             .map_err(Clone::clone)
     }
@@ -560,6 +563,13 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn state_name_for(&self, id: u32, plain: bool) -> Result<String, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::StateNameFor(id, plain)),
+            || self.state_name_for_unrecorded(id, plain),
+        )
+    }
+
+    pub(crate) fn state_name_for_unrecorded(&self, id: u32, plain: bool) -> Result<String, String> {
         static EMPTY_STATE_NAMES: StateNames = BTreeMap::new();
         let (states, gap) = rows::<tables::States>(self.frame);
         let state = states
@@ -605,6 +615,16 @@ impl<'a> ScriptedText<'a> {
 
     /// Primary province display names, also used by the combat-history location.
     pub fn province_display_name_primary(&self, id: u32) -> Result<Option<String>, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::ProvinceDisplayNamePrimary(id)),
+            || self.province_display_name_primary_unrecorded(id),
+        )
+    }
+
+    pub(crate) fn province_display_name_primary_unrecorded(
+        &self,
+        id: u32,
+    ) -> Result<Option<String>, String> {
         if let Some(raw) = self
             .province_name_override(id)?
             .filter(|raw| !raw.is_empty())
@@ -625,6 +645,13 @@ impl<'a> ScriptedText<'a> {
 
     /// Effect/map display names, distinct from province GetName.
     pub(crate) fn province_display_name(&self, id: u32) -> Result<String, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::ProvinceDisplayName(id)),
+            || self.province_display_name_unrecorded(id),
+        )
+    }
+
+    pub(crate) fn province_display_name_unrecorded(&self, id: u32) -> Result<String, String> {
         if let Some(text) = self.province_display_name_primary(id)? {
             return Ok(text);
         }
@@ -643,6 +670,16 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn province_name_override(&self, id: u32) -> Result<Option<&[u8]>, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::ProvinceNameOverride(id)),
+            || self.province_name_override_unrecorded(id),
+        )
+    }
+
+    pub(crate) fn province_name_override_unrecorded(
+        &self,
+        id: u32,
+    ) -> Result<Option<&[u8]>, String> {
         let (names, gap) = rows::<tables::ProvinceNames>(self.frame);
         if let Some(row) = names.iter().find(|row| row.province == id) {
             Ok(Some(&row.name))
@@ -654,6 +691,13 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(crate) fn province_victory_point_name(&self, id: u32) -> Result<String, String> {
+        crate::triggers::inputs::query(
+            || crate::triggers::inputs::Key::Text(TextQuery::ProvinceVictoryPointName(id)),
+            || self.province_victory_point_name_unrecorded(id),
+        )
+    }
+
+    pub(crate) fn province_victory_point_name_unrecorded(&self, id: u32) -> Result<String, String> {
         let (provinces, gap) = rows::<tables::Provinces>(self.frame);
         let province = provinces
             .iter()
@@ -813,6 +857,7 @@ fn bound_scope(
         random_seed: super::random::scope_seed(424242),
         random_counter: super::random::scope_counter(424242),
         random_seed_refusal: None, // Construct a known fresh seed.
+        clock_seed: None,
     });
     scopes.prev_distance.borrow_mut().push(distance);
     at

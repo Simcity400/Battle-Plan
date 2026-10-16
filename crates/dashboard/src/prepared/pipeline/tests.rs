@@ -14,10 +14,16 @@ use std::{
 };
 
 mod casualty_pending;
+mod catalogue_refusals;
 mod equipment_loss_pending;
 mod family_lanes;
 mod family_refusal;
+mod independent_families;
+mod independent_groups;
+mod parallel_flush;
+mod prepass_parity;
 mod serialization_order;
+mod stability_progressive;
 
 #[test]
 #[cfg_attr(
@@ -118,7 +124,6 @@ fn observer_timing_table_is_filled_only_in_measured_mode() {
         "branch.restore-or-construct",
         "branch.flush_overhead",
         "branch.drop",
-        "block.reader",
         "block.overhead",
         "frame.overhead",
         "stream.acquire",
@@ -130,8 +135,12 @@ fn observer_timing_table_is_filled_only_in_measured_mode() {
     ] {
         assert!(families.contains_key(name), "missing timing row {name}");
     }
-    assert!(family_time(&families) <= timing.wall);
-    assert_eq!(family_time(&families) + timing.residual, timing.wall);
+    // Block extracts run on pre-pass workers, in serial runs too.
+    assert!(family_time(&families) - timing.worker_observe <= timing.wall);
+    assert_eq!(
+        family_time(&families) - timing.worker_observe + timing.residual,
+        timing.wall
+    );
 
     let (_, resumed) = run_measured(
         &source,
@@ -157,7 +166,10 @@ fn observer_timing_table_is_filled_only_in_measured_mode() {
             "missing resume timing row {name}"
         );
     }
-    assert_eq!(family_time(&families) + resumed.residual, resumed.wall);
+    assert_eq!(
+        family_time(&families) - resumed.worker_observe + resumed.residual,
+        resumed.wall
+    );
 
     // Prefix mode ignores the short time box, emits once per real commit, and
     // resumes at the accepted cursor without writing the earlier row again.
@@ -182,7 +194,10 @@ fn observer_timing_table_is_filled_only_in_measured_mode() {
                     block.ordinal + 1
                 );
                 assert_eq!(block.hours, 2);
-                assert_eq!(family_time(&block.families) + block.residual, block.wall);
+                assert_eq!(
+                    family_time(&block.families) - block.worker_observe + block.residual,
+                    block.wall
+                );
                 serde_json::to_writer(
                     &mut journal,
                     &serde_json::json!({
@@ -1533,30 +1548,52 @@ fn appended_recording_reuses_accepted_domain_state_and_only_prepares_new_blocks(
 #[test]
 fn cancelled_initial_block_publishes_no_country_or_day_state() {
     let replay = recording();
-    let mut fixture = Fixture::new(&replay);
-    let source = fixture.source("1");
-    let flag = AtomicBool::new(false);
-    assert!(
+    // Cancels before the hourly walk's first commit.
+    let cancelled = |source: &Source, flag: &AtomicBool| {
         run_checked(
-            &source,
+            source,
             None,
-            &flag,
-            |accepted| assert!(
-                accepted
-                    .sections
-                    .iter()
-                    .all(|section| section.state == State::Preparing)
-            ),
+            flag,
+            |accepted| {
+                assert!(
+                    accepted
+                        .sections
+                        .iter()
+                        .all(|section| section.state == State::Preparing)
+                )
+            },
             |_| {
                 flag.store(true, Ordering::Release);
                 Ok(())
-            }
+            },
         )
         .is_err()
-    );
+    };
+    let mut fixture = Fixture::new(&replay);
+    let source = fixture.source("1");
+    let flag = AtomicBool::new(false);
+    independent::with_test_hourly(|| assert!(cancelled(&source, &flag)));
     let (store, key) = super::super::files(&source, None).unwrap();
     assert!(!store.is_reusable(&key).unwrap());
     assert!(store.saved_key().unwrap().is_none());
+    flag.store(false, Ordering::Release);
+    assert!(run(&source, None, &flag, |_| {}).is_ok());
+
+    // Families prepared on their own commit before the hourly walk, so only
+    // their progress is kept: the walk accepted nothing.
+    let mut fixture = Fixture::new(&replay);
+    let source = fixture.source("1");
+    let flag = AtomicBool::new(false);
+    assert!(cancelled(&source, &flag));
+    let (store, key) = super::super::files(&source, None).unwrap();
+    let saved = checkpoint(&store, &key, None).unwrap().unwrap().0;
+    assert_eq!(saved.cursor.next_block, 0);
+    assert!(
+        saved
+            .independent
+            .values()
+            .all(|family| family.next_block == replay.index.len())
+    );
     flag.store(false, Ordering::Release);
     assert!(run(&source, None, &flag, |_| {}).is_ok());
 }
@@ -2032,24 +2069,27 @@ fn one_branch_batches_many_replay_blocks_into_shared_measure_files() {
     let flag = AtomicBool::new(false);
     let mut commits = 0;
     let mut blocks = 0;
-    let result = run_checked(
-        &source,
-        None,
-        &flag,
-        |progress| {
-            if progress
-                .sections
-                .iter()
-                .all(|section| section.state == State::Preparing)
-            {
-                blocks += 1;
-            }
-        },
-        |_| {
-            commits += 1;
-            Ok(())
-        },
-    )
+    // The hourly walk's own reports, one per replay block.
+    let result = independent::with_test_hourly(|| {
+        run_checked(
+            &source,
+            None,
+            &flag,
+            |progress| {
+                if progress
+                    .sections
+                    .iter()
+                    .all(|section| section.state == State::Preparing)
+                {
+                    blocks += 1;
+                }
+            },
+            |_| {
+                commits += 1;
+                Ok(())
+            },
+        )
+    })
     .unwrap();
     assert_eq!(blocks, replay.index.len());
     assert_eq!(result.new_blocks, replay.index.len());
@@ -2064,9 +2104,12 @@ fn one_branch_batches_many_replay_blocks_into_shared_measure_files() {
             Some(commits as u64)
         );
     }
-    assert_eq!(
-        store.range_count(&key, "measure-1-catalogue").unwrap(),
-        Some(1)
+    // A catalogue is its base plus a short chain of patches.
+    assert!(
+        store
+            .range_count(&key, "measure-1-catalogue")
+            .unwrap()
+            .is_some_and(|count| (1..=4).contains(&count))
     );
     let saved = checkpoint(&store, &key, None).unwrap().unwrap().0;
     assert_eq!(saved.cursor.next_block, replay.index.len());
@@ -2661,9 +2704,12 @@ fn prepared_autonomy_matches_oracle_after_commits_cancel_resume_append_and_5000_
         [(10, 13), (15, 16)]
     );
     let (store, key) = super::super::files(&source, None).unwrap();
-    assert_eq!(
-        store.range_count(&key, "autonomy-1-catalogue").unwrap(),
-        Some(1)
+    // A catalogue is its base plus a short chain of patches.
+    assert!(
+        store
+            .range_count(&key, "autonomy-1-catalogue")
+            .unwrap()
+            .is_some_and(|count| (1..=4).contains(&count))
     );
     assert_eq!(
         store.range_count(&key, "autonomy-series-1").unwrap(),
@@ -2823,11 +2869,12 @@ fn prepared_tension_matches_oracle_after_commits_cancel_resume_append_and_5000_c
         ]
     );
     let (store, key) = super::super::files(&source, None).unwrap();
-    assert_eq!(
+    // A catalogue is its base plus a short chain of patches.
+    assert!(
         store
             .range_count(&key, "world-tension-1-catalogue")
-            .unwrap(),
-        Some(1)
+            .unwrap()
+            .is_some_and(|count| (1..=4).contains(&count))
     );
     assert_eq!(
         store.range_count(&key, "tension-series-1").unwrap(),
@@ -2920,19 +2967,18 @@ fn prepared_wars_match_oracle_after_commits_cancel_resume_append_and_5000_countr
     assert_eq!(run(&source, None, &flag, |_| {}).unwrap().new_blocks, 1);
     compare(&source);
     let (store, key) = super::super::files(&source, None).unwrap();
-    assert_eq!(
-        store.range_count(&key, "wars-1-catalogue").unwrap(),
-        Some(1)
+    // A catalogue is its base plus a short chain of patches.
+    assert!(
+        store
+            .range_count(&key, "wars-1-catalogue")
+            .unwrap()
+            .is_some_and(|count| (1..=4).contains(&count))
     );
     assert_eq!(store.range_count(&key, "wars-series-1").unwrap(), Some(3));
     let mut reader =
         crate::prepared::series::Reader::new(&store, &key, "wars-series-1".into(), &flag).unwrap();
     assert_eq!(
-        reader
-            .events(&[0], i32::MIN, i32::MAX, 0, 256)
-            .unwrap()
-            .rows
-            .len(),
+        reader.event_count_through(0, i32::MAX).unwrap(),
         2,
         "counter-only appends do not publish another topology input"
     );

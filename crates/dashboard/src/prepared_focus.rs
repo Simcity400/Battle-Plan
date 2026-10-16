@@ -612,6 +612,11 @@ pub struct FocusEvaluator {
     presentations: BTreeMap<(Presentation, String, String), (bool, Option<artwork::ResolvedArt>)>,
     reusable: BTreeSet<String>,
     hourly: BTreeMap<String, HourlyFocus>,
+    /// The inputs of each hourly tag's last evaluation, while they read the
+    /// same values ([`crate::triggers::inputs`]); runtime state, empty on resume.
+    inputs: BTreeMap<String, crate::triggers::inputs::Inputs>,
+    /// Hourly evaluations run, reused, and reused but checked.
+    pub(crate) reuse: crate::triggers::inputs::ReuseCounts,
     failed: BTreeSet<String>,
     failed_error: Option<String>,
     #[cfg(test)]
@@ -663,6 +668,7 @@ impl FocusEvaluator {
             self.presentations.clear();
             self.reusable.clear();
             self.hourly.clear();
+            self.inputs.clear();
             self.failed.clear();
             self.failed_error = None;
             let result = (|| {
@@ -911,6 +917,7 @@ impl FocusEvaluator {
         for tag in &accumulator.removed {
             index.close(tag, frame.hour);
             self.hourly.remove(tag);
+            self.inputs.remove(tag);
             self.reusable.remove(tag);
             self.failed.remove(tag);
         }
@@ -1011,6 +1018,8 @@ impl FocusEvaluator {
                     continue;
                 }
             }
+            // The full path rebuilds this tag's hourly layout.
+            self.inputs.remove(&tag);
             let observation =
                 observation.unwrap_or_else(|| accumulator.observation(&tag, frame.hour));
             let mut tokens: Vec<_> = observation
@@ -1194,72 +1203,114 @@ impl FocusEvaluator {
         {
             return Ok(false);
         }
+        let frame = inputs.frame;
+        // Every value the last evaluation read reads the same now, so it would
+        // present exactly what it presented: no change this hour.
+        let reused = self
+            .inputs
+            .get(tag)
+            .is_some_and(|recorded| recorded.confirm(frame, |key| inputs.reread(key)));
+        if reused && !crate::triggers::inputs::check_reuse() {
+            self.reuse.reused += 1;
+            self.reusable.remove(tag);
+            index.progress(
+                tag,
+                frame.hour,
+                i128::from(previous.progress.raw),
+                daily_gain(&previous.progress, &previous.order).unwrap_or(0),
+                false,
+            );
+            return Ok(true);
+        }
+        self.reuse.evaluated += 1;
         let layout = self.hourly.remove(tag).unwrap();
         let mut update: Option<FocusState> = None;
-        let result = (|| {
-            let mut warnings = Vec::new();
-            for mode in [Presentation::Display, Presentation::Text] {
-                let Some(rows) = layout.modes.get(&mode) else {
-                    continue;
-                };
-                let tokens: Vec<_> = rows.iter().map(|row| row.0.clone()).collect();
-                let (evaluated, notes) = self.present_in(
-                    source,
-                    content,
-                    inputs,
-                    tag,
-                    &tokens,
-                    mode,
-                    cancelled,
-                    |items, warnings| {
-                        let items = items
-                            .map(|item| {
-                                check_cancel(cancelled)?;
-                                Ok(item)
-                            })
-                            .collect::<io::Result<Vec<_>>>()?;
-                        Ok((items, warnings))
-                    },
-                )?;
-                if evaluated.len() != rows.len() {
-                    return Err(io::Error::other("Focus presentation omitted token"));
-                }
-                warnings.extend(notes);
-                let old = if mode == Presentation::Display {
-                    &last.presentation
-                } else {
-                    last.details.as_ref().unwrap()
-                };
-                for ((_, positions), (artwork, reason)) in rows.iter().zip(evaluated) {
-                    let next = PresentedFocus { artwork, reason };
-                    if old[positions[0]] != next {
-                        if update.is_none() {
-                            #[cfg(test)]
-                            {
-                                self.counts.completed_rows_copied += last.order.completed.len();
+        let (result, recorded) = crate::triggers::inputs::capture(frame, || {
+            (|| {
+                let mut warnings = Vec::new();
+                for mode in [Presentation::Display, Presentation::Text] {
+                    let Some(rows) = layout.modes.get(&mode) else {
+                        continue;
+                    };
+                    let tokens: Vec<_> = rows.iter().map(|row| row.0.clone()).collect();
+                    let (evaluated, notes) = self.present_in(
+                        source,
+                        content,
+                        inputs,
+                        tag,
+                        &tokens,
+                        mode,
+                        cancelled,
+                        |items, warnings| {
+                            let items = items
+                                .map(|item| {
+                                    check_cancel(cancelled)?;
+                                    Ok(item)
+                                })
+                                .collect::<io::Result<Vec<_>>>()?;
+                            Ok((items, warnings))
+                        },
+                    )?;
+                    if evaluated.len() != rows.len() {
+                        return Err(io::Error::other("Focus presentation omitted token"));
+                    }
+                    warnings.extend(notes);
+                    let old = if mode == Presentation::Display {
+                        &last.presentation
+                    } else {
+                        last.details.as_ref().unwrap()
+                    };
+                    for ((_, positions), (artwork, reason)) in rows.iter().zip(evaluated) {
+                        let next = PresentedFocus { artwork, reason };
+                        if old[positions[0]] != next {
+                            if update.is_none() {
+                                #[cfg(test)]
+                                {
+                                    self.counts.completed_rows_copied += last.order.completed.len();
+                                }
+                                update = Some(last.clone());
                             }
-                            update = Some(last.clone());
-                        }
-                        let changed = update.as_mut().unwrap();
-                        let target = if mode == Presentation::Display {
-                            &mut changed.presentation
-                        } else {
-                            changed.details.as_mut().unwrap()
-                        };
-                        for &position in positions {
-                            target[position] = next.clone();
+                            let changed = update.as_mut().unwrap();
+                            let target = if mode == Presentation::Display {
+                                &mut changed.presentation
+                            } else {
+                                changed.details.as_mut().unwrap()
+                            };
+                            for &position in positions {
+                                target[position] = next.clone();
+                            }
                         }
                     }
                 }
-            }
-            // Each projection has the same standing warnings; an earlier
-            // transient write refusal needs the full path to retry its write.
-            warnings.sort();
-            warnings.dedup();
-            Ok(warnings == last.warnings)
-        })();
+                // Each projection has the same standing warnings; an earlier
+                // transient write refusal needs the full path to retry its write.
+                warnings.sort();
+                warnings.dedup();
+                Ok(warnings == last.warnings)
+            })()
+        });
         self.hourly.insert(tag.to_owned(), layout);
         self.reusable.remove(tag);
+        if reused {
+            // Check mode: the reused evaluation, run anyway, changed nothing.
+            self.reuse.checked += 1;
+            if update.is_some() || !matches!(result, Ok(true)) {
+                self.reuse.mismatched += 1;
+                #[cfg(test)]
+                panic!(
+                    "focus {tag}: a reused evaluation changed at hour {}",
+                    frame.hour
+                );
+            }
+        }
+        match &result {
+            Ok(true) => {
+                self.inputs.insert(tag.to_owned(), recorded);
+            }
+            _ => {
+                self.inputs.remove(tag);
+            }
+        }
         if !result? {
             return Ok(false);
         }

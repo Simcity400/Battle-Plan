@@ -1,6 +1,6 @@
 use super::{
-    DecodedFrame, Frame, SharedView, TABLE_COUNT, TableUpdate, TableView, validate_complete,
-    validate_delta, validate_rows, validate_singleton,
+    DecodedFrame, Frame, SharedView, TABLE_COUNT, TableUpdate, TableView, validate_applied,
+    validate_complete, validate_delta, validate_rows, validate_singleton,
 };
 use crate::{Hour, codec::invalid, rows::TableId};
 use engine::allocation;
@@ -88,33 +88,17 @@ impl FrameDecoder {
             {
                 return not_selected();
             }
-            match apply_table(
+            match advance_table(
                 table,
                 &frame.tables[index],
                 previous[index].take(),
                 frame.hour,
+                frame.metrics.table_ns[index] != 0,
             ) {
-                Ok(mut view) => {
-                    // The collector exports zero timing for skipped tables
-                    // (sampling::exported_table_ticks). Equality may encode a
-                    // successful acquisition as Unchanged; completeness and
-                    // this table's own timing, not the wire update, witness it.
-                    if matches!(*view, TableView::Complete(_)) && frame.metrics.table_ns[index] != 0
-                    {
-                        view.1 = Some(frame.hour);
-                    }
-                    view
-                }
+                Ok(view) => view,
                 Err(error) => {
-                    if allocation::is_allocation_error(&error) {
-                        allocation_failure = Some(error);
-                        not_selected()
-                    } else {
-                        TableView::Unavailable {
-                            reason: error.to_string(),
-                        }
-                        .into()
-                    }
+                    allocation_failure = Some(error);
+                    not_selected()
                 }
             }
         });
@@ -131,8 +115,39 @@ impl FrameDecoder {
     }
 }
 
+/// One table's view at `hour`, from its update and the hour before's complete
+/// view with that hour (`previous`), as [`FrameDecoder::advance`] reconstructs
+/// it: a failed update becomes a named unavailable view, and a complete table
+/// `read` this hour (its own nonzero timing) is sampled at it. Only an
+/// allocation failure is an error.
+pub(crate) fn advance_table(
+    table: TableId,
+    update: &TableUpdate,
+    previous: Option<(Hour, SharedView)>,
+    hour: Hour,
+    read: bool,
+) -> io::Result<SharedView> {
+    match apply_table(table, update, previous, hour) {
+        Ok(mut view) => {
+            // The collector exports zero timing for skipped tables
+            // (sampling::exported_table_ticks). Equality may encode a
+            // successful acquisition as Unchanged; completeness and this
+            // table's own timing, not the wire update, witness it.
+            if matches!(*view, TableView::Complete(_)) && read {
+                view.1 = Some(hour);
+            }
+            Ok(view)
+        }
+        Err(error) if allocation::is_allocation_error(&error) => Err(error),
+        Err(error) => Ok(TableView::Unavailable {
+            reason: error.to_string(),
+        }
+        .into()),
+    }
+}
+
 /// One view shared by every unselected table of every hour.
-fn not_selected() -> SharedView {
+pub(crate) fn not_selected() -> SharedView {
     static VIEW: LazyLock<SharedView> = LazyLock::new(|| {
         TableView::Unavailable {
             reason: "Table not selected for reconstruction".into(),
@@ -189,19 +204,23 @@ fn apply_table(
             } = update
             {
                 validate_delta(table, changed, deleted)?;
+                // The baseline passed full row validation, so an in-place
+                // delta checks only the keys it can have changed.
                 let rows = match previous_view.try_unwrap() {
                     Ok(TableView::Complete(previous_rows)) => {
-                        previous_rows.apply_delta(changed, deleted)?
+                        previous_rows.apply_delta_validated(changed, deleted)?
                     }
                     Err(shared) => match &*shared {
                         TableView::Complete(previous_rows) => {
-                            previous_rows.apply_delta_shared(changed, deleted)?
+                            let rows = previous_rows.apply_delta_shared(changed, deleted)?;
+                            rows.validate_keys()?;
+                            rows
                         }
                         _ => unreachable!("only complete tables become baselines"),
                     },
                     Ok(_) => unreachable!("only complete tables become baselines"),
                 };
-                validate_complete(table, &rows, hour)?;
+                validate_applied(table, &rows, hour)?;
                 Ok(TableView::Complete(rows).into())
             } else {
                 // This private baseline already passed full row validation. Only

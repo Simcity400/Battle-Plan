@@ -597,6 +597,8 @@ fn character_lookup_keeps_country_five_thousand() {
         scope_id: 6_000,
         ..Default::default()
     });
+    // A recorded table is in key order: scope kind, then id.
+    stores.sort_by_key(|row| (row.scope_kind, row.scope_id));
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(5_000))]);
     let out = fixture.render(
         "set_nationality={character=synthetic_other target_country=BBB}",
