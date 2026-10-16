@@ -1214,6 +1214,15 @@ impl Document {
                     rail_defines,
                 ))
             });
+            // The infrastructure map mode's limit operands: locations and enabling technologies.
+            let h_infrastructure_reads = scope.spawn(|| -> io::Result<_> {
+                let locations = installed_content::strategic_locations::read(layers)?;
+                let technologies = layers
+                    .key_names()
+                    .and_then(|names| installed_content::technology::Catalog::read(layers, &names))
+                    .map_err(|error| error.to_string());
+                Ok((locations, technologies))
+            });
             let h_trains = scope.spawn(|| -> io::Result<_> {
                 let mut warnings = Vec::new();
                 let trains = Arc::new(viewer_world::map::trains::TrainAssets::load(
@@ -1353,6 +1362,9 @@ impl Document {
             )?;
             let (cities, city_styles, buildings_read, building_types, rail_defines) =
                 h_rail_reads.join().expect("rail reads loader panicked")?;
+            let infrastructure_reads = h_infrastructure_reads
+                .join()
+                .expect("infrastructure reads loader panicked")?;
             let (ideologies, warnings) =
                 h_ideologies.join().expect("ideologies loader panicked")?;
             joined_warnings.extend(
@@ -1426,6 +1438,7 @@ impl Document {
                 city_styles,
                 buildings_read,
                 building_types,
+                infrastructure_reads,
                 rail_defines,
                 trains,
                 aircraft,
@@ -1463,6 +1476,7 @@ impl Document {
             city_styles,
             buildings_read,
             building_types,
+            (strategic_locations, technologies),
             rail_defines,
             trains,
             aircraft,
@@ -1695,6 +1709,14 @@ impl Document {
                     "Scripted map modes: {count} unread entries {field}"
                 ));
             }
+            let categories = installed_content::state_categories::read(&content.layers)?;
+            let infrastructure = viewer_world::map::map_mode::infrastructure::Content::new(
+                &building_types,
+                &defines,
+                &categories,
+                &strategic_locations,
+                technologies.as_ref().map_err(Clone::clone),
+            )?;
             let terrain_categories = combat_assets.movement_terrain();
             let provinces: Vec<u32> = map.definitions.keys().copied().collect();
             let province_terrain = |province| {
@@ -1719,10 +1741,12 @@ impl Document {
             Arc::new(viewer_world::map::map_mode::Content::new(
                 &defines,
                 Arc::new(counters.ideologies.clone()),
+                &categories,
                 scripted_modes,
                 content.layers.faction_templates(),
                 recorded_language.clone(),
                 terrain,
+                infrastructure,
             )?)
         };
         let icons = MapIcons {

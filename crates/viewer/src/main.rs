@@ -1485,6 +1485,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let mode = crate::app::picker::mode_hover(
                 &options.map_mode,
                 document.map_modes.defines.opinion_thresholds(),
+                || document.map_modes.infrastructure.hover_level(frame, province),
             );
             // The hover's air statistics wait for the roster history worker, as the
             // interactive hover does through its wake: ask again until nothing is pending.

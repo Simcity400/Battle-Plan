@@ -555,6 +555,7 @@ countries={ GER={} } states={1={owner=GER}} provinces={}
             name: None,
             manpower_available: None,
             population: None,
+            category: None,
         },
     );
     assert!(

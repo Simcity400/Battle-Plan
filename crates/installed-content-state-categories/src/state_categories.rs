@@ -32,6 +32,10 @@ pub struct Database {
     /// Each name's colour after every `color` read of its bodies, in [`Self::names`] order;
     /// `Ok(None)` when no body reads one, `Err` when a read refused.
     pub colors: Vec<Result<Option<[f32; 4]>, String>>,
+    /// Each category's `buildings_max_level` entries in [`Self::names`] order:
+    /// the building name as authored and its integer maximum, `None` when the
+    /// value does not scan as one.
+    pub capped: Vec<Vec<(Vec<u8>, Option<i32>)>>,
     pub notes: Vec<String>,
     gap: Option<String>,
 }
@@ -66,6 +70,40 @@ impl Database {
         self.colors[index].clone()
     }
 
+    /// Each category whose `buildings_max_level` names `building` under the
+    /// lexer's ASCII fold, in declaration order, with the maximum it sets.
+    /// `Err` names an entry that does not scan as an integer or a building
+    /// named again with a different maximum, whose stored value is unverified.
+    pub fn capping(&self, building: &str) -> Result<Vec<(&[u8], Result<i32, String>)>, String> {
+        if let Some(why) = &self.gap {
+            return Err(format!("state-category definitions uncertain: {why}"));
+        }
+        Ok(self
+            .names
+            .iter()
+            .zip(&self.capped)
+            .filter_map(|(name, capped)| {
+                let values = capped
+                    .iter()
+                    .filter(|(key, _)| key.eq_ignore_ascii_case(building.as_bytes()))
+                    .map(|(_, value)| *value)
+                    .collect::<Vec<_>>();
+                let first = *values.first()?;
+                let category = String::from_utf8_lossy(name);
+                let value = match first {
+                    _ if values.iter().any(|value| *value != first) => Err(format!(
+                        "state category {category} sets {building}'s maximum more than once with different values"
+                    )),
+                    Some(value) => Ok(value),
+                    None => Err(format!(
+                        "state category {category}'s maximum for {building} is not an integer"
+                    )),
+                };
+                Some((name.as_slice(), value))
+            })
+            .collect())
+    }
+
     fn insert(&mut self, name: Vec<u8>) -> usize {
         match self
             .names
@@ -76,6 +114,7 @@ impl Database {
             None => {
                 self.names.push(name);
                 self.colors.push(Ok(None));
+                self.capped.push(Vec::new());
                 self.names.len() - 1
             }
         }
@@ -101,6 +140,21 @@ impl Database {
             let index = self.insert(name);
             for body in bodies {
                 self.read_colors(index, &body);
+                for field in body
+                    .iter()
+                    .filter(|field| field.keyword_is("buildings_max_level"))
+                {
+                    self.capped[index].extend(field.value.items().unwrap_or_default().iter().map(
+                        |entry| {
+                            (
+                                c_string(entry.key.as_deref().unwrap_or_default()).to_vec(),
+                                entry.value.scalar().and_then(|value| {
+                                    installed_content_core::crt::scan_i32(value).stored()
+                                }),
+                            )
+                        },
+                    ));
+                }
             }
         }
     }
@@ -230,6 +284,47 @@ mod tests {
             assert_eq!(database.find(b"sYn").unwrap().is_some(), expected.contains(&b"Syn".as_slice()));
             assert!(database.find(b"undefined").unwrap().is_none());
         }
+    }
+
+    #[test]
+    fn state_categories_name_the_buildings_they_cap_across_bodies() {
+        engine::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let database = parse(
+            b"state_categories={isle={buildings_max_level={naval_base=8}} town={} ISLE={buildings_max_level={Roads=2}} coast={buildings_max_level={roads=1 air_base=2}}}",
+            &KeyNames::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            database.capping("roads").unwrap(),
+            [(b"isle".as_slice(), Ok(2)), (b"coast", Ok(1))]
+        );
+        assert_eq!(
+            database.capping("air_base").unwrap(),
+            [(b"coast".as_slice(), Ok(2))]
+        );
+        assert!(database.capping("rails").unwrap().is_empty());
+        let unclear = parse(
+            b"state_categories={a={buildings_max_level={roads=2 roads=3}} b={buildings_max_level={roads=x}} c={buildings_max_level={roads=4 roads=4}}}",
+            &KeyNames::default(),
+        )
+        .unwrap();
+        let capping = unclear.capping("roads").unwrap();
+        assert!(
+            capping[0]
+                .1
+                .as_ref()
+                .unwrap_err()
+                .contains("more than once")
+        );
+        assert!(
+            capping[1]
+                .1
+                .as_ref()
+                .unwrap_err()
+                .contains("not an integer")
+        );
+        assert_eq!(capping[2].1, Ok(4));
     }
 
     #[test]

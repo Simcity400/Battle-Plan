@@ -63,6 +63,7 @@ pub mod scripted_map_modes;
 pub mod scripted_triggers;
 pub mod special_projects;
 pub mod static_modifiers;
+pub mod strategic_locations;
 pub mod tag_aliases;
 pub mod technology;
 pub mod technology_sharing;

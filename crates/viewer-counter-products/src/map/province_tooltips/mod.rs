@@ -162,13 +162,15 @@ impl Content {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ModeHover {
     /// The location block, units and selection; `category` adds the state's category line,
-    /// as the states mode does. The category is the state's current one, which play can change
-    /// from its history and recordings do not hold, so the line is refused.
+    /// naming its live category (States `category`), as the states mode does.
     Location { category: bool },
     /// Nothing of the mode's own.
     Nothing,
     /// The state's population.
     Manpower,
+    /// The infrastructure line (`MAPMODE_TOOLTIP_INFRASTRUCTURE`) with the hovered province's
+    /// state's infrastructure level, zero outside every state, or why it cannot be read.
+    Infrastructure(Result<i32, String>),
     /// The state, its owner, and the owner's relation to the viewing country, at the content's
     /// very good and very bad opinion thresholds.
     Diplomacy { very_good: i32, very_bad: i32 },
@@ -186,10 +188,6 @@ pub enum ModeHover {
 
 /// The province, viewing country and fog setting a tooltip was built for,
 /// whether NATO counters were on, and the map mode's hover.
-/// Why the states mode's category line is refused.
-pub const STATE_CATEGORY_UNRECORDED: &str =
-    "the state's current category is not recorded (play can change it from its history)";
-
 type CacheKey = (u32, u32, bool, bool, ModeHover);
 type TooltipSources = (
     Arc<counter_content::Content>,
@@ -613,12 +611,7 @@ impl Context<'_> {
         })();
         line(out, "controller", 1, controller);
         if category {
-            line(
-                out,
-                "state category",
-                1,
-                Err(STATE_CATEGORY_UNRECORDED.to_owned()),
-            );
+            line(out, "state category", 1, self.category());
         }
         let flags = self
             .frame

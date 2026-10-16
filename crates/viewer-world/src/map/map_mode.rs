@@ -13,8 +13,7 @@
 //! | resources, raids | countries | none |
 //! | states, resistance, compliance, operatives | countries | the mode's layer |
 //! | diplomacy | the mode's layer | none |
-//! | manpower, terrain | the mode's layer | countries |
-//! | infrastructure | the mode's layer, refused | countries |
+//! | infrastructure, manpower, terrain | the mode's layer | countries |
 //! | supply | the supply-border layer, refused | the supply layer, refused |
 //! | scripted | the bottom layer | the top layer |
 //!
@@ -24,11 +23,13 @@
 //! | factions | controller | the controller's faction colour at `FACTIONS_MEMBER_TRANSPARENCY`, else `FACTIONS_COLOR_NOT_MEMBER` | area rule; faction defines |
 //! | players | controller | the subject-resolved colour, at `PLAYER_MAPMODE_NOT_SELECTED_COUNTRY_TRANSPARENCY` unless a player holds it | area rule; country defines |
 //! | ideology | controller | the ruling party's ideology group colour at `MAP_MODE_IDEOLOGY_COLOR_TRANSPARENCY`, else the subject-resolved colour | area rule; country defines |
-//! | states | state | the state category's colour; none: the fixed blue below | `THICKNESS_STATE`; state defines |
+//! | states | state | the state's live category's colour; a category without one: the fixed blue below | `THICKNESS_STATE`; state defines |
 //! | diplomacy | controller | relation to the selected country, in the fixed colours below | `THICKNESS_DIPLOMACY`; diplomacy defines |
 //! | resistance, compliance | the selected country's controlled states | the level through the content's colour list, or `OCCUPATION_RESISTANCE_NON_INITIALIZED_COLOR` without an occupier | `THICKNESS_RESISTANCE`, gradient 241; camera 0 / resistance cutoff |
 //! | operatives | each state with positive strength in one of the selected country's networks, while the network's target controls it | the strength's share of 100% between the `MAP_MODE_INTEL_NETWORK_STRENGTH` low and high colours, or the quiet pair for a quiet subnetwork | `THICKNESS_STATE`, gradient 241; camera 0 / state cutoff |
 //! | terrain | each province | its terrain category's colour ([`terrain`]) | zero, gradient 127; terrain camera / state cutoff |
+//! | manpower | state | the population over `MAP_MODE_MANPOWER_RANGE_MAX`, blended between its two colours | `THICKNESS_STATE`, gradient 241; camera 0 / state cutoff |
+//! | infrastructure | state | the infrastructure level over its maximum, blended between `MAP_MODE_INFRA_RANGE_COLOR_FROM` and `_TO`; no maximum: opaque black ([`infrastructure`]) | `THICKNESS_STATE`, gradient 241; camera 0 / state cutoff |
 //!
 //! In the players mode the selected country pulses and its fill factor is
 //! `SELECTED_COUNTRY_HIGHLIGHT_THICKNESS_MULT`. The selected country is the viewing country:
@@ -61,6 +62,7 @@ use super::political::{color_source, inherited_colors};
 
 mod colour_script;
 pub use colour_script::ColourState;
+pub mod infrastructure;
 pub mod terrain;
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -160,15 +162,10 @@ impl Stock {
     pub fn unavailable(self) -> Option<&'static str> {
         match self {
             Self::Supply => Some(SUPPLY_UNAVAILABLE),
-            Self::Infrastructure => Some(INFRASTRUCTURE_UNAVAILABLE),
             _ => None,
         }
     }
 }
-
-/// Why the infrastructure mode is unavailable: it colours each state by its level against its
-/// maximum, and no recording holds the maximum.
-pub const INFRASTRUCTURE_UNAVAILABLE: &str = "Not available in replays: the game colours this map mode by each state's infrastructure against its maximum level, which recordings do not hold.";
 
 /// Why the supply mode is unavailable: its province colours, supply borders, flows and
 /// tooltips are computed from the supply network's per-province sources and per-hour node
@@ -429,6 +426,8 @@ pub struct ModeDefines {
     /// The operatives mode's low and high network colours, and the quiet pair.
     network_colors: [[f32; 4]; 2],
     quiet_network_colors: [[f32; 4]; 2],
+    /// The infrastructure mode's two colours.
+    infrastructure_colors: [[f32; 4]; 2],
     /// `UI_CONFIGURABLE_SLOT_FROM` and `_TO`: the picker slots the user can reassign.
     pub configurable_slots: [i32; 2],
     pub terrain: terrain::Defines,
@@ -524,6 +523,10 @@ impl ModeDefines {
                     "MAP_MODE_INTEL_NETWORK_STRENGTH_QUIET_COLOR_HIGH",
                 )?,
             ],
+            infrastructure_colors: [
+                color4(defines, "NMapMode", "MAP_MODE_INFRA_RANGE_COLOR_FROM")?,
+                color4(defines, "NMapMode", "MAP_MODE_INFRA_RANGE_COLOR_TO")?,
+            ],
             configurable_slots: [
                 defines.int32("NMapMode", "UI_CONFIGURABLE_SLOT_FROM")?,
                 defines.int32("NMapMode", "UI_CONFIGURABLE_SLOT_TO")?,
@@ -551,6 +554,8 @@ const DIPLOMACY_FACTION: [f32; 4] = [0.035, 0.426, 0.91, 1.0];
 const DIPLOMACY_WAR_GOAL: [f32; 4] = [1.0, 0.35, 0.0, 1.0];
 const DIPLOMACY_GOOD: [f32; 4] = [0.0, 0.4, 0.0, 1.0];
 const DIPLOMACY_BAD: [f32; 4] = [1.0, 0.64, 0.0, 1.0];
+/// The states mode's colour for a state whose category has no colour.
+const STATE_WITHOUT_CATEGORY: [f32; 4] = [0.0, 0.0, 1.0, 0.25];
 /// Resistance and compliance levels are fixed5 percentages.
 const RESISTANCE_SCALE: f32 = 100_000.0;
 /// The constant gradient the resistance, compliance and manpower layers write.
@@ -565,6 +570,8 @@ pub fn pack(color: [f32; 4]) -> [u8; 4] {
 pub struct Content {
     pub defines: ModeDefines,
     ideologies: Arc<installed_content::ideologies::Ideologies>,
+    /// Each declared category's colour by folded name: `Ok(None)` for one without a colour.
+    category_colors: BTreeMap<Vec<u8>, Result<Option<[f32; 4]>, String>>,
     pub scripted: MapModes,
     /// The content's faction templates, which name a faction without a literal name.
     faction_templates: Result<Arc<installed_content::faction_templates::Catalog>, String>,
@@ -572,26 +579,36 @@ pub struct Content {
     recorded_language: String,
     /// The terrain mode's layer, built once, or why the content cannot build it.
     terrain: Result<terrain::Built, String>,
+    pub infrastructure: infrastructure::Content,
 }
 
 impl Content {
     pub fn new(
         defines: &Defines,
         ideologies: Arc<installed_content::ideologies::Ideologies>,
+        categories: &installed_content::state_categories::Database,
         scripted: MapModes,
         faction_templates: Result<Arc<installed_content::faction_templates::Catalog>, String>,
         recorded_language: String,
         terrain: Result<terrain::Sources, String>,
+        infrastructure: infrastructure::Content,
     ) -> io::Result<Self> {
         let defines = ModeDefines::load(defines)?;
         let terrain = terrain.map(|sources| terrain::build(&sources, &defines.terrain));
+        let category_colors = categories
+            .names
+            .iter()
+            .map(|name| (name.to_ascii_lowercase(), categories.color(name)))
+            .collect();
         Ok(Self {
             defines,
             ideologies,
+            category_colors,
             scripted,
             faction_templates,
             recorded_language,
             terrain,
+            infrastructure,
         })
     }
 
@@ -1014,8 +1031,18 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
             }
         }
         Stock::Infrastructure => {
-            warnings.push(unbuilt(stock).to_owned());
-            Draw::of([Empty, Country], political)
+            let layer = inputs.content.infrastructure.layer(
+                &inputs.content.defines,
+                inputs,
+                &mut warnings,
+            )?;
+            Draw {
+                channels: [built(&layer, Mode), Country],
+                country: None,
+                layer,
+                second: None,
+                political,
+            }
         }
         Stock::Supply => {
             warnings.push(unbuilt(stock).to_owned());
@@ -1034,9 +1061,6 @@ fn unbuilt(stock: Stock) -> &'static str {
     match stock {
         Stock::Supply => {
             "Supply map mode: its province supply and supply-border layers need each province's distributed supply, which is not recorded; both channels stay empty and the supply hub icons, flow arrows and supply tooltips are not drawn"
-        }
-        Stock::Infrastructure => {
-            "Infrastructure map mode: each state's maximum infrastructure level is not recorded; its layer is refused and the countries show alone"
         }
         Stock::StrategicAir => {
             "Air map mode: the strategic regions show without their superiority colours, names, region statistics and range overlays, which are not drawn; the map writes no names"
@@ -1251,24 +1275,78 @@ fn finish(
     }
 }
 
+/// Every state, coloured by its live category.
 fn states(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<ModeLayer>> {
     let defines = &inputs.content.defines;
+    let states = match complete::<tables::States>(inputs.frame, "states") {
+        Ok(states) => states,
+        Err(why) => {
+            warnings.push(why);
+            return Ok(None);
+        }
+    };
+    let names = viewer_foundation::table_access::TokenNames::new(inputs.frame)?;
+    let mut styles = BTreeMap::new();
+    let (mut unread, mut unnamed, mut uncoloured) = (0, 0, 0);
+    for state in states {
+        let token = match state.category {
+            replay::rows::Recorded::Value(Some(token)) => token,
+            replay::rows::Recorded::Value(None) => {
+                unread += 1;
+                continue;
+            }
+            replay::rows::Recorded::NotRecorded => {
+                warnings.push(
+                    "The states map mode needs each state's live category, which this recording does not hold".to_owned(),
+                );
+                return Ok(None);
+            }
+        };
+        let Ok(name) = names.name(token) else {
+            unnamed += 1;
+            continue;
+        };
+        match inputs
+            .content
+            .category_colors
+            .get(name.to_ascii_lowercase().as_bytes())
+        {
+            Some(Ok(Some(color))) => {
+                styles.insert(state.id + 1, style(*color));
+            }
+            Some(Ok(None)) => {
+                styles.insert(state.id + 1, style(STATE_WITHOUT_CATEGORY));
+            }
+            Some(Err(_)) | None => uncoloured += 1,
+        }
+    }
+    for (count, why) in [
+        (unread, "whose category read was refused"),
+        (
+            unnamed,
+            "whose category token the recorded dictionary does not name",
+        ),
+        (
+            uncoloured,
+            "whose category the content does not declare or colour",
+        ),
+    ] {
+        if count != 0 {
+            warnings.push(format!(
+                "The states map mode leaves {count} states unfilled {why}"
+            ));
+        }
+    }
     let provinces = core::<tables::Provinces>(inputs.frame)?;
-    let len = region_table_len(inputs.map, provinces.iter().map(|row| row.id));
-    let mut region_of = vec![0; len];
+    let mut region_of = vec![0; region_table_len(inputs.map, provinces.iter().map(|row| row.id))];
     for province in provinces {
         if province.state != 0 {
             region_of[province.id as usize] = province.state + 1;
         }
     }
-    // Each state's colour is its current category's, which play can change from its history and
-    // recordings do not hold, so no state is filled rather than any with its history colour.
-    warnings.push(
-        "The states map mode's category colours are refused: each state's current category is not recorded (completed by #531)".to_owned(),
-    );
     Ok(Some(finish(
         region_of,
-        BTreeMap::new(),
+        styles,
         Some(defines.state_thickness),
         None,
         defines.state_channel,

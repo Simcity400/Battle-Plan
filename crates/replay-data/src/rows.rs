@@ -180,6 +180,11 @@ pub struct StateRow {
     /// `state_population` triggers compare and the manpower map mode colours
     /// each state by. Available manpower is not population.
     pub population: Recorded<i32>,
+    /// The token of the state's live category, read every hour beside
+    /// `population` and saved as `state_category`: what the states map mode
+    /// colours each state by and whose `buildings_max_level` limits building
+    /// levels. None is a counted read refusal.
+    pub category: Recorded<Option<u32>>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -2394,7 +2399,7 @@ row_codec!(EventFeedHistoryRow, 0, |_row| 0, |_key| {}, {
 row_codec!(CountryRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => canonical_slot: U32, 1 => tag: Bytes, 2 => political_power_raw: OptionalI64, 3 => command_power_raw: I64, 4 => stability_raw: I64, 5 => war_support_raw: I64, 6 => convoys_raw: OptionalI64, 7 => peace_conference_participant: U8, 8 => manpower_residual: I32, 9 => border_land_doctrine_level: OptionalI32}, |_row| Ok(()));
 row_codec!(CountryLinkRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => canonical_slot: U32}, |_row| Ok(()));
 row_codec!(ProvinceRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => state: U32, 1 => owner: U32, 2 => controller: U32, 3 => victory_points: I32, 4 => fort_positive: U8, 5 => move_gate: U8, 6 => port_sea: I32, 7 => attack: Opaque, 8 => selected_areas: Opaque, 9 => fort_bunker: OptionalI64, 10 => controller_area: OptionalU32, 11 => owner_area: OptionalU32, 12 => area_node: Opaque}, |_row| Ok(()));
-row_codec!(StateRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => owner: U32, 1 => controller: U32, 2 => movement_infrastructure: I64, 3 => custom_name: Bytes, 4 => owner_name: Bytes, 5 => manpower_available: I32, 6 => continent: OptionalU32, 7 => railway_infrastructure: OptionalI64, 8 => population: I32}, |_row| Ok(()));
+row_codec!(StateRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => owner: U32, 1 => controller: U32, 2 => movement_infrastructure: I64, 3 => custom_name: Bytes, 4 => owner_name: Bytes, 5 => manpower_available: I32, 6 => continent: OptionalU32, 7 => railway_infrastructure: OptionalI64, 8 => population: I32, 9 => category: OptionalU32}, |_row| Ok(()));
 row_codec!(DivisionRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => roster_owner: U32, 1 => logical_owner: U32, 2 => expeditionary_owner: U32, 3 => province: U32, 4 => template: U64, 5 => hit_points: I64 @ Self::HIT_POINTS_STEP, 6 => organisation: I64 @ Self::ORGANISATION_STEP, 7 => orders_group: U64, 8 => reveal_skip: U8}, |_row| Ok(()));
 row_codec!(WarRelationRow, 64, |row| (row.first_country as u128) << 32 | row.second_country as u128, |key| { first_country: (key >> 32) as u32, second_country: key as u32 }, {0 => start_hour: I32, 1 => end_hour: I32, 2 => cancel: U8, 3 => first_casualties: I64, 4 => second_casualties: I64, 5 => first_unknown_casualties: I64, 6 => second_unknown_casualties: I64, 7 => first_was_instigator: U8}, |_row| Ok(()));
 row_codec!(FactionRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => name: Bytes, 1 => template_token: OptionalU32, 2 => color_red: U32, 3 => color_green: U32, 4 => color_blue: U32, 5 => color_alpha: U32, 6 => color_overridden: U8}, |_row| Ok(()));
@@ -3522,6 +3527,7 @@ mod tests {
                 railway_infrastructure: Some(i64::MAX).into(),
                 manpower_available: i32::MIN,
                 population: i32::MAX.into(),
+                category: Recorded::Value(Some(u32::MAX)),
                 custom_name: vec![0xff, 0, b'a'],
                 owner_name: "Département".into(),
                 continent: Recorded::Value(Some(u32::MAX)),
@@ -3909,6 +3915,7 @@ mod tests {
                 movement_infrastructure: if mask & 4 != 0 { 100_001 } else { 100_000 },
                 railway_infrastructure: (if mask & 128 != 0 { Some(0) } else { None }).into(),
                 population: (if mask & 256 != 0 { -1 } else { 0 }).into(),
+                category: Recorded::Value(if mask & 512 != 0 { Some(123) } else { None }),
                 custom_name: if mask & 8 != 0 {
                     b"Rename".to_vec()
                 } else {
@@ -3924,7 +3931,7 @@ mod tests {
             assert_eq!(delta.mask, mask);
             let mut bytes = Vec::new();
             encode_delta(TableId::States, &delta, 0, &mut bytes).unwrap();
-            // Nine fields take a two-byte mask.
+            // Ten fields take a two-byte mask.
             let scalars = 5
                 + 2
                 + usize::from(mask & 1 != 0)
@@ -3933,7 +3940,8 @@ mod tests {
                 + 5 * usize::from(mask & 32 != 0)
                 + 3 * usize::from(mask & 64 != 0)
                 + 2 * usize::from(mask & 128 != 0)
-                + usize::from(mask & 256 != 0);
+                + usize::from(mask & 256 != 0)
+                + 3 * usize::from(mask & 512 != 0);
             // The name fields add their own length-prefixed bytes.
             let names = 6 * usize::from(mask & 8 != 0) + 5 * usize::from(mask & 16 != 0);
             if names == 0 {

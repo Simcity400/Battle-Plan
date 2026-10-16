@@ -281,6 +281,9 @@ pub struct State {
     /// pool is omitted (which certifies only a nonpositive population),
     /// `Some(None)` for a pool written without it.
     pub population: Option<Option<i32>>,
+    /// The `state_category` name the state writer emits for the state's
+    /// category definition.
+    pub category: Option<Vec<u8>>,
     /// The set_state_name rename, emitted as `name` only when the string
     /// is nonempty.
     pub name: Option<Vec<u8>>,
@@ -1348,6 +1351,7 @@ fn parse_items(items: &[Item], country_view: CountriesView<'_>) -> io::Result<Sa
                         .map(boolean)
                         .transpose()?,
                     name: bytes(state, b"name")?,
+                    category: bytes(state, b"state_category")?,
                     manpower_available: field(state, b"manpower_pool")?
                         .map(|value| integer(&required_bytes(block(value)?, b"available")?))
                         .transpose()?,

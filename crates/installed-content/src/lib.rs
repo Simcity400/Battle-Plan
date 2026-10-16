@@ -61,6 +61,7 @@ pub use installed_content_core::scripted_map_modes;
 pub use installed_content_core::scripted_triggers;
 pub use installed_content_core::special_projects;
 pub use installed_content_core::static_modifiers;
+pub use installed_content_core::strategic_locations;
 pub use installed_content_core::tag_aliases;
 pub use installed_content_core::technology;
 pub use installed_content_core::technology_sharing;

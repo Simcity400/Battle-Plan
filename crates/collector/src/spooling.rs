@@ -3233,6 +3233,7 @@ fn state_table(
             continent: replay::rows::Recorded::Value(state.continent),
             manpower_available: state.manpower_available,
             population: replay::rows::Recorded::Value(state.population),
+            category: replay::rows::Recorded::Value(state.category),
             railway_infrastructure: replay::rows::Recorded::Value(
                 captured.state_inputs.fraction(state.id),
             ),

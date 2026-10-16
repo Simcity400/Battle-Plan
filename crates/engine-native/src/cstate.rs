@@ -78,6 +78,13 @@ pub const MANPOWER_AVAILABLE: usize = MANPOWER + 0x10;
 pub const POPULATION: usize = MANPOWER + 0x18;
 /// Bytes from [`MANPOWER_AVAILABLE`] through [`POPULATION`], read as one span.
 const MANPOWER_SPAN: usize = POPULATION + 4 - MANPOWER_AVAILABLE;
+/// The state's category definition pointer: loading and the category effect
+/// replace it, and the save writes its definition's name as `state_category`.
+pub const CATEGORY: usize = 0x898;
+/// State category definition vtable.
+pub const CATEGORY_VTABLE_RVA: usize = 0x029a_39c0;
+/// The category definition's lexer token id, u32, beside its vtable.
+pub const CATEGORY_TOKEN: usize = 0x08;
 /// State constructor establishing template and ID.
 pub const CONSTRUCTOR_RVA: usize = 0x009c_2cc0;
 /// Controller setter.
@@ -569,6 +576,9 @@ pub struct Row {
     pub manpower_available: i32,
     /// Stored state population ([`POPULATION`]).
     pub population: i32,
+    /// The token of the state's category definition ([`CATEGORY`]); None is a
+    /// failed independent capture.
+    pub category: Option<u32>,
     /// The exact bytes of [`PRIMARY_DISPLAY_NAME`] and
     /// [`SECONDARY_DISPLAY_NAME`] in the caller's name arena ([`read_names`]).
     pub custom_name: NameSpan,
@@ -716,6 +726,9 @@ fn walk_with_buffer(
             controller,
             manpower_available: word(MANPOWER_AVAILABLE),
             population: word(POPULATION),
+            category: read::<u64>(memory, at(CATEGORY)?)
+                .filter(|&category| category != 0)
+                .and_then(|category| category_token(memory, base, category).ok()),
             ..Row::default()
         })
     });
@@ -1325,22 +1338,51 @@ const MANPOWER_LAYOUT: RecordLayout<'static> = RecordLayout::new(
             destination_offset: 16,
             len: 4,
         },
+        RecordField {
+            source_offset: CATEGORY,
+            destination_offset: 24,
+            len: 8,
+        },
     ],
     MANPOWER_RECORD,
 )
 .expect("valid manpower layout");
-const MANPOWER_RECORD: usize = 24;
+const MANPOWER_RECORD: usize = 32;
 
-/// A state's stored manpower words ([`read_manpower`]).
+/// A state's stored manpower words and category pointer ([`read_manpower`]).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Manpower {
     pub available: i32,
     pub population: i32,
+    /// The category definition pointer ([`CATEGORY`]), for [`category_token`].
+    pub category: u64,
+}
+
+/// A category definition's token: its vtable must be the category vtable.
+/// Several states share a definition, so callers resolve each pointer once.
+pub fn category_token(
+    memory: &impl Memory,
+    base: usize,
+    category: u64,
+) -> Result<u32, &'static str> {
+    let vtable = base
+        .checked_add(CATEGORY_VTABLE_RVA)
+        .ok_or("module address overflow")? as u64;
+    let bytes = read::<[u8; CATEGORY_TOKEN + 4]>(memory, category as usize)
+        .ok_or("state category unreadable")?;
+    if u64::from_le_bytes(bytes[..8].try_into().unwrap()) != vtable {
+        return Err("state category vtable mismatch");
+    }
+    Ok(u32::from_le_bytes(
+        bytes[CATEGORY_TOKEN..CATEGORY_TOKEN + 4]
+            .try_into()
+            .unwrap(),
+    ))
 }
 
 /// Each listed state's identity (vtable and id, as [`walk`] checks them),
-/// available manpower and population, in guarded record copies of 64. A
-/// failed or mismatching field fails the whole read.
+/// available manpower, population and category pointer, in guarded record
+/// copies of 64. A failed or mismatching field fails the whole read.
 pub fn read_manpower(
     memory: &impl Memory,
     base: usize,
@@ -1366,7 +1408,7 @@ pub fn read_manpower(
             RecordSources::Pointers(pointers),
             &MANPOWER_LAYOUT,
             &mut bytes[..count * MANPOWER_RECORD],
-        ) != count * 4
+        ) != count * 5
         {
             return Err("state manpower unreadable");
         }
@@ -1384,6 +1426,7 @@ pub fn read_manpower(
             *output = Manpower {
                 available: i32::from_le_bytes(record[12..16].try_into().unwrap()),
                 population: i32::from_le_bytes(record[16..20].try_into().unwrap()),
+                category: u64::from_le_bytes(record[24..32].try_into().unwrap()),
             };
         }
     }

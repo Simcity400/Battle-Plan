@@ -13,6 +13,7 @@ fn fixture(
             controller,
             manpower_available: -5,
             custom_name: b"kept name".to_vec(),
+            category: Some(super::super::fixtures::FIXTURE_CATEGORY_TOKEN).into(),
             ..Default::default()
         }]));
     let saved = save.states.get_mut(&1).unwrap();
@@ -256,6 +257,48 @@ fn unowned_state_province_census_compares_every_province_and_rejects_positive_ow
         report.provinces,
         membership.provinces.keys().filter(|&&id| id != 0).count()
     );
+}
+
+/// States.category compares the recorded definition token's spelling with the
+/// saved `state_category` under the lexer's fold; a refused read or a token
+/// outside the recorded dictionary differs.
+#[test]
+fn state_category_compares_its_token_spelling_with_the_saved_name() {
+    let with = |actual: Option<u32>, saved: Option<&str>| {
+        let (mut frame, mut save, membership) = fixture(0, 999);
+        save.states.get_mut(&1).unwrap().category = saved.map(|name| name.as_bytes().to_vec());
+        frame.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![
+                replay::rows::LexicalTokenRow {
+                    token: 41,
+                    literal: b"Large_Town".to_vec(),
+                },
+                replay::rows::LexicalTokenRow {
+                    token: 42,
+                    literal: b"city".to_vec(),
+                },
+            ]))
+            .into();
+        let TableView::Complete(TableRows::States(states)) =
+            &mut *frame.tables[TableId::States.index()]
+        else {
+            unreachable!()
+        };
+        states[0].category = replay::rows::Recorded::Value(actual);
+        run(&frame, &save, &membership)
+    };
+    let category = |report: &Report| {
+        report
+            .differences
+            .iter()
+            .filter(|difference| difference.contains("category"))
+            .count()
+    };
+    assert_eq!(category(&with(Some(41), Some("large_town"))), 0);
+    assert_eq!(category(&with(Some(42), Some("large_town"))), 1);
+    assert_eq!(category(&with(Some(43), Some("large_town"))), 1);
+    assert_eq!(category(&with(None, Some("large_town"))), 1);
+    assert_eq!(category(&with(Some(41), None)), 1);
 }
 
 /// States.population compares with the saved pool's `total`; an omitted pool

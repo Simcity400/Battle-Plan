@@ -654,8 +654,20 @@ pub(crate) mod tests {
             let report = actual.run(&memory);
             let outcome = serial(&mut reference, &expected);
             assert_eq!(report.census.result, outcome, "fault {fault}");
-            // The continents database singleton is optional.
-            if healthy.calls.borrow()[fault] == (0x0331_6ca0, 8) {
+            let (at, len) = healthy.calls.borrow()[fault];
+            // A state's category is an independent capture: its fault refuses
+            // only that state's category.
+            if len == 8 && [FIRST, LAST].contains(&at.wrapping_sub(cstate::CATEGORY)) {
+                assert_eq!(report.census.result, Outcome::Rows { len: 2 });
+                assert!(
+                    actual
+                        .census
+                        .payload
+                        .iter()
+                        .any(|row| row.category.is_none())
+                );
+            } else if healthy.calls.borrow()[fault] == (0x0331_6ca0, 8) {
+                // The continents database singleton is optional.
                 assert_eq!(report.census.result, Outcome::Rows { len: 2 });
                 assert_eq!(actual.visitor.outcomes(), [Outcome::Rows { len: 2 }]);
                 assert!(

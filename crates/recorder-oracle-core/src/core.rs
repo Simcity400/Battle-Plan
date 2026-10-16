@@ -11,8 +11,8 @@ use replay::{
 };
 
 use super::{
-    ContentRead, Report, complete, convoy_total, country_tag, invalid, required_context,
-    required_country_tag, tag_text,
+    ContentRead, Report, complete, convoy_total, country_tag, invalid, lexical_tokens,
+    required_context, required_country_tag, tag_text,
 };
 
 pub fn compare_province_names(
@@ -309,6 +309,7 @@ pub fn compare_states(
             return Err(invalid("duplicate state row"));
         }
     }
+    let tokens = lexical_tokens(frame, report)?;
     for expected in save.state_control_emissions(membership)? {
         let id = match &expected {
             installed_content_save::StateControlEmission::Positive(control) => control.id,
@@ -354,7 +355,7 @@ pub fn compare_states(
                 );
             }
         }
-        compare_state_fields(actual, &save.states[&id], report);
+        compare_state_fields(actual, &save.states[&id], &tokens, report);
     }
     for id in states.keys() {
         report.difference(format!("state {id}"), "present", "absent");
@@ -374,7 +375,42 @@ pub fn compare_states(
     Ok(())
 }
 
-fn compare_state_fields(actual: &StateRow, saved: &installed_content_save::State, report: &mut Report) {
+fn compare_state_fields(
+    actual: &StateRow,
+    saved: &installed_content_save::State,
+    tokens: &BTreeMap<u32, &[u8]>,
+    report: &mut Report,
+) {
+    let field = format!("state {}.category", actual.id);
+    if let Some(&category) = report.recorded(&actual.category, "States.category", &field) {
+        // The writer emits the definition's name; the lexer interned it under its fold.
+        if tokens.is_empty() {
+            // lexical_tokens names the unavailable dictionary as the limitation.
+            report.limitation(
+                "the recorded lexical dictionary is unavailable, so the category token is not named",
+                field,
+            );
+            return compare_state_scalars(actual, saved, report);
+        }
+        let recorded = category.map(|token| tokens.get(&token).copied().ok_or(token));
+        let saved_name = saved.category.as_deref().map(String::from_utf8_lossy);
+        match (recorded, saved.category.as_deref()) {
+            (Some(Ok(name)), Some(saved)) if name.eq_ignore_ascii_case(saved) => {}
+            (Some(Ok(name)), _) => {
+                report.difference(field, String::from_utf8_lossy(name), saved_name)
+            }
+            (Some(Err(token)), _) => report.difference(
+                field,
+                format!("token {token} outside the recorded dictionary"),
+                saved_name,
+            ),
+            (None, _) => report.difference(field, "refused read", saved_name),
+        }
+    }
+    compare_state_scalars(actual, saved, report);
+}
+
+fn compare_state_scalars(actual: &StateRow, saved: &installed_content_save::State, report: &mut Report) {
     let field = format!("state {}.manpower_available", actual.id);
     match saved.manpower_available {
         Some(saved) if saved != actual.manpower_available => {

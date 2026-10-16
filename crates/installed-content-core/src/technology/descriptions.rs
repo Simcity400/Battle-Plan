@@ -215,6 +215,36 @@ impl Catalog {
             .map(|&index| &self.definitions[index]))
     }
 
+    /// Each definition's `enable_building` entries after loading's inheritance pass, in
+    /// database order. A definition naming a `parent` gets that parent's entries, as they
+    /// stand at that point in the pass, appended after its own; the parent is the first
+    /// definition whose id matches under ASCII case folding. A definition naming itself
+    /// inherits nothing, and an unknown parent adds nothing (it resolves to the database's
+    /// empty null definition). [`Definition::buildings`] keeps the authored entries.
+    pub fn inherited_buildings(&self) -> Vec<Vec<(Vec<u8>, i32)>> {
+        let mut lists = self
+            .definitions
+            .iter()
+            .map(|definition| definition.buildings.clone())
+            .collect::<Vec<_>>();
+        for index in 0..lists.len() {
+            let definition = &self.definitions[index];
+            let parent = parser::c_string(&definition.parent);
+            if parent.is_empty() || parent.eq_ignore_ascii_case(parser::c_string(&definition.id)) {
+                continue;
+            }
+            if let Some(found) = self
+                .definitions
+                .iter()
+                .position(|other| parser::c_string(&other.id).eq_ignore_ascii_case(parent))
+            {
+                let inherited = lists[found].clone();
+                lists[index].extend(inherited);
+            }
+        }
+        lists
+    }
+
     pub fn category(&self, operand: &[u8]) -> Result<Option<&[u8]>, String> {
         if let Some(why) = &self.refusal {
             return Err(why.clone());
@@ -264,6 +294,51 @@ mod tests {
         assert_eq!(catalog.definitions[2].parent, b"third");
         assert!(catalog.get(b"hidden").unwrap().is_none());
         assert!(catalog.get(b"ignored").unwrap().is_none());
+    }
+
+    #[test]
+    fn loading_appends_each_parents_building_entries_in_database_order() {
+        let definition = |id: &str, parent: &str, buildings: &[(&str, i32)]| Definition {
+            id: id.as_bytes().to_vec(),
+            parent: parent.as_bytes().to_vec(),
+            buildings: buildings
+                .iter()
+                .map(|&(name, level)| (name.as_bytes().to_vec(), level))
+                .collect(),
+            ..Default::default()
+        };
+        let mut catalog = Catalog::default();
+        catalog.definitions = vec![
+            definition("base", "", &[("roads", 4)]),
+            // Inherits the base's entry after its own.
+            definition("child", "BASE", &[("rails", 1)]),
+            // Its parent comes later, so it takes that parent's authored entries only.
+            definition("early", "late", &[]),
+            definition("late", "child", &[("ports", 2)]),
+            definition("own", "OWN", &[("roads", 1)]),
+            definition("orphan", "missing", &[("rails", 3)]),
+        ];
+        let names = |list: &Vec<(Vec<u8>, i32)>| {
+            list.iter()
+                .map(|(name, level)| (String::from_utf8(name.clone()).unwrap(), *level))
+                .collect::<Vec<_>>()
+        };
+        let lists = catalog.inherited_buildings();
+        let lists = lists.iter().map(names).collect::<Vec<_>>();
+        let owned = |entries: &[(&str, i32)]| {
+            entries
+                .iter()
+                .map(|&(name, level)| (name.to_owned(), level))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(lists[0], owned(&[("roads", 4)]));
+        assert_eq!(lists[1], owned(&[("rails", 1), ("roads", 4)]));
+        assert_eq!(lists[2], owned(&[("ports", 2)]));
+        assert_eq!(lists[3], owned(&[("ports", 2), ("rails", 1), ("roads", 4)]));
+        assert_eq!(lists[4], owned(&[("roads", 1)]));
+        assert_eq!(lists[5], owned(&[("rails", 3)]));
+        // The authored entries are kept.
+        assert_eq!(catalog.definitions[1].buildings.len(), 1);
     }
 
     #[test]

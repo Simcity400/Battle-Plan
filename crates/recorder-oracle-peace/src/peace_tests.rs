@@ -398,6 +398,7 @@ fn busy_drain_span_matches_long_delays_and_keeps_every_conference_in_the_census(
             is_border_conflict: None,
             manpower_available: None,
             population: None,
+            category: None,
             name: None,
         },
     );

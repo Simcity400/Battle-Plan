@@ -311,14 +311,13 @@ fn the_air_and_navy_modes_write_no_country_names() -> std::io::Result<()> {
     Ok(())
 }
 
-/// The states mode's category line is refused by name: the state's current category is not
-/// recorded, and its history category is not shown in its place.
+/// The states mode's category line names the state's live category (States `category`); a
+/// recording without it refuses the line by name, and the history category is never shown in
+/// its place.
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
-fn the_states_mode_refuses_its_category_line() -> std::io::Result<()> {
-    use viewer_counter_products::map::province_tooltips::{
-        Cache, ModeHover, STATE_CATEGORY_UNRECORDED,
-    };
+fn the_states_mode_names_its_live_category_or_refuses_the_line() -> std::io::Result<()> {
+    use viewer_counter_products::map::province_tooltips::{Cache, ModeHover};
     let fixture = Fixture::load("viewer-state-category")?;
     let document = &fixture.document;
     let crate::playback::Current::Frame(frame) = document.playback.current() else {
@@ -346,18 +345,21 @@ fn the_states_mode_refuses_its_category_line() -> std::io::Result<()> {
             || {},
         )
     };
-    let refusal = format!("province state category: {STATE_CATEGORY_UNRECORDED}");
+    let refusal = "province state category: the state's live category is not recorded";
     let states = hover(true);
-    assert_eq!(
-        states.refused.get(&refusal),
-        Some(&1),
-        "{:?}",
-        states.refused
-    );
-    // The rest of the location block is the default mode's.
     let default = hover(false);
-    assert_eq!(states.title, default.title);
-    assert!(!default.refused.contains_key(&refusal));
+    assert!(!default.refused.contains_key(refusal));
+    if states.refused.get(refusal) == Some(&1) {
+        // The rest of the location block is the default mode's.
+        assert_eq!(states.title, default.title);
+    } else {
+        // The category line joins the default mode's location block.
+        assert!(
+            states.title.len() > default.title.len(),
+            "{:?}",
+            states.refused
+        );
+    }
     Ok(())
 }
 

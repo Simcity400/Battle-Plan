@@ -60,6 +60,22 @@ pub struct BuildingType {
     pub air_defence: i32,
     /// Signed land-fort weight; defaults to zero.
     pub land_fort: i32,
+    /// Signed naval-fort weight; defaults to zero. A positive land or naval
+    /// fort weight lets a game-wide fort level override replace the type's
+    /// maximum level.
+    pub naval_fort: i32,
+    /// `infrastructure = yes`: the infrastructure map mode and its hover read
+    /// the first such type in database order.
+    pub infrastructure: bool,
+    /// `level_cap = { shares_slots = yes }`: the type's maximum level is also
+    /// limited by the state's free shared building slots.
+    pub shares_slots: bool,
+    /// `level_cap = { group_by = X }`: the type's level allowance counts every
+    /// building of its group, in the state and in its provinces.
+    pub group_by: Option<String>,
+    /// `level_cap = { exclusive_with = ... }`: types whose presence in the
+    /// location makes this type's maximum level zero.
+    pub exclusive_with: Vec<String>,
     /// `icon_frame`: the one-based frame in the interface building strip used
     /// by the construction queue; zero when not declared.
     pub icon_frame: i32,
@@ -242,6 +258,29 @@ impl<'a> Slot<'a> {
 }
 
 impl Buildings {
+    /// The type the infrastructure map mode and its hover read: the first type
+    /// in database order declared `infrastructure = yes`. A type declared more
+    /// than once with differing fields, one of which declares it so, is
+    /// refused by name: which of its records comes first is unverified.
+    pub fn infrastructure(&self) -> Result<Option<&BuildingType>, String> {
+        for name in &self.declaration_order {
+            if let Some(repeats) = self.repeated_types.get(name)
+                && repeats.iter().any(|building| building.infrastructure)
+            {
+                return Err(format!(
+                    "building type {name} is declared {} times with differing fields, and one declares it infrastructure",
+                    repeats.len()
+                ));
+            }
+            if let Some(building) = self.types.get(name)
+                && building.infrastructure
+            {
+                return Ok(Some(building));
+            }
+        }
+        Ok(None)
+    }
+
     /// A type named by an ASCII-folded lexer token, keeping its declared
     /// spelling. Differing declarations of one token are refused by name,
     /// as with the bucket resolver.
@@ -569,6 +608,24 @@ fn parse_declarations(
                                     Some(b"province_max") => {
                                         integer(bytes, province_max.get_or_insert(0))
                                     }
+                                    Some(b"shares_slots") => {
+                                        boolean(bytes, &mut building.shares_slots)
+                                    }
+                                    Some(b"group_by") => {
+                                        if let Ok(group) = cap.value.c_str() {
+                                            building.group_by = Some(group.to_owned());
+                                        }
+                                    }
+                                    Some(b"exclusive_with") => match cap.value.items() {
+                                        Some(items) => {
+                                            building.exclusive_with.extend(items.iter().filter_map(
+                                                |item| item.value.c_str().ok().map(str::to_owned),
+                                            ))
+                                        }
+                                        None => building
+                                            .exclusive_with
+                                            .extend(cap.value.c_str().ok().map(str::to_owned)),
+                                    },
                                     _ => {}
                                 }
                             }
@@ -616,6 +673,8 @@ fn parse_declarations(
                             integer(bytes, &mut flags.general_production)
                         }
                         Some(b"land_fort") => integer(bytes, &mut building.land_fort),
+                        Some(b"naval_fort") => integer(bytes, &mut building.naval_fort),
+                        Some(b"infrastructure") => boolean(bytes, &mut building.infrastructure),
                         Some(b"rocket_production") => integer(bytes, &mut flags.rocket_production),
                         Some(b"air_base") => boolean(bytes, &mut building.air_base),
                         Some(b"gun_emplacement") => boolean(bytes, &mut building.gun_emplacement),

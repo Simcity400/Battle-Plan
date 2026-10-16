@@ -29,7 +29,7 @@ use replay::{
 const FIRST_HOUR: i32 = 100;
 const HOURS: i32 = 30;
 /// FNV-1a 64 over every spool segment's bytes in segment order.
-const EXPECTED_DIGEST: u64 = 0x8137_4c53_5bd6_7d37;
+const EXPECTED_DIGEST: u64 = 0x6df6_c3c6_5ce4_1b1d;
 
 fn text<const N: usize>(value: &[u8]) -> Text<N> {
     let mut result = Text {

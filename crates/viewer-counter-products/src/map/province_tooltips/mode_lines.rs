@@ -12,6 +12,26 @@ fn highlighted(text: &str) -> String {
 }
 
 impl Context<'_> {
+    /// The state category line the states mode adds after the controller, naming the state's
+    /// live category (States `category`).
+    pub(super) fn category(&self) -> Result<String, String> {
+        let token = match self.state_row()?.category {
+            Recorded::Value(Some(token)) => token,
+            Recorded::Value(None) => return Err("the state's category read was refused".to_owned()),
+            Recorded::NotRecorded => {
+                return Err("the state's live category is not recorded".to_owned());
+            }
+        };
+        let names = viewer_foundation::table_access::TokenNames::new(self.frame)
+            .map_err(|e| e.to_string())?;
+        let category = names.name(token).map_err(|e| e.to_string())?;
+        let name = self.loc(category, &[])?;
+        self.loc(
+            "PROVINCE_STATE_CATERGORY_TOOLTIP",
+            &[("CATEGORY", Arg::Text(&name))],
+        )
+    }
+
     fn state_row(&self) -> Result<&replay::rows::StateRow, String> {
         let id = self.province.state;
         self.frame
@@ -32,7 +52,17 @@ impl Context<'_> {
     }
 
     pub(super) fn mode_lines(&self, mode: &ModeHover, out: &mut Tooltip) {
-        // Every mode's own lines describe the province's state.
+        // The infrastructure line shows for every province, a stateless one at level zero.
+        if let ModeHover::Infrastructure(level) = mode {
+            let text = level.clone().and_then(|level| {
+                self.loc(
+                    "MAPMODE_TOOLTIP_INFRASTRUCTURE",
+                    &[("INF", Arg::Int32(level))],
+                )
+            });
+            return line(out, "infrastructure", 0, text);
+        }
+        // Every other mode's own lines describe the province's state.
         if self.province.state == 0 {
             if let ModeHover::Unbuilt(why) = mode {
                 out.refuse("map mode hover", why.clone());
@@ -40,7 +70,7 @@ impl Context<'_> {
             return;
         }
         match mode {
-            ModeHover::Location { .. } | ModeHover::Nothing => {}
+            ModeHover::Location { .. } | ModeHover::Nothing | ModeHover::Infrastructure(_) => {}
             ModeHover::Manpower => line(out, "population", 0, self.population()),
             ModeHover::Diplomacy {
                 very_good,

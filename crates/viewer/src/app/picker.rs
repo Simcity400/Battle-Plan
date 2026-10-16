@@ -137,6 +137,7 @@ pub fn slot_modes(document: &Document, configured: &[String]) -> Vec<MapMode> {
 pub fn mode_hover(
     mode: &MapMode,
     opinion_thresholds: [i32; 2],
+    infrastructure_level: impl FnOnce() -> Result<i32, String>,
 ) -> viewer_counter_products::map::province_tooltips::ModeHover {
     use viewer_counter_products::map::province_tooltips::ModeHover;
     match mode {
@@ -164,9 +165,8 @@ pub fn mode_hover(
                 "the resources mode's hover (each resource produced) is not built".to_owned(),
             ),
             Stock::Operatives => ModeHover::Operatives,
-            Stock::Supply | Stock::Infrastructure => {
-                ModeHover::Unbuilt(stock.unavailable().unwrap_or_default().to_owned())
-            }
+            Stock::Infrastructure => ModeHover::Infrastructure(infrastructure_level()),
+            Stock::Supply => ModeHover::Unbuilt(stock.unavailable().unwrap_or_default().to_owned()),
         },
         MapMode::Scripted(name) => ModeHover::Scripted(name.clone()),
     }
@@ -608,6 +608,10 @@ mod tests {
         );
         assert_eq!(
             host_choice(&options(true, Some("infrastructure"))).0,
+            MapMode::Stock(Stock::Infrastructure)
+        );
+        assert_eq!(
+            host_choice(&options(true, Some("supply"))).0,
             MapMode::default()
         );
         assert_eq!(host_choice(&options(true, None)).0, MapMode::default());
@@ -808,13 +812,17 @@ mod tests {
     #[test]
     fn only_the_default_and_states_modes_hover_the_location_block() {
         use viewer_counter_products::map::province_tooltips::ModeHover;
-        let hover = |stock| mode_hover(&MapMode::Stock(stock), [50, -50]);
+        let hover = |stock| mode_hover(&MapMode::Stock(stock), [50, -50], || Ok(3));
         assert_eq!(
             hover(Stock::Default),
             ModeHover::Location { category: false }
         );
         assert_eq!(hover(Stock::States), ModeHover::Location { category: true });
         assert_eq!(hover(Stock::Manpower), ModeHover::Manpower);
+        assert_eq!(
+            hover(Stock::Infrastructure),
+            ModeHover::Infrastructure(Ok(3))
+        );
         assert_eq!(
             hover(Stock::Diplomacy),
             ModeHover::Diplomacy {
@@ -835,7 +843,7 @@ mod tests {
             assert_eq!(hover(stock), ModeHover::Nothing, "{stock:?}");
         }
         assert_eq!(
-            mode_hover(&MapMode::Scripted("spheres".into()), [50, -50]),
+            mode_hover(&MapMode::Scripted("spheres".into()), [50, -50], || Ok(0)),
             ModeHover::Scripted("spheres".into())
         );
     }

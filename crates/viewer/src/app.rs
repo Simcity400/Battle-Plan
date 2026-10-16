@@ -2591,6 +2591,12 @@ impl Viewer {
             &picker::mode_hover(
                 &self.map_mode,
                 document.map_modes.defines.opinion_thresholds(),
+                || {
+                    document
+                        .map_modes
+                        .infrastructure
+                        .hover_level(frame, province)
+                },
             ),
             {
                 let ctx = ctx.clone();

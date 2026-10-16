@@ -1241,6 +1241,10 @@ fn relations_fixture() -> (
                 token: TEMPLATE_TOKEN,
                 literal: b"faction_template_axis".to_vec(),
             },
+            replay::rows::LexicalTokenRow {
+                token: super::fixtures::FIXTURE_CATEGORY_TOKEN,
+                literal: b"town".to_vec(),
+            },
         ]));
     *frame.tables[TableId::FactionMembers.index()] =
         TableView::Complete(TableRows::FactionMembers(vec![

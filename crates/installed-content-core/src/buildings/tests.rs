@@ -698,3 +698,38 @@ fn nonpositive_caps_use_the_exact_signed_default() {
         }
     }
 }
+
+#[test]
+fn infrastructure_is_the_first_flagged_type_and_reads_its_level_cap_forms() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let buildings = parse(
+        br#"buildings={
+        plain={level_cap={state_max=3}}
+        roads={infrastructure=yes naval_fort=2 level_cap={state_max=5 shares_slots=yes group_by=paths exclusive_with={canal ferry}}}
+        rails={infrastructure=yes land_fort=1 level_cap={exclusive_with=canal}}
+        }"#,
+    )
+    .unwrap();
+    let roads = &buildings.types["roads"];
+    assert!(roads.infrastructure && roads.shares_slots);
+    assert_eq!(roads.naval_fort, 2);
+    assert_eq!(roads.group_by.as_deref(), Some("paths"));
+    assert_eq!(roads.exclusive_with, ["canal", "ferry"]);
+    assert_eq!(buildings.types["rails"].exclusive_with, ["canal"]);
+    let plain = &buildings.types["plain"];
+    assert!(!plain.infrastructure && !plain.shares_slots && plain.group_by.is_none());
+    assert_eq!(
+        buildings.infrastructure().unwrap().map(|b| b.name.as_str()),
+        Some("roads")
+    );
+    assert_eq!(
+        parse(b"buildings={plain={}}").unwrap().infrastructure(),
+        Ok(None)
+    );
+    // A differing repeat that declares the flag has no proven record order.
+    let repeated =
+        parse(b"buildings={roads={} roads={infrastructure=yes} rails={infrastructure=yes}}")
+            .unwrap();
+    assert!(repeated.infrastructure().unwrap_err().contains("roads"));
+}

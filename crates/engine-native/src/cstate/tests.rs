@@ -1013,6 +1013,7 @@ fn state_census_and_flags_keep_primary_read_order_without_terminal_rereads() {
             (pointer + OWNER, 4),
             (pointer + CONTROLLER, 4),
             (pointer + MANPOWER_AVAILABLE, 12),
+            (pointer + CATEGORY, 8),
         ]);
     }
     assert_eq!(*memory.reads.borrow(), expected);
@@ -1128,7 +1129,11 @@ fn continent_capture_keeps_cached_identity_null_and_independent_failure() {
 fn state_population_is_read_beside_available_manpower() {
     let mut bytes = states_with_holes();
     for (offset, available, population) in [(0x400, 6_792_i32, 363_133_i32), (0x600, -5, 0)] {
-        put(&mut bytes, offset + MANPOWER_AVAILABLE, &available.to_le_bytes());
+        put(
+            &mut bytes,
+            offset + MANPOWER_AVAILABLE,
+            &available.to_le_bytes(),
+        );
         put(&mut bytes, offset + POPULATION, &population.to_le_bytes());
     }
     let memory = SliceMemory {
@@ -1136,7 +1141,10 @@ fn state_population_is_read_beside_available_manpower() {
         bytes: &bytes,
     };
     let mut rows = [Row::default(); 5];
-    assert_eq!(walk(&memory, 0, 0x1000, &mut rows), Outcome::Rows { len: 2 });
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut rows),
+        Outcome::Rows { len: 2 }
+    );
     assert_eq!(
         rows[..2]
             .iter()
@@ -1151,12 +1159,60 @@ fn state_population_is_read_beside_available_manpower() {
         [
             Manpower {
                 available: 6_792,
-                population: 363_133
+                population: 363_133,
+                category: 0
             },
             Manpower {
                 available: -5,
-                population: 0
+                population: 0,
+                category: 0
             }
         ]
+    );
+}
+
+/// The census and the carried manpower read take each state's category
+/// pointer; its definition is authenticated by vtable before its token is
+/// read, and a failed definition read refuses only that state's category.
+#[test]
+fn state_category_is_named_by_its_authenticated_definitions_token() {
+    let mut bytes = states_with_holes();
+    // Two definitions: state 1's is a category, state 3's has another vtable.
+    for (offset, vtable, token) in [
+        (0x100, CATEGORY_VTABLE_RVA, 0x2fab_u32),
+        (0x140, VTABLE_RVA, 7),
+    ] {
+        put(&mut bytes, offset, &(vtable as u64).to_le_bytes());
+        put(&mut bytes, offset + CATEGORY_TOKEN, &token.to_le_bytes());
+    }
+    put(&mut bytes, 0x400 + CATEGORY, &0x1100_u64.to_le_bytes());
+    put(&mut bytes, 0x600 + CATEGORY, &0x1140_u64.to_le_bytes());
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let mut rows = [Row::default(); 5];
+    assert_eq!(
+        walk(&memory, 0, 0x1000, &mut rows),
+        Outcome::Rows { len: 2 }
+    );
+    assert_eq!(
+        rows[..2]
+            .iter()
+            .map(|row| (row.id, row.category))
+            .collect::<Vec<_>>(),
+        [(1, Some(0x2fab)), (3, None)]
+    );
+    let mut manpower = [Manpower::default(); 2];
+    read_manpower(&memory, 0, &[0x1400, 0x1600], &[1, 3], &mut manpower).unwrap();
+    assert_eq!(manpower.map(|state| state.category), [0x1100, 0x1140]);
+    assert_eq!(category_token(&memory, 0, 0x1100), Ok(0x2fab));
+    assert_eq!(
+        category_token(&memory, 0, 0x1140),
+        Err("state category vtable mismatch")
+    );
+    assert_eq!(
+        category_token(&memory, 0, 0x9000),
+        Err("state category unreadable")
     );
 }

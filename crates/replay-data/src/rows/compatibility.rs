@@ -320,6 +320,9 @@ pub const MAP_MODE_INPUTS_FORMAT: u16 = FORMAT_VERSION;
 /// field count, so their blocks read as malformed; no published build wrote
 /// them.
 pub const INTEL_NETWORK_MAP_FORMAT: u16 = FORMAT_VERSION;
+/// Each state's live category (States `category`). Format-102 captures
+/// written before it hold none.
+pub const STATE_CATEGORY_FORMAT: u16 = FORMAT_VERSION;
 
 /// Provisional main+1: MapEvents records the simulation edges behind the
 /// game's floating map text and critical shore bombardment explosions as an
@@ -970,7 +973,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     history[TableId::States.index()] = appended_at(
         TableId::States,
         MAP_MODE_INPUTS_FORMAT,
-        "pending political runtime inputs, pol/mapmode-capture population",
+        "pending political runtime inputs, pol/mapmode-capture population, pol/mapmode-infrastructure category",
         &[
             AppendedField {
                 index: 6,
@@ -986,6 +989,11 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 index: 8,
                 name: "population",
                 introduced: MAP_MODE_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 9,
+                name: "category",
+                introduced: STATE_CATEGORY_FORMAT,
             },
         ],
     );

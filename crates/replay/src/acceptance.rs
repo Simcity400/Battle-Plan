@@ -818,6 +818,9 @@ fn source_with_faults(
                 .into(),
             manpower_available: [i32::MIN, 0, i32::MAX][(index + id as usize) % 3],
             population: [i32::MAX, i32::MIN, 0][(index + id as usize) % 3].into(),
+            category: crate::rows::Recorded::Value(
+                [None, Some(0x2fab), Some(u32::MAX)][(index / 13 + id as usize) % 3],
+            ),
             continent: crate::rows::Recorded::Value(Some((index + id as usize) as u32)),
             // Empty, ASCII and non-UTF-8 names, changing on their own cadence.
             custom_name: match (index / 11 + id as usize) % 3 {

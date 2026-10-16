@@ -95,6 +95,9 @@ pub(crate) struct StateStore {
     slots: Vec<usize>,
     ids: Vec<u32>,
     manpower: Vec<cstate::Manpower>,
+    /// The hour's category definitions by pointer, with their tokens; reserved
+    /// for every held state with the other scratch, so naming allocates nothing.
+    categories: Vec<(u64, Option<u32>)>,
     /// Per held row: read afresh, and whether only for comparison.
     reread: Vec<bool>,
     sampled: Vec<bool>,
@@ -114,6 +117,7 @@ impl StateStore {
             slots: Vec::new(),
             ids: Vec::new(),
             manpower: Vec::new(),
+            categories: Vec::new(),
             reread: Vec::new(),
             sampled: Vec::new(),
             counts: Counts::default(),
@@ -210,7 +214,9 @@ impl StateStore {
                 allocation::resize_default(values, len)?;
             }
             allocation::resize_default(&mut self.ids, len)?;
-            allocation::resize_default(&mut self.manpower, len)
+            allocation::resize_default(&mut self.manpower, len)?;
+            self.categories.clear();
+            allocation::reserve(&mut self.categories, len)
         });
         scratch.ok()?;
         // The occupied slots are exactly the held states, at the same
@@ -257,10 +263,30 @@ impl StateStore {
         {
             return None;
         }
+        // Every state's category pointer is read each hour; a definition
+        // several states share is authenticated and named once.
         for (index, row) in rows[..len].iter_mut().enumerate() {
+            let pointer = self.manpower[index].category;
+            let held = self
+                .categories
+                .iter()
+                .find(|(held, _)| *held == pointer)
+                .map(|&(_, token)| token);
+            let category = match held {
+                Some(token) => token,
+                None => {
+                    let token = (pointer != 0)
+                        .then(|| cstate::category_token(memory, base, pointer).ok())
+                        .flatten();
+                    // At most one entry per held state: within the reservation.
+                    self.categories.push((pointer, token));
+                    token
+                }
+            };
             *row = cstate::Row {
                 manpower_available: self.manpower[index].available,
                 population: self.manpower[index].population,
+                category,
                 ..self.held.rows[index]
             };
             if self.reread[index] {
@@ -428,6 +454,7 @@ impl StateStore {
             + self.slots.capacity() * size_of::<usize>()
             + self.ids.capacity() * size_of::<u32>()
             + self.manpower.capacity() * size_of::<cstate::Manpower>()
+            + self.categories.capacity() * size_of::<(u64, Option<u32>)>()
             + self.reread.capacity()
             + self.sampled.capacity();
     }

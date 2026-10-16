@@ -4,9 +4,10 @@ use installed_content::scripted_map_modes;
 use replay::{
     frame::{Metrics, TableView},
     rows::{
-        CapitulationRow, CountryAppearanceRow, CountryCounterInputRow, CountryLinkRow, CountryRow,
-        FactionMemberRow, FactionRow, IntelNetworkRow, PlayerRow, ProvinceRow, Recorded, StateRow,
-        SubjectRow, TableId, TableRows,
+        BuildingRow, CapitulationRow, CountryAppearanceRow, CountryCounterInputRow, CountryLinkRow,
+        CountryRow, FactionMemberRow, FactionRow, IntelNetworkRow, LexicalTokenRow, PlayerRow,
+        ProvinceRow, Recorded, ResearchTechnologyRow, StateRow, SubjectRow, TableId, TableRows,
+        TechnologyDefinitionRow,
     },
 };
 
@@ -42,6 +43,7 @@ fn defines() -> ModeDefines {
         manpower_colors: [[0.2, 0.2, 0.7, 0.18], [1.0, 0.125, 0.0, 0.6]],
         network_colors: [[0.1, 0.1, 0.5, 0.2], [0.4, 0.3, 0.9, 1.0]],
         quiet_network_colors: [[0.1, 0.5, 0.1, 0.2], [0.4, 0.9, 0.3, 1.0]],
+        infrastructure_colors: [[1.0, 0.125, 0.0, 0.1], [0.1, 0.9, 0.1, 0.6]],
         configurable_slots: [4, 10],
         terrain: terrain::Defines {
             alpha: [0.5, 0.8],
@@ -54,10 +56,16 @@ fn content(scripted: MapModes) -> Content {
     Content {
         defines: defines(),
         ideologies: Arc::new(installed_content::ideologies::Ideologies::default()),
+        category_colors: BTreeMap::from([
+            (b"town".to_vec(), Ok(Some([0.0, 200.0 / 255.0, 0.0, 1.0]))),
+            (b"rural".to_vec(), Ok(None)),
+            (b"wasteland".to_vec(), Err("no colour".to_owned())),
+        ]),
         scripted,
         faction_templates: Ok(Arc::new(Default::default())),
         recorded_language: "english".to_owned(),
         terrain: Err("the terrain database did not read".to_owned()),
+        infrastructure: infrastructure::Content::default(),
     }
 }
 
@@ -184,6 +192,21 @@ fn frame() -> DecodedFrame {
             ordinal: 1,
         },
     ]));
+    // Every state is a town.
+    tables[TableId::States.index()] = TableView::Complete(TableRows::States(
+        (1..=3)
+            .map(|id| StateRow {
+                id,
+                category: Some(11).into(),
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 11,
+            literal: b"town".to_vec(),
+        }]));
     tables[TableId::Players.index()] = TableView::Complete(TableRows::Players(vec![PlayerRow {
         id: 1,
         country: 200,
@@ -279,12 +302,48 @@ fn players_fade_unplayed_countries_and_pulse_the_selected_one() {
 }
 
 #[test]
-fn states_withhold_their_category_colour_and_name_why() {
-    let fill = run(
-        MapMode::Stock(Stock::States),
-        &content(MapModes::default()),
-        None,
-    );
+fn states_take_their_category_colour_and_name_what_they_cannot_draw() {
+    // State 1 is a town, state 2 a colourless rural state, state 3's category has no colour
+    // the content reads; the category tokens fold to the declared names.
+    let with = |categories: [Recorded<Option<u32>>; 3]| {
+        let mut frame = frame();
+        frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
+            categories
+                .into_iter()
+                .zip(1..)
+                .map(|(category, id)| StateRow {
+                    id,
+                    category,
+                    ..Default::default()
+                })
+                .collect(),
+        ))
+        .into();
+        frame.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(
+                [(11, "Town"), (12, "rural"), (13, "wasteland")]
+                    .into_iter()
+                    .map(|(token, literal)| LexicalTokenRow {
+                        token,
+                        literal: literal.as_bytes().to_vec(),
+                    })
+                    .collect(),
+            ))
+            .into();
+        fill(
+            &MapMode::Stock(Stock::States),
+            &Inputs {
+                content: &content(MapModes::default()),
+                map: &map(),
+                frame: &frame,
+                selected: None,
+                world: None,
+                colour: None,
+            },
+        )
+        .unwrap()
+    };
+    let fill = with([Some(11).into(), Some(12).into(), Some(13).into()]);
     let draw = fill.draw.unwrap();
     // The states draw over the political countries.
     assert_eq!(draw.channels, [Source::Country, Source::Mode]);
@@ -294,16 +353,32 @@ fn states_withhold_their_category_colour_and_name_why() {
         draw.channel_constants(),
         [Some([0.0, 0.973]), Some([0.4, 0.973])]
     );
-    // The current category is not recorded, so no state takes its history colour.
     let layer = draw.layer.unwrap();
-    assert!(layer.styles.is_empty());
-    assert_eq!(layer.region_of, [0; 6]);
+    assert_eq!(layer.region_of, [0, 2, 2, 3, 0, 0]);
+    assert_eq!(layer.styles[&2].color, [0, 200, 0, 255]);
+    // A category without a colour takes the fixed blue; one whose colour is unknown is refused.
+    assert_eq!(layer.styles[&3].color, [0, 0, 255, 63]);
+    assert!(!layer.styles.contains_key(&4));
     assert_eq!(layer.thickness, Some(5.0));
     assert_eq!(layer.channel, [0.4, 0.973]);
-    assert!(
-        fill.warnings
-            .iter()
-            .any(|line| line.contains("category colours are refused"))
+    assert_eq!(
+        fill.warnings,
+        [
+            "The states map mode leaves 1 states unfilled whose category the content does not declare or colour"
+        ]
+    );
+    // The live category decides: state 1 recategorised as rural turns blue.
+    let moved = with([Some(12).into(), Some(12).into(), None.into()]);
+    let layer = moved.draw.unwrap().layer.unwrap();
+    assert_eq!(layer.styles[&2].color, [0, 0, 255, 63]);
+    assert_eq!(
+        moved.warnings,
+        ["The states map mode leaves 1 states unfilled whose category read was refused"]
+    );
+    let unrecorded = with([Recorded::NotRecorded, Some(12).into(), Some(12).into()]);
+    assert_eq!(
+        unrecorded.draw.unwrap().channels,
+        [Source::Country, Source::Empty]
     );
 }
 
@@ -637,7 +712,7 @@ fn each_mode_chooses_whose_names_the_map_writes_far_and_near() {
 #[test]
 fn modes_no_recording_can_draw_say_why() {
     for stock in Stock::ALL {
-        let expected = matches!(stock, Stock::Supply | Stock::Infrastructure);
+        let expected = stock == Stock::Supply;
         assert_eq!(stock.unavailable().is_some(), expected, "{stock:?}");
     }
 }
@@ -649,7 +724,6 @@ fn each_mode_takes_the_games_channel_pair_and_names_what_it_lacks() {
         (Stock::StrategicAir, [Strategic, Empty]),
         (Stock::Supply, [Empty, Empty]),
         (Stock::Terrain, [Empty, Country]),
-        (Stock::Infrastructure, [Empty, Country]),
         (Stock::Resources, [Country, Empty]),
     ] {
         let fill = run(
@@ -1011,4 +1085,393 @@ fn the_terrain_mode_draws_its_layer_under_the_countries() {
         [Some([0.39, 0.973]), Some(defines().country_channel)]
     );
     assert_eq!(fill.warnings, ["one province left out"]);
+}
+
+/// Token 77 spells the infrastructure building `roads`; token 78 spells another building.
+const ROADS: u32 = 77;
+
+/// GER's state 1, SOV's state 2 and ITA's state 3, with the given building levels and
+/// technology rows.
+fn infrastructure_frame(
+    levels: &[(u32, u32, i16)],
+    research: Vec<ResearchTechnologyRow>,
+    definitions: Vec<TechnologyDefinitionRow>,
+) -> DecodedFrame {
+    let mut frame = frame();
+    frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
+        [(1, 100), (2, 200), (3, 300)]
+            .into_iter()
+            .map(|(id, controller)| StateRow {
+                id,
+                owner: controller,
+                controller,
+                ..Default::default()
+            })
+            .collect(),
+    ))
+    .into();
+    frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![
+            LexicalTokenRow {
+                token: ROADS,
+                literal: b"Roads".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 78,
+                literal: b"arms_factory".to_vec(),
+            },
+        ]))
+        .into();
+    frame.tables[TableId::StateBuildings.index()] = TableView::Complete(TableRows::StateBuildings(
+        levels
+            .iter()
+            .map(|&(location, building_type, level)| BuildingRow {
+                location,
+                building_type,
+                level,
+                ..Default::default()
+            })
+            .collect(),
+    ))
+    .into();
+    frame.tables[TableId::ResearchTechnologies.index()] =
+        TableView::Complete(TableRows::ResearchTechnologies(research)).into();
+    frame.tables[TableId::TechnologyDefinitions.index()] =
+        TableView::Complete(TableRows::TechnologyDefinitions(definitions)).into();
+    frame
+}
+
+fn infrastructure_fill(infrastructure: infrastructure::Content, frame: &DecodedFrame) -> ModeFill {
+    let content = Content {
+        infrastructure,
+        ..content(MapModes::default())
+    };
+    fill(
+        &MapMode::Stock(Stock::Infrastructure),
+        &Inputs {
+            content: &content,
+            map: &map(),
+            frame,
+            selected: Some(0),
+            world: None,
+            colour: None,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn infrastructure_blends_each_states_level_over_its_maximum_and_clamps_it() {
+    let roads = infrastructure::for_tests("roads", 5, true, None, Vec::new());
+    // State 1 at two of five, state 2 past its maximum, state 3 without an entry; another
+    // building's level is not the infrastructure level.
+    let frame = infrastructure_frame(
+        &[(1, ROADS, 2), (2, ROADS, 7), (3, 78, 4)],
+        Vec::new(),
+        Vec::new(),
+    );
+    let fill = infrastructure_fill(roads.clone(), &frame);
+    assert!(fill.warnings.is_empty(), "{:?}", fill.warnings);
+    let draw = fill.draw.unwrap();
+    assert_eq!(draw.channels, [Source::Mode, Source::Country]);
+    let layer = draw.layer.unwrap();
+    assert_eq!(layer.styles[&2].color, pack([0.64, 0.435, 0.04, 0.3]));
+    assert_eq!(layer.styles[&3].color, pack([0.1, 0.9, 0.1, 0.6]));
+    assert_eq!(layer.styles[&4].color, pack([1.0, 0.125, 0.0, 0.1]));
+    assert_eq!(layer.gradient, Some(LEVEL_GRADIENT));
+    assert_eq!(layer.thickness, Some(5.0));
+    assert_eq!(layer.channel, [0.0, 0.973]);
+    assert_eq!(&layer.region_of[1..6], &[2, 2, 3, 4, 0]);
+    // The hover reads the level of the province's state: zero outside every state or entry.
+    assert_eq!(roads.hover_level(&frame, 1), Ok(2));
+    assert_eq!(roads.hover_level(&frame, 3), Ok(7));
+    assert_eq!(roads.hover_level(&frame, 4), Ok(0));
+    assert_eq!(roads.hover_level(&frame, 5), Ok(0));
+    // A type no state status can hold leaves every state without a maximum.
+    let provincial = infrastructure::for_tests("roads", 5, false, None, Vec::new());
+    let layer = infrastructure_fill(provincial, &frame)
+        .draw
+        .unwrap()
+        .layer
+        .unwrap();
+    for key in 2..=4 {
+        assert_eq!(layer.styles[&key].color, pack(infrastructure::NO_MAXIMUM));
+    }
+}
+
+#[test]
+fn enabling_technologies_cap_the_maximum_by_the_controllers_completed_ones() {
+    let technologies = vec![
+        ("rail_a", Some(3)),
+        ("rail_b", Some(4)),
+        ("unrelated", None),
+    ];
+    let roads = infrastructure::for_tests("roads", 5, true, Some(technologies), Vec::new());
+    let completed = engine::ctechnology::CLASSIFIER_COMPLETED;
+    let research = |country, database_index, classifier| ResearchTechnologyRow {
+        country,
+        database_index,
+        classifier,
+        ..Default::default()
+    };
+    let definition = |database_index, id: &str, max_level| TechnologyDefinitionRow {
+        database_index,
+        id: id.as_bytes().to_vec(),
+        max_level,
+        ..Default::default()
+    };
+    let frame = |max_level| {
+        infrastructure_frame(
+            &[(1, ROADS, 2), (2, ROADS, 1), (3, ROADS, 3)],
+            vec![
+                // GER completed the level-three technology, SOV is still researching one and
+                // ITA completed both.
+                research(100, 1, completed),
+                research(200, 2, completed + 1),
+                research(300, 1, completed),
+                research(300, 2, completed),
+            ],
+            vec![
+                definition(1, "Rail_A", 1),
+                definition(2, "rail_b", max_level),
+                definition(3, "unrelated", 4),
+            ],
+        )
+    };
+    let layer = infrastructure_fill(roads.clone(), &frame(1))
+        .draw
+        .unwrap()
+        .layer
+        .unwrap();
+    let blend = |t: f32| {
+        let [from, to] = [[1.0, 0.125, 0.0, 0.1], [0.1, 0.9, 0.1, 0.6_f32]];
+        pack(std::array::from_fn(|i| (to[i] - from[i]) * t + from[i]))
+    };
+    // GER: two of three; SOV: no maximum; ITA: three of four.
+    assert_eq!(layer.styles[&2].color, blend(2.0 / 3.0));
+    assert_eq!(layer.styles[&3].color, pack(infrastructure::NO_MAXIMUM));
+    assert_eq!(layer.styles[&4].color, blend(0.75));
+    // A completed repeatable technology was applied on every path, so its level holds.
+    let fill = infrastructure_fill(roads.clone(), &frame(3));
+    assert!(fill.warnings.is_empty(), "{:?}", fill.warnings);
+    assert_eq!(
+        fill.draw.unwrap().layer.unwrap().styles[&4].color,
+        blend(0.75)
+    );
+    // A partly researched one may or may not have been applied: only its controller's states
+    // are left unfilled, by name and count.
+    let mut partly = frame(3);
+    let TableView::Complete(TableRows::ResearchTechnologies(rows)) =
+        &mut *partly.tables[TableId::ResearchTechnologies.index()]
+    else {
+        unreachable!()
+    };
+    rows[1].level = 1;
+    let fill = infrastructure_fill(roads, &partly);
+    let layer = fill.draw.unwrap().layer.unwrap();
+    assert!(!layer.styles.contains_key(&3));
+    assert_eq!(layer.styles[&2].color, blend(2.0 / 3.0));
+    assert_eq!(fill.warnings.len(), 1);
+    assert!(
+        fill.warnings[0].contains("leaves 1 states") && fill.warnings[0].contains("rail_b"),
+        "{:?}",
+        fill.warnings
+    );
+}
+
+#[test]
+fn refused_infrastructure_content_and_country_statuses_are_named_and_counted() {
+    let frame = infrastructure_frame(&[(1, ROADS, 2)], Vec::new(), Vec::new());
+    let refused = infrastructure::for_tests(
+        "roads",
+        5,
+        true,
+        None,
+        vec!["1 state categories set its maximum".to_owned()],
+    );
+    let fill = infrastructure_fill(refused, &frame);
+    assert_eq!(
+        fill.draw.unwrap().channels,
+        [Source::Empty, Source::Country]
+    );
+    assert_eq!(
+        fill.warnings,
+        ["The infrastructure map mode is not drawn: 1 state categories set its maximum"]
+    );
+    let missing = infrastructure_fill(infrastructure::Content::default(), &frame);
+    assert_eq!(
+        missing.draw.unwrap().channels,
+        [Source::Empty, Source::Country]
+    );
+    assert!(missing.warnings[0].contains("infrastructure = yes"));
+    // A state whose building status names a country is left unfilled and counted.
+    let mut frame = frame;
+    frame.tables[TableId::StateBuildings.index()] =
+        TableView::Complete(TableRows::StateBuildings(vec![BuildingRow {
+            location: 2,
+            building_type: ROADS,
+            country: 200,
+            level: 1,
+            ..Default::default()
+        }]))
+        .into();
+    let roads = infrastructure::for_tests("roads", 5, true, None, Vec::new());
+    let fill = infrastructure_fill(roads, &frame);
+    let layer = fill.draw.unwrap().layer.unwrap();
+    assert!(!layer.styles.contains_key(&3));
+    assert_eq!(layer.region_of[3], 0);
+    assert_eq!(fill.warnings.len(), 1);
+    assert!(fill.warnings[0].starts_with("The infrastructure map mode leaves 1 states unfilled"));
+}
+
+#[test]
+fn a_states_live_category_lowers_its_infrastructure_maximum() {
+    let roads = infrastructure::for_tests("roads", 5, true, None, Vec::new())
+        .with_categories(&[("Ridge", 2), ("plateau", 9)]);
+    let mut frame = infrastructure_frame(
+        &[(1, ROADS, 1), (2, ROADS, 1), (3, ROADS, 5)],
+        Vec::new(),
+        Vec::new(),
+    );
+    let TableView::Complete(TableRows::States(states)) =
+        &mut *frame.tables[TableId::States.index()]
+    else {
+        unreachable!()
+    };
+    // State 1 is a ridge, state 2 a town no category caps, state 3 a plateau above the type's own.
+    for (state, token) in states.iter_mut().zip([90, 91, 92]) {
+        state.category = Recorded::Value(Some(token));
+    }
+    let TableView::Complete(TableRows::LexicalTokens(tokens)) =
+        &mut *frame.tables[TableId::LexicalTokens.index()]
+    else {
+        unreachable!()
+    };
+    for (token, literal) in [(90, "ridge"), (91, "town"), (92, "PLATEAU")] {
+        tokens.push(LexicalTokenRow {
+            token,
+            literal: literal.as_bytes().to_vec(),
+        });
+    }
+    let fill = infrastructure_fill(roads.clone(), &frame);
+    assert!(fill.warnings.is_empty(), "{:?}", fill.warnings);
+    let layer = fill.draw.unwrap().layer.unwrap();
+    let blend = |t: f32| {
+        let [from, to] = [[1.0, 0.125, 0.0, 0.1], [0.1, 0.9, 0.1, 0.6_f32]];
+        pack(std::array::from_fn(|i| (to[i] - from[i]) * t + from[i]))
+    };
+    assert_eq!(layer.styles[&2].color, blend(0.5));
+    assert_eq!(layer.styles[&3].color, blend(0.2));
+    assert_eq!(layer.styles[&4].color, blend(1.0));
+    // A refused category read leaves its state unfilled and counted.
+    let TableView::Complete(TableRows::States(states)) =
+        &mut *frame.tables[TableId::States.index()]
+    else {
+        unreachable!()
+    };
+    states[0].category = Recorded::Value(None);
+    let fill = infrastructure_fill(roads, &frame);
+    assert!(!fill.draw.unwrap().layer.unwrap().styles.contains_key(&2));
+    assert_eq!(fill.warnings.len(), 1);
+    assert!(fill.warnings[0].contains("1 states unfilled whose category read was refused"));
+}
+
+#[test]
+fn an_incomplete_dictionary_without_the_infrastructure_token_is_refused_not_zero() {
+    let roads = infrastructure::for_tests("roads", 5, true, None, Vec::new());
+    let mut frame = infrastructure_frame(&[(1, ROADS, 4)], Vec::new(), Vec::new());
+    // The hour's dictionary lost rows, the infrastructure token among them.
+    frame.tables[TableId::LexicalTokens.index()] = TableView::Truncated {
+        rows: TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 78,
+            literal: b"arms_factory".to_vec(),
+        }]),
+        missing: 1,
+    }
+    .into();
+    let fill = infrastructure_fill(roads.clone(), &frame);
+    assert_eq!(
+        fill.draw.unwrap().channels,
+        [Source::Empty, Source::Country]
+    );
+    assert!(
+        fill.warnings[0].contains("dictionary is incomplete"),
+        "{:?}",
+        fill.warnings
+    );
+    assert!(roads.hover_level(&frame, 1).is_err());
+    // A complete dictionary that does not name the type leaves every level zero.
+    frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(Vec::new())).into();
+    assert_eq!(roads.hover_level(&frame, 1), Ok(0));
+}
+
+#[test]
+fn each_recorded_declaration_of_a_repeated_technology_gives_its_own_unlock() {
+    // Two declarations of `t`: the first enables level 3, the second level 4.
+    let technologies = vec![("t", Some(3)), ("t", Some(4))];
+    let roads = infrastructure::for_tests("roads", 5, true, Some(technologies), Vec::new());
+    let completed = engine::ctechnology::CLASSIFIER_COMPLETED;
+    let research = |country, database_index| ResearchTechnologyRow {
+        country,
+        database_index,
+        classifier: completed,
+        ..Default::default()
+    };
+    let definition = |database_index, id: &str| TechnologyDefinitionRow {
+        database_index,
+        id: id.as_bytes().to_vec(),
+        max_level: 1,
+        ..Default::default()
+    };
+    // GER completed the first declaration (index 1), ITA the second (index 2).
+    let frame = |definitions| {
+        infrastructure_frame(
+            &[(1, ROADS, 3), (2, ROADS, 1), (3, ROADS, 2)],
+            vec![research(100, 1), research(300, 2)],
+            definitions,
+        )
+    };
+    let fill = infrastructure_fill(
+        roads.clone(),
+        &frame(vec![definition(1, "t"), definition(2, "T")]),
+    );
+    assert!(fill.warnings.is_empty(), "{:?}", fill.warnings);
+    let layer = fill.draw.unwrap().layer.unwrap();
+    let blend = |t: f32| {
+        let [from, to] = [[1.0, 0.125, 0.0, 0.1], [0.1, 0.9, 0.1, 0.6_f32]];
+        pack(std::array::from_fn(|i| (to[i] - from[i]) * t + from[i]))
+    };
+    // GER: three of three; SOV completed neither; ITA: two of four.
+    assert_eq!(layer.styles[&2].color, blend(1.0));
+    assert_eq!(layer.styles[&3].color, pack(infrastructure::NO_MAXIMUM));
+    assert_eq!(layer.styles[&4].color, blend(0.5));
+    // A recorded declaration whose index names no content declaration of its id hides nothing
+    // while nobody researched it.
+    let unjoined = vec![definition(1, "t"), definition(2, "t"), definition(3, "t")];
+    let fill = infrastructure_fill(roads.clone(), &frame(unjoined.clone()));
+    assert!(fill.warnings.is_empty(), "{:?}", fill.warnings);
+    let layer = fill.draw.unwrap().layer.unwrap();
+    assert_eq!(layer.styles[&2].color, blend(1.0));
+    assert_eq!(layer.styles[&4].color, blend(0.5));
+    // Once SOV completes it, only SOV's states are left unfilled, by name and count.
+    let mut completed = frame(unjoined);
+    let TableView::Complete(TableRows::ResearchTechnologies(rows)) =
+        &mut *completed.tables[TableId::ResearchTechnologies.index()]
+    else {
+        unreachable!()
+    };
+    rows.push(research(200, 3));
+    let fill = infrastructure_fill(roads, &completed);
+    let layer = fill.draw.unwrap().layer.unwrap();
+    assert!(!layer.styles.contains_key(&3));
+    assert_eq!(layer.styles[&2].color, blend(1.0));
+    assert_eq!(layer.styles[&4].color, blend(0.5));
+    assert_eq!(fill.warnings.len(), 1);
+    assert!(
+        fill.warnings[0].contains("leaves 1 states")
+            && fill.warnings[0].contains("t (its declaration"),
+        "{:?}",
+        fill.warnings
+    );
 }

@@ -9,6 +9,9 @@ use replay::{
 };
 use std::{collections::BTreeMap, io};
 
+/// The lexical token of the fixture state's category, spelled `town`.
+pub const FIXTURE_CATEGORY_TOKEN: u32 = 0x5a1;
+
 pub fn fixture() -> (
     DecodedFrame,
     Save,
@@ -17,7 +20,7 @@ pub fn fixture() -> (
 ) {
     let save = save::parse(br#"HOI4txt
 player="GER" date="1936.1.1.1" game_unique_id="campaign" game_unique_seed=7 debug_current_ref_id=65580 unit=4008 order_index=7484 front_index=8230 theatre_index=112 theater_group_index=910 military_deployment_line_index=7783 military_deployment_conveyor_index=736 equipment_variant_index=6284 country_leader_index=1 navy_id=8184 land_combat_id=15224 multiplayer_random_count=-1334833904 version="build"
-states={1={owner="GER" demilitarized=no is_border_conflict=no}} provinces={2={controller="GER"}}
+states={1={owner="GER" demilitarized=no is_border_conflict=no state_category=town}} provinces={2={controller="GER"}}
 countries={GER={politics={political_power=10.00001} command_power=2 stability=0.7 war_support=0.3 convoys={equipment={}}}}
 "#).unwrap();
     let hour = save.date.engine_hour().unwrap();
@@ -108,6 +111,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                     owner: 102,
                     controller: 101,
                     railway_infrastructure: Recorded::Value(Some(0)),
+                    category: Recorded::Value(Some(FIXTURE_CATEGORY_TOKEN)),
                     ..StateRow::default()
                 }])),
                 TableView::Complete(TableRows::Divisions(Vec::new())),
@@ -120,6 +124,13 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
             {
                 tables[index] = table;
             }
+            tables[TableId::LexicalTokens.index()] =
+                TableView::Complete(TableRows::LexicalTokens(vec![
+                    replay::rows::LexicalTokenRow {
+                        token: FIXTURE_CATEGORY_TOKEN,
+                        literal: b"town".to_vec(),
+                    },
+                ]));
             tables[TableId::HumanControllers.index()] =
                 TableView::Complete(TableRows::HumanControllers(vec![
                     replay::rows::HumanControllerRow {

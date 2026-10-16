@@ -264,3 +264,52 @@ fn a_forgotten_store_reads_everything() {
     hour(&mut store, &memory);
     assert_eq!(reread(&memory), [true, true]);
 }
+
+/// The hour's category cache is prepared with the store's other scratch, so a
+/// carried hour names each shared category definition without allocating; a
+/// denied allocation then cannot end the game's process.
+#[test]
+fn a_carried_hour_names_categories_without_allocating() {
+    const CATEGORY: usize = 0x5800;
+    const TOKEN: u32 = 0x2fab;
+    let mut bytes = named();
+    put(
+        &mut bytes,
+        CATEGORY,
+        (cstate::CATEGORY_VTABLE_RVA as u64).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        CATEGORY + cstate::CATEGORY_TOKEN,
+        TOKEN.to_le_bytes(),
+    );
+    for state in [FIRST, LAST] {
+        put(
+            &mut bytes,
+            state + cstate::CATEGORY,
+            (CATEGORY as u64).to_le_bytes(),
+        );
+    }
+    let memory = Movement(SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    });
+    let domain = domain();
+    let mut store = store(domain, Check::Nothing);
+    hour(&mut store, &memory);
+    hour(&mut store, &memory);
+    let mut request = carried_request(&mut store);
+    let report = crate::test_support::with_allocations_denied(|| request.run(&memory));
+    assert!(matches!(report.census.result, Outcome::Rows { len: 2 }));
+    assert_eq!(
+        request
+            .census
+            .payload
+            .iter()
+            .map(|row| row.category)
+            .collect::<Vec<_>>(),
+        [Some(TOKEN), Some(TOKEN)]
+    );
+    let counts = request.store.as_ref().unwrap().counts();
+    assert_eq!(counts.reused, 2);
+}
