@@ -1,4 +1,6 @@
 //! Shared conventional-flight and raid-aircraft equipment selection.
+use std::collections::BTreeMap;
+
 use replay::{
     frame::DecodedFrame,
     rows::{VariantDefinitionRow, WingEquipmentRow, tables},
@@ -9,14 +11,30 @@ use replay::{
 pub fn primary(rows: &[WingEquipmentRow], wing: u64) -> Option<u64> {
     let mut best: Option<&WingEquipmentRow> = None;
     for row in rows.iter().filter(|row| row.wing == wing) {
-        if best.is_none_or(|old| {
-            row.amount_raw > old.amount_raw
-                || (row.amount_raw == old.amount_raw && row.ordinal < old.ordinal)
-        }) {
+        if best.is_none_or(|old| outranks(row, old)) {
             best = Some(row);
         }
     }
     best.map(|row| row.variant)
+}
+
+/// [`primary`] of every wing `wanted` admits, in one pass over the rows.
+pub fn primaries(rows: &[WingEquipmentRow], wanted: impl Fn(u64) -> bool) -> BTreeMap<u64, u64> {
+    let mut best = BTreeMap::<u64, &WingEquipmentRow>::new();
+    for row in rows.iter().filter(|row| wanted(row.wing)) {
+        let old = best.entry(row.wing).or_insert(row);
+        if outranks(row, old) {
+            *old = row;
+        }
+    }
+    best.into_iter()
+        .map(|(wing, row)| (wing, row.variant))
+        .collect()
+}
+
+/// Whether `row` is a wing's primary equipment before `old`.
+fn outranks(row: &WingEquipmentRow, old: &WingEquipmentRow) -> bool {
+    row.amount_raw > old.amount_raw || (row.amount_raw == old.amount_raw && row.ordinal < old.ordinal)
 }
 
 pub fn wing_primary(frame: &DecodedFrame, wing: u64) -> Result<Option<u64>, String> {
@@ -224,6 +242,28 @@ mod tests {
         assert_eq!(primary(&rows, 5), Some(7));
         assert_eq!(primary(&rows, 4), None);
         assert_eq!(primary(&rows[3..], 5), Some(1));
+    }
+    #[test]
+    fn primaries_are_each_wanted_wings_primary_in_one_pass() {
+        let rows = [
+            (5, 9, 2, 400),
+            (6, 3, 0, 50),
+            (5, 7, 0, 400),
+            (6, 4, 1, 60),
+            (8, 1, 0, 10),
+            (5, 3, 1, 200),
+        ]
+        .map(|(wing, variant, ordinal, amount_raw)| WingEquipmentRow {
+            wing,
+            variant,
+            ordinal,
+            amount_raw,
+        });
+        let primaries = primaries(&rows, |wing| wing != 8);
+        assert_eq!(primaries, BTreeMap::from([(5, 7), (6, 4)]));
+        for (wing, variant) in primaries {
+            assert_eq!(primary(&rows, wing), Some(variant));
+        }
     }
     #[test]
     fn primary_selects_the_greatest_signed_balance_in_a_nonempty_bank() {

@@ -2018,3 +2018,160 @@ fn a_scenario_rig_whose_files_do_not_read_is_refused_and_the_assets_load() {
     assert!(!assets.rigs.contains_key("missile_1_bombing"));
     assert!(!assets.rigs.contains_key("fighter_1_patrol"));
 }
+
+/// The flying mode's stand-in aircraft: the viewing country's largest fighter wing, through the
+/// airborne ladder, falling back past a wing whose aircraft does not resolve.
+#[test]
+fn the_viewing_countrys_fighter_is_its_largest_fighter_wings_aircraft() {
+    use replay::{
+        frame::{Metrics, TableView},
+        rows::{TableId, TableRows, VariantDefinitionRow, WingEquipmentRow},
+    };
+    let frame = |wings: Vec<AirWingRow>| {
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 42,
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index])).into()
+            }),
+            metrics: Metrics::default(),
+        };
+        let equipment = wings
+            .iter()
+            .map(|wing| WingEquipmentRow {
+                wing: wing.id,
+                ordinal: 0,
+                variant: wing.id * 100,
+                amount_raw: 1000,
+            })
+            .collect();
+        // Wing 1 flies bombers; the others fighters, by air superiority or interception alone.
+        let definitions = [(100, 1 << 3), (200, FIGHTER_MISSIONS), (300, 1), (400, 1 << 2), (500, 1)]
+            .map(|(id, mission_mask)| VariantDefinitionRow {
+                id,
+                mission_mask,
+                ..Default::default()
+            })
+            .to_vec();
+        *frame.tables[TableId::AirWings.index()] =
+            TableView::Complete(TableRows::AirWings(wings));
+        *frame.tables[TableId::WingEquipment.index()] =
+            TableView::Complete(TableRows::WingEquipment(equipment));
+        *frame.tables[TableId::VariantDefinitions.index()] =
+            TableView::Complete(TableRows::VariantDefinitions(definitions));
+        frame
+    };
+    let layers = ResolvedLayers::default();
+    let map = MapData {
+        width: 1,
+        height: 1,
+        province_ids: vec![0],
+        definitions: Default::default(),
+        country_colors: Default::default(),
+    };
+    let mut assets = AircraftAssets::load(
+        &layers,
+        Decode::default(),
+        &map,
+        &Defines::new().unwrap(),
+        &BTreeMap::new(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assets.roster = Arc::new(roster(
+        "entity = { name = plane_200_entity } entity = { name = plane_300_entity }
+         entity = { name = plane_400_entity } entity = { name = plane_500_entity }",
+    ));
+    let planes = |id, owner, planes| AirWingRow {
+        planes,
+        ..wing(id, owner, 1)
+    };
+    // Raw countries 70 and 71 are the viewing country's slot 7; 80 is another country's.
+    let links = BTreeMap::from([(70, 7), (71, 7), (80, 8)]);
+    let wings = vec![
+        planes(1, 70, 40),
+        planes(2, 70, 5),
+        planes(3, 71, 8),
+        planes(4, 80, 50),
+        AirWingRow {
+            // Lent to the viewing country, it flies as its own.
+            country_override: 70,
+            ..planes(5, 80, 8)
+        },
+    ];
+    let named = |variant: u64, _: u32| Ok(Some(format!("plane_{variant}_entity")));
+    let fighter = viewing_fighter(&frame(wings.clone()), &assets, &links, 7, &named).unwrap();
+    // Wings 3 and 5 tie at eight planes; the first stored wins over the larger bomber wing.
+    assert_eq!(fighter.name, "plane_300_entity");
+    assert_eq!(assets.library().meshes[fighter.slot].name, "plane_300_entity");
+    // A wing whose aircraft the ladder cannot name gives way to the next.
+    let unnamed = |variant: u64, country: u32| {
+        if variant == 300 {
+            Ok(None)
+        } else {
+            named(variant, country)
+        }
+    };
+    let fighter = viewing_fighter(&frame(wings.clone()), &assets, &links, 7, &unnamed).unwrap();
+    assert_eq!(fighter.name, "plane_500_entity");
+    // Another viewing country flies its own; a country with only bombers has none.
+    let other = viewing_fighter(&frame(wings.clone()), &assets, &links, 8, &named).unwrap();
+    assert_eq!(other.name, "plane_400_entity");
+    let bombers = viewing_fighter(&frame(wings[..1].to_vec()), &assets, &links, 7, &named);
+    assert_eq!(bombers, Err("the viewing country fields no fighter".into()));
+    // Every fighter refused is named.
+    let refused = viewing_fighter(&frame(wings), &assets, &links, 7, &|_, _| Ok(None));
+    let reason = refused.unwrap_err();
+    assert!(reason.contains("wing 3: unresolved aircraft equipment variant 300"), "{reason}");
+    assert!(reason.contains("wing 5:") && reason.contains("wing 2:"), "{reason}");
+}
+
+/// The flying mode's crash reads the content's plane ground contact: its height above the surface
+/// and how long the explosion plays before the entity goes.
+#[test]
+fn ground_contact_reads_the_content_defines_and_names_a_missing_one() {
+    let defines = Defines::new().unwrap();
+    defines
+        .load(
+            "common/defines/00_graphics.lua",
+            b"NDefines = { NAirGfx = { AIRPLANES_GROUND_COLLISION_OFFSET_Y = 0.25, AIRPLANES_GROUND_EXPLOSION_TIME_DELAY = 0.75 } }",
+        )
+        .unwrap();
+    assert_eq!(
+        GroundContact::load(&defines).unwrap(),
+        GroundContact {
+            offset: 0.25,
+            explosion: 0.75
+        }
+    );
+    let missing = Defines::new().unwrap();
+    missing
+        .load(
+            "common/defines/00_graphics.lua",
+            b"NDefines = { NAirGfx = { AIRPLANES_GROUND_COLLISION_OFFSET_Y = 0.0 } }",
+        )
+        .unwrap();
+    let error = GroundContact::load(&missing).unwrap_err().to_string();
+    assert!(error.contains("AIRPLANES_GROUND_EXPLOSION_TIME_DELAY"), "{error}");
+}
+
+#[test]
+fn an_explosion_has_played_once_its_own_player_reads_the_delay() {
+    let contact = GroundContact {
+        offset: 0.0,
+        explosion: 4.0,
+    };
+    // The play position, not the clip's length, meets the delay.
+    assert!(!contact.exploded(Some(Some((3.9, 10.0)))));
+    assert!(contact.exploded(Some(Some((4.0, 2.0)))));
+    // Before its player exists nothing has played; a root that plays no animation reads zero.
+    assert!(!contact.exploded(None));
+    assert!(!contact.exploded(Some(None)));
+    assert!(
+        GroundContact {
+            explosion: 0.0,
+            ..contact
+        }
+        .exploded(Some(None))
+    );
+}

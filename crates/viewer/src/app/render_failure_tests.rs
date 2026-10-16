@@ -6,7 +6,7 @@ use viewer_foundation::map::camera::Placement;
 use viewer_foundation::map::test_support::TEST_HANG_GUARD;
 use viewer_world::map::scene_faults::Point;
 
-fn target(fixture: &Fixture) -> dashboard::protocol::DashboardMapView {
+pub(super) fn target(fixture: &Fixture) -> dashboard::protocol::DashboardMapView {
     let bounds = dashboard::protocol::ViewBounds {
         x: 0,
         y: 0,

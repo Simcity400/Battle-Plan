@@ -52,7 +52,10 @@
 //! refuse only dependent branches. CAS diversion uses the raw mission ratio.
 //! Models, rigs and every define resolve through the recorded content stack.
 //! Presentation clocks and seeds belong to the viewer. Deterministic random
-//! removal supplies selections from unrecorded wall-clock random state. Training
+//! removal supplies selections from unrecorded wall-clock random state. Each plan
+//! also names the viewing country's fighter for the flying mode
+//! ([`AircraftPlan::fighter`]): its largest fighter wing's aircraft through the
+//! same ladder, baked on the hour builder. Training
 //! uses the four initial bomber/fighter arrays; carrier take-off shares the
 //! settled task-force route law.
 //!
@@ -429,6 +432,45 @@ impl FlightDefines {
     }
 }
 
+/// What a plane meeting the ground does, from the content's `NAirGfx`:
+/// `AIRPLANES_GROUND_COLLISION_OFFSET_Y` is the height above the surface at
+/// which it meets it, and `AIRPLANES_GROUND_EXPLOSION_TIME_DELAY` the seconds
+/// its explosion plays before the entity is removed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroundContact {
+    pub offset: f32,
+    pub explosion: f32,
+}
+
+impl GroundContact {
+    /// The near-ground band the content's flights meet ([`Band`]), read once for both.
+    pub fn load(defines: &Defines) -> Result<Self, &'static str> {
+        Band::load(defines).map(Self::from)
+    }
+
+    /// Whether an exploding actor has played the explosion's delay, as its own
+    /// player reads it ([`crate::map::models::ModelPass::root_play_position`]):
+    /// its root's play position, at its clip's authored speed and start, has
+    /// reached the delay; a root that plays no animation reads zero against it.
+    /// Before its player exists it has not.
+    pub fn exploded(&self, played: Option<Option<(f32, f32)>>) -> bool {
+        match played {
+            Some(Some((position, _))) => position >= self.explosion,
+            Some(None) => 0.0 >= self.explosion,
+            None => false,
+        }
+    }
+}
+
+impl From<Band> for GroundContact {
+    fn from(band: Band) -> Self {
+        Self {
+            offset: band.offset,
+            explosion: band.explosion_delay,
+        }
+    }
+}
+
 /// The game converts an authored f32 threshold to fixed5 before comparing.
 fn threshold_raw(value: f32) -> i64 {
     let rounded = value * 100_000.0 + (if value >= 0.0 { 1.0 } else { 0.0 }) - 0.5;
@@ -557,6 +599,8 @@ pub struct AircraftAssets {
     /// What launch effects and rocket-site and gun-emplacement take-offs
     /// read ([`launches`]).
     launch_content: launches::Content,
+    /// How a plane meets the ground, for the flying mode's aircraft.
+    ground: Result<GroundContact, String>,
 }
 
 /// The exact suffix ladder under each available prefix. Missing recorded
@@ -1405,7 +1449,14 @@ impl AircraftAssets {
             flight_defines: FlightDefines::load(defines).map_err(|error| error.to_string()),
             band: band.ok(),
             launch_content: launches::Content::load(layers, map, defines, &roster, warnings),
+            ground: band.map(GroundContact::from).map_err(str::to_owned),
         })
+    }
+
+    /// How a plane meets the ground ([`GroundContact`]), or why the content's
+    /// defines for it do not read.
+    pub fn ground_contact(&self) -> Result<GroundContact, &str> {
+        self.ground.as_ref().copied().map_err(String::as_str)
     }
 
     pub fn library(&self) -> std::sync::RwLockReadGuard<'_, ModelLibrary> {
@@ -1920,6 +1971,111 @@ pub struct AircraftPlan {
     /// Whether explosions were taken past the launch clock's opening instant.
     opened: bool,
     pub diagnostics: Vec<String>,
+    /// The viewing country's fighter for the flying mode, or why it has none
+    /// ([`viewing_fighter`]).
+    fighter: Fighter,
+}
+
+/// A plan's fighter for the flying mode, or why it has none; a plan built for no hour has none.
+#[derive(Clone, Debug)]
+struct Fighter(Result<PlayerAircraft, String>);
+
+impl Default for Fighter {
+    fn default() -> Self {
+        Self(Err(NO_HOUR.to_owned()))
+    }
+}
+
+/// Why a plan built for no hour has no fighter.
+const NO_HOUR: &str = "no hour is shown";
+
+/// The aircraft the flying mode flies: an entity baked into [`AircraftAssets::library`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerAircraft {
+    /// The entity's name in the recorded content stack.
+    pub name: String,
+    /// Its slot in the aircraft library.
+    pub slot: usize,
+}
+
+/// The mission mask bits of the missions only fighters fly: air superiority (bit 0) and
+/// interception (bit 2), which the flying-aircraft scans draw a reached province for and a
+/// carrier in combat admits over its own region.
+pub const FIGHTER_MISSIONS: u32 = (1 << 0) | (1 << 2);
+
+/// The viewing country's fighter: the primary variant of its wing with the most planes whose
+/// variant flies the fighters' own missions ([`FIGHTER_MISSIONS`]), resolved by the airborne
+/// ladder that draws its flights (`model`) and baked into the library. Wings tie in stored order,
+/// and a wing whose aircraft cannot be drawn gives way to the next.
+fn viewing_fighter(
+    frame: &DecodedFrame,
+    assets: &AircraftAssets,
+    links: &BTreeMap<u32, u32>,
+    ours: u32,
+    model: &dyn Fn(u64, u32) -> Result<Option<String>, String>,
+) -> Result<PlayerAircraft, String> {
+    let error = |error: io::Error| error.to_string();
+    let Available::Complete(wings) = rows::<tables::AirWings>(frame).map_err(error)? else {
+        return Err("the hour's air wings are not completely recorded".into());
+    };
+    let definitions = frame
+        .complete::<tables::VariantDefinitions>()
+        .map_err(error)?;
+    let ours_wings: BTreeSet<u64> = wings
+        .iter()
+        .filter(|wing| wing.planes > 0 && links.get(&effective_country(wing)) == Some(&ours))
+        .map(|wing| wing.id)
+        .collect();
+    let primaries = aircraft_model::primaries(
+        frame.complete::<tables::WingEquipment>().map_err(error)?,
+        |wing| ours_wings.contains(&wing),
+    );
+    let fighters: BTreeSet<u64> = definitions
+        .iter()
+        .filter(|row| row.mission_mask & FIGHTER_MISSIONS != 0)
+        .map(|row| row.id)
+        .collect();
+    let mut candidates: Vec<(&AirWingRow, u64)> = wings
+        .iter()
+        .filter_map(|wing| {
+            let variant = *primaries.get(&wing.id)?;
+            fighters.contains(&variant).then_some((wing, variant))
+        })
+        .collect();
+    candidates.sort_by_key(|(wing, _)| std::cmp::Reverse(wing.planes));
+    let mut refused = Vec::new();
+    for (wing, variant) in candidates {
+        let resolved = model(variant, effective_country(wing))
+            .map_err(Unresolved::Token)
+            .and_then(|entity| entity.ok_or_else(|| Unresolved::Missing(format!("variant {variant}"))))
+            .and_then(|entity| {
+                let slot = assets.resolve(&entity)?;
+                Ok(PlayerAircraft { name: entity, slot })
+            });
+        match resolved {
+            Ok(aircraft) => return Ok(aircraft),
+            Err(why) => refused.push(format!(
+                "wing {}: {}",
+                wing.id,
+                match why {
+                    Unresolved::Identity => "missing equipment identity".to_owned(),
+                    Unresolved::Missing(name) => format!("unresolved aircraft equipment {name}"),
+                    Unresolved::Token(reason) => reason,
+                    Unresolved::Refused { entity, reason } => {
+                        format!("its aircraft entity {entity} is refused: {reason}")
+                    }
+                }
+            )),
+        }
+    }
+    if refused.is_empty() {
+        Err("the viewing country fields no fighter".into())
+    } else {
+        Err(format!(
+            "none of the viewing country's fighters can be drawn: {}",
+            refused.join("; ")
+        ))
+    }
 }
 
 /// Launch explosions' impact ids set this bit, apart from the flights'.
@@ -3188,6 +3344,7 @@ impl AircraftPlan {
             ..TrainingGate::default()
         };
         out.diagnostics.extend(gap);
+        out.fighter = Fighter(viewing_fighter(frame, assets, &links, ours, model));
         let (Available::Complete(wings), Available::Complete(registrations), Some(registry)) = (
             rows::<tables::AirWings>(frame)?,
             rows::<tables::AirRegionalMissions>(frame)?,
@@ -3816,11 +3973,8 @@ impl AircraftPlan {
                     } => {
                         // Once it has read the delay it is hidden and stays done.
                         let read = hidden
-                            || match played((flight.mesh, index as u32, run.cycle)) {
-                                Some(Some((position, _))) => position >= band.explosion_delay,
-                                Some(None) => 0.0 >= band.explosion_delay,
-                                None => false,
-                            };
+                            || GroundContact::from(band)
+                                .exploded(played((flight.mesh, index as u32, run.cycle)));
                         *ground = Ground::Exploding {
                             pose,
                             entry,
@@ -4051,6 +4205,11 @@ impl AircraftPlan {
             .enumerate()
             .filter_map(|(index, launch)| Some((launch.mesh, launch.instance(index, seconds)?)))
             .collect()
+    }
+
+    /// The viewing country's fighter for the flying mode, or why it has none.
+    pub fn fighter(&self) -> Result<&PlayerAircraft, &str> {
+        self.fighter.0.as_ref().map_err(String::as_str)
     }
 
     /// The aircraft in the air at `seconds`, every mission placed so each keeps its player,

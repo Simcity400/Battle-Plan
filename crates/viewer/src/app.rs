@@ -67,6 +67,7 @@ use {
 
 mod embedded;
 mod faction_highlight;
+pub(crate) mod fly;
 mod presentation;
 mod walk;
 
@@ -729,10 +730,16 @@ pub struct Viewer {
     input: crate::controls::Input,
     /// The controller's heading and tilt around the map camera.
     orbit: crate::controls::orbit::Orbit,
-    /// The free eye of the flying mode, placed when it starts.
-    observer: Option<crate::controls::observer::Observer>,
     /// The walking mode's figure, walker and scale.
     walk: walk::Walk,
+    /// The flying mode's flight, started when the mode starts.
+    flight: Option<crate::controls::flight::Flight>,
+    /// The aircraft this frame's flight placed, as its library slot and instance.
+    flying: Option<(usize, viewer_world::map::models::ModelInstance)>,
+    /// The capture clock a window dump's flight last stepped to.
+    fly_clock: Option<f32>,
+    /// What a respawn under a low ceiling built for this map, kept for its next one.
+    fly_footprints: crate::controls::flight::Footprints,
     /// Whether the window hides and confines the cursor for looking around.
     pointer_grabbed: bool,
     playing: bool,
@@ -1104,9 +1111,11 @@ impl Viewer {
             camera: options.camera,
             camera_manual: options.camera.is_some(),
             zoom: Motion::default(),
-            // A window dump's placed walk starts walking.
+            // A window dump's placed walk starts walking, and its `--fly` flies.
             camera_mode: if options.walk.is_some() {
                 CameraMode::Walk
+            } else if options.fly.is_some() {
+                CameraMode::Fly
             } else {
                 CameraMode::Map
             },
@@ -1115,8 +1124,11 @@ impl Viewer {
             looks: None,
             input: crate::controls::Input::default(),
             orbit: crate::controls::orbit::Orbit::default(),
-            observer: None,
             walk: walk::Walk::new(options.walk.clone()),
+            flight: None,
+            flying: None,
+            fly_clock: None,
+            fly_footprints: Default::default(),
             pointer_grabbed: false,
             // colour: `--postfx off` reaches the window too, so a window and a
             // dump of the same state can be the same frame.
@@ -1519,6 +1531,9 @@ impl Viewer {
         {
             warnings.push(note.clone());
         }
+        if self.camera_mode == CameraMode::Fly {
+            warnings.extend(self.fly_refusals(document));
+        }
         document.uncovered_reads.append_to(&mut warnings);
         warnings
     }
@@ -1766,8 +1781,10 @@ impl Viewer {
         self.camera_manual = self.options.camera.is_some();
         self.zoom.reset();
         self.orbit.reset();
-        self.observer = None;
         self.walk.reset();
+        self.flight = None;
+        self.fly_clock = None;
+        self.fly_footprints = Default::default();
         // names
         self.placements = None;
         self.placements_at = None;
@@ -2012,6 +2029,9 @@ impl Viewer {
                     "Camera: {},{},{}",
                     camera.center[0], camera.center[1], camera.height
                 );
+                if let Some(line) = self.flight_line() {
+                    println!("{line}");
+                }
                 if let Some(time) = capture.time {
                     println!("Animation time: {time:.6} s");
                 }
@@ -2566,11 +2586,13 @@ impl Viewer {
         {
             self.set_camera_mode(self.camera_mode.next(), self.free_overlays, ui.ctx());
         }
-        let free_mode = self.camera_mode != CameraMode::Map && (pinned.is_none() || placed_walk);
+        // A window dump's placed walk walks, and its `--fly` flies, its pinned frame.
+        let free_mode = self.camera_mode != CameraMode::Map
+            && (pinned.is_none() || placed_walk || self.options.fly.is_some());
         // Whether the map's interface draws: always for the game's camera and its orbit; in fly
-        // and walk, a capture's placed walk or its free camera, only when asked for.
+        // and walk, a capture's placed walk, flight or free camera, only when asked for.
         let interface = match pinned {
-            Some(_) if placed_walk => self.options.free_overlays.unwrap_or(false),
+            Some(_) if free_mode => self.options.free_overlays.unwrap_or(false),
             Some((_, Some(placement))) if placement.pose != Pose::Map => {
                 self.options.free_overlays.unwrap_or(false)
             }
@@ -2882,7 +2904,20 @@ impl Viewer {
                     || Camera::fit(map_size, defines, size),
                     |placement| placement.on(map_size, defines),
                 );
-                (camera, camera)
+                match self.options.fly {
+                    // A window dump's flight steps by the capture clock, holding its controls.
+                    Some(scripted) if free_mode => {
+                        let time = self.capture.as_ref().and_then(|capture| capture.time);
+                        let dt = match (time, self.fly_clock) {
+                            (Some(time), Some(last)) => (time - last).max(0.0),
+                            _ => 0.0,
+                        };
+                        self.fly_clock = time;
+                        let eye = self.fly(document, camera, &scripted.frame(dt));
+                        (eye, if interface { eye } else { camera })
+                    }
+                    _ => (camera, camera),
+                }
             }
             None => {
                 let map = self.orbit.view(*camera);
@@ -2922,12 +2957,9 @@ impl Viewer {
                         self.walk
                             .camera(&controls, wheel, map, camera.center, &world)
                     } else {
-                        // Flying starts where the view looks from.
-                        let observer = self.observer.get_or_insert_with(|| {
-                            crate::controls::observer::Observer::flying(&map)
-                        });
-                        observer.update(&controls, map, &floor);
-                        observer.camera(map, &floor)
+                        // The input layer keeps the keyboard and mouse to a focused map, and the
+                        // controller to wherever the host routes it.
+                        self.fly(document, map, &controls)
                     };
                     // Shown, the interface stands in the free eye's world; hidden, it stays laid
                     // out for the map camera the mode left, undrawn.
@@ -3410,17 +3442,20 @@ impl Viewer {
         // is what a dump's own pair of frames does.
         let scene = self.scene.as_mut().unwrap();
         scene.set_graphics(self.graphics);
-        // The walking mode's figure stands in the scene while it walks.
+        // The walking mode's figure stands in the scene while it walks, and the flying mode's
+        // aircraft where this frame's flight placed it.
         let library = document.unit_models.library();
-        let player = if free_mode && self.camera_mode == CameraMode::Walk {
-            self.walk.player(&library)
-        } else {
-            None
+        let aircraft = document.aircraft.library();
+        let flying = self.flying.take();
+        let player = match self.camera_mode {
+            CameraMode::Walk if free_mode => self.walk.player(&library),
+            CameraMode::Fly => Self::fly_model(flying, &aircraft),
+            _ => None,
         };
         scene
             .set_player(&state.device, &state.queue, player)
             .map_err(|error| error.to_string())?;
-        drop(library);
+        drop((library, aircraft));
         crate::document::select_movement(
             scene,
             &document.content,
@@ -3606,8 +3641,8 @@ impl Viewer {
             return;
         }
         self.camera_mode = mode;
-        self.observer = None;
         self.walk.leave();
+        self.flight = None;
         self.input.release();
         self.grab_pointer(ctx);
     }

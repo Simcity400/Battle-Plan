@@ -100,6 +100,11 @@ Window dump: --window-dump opens a window, renders through the windowed path at 
              flight; each frame moves it by --animation-step
              --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>
              sample a deterministic sequence; default is one frame at time zero
+             --fly <x,y,z,yaw,pitch[,roll]>, the flying mode with its aircraft at world (x, y, z)
+               turned by degrees, in place of --camera; each sampled frame flies one step
+             --fly-view chase|nose, the flying camera (default chase)
+             --fly-steer <turn,climb,throttle>, each -1..1, held through the capture as the
+               controller's left stick and triggers (default none)
 Dump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, zero in a dump:
              the fog-of-war noise, the entity animation and the map-icon windows' GUI clock
            --map-time <seconds>, the map scene's own second clock: the selection
@@ -152,6 +157,48 @@ fn parse_free_camera(value: &str) -> io::Result<Placement> {
         height: values[1],
         pose: Pose::Free(pose),
     })
+}
+
+/// `--fly`'s value: the aircraft's world `x,y,z`, then its heading and pitch in degrees, and
+/// optionally its bank.
+fn parse_fly(value: &str) -> io::Result<app::fly::Scripted> {
+    const USAGE: &str = "fly requires x,y,z,yaw,pitch[,roll]";
+    let values = value
+        .split(',')
+        .map(str::parse::<f32>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| invalid(USAGE))?;
+    if !(5..=6).contains(&values.len()) || !values.iter().all(|value| value.is_finite()) {
+        return Err(invalid(USAGE));
+    }
+    Ok(app::fly::Scripted {
+        position: [values[0], values[1], values[2]],
+        attitude: [
+            values[3].to_radians(),
+            values[4].to_radians(),
+            values.get(5).copied().unwrap_or(0.0).to_radians(),
+        ],
+        view: controls::flight::View::Chase,
+        steer: [0.0; 3],
+    })
+}
+
+/// `--fly-steer`'s value: turn, climb and throttle, each within -1..=1.
+fn parse_fly_steer(value: &str) -> io::Result<[f32; 3]> {
+    const USAGE: &str = "fly steer requires turn,climb,throttle, each from -1 to 1";
+    let values = value
+        .split(',')
+        .map(str::parse::<f32>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| invalid(USAGE))?;
+    match values.as_slice() {
+        &[turn, climb, throttle]
+            if values.iter().all(|value| (-1.0..=1.0).contains(value)) =>
+        {
+            Ok([turn, climb, throttle])
+        }
+        _ => Err(invalid(USAGE)),
+    }
 }
 
 fn parse_placement(value: &str) -> io::Result<Placement> {
@@ -225,6 +272,12 @@ struct Options {
     /// window's own path, so this drives [`app::Viewer`] rather than
     /// [`render::dump_png`]; the readback is the dump's own.
     window_dump: bool,
+    /// `--window-dump --fly`: the flying mode's scripted flight, with `--fly-view` and
+    /// `--fly-steer` applied.
+    fly: Option<app::fly::Scripted>,
+    /// `--fly-view` and `--fly-steer` as given, applied to `fly` once every argument is read.
+    fly_view: Option<controls::flight::View>,
+    fly_steer: Option<[f32; 3]>,
     animation_time: f32,
     animation_step: f32,
     window_frames: u32,
@@ -557,6 +610,9 @@ impl Options {
                     | "--nato-counters"
                     | "--animation-time"
                     | "--animation-step"
+                    | "--fly"
+                    | "--fly-view"
+                    | "--fly-steer"
                     | "--window-frames"
                     | "--presentation-time"
                     | "--settle"
@@ -636,6 +692,15 @@ impl Options {
                         "--building-camera" => {
                             options.building_cameras.push(parse_placement(&value)?)
                         }
+                        "--fly" => options.fly = Some(parse_fly(&value)?),
+                        "--fly-view" => {
+                            options.fly_view = Some(match value.trim() {
+                                "chase" => controls::flight::View::Chase,
+                                "nose" => controls::flight::View::Nose,
+                                _ => return Err(invalid("--fly-view takes chase or nose")),
+                            })
+                        }
+                        "--fly-steer" => options.fly_steer = Some(parse_fly_steer(&value)?),
                         // counters
                         "--perspective" => options.perspective.country = Country::parse(&value)?,
                         "--fog" => options.perspective.fog = Choice::parse_fog(&value)?,
@@ -785,6 +850,28 @@ impl Options {
                 || options.window_frames != 0)
         {
             return Err(invalid("animation sampling options require --window-dump"));
+        }
+        // The flying mode's evidence comes from the window's own path.
+        if options.fly.is_some() && !options.window_dump {
+            return Err(invalid(
+                "--fly flies the window's flying mode and requires --window-dump",
+            ));
+        }
+        if options.fly.is_some() && options.walk.is_some() {
+            return Err(invalid("give one of --fly and --walk"));
+        }
+        if options.fly.is_some() && options.camera.is_some() {
+            return Err(invalid(
+                "--fly places the flying camera; give it or --camera or --free-camera",
+            ));
+        }
+        match (&mut options.fly, options.fly_view, options.fly_steer) {
+            (Some(fly), view, steer) => {
+                fly.view = view.unwrap_or(fly.view);
+                fly.steer = steer.unwrap_or(fly.steer);
+            }
+            (None, None, None) => {}
+            (None, _, _) => return Err(invalid("--fly-view and --fly-steer require --fly")),
         }
         if (options.presentation_time != 0.0 || options.map_time != 0.0 || options.settle != 0.0)
             && !options.headless_dump
@@ -2509,6 +2596,70 @@ mod tests {
         }
         // It is a window dump's: the desktop app's maps walk from their Camera control.
         assert!(parse(&["campaign.battleplan", "--walk", "1,2,0"]).is_err());
+    }
+
+    #[test]
+    fn fly_puts_a_window_dump_in_the_flying_mode() {
+        let window = |extra: &[&str]| {
+            let mut args = vec![
+                "--window-dump",
+                "c.battleplan",
+                "--hour",
+                "1",
+                "--out",
+                "f.png",
+            ];
+            args.extend_from_slice(extra);
+            parse(&args)
+        };
+        let options = window(&[
+            "--fly",
+            "3000,40,1000,90,-10,20",
+            "--fly-view",
+            "nose",
+            "--fly-steer",
+            "0.5,-1,1",
+        ])
+        .unwrap();
+        let fly = options.fly.expect("a flight");
+        assert_eq!(fly.position, [3000.0, 40.0, 1000.0]);
+        assert_eq!(
+            fly.attitude,
+            [90f32.to_radians(), (-10f32).to_radians(), 20f32.to_radians()]
+        );
+        assert_eq!(fly.view, controls::flight::View::Nose);
+        assert_eq!(fly.steer, [0.5, -1.0, 1.0]);
+        // The defaults: the chase view, nothing held, no bank.
+        let plain = window(&["--fly", "1,2,3,4,5"]).unwrap().fly.unwrap();
+        assert_eq!(plain.view, controls::flight::View::Chase);
+        assert_eq!(plain.steer, [0.0; 3]);
+        assert_eq!(plain.attitude[2], 0.0);
+        for refused in [
+            &["--fly", "1,2,3,4"][..],
+            &["--fly", "1,2,3,4,5,6,7"],
+            &["--fly", "1,2,3,4,5", "--camera", "1,2,300"],
+            &["--fly", "1,2,3,4,5", "--walk", "1,2,0"],
+            &["--fly", "1,2,3,4,5", "--fly-view", "side"],
+            &["--fly", "1,2,3,4,5", "--fly-steer", "2,0,0"],
+            &["--fly-view", "nose"],
+            &["--fly-steer", "0,0,0"],
+        ] {
+            assert!(window(refused).is_err(), "{refused:?}");
+        }
+        // A flight needs the window's path.
+        assert!(
+            parse(&[
+                "--dump",
+                "c.battleplan",
+                "--hour",
+                "1",
+                "--out",
+                "f.png",
+                "--fly",
+                "1,2,3,4,5"
+            ])
+            .is_err()
+        );
     }
 
     #[test]

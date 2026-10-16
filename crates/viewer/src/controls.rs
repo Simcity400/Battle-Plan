@@ -18,10 +18,10 @@
 //! the last state read, so a button held through a handoff or a pause is never pressed twice. Keyboard and mouse input arrives at the map's
 //! own window.
 //!
-//! [`orbit`] moves the game's map camera with a controller; [`observer`] is the free eye the
-//! flying mode moves; [`walker`] is the walking mode's figure and the view following it.
+//! [`orbit`] moves the game's map camera with a controller; [`flight`] flies the flying mode's
+//! aircraft and its camera; [`walker`] is the walking mode's figure and the view following it.
 
-pub mod observer;
+pub mod flight;
 pub mod orbit;
 pub mod walker;
 
