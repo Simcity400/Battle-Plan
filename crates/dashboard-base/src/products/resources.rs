@@ -55,6 +55,12 @@ pub struct Learned {
     ids: BTreeMap<u32, String>,
 }
 
+impl crate::prepared::prepass::Held for Learned {
+    fn held(&self, bytes: &mut crate::prepared::prepass::HeldBytes) {
+        bytes.heap(&self.ids);
+    }
+}
+
 impl Learned {
     /// Adds the resources a frame's definitions name that were not seen yet. A
     /// definition whose token the recorded dictionary does not spell is left for
@@ -356,6 +362,45 @@ pub fn resource_infos(
     resources: &[(u32, String)],
     cancelled: &AtomicBool,
 ) -> io::Result<(Vec<ResourceInfo>, Vec<String>)> {
+    ResourceNaming::of(source, context).infos(resources, cancelled)
+}
+
+/// What naming recorded resources reads of a source, held apart from it: the
+/// content catalogue of its content stack (or why it is unavailable) and the
+/// source's resource cache. A preparation that publishes names where it holds
+/// no source takes it when it last observed one.
+pub struct ResourceNaming {
+    catalogue: Result<Arc<Catalogue>, String>,
+    cache: Arc<std::sync::Mutex<ContentState>>,
+}
+
+impl ResourceNaming {
+    pub fn of(source: &Source, context: &LoadContext) -> Self {
+        Self {
+            catalogue: context
+                .content()
+                .and_then(|content| catalogue::catalogue(source, content))
+                .map_err(|error| error.to_string()),
+            cache: source.state::<ContentState>(),
+        }
+    }
+
+    /// [`resource_infos`] of `resources`.
+    pub fn infos(
+        &self,
+        resources: &[(u32, String)],
+        cancelled: &AtomicBool,
+    ) -> io::Result<(Vec<ResourceInfo>, Vec<String>)> {
+        infos(&self.catalogue, &self.cache, resources, cancelled)
+    }
+}
+
+fn infos(
+    catalogue: &Result<Arc<Catalogue>, String>,
+    state: &std::sync::Mutex<ContentState>,
+    resources: &[(u32, String)],
+    cancelled: &AtomicBool,
+) -> io::Result<(Vec<ResourceInfo>, Vec<String>)> {
     let mut warnings = Vec::new();
     let ordinals = ordinals(resources);
     let declarations: Vec<(String, u32)> = resources
@@ -373,12 +418,8 @@ pub fn resource_infos(
             icon: declared.and_then(|declared| declared.icon.clone()),
         }
     };
-    let infos = match context
-        .content()
-        .and_then(|content| catalogue::catalogue(source, content))
-    {
+    let infos = match catalogue {
         Ok(catalogue) => {
-            let state = source.state::<ContentState>();
             let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
             if !cache
                 .content

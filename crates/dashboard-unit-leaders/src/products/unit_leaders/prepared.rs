@@ -3,6 +3,7 @@ use super::*;
 use dashboard_base::prepared::frame_changes::FrameChanges;
 use dashboard_base::prepared::series::{self, Accumulator, Reader};
 use dashboard_text::metadata::check_cancel;
+use dashboard_text::triggers::inputs::TableChanges;
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Prepared {
@@ -138,7 +139,48 @@ impl Prepared {
         content: Option<&Content>,
         changes: &FrameChanges,
     ) -> io::Result<()> {
-        self.own(|state| state.observe_own(frame, replay, content, changes))
+        self.own(|state| state.observe_own(frame, replay, content, changes, changes, None))
+            .map(drop)
+    }
+    /// [`Self::observe`] of an hour of a block read by its changes, on a
+    /// frame kept from it (`frame`), whose rows differ from the hour's whole
+    /// frame only as `reduced` says; `tables` says what changed since the
+    /// hour before. False when the hour must be observed on its whole frame
+    /// instead, having changed only what that observation changes the same
+    /// way.
+    pub fn observe_kept(
+        &mut self,
+        frame: &DecodedFrame,
+        replay: &Replay,
+        content: Option<&Content>,
+        changes: &FrameChanges,
+        tables: &dyn TableChanges,
+        reduced: &dyn TableChanges,
+    ) -> io::Result<bool> {
+        let kept = Kept::new(reduced);
+        self.own(|state| state.observe_own(frame, replay, content, changes, tables, Some(&kept)))
+    }
+    /// Carry the family through the quiet hours `first..=last` that follow
+    /// its last observed hour, at which `tables` says what may have changed
+    /// since the hour before `first`, and `rows` holds the rows of the tables
+    /// they leave unchanged: what observing each of them would do. False,
+    /// having changed nothing, when an hour of them must be observed.
+    pub fn advance_quiet(
+        &mut self,
+        first: i32,
+        last: i32,
+        tables: &dyn TableChanges,
+        rows: &DecodedFrame,
+        content: Option<&Content>,
+    ) -> io::Result<bool> {
+        if !self
+            .own(|state| state.scan.advance_quiet(first, last, tables, rows, content))
+        {
+            return Ok(false);
+        }
+        self.series.advance_span(first, last)?;
+        self.through = last;
+        Ok(true)
     }
     fn observe_own(
         &mut self,
@@ -146,7 +188,9 @@ impl Prepared {
         replay: &Replay,
         content: Option<&Content>,
         changes: &FrameChanges,
-    ) -> io::Result<()> {
+        tables: &dyn TableChanges,
+        kept: Option<&Kept<'_>>,
+    ) -> io::Result<bool> {
         self.series.advance(frame.hour)?;
         let naval_changed = [
             TableId::NavalResults,
@@ -235,12 +279,14 @@ impl Prepared {
         let kinds = &mut self.kinds;
         #[cfg(test)]
         let work = &mut self.work;
-        self.scan.observe(
+        let observed = self.scan.observe_changes(
             frame,
             replay,
             &params,
             content,
             changes,
+            tables,
+            kept,
             &mut |reference, role, holder| {
                 #[cfg(test)]
                 {
@@ -279,8 +325,10 @@ impl Prepared {
                 }
             },
         )?;
-        self.through = frame.hour;
-        Ok(())
+        if observed {
+            self.through = frame.hour;
+        }
+        Ok(observed)
     }
     pub fn buffered_bytes(&self) -> usize {
         self.series.bytes().saturating_add(self.scan.pending_bytes)

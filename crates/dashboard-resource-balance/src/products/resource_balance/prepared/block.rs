@@ -7,11 +7,11 @@
 //! forward. Assumptions the fast fold relies on are checked first; when one
 //! does not hold, the fold observes the rest of the block hour by hour.
 
-use super::super::{CountryScan, Scan, ScannedBalance, same_pools, same_terms};
+use super::super::{CountryScan, PoolRun, Scan, ScannedBalance, TradeRun, same_pools, same_terms};
 use super::{Membership, Prepared, publish_membership};
 use dashboard_base::prepared::{
     frame_changes::{FrameChangeTracker, FrameChanges},
-    prepass::{Extract, Failure, Family, Folded},
+    prepass::{Extract, Failure, Family, Folded, Held, HeldBytes},
     series::{self, Accumulator, Recording, ReplayTarget},
 };
 use replay::{
@@ -101,7 +101,101 @@ fn names_of(prepared: &Prepared) -> Option<Vec<(u32, String)>> {
         .map(|names| names.list())
 }
 
+impl Held for AfterFirst {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes.heap(&self.learned);
+    }
+}
+
+impl Held for PoolRun {
+    fn held(&self, bytes: &mut HeldBytes) {
+        for raw in [
+            &self.produced_raw,
+            &self.subjects_raw,
+            &self.imported_raw,
+            &self.to_export_raw,
+            &self.exported_raw,
+            &self.available_raw,
+            &self.after_projects_raw,
+            &self.production_raw,
+        ] {
+            bytes.heap(raw);
+        }
+    }
+}
+
+impl Held for TradeRun {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.deal)
+            .heap(&self.partner)
+            .heap(&self.delivered_raw);
+    }
+}
+
+impl Held for ScannedBalance {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.resources)
+            .heap(&self.series)
+            .heap(&self.deal_hours)
+            .heap(&self.trades);
+    }
+}
+
+impl Held for CountryScan {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.result)
+            .heap(&self.learned)
+            .heap(&self.open_trades)
+            .heap(&self.pool_keys)
+            .heap(&self.dirty_pools)
+            .heap(&self.dirty_deals)
+            .heap(&self.pool_ids);
+    }
+}
+
+/// What the facts keep of a scan ([`Scan::forget_runtime`]).
+impl Held for Scan {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.selected)
+            .heap(&self.countries)
+            .heap(&self.active);
+    }
+}
+
+/// A membership recorded for the fold: its country and members.
+impl Held for Membership {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes.heap(&self.name).heap(&self.members);
+    }
+}
+
 impl Extract for BlockExtract {
+    /// What the block's facts hold: its first frame and what the scan held
+    /// after it, its recorded calls, the memberships recorded for the fold,
+    /// its keys by name, its maxima and its scan at the block's end (every
+    /// country's pool runs and trades).
+    fn bytes(&self) -> u64 {
+        let mut held = HeldBytes::default();
+        if let Some(first) = &self.first {
+            held.frame(&first.frame)
+                .heap(&first.names)
+                .heap(&first.countries);
+        }
+        let prepared = &self.prepared;
+        // The keys by number, as the facts name them.
+        held.add(prepared.keys.len() * size_of::<String>())
+            .add(prepared.keys.keys().map(String::capacity).sum());
+        held.heap(&self.recording)
+            .heap(&prepared.recorded)
+            .heap(&prepared.maxima)
+            .value(&prepared.scan)
+            .total()
+    }
+
     fn observe(
         &mut self,
         _: &Replay,

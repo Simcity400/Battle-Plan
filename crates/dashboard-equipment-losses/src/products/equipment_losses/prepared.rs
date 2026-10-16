@@ -1091,10 +1091,12 @@ pub fn query(
     if !validate_origin(source, &params.selection, context, cancelled)? {
         return Ok(Value::Null);
     }
-    let Some(coverage) = dashboard_base::prepared::coverage::coverage(
+    // With the identity history's, while the family is prepared on its own.
+    let Some(coverage) = dashboard_base::prepared::coverage::product_coverage(
         source,
         context.content.as_ref(),
         branch,
+        "equipment-losses",
         cancelled,
     )?
     else {

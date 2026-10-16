@@ -27,6 +27,7 @@ impl shared::Family for Navy {
     );
     const POINT_PARTS: bool = true;
     const NAME: &'static str = "navy";
+    const PRODUCT: &'static str = "navy-size";
     const GROUPS: usize = 2;
     const MIXES: usize = 4;
     const REFERENCES: usize = 2;
@@ -246,6 +247,37 @@ impl shared::Family for Navy {
     }
     fn reference(index: usize) -> Option<usize> {
         (index % 2 == 1).then_some(index / 2)
+    }
+    type Tail = scan::Tail;
+    fn tail(scan: &Self::Scan, hour: i32) -> Self::Tail {
+        scan.tail(hour)
+    }
+    /// Ship classes are numbered in the order a census first sees them.
+    type Numbering = scan::Numbering;
+    fn numbering(carried: &Self::Scan, block: &Self::Scan) -> Self::Numbering {
+        carried.numbering(block)
+    }
+    fn renumber(numbering: &Self::Numbering, raw: &mut Self::Raw) {
+        raw.classes = numbering.classes(&raw.classes);
+    }
+    fn renumber_base(numbering: &Self::Numbering, base: &mut Self::Scanned) {
+        base.classes = numbering.catalogue(base.classes.len());
+    }
+    fn continues(
+        carried: &Self::Scan,
+        tail: &Self::Tail,
+        block: &Self::Scan,
+        numbering: &Self::Numbering,
+    ) -> bool {
+        carried.continues(tail, block, numbering)
+    }
+    fn carry(
+        carried: &mut Self::Scan,
+        tail: Self::Tail,
+        block: Self::Scan,
+        numbering: Self::Numbering,
+    ) {
+        carried.carry(tail, block, numbering);
     }
     fn part_key(part: &Self::Part) -> &str {
         &part.key

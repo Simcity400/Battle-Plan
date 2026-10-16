@@ -78,8 +78,94 @@ pub trait Extract: Send {
         let _ = (replay, hours, span);
         Err(io::Error::other("This block extract observes every hour"))
     }
+    /// The bytes the facts [`Self::finish`] returns hold, about: what a block
+    /// extracted ahead holds until its family takes it, which the pre-pass
+    /// counts against its read-ahead budget beside the block's recorded raw
+    /// bytes. An extract whose facts stay small (a few counts, spans or
+    /// keys) reports none; one keeping rows or frames counts them, never
+    /// much less than they hold.
+    fn bytes(&self) -> u64 {
+        0
+    }
     /// The block's facts for the family's fold.
     fn finish(self: Box<Self>) -> io::Result<Box<dyn Any + Send>>;
+}
+
+/// What a block's facts hold, counted as an extract keeps them, for
+/// [`Extract::bytes`]: each table view once however many kept frames share
+/// it, at the capacity of its rows and every value they own (as the frame
+/// cache counts it); each hour's recorded updates once; and whatever else
+/// the extract adds: every value it keeps beside them, its maps, sets,
+/// strings and serialized rows, through [`Held`].
+#[derive(Default)]
+pub struct HeldBytes {
+    /// The views, recorded updates and shared values counted, by allocation.
+    seen: std::collections::HashSet<usize>,
+    total: u64,
+}
+
+mod held;
+pub use held::Held;
+
+impl HeldBytes {
+    /// A kept frame: its every table view not yet counted.
+    pub fn frame(&mut self, frame: &DecodedFrame) -> &mut Self {
+        self.value(frame)
+    }
+
+    /// A kept table view, once per allocation.
+    pub fn view(&mut self, view: &replay::frame::SharedView) -> &mut Self {
+        let table: &replay::frame::TableView = view;
+        if self
+            .seen
+            .insert(std::ptr::from_ref(table) as *const () as usize)
+        {
+            self.add(super::query::frames::view_bytes(table));
+        }
+        self
+    }
+
+    /// Kept change facts: their flags, and their recorded updates once.
+    pub fn changes(&mut self, changes: &FrameChanges) -> &mut Self {
+        self.value(changes)
+    }
+
+    /// Change facts' recorded updates, once however many keep them.
+    fn recorded(&mut self, changes: &FrameChanges) -> &mut Self {
+        if let Some(frame) = changes.recorded()
+            && self.once(std::sync::Arc::as_ptr(frame))
+        {
+            self.add(
+                size_of::<replay::frame::Frame>()
+                    + frame
+                        .tables
+                        .iter()
+                        .map(super::query::frames::update_bytes)
+                        .sum::<usize>(),
+            );
+        }
+        self
+    }
+
+    /// `bytes` held by the allocation at `shared`, once however many kept
+    /// values share it.
+    pub fn shared<T: ?Sized>(&mut self, shared: *const T, bytes: usize) -> &mut Self {
+        if self.once(shared) {
+            self.add(bytes);
+        }
+        self
+    }
+
+    /// `bytes` more.
+    pub fn add(&mut self, bytes: usize) -> &mut Self {
+        self.total = self.total.saturating_add(bytes as u64);
+        self
+    }
+
+    /// Everything counted.
+    pub fn total(&self) -> u64 {
+        self.total
+    }
 }
 
 /// How a fold completed.

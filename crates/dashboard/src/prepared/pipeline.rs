@@ -81,6 +81,13 @@ impl Batches {
     }
 }
 
+/// Run `run` with every family prepared hour by hour, for query tests that
+/// publish the hourly walk's pages and coverage themselves.
+#[cfg(test)]
+pub(crate) fn with_test_hourly<T>(run: impl FnOnce() -> T) -> T {
+    independent::with_test_hourly(run)
+}
+
 /// The block budget; tests set a smaller one to commit inside small fixtures.
 fn batch_blocks() -> usize {
     #[cfg(test)]
@@ -571,7 +578,9 @@ impl Refused {
         match result {
             Err(error) if refuses(&error) => {
                 // A refusal of a family's own read of another names that one.
-                let from = crate::products::air_superiority::block::refused_from(&error);
+                let from = crate::products::air_superiority::block::refused_from(&error)
+                    .or_else(|| independent::event_feed::refused_from(&error))
+                    .or_else(|| independent::sampled::refused_from(&error));
                 self.refuse(family, hour, error.to_string(), from);
                 Ok(T::default())
             }
@@ -697,6 +706,21 @@ unsaved_while_own!(
     own_experience => "experience",
     own_peace => "peace",
     own_casualties => "casualties",
+    own_research => "research",
+    own_projects => "projects",
+    own_nukes => "nukes",
+    own_factories => "factories",
+    own_feed => "event_feed",
+    own_naval => "naval",
+    own_divisions => "divisions",
+    own_air => "air",
+    own_navy => "navy",
+    own_supply => "supply",
+    own_stability => "stability",
+    own_fuel => "fuel",
+    own_equipment_losses => "equipment_losses",
+    own_trade => "trade",
+    own_territory => "territory",
 );
 
 /// The state of a family whose new state needs the recording, absent when
@@ -747,19 +771,27 @@ struct BranchState {
     production: Box<ProductionAccumulator>,
     measure: Box<MeasureAccumulator>,
     land: Box<crate::products::land_battles::Census>,
+    #[serde(default, skip_serializing_if = "own_naval")]
     naval: Box<crate::products::naval_battles::Scan>,
+    #[serde(default, skip_serializing_if = "own_divisions")]
     divisions: Box<crate::products::division_log::Scan>,
     #[serde(skip)]
     identities: Box<crate::products::country_history::HistoryScan>,
     army: Box<crate::products::army_size::prepared::Prepared>,
+    #[serde(default, skip_serializing_if = "own_air")]
     air: Box<crate::products::air_force::prepared::Prepared>,
+    #[serde(default, skip_serializing_if = "own_navy")]
     navy: Box<crate::products::navy::prepared::Prepared>,
+    #[serde(default, skip_serializing_if = "own_nukes")]
     nukes: Box<crate::products::country_nukes::prepared::Prepared>,
+    #[serde(default, skip_serializing_if = "own_factories")]
     factories: Box<crate::products::country_factories::prepared::Prepared>,
+    #[serde(default, skip_serializing_if = "own_supply")]
     supply: Box<crate::products::supply_health::prepared::Prepared>,
     #[serde(default, skip_serializing_if = "own_construction")]
     construction: Box<crate::products::construction_log::prepared::Prepared>,
     resources: Box<crate::products::resource_balance::prepared::Prepared>,
+    #[serde(default, skip_serializing_if = "own_trade")]
     trade: Box<crate::products::trade_flows::prepared::Prepared>,
     #[serde(default, skip_serializing_if = "own_stockpile")]
     stockpile: Box<crate::products::equipment_stockpile::prepared::Prepared>,
@@ -790,30 +822,37 @@ struct BranchState {
     ideas: Box<crate::products::idea_history::Scan>,
     #[serde(default, skip_serializing_if = "own_ideas")]
     idea_changes: Box<crate::products::idea_history::PreparedChanges>,
+    #[serde(default, skip_serializing_if = "own_feed")]
     feed: Box<crate::products::event_feed::prepared::Observer>,
     #[serde(skip)]
     parties: Box<crate::products::party_history::prepared::Prepared>,
     #[serde(skip)]
     intelligence: Box<crate::products::intelligence_prepared::Observer>,
+    #[serde(default, skip_serializing_if = "own_stability")]
     stability: Box<crate::prepared_stability::StabilityAccumulator>,
     #[serde(default, skip_serializing_if = "own_experience")]
     experience: Box<crate::prepared_stability::ExperienceAccumulator>,
     #[serde(skip)]
     ledger: Box<crate::products::politics_ledger::prepared::Prepared>,
+    #[serde(default, skip_serializing_if = "own_fuel")]
     fuel: Box<crate::products::country_fuel::prepared::Prepared>,
+    #[serde(default, skip_serializing_if = "own_territory")]
     territory: Box<crate::products::territory::prepared::Prepared>,
     #[serde(skip)]
     occupation: Box<crate::products::occupied_states::prepared::Prepared>,
     game_score: Box<crate::products::game_score::prepared::Prepared>,
     #[serde(skip)]
     leaders: Box<crate::products::unit_leaders::prepared::Prepared>,
+    #[serde(default, skip_serializing_if = "own_research")]
     research: Box<crate::products::research::prepared::Prepared>,
     #[serde(default, skip_serializing_if = "own_peace")]
     peace: Unsaved<crate::products::peace_deals::prepared::Prepared>,
+    #[serde(default, skip_serializing_if = "own_projects")]
     projects: Box<crate::products::special_projects::prepared::Prepared>,
     #[serde(default, skip_serializing_if = "own_casualties")]
     casualties: Unsaved<crate::products::war_casualties::prepared::Prepared>,
-    equipment_losses: Box<crate::products::equipment_losses::prepared::Prepared>,
+    #[serde(default, skip_serializing_if = "own_equipment_losses")]
+    equipment_losses: Unsaved<crate::products::equipment_losses::prepared::Prepared>,
 }
 impl BranchState {
     fn resume(&mut self, frame: &replay::frame::DecodedFrame, branch: u64, refused: &Refused) {
@@ -898,7 +937,7 @@ impl BranchState {
             casualties: Unsaved::new(crate::products::war_casualties::prepared::Prepared::new(
                 replay, branch,
             )),
-            equipment_losses: Box::new(crate::products::equipment_losses::prepared::Prepared::new(
+            equipment_losses: Unsaved::new(crate::products::equipment_losses::prepared::Prepared::new(
                 replay, branch, first,
             )),
         })
@@ -1032,6 +1071,15 @@ fn family_page(
     let Some(family) = independent::gating(query) else {
         return Ok(None);
     };
+    Ok(own_page(store, key, family, branch)?.map(|page| (family, page)))
+}
+/// The coverage page `family`, prepared on its own, published for `branch`.
+fn own_page(
+    store: &store::Store,
+    key: &store::SourceKey,
+    family: &str,
+    branch: u64,
+) -> io::Result<Option<CoveragePage>> {
     let Some(file) = store.read(key, &independent::coverage_section(family, branch), 0)? else {
         return Ok(None);
     };
@@ -1039,12 +1087,53 @@ fn family_page(
     if page.coverage.schema != SCHEMA || page.coverage.first_hour > page.coverage.last_hour {
         return Err(invalid("Unsupported prepared coverage schema"));
     }
-    Ok(Some((family, page)))
+    Ok(Some(page))
 }
-/// The coverage `product`'s queries wait for on `branch`: that of the family
-/// prepared on its own whose registry entry gates the product
-/// ([`independent::gating`]), the branch's otherwise; None before any is
-/// accepted. A product gated so is answered while the hourly walk prepares.
+/// The coverage every one of `families` has on `branch`
+/// ([`independent::joint`]): its own of each prepared on its own, the
+/// branch's of any other; through the least of their last hours, complete
+/// when every one is. None until every one has accepted some.
+fn joint_coverage(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    branch: u64,
+    families: &[&str],
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Coverage>> {
+    check_cancel(cancelled)?;
+    let (store, key) = super::files(source, content)?;
+    let mut walked = None;
+    let mut joint: Option<Coverage> = None;
+    for &family in families {
+        let extent = if independent::registered(family) {
+            own_page(&store, &key, family, branch)?.map(|page| page.coverage)
+        } else {
+            if walked.is_none() {
+                walked = Some(coverage(source, content, branch, cancelled)?);
+            }
+            walked.clone().flatten()
+        };
+        let Some(extent) = extent else {
+            return Ok(None);
+        };
+        joint = Some(match joint {
+            None => extent,
+            Some(held) => Coverage {
+                schema: SCHEMA,
+                first_hour: held.first_hour.max(extent.first_hour),
+                last_hour: held.last_hour.min(extent.last_hour),
+                complete: held.complete && extent.complete,
+            },
+        });
+    }
+    Ok(joint)
+}
+/// The coverage `product`'s queries wait for on `branch`: that of the
+/// families whose pages its replies read together, while any is prepared on
+/// its own ([`independent::joint`]); that of the family prepared on its own
+/// whose registry entry gates the product ([`independent::gating`]); the
+/// branch's otherwise; None before any is accepted. A product gated so is
+/// answered while the hourly walk prepares.
 pub(crate) fn product_coverage(
     source: &Source,
     content: Option<&ContentOptions>,
@@ -1052,6 +1141,9 @@ pub(crate) fn product_coverage(
     product: &str,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Coverage>> {
+    if let Some(families) = independent::joint(product) {
+        return joint_coverage(source, content, branch, families, cancelled);
+    }
     if independent::gating(product).is_none() {
         return coverage(source, content, branch, cancelled);
     }
@@ -1110,7 +1202,10 @@ pub(crate) fn refusal(
         .iter()
         .filter(|family| family.queries.contains(&query))
         .collect();
-    if families.is_empty() && independent::gating(query).is_none() {
+    if families.is_empty()
+        && independent::gating(query).is_none()
+        && independent::joint(query).is_none()
+    {
         return Ok(());
     }
     check_cancel(cancelled)?;
@@ -1347,6 +1442,11 @@ fn load_branch(
         state.peace = Unsaved::new(crate::products::peace_deals::prepared::Prepared::new(
             replay, branch,
         ));
+    }
+    if state.equipment_losses.missing() {
+        state.equipment_losses = Unsaved::new(
+            crate::products::equipment_losses::prepared::Prepared::new(replay, branch, first),
+        );
     }
     if state.casualties.missing() {
         state.casualties = Unsaved::new(crate::products::war_casualties::prepared::Prepared::new(
@@ -2325,32 +2425,12 @@ fn run_inner(
             store.extend(&key)
         )?;
     }
-    // Each branch's newest block window answers before forward preparation
-    // reaches it.
-    let (opened, committed) = newest::prepare(
-        &newest::Phase {
-            source,
-            replay,
-            store: &store,
-            key: &key,
-            context: &context,
-            map: &map,
-            last_blocks: &last_blocks,
-            cancelled,
-        },
-        writer,
-        &mut state,
-        &mut saved,
-        &mut bytes,
-        &mut family_timings,
-        &mut accepted,
-    )?;
-    writer = opened;
-    metadata_dirty &= !committed;
     // Families prepared on their own accept every block before the hourly
-    // walk starts, so their queries do not wait for it.
-    let (opened, committed) = independent::prepare(
-        &independent::Phase {
+    // walk starts, so their queries do not wait for it. Beside them, each
+    // branch's newest block window answers before forward preparation
+    // reaches it, published in its own commit as soon as it is proven.
+    let (opened, committed) = {
+        let phase = independent::Phase {
             source,
             replay,
             store: &store,
@@ -2361,15 +2441,20 @@ fn run_inner(
             batches: &batches,
             measured: measurement.is_some(),
             cancelled,
-        },
-        writer,
-        &mut state,
-        &mut saved,
-        &mut bytes,
-        &mut family_timings,
-        &mut lane_timings,
-        &mut accepted,
-    )?;
+        };
+        let beside = newest::jobs(&phase, &state, &saved)?;
+        independent::prepare(
+            &phase,
+            writer,
+            &mut state,
+            &mut saved,
+            &mut bytes,
+            &mut family_timings,
+            &mut lane_timings,
+            beside,
+            &mut accepted,
+        )?
+    };
     writer = opened;
     metadata_dirty &= !committed;
     let mut branch = replay

@@ -905,6 +905,7 @@ fn read_leader_visibility_reads_the_world_only_to_evaluate() {
             frame,
             world: OnceCell::from(Err("the World is read".to_owned())),
             gap: OnceCell::new(),
+            kept: None,
         }
     }
     let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
@@ -2357,6 +2358,7 @@ fn reused_leader_visibility(checking: bool) {
             frame: &frame,
             world: OnceCell::from(Ok(world)),
             gap: OnceCell::new(),
+            kept: None,
         };
         let mut rereads = Rereads::new();
         let decided = visible_reusing(
@@ -2534,6 +2536,7 @@ fn leader_visibility_from_changes(checking: bool) {
             frame: &decoded,
             world,
             gap: OnceCell::new(),
+            kept: None,
         };
         let mut rereads = Rereads::new();
         let decided = visible_reusing(
@@ -2564,4 +2567,132 @@ fn leader_visibility_from_changes(checking: bool) {
         }
     }
     assert_eq!(counts.mismatched, 0);
+}
+
+/// A kept frame's visibility pass that another leader's verdict stops
+/// (`Kept::blocked`) leaves the hour's observation on its whole frame
+/// nothing to depend on: a leader whose visibility input has just become
+/// active and whose template is unknown reads it again there and records
+/// its refusal, as the per-hour oracle does.
+#[test]
+fn a_blocked_kept_visibility_pass_leaves_the_whole_frame_its_refusals() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    use dashboard_core::test_fixtures::{CAMPAIGN, records};
+    use replay::{frame::TableView, rows::TableRows};
+    let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/00.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30} NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+        ),
+        (
+            "common/unit_leader/a.txt",
+            "leader_skills={1={type=corps_commander cost=1}} leader_traits={}",
+        ),
+    ]);
+    let catalogue = Arc::new(catalogue);
+    let content = Content {
+        politics: Arc::new(politics_content::PoliticsContent::load(catalogue.clone()).unwrap()),
+        leaders: installed_content::unit_leader::Leaders::load(&catalogue.content.layers, &|_| None)
+            .unwrap(),
+        catalogue,
+    };
+    let mut base = prepared::test_fixtures::frame(100, 1);
+    for table in [TableId::Provinces, TableId::States] {
+        *base.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+    }
+    // The leader's own visibility choice becomes active at 101; its
+    // character has no recorded template.
+    let frames: Vec<_> = [100, 101]
+        .into_iter()
+        .map(|hour| {
+            let mut frame = base.clone();
+            frame.hour = hour;
+            if hour == 101
+                && let TableView::Complete(TableRows::UnitLeaders(rows)) =
+                    &mut *frame.tables[TableId::UnitLeaders.index()]
+            {
+                rows[0].visibility_choice = 1;
+            }
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+    let params = UnitLeadersParams {
+        branch_id: "1".into(),
+        selection: LeaderSelection::All,
+        view: LeaderView::Career,
+        leaders: LeaderKinds::All,
+    };
+    dashboard_text::triggers::inputs::reusing(|| {
+        let mut scan = Scan::new(&replay, 1).unwrap();
+        scan.reuse_evaluations = true;
+        let mut tracker = FrameChangeTracker::new();
+        let first = tracker.observe(&frames[0], replay.format);
+        assert!(
+            scan.observe_changes(
+                &frames[0],
+                &replay,
+                &params,
+                Some(&content),
+                &first,
+                &first,
+                None,
+                &mut |_, _, _| {},
+            )
+            .unwrap()
+        );
+        let second = tracker.observe(&frames[1], replay.format);
+        let reduced = block::Changes::default();
+        let kept = Kept::new(&reduced);
+        // Another leader's verdict needs the whole frame.
+        kept.block();
+        assert!(
+            !scan
+                .observe_changes(
+                    &frames[1],
+                    &replay,
+                    &params,
+                    Some(&content),
+                    &second,
+                    &second,
+                    Some(&kept),
+                    &mut |_, _, _| {},
+                )
+                .unwrap(),
+            "the blocked hour is observed on its whole frame"
+        );
+        assert!(
+            scan.observe_changes(
+                &frames[1],
+                &replay,
+                &params,
+                Some(&content),
+                &second,
+                &second,
+                None,
+                &mut |_, _, _| {},
+            )
+            .unwrap()
+        );
+        let actual = scan.finish(&params, Some(&content)).unwrap();
+        let mut oracle = Scan::new(&replay, 1).unwrap();
+        for frame in &frames {
+            oracle
+                .observe_read(frame, &replay, &params, Some(&content), &mut |_, _, _| {})
+                .unwrap();
+        }
+        let expected = oracle.finish(&params, Some(&content)).unwrap();
+        assert!(
+            expected
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("no template")),
+            "{:?}",
+            expected.warnings
+        );
+        dashboard_base::prepared::observer_tests::assert_reply_parity(&actual, &expected)
+            .unwrap();
+    });
 }

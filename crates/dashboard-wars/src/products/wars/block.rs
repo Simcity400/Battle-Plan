@@ -29,13 +29,14 @@
 //! the rest of the block is observed hour by hour.
 
 use super::Hour;
+use super::native::World;
 use super::prepared::Observer;
 use super::published::{Prepared as Walk, Saved};
 use dashboard_base::{
     Source,
     prepared::{
         frame_changes::{FrameChangeTracker, FrameChanges},
-        prepass::{Extract, Family, Folded},
+        prepass::{Extract, Family, Folded, Held, HeldBytes},
         series::{self, Accumulator, Recording, ReplayTarget},
     },
     products::LoadContext,
@@ -210,7 +211,67 @@ struct BlockExtract {
     frames: usize,
 }
 
+impl Held for World {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.owned)
+            .heap(&self.relations)
+            .heap(&self.adjacent)
+            .heap(&self.factions)
+            .heap(&self.scores);
+    }
+}
+
+/// The inputs the observer holds at the block's end: its world and every
+/// country and relation map beside it.
+impl Held for Hour {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.world)
+            .heap(&self.relation_order)
+            .heap(&self.tags)
+            .heap(&self.identities)
+            .heap(&self.raw_to_slot)
+            .heap(&self.goal_owned);
+    }
+}
+
 impl Extract for BlockExtract {
+    /// What the block's facts hold: its first frame, its recorded calls,
+    /// the views it holds, each step's inputs and the observer's state (its
+    /// series, its relation lifetimes by name and the hour each was first
+    /// read, the change-input ordinals it recorded for the fold, and its
+    /// frame and inputs at the block's end).
+    fn bytes(&self) -> u64 {
+        let mut held = HeldBytes::default();
+        let observer = &self.observer;
+        // The relation lifetimes by number, as the facts name them.
+        held.add(observer.indices.len() * size_of::<String>())
+            .add(observer.indices.keys().map(String::capacity).sum())
+            .heap(&observer.first_reads)
+            .heap(&observer.recorded)
+            .heap(&observer.inputs);
+        if let Some(first) = &self.first {
+            held.frame(&first.frame).changes(&first.changes);
+        }
+        held.add(self.recording.bytes());
+        for view in &self.held {
+            held.view(view);
+        }
+        held.add(self.steps.capacity() * size_of::<Step>());
+        for step in &self.steps {
+            held.add(
+                step.inputs.capacity() * size_of::<(i32, Vec<u8>)>()
+                    + step.inputs.iter().map(|(_, input)| input.capacity()).sum::<usize>(),
+            );
+        }
+        if let Some(frame) = &self.observer.frame {
+            held.frame(frame);
+        }
+        held.add(self.observer.bytes());
+        held.total()
+    }
+
     fn observe(
         &mut self,
         _: &Replay,

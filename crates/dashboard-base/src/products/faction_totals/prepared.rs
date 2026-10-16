@@ -520,29 +520,35 @@ pub fn query(
         return Ok(Value::Null);
     };
     let members = NativeMembers::new(&history, &identities, params.membership, cancelled)?;
-    let Some((present_keys, territory_metadata)) =
-        series::read_catalogue::<territory::TerritoryReply>(&store, &key, "territory", branch)?
-    else {
-        return Ok(Value::Null);
-    };
-    let (keys, section, mut measures) = match &params.source {
-        FactionMeasure::Territory { measure, rule } => (
-            present_keys.clone(),
-            format!("territory-values-{branch}-{}", measure.index(*rule)),
-            CountryMeasures {
-                tracks: Vec::new(),
-                unit: match measure {
-                    TerritoryMeasure::States => Some("states".into()),
-                    TerritoryMeasure::Provinces => Some("provinces".into()),
-                    TerritoryMeasure::VictoryPoints => Some("victory points".into()),
-                    TerritoryMeasure::Area => territory_metadata.area_unit.clone(),
+    // Territory's catalogue: its measures' keys, presence and metadata for
+    // territory totals. Factory totals read only its presence, which joins a
+    // dense summary's members; their exact replies never read territory.
+    let territory_catalogue =
+        || series::read_catalogue::<territory::TerritoryReply>(&store, &key, "territory", branch);
+    let (keys, section, mut measures, present_keys) = match &params.source {
+        FactionMeasure::Territory { measure, rule } => {
+            let Some((present_keys, territory_metadata)) = territory_catalogue()? else {
+                return Ok(Value::Null);
+            };
+            (
+                present_keys.clone(),
+                format!("territory-values-{branch}-{}", measure.index(*rule)),
+                CountryMeasures {
+                    tracks: Vec::new(),
+                    unit: match measure {
+                        TerritoryMeasure::States => Some("states".into()),
+                        TerritoryMeasure::Provinces => Some("provinces".into()),
+                        TerritoryMeasure::VictoryPoints => Some("victory points".into()),
+                        TerritoryMeasure::Area => territory_metadata.area_unit.clone(),
+                    },
+                    unavailable_reason: matches!(measure, TerritoryMeasure::Area)
+                        .then(|| territory_metadata.area_reason.clone())
+                        .flatten(),
+                    warnings: territory_metadata.warnings.clone(),
                 },
-                unavailable_reason: matches!(measure, TerritoryMeasure::Area)
-                    .then(|| territory_metadata.area_reason.clone())
-                    .flatten(),
-                warnings: territory_metadata.warnings.clone(),
-            },
-        ),
+                Some(present_keys),
+            )
+        }
         FactionMeasure::Factories { mode, groups } => {
             let Some((keys, metadata)) = series::read_catalogue::<
                 country_factories::ScannedFactories,
@@ -576,10 +582,39 @@ pub fn query(
                     unavailable_reason: None,
                     warnings,
                 },
+                None,
             )
         }
     };
     let mut values = Reader::new(&store, &key, section, cancelled)?;
+    if matches!(params.source, FactionMeasure::Factories { .. })
+        && let Some(coverage) = crate::prepared::coverage::product_coverage(
+            source,
+            context.content.as_ref(),
+            branch,
+            FACTORIES_GATE,
+            cancelled,
+        )?
+        .filter(|coverage| !coverage.complete)
+    {
+        // Factories prepared on their own may have committed pages beyond
+        // the coverage of the families read with them: they are read only
+        // through the last batch committed by its last hour, and a request
+        // reaching past that waits.
+        let reached = values.through_hour(coverage.last_hour)?;
+        let requested = match product {
+            "series-state" => value["reads"][0]["hour"].as_f64(),
+            "series-summary" => value["to"].as_f64(),
+            "series-next-change" => value["lastHour"].as_f64(),
+            _ => None,
+        }
+        .map(f64::ceil);
+        if requested
+            .is_some_and(|requested| reached.is_none_or(|reached| f64::from(reached) < requested))
+        {
+            return Ok(Value::Null);
+        }
+    }
     if product == "series-next-change" {
         let navigation: series::Navigation = serde_json::from_value(value)?;
         return Ok(
@@ -680,6 +715,31 @@ pub fn query(
         super::super::check_reply_budget(&reply)?;
         return Ok(reply);
     }
+    let present_keys = match present_keys {
+        Some(present_keys) => present_keys,
+        None => {
+            // A dense factory summary joins territory's member presence: it
+            // waits for territory's coverage through the window, as a request
+            // waiting for the branch's coverage does.
+            let covered = crate::prepared::coverage::product_coverage(
+                source,
+                context.content.as_ref(),
+                branch,
+                <territory::Territory as Product>::KEY,
+                cancelled,
+            )?
+            .is_some_and(|coverage| {
+                coverage.complete || f64::from(coverage.last_hour) >= view.1.ceil()
+            });
+            if !covered {
+                return Ok(Value::Null);
+            }
+            let Some((present_keys, _)) = territory_catalogue()? else {
+                return Ok(Value::Null);
+            };
+            present_keys
+        }
+    };
     dense_reply(
         source,
         context,

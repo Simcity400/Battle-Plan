@@ -289,6 +289,61 @@ impl Replay {
         )
         .map(|_| ())
     }
+
+    /// [`Replay::read_block_alone`] of a block already read: `frames` are the
+    /// block's frames as [`Replay::read_block_selected`] returned them for a
+    /// selection holding `tables`, here reconstructed with `tables` (and
+    /// Campaign) alone from the block's keyframe and handed to `visit` with
+    /// their recorded updates, so one read of a block serves readers of
+    /// several selections within it. A selected read decodes each table's
+    /// updates on their own, so a selected table's updates and every frame's
+    /// hour and metrics are those a read of `tables` returns; the decoder
+    /// reconstructs `tables` alone, so each hour, and which hours share a
+    /// table's allocation, are `read_block_alone`'s. The frames' other tables'
+    /// updates are not reconstructed. The one check that reads every table,
+    /// that a keyframe holds only updates needing no earlier hour, would see
+    /// them: when one fails it the block is not reconstructed and nothing is
+    /// visited (false), and the caller reads it alone. A prefix of a block's
+    /// frames reconstructs its hours through the prefix's last.
+    pub fn reconstruct_alone<F: std::borrow::Borrow<Frame>>(
+        &self,
+        frames: &[F],
+        tables: &[TableId],
+        mut visit: impl FnMut(&F, &DecodedFrame) -> io::Result<()>,
+        mut check: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<bool> {
+        check()?;
+        let mut selected = engine::allocation::collect_vec(tables.iter().copied())?;
+        if !selected.contains(&TableId::Campaign) {
+            engine::allocation::reserve(&mut selected, 1)?;
+            selected.push(TableId::Campaign);
+        }
+        let mut chosen = [false; TABLE_COUNT];
+        for table in &selected {
+            chosen[table.index()] = true;
+        }
+        // A read of `tables` alone holds an unselected table as unavailable,
+        // which a keyframe may hold.
+        let unselected_dependent = frames.iter().any(|frame| {
+            let frame = frame.borrow();
+            frame.keyframe
+                && TableId::ALL.iter().any(|table| {
+                    !chosen[table.index()]
+                        && !crate::frame::keyframe_update(&frame.tables[table.index()])
+                })
+        });
+        if unselected_dependent {
+            return Ok(false);
+        }
+        let mut decoder = FrameDecoder::for_tables(&selected);
+        for frame in frames {
+            check()?;
+            let decoded = decoder.advance(frame.borrow())?;
+            validate_campaign(decoded, &self.campaign_id)?;
+            visit(frame, decoded)?;
+        }
+        Ok(true)
+    }
 }
 
 /// Read a block's selected frames and reconstruct them with the decoder
@@ -572,6 +627,145 @@ mod tests {
                 assert_eq!(continuous.cursor().next_block, replay.index.len());
             }
         }
+        drop(held);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// One read of a block for a selection reconstructs each selection
+    /// within it exactly as that selection's own read alone: every hour, its
+    /// recorded updates of the selected tables and its metrics, and which
+    /// hours share each table's allocation (the change facts readers derive).
+    /// A keyframe holding an unselected table's dependent update, which a
+    /// read of the selection alone holds as unavailable, is refused unvisited.
+    #[test]
+    fn a_wider_read_reconstructs_each_selection_within_it_as_its_own_read() {
+        use crate::frame::{SharedView, TableUpdate};
+        let memory = continued();
+        let interleaved = interleaved_copy(&memory);
+        let path =
+            std::env::temp_dir().join(format!("replay-wider-{}.battleplan", std::process::id()));
+        std::fs::write(&path, memory.bytes()).unwrap();
+        let held = Replay::open_path(&path).unwrap();
+        let wide = [
+            TableId::Campaign,
+            TableId::Clock,
+            TableId::WorldTension,
+            TableId::SunkShips,
+        ];
+        let narrow: [&[TableId]; 3] = [
+            &[TableId::Clock],
+            &[TableId::WorldTension, TableId::SunkShips],
+            &wide,
+        ];
+        for replay in [&memory, &interleaved, &held] {
+            for tables in narrow {
+                for index in &replay.index {
+                    let mut alone = Vec::new();
+                    replay
+                        .read_block_alone(
+                            index,
+                            tables,
+                            |raw, frame| {
+                                alone.push((raw, frame.clone()));
+                                Ok(())
+                            },
+                            || Ok(()),
+                        )
+                        .unwrap();
+                    let read: Vec<Arc<Frame>> = replay
+                        .read_block_selected(index, &wide)
+                        .unwrap()
+                        .into_iter()
+                        .map(Arc::new)
+                        .collect();
+                    let mut position = 0;
+                    let mut previous: Option<DecodedFrame> = None;
+                    let reconstructed = replay
+                        .reconstruct_alone(
+                            &read,
+                            tables,
+                            |raw, frame| {
+                                let (alone_raw, alone_frame) = &alone[position];
+                                assert_eq!(
+                                    (raw.branch, raw.hour, raw.keyframe),
+                                    (alone_raw.branch, alone_raw.hour, alone_raw.keyframe)
+                                );
+                                assert_eq!(raw.metrics, alone_raw.metrics);
+                                for table in tables.iter().chain(std::iter::once(&TableId::Campaign))
+                                {
+                                    assert_eq!(
+                                        raw.tables[table.index()],
+                                        alone_raw.tables[table.index()],
+                                        "{table:?}'s recorded update"
+                                    );
+                                }
+                                assert_frame(frame, alone_frame);
+                                if let Some(previous) = &previous {
+                                    let alone_previous = &alone[position - 1].1;
+                                    for table in TableId::ALL {
+                                        let at = table.index();
+                                        assert_eq!(
+                                            SharedView::ptr_eq(&previous.tables[at], &frame.tables[at]),
+                                            SharedView::ptr_eq(
+                                                &alone_previous.tables[at],
+                                                &alone_frame.tables[at]
+                                            ),
+                                            "{table:?} shares the hour before's allocation in one read only"
+                                        );
+                                    }
+                                }
+                                previous = Some(frame.clone());
+                                position += 1;
+                                Ok(())
+                            },
+                            || Ok(()),
+                        )
+                        .unwrap();
+                    assert!(reconstructed);
+                    assert_eq!(position, alone.len());
+                }
+            }
+        }
+        // A prefix reconstructs its hours alone.
+        let index = &memory.index[0];
+        let read = memory.read_block_selected(index, &wide).unwrap();
+        let mut hours = Vec::new();
+        assert!(
+            memory
+                .reconstruct_alone(
+                    &read[..2],
+                    &[TableId::Clock],
+                    |raw, frame| {
+                        assert_eq!(raw.hour, frame.hour);
+                        hours.push(frame.hour);
+                        Ok(())
+                    },
+                    || Ok(()),
+                )
+                .unwrap()
+        );
+        assert_eq!(hours, [read[0].hour, read[1].hour]);
+        // An unselected table's dependent update at a keyframe.
+        let mut read = read;
+        assert!(read[0].keyframe);
+        read[0].tables[TableId::SunkShips.index()] = TableUpdate::Unchanged {
+            baseline: read[0].hour - 1,
+        };
+        let mut visited = 0;
+        assert!(
+            !memory
+                .reconstruct_alone(
+                    &read,
+                    &[TableId::Clock],
+                    |_, _| {
+                        visited += 1;
+                        Ok(())
+                    },
+                    || Ok(()),
+                )
+                .unwrap()
+        );
+        assert_eq!(visited, 0);
         drop(held);
         std::fs::remove_file(path).unwrap();
     }

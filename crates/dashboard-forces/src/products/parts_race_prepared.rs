@@ -1,6 +1,9 @@
 //! The prepared parts-race flow shared by the native air and ship censuses.
 use dashboard_base::{
-    prepared::series::{self, Accumulator, Reader, Run},
+    prepared::{
+        prepass::Held,
+        series::{self, Accumulator, Reader, Run},
+    },
     products::{
         country_groups::{self, HourSpan},
         country_history,
@@ -21,6 +24,8 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+/// Blocks extracted on pre-pass workers and folded on the carried state.
+pub mod block;
 #[cfg(test)]
 mod phase_b_tests;
 #[cfg(test)]
@@ -42,15 +47,20 @@ pub struct Selection {
 pub type Holder = (Vec<u8>, Option<(u32, u32)>);
 
 /// Only native input/projection shapes differ. Series, ranking and request flow live here.
+/// A block extract keeps scans, runs and projection bases, so each counts
+/// what it holds ([`Held`]).
 pub trait Family {
-    type Scan: Default + Serialize + DeserializeOwned;
-    type Raw: Clone + Serialize + DeserializeOwned;
-    type Scanned: Serialize + DeserializeOwned;
+    type Scan: Default + Serialize + DeserializeOwned + Held;
+    type Raw: Clone + Serialize + DeserializeOwned + Held;
+    type Scanned: Serialize + DeserializeOwned + Held;
     type Part: Clone + Serialize + DeserializeOwned;
     type Reply: Serialize + dashboard_base::products::ReplyWarnings;
     type PointContent;
     const POINT_PARTS: bool;
     const NAME: &'static str;
+    /// The product key whose coverage its queries wait for: the family's own
+    /// while it is prepared on its own, the branch's otherwise.
+    const PRODUCT: &'static str;
     const GROUPS: usize;
     const MIXES: usize;
     const REFERENCES: usize;
@@ -126,6 +136,42 @@ pub trait Family {
     ) -> io::Result<Self::Reply>;
     #[allow(clippy::type_complexity)]
     fn projection(reply: Self::Reply) -> (Vec<Self::Part>, BTreeMap<String, Vec<Option<i64>>>);
+    /// What a block fold keeps of the scan right after the block's first
+    /// hour: what decides its later hours, and its counters then.
+    type Tail: Send + Held;
+    fn tail(scan: &Self::Scan, hour: i32) -> Self::Tail;
+    /// How the extract's scan's own numbers for what it names (navy's ship
+    /// classes, numbered in the order a census first sees them) name the
+    /// carried scan's, which numbered them over the branch before.
+    type Numbering: Send + Sync;
+    /// The numbering of `block`'s names in `carried`'s, `carried` having
+    /// observed the block's first hour: a name it knows keeps its number,
+    /// and the others take the next numbers in the order `block` first saw
+    /// them, the order the carried scan would number them in.
+    fn numbering(carried: &Self::Scan, block: &Self::Scan) -> Self::Numbering;
+    /// A run of the extract's renumbered as the carried scan numbers it.
+    fn renumber(numbering: &Self::Numbering, raw: &mut Self::Raw);
+    /// A projection base of the extract's at an hour, renumbered: the
+    /// carried scan's names with what it would have added by then.
+    fn renumber_base(numbering: &Self::Numbering, base: &mut Self::Scanned);
+    /// Whether `carried`, having observed the block's first hour, decides
+    /// every later hour of the block as the extract's scan did from `tail`,
+    /// which ended the block as `block`, with `block`'s names numbered as
+    /// `numbering` gives them.
+    fn continues(
+        carried: &Self::Scan,
+        tail: &Self::Tail,
+        block: &Self::Scan,
+        numbering: &Self::Numbering,
+    ) -> bool;
+    /// Carry `carried` through the block's end: what the extract's scan added
+    /// after `tail`, on the carried history and counters, renumbered.
+    fn carry(
+        carried: &mut Self::Scan,
+        tail: Self::Tail,
+        block: Self::Scan,
+        numbering: Self::Numbering,
+    );
 }
 
 #[derive(Serialize, Deserialize)]
@@ -355,6 +401,108 @@ fn part_runs(totals: &[Run], values: &[Run], witnessed: &[(i32, i32, u32, u32)])
         })
         .collect()
 }
+/// One hour's rows from the scan alone: what each channel observed (the rows
+/// whose runs changed, or every active row before the state's first hour),
+/// the rows removed, and each channel's projection base at that hour.
+pub struct Rows<F: Family> {
+    pub hour: i32,
+    branch: u64,
+    observed: [BTreeMap<String, F::Raw>; 4],
+    removed: Vec<String>,
+    bases: [Option<F::Scanned>; 4],
+}
+
+/// Each channel's projections of its rows, by group (part columns and each
+/// country's amounts), or the error projecting them: none for a channel whose
+/// rows project nothing, and none after the first channel that failed.
+#[allow(clippy::type_complexity)]
+pub struct Projected<F: Family>(
+    [io::Result<Vec<(Vec<F::Part>, BTreeMap<String, Vec<Option<i64>>>)>>; 4],
+);
+
+/// The scan's step at `frame` and the rows it leaves, as observing the hour
+/// steps it: `ready` once the state observed an hour.
+pub fn step_rows<F: Family>(
+    scan: &mut F::Scan,
+    ready: bool,
+    frame: &DecodedFrame,
+    format: FormatVersion,
+    cancelled: &AtomicBool,
+    changes: &dashboard_base::prepared::frame_changes::FrameChanges,
+) -> io::Result<Rows<F>> {
+    let raw = updates_changed(frame, F::TABLES, Some(changes), F::applied(scan));
+    F::step(scan, &raw, frame, format, cancelled, Some(changes))?;
+    let observed = std::array::from_fn(|index| {
+        if ready {
+            F::changed(scan, index, frame.hour)
+        } else {
+            F::observed(scan, index, frame.hour)
+        }
+    });
+    Ok(Rows {
+        hour: frame.hour,
+        branch: frame.branch,
+        observed,
+        removed: F::removed(scan).to_vec(),
+        bases: std::array::from_fn(|_| Some(F::projection_scan(scan))),
+    })
+}
+
+/// The projections of `rows` through the recorded content: what each
+/// channel's rows add to the part catalogue and each country's part amounts.
+/// Each depends on the hour's rows alone, so hours project apart.
+pub fn project<F: Family>(
+    rows: &mut Rows<F>,
+    source: &Source,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> Projected<F> {
+    let mut failed = false;
+    let observed = &rows.observed;
+    let bases = &mut rows.bases;
+    let branch = rows.branch;
+    Projected(std::array::from_fn(|index| {
+        let mut projected = Vec::new();
+        if failed {
+            return Ok(projected);
+        }
+        let changed: BTreeMap<_, _> = observed[index]
+            .iter()
+            .filter(|(_, raw)| F::projectable(raw))
+            .map(|(tag, raw)| (tag.clone(), vec![raw.clone()]))
+            .collect();
+        if changed.is_empty() {
+            return Ok(projected);
+        }
+        let mut snapshot = bases[index]
+            .take()
+            .expect("each channel's projection base is taken once");
+        let tags: Vec<String> = changed.keys().cloned().collect();
+        for (tag, runs) in changed {
+            F::insert(&mut snapshot, index, tag, runs, Vec::new());
+        }
+        for group in 0..F::GROUPS {
+            let selection = Selection {
+                branch_id: branch.to_string(),
+                tags: tags.clone(),
+                top: None,
+                channel: index,
+                group,
+            };
+            match F::render(
+                source, &selection, context, cancelled, &snapshot, None, None,
+            ) {
+                Ok(reply) => projected.push(F::projection(reply)),
+                Err(error) => {
+                    failed = true;
+                    return Err(error);
+                }
+            }
+        }
+        Ok(projected)
+    }))
+}
+
 pub fn retain_tail<T>(items: &mut Vec<T>) {
     if items.len() > 1 {
         items.drain(..items.len() - 1);
@@ -394,17 +542,31 @@ impl<F: Family> Prepared<F> {
         cancelled: &AtomicBool,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
-        let raw = updates_changed(frame, F::TABLES, Some(changes), F::applied(&self.scan));
-        F::step(
+        let rows = step_rows::<F>(
             &mut self.scan,
-            &raw,
+            self.ready,
             frame,
             replay.format,
             cancelled,
-            Some(changes),
+            changes,
         )?;
-        self.first.get_or_insert(frame.hour);
-        self.last = frame.hour;
+        let mut rows = rows;
+        let projected = project::<F>(&mut rows, source, context, cancelled);
+        self.apply(rows, projected)
+    }
+    /// Publish one hour's rows and their projections, as observing the hour
+    /// does after its scan step: every accumulator authenticates the hour,
+    /// then each channel in order records its rows' totals, compositions and
+    /// parts, stopping at the first projection that failed.
+    pub fn apply(&mut self, rows: Rows<F>, projected: Projected<F>) -> io::Result<()> {
+        let Rows {
+            hour,
+            observed,
+            removed,
+            ..
+        } = rows;
+        self.first.get_or_insert(hour);
+        self.last = hour;
         for accumulator in self
             .values
             .iter_mut()
@@ -412,59 +574,31 @@ impl<F: Family> Prepared<F> {
             .chain(&mut self.mixes)
             .chain(&mut self.maximum)
         {
-            accumulator.advance(frame.hour)?;
+            accumulator.advance(hour)?;
         }
-        for index in 0..4 {
-            let observed = if self.ready {
-                F::changed(&self.scan, index, frame.hour)
-            } else {
-                F::observed(&self.scan, index, frame.hour)
-            };
-            let changed: BTreeMap<_, _> = observed
-                .iter()
-                .filter(|(_, raw)| F::projectable(raw))
-                .map(|(tag, raw)| (tag.clone(), vec![raw.clone()]))
-                .collect();
+        for (index, (observed, projection)) in observed.into_iter().zip(projected.0).enumerate() {
             let mut projected = Vec::new();
-            if !changed.is_empty() {
-                let mut snapshot = F::projection_scan(&self.scan);
-                let tags: Vec<String> = changed.keys().cloned().collect();
-                for (tag, runs) in changed {
-                    F::insert(&mut snapshot, index, tag, runs, Vec::new());
-                }
-                for group in 0..F::GROUPS {
-                    let selection = Selection {
-                        branch_id: frame.branch.to_string(),
-                        tags: tags.clone(),
-                        top: None,
-                        channel: index,
-                        group,
-                    };
-                    let (parts, countries) = F::projection(F::render(
-                        source, &selection, context, cancelled, &snapshot, None, None,
-                    )?);
-                    let columns = parts
-                        .iter()
-                        .map(|part| F::part_key(part).to_owned())
-                        .collect::<Vec<_>>();
-                    self.catalogue[index * F::GROUPS + group].extend(
-                        parts
-                            .into_iter()
-                            .map(|part| (F::part_key(&part).to_owned(), part)),
-                    );
-                    projected.push((columns, countries));
-                }
+            for (group, (parts, countries)) in projection?.into_iter().enumerate() {
+                let columns = parts
+                    .iter()
+                    .map(|part| F::part_key(part).to_owned())
+                    .collect::<Vec<_>>();
+                self.catalogue[index * F::GROUPS + group].extend(
+                    parts
+                        .into_iter()
+                        .map(|part| (F::part_key(&part).to_owned(), part)),
+                );
+                projected.push((columns, countries));
             }
-            let removed = F::removed(&self.scan).to_vec();
             let rows = observed
                 .into_iter()
                 .map(|(tag, raw)| (tag, Some(raw)))
-                .chain(removed.into_iter().map(|tag| (tag, None)));
+                .chain(removed.iter().cloned().map(|tag| (tag, None)));
             for (tag, raw) in rows {
                 let key = self.key(&tag, "");
                 let starts = raw.as_ref().is_some_and(|raw| {
                     let (first, _, starts) = F::bounds(raw);
-                    starts && first == frame.hour
+                    starts && first == hour
                 });
                 let total = raw
                     .as_ref()
@@ -472,9 +606,7 @@ impl<F: Family> Prepared<F> {
                     .map(i128::from);
                 let mix = mix_index::<F>(index);
                 if index == mix {
-                    let changed = raw
-                        .as_ref()
-                        .is_some_and(|raw| F::bounds(raw).0 == frame.hour)
+                    let changed = raw.as_ref().is_some_and(|raw| F::bounds(raw).0 == hour)
                         || self.mixes[mix].state(key).is_none();
                     let version = self.mixes[mix]
                         .state(key)
@@ -482,15 +614,15 @@ impl<F: Family> Prepared<F> {
                         .map_or(0, |run| run.value)
                         + i128::from(changed);
                     if let Some(raw) = raw.as_ref().filter(|_| changed) {
-                        self.mixes[mix].event(key, frame.hour, raw)?;
+                        self.mixes[mix].event(key, hour, raw)?;
                     }
-                    self.mixes[mix].observe(key, frame.hour, raw.as_ref().map(|_| version), starts);
+                    self.mixes[mix].observe(key, hour, raw.as_ref().map(|_| version), starts);
                 }
-                self.values[index].observe(key, frame.hour, total, starts);
+                self.values[index].observe(key, hour, total, starts);
                 if let Some(reference) = F::reference(index) {
                     self.maximum[reference].observe(
                         key,
-                        frame.hour,
+                        hour,
                         raw.as_ref().and_then(F::maximum).map(i128::from),
                         starts,
                     );
@@ -536,7 +668,7 @@ impl<F: Family> Prepared<F> {
                         for part in changed.union(&current) {
                             let amount = amounts.get(part).copied().unwrap_or(Some(0));
                             let part_key = self.key(&tag, &format!("{part_index}/{part}"));
-                            self.parts[part_index].observe(part_key, frame.hour, amount, starts);
+                            self.parts[part_index].observe(part_key, hour, amount, starts);
                             let open = self.open_parts[part_index].entry(tag.clone()).or_default();
                             if amount.is_some() {
                                 open.insert(part.clone());
@@ -552,7 +684,7 @@ impl<F: Family> Prepared<F> {
                     } else {
                         for part in self.open_parts[part_index].remove(&tag).unwrap_or_default() {
                             let part_key = self.key(&tag, &format!("{part_index}/{part}"));
-                            self.parts[part_index].observe(part_key, frame.hour, None, starts);
+                            self.parts[part_index].observe(part_key, hour, None, starts);
                             #[cfg(test)]
                             {
                                 self.work.emitted += 1;
@@ -683,10 +815,11 @@ pub fn query<F: Family>(
         .as_str()
         .and_then(|id| id.parse().ok())
         .ok_or_else(|| dashboard_core::invalid("Invalid force branch"))?;
-    let coverage = dashboard_base::prepared::coverage::coverage(
+    let coverage = dashboard_base::prepared::coverage::product_coverage(
         source,
         context.content.as_ref(),
         branch,
+        F::PRODUCT,
         cancelled,
     )?;
     if !coverage.as_ref().is_some_and(|coverage| coverage.complete)
@@ -741,10 +874,11 @@ fn prepared_query<F: Family>(
         .parse()
         .map_err(|_| dashboard_core::invalid(format!("Invalid {} branch", F::NAME)))?;
     let (store, source_key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
-    let coverage = dashboard_base::prepared::coverage::coverage(
+    let coverage = dashboard_base::prepared::coverage::product_coverage(
         source,
         context.content.as_ref(),
         branch,
+        F::PRODUCT,
         cancelled,
     )?;
     let history = dashboard_base::prepared::query::progressive::histories(

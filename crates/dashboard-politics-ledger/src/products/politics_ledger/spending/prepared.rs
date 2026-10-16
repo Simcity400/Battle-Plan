@@ -1,6 +1,7 @@
 //! Prepared ledger observations use the production accounting and shared series.
 use super::*;
 use dashboard_base::prepared::frame_changes::FrameChanges;
+use dashboard_base::prepared::prepass::Extract;
 use dashboard_base::prepared::series::{self, Accumulator, Reader, Run};
 use replay::rows::RowCodec;
 
@@ -69,6 +70,12 @@ pub struct Prepared {
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     paths: [usize; 2],
+    /// Of the hours that only advanced captures, those a pre-pass worker's
+    /// certificate advanced without joining their captures; and the hours
+    /// whose countries were presented on several threads.
+    #[cfg(any(test, feature = "test-support"))]
+    #[serde(skip)]
+    folds: [usize; 2],
     /// Take the whole accounting at every hour that is not quiet, so tests
     /// compare it with the advance path.
     #[cfg(test)]
@@ -507,6 +514,17 @@ impl Prepared {
     pub fn accounted_hours(&self) -> usize {
         self.paths[1]
     }
+    /// The hours a pre-pass worker's certificate advanced without joining
+    /// their captures ([`Self::observe_folded`]).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn certified_hours(&self) -> usize {
+        self.folds[0]
+    }
+    /// The hours whose countries were presented on several threads.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn parallel_hours(&self) -> usize {
+        self.folds[1]
+    }
     /// Whether every hour that is not quiet takes the whole accounting.
     fn dense(&self) -> bool {
         #[cfg(test)]
@@ -590,6 +608,84 @@ impl Prepared {
         cancelled_request(cancelled)?;
         let content = self.content.clone();
         self.observe_changed_frame(frame, content.as_deref(), changes, cancelled)
+    }
+
+    /// [`Self::observe`] of an hour of a block a pre-pass worker read
+    /// ([`BlockFacts`]), with what it folded of the block so far (`fold`).
+    /// The block's first hour is observed; when the join it leaves is the
+    /// worker's after that hour, every later hour the worker certified (its
+    /// changed captures only extend to it and nothing else joins a country)
+    /// that only advances captures here too
+    /// ([`Scanned::certified_advance`]) takes the advance path without
+    /// joining its captures, which the certificate names
+    /// ([`Self::observe_certified`]). Every other hour is observed. Both
+    /// publish and keep what [`Self::observe`] does.
+    pub fn observe_folded(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        cancelled: &AtomicBool,
+        fold: &mut BlockFold,
+    ) -> io::Result<()> {
+        cancelled_request(cancelled)?;
+        let content = self.content.clone();
+        let Some(joined) = fold.joined else {
+            let result = self.observe_changed_frame(frame, content.as_deref(), changes, cancelled);
+            fold.joined = Some(
+                result.is_ok()
+                    && fold.facts.first.as_ref().is_some_and(|(hour, inputs)| {
+                        *hour == frame.hour && self.scan.inputs.same_join(inputs)
+                    }),
+            );
+            return result;
+        };
+        if joined
+            && let Some(advanced) = fold.certified(frame.hour)
+            && !self.dense()
+            && self.scan.certified_advance(
+                frame,
+                changes,
+                &advanced,
+                self.day_tags
+                    .first_key_value()
+                    .is_some_and(|(hour, _)| *hour <= frame.hour),
+            )
+        {
+            return self.observe_certified(frame, content.as_deref(), changes, &advanced);
+        }
+        self.observe_changed_frame(frame, content.as_deref(), changes, cancelled)
+    }
+
+    /// [`Self::observe_changed_frame`] of an hour
+    /// [`Scanned::certified_advance`] accepted, in its order: the hour is
+    /// accepted, its join only extends `advanced` (`Scanned::inputs_advanced`),
+    /// no capture is due and no day boundary, so it takes the advance path
+    /// ([`Self::observe_advance`]).
+    fn observe_certified(
+        &mut self,
+        frame: &DecodedFrame,
+        content: Option<&PoliticsContent>,
+        changes: &FrameChanges,
+        advanced: &Arc<[(u32, i32)]>,
+    ) -> io::Result<()> {
+        self.scan.advance(frame.hour)?;
+        self.series.advance(frame.hour)?;
+        // The hour continues the last: every held value stays observed.
+        self.metadata.first.get_or_insert(frame.hour);
+        self.metadata.last = Some(frame.hour);
+        self.scan.inputs_advanced(frame, changes, advanced);
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.paths[0] += 1;
+            self.folds[0] += 1;
+        }
+        self.observe_advance(frame, content, changes)
+    }
+
+    /// After a block observed with [`Self::observe_folded`]: the captures it
+    /// advanced reach the last hour they did.
+    pub fn end_block(&mut self) {
+        self.scan.materialize_advance();
     }
 
     fn register(
@@ -1291,26 +1387,15 @@ impl Prepared {
         self.settle_native(changes)?;
         self.read_daily_keys(frame, changes);
         let tags = std::mem::take(&mut self.scan.dirty);
+        let mut presented = Presentations::new(&tags);
         for tag in &tags {
             #[cfg(any(test, feature = "test-support"))]
             {
                 self.work.history_visits += 1;
             }
             cancelled_request(cancelled)?;
-            let mut tooltip_order = Vec::new();
-            let mut notes = PresentationNotes::default();
-            let reply = present_fields(
-                &self.scan,
-                frame.branch,
-                tag,
-                content,
-                cancelled,
-                LedgerView::Raw,
-                true,
-                false,
-                Some(&mut tooltip_order),
-                Some(&mut notes),
-            )?;
+            let (reply, tooltip_order, notes) =
+                presented.take(&self.scan, frame.branch, tag, content, cancelled)?;
             self.open_notes
                 .entry(tag.clone())
                 .or_default()
@@ -1682,6 +1767,10 @@ impl Prepared {
                 .governments
                 .clear();
         }
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.folds[1] += usize::from(presented.parallel);
+        }
         for tag in &tags {
             let identity = self.scan.countries[tag]
                 .coverage
@@ -2043,6 +2132,329 @@ impl Prepared {
             reader,
         )?)?)
     }
+}
+
+/// The tables a block's join reads ([`BlockExtract`]): the census and
+/// capture coverage, the native power, government, daily and cost tables,
+/// the command power allocations, the characters, portraits and dictionary
+/// whose reads change it, and the campaign identity every block read keeps.
+pub const BLOCK_TABLES: &[TableId] = &[
+    TableId::Campaign,
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::PoliticsCaptureCoverage,
+    TableId::CountryPowerChanges,
+    TableId::GovernmentChanges,
+    TableId::CountryPowerDaily,
+    TableId::CountryPowerDailyCosts,
+    TableId::CountryCommandPower,
+    TableId::Characters,
+    TableId::CharacterPortraits,
+    TableId::LexicalTokens,
+];
+
+/// What a pre-pass worker read of one block for the ledger's fold: the join
+/// the block's first hour leaves, and the later hours the join certifies.
+///
+/// The worker joins the block read alone from its first hour, as the
+/// ledger's own join does ([`BLOCK_TABLES`], with the change facts of the
+/// block alone, which are the observer's), and none of the ledger's
+/// accounting. At an hour it certifies, its join from the hour's changed
+/// rows extends at least one capture to the hour, every changed capture
+/// only extends (same identity, first hour and streams, no power row dated
+/// after its old last hour), and nothing else joins a country: no census,
+/// link, capture, power, government, allocation, completeness, daily gain
+/// or dictionary change. With none of the rows not yet recorded as events,
+/// which are the observer's own, observed again. A join's state after an
+/// hour follows from its state before and the hour's tables and changes
+/// alone, and so is the ledger's at every later hour of the block once it
+/// is after the first.
+pub struct BlockFacts {
+    /// The block's first hour and the join it leaves.
+    first: Option<(i32, Box<inputs::Inputs>)>,
+    /// Runs of consecutive certified hours extending the same captures: the
+    /// first and last hour and the captures, each with its first hour, in
+    /// country order.
+    spans: Vec<(i32, i32, Arc<[(u32, i32)]>)>,
+}
+
+/// A fresh join of one block on a pre-pass worker ([`BlockFacts`]).
+pub struct BlockExtract {
+    inputs: inputs::Inputs,
+    previous: Option<i32>,
+    facts: BlockFacts,
+}
+
+/// The ledger's block extract.
+pub fn block_extract(_: replay::format::FormatVersion) -> Box<dyn Extract> {
+    Box::new(BlockExtract {
+        inputs: inputs::Inputs::default(),
+        previous: None,
+        facts: BlockFacts {
+            first: None,
+            spans: Vec::new(),
+        },
+    })
+}
+
+/// The rows a worker's join treats as not yet recorded: none, so an hour it
+/// certifies joins no country by itself; the fold checks the observer's.
+static NO_PENDING: [BTreeSet<u128>; 2] = [BTreeSet::new(), BTreeSet::new()];
+
+impl Extract for BlockExtract {
+    /// What the block's facts hold: the join its first hour leaves and the
+    /// captures of each certified span.
+    fn bytes(&self) -> u64 {
+        let mut held = dashboard_base::prepared::prepass::HeldBytes::default();
+        // The join (its box and all it keeps), and each span's captures,
+        // each shared allocation once.
+        held.heap(&self.facts.first)
+            .heap(&self.facts.spans)
+            .total()
+    }
+
+    fn observe(
+        &mut self,
+        _: &replay::container::Replay,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+    ) -> io::Result<()> {
+        // As the observer joins: from the changed rows when the hour
+        // continues the last, otherwise from the whole tables.
+        let continuous = self.previous.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
+        self.inputs
+            .refresh_changes(frame, changes, continuous.then_some(&NO_PENDING));
+        self.previous = Some(frame.hour);
+        let inputs = &self.inputs;
+        if self.facts.first.is_none() {
+            self.facts.first = Some((frame.hour, Box::new(inputs.clone())));
+        } else if inputs.narrow && inputs.joins_nothing() && !inputs.advanced.is_empty() {
+            match self.facts.spans.last_mut() {
+                Some((_, last, advanced))
+                    if last.checked_add(1) == Some(frame.hour)
+                        && **advanced == *inputs.advanced =>
+                {
+                    *last = frame.hour;
+                }
+                _ => self.facts.spans.push((
+                    frame.hour,
+                    frame.hour,
+                    Arc::from(inputs.advanced.as_slice()),
+                )),
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self: Box<Self>) -> io::Result<Box<dyn std::any::Any + Send>> {
+        Ok(Box::new(self.facts))
+    }
+}
+
+/// A block's [`BlockFacts`] as its fold goes through its hours.
+pub struct BlockFold {
+    facts: BlockFacts,
+    /// None before the block's first hour; then whether the join it left is
+    /// the worker's.
+    joined: Option<bool>,
+    /// The first span that may hold a later hour.
+    span: usize,
+}
+
+impl BlockFold {
+    pub fn new(facts: BlockFacts) -> Self {
+        Self {
+            facts,
+            joined: None,
+            span: 0,
+        }
+    }
+
+    /// The captures `hour` extends when the worker certified it. Hours are
+    /// asked in order.
+    fn certified(&mut self, hour: i32) -> Option<Arc<[(u32, i32)]>> {
+        let spans = &self.facts.spans;
+        while spans
+            .get(self.span)
+            .is_some_and(|&(_, last, _)| last < hour)
+        {
+            self.span += 1;
+        }
+        spans
+            .get(self.span)
+            .filter(|&&(first, _, _)| first <= hour)
+            .map(|(_, _, advanced)| Arc::clone(advanced))
+    }
+}
+
+/// One country's presentation at an hour: its raw reply, the tooltip order
+/// and the presentation notes.
+type Presented = (PoliticsLedgerReply, Vec<(String, bool)>, PresentationNotes);
+
+fn present_one(
+    scan: &Scanned,
+    branch: u64,
+    tag: &str,
+    content: Option<&PoliticsContent>,
+    cancelled: &AtomicBool,
+) -> io::Result<Presented> {
+    let mut tooltip_order = Vec::new();
+    let mut notes = PresentationNotes::default();
+    let reply = present_fields(
+        scan,
+        branch,
+        tag,
+        content,
+        cancelled,
+        LedgerView::Raw,
+        true,
+        false,
+        Some(&mut tooltip_order),
+        Some(&mut notes),
+    )?;
+    Ok((reply, tooltip_order, notes))
+}
+
+/// The countries an hour presents, taken in order. A country's presentation
+/// reads its own rows, holds and coverage and what every country shares (the
+/// branch's warnings, names, census runs, modifier definitions and read
+/// extent), none of which taking an earlier country changes: that clears
+/// only the earlier country's own mutations and governments. So a window of
+/// countries is presented at once on several threads when enough remain,
+/// and each is what presenting it in turn makes. The content's power
+/// diagnostics, which a presentation reports once any item demanded the
+/// power content, must already be reachable: no presentation then changes
+/// what another reports.
+struct Presentations<'t> {
+    tags: Vec<&'t String>,
+    next: usize,
+    ready: std::collections::VecDeque<io::Result<Presented>>,
+    #[cfg(any(test, feature = "test-support"))]
+    parallel: bool,
+}
+
+impl<'t> Presentations<'t> {
+    fn new(tags: &'t BTreeSet<String>) -> Self {
+        Self {
+            tags: tags.iter().collect(),
+            next: 0,
+            ready: Default::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            parallel: false,
+        }
+    }
+
+    /// `tag`'s presentation: the next country's.
+    fn take(
+        &mut self,
+        scan: &Scanned,
+        branch: u64,
+        tag: &str,
+        content: Option<&PoliticsContent>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Presented> {
+        debug_assert_eq!(self.tags.get(self.next).map(|tag| tag.as_str()), Some(tag));
+        if self.ready.is_empty() {
+            let rest = &self.tags[self.next..];
+            let (least, threads) = presentation_threads();
+            if threads > 1
+                && rest.len() >= least
+                && content.is_none_or(PoliticsContent::power_requested)
+            {
+                let window = &rest[..rest.len().min(threads.saturating_mul(PRESENTED_PER_THREAD))];
+                self.ready.extend(present_window(
+                    scan, branch, window, content, cancelled, threads,
+                ));
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    self.parallel = true;
+                }
+            }
+        }
+        self.next += 1;
+        match self.ready.pop_front() {
+            Some(presented) => presented,
+            None => present_one(scan, branch, tag, content, cancelled),
+        }
+    }
+}
+
+/// Countries each thread presents in one window.
+const PRESENTED_PER_THREAD: usize = 32;
+
+/// The fewest countries left to present on several threads, and the
+/// threads: the machine's processors.
+fn presentation_threads() -> (usize, usize) {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(test) = TEST_PRESENTATION.with(std::cell::Cell::get) {
+        return test;
+    }
+    static THREADS: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+    });
+    (32, *THREADS)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static TEST_PRESENTATION: std::cell::Cell<Option<(usize, usize)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Run `run` presenting on `threads` threads whenever at least `least`
+/// countries are left to present at an hour.
+#[cfg(any(test, feature = "test-support"))]
+pub fn with_test_presentation<T>(least: usize, threads: usize, run: impl FnOnce() -> T) -> T {
+    struct Reset(Option<(usize, usize)>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_PRESENTATION.with(|value| value.set(self.0));
+        }
+    }
+    let _reset = Reset(TEST_PRESENTATION.with(|value| value.replace(Some((least, threads)))));
+    run()
+}
+
+/// `tags` presented on up to `threads` threads, in order. A thread that
+/// cannot start leaves its countries to this one.
+fn present_window(
+    scan: &Scanned,
+    branch: u64,
+    tags: &[&String],
+    content: Option<&PoliticsContent>,
+    cancelled: &AtomicBool,
+    threads: usize,
+) -> Vec<io::Result<Presented>> {
+    let size = tags.len().div_ceil(threads.max(1)).max(1);
+    std::thread::scope(|scope| {
+        let parts: Vec<_> = tags
+            .chunks(size)
+            .map(|part| {
+                let started = std::thread::Builder::new()
+                    .name("politics ledger presentation".into())
+                    .spawn_scoped(scope, move || {
+                        part.iter()
+                            .map(|tag| present_one(scan, branch, tag, content, cancelled))
+                            .collect::<Vec<_>>()
+                    });
+                (part, started)
+            })
+            .collect();
+        let mut presented = Vec::with_capacity(tags.len());
+        for (part, started) in parts {
+            match started {
+                Ok(handle) => match handle.join() {
+                    Ok(rows) => presented.extend(rows),
+                    Err(payload) => std::panic::resume_unwind(payload),
+                },
+                Err(_) => presented.extend(
+                    part.iter()
+                        .map(|tag| present_one(scan, branch, tag, content, cancelled)),
+                ),
+            }
+        }
+        presented
+    })
 }
 
 const DAILY_FIELDS: &[&str] = &[

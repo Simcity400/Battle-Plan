@@ -112,6 +112,21 @@ whole-recording loaders of prepared-only products) and the test instrumentation
 (read and work counters) for the tests of the crates above, so their test builds
 behave exactly as this crate's own. Only dev-dependencies enable it.
 
+## Production lines first view
+
+`production-lines` answers from one scan of every hour of the branch, in order
+on one thread ([products/production_lines.rs](src/products/production_lines.rs)),
+so its cost grows with the recording. Until that scan is held, a request without
+`exact` is answered from the same scan over only the branch's newest blocks: the
+fewest holding one detail window of hours, never more than four. A block holds at
+most one keyframe interval, so this read does not grow with the recording. The
+reply's `approximate` spans cover the branch from its start through the first
+read among those blocks, where the lines listed are taken as begun and their
+appearances are counted from. Further first-view requests reuse the held first
+view. A request with `exact` scans the whole branch (or answers from the held
+scan), and once the whole scan is held every request is answered exactly. Detail
+windows and breakdowns always read the whole scan.
+
 ## Country identity history
 
 The country identity history is prepared on its own. Its extract

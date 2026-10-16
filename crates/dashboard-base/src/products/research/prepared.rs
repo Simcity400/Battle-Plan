@@ -84,16 +84,27 @@ impl Prepared {
         frame: &DecodedFrame,
         changes: &crate::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
-        self.values.advance(frame.hour)?;
-        self.scan
-            .observe_selected_changed(frame, None, changes, true)?;
+        self.observe_with(frame.hour, |scan| {
+            scan.observe_selected_changed(frame, None, changes, true)
+        })
+    }
+
+    /// Observe hour `hour`: `step` takes the scan through the hour, then
+    /// every country it observed publishes what the hour changed.
+    fn observe_with(
+        &mut self,
+        hour: i32,
+        step: impl FnOnce(&mut Scan) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.values.advance(hour)?;
+        step(&mut self.scan)?;
         for tag in &self.scan.observed {
             let country = self
                 .scan
                 .countries
                 .get_mut(tag)
                 .expect("observed research country");
-            country.materialize(frame.hour);
+            country.materialize(hour);
             let key = *self.keys.entry(tag.clone()).or_insert_with(|| {
                 let key = self.next_key;
                 self.next_key += 1;
@@ -101,18 +112,18 @@ impl Prepared {
             });
             self.values.observe(
                 key,
-                frame.hour,
+                hour,
                 country
                     .history
                     .coverage
                     .last()
-                    .filter(|span| span.last_hour == frame.hour)
+                    .filter(|span| span.last_hour == hour)
                     .map(|_| 1),
                 country
                     .history
                     .coverage
                     .last()
-                    .is_some_and(|span| span.first_hour == frame.hour),
+                    .is_some_and(|span| span.first_hour == hour),
             );
             let slots = self.slots.entry(tag.clone()).or_default();
             // Whether progress is shown at this read hour alone: the carried
@@ -131,27 +142,27 @@ impl Prepared {
                 let available = slot
                     .availability
                     .last()
-                    .filter(|span| span.last_hour == frame.hour);
+                    .filter(|span| span.last_hour == hour);
                 self.values.observe(
                     keys.available,
-                    frame.hour,
+                    hour,
                     available.map(|_| 1),
-                    available.is_some_and(|span| span.first_hour == frame.hour),
+                    available.is_some_and(|span| span.first_hour == hour),
                 );
                 let state = slot
                     .states
                     .last()
-                    .filter(|state| state.last_hour == frame.hour);
+                    .filter(|state| state.last_hour == hour);
                 self.values.observe(
                     keys.state,
-                    frame.hour,
+                    hour,
                     state.map(|state| i128::from(state.first_hour)),
-                    state.is_some_and(|state| state.first_hour == frame.hour),
+                    state.is_some_and(|state| state.first_hour == hour),
                 );
-                if let Some(state) = state.filter(|state| state.first_hour == frame.hour) {
+                if let Some(state) = state.filter(|state| state.first_hour == hour) {
                     self.values.event(
                         keys.state,
-                        frame.hour,
+                        hour,
                         &Event::State {
                             slot: slot.index,
                             state: state.clone(),
@@ -167,7 +178,7 @@ impl Prepared {
                 let progress = slot
                     .progress
                     .last()
-                    .filter(|progress| progress.last_hour == frame.hour || current(*progress));
+                    .filter(|progress| progress.last_hour == hour || current(*progress));
                 read_only |= progress.is_some_and(|progress| !current(progress));
                 let value = progress
                     .map(|progress| progress.progress_raw.parse::<i128>())
@@ -175,26 +186,26 @@ impl Prepared {
                     .map_err(|_| crate::invalid("Invalid research progress"))?;
                 self.values.observe(
                     keys.progress,
-                    frame.hour,
+                    hour,
                     value,
-                    progress.is_some_and(|progress| progress.first_hour == frame.hour),
+                    progress.is_some_and(|progress| progress.first_hour == hour),
                 );
                 if let Some(progress) = progress.filter(|progress| {
-                    progress.last_hour == frame.hour && country.last_read == Some(frame.hour)
+                    progress.last_hour == hour && country.last_read == Some(hour)
                 }) {
                     let mut progress = progress.clone();
                     progress.progress_raw.clear();
                     self.values
-                        .event(keys.progress, frame.hour, &Event::Read { progress })?;
+                        .event(keys.progress, hour, &Event::Read { progress })?;
                 }
             }
             if read_only && let Some((_, canonical)) = country.identity {
                 self.scan.recheck.insert(canonical);
             }
-            retain_open(country, |event| self.values.event(key, frame.hour, &event))?;
+            retain_open(country, |event| self.values.event(key, hour, &event))?;
             country.charge(&mut self.scan.bytes);
         }
-        self.values.through(frame.hour);
+        self.values.through(hour);
         Ok(())
     }
 
@@ -578,6 +589,9 @@ fn values_query(
     }
     Ok(serde_json::json!({ "branchId": branch.to_string(), "series": lines }))
 }
+
+/// Research prepared block by block, on its own.
+pub mod block;
 
 #[cfg(test)]
 mod tests;

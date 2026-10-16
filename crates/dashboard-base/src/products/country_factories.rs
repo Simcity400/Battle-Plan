@@ -490,6 +490,9 @@ pub(crate) struct Scan {
     rates: Rates,
     #[serde(skip)]
     read: Option<bool>,
+    /// Whether the last hour observed joined its countries and links.
+    #[serde(skip)]
+    joined: bool,
     #[serde(skip)]
     observed: Vec<String>,
     #[cfg(any(test, feature = "test-support"))]
@@ -497,6 +500,33 @@ pub(crate) struct Scan {
     pub work: crate::prepared::observer_tests::Work,
 }
 impl Scan {
+    /// What observing `hour` does when it follows the last hour observed with
+    /// the same country keys, links, availability and factory rows, the
+    /// factory table read (`read`) or not as then: the unchanged hour's
+    /// counts, in constant time. False, with nothing changed, when observing
+    /// it would take another path: the hour does not follow, its read flag
+    /// differs, or the countries and links did not join.
+    fn advance_quiet(&mut self, hour: i32, read: bool) -> bool {
+        let continuous = self
+            .frontier
+            .is_some_and(|at| at.checked_add(1) == Some(hour));
+        if !continuous || self.read != Some(read) || !self.joined {
+            return false;
+        }
+        self.observed.clear();
+        self.unchanged(hour);
+        true
+    }
+    /// An hour whose factory inputs are the hour before's: the rates of the
+    /// last read count again.
+    fn unchanged(&mut self, hour: i32) {
+        self.result.unreadable += self.rates.unreadable;
+        self.result.unnamed += self.rates.unnamed;
+        for (&key, &count) in &self.rates.unexplained {
+            *self.result.unexplained.entry(key).or_default() += count;
+        }
+        self.frontier = Some(hour);
+    }
     pub(crate) fn observe(
         &mut self,
         decoded: &DecodedFrame,
@@ -528,18 +558,14 @@ impl Scan {
             .is_some_and(|at| at.checked_add(1) == Some(hour));
         let read = slot_read(format, &decoded.metrics, TableId::CountryFactories, hour);
         let joined = self.countries.update(decoded);
+        self.joined = joined.is_ok();
         let changed = !continuous
             || self.read != Some(read)
             || !matches!(joined, Ok(false))
             || changes
                 .is_none_or(|changes| changes.rows_changed[TableId::CountryFactories.index()]);
         if !changed {
-            self.result.unreadable += self.rates.unreadable;
-            self.result.unnamed += self.rates.unnamed;
-            for (&key, &count) in &self.rates.unexplained {
-                *self.result.unexplained.entry(key).or_default() += count;
-            }
-            self.frontier = Some(hour);
+            self.unchanged(hour);
             return;
         }
         if !continuous {

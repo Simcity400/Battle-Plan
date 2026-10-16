@@ -373,7 +373,7 @@ export type PreparedCoverage = { schema: number, firstHour: number, lastHour: nu
 export type PreparationPreferences = { backgroundEnabled: boolean, };
 export type PreparedFocusArt = { artwork: Artwork, reason: string | null, };
 export type PreparedFocusPages = { first: string, count: string, rows: string, };
-export type PreparedFocusHour = { schema: number, slot: number, countryId: number, hour: number, orderFirstHour: number, lastHour: number, current: string | null, continuous: string | null, paused: boolean, progressRaw: string, dailyGainRaw: string | null, completed: PreparedFocusPages, presentation: PreparedFocusPages, details: PreparedFocusPages | null, warnings: Array<string>, };
+export type PreparedFocusHour = { schema: number, slot: number, countryId: number, hour: number, lastHour: number, orderFirstHour: number, current: string | null, continuous: string | null, paused: boolean, completed: PreparedFocusPages, at: number, progressRaw: string, dailyGainRaw: string | null, };
 export type PreparedFocusTableRefusal = { table: string, reason: string | null, missingRows: string | null, };
 export type PreparedFocusUnavailableHour = { schema: number, firstHour: number, lastHour: number, reasons: Array<PreparedFocusTableRefusal>, };
 export type ChartBucket = {
@@ -421,6 +421,14 @@ staticText?: Array<Artwork>, warnings: Array<string>, };
 export type FocusArtworkParams = { branchId: string, hour: number, tag: string, tokens: Array<string>, textOnly?: boolean, includeDescriptions?: boolean, iconsOnly?: boolean, };
 export type DatedFocusArtwork = { artwork: Artwork, reason: string | null, };
 export type FocusArtworkReply = { branchId: string, hour: number, tag: string, items: Array<DatedFocusArtwork>, warnings: Array<string>, };
+export type FocusArtParams = { branchId: string, tag: string, hour: number,
+/**
+ * Distinct tokens in ascending order, at most one page.
+ */
+tokens: Array<string>, mode: FocusArtMode, };
+export type FocusArtMode = "display" | "text";
+export type FocusArtFailure = { reason: string, tokens: number, };
+export type FocusArtReply = { art: Array<PreparedFocusArt>, warnings: Array<string>, failures: Array<FocusArtFailure>, };
 export type ResearchReply = { history: ResearchHistory, artwork: Array<Artwork>, folders: Array<ResearchFolder>, technologyFolders: Array<ResearchTechnologyFolder>, warnings: Array<string>, };
 export type TechnologyArtworkParams = { tokens: Array<string>, };
 export type TechnologyArtworkReply = { items: Array<Artwork>, warnings: Array<string>, };
@@ -2320,6 +2328,12 @@ export type EquipmentIcon = { key: string,
  * A PNG data URL; null when the texture could not be read.
  */
 image: string | null, };
+export type ProductionLinesParams = { branchId: string, tag: string,
+/**
+ * Answer every hour exactly, scanning the whole branch when its scan is not
+ * held, instead of a first view of its newest blocks.
+ */
+exact?: boolean, };
 export type ProductionLinesReply = { branchId: string, tag: string, decimals: number,
 /**
  * Every line of the country in the branch, in the order first seen.
@@ -2356,6 +2370,13 @@ organisationHours: Array<HourSpan>,
  * output, the only place such a line's rows are published, could not be read.
  */
 unreadOutput: Array<HourSpan>,
+/**
+ * Hours this reply does not answer exactly yet, ascending spans: a first view
+ * read only the branch's newest blocks, so the history before them, through
+ * the first read among them, is still being prepared. Empty when every hour is
+ * answered; a request with `exact` answers them all.
+ */
+approximate: Array<HourSpan>,
 /**
  * The hours one `production-line-detail` window covers.
  */
@@ -3960,6 +3981,6 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "research", "technology-artwork", "country-flags", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "place-names", "country-styles", "country-groups", "wars", "country-stability", "stability-parts", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-ledger", "peace-deals", "resource-balance", "decryption", "production-lines", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "event-feed", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "place-names", "country-styles", "country-groups", "wars", "country-stability", "stability-parts", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-ledger", "peace-deals", "resource-balance", "decryption", "production-lines", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "event-feed", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue"] as const;
 /** Products served separately from whole-branch history reads. */
-export const INTERACTIVE_PRODUCTS = ["focus-artwork", "technology-artwork", "country-flags", "unit-leader-portraits", "land-battle-terrain", "place-names", "country-styles", "air-ace-portraits", "stockpile-artwork"] as const;
+export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "unit-leader-portraits", "land-battle-terrain", "place-names", "country-styles", "air-ace-portraits", "stockpile-artwork"] as const;

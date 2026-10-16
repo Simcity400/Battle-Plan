@@ -13,13 +13,20 @@ import { NumericReply } from '../../dashboard/numericReply';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import { validateDetailReply, validateProductionReply, validateBreakdownReply } from './productionData';
 
-/** The widget's country and its production lines' history. */
+/** The widget's country and its production lines' history: a first view of the
+ * newest recorded blocks, which names the hours it does not answer exactly, until
+ * the exact history it then asks for replaces it. */
 export function useProductionLines(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'production-lines',
     params: { branchId: track.branch.id, tag } } : null;
-  return { track, tag, ...useProduct<ProductionLinesReply>(runtime.client, request, active, validateProductionReply) };
+  const first = useProduct<ProductionLinesReply>(runtime.client, request, active, validateProductionReply);
+  const exactRequest = request && first.data?.approximate.length ? { ...request, params: { ...request.params, exact: true } } : null;
+  const exact = useProduct<ProductionLinesReply>(runtime.client, exactRequest, active, validateProductionReply);
+  const data = exactRequest ? exact.data ?? first.data : first.data;
+  const error = first.error ?? (exactRequest && !exact.data ? exact.error : undefined);
+  return { track, tag, data, error, retry: () => { first.retry(); exact.retry(); } };
 }
 
 export function useLineBreakdown(runtime: WidgetRuntime, track: BoundTrack | undefined, tag: string | undefined, key: string | null, group: string, active: boolean, originHour?: number) {

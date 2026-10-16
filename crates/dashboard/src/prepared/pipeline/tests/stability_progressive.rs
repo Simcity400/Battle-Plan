@@ -120,6 +120,11 @@ fn state_values(state: &Value) -> Value {
 
 #[test]
 fn stability_measures_answer_unprepared_spans_from_the_shared_sampler_as_preparation_does() {
+    independent::with_test_hourly(stability_measures_answer_unprepared_spans_from_the_shared_sampler_as_preparation_does_hourly);
+}
+
+/// The stability pages are written as the hourly walk publishes them.
+fn stability_measures_answer_unprepared_spans_from_the_shared_sampler_as_preparation_does_hourly() {
     let frames = frames();
     let mut replay =
         Replay::from_records(CAMPAIGN.into(), &[records(1, frames[..2].to_vec())]).unwrap();

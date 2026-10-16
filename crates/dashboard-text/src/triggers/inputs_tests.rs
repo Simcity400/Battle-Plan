@@ -6,7 +6,10 @@ use replay::rows::{
     LexicalTokenRow, PartyLeaderRow, PoliticalPartyRow, ScriptFlagRow, SubjectRow, TableRows,
     TableSchema, WarRelationRow,
 };
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 #[test]
 fn evaluations_record_queries_and_whole_tables_read_outside_them() {
@@ -54,6 +57,12 @@ struct State {
     war_end: i32,
     /// Whether country 102 has completed focus `g`.
     other_focus: bool,
+    /// Whether country 101 has completed focus `g`.
+    own_focus: bool,
+    /// Whether country 103, which no link resolves, has completed focus `g`.
+    unlinked_focus: bool,
+    /// Whether country 102's link resolves to slot 1, as 101's does.
+    relinked: bool,
 }
 
 const BASE: State = State {
@@ -63,6 +72,9 @@ const BASE: State = State {
     other_flag: 1,
     war_end: 103,
     other_focus: false,
+    own_focus: false,
+    unlinked_focus: false,
+    relinked: false,
 };
 
 fn set<T: TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
@@ -88,7 +100,7 @@ fn frame(hour: Hour, state: State) -> DecodedFrame {
     );
     set::<tables::CountryLinks>(
         &mut frame,
-        [(101, 1), (102, 2)]
+        [(101, 1), (102, if state.relinked { 1 } else { 2 })]
             .into_iter()
             .map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
             .collect(),
@@ -142,15 +154,18 @@ fn frame(hour: Hour, state: State) -> DecodedFrame {
             ..Default::default()
         }],
     );
-    let focus = |country, token: &str| CompletedFocusRow {
+    let focus = |country, ordinal, token: &str| CompletedFocusRow {
         country,
-        ordinal: 0,
+        ordinal,
         token: token.as_bytes().to_vec(),
     };
+    // In key order: by country, then ordinal.
     set::<tables::CompletedFocuses>(
         &mut frame,
-        std::iter::once(focus(101, "f"))
-            .chain(state.other_focus.then(|| focus(102, "g")))
+        std::iter::once(focus(101, 0, "f"))
+            .chain(state.own_focus.then(|| focus(101, 1, "g")))
+            .chain(state.other_focus.then(|| focus(102, 0, "g")))
+            .chain(state.unlinked_focus.then(|| focus(103, 0, "g")))
             .collect(),
     );
     frame
@@ -293,9 +308,9 @@ fn an_hour_changing_a_read_field_or_row_reads_again() {
     let mut recording = Recording::new();
     let (_, first) = recording.hour(100, BASE);
     let (value, inputs) = evaluate(&first);
-    // Another country completes a focus: a row whose country might not
-    // resolve, which `has_completed_focus` refuses on, so it is read again
-    // and still reads the same.
+    // Another country completes a focus: a row of a country that resolves
+    // to another slot, which `has_completed_focus` neither reads nor
+    // refuses on, so nothing is read again.
     let (wire, second) = recording.hour(
         101,
         State {
@@ -303,13 +318,19 @@ fn an_hour_changing_a_read_field_or_row_reads_again() {
             ..BASE
         },
     );
+    assert!(matches!(
+        wire.tables[TableId::CompletedFocuses.index()],
+        TableUpdate::Delta { .. }
+    ));
     let updates = Updates(&wire);
     let since = Since::hour_before(&second, &updates).unwrap();
-    assert!(!inputs.unchanged(&since));
+    assert!(inputs.unchanged(&since));
+    // Check mode reads it anyway and finds it the same.
+    assert!(confirm(&mut inputs.clone(), &second, Some(&since)).0);
     let mut confirmed = inputs.clone();
     assert_eq!(
         reusing(|| confirm(&mut confirmed, &second, Some(&since))),
-        (true, 1)
+        (true, 0)
     );
     // The flag the evaluation reads changes value.
     let flagged = State {
@@ -352,6 +373,116 @@ fn a_relation_ending_at_an_unchanged_hour_reads_again() {
     assert!(!inputs.unchanged(&since));
     assert!(!confirm(&mut inputs, &ended, Some(&since)).0);
     assert_ne!(evaluate(&ended).0, value);
+}
+
+/// What an evaluation of whether country 1 completed focus `g` reads.
+fn evaluate_focus(frame: &DecodedFrame) -> (String, Inputs) {
+    with_world(frame, |world| {
+        capture(frame, || format!("{:?}", world.has_focus(1, b"g")))
+    })
+}
+
+#[test]
+fn an_owned_read_changes_only_with_its_countrys_rows_an_unlinked_row_or_the_links() {
+    let mut recording = Recording::new();
+    let (_, first) = recording.hour(100, BASE);
+    let (mut value, mut inputs) = evaluate_focus(&first);
+    assert_eq!(value, "Ok(false)");
+    let other = State {
+        other_focus: true,
+        ..BASE
+    };
+    // Each hour's state, whether the read may have changed since the hour
+    // before, and its value.
+    let hours = [
+        // Another slot's country completes `g`.
+        (other, false, "Ok(false)"),
+        // A country no link resolves completes it: refused.
+        (
+            State {
+                unlinked_focus: true,
+                ..other
+            },
+            true,
+            "Err",
+        ),
+        (other, true, "Ok(false)"),
+        // Only the links change: 102, which holds `g`, now resolves to slot 1.
+        (
+            State {
+                relinked: true,
+                ..other
+            },
+            true,
+            "Ok(true)",
+        ),
+        // A row of 102, now slot 1's, goes away.
+        (
+            State {
+                relinked: true,
+                ..BASE
+            },
+            true,
+            "Ok(false)",
+        ),
+        // The country itself completes it.
+        (
+            State {
+                relinked: true,
+                own_focus: true,
+                ..BASE
+            },
+            true,
+            "Ok(true)",
+        ),
+    ];
+    for (hour, (state, changed, read)) in (101..).zip(hours) {
+        let (wire, frame) = recording.hour(hour, state);
+        let updates = Updates(&wire);
+        let since = Since::hour_before(&frame, &updates).unwrap();
+        assert_eq!(!inputs.unchanged(&since), changed, "hour {hour}");
+        let (now, next) = evaluate_focus(&frame);
+        assert!(now.starts_with(read), "hour {hour}: {now}");
+        // Check mode reads a skipped input anyway, and finds it the same.
+        assert_eq!(
+            confirm(&mut inputs.clone(), &frame, Some(&since)).0,
+            now == value,
+            "hour {hour}"
+        );
+        (value, inputs) = (now, next);
+    }
+}
+
+#[test]
+fn check_mode_reports_an_owned_read_declared_for_the_wrong_country() {
+    let mut recording = Recording::new();
+    let (_, first) = recording.hour(100, BASE);
+    // Declare, wrongly, that country 1's focus reads slot 2's rows.
+    let wrong = |key: &Key| {
+        matches!(key, Key::World(Query::HasFocus(..))).then(|| {
+            Some(vec![
+                TableRead::fields(TableId::CompletedFocuses, &["token"]).owned_by(2, 32),
+                TableRead::fields(TableId::CountryLinks, &["canonical_slot"]),
+            ])
+        })
+    };
+    let (_, inputs) = declaring(wrong, || evaluate_focus(&first));
+    let (_, right) = evaluate_focus(&first);
+    let (wire, second) = recording.hour(
+        101,
+        State {
+            own_focus: true,
+            ..BASE
+        },
+    );
+    let updates = Updates(&wire);
+    let since = Since::hour_before(&second, &updates).unwrap();
+    assert!(!right.unchanged(&since));
+    assert!(inputs.unchanged(&since));
+    let ((confirmed, _), missed) =
+        expecting_missed(|| confirm(&mut inputs.clone(), &second, Some(&since)));
+    assert!(confirmed);
+    assert_eq!(missed, 1);
 }
 
 #[test]
@@ -656,156 +787,975 @@ fn declared_tables(key: &Key) -> Vec<TableId> {
         .collect()
 }
 
-#[test]
-fn a_declared_query_reads_no_table_it_does_not_declare() {
-    let frame = rich_frame();
-    let queries = declared_world_queries();
-    let before: Vec<u64> = with_world(&frame, |world| {
-        queries.iter().map(|query| world.reread(query)).collect()
-    });
-    let mut differed = BTreeSet::new();
+/// Each key's digest at a frame, None when it cannot be read there.
+pub(crate) type Digests<'a> = dyn Fn(&DecodedFrame, &[Key]) -> Vec<Option<u64>> + 'a;
+
+/// Reads `keys` on `frame` with each table in turn made unavailable: a key
+/// whose declaration lacks that table reads the same. For each key that a
+/// table it declares changed, the first such table.
+pub(crate) fn tables_each_key_reads(
+    frame: &DecodedFrame,
+    keys: &[Key],
+    digests: &Digests<'_>,
+) -> BTreeMap<usize, TableId> {
+    let before = digests(frame, keys);
+    let mut differed = BTreeMap::new();
     for table in TableId::ALL {
         let mut without = frame.clone();
         *without.tables[table.index()] = TableView::Unavailable {
             reason: "made unavailable".into(),
         };
-        with_world(&without, |world| {
-            for (query, before) in queries.iter().zip(&before) {
-                let key = Key::World(query.clone());
-                let after = world.reread(query);
-                if !declared_tables(&key).contains(&table) {
-                    assert_eq!(
-                        after, *before,
-                        "{query:?} reads {table:?}, which it does not declare"
-                    );
-                } else if after != *before {
-                    differed.insert(format!("{query:?}"));
-                }
+        let after = digests(&without, keys);
+        for (at, key) in keys.iter().enumerate() {
+            if !declared_tables(key).contains(&table) {
+                assert_eq!(
+                    after[at], before[at],
+                    "{key:?} reads {table:?}, which it does not declare"
+                );
+            } else if after[at] != before[at] {
+                differed.entry(at).or_insert(table);
             }
-        });
+        }
     }
+    differed
+}
+
+/// An edit of some fields of one row (or of every row) of one table.
+pub(crate) struct Change {
+    pub table: TableId,
+    pub fields: &'static [&'static str],
+    pub row: Option<u128>,
+    pub edit: Box<dyn Fn(&mut TableRows)>,
+}
+
+impl Change {
+    pub(crate) fn new(
+        table: TableId,
+        fields: &'static [&'static str],
+        row: Option<u128>,
+        edit: impl Fn(&mut TableRows) + 'static,
+    ) -> Self {
+        Self {
+            table,
+            fields,
+            row,
+            edit: Box::new(edit),
+        }
+    }
+}
+
+/// Applies each change to `frame`: a key none of whose declared reads of
+/// that table reads a changed field of a changed row reads the same. How
+/// many reads changed.
+pub(crate) fn changes_each_key_reads(
+    frame: &DecodedFrame,
+    keys: &[Key],
+    digests: &Digests<'_>,
+    changes: &[Change],
+) -> usize {
+    let before = digests(frame, keys);
+    let mut differed = 0;
+    for change in changes {
+        let mut changed = frame.clone();
+        match &mut *changed.tables[change.table.index()] {
+            TableView::Complete(rows) => (change.edit)(rows),
+            _ => panic!("{:?} is not complete", change.table),
+        }
+        assert!(
+            changed.tables[change.table.index()] != frame.tables[change.table.index()],
+            "the edit of {:?} changes it",
+            change.table
+        );
+        let read = TableRead::fields(change.table, change.fields);
+        let after = digests(&changed, keys);
+        for (at, key) in keys.iter().enumerate() {
+            let affected = key.dependence().expect("declared").iter().any(|declared| {
+                declared.table == change.table
+                    && declared.fields & read.fields != 0
+                    && change.row.is_none_or(|row| declared.reads_row(row, frame))
+            });
+            if !affected {
+                assert_eq!(
+                    after[at], before[at],
+                    "{key:?} reads {:?} {:?}, which it does not declare",
+                    change.table, change.fields
+                );
+            }
+            differed += usize::from(after[at] != before[at]);
+        }
+    }
+    differed
+}
+
+/// Check mode reads every input a declaration lets through: each key,
+/// declared to read nothing, is let through unread by the hour after
+/// `frame` that makes the table `tables` names for it unavailable, and
+/// check mode counts its changed value as a missed dependence; its own
+/// declaration reads it again.
+pub(crate) fn check_mode_reports_each_wrong_declaration(
+    frame: &DecodedFrame,
+    keys: &[Key],
+    tables: &BTreeMap<usize, TableId>,
+    digests: &Digests<'_>,
+) {
+    for (&at, &table) in tables {
+        let key = &keys[at];
+        let mut edited = frame.clone();
+        edited.hour = frame.hour + 1;
+        *edited.tables[table.index()] = TableView::Unavailable {
+            reason: "made unavailable".into(),
+        };
+        let record = || {
+            capture(frame, || {
+                query(
+                    || key.clone(),
+                    || digests(frame, std::slice::from_ref(key))[0],
+                )
+            })
+            .1
+        };
+        let wanted = key.clone();
+        let wrong = declaring(
+            move |declared| (*declared == wanted).then(|| Some(Vec::new())),
+            || record(),
+        );
+        let right = record();
+        let changes = Differing {
+            before: frame,
+            after: &edited,
+        };
+        let since = Since::hour_before(&edited, &changes).unwrap();
+        assert!(!right.unchanged(&since), "{key:?} declares {table:?}");
+        assert!(wrong.unchanged(&since), "{key:?}");
+        let reread = |key: &Key| Some(digest(&digests(&edited, std::slice::from_ref(key))[0]));
+        let (confirmed, missed) =
+            expecting_missed(|| wrong.clone().confirm_since(&edited, Some(&since), reread));
+        assert!(confirmed, "{key:?}");
+        assert_eq!(missed, 1, "{key:?} read the same without {table:?}");
+    }
+}
+
+/// Each world query's digest, read in the content-free world.
+fn world_digests(frame: &DecodedFrame, keys: &[Key]) -> Vec<Option<u64>> {
+    with_world(frame, |world| {
+        keys.iter()
+            .map(|key| match key {
+                Key::World(query) => Some(world.reread(query)),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+fn world_keys(queries: Vec<Query>) -> Vec<Key> {
+    queries.into_iter().map(Key::World).collect()
+}
+
+#[test]
+fn a_declared_query_reads_no_table_it_does_not_declare() {
+    let keys = world_keys(declared_world_queries());
+    let differed = tables_each_key_reads(&rich_frame(), &keys, &world_digests);
     // Most queries read rows here, so a table they declare matters.
-    assert!(differed.len() * 4 >= queries.len() * 3, "{differed:?}");
+    assert!(differed.len() * 4 >= keys.len() * 3, "{differed:?}");
 }
 
 #[test]
 fn a_declared_query_reads_no_field_or_row_it_does_not_declare() {
-    let frame = rich_frame();
-    let queries = declared_world_queries();
-    let digests = |frame: &DecodedFrame| -> Vec<u64> {
-        with_world(frame, |world| {
-            queries.iter().map(|query| world.reread(query)).collect()
-        })
-    };
-    let before = digests(&frame);
-    let edit = |table: TableId, change: &dyn Fn(&mut TableRows)| {
-        let mut changed = frame.clone();
-        if let TableView::Complete(rows) = &mut *changed.tables[table.index()] {
-            change(rows);
-        }
-        changed
-    };
+    let keys = world_keys(declared_world_queries());
     // Each change edits rows or fields of one table; a query whose
     // declaration of that table holds none of them reads the same.
-    let changes: Vec<(
-        TableId,
-        Vec<&str>,
-        Option<u128>,
-        Box<dyn Fn(&mut TableRows)>,
-    )> = vec![
-        (
+    let changes = vec![
+        Change::new(
             TableId::Countries,
-            vec!["political_power_raw", "stability_raw"],
+            &["political_power_raw", "stability_raw"],
             None,
-            Box::new(|rows| {
+            |rows| {
                 if let TableRows::Countries(rows) = rows {
                     for row in rows {
                         row.political_power_raw = Some(-1);
                         row.stability_raw = 77;
                     }
                 }
-            }),
+            },
         ),
-        (
-            TableId::Countries,
-            vec!["tag"],
-            None,
-            Box::new(|rows| {
-                if let TableRows::Countries(rows) = rows {
-                    rows[0].tag = b"ZZZ".to_vec();
-                }
-            }),
-        ),
-        (
+        Change::new(TableId::Countries, &["tag"], None, |rows| {
+            if let TableRows::Countries(rows) = rows {
+                rows[0].tag = b"ZZZ".to_vec();
+            }
+        }),
+        Change::new(
             TableId::PoliticalParties,
-            vec!["popularity", "name"],
+            &["popularity", "name"],
             None,
-            Box::new(|rows| {
+            |rows| {
                 if let TableRows::PoliticalParties(rows) = rows {
                     for row in rows {
                         row.popularity = 3;
                         row.name = b"renamed".to_vec();
                     }
                 }
-            }),
+            },
         ),
-        (
+        Change::new(
             TableId::ScriptFlags,
-            vec!["set_hour", "remaining_days"],
+            &["set_hour", "remaining_days"],
             None,
-            Box::new(|rows| {
+            |rows| {
                 if let TableRows::ScriptFlags(rows) = rows {
                     for row in rows {
                         row.set_hour = 1;
                         row.remaining_days = 5;
                     }
                 }
-            }),
+            },
         ),
-        (
+        // Country 102's flag row only.
+        Change::new(
             TableId::ScriptFlags,
-            vec!["value"],
-            // Country 102's flag row only.
+            &["value"],
             Some(1 << 64 | 102 << 32 | 901),
-            Box::new(|rows| {
+            |rows| {
                 if let TableRows::ScriptFlags(rows) = rows {
                     rows[1].value = 9;
                 }
-            }),
+            },
         ),
-        (
+        Change::new(
             TableId::WarRelations,
-            vec!["first_casualties", "cancel"],
+            &["first_casualties", "cancel"],
             None,
-            Box::new(|rows| {
+            |rows| {
                 if let TableRows::WarRelations(rows) = rows {
                     rows[0].first_casualties = 5;
                     rows[0].cancel = 1;
                 }
-            }),
+            },
         ),
     ];
-    let mut differed = 0;
-    for (table, names, row, change) in &changes {
-        let read = TableRead::fields(*table, names);
-        let after = digests(&edit(*table, &**change));
-        for ((query, before), after) in queries.iter().zip(&before).zip(&after) {
-            let reads = Key::World(query.clone()).dependence().unwrap();
-            let affected = reads.iter().any(|declared| {
-                declared.table == *table
-                    && declared.fields & read.fields != 0
-                    && row.is_none_or(|key| declared.holds(key))
-            });
-            if !affected {
-                assert_eq!(
-                    after, before,
-                    "{query:?} reads {table:?} {names:?}, which it does not declare"
-                );
-            }
-            differed += usize::from(after != before);
-        }
-    }
+    let differed = changes_each_key_reads(&rich_frame(), &keys, &world_digests, &changes);
     assert!(differed > 0, "a read field changes some query");
+}
+
+#[test]
+fn check_mode_reports_a_wrong_declaration_of_each_declared_query() {
+    let frame = rich_frame();
+    let keys = world_keys(declared_world_queries());
+    let tables = tables_each_key_reads(&frame, &keys, &world_digests);
+    check_mode_reports_each_wrong_declaration(&frame, &keys, &tables, &world_digests);
+}
+
+/// [`rich_frame`] with a state, a province, rows of every table the other
+/// world queries read, and country 102's rows in each table read by
+/// country.
+fn richer_frame() -> DecodedFrame {
+    use replay::rows::{
+        ActiveIdeaRow, AdvisorTokenRow, ArmyOrderPlanRow, ArmyOrderRow, BuildingRow,
+        CharacterRoleTraitRow, CountryBuildingResourceRow, CountryCivilWarRow,
+        CountryCounterInputRow, CountryFactoriesRow, CountryLeaderRoleRow, CountryWarRow,
+        DivisionRow, DivisionStatusRow, DivisionTemplateRow, DynamicModifierRow, HiredAdvisorRow,
+        IndustrialOrganisationRow, LandTheatreRow, NukeRow, OrdersGroupPlanRow, OrdersGroupRow,
+        ProvinceRow, Recorded, RelationOpinionRow, ResearchTechnologyRow, ReservedCountryNamingRow,
+        ResourceDefinitionRow, StateBaseResourceRow, StateCoreRow, StateDynamicModifierRow,
+        StateResourceInputRow, StateResourceRow, StateRow, TechnologyDefinitionRow,
+    };
+    let mut frame = rich_frame();
+    let both = [101_u32, 102];
+    set::<tables::States>(
+        &mut frame,
+        vec![StateRow {
+            id: 1,
+            owner: 101,
+            controller: 102,
+            manpower_available: 5,
+            ..Default::default()
+        }],
+    );
+    set::<tables::Provinces>(
+        &mut frame,
+        vec![ProvinceRow {
+            id: 1,
+            state: 1,
+            owner: 101,
+            controller: 101,
+            ..Default::default()
+        }],
+    );
+    set::<tables::PartyLeaders>(
+        &mut frame,
+        both.map(|country| PartyLeaderRow {
+            country,
+            party: 1,
+            ordinal: 0,
+            character: Some(5),
+            role: Some(1),
+            leader_id: 3,
+        })
+        .into(),
+    );
+    set::<tables::CountryCharacters>(
+        &mut frame,
+        both.map(|country| CountryCharacterRow {
+            country,
+            ordinal: 0,
+            character: Some(5),
+        })
+        .into(),
+    );
+    set::<tables::ActiveIdeas>(
+        &mut frame,
+        both.map(|country| ActiveIdeaRow {
+            country,
+            ordinal: 0,
+            token: b"idea".to_vec(),
+        })
+        .into(),
+    );
+    set::<tables::HiredAdvisors>(
+        &mut frame,
+        both.map(|country| HiredAdvisorRow {
+            country,
+            ordinal: 0,
+            idea: b"adv".to_vec(),
+            ..Default::default()
+        })
+        .into(),
+    );
+    set::<tables::AdvisorTokens>(
+        &mut frame,
+        vec![AdvisorTokenRow {
+            ordinal: 0,
+            token: b"adv".to_vec(),
+        }],
+    );
+    set::<tables::TechnologyDefinitions>(
+        &mut frame,
+        vec![TechnologyDefinitionRow {
+            database_index: 4,
+            id: b"tech".to_vec(),
+            ..Default::default()
+        }],
+    );
+    set::<tables::ResearchTechnologies>(
+        &mut frame,
+        both.map(|country| ResearchTechnologyRow {
+            country,
+            database_index: 4,
+            classifier: engine::ctechnology::CLASSIFIER_COMPLETED,
+            ..Default::default()
+        })
+        .into(),
+    );
+    set::<tables::DynamicModifiers>(
+        &mut frame,
+        both.map(|country| DynamicModifierRow {
+            country,
+            ordinal: 0,
+            token: b"mod".to_vec(),
+            ..Default::default()
+        })
+        .into(),
+    );
+    set::<tables::StateDynamicModifiers>(
+        &mut frame,
+        vec![StateDynamicModifierRow {
+            state: 1,
+            ordinal: 0,
+            token: b"smod".to_vec(),
+            ..Default::default()
+        }],
+    );
+    set::<tables::StateCores>(
+        &mut frame,
+        vec![StateCoreRow {
+            state: 1,
+            cores: vec![101],
+            claims: Recorded::Value(vec![102]),
+        }],
+    );
+    set::<tables::Nukes>(
+        &mut frame,
+        both.map(|country| NukeRow {
+            country,
+            nuke_type: 0,
+            amount_raw: 3_000_000,
+            ..Default::default()
+        })
+        .into(),
+    );
+    set::<tables::RelationOpinions>(
+        &mut frame,
+        vec![RelationOpinionRow {
+            owner_country: 101,
+            target_country: 102,
+            opinion: 10,
+        }],
+    );
+    set::<tables::DivisionTemplates>(
+        &mut frame,
+        vec![DivisionTemplateRow {
+            template: 1,
+            owner: 101,
+            name: b"Infantry".to_vec(),
+            ..Default::default()
+        }],
+    );
+    set::<tables::CountryFactories>(
+        &mut frame,
+        vec![CountryFactoriesRow {
+            country: 101,
+            civilian_levels: 2,
+            ..Default::default()
+        }],
+    );
+    set::<tables::CountryWars>(
+        &mut frame,
+        vec![CountryWarRow {
+            country: 101,
+            enemies_read: 1,
+            enemies: vec![102],
+            ..Default::default()
+        }],
+    );
+    set::<tables::CountryCivilWars>(
+        &mut frame,
+        vec![CountryCivilWarRow {
+            country: 101,
+            ordinal: 0,
+            target: 102,
+        }],
+    );
+    set::<tables::CountryCounterInputs>(
+        &mut frame,
+        both.map(|country| CountryCounterInputRow {
+            country,
+            owned_state_count: 1,
+            owned_states: Recorded::Value(Some(vec![1])),
+            controlled_states: Recorded::Value(Some(Vec::new())),
+            ..Default::default()
+        })
+        .into(),
+    );
+    set::<tables::ReservedCountryNaming>(
+        &mut frame,
+        vec![ReservedCountryNamingRow {
+            owned_state_count: Recorded::Value(Some(0)),
+            land_theatre_count: Recorded::Value(Some(0)),
+            faction: Recorded::Value(Some(0)),
+            ..Default::default()
+        }],
+    );
+    set::<tables::LandTheatres>(
+        &mut frame,
+        vec![LandTheatreRow {
+            id: 1,
+            owner: 101,
+            ordinal: 0,
+            ..Default::default()
+        }],
+    );
+    set::<tables::OrdersGroups>(
+        &mut frame,
+        vec![OrdersGroupRow {
+            handle: 10,
+            country: 101,
+            theatre: 1,
+            theatre_ordinal: Some(0),
+            ..Default::default()
+        }],
+    );
+    set::<tables::OrdersGroupPlans>(
+        &mut frame,
+        vec![OrdersGroupPlanRow {
+            group: 10,
+            primary_orders: vec![1],
+            ..Default::default()
+        }],
+    );
+    set::<tables::ArmyOrders>(
+        &mut frame,
+        vec![ArmyOrderRow {
+            owner_group: 10,
+            instance: 1,
+            country: 101,
+            order_type: 3,
+            active: 1,
+            path: vec![1],
+            ..Default::default()
+        }],
+    );
+    set::<tables::ArmyOrderPlans>(
+        &mut frame,
+        vec![ArmyOrderPlanRow {
+            owner_group: 10,
+            instance: 1,
+            ..Default::default()
+        }],
+    );
+    set::<tables::Divisions>(
+        &mut frame,
+        vec![DivisionRow {
+            id: 77,
+            ..Default::default()
+        }],
+    );
+    set::<tables::DivisionStatus>(
+        &mut frame,
+        vec![DivisionStatusRow {
+            division: 77,
+            supply_ratio: 5,
+            ..Default::default()
+        }],
+    );
+    set::<tables::IndustrialOrganisations>(
+        &mut frame,
+        vec![IndustrialOrganisationRow {
+            organisation: 55,
+            ..Default::default()
+        }],
+    );
+    set::<tables::CountryLeaderRoles>(
+        &mut frame,
+        vec![CountryLeaderRoleRow {
+            character: 5,
+            country: 101,
+            ideology: 1,
+            ..Default::default()
+        }],
+    );
+    set::<tables::CharacterRoleTraits>(
+        &mut frame,
+        vec![CharacterRoleTraitRow {
+            character: 5,
+            kind: CharacterRoleTraitRow::COUNTRY_LEADER,
+            role: 1,
+            tokens: vec![900],
+            definitions: vec![1],
+        }],
+    );
+    set::<tables::StateResourceInputs>(
+        &mut frame,
+        vec![StateResourceInputRow {
+            state: 1,
+            origin: 1,
+            infrastructure_level: Some(3),
+            ..Default::default()
+        }],
+    );
+    set::<tables::StateResources>(
+        &mut frame,
+        vec![StateResourceRow {
+            state: 1,
+            resource: 900,
+            pool: 200_000,
+            ..Default::default()
+        }],
+    );
+    set::<tables::StateBaseResources>(
+        &mut frame,
+        vec![StateBaseResourceRow {
+            state: 1,
+            resource: 900,
+            amount: 300_000,
+            ..Default::default()
+        }],
+    );
+    // State 2's building only: state 1's amount reads none.
+    set::<tables::StateBuildings>(
+        &mut frame,
+        vec![BuildingRow {
+            location: 2,
+            building_type: 900,
+            level: 2,
+            healthy_level: 2,
+            ..Default::default()
+        }],
+    );
+    set::<tables::ProvinceBuildings>(
+        &mut frame,
+        vec![BuildingRow {
+            location: 1,
+            building_type: 900,
+            level: 1,
+            healthy_level: 1,
+            ..Default::default()
+        }],
+    );
+    set::<tables::CountryBuildingResources>(
+        &mut frame,
+        both.map(|country| CountryBuildingResourceRow {
+            country,
+            ordinal: 0,
+            building: 900,
+            count: 1,
+            resource: 900,
+            amount: 100_000,
+            ..Default::default()
+        })
+        .into(),
+    );
+    set::<tables::ResourceDefinitions>(
+        &mut frame,
+        vec![ResourceDefinitionRow {
+            id: 1,
+            token: 900,
+            active: 1,
+            ..Default::default()
+        }],
+    );
+    for table in [
+        TableId::Raids,
+        TableId::RaidTooltipOperands,
+        TableId::DivisionTemplateIcons,
+    ] {
+        *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+    }
+    frame
+}
+
+/// A query of every kind not in [`declared_world_queries`], and of each
+/// kind read from one country's rows, on the richer frame's countries.
+fn other_world_queries() -> Vec<Query> {
+    use crate::triggers::Scope;
+    vec![
+        Query::UnitStatus(77),
+        Query::RaidWingName(9),
+        Query::IndustrialOrganisation(55),
+        Query::HasFocus(1, b"f".to_vec()),
+        Query::HasTech(1, b"tech".to_vec()),
+        Query::HasCountryModifier(1, b"mod".to_vec(), None),
+        Query::HasCountryModifier(1, b"mod".to_vec(), Some(Scope::Country(2))),
+        Query::HasStateModifier(1, b"smod".to_vec(), None),
+        Query::StateResource(1, 900),
+        Query::StateResourceAmount(1, 900, Some(1)),
+        Query::BuildingLevel(false, 2, 900),
+        Query::BuildingLevel(true, 1, 900),
+        Query::StateMembers,
+        Query::StateOrder(1),
+        Query::Exists(0),
+        Query::OwnedStateCount(0),
+        Query::CountryStateRoster(1, false),
+        Query::CountryStateRoster(1, true),
+        Query::InvasionOrders(1),
+        Query::InvasionOrders(0),
+        Query::StateOfValue(100_000),
+        Query::PartyLeaders(1),
+        Query::CountryCharacters(1),
+        Query::LeaderHasTrait(1, "same".into()),
+        Query::HasCivilWar(1),
+        Query::HasIdea(1, "adv".into()),
+        Query::HasIdea(1, "idea".into()),
+        Query::Opinion(1, Some(2)),
+        Query::Opinion(1, None),
+        Query::BuiltinVariable(Store::Country(1), b"num_owned_states".to_vec()),
+        Query::BuiltinVariable(Store::Country(1), b"num_owned_controlled_states".to_vec()),
+        Query::BuiltinVariable(Store::Country(1), b"num_of_controlled_factories".to_vec()),
+        Query::BuiltinVariable(Store::Global, b"x".to_vec()),
+        Query::HasTemplate(1, b"Infantry".to_vec()),
+        Query::Appearance(1),
+        Query::IsCoreOf(1, Some(1)),
+        Query::IsClaimedBy(1, Some(2)),
+        Query::Nukes(1),
+        Query::IsAllyWith(0, Some(1)),
+    ]
+}
+
+/// Edits of the richer frame: fields no query reads, and country 102's
+/// rows of the tables read by country.
+fn other_changes() -> Vec<Change> {
+    use TableId as T;
+    vec![
+        Change::new(
+            T::ResearchTechnologies,
+            &["classifier"],
+            Some(102 << 32 | 4),
+            |rows| {
+                if let TableRows::ResearchTechnologies(rows) = rows {
+                    rows[1].classifier = 0;
+                }
+            },
+        ),
+        Change::new(
+            T::ResearchTechnologies,
+            &["level", "progress_raw"],
+            None,
+            |rows| {
+                if let TableRows::ResearchTechnologies(rows) = rows {
+                    for row in rows {
+                        row.level = 3;
+                        row.progress_raw = 7;
+                    }
+                }
+            },
+        ),
+        Change::new(
+            T::DynamicModifiers,
+            &["days_remaining", "enabled"],
+            None,
+            |rows| {
+                if let TableRows::DynamicModifiers(rows) = rows {
+                    for row in rows {
+                        row.days_remaining = 3;
+                        row.enabled = 1;
+                    }
+                }
+            },
+        ),
+        Change::new(T::DynamicModifiers, &["token"], Some(102 << 32), |rows| {
+            if let TableRows::DynamicModifiers(rows) = rows {
+                rows[1].token = b"other".to_vec();
+            }
+        }),
+        Change::new(T::Nukes, &["amount_raw"], Some(102 << 32), |rows| {
+            if let TableRows::Nukes(rows) = rows {
+                rows[1].amount_raw = 9;
+            }
+        }),
+        Change::new(T::Nukes, &["ready"], None, |rows| {
+            if let TableRows::Nukes(rows) = rows {
+                for row in rows {
+                    row.ready = 4;
+                }
+            }
+        }),
+        Change::new(
+            T::CountryAppearance,
+            &["red", "graphical_culture"],
+            Some(102),
+            |rows| {
+                if let TableRows::CountryAppearance(rows) = rows {
+                    rows[1].red = 9;
+                    rows[1].graphical_culture = b"other".to_vec();
+                }
+            },
+        ),
+        Change::new(
+            T::PartyLeaders,
+            &["character", "role"],
+            Some(102 << 64 | 1 << 32),
+            |rows| {
+                if let TableRows::PartyLeaders(rows) = rows {
+                    rows[1].character = Some(6);
+                    rows[1].role = Some(2);
+                }
+            },
+        ),
+        Change::new(
+            T::CountryCharacters,
+            &["character"],
+            Some(102 << 32),
+            |rows| {
+                if let TableRows::CountryCharacters(rows) = rows {
+                    rows[1].character = Some(6);
+                }
+            },
+        ),
+        Change::new(T::ActiveIdeas, &["token"], Some(102 << 32), |rows| {
+            if let TableRows::ActiveIdeas(rows) = rows {
+                rows[1].token = b"other".to_vec();
+            }
+        }),
+        Change::new(
+            T::HiredAdvisors,
+            &["idea", "slot"],
+            Some(102 << 32),
+            |rows| {
+                if let TableRows::HiredAdvisors(rows) = rows {
+                    rows[1].idea = b"other".to_vec();
+                    rows[1].slot = b"slot".to_vec();
+                }
+            },
+        ),
+        Change::new(T::HiredAdvisors, &["character"], None, |rows| {
+            if let TableRows::HiredAdvisors(rows) = rows {
+                for row in rows {
+                    row.character = 9;
+                }
+            }
+        }),
+        Change::new(
+            T::CountryBuildingResources,
+            &["amount"],
+            Some(102 << 32),
+            |rows| {
+                if let TableRows::CountryBuildingResources(rows) = rows {
+                    rows[1].amount = 1;
+                }
+            },
+        ),
+        Change::new(
+            T::StateBuildings,
+            &["healthy_level"],
+            Some(2 << 32 | 900),
+            |rows| {
+                if let TableRows::StateBuildings(rows) = rows {
+                    rows[0].healthy_level = 5;
+                }
+            },
+        ),
+        Change::new(
+            T::States,
+            &["movement_infrastructure", "custom_name"],
+            None,
+            |rows| {
+                if let TableRows::States(rows) = rows {
+                    for row in rows {
+                        row.movement_infrastructure = 4;
+                        row.custom_name = b"renamed".to_vec();
+                    }
+                }
+            },
+        ),
+        Change::new(
+            T::CountryCounterInputs,
+            &["pride_of_the_fleet", "controlled_state_count"],
+            None,
+            |rows| {
+                if let TableRows::CountryCounterInputs(rows) = rows {
+                    for row in rows {
+                        row.pride_of_the_fleet = 4;
+                        row.controlled_state_count = 2;
+                    }
+                }
+            },
+        ),
+        Change::new(T::CountryFactories, &["military_total_raw"], None, |rows| {
+            if let TableRows::CountryFactories(rows) = rows {
+                rows[0].military_total_raw = 4;
+            }
+        }),
+        Change::new(T::DivisionTemplates, &["unit_type"], None, |rows| {
+            if let TableRows::DivisionTemplates(rows) = rows {
+                rows[0].unit_type = 4;
+            }
+        }),
+        Change::new(
+            T::ArmyOrders,
+            &["target_states", "paradrop_target"],
+            None,
+            |rows| {
+                if let TableRows::ArmyOrders(rows) = rows {
+                    rows[0].target_states = vec![1];
+                    rows[0].paradrop_target = 4;
+                }
+            },
+        ),
+        Change::new(T::ArmyOrderPlans, &["name"], None, |rows| {
+            if let TableRows::ArmyOrderPlans(rows) = rows {
+                rows[0].name = b"named".to_vec();
+            }
+        }),
+        Change::new(T::OrdersGroups, &["motorization_level"], None, |rows| {
+            if let TableRows::OrdersGroups(rows) = rows {
+                rows[0].motorization_level = 2;
+            }
+        }),
+        Change::new(T::StateCores, &["claims"], None, |rows| {
+            if let TableRows::StateCores(rows) = rows {
+                rows[0].claims = replay::rows::Recorded::Value(vec![101]);
+            }
+        }),
+    ]
+}
+
+/// The queries content alone decides in the content-free world, which the
+/// content world below reads.
+const CONTENT_DECIDED: [&str; 6] = [
+    "StateResource(1, 900)",
+    "StateResourceAmount(1, 900, Some(1))",
+    "StateOrder(1)",
+    "LeaderHasTrait(1, \"same\")",
+    "Opinion(1, None)",
+    "BuiltinVariable(Global, [120])",
+];
+
+#[test]
+fn every_other_world_query_is_declared_and_reads_no_table_field_or_row_it_does_not_declare() {
+    let frame = richer_frame();
+    let keys = world_keys(other_world_queries());
+    let tables = tables_each_key_reads(&frame, &keys, &world_digests);
+    let undecided: Vec<String> = keys
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| !tables.contains_key(at))
+        .map(|(_, key)| match key {
+            Key::World(query) => format!("{query:?}"),
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(undecided, CONTENT_DECIDED);
+    let differed = changes_each_key_reads(&frame, &keys, &world_digests, &other_changes());
+    assert!(differed > 0, "a read field changes some query");
+    check_mode_reports_each_wrong_declaration(&frame, &keys, &tables, &world_digests);
+}
+
+#[test]
+fn content_decided_world_queries_read_no_table_field_or_row_they_do_not_declare() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let root =
+        std::env::temp_dir().join(format!("dashboard-declared-trait-{}", std::process::id()));
+    let file = root.join("common/country_leader/traits.txt");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "leader_traits = { same = {} }").unwrap();
+    let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let leaders = installed_content::leader_traits::read(&layers).unwrap().0;
+    std::fs::remove_dir_all(root).unwrap();
+    let units = installed_content::unit_leader::Traits::default();
+    let states: std::collections::BTreeMap<u32, Vec<u32>> = [(1, vec![1])].into();
+    let (dlcs, triggers, aliases) = (
+        BTreeSet::new(),
+        installed_content::trigger_keys::TriggerNames::default(),
+        Arc::default(),
+    );
+    let digests = |frame: &DecodedFrame, keys: &[Key]| -> Vec<Option<u64>> {
+        let world = World::read(
+            frame,
+            ContentFacts {
+                state_provinces: &states,
+                state_content: Ok(()),
+                resource_bonuses: Ok([15_000, 20_000]),
+                character_traits: Ok((&units, &leaders)),
+                ..ContentFacts::content_only(&dlcs, &triggers, &aliases)
+            },
+        );
+        keys.iter()
+            .map(|key| match key {
+                Key::World(query) => Some(world.reread(query)),
+                _ => None,
+            })
+            .collect()
+    };
+    let frame = richer_frame();
+    let keys = world_keys(vec![
+        Query::StateResource(1, 900),
+        Query::StateResourceAmount(1, 900, Some(1)),
+        Query::StateResourceAmount(1, 900, None),
+        Query::StateOrder(1),
+        Query::LeaderHasTrait(1, "same".into()),
+    ]);
+    let tables = tables_each_key_reads(&frame, &keys, &digests);
+    assert_eq!(tables.len(), keys.len(), "{tables:?}");
+    let differed = changes_each_key_reads(&frame, &keys, &digests, &other_changes());
+    // The amounts read the controller's overrides and state 1's pool.
+    let read = vec![
+        Change::new(TableId::StateResources, &["pool"], None, |rows| {
+            if let TableRows::StateResources(rows) = rows {
+                rows[0].pool = 700_000;
+            }
+        }),
+        Change::new(
+            TableId::CountryBuildingResources,
+            &["amount"],
+            Some(101 << 32),
+            |rows| {
+                if let TableRows::CountryBuildingResources(rows) = rows {
+                    rows[0].amount = 1;
+                }
+            },
+        ),
+    ];
+    assert!(differed + changes_each_key_reads(&frame, &keys, &digests, &read) > 0);
+    check_mode_reports_each_wrong_declaration(&frame, &keys, &tables, &digests);
 }
 
 #[test]

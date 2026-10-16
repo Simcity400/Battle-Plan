@@ -28,7 +28,7 @@ import { usePlaybackHour } from '../../dashboard/playback';
 import { readAt } from '../../dashboard/reads';
 import type { ProductionLineDetailReply, ProductionLinesReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
-import { bandScale, breakdownTooltip, detailOf, efficiencyFraction, efficiencyPercent, factoryScale, finalTooltip, gapTooltip, historyLanes, iconImage, lineTooltip, linesAt, linesKnown,
+import { bandScale, breakdownItems, breakdownTooltip, emptyHistoryState, firstViewLineReason, detailOf, efficiencyFraction, efficiencyPercent, factoryScale, finalTooltip, gapTooltip, historyLanes, iconImage, lineTooltip, linesAt, linesKnown,
   organisationAt, organisationText, outputAt, outputTotal, productionLineKey, productionLineToken, productionLineLabel, stepTooltip, totalText, unreadNote, variantAt, variantName, weeklyOutput, weeklyText, windowOf } from './productionData';
 import type { LineAt, LineOrder, TooltipForms } from './productionData';
 import { useLineDetail, useProductionLines, useLineBreakdown, useProductionCountry } from './useProductionLines';
@@ -67,7 +67,8 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   useEffect(() => setHovered(null), [track?.source.id, track?.source.revision, track?.branch.id, tag]);
   const shownHour = playhead != null ? Math.floor(playhead) : null;
   const wanted = useMemo(() => {
-    if (!data || !track) return NO_WINDOWS;
+    // Detail windows read the whole history: none while a first view waits for it.
+    if (!data || !track || data.approximate.length) return NO_WINDOWS;
     if (shownHour == null) return hovered == null ? NO_WINDOWS : [hovered];
     const window = windowOf(data, shownHour);
     // The next window too, while playback can reach it.
@@ -109,7 +110,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const breakdownHour = pinned ? (shownPinnedFollow ? clockHour : shownPickedHour ?? shownHour ?? extent[1]) : drillHour(drill, clockHour);
   const selectedLineIndex = data?.lines.findIndex(line => line.key === key) ?? -1;
   const selectedLine = selectedLineIndex >= 0 ? data?.lines[selectedLineIndex] : null;
-  const lineLabel = data && selectedLine ? productionLineLabel(data, selectedLine, selectedLineIndex, breakdownHour ?? extent[1]) : 'Production line';
+  const lineLabel = data && selectedLine && !firstViewLineReason(data) ? productionLineLabel(data, selectedLine, selectedLineIndex, breakdownHour ?? extent[1]) : 'Production line';
   const missingSavedDate = pinned && !shownPinnedFollow && shownPickedHour === null && (widget.time.mode === 'pin' || widget.time.mode === 'range') && !window;
   usePlaybackHour(runtime.clock, active && (pinned ? shownPinnedFollow : drill.breakdown != null && drill.follow));
   useEffect(() => { setDrill(CLOSED); setLineKey(null); setPickedHour(null); setPinnedFollow(widget.time.mode === 'follow'); }, [runtime.client, track?.source.id, track?.source.revision, track?.branch.id, tag, widget.time]);
@@ -122,6 +123,8 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
     label={headerTag && !headerReason && breakdownHour !== null ? header.labelAt(breakdownHour)(headerTag) : null} />, countrySlot) : null;
   const openBreakdown = (key: string, part: 'efficiency' | 'output', hour: number) => {
     if (currentData.current !== data || ownerRef.current.owner !== owner || !ownerRef.current.active) return;
+    // A first view's line keys may name another appearance than the exact history's.
+    if (data && firstViewLineReason(data)) return;
     setFactor(null);
     setLineKey(key);
     if (track && tag) setCountryPick({ owner, selection: { campaign: track.source.metadata.campaignKey, branch: track.branch.id,
@@ -143,11 +146,12 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   if (!pinned && drill.breakdown === null && (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
   if (!pinned && drill.breakdown === null && error) return <>{pinnedHeader}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
   if (!pinned && drill.breakdown === null && !data) return <>{pinnedHeader}<WidgetState kind="loading" label="Loading production lines…" /></>;
+  if (!pinned && drill.breakdown === null && data && !data.reads.length && data.approximate.length) return <>{pinnedHeader}<WidgetState kind="loading" label="Preparing this country’s earlier production history…" /></>;
   if (!pinned && drill.breakdown === null && data && !data.reads.length) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Production lines weren’t recorded for this country." /></>;
 
+  // A first view's line keys may name another appearance: its breakdowns wait, saying why.
   const jump = (hour: number, x: number, y: number, key?: string) => menu.open(x, y, [jumpItem(runtime, track.id, hour),
-    ...(key ? (['efficiency', 'output'] as const).map(part => ({ label: `${part === 'output' ? 'Output' : 'Efficiency'} breakdown`,
-      run: () => openBreakdown(key, part, hour) })) : [])]);
+    ...(key && data ? breakdownItems(data, part => openBreakdown(key, part, hour)) : [])]);
   const liveTable = () => {
     if (!data) return null;
     const hour = Math.floor(playhead!);
@@ -311,10 +315,15 @@ function History({ data, tag, extent, showEnded, active, hoursPerSecond, onMenu,
   const byKey = useMemo(() => new Map(data.lines.map(line => [line.key, line])), [data]);
   // A tooltip shown while its window loads is built again when it arrives.
   const revision = useMemo(() => ({}), [data, windows, failed]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (!lanes.length) return <WidgetState kind="empty" message="No production lines recorded in this time." />;
+  // No lane over hours a first view does not answer yet is not "none".
+  if (!lanes.length) return emptyHistoryState(data, extent) === 'preparing'
+    ? <WidgetState kind="loading" label="Preparing this country’s earlier production history…" />
+    : <WidgetState kind="empty" message="No production lines recorded in this time." />;
   const description = `${dayLabel(until)}: ${lanes.map(lane => `${lane.identity?.label ?? lane.id}, ${lane.label}`).join('; ')}.`;
   return <div className="production-history">
+    {data.approximate.length > 0 && <p className="production-caption" role="status">Showing the newest recorded production; earlier history is still being prepared.</p>}
     <Timeline label={`Production lines of ${tag}`} extent={extent} playhead={null} lanes={lanes} showIcons={false} showNames={false} bandMax={most}
+      unobserved={data.approximate}
       stickyAxis={false} fadePresentation truncateLabels={false} holderIconAlign="top"
       description={description} hoursPerSecond={hoursPerSecond} active={active} revision={revision}
       tooltip={(lane, _span, hour, full) => {

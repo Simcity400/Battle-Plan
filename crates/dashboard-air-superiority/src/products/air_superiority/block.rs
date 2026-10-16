@@ -46,7 +46,7 @@ use dashboard_base::{
     Source,
     prepared::{
         frame_changes::FrameChanges,
-        prepass::{Extract, Family, Folded},
+        prepass::{Extract, Family, Folded, Held, HeldBytes},
     },
     products::{
         LoadContext,
@@ -146,16 +146,7 @@ fn fields() -> io::Result<Vec<TableFields>> {
 }
 
 fn start(format: FormatVersion) -> Box<dyn Extract> {
-    Box::new(BlockExtract {
-        format,
-        hours: Vec::new(),
-        countries: Reduced::new(TableId::Countries),
-        wings: Reduced::new(TableId::AirWings),
-        scores: ScoreTracker::default(),
-        last: None,
-        war_end: None,
-        frames: 0,
-    })
+    Box::new(BlockExtract::new(format))
 }
 
 /// One hour between observed hours: whether the theatres were read there,
@@ -287,7 +278,87 @@ struct BlockExtract {
     frames: usize,
 }
 
+impl BlockExtract {
+    fn new(format: FormatVersion) -> Self {
+        Self {
+            format,
+            hours: Vec::new(),
+            countries: Reduced::new(TableId::Countries),
+            wings: Reduced::new(TableId::AirWings),
+            scores: ScoreTracker::default(),
+            last: None,
+            war_end: None,
+            frames: 0,
+        }
+    }
+}
+
+impl Held for scan::ScoreOperands {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.present)
+            .heap(&self.witnessed)
+            .heap(&self.invalid);
+    }
+}
+
+impl Held for scan::CountryScores {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.operands)
+            .heap(&self.pairs)
+            .heap(&self.active);
+    }
+}
+
+impl Held for ProjectionMark {
+    fn held(&self, _: &mut HeldBytes) {}
+}
+
+impl Held for PairDiff {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.after)
+            .heap(&self.changed)
+            .heap(&self.removed);
+    }
+}
+
+/// A worker projection: its own pairs, sets and diff, and the score identity
+/// and marks it shares with the block's other projections, once.
+impl Held for Scored {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.identity)
+            .heap(&self.projection)
+            .heap(&self.mark)
+            .heap(&self.diff);
+    }
+}
+
 impl Extract for BlockExtract {
+    /// What the block's facts hold: each kept frame's views once, its change
+    /// facts and score projection, and the hours kept between them.
+    fn bytes(&self) -> u64 {
+        let mut held = HeldBytes::default();
+        held.add(self.hours.capacity() * size_of::<Hour>());
+        for hour in &self.hours {
+            match hour {
+                Hour::Observed {
+                    frame,
+                    changes,
+                    scored,
+                } => {
+                    held.frame(frame).changes(changes).heap(scored);
+                }
+                Hour::Quiet { hours, .. } => {
+                    held.add(hours.capacity() * size_of::<Quiet>());
+                }
+            }
+        }
+        held.total()
+    }
+
     fn observe(
         &mut self,
         _: &Replay,
@@ -693,5 +764,84 @@ impl OwnBranch {
             0,
             serde_json::to_vec(&*self.changes)?.as_slice(),
         )
+    }
+}
+
+#[cfg(test)]
+mod bytes_tests {
+    use super::*;
+    use dashboard_base::{
+        prepared::{frame_changes::FrameChangeTracker, prepass::HeldBytes},
+        test_fixtures::{CAMPAIGN, records, source},
+    };
+    use replay::{frame::TableView, rows::RaidAirScoreRow};
+
+    /// What a block's extract reports, and what its kept frames and change
+    /// facts alone hold, when `regions` scores move at each of `hours` hours.
+    fn reported(regions: u32, hours: i32) -> (u64, u64) {
+        let frames: Vec<DecodedFrame> = (100..100 + hours)
+            .map(|hour| {
+                let mut frame = source(1, hour, Some(1));
+                *frame.tables[TableId::RaidAirScores.index()] =
+                    TableView::Complete(TableRows::RaidAirScores(
+                        (0..regions)
+                            .map(|region| RaidAirScoreRow {
+                                country: 9001,
+                                region,
+                                friendly: i64::from(hour) * 1_000 + i64::from(region),
+                                enemy: 1,
+                                ..Default::default()
+                            })
+                            .collect(),
+                    ));
+                frame
+            })
+            .collect();
+        // The recording the extract is given; it reads only the frames.
+        let replay = Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(1, vec![source(1, 100, Some(1))])],
+        )
+        .unwrap();
+        let mut tracker = FrameChangeTracker::new();
+        let mut extract = BlockExtract::new(replay.format);
+        for frame in &frames {
+            let changes = tracker.observe(frame, replay.format);
+            extract.observe(&replay, frame, &changes).unwrap();
+        }
+        let mut frames_alone = HeldBytes::default();
+        frames_alone.add(extract.hours.capacity() * size_of::<Hour>());
+        for hour in &extract.hours {
+            if let Hour::Observed {
+                frame,
+                changes,
+                scored,
+            } = hour
+            {
+                assert!(scored.is_some(), "every hour's scores moved");
+                frames_alone.frame(frame).changes(changes);
+            }
+        }
+        (extract.bytes(), frames_alone.total())
+    }
+
+    /// Every hour's projection is kept beside its frame (its pairs and their
+    /// diff against the hour before), so a block of K moving pairs at each of
+    /// H hours holds more than its frames by at least two pair entries per
+    /// pair and hour.
+    #[test]
+    fn extract_bytes_grow_with_pairs_times_hours() {
+        let beyond = |regions, hours| {
+            let (reported, frames) = reported(regions, hours);
+            assert!(reported >= frames);
+            reported - frames
+        };
+        let pair = 2 * size_of::<((String, u32), (i64, i64))>() as u64;
+        let (small, wide, long, both) =
+            (beyond(8, 4), beyond(256, 4), beyond(8, 64), beyond(256, 64));
+        assert!(wide - small >= (256 - 8) * 4 * pair, "{small} {wide}");
+        assert!(long - small >= 8 * (64 - 4) * pair, "{small} {long}");
+        assert!(both - wide >= 256 * (64 - 4) * pair, "{wide} {both}");
+        assert!(both - long >= (256 - 8) * 64 * pair, "{long} {both}");
     }
 }

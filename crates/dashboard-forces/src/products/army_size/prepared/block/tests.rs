@@ -111,3 +111,74 @@ fn army_blocks_extracted_alone_and_folded_equal_continuous_observation() {
     );
     assert_eq!(assert_folds_continue(&replay, &[4]), [Folded::Fast; 5]);
 }
+
+/// What a block's extract reports when, after the scenario's first hour, one
+/// country's composition of `parts` parts changes at each of `hours` hours:
+/// the scan keeps each composition run and the extract records each
+/// composition's serialized parts for its fold, as the observer does.
+fn reported_with_compositions(parts: usize, hours: i32) -> u64 {
+    let replay = recording();
+    let first = super::test_fixtures::scenario(100);
+    let mut extract = BlockExtract {
+        prepared: Box::default(),
+        recording: Recording::default(),
+        first: None,
+    };
+    extract
+        .observe(&replay, &first, &FrameChanges::alone(&first, replay.format))
+        .unwrap();
+    let prepared = &mut extract.prepared;
+    for hour in 101..101 + hours {
+        let mix = RawMixRun {
+            first: hour,
+            last: hour,
+            parts: [
+                Some(
+                    (0..parts)
+                        .map(|part| (format!("part_{part:04}"), hour as i64 + part as i64))
+                        .collect(),
+                ),
+                None,
+            ],
+        };
+        let publication = Publication {
+            tag: "origin".into(),
+            key: 0,
+            hour,
+            parts: serde_json::to_vec(&mix.parts).unwrap(),
+            starts: false,
+        };
+        prepared
+            .recorded
+            .as_mut()
+            .expect("the extract records after its first hour")
+            .push(publication);
+        prepared
+            .scan
+            .tracks
+            .entry("origin".into())
+            .or_default()
+            .mix
+            .push(mix);
+    }
+    extract.bytes()
+}
+
+/// A block of K-part compositions at each of H hours holds every part of
+/// every composition twice (its run's map and its serialized publication),
+/// so the extract reports at least that, growing with K×H.
+#[test]
+fn extract_bytes_grow_with_parts_times_hours() {
+    // A part's map entry and name, and its serialized name, at least.
+    let part = (size_of::<(String, i64)>() + 2 * "part_0000".len()) as u64;
+    let (small, wide, long, both) = (
+        reported_with_compositions(8, 4),
+        reported_with_compositions(256, 4),
+        reported_with_compositions(8, 64),
+        reported_with_compositions(256, 64),
+    );
+    assert!(wide - small >= (256 - 8) * 4 * part, "{small} {wide}");
+    assert!(long - small >= 8 * (64 - 4) * part, "{small} {long}");
+    assert!(both - wide >= 256 * (64 - 4) * part, "{wide} {both}");
+    assert!(both - long >= (256 - 8) * 64 * part, "{long} {both}");
+}

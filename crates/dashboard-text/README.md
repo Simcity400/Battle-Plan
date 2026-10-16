@@ -52,10 +52,17 @@ same, the evaluation's result is reused. Leader visibility reuses this way.
 
 Each input also declares what its value is a function of (`Key::dependence`):
 some fields of some rows (a key range) of some tables, their row keys and
-availability, and for an ongoing relation the hours its rows end. World queries
-declare theirs beside the queries (`triggers/world/dependence.rs`), scope
-queries in `scope.rs`; a query not declared there, and every names or text
-read, is undeclared. Given what changed since the hour the inputs last read
+availability, and for an ongoing relation the hours its rows end. A read of one
+country's rows of a table keyed by raw country (its completed focuses, parties
+and their leaders, characters, ideas, technologies, modifiers, appearance,
+nukes, its Politics row) declares those rows and the rows whose country does
+not resolve, which a read refuses on, with every link's slot
+(`TableRead::owned_by`): another country's rows changing leave it unchanged.
+World queries declare theirs beside the queries (`triggers/world/dependence.rs`),
+scope queries in `scope.rs`, scripted texts' own reads and country names in
+`scripted_text/dependence.rs`. Every world query, names read and text read is
+declared but a date property, a function of the hour itself; a scope query not
+declared in `scope.rs` is undeclared. Given what changed since the hour the inputs last read
 their values (`inputs::Since`: a `FrameChanges`, a `BlockChange::Changed` hour
 or a quiet span of `Replay::read_block_changes` through `BlockTables` and
 `QuietTables`), `Inputs::confirm_since` takes an input none of whose declared
@@ -69,7 +76,8 @@ reused result anyway and counts any difference, and rereads every input a
 declaration let through: a changed value is a declaration that misses a read,
 counted by `inputs::missed_dependences` and failing the test that finds it.
 Tests read each declared query on frames that differ only outside its
-declaration (`triggers/inputs_tests.rs`).
+declaration, and check that check mode reports each one declared to read
+nothing (`triggers/inputs_tests.rs`, `scripted_text/dependence_tests.rs`).
 
 A country's completed focuses, parties and party leaders, characters and
 active ideas are read from that country's rows of the hour's table (rows

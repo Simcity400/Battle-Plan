@@ -272,11 +272,13 @@ impl Prepared {
         self.events.through(scan.last_hour);
         Ok(())
     }
+    /// The block `ordinal` of `branch` in `replay`, whose windows its pages
+    /// are dated by.
     #[allow(clippy::too_many_arguments)]
-    pub fn publish(
+    pub fn publish<W: dashboard_base::prepared::pages::Pages + ?Sized>(
         &mut self,
-        source: &Source,
-        writer: &mut store::Writer,
+        replay: &replay::container::Replay,
+        writer: &mut W,
         branch: u64,
         ordinal: usize,
         scan: &sinkings::Scanned,
@@ -285,12 +287,13 @@ impl Prepared {
         content: Option<&NameContent>,
         retention: Option<&sinkings::Retention>,
     ) -> io::Result<()> {
-        let windows: Vec<_> = source
-            .block_windows(branch)
+        let windows: Vec<_> = replay
+            .index
             .iter()
-            .map(|window| HourSpan {
-                first_hour: window.first_hour,
-                last_hour: window.last_hour,
+            .filter(|block| block.branch == branch)
+            .map(|block| HourSpan {
+                first_hour: block.first_hour,
+                last_hour: block.last_hour,
             })
             .collect();
         self.publish_with(writer, branch, ordinal, scan, &windows, flag, |page| {
@@ -298,9 +301,9 @@ impl Prepared {
         })
     }
     #[allow(clippy::too_many_arguments)]
-    fn publish_with(
+    fn publish_with<W: dashboard_base::prepared::pages::Pages + ?Sized>(
         &mut self,
-        writer: &mut store::Writer,
+        writer: &mut W,
         branch: u64,
         ordinal: usize,
         scan: &sinkings::Scanned,
@@ -344,7 +347,7 @@ impl Prepared {
             let section = format!("ships-sunk-{branch}");
             // The writer sees both committed input and an earlier staged repair in this transaction.
             let mut value = if let Some(file) = writer.read_at(&section, at as u64)? {
-                let prior = serde_json::from_reader(zstd::stream::Decoder::new(file)?)?;
+                let prior = serde_json::from_reader(zstd::stream::Decoder::new(file.as_slice())?)?;
                 merge_reply(prior, added)
             } else {
                 added

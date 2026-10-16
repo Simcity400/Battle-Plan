@@ -236,6 +236,24 @@ fn next_roster_read(format: FormatVersion, hour: i32) -> Option<i32> {
 }
 
 impl Extract for BlockExtract {
+    /// What the block's facts hold: each kept frame's views once, its change
+    /// facts and the hours kept between them.
+    fn bytes(&self) -> u64 {
+        let mut held = dashboard_base::prepared::prepass::HeldBytes::default();
+        held.add(self.hours.capacity() * size_of::<Hour>());
+        for hour in &self.hours {
+            match hour {
+                Hour::Observed { frame, changes } => {
+                    held.frame(frame).changes(changes);
+                }
+                Hour::Quiet { reads, .. } => {
+                    held.add(reads.capacity() * size_of::<i32>());
+                }
+            }
+        }
+        held.total()
+    }
+
     fn observe(
         &mut self,
         replay: &Replay,

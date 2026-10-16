@@ -1119,11 +1119,17 @@ pub fn query(
         return Err(dashboard_core::invalid("Unknown fuel series family"));
     }
     let branch = params.branch_id.parse::<u64>().map_err(io::Error::other)?;
-    let accepted =
-        match dashboard_base::prepared::coverage::coverage(source, content, branch, cancelled) {
-            Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
-            result => result?,
-        };
+    // The family's own coverage while it is prepared on its own.
+    let accepted = match dashboard_base::prepared::coverage::product_coverage(
+        source,
+        content,
+        branch,
+        "country-fuel",
+        cancelled,
+    ) {
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
+        result => result?,
+    };
     let partial = accepted.as_ref().is_none_or(|coverage| !coverage.complete);
     let last = accepted.as_ref().map(|coverage| coverage.last_hour);
     let measures = if params.measures.is_empty() {

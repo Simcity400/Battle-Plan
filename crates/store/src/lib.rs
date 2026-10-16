@@ -24,13 +24,23 @@ use windows_sys::Win32::{
 
 const MANIFEST: &str = "manifest";
 const LOCK: &str = "writer.lock";
-/// Manifest entries name a range's pack, offset and length. Manifests of an
-/// older layout (one file per range) read as absent.
-const VERSION: u32 = 3;
-/// A manifest entry: pack id, offset and length, little-endian.
+/// The manifest is a small root naming each section's runs of entries in
+/// append-only entry logs, with the section names in a names file. Manifests
+/// of an older layout (one flat file of every entry, or one file per range)
+/// read as absent.
+const VERSION: u32 = 4;
+/// An entry: pack id, offset and length, little-endian.
 const ENTRY_BYTES: u64 = 24;
-/// A pack table record: pack id, listed (live) bytes and pack length.
+/// A pack or log table record: id, listed (live) bytes and length.
 const PACK_BYTES: u64 = 24;
+/// A root's section record: range count and run count.
+const SECTION_BYTES: u64 = 16;
+/// A run: first range, range count, log id and offset of its first entry.
+const RUN_BYTES: u64 = 32;
+/// Runs a section keeps before its entries are rewritten as one run.
+const MAX_RUNS: usize = 32;
+/// The log id runs of a commit's own log carry until the log is created.
+const NEW_LOG: u64 = 0;
 /// Bytes a pack writer buffers before writing them to its file.
 const PACK_BUFFER: u64 = 1 << 20;
 const SHARING: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
@@ -617,24 +627,33 @@ impl Store {
             .open(self.directory.join(LOCK))
     }
 
-    /// Keeps the lock, the manifest, its source stamps and the packs its table
-    /// lists; removes every other name in one directory pass.
+    /// Keeps the lock, the manifest, its source stamps, its names file and the
+    /// packs and entry logs its tables list; removes every other name in one
+    /// directory pass.
     fn cleanup(&self, catalog: Option<&Catalog>) -> io::Result<()> {
-        let listed: HashSet<u64> = match catalog {
-            Some(catalog) => catalog.packs()?.into_iter().map(|pack| pack.id).collect(),
-            None => HashSet::new(),
+        let (listed, logs): (HashSet<u64>, HashSet<u64>) = match catalog {
+            Some(catalog) => (
+                catalog.packs.iter().map(|pack| pack.id).collect(),
+                catalog.logs.iter().map(|log| log.id).collect(),
+            ),
+            None => Default::default(),
         };
         for entry in fs::read_dir(&self.directory)? {
             let entry = entry?;
             let name = entry.file_name();
+            let text = name.to_str();
             let keep = name == LOCK
                 || catalog.is_some_and(|catalog| {
-                    name == MANIFEST || name == source_name(catalog.header.source).as_str()
+                    name == MANIFEST
+                        || name == source_name(catalog.header.source).as_str()
+                        || (catalog.names.0 != 0 && name == names_name(catalog.names.0).as_str())
                 })
-                || name
-                    .to_str()
+                || text
                     .and_then(parse_pack)
-                    .is_some_and(|id| listed.contains(&id));
+                    .is_some_and(|id| listed.contains(&id))
+                || text
+                    .and_then(parse_log)
+                    .is_some_and(|id| logs.contains(&id));
             if !keep {
                 posix_delete(&entry.path())?;
             }
@@ -772,6 +791,8 @@ pub mod counters {
         pub stats: u64,
         pub manifest_reads: u64,
         pub pack_opens: u64,
+        /// Entry logs opened to find a range.
+        pub log_opens: u64,
     }
 
     impl std::ops::Sub for Counters {
@@ -781,6 +802,7 @@ pub mod counters {
                 stats: self.stats - earlier.stats,
                 manifest_reads: self.manifest_reads - earlier.manifest_reads,
                 pack_opens: self.pack_opens - earlier.pack_opens,
+                log_opens: self.log_opens - earlier.log_opens,
             }
         }
     }
@@ -791,6 +813,7 @@ pub mod counters {
                 stats: 0,
                 manifest_reads: 0,
                 pack_opens: 0,
+                log_opens: 0,
             })
         };
     }
@@ -965,11 +988,14 @@ impl Seek for Range {
     }
 }
 
-/// A read-only view of a published manifest, or a copy of one, for
-/// measurement tools. Manifests of an older layout read as absent.
+//// A read-only view of a published manifest, or of a snapshot one wrote
+/// ([`Listing::write_snapshot`]), for measurement tools. Manifests of an
+/// older layout read as absent.
 pub struct Listing(Catalog);
 
 impl Listing {
+    /// Opens a manifest, whose names file and entry logs are its siblings,
+    /// or a snapshot, which holds its entries itself.
     pub fn open(manifest: &Path) -> io::Result<Option<Self>> {
         Ok(Catalog::open(manifest)?.map(Self))
     }
@@ -987,11 +1013,40 @@ impl Listing {
     pub fn range(&self, section: usize, range: u64) -> io::Result<Option<RangeId>> {
         self.0.entry(section, range)
     }
+
+    /// Writes a self-contained snapshot of the listing: its sections and
+    /// every entry, in manifest order, which [`Listing::open`] reads without
+    /// the store's names file or logs.
+    pub fn write_snapshot(&self, into: &mut impl Write) -> io::Result<()> {
+        let head = serde_json::to_vec(&FlatHead {
+            version: VERSION,
+            flat: true,
+            sections: self.0.header.sections.clone(),
+        })?;
+        into.write_all(&(head.len() as u64).to_le_bytes())?;
+        into.write_all(&head)?;
+        for (index, section) in self.0.header.sections.iter().enumerate() {
+            match &self.0.entries {
+                Entries::Flat { file, offsets } => {
+                    let mut bytes = vec![0; to_usize(section.count * ENTRY_BYTES)?];
+                    if read_at(file, &mut bytes, offsets[index])? != bytes.len() {
+                        return Err(invalid("truncated prepared listing"));
+                    }
+                    into.write_all(&bytes)?;
+                }
+                Entries::Logs(_) => {
+                    for run in &self.0.runs[index] {
+                        into.write_all(&self.0.run_entries(run)?)?;
+                    }
+                }
+            }
+        }
+        into.flush()
+    }
 }
 
-#[derive(Serialize, Deserialize)]
+/// What a catalog lists, whatever holds its entries.
 struct Header {
-    version: u32,
     source: Uuid,
     sections: Vec<Section>,
 }
@@ -1000,15 +1055,39 @@ struct Header {
 #[derive(Deserialize)]
 struct Layout {
     version: u32,
+    #[serde(default)]
+    flat: bool,
 }
 
+/// A root's header: its source stamps, its names file and how many of that
+/// file's bytes it lists, and the length of each of its tables (the pack
+/// table fills the rest of the root).
 #[derive(Serialize, Deserialize)]
+struct Head {
+    version: u32,
+    source: Uuid,
+    names: u64,
+    names_bytes: u64,
+    sections: u64,
+    runs: u64,
+    logs: u64,
+}
+
+/// A snapshot's header: its sections, whose entries follow it.
+#[derive(Serialize, Deserialize)]
+struct FlatHead {
+    version: u32,
+    flat: bool,
+    sections: Vec<Section>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Section {
     name: String,
     count: u64,
 }
 
-/// A pack the manifest lists, with its listed bytes and length.
+/// A pack or entry log the manifest lists, with its listed bytes and length.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PackRecord {
     id: u64,
@@ -1025,39 +1104,182 @@ impl PackRecord {
         }
         .encode()
     }
+
+    fn decode(bytes: &[u8]) -> Self {
+        let [id, live, size] = words(bytes);
+        Self { id, live, size }
+    }
+}
+
+/// Consecutive ranges of one section whose entries lie consecutively in one
+/// entry log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Run {
+    first: u64,
+    count: u64,
+    log: u64,
+    offset: u64,
+}
+
+impl Run {
+    fn end(&self) -> u64 {
+        self.first + self.count
+    }
+
+    fn bytes(&self) -> u64 {
+        self.count * ENTRY_BYTES
+    }
+
+    fn encode(&self) -> [u8; RUN_BYTES as usize] {
+        let mut bytes = [0; RUN_BYTES as usize];
+        for (at, word) in [self.first, self.count, self.log, self.offset]
+            .into_iter()
+            .enumerate()
+        {
+            bytes[at * 8..at * 8 + 8].copy_from_slice(&word.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn decode(bytes: &[u8]) -> Self {
+        let word = |at: usize| u64::from_le_bytes(bytes[at * 8..at * 8 + 8].try_into().unwrap());
+        Self {
+            first: word(0),
+            count: word(1),
+            log: word(2),
+            offset: word(3),
+        }
+    }
 }
 
 fn words(bytes: &[u8]) -> [u64; 3] {
     [0, 8, 16].map(|at| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()))
 }
 
+fn to_usize(value: u64) -> io::Result<usize> {
+    usize::try_from(value).map_err(|_| invalid("prepared manifest too large"))
+}
+
+/// Where a catalog's entries are: in entry logs beside its root, opened when
+/// first read and shared by its lookups, or in a snapshot itself.
+enum Entries {
+    Logs(Mutex<HashMap<u64, Arc<File>>>),
+    Flat { file: File, offsets: Vec<u64> },
+}
+
 struct Catalog {
-    file: File,
+    /// Where its names file, entry logs and packs are.
+    directory: PathBuf,
     header: Header,
-    offsets: Vec<u64>,
-    /// Where the pack table starts, after every section's entries.
-    table: u64,
-    packs: u64,
+    /// The names file and how many of its bytes are this root's.
+    names: (u64, u64),
+    /// Each section's runs, in range order, covering its ranges.
+    runs: Vec<Vec<Run>>,
+    logs: Vec<PackRecord>,
+    packs: Vec<PackRecord>,
+    entries: Entries,
+}
+
+/// A root encoded: its header, section and run records, then its log and
+/// pack tables.
+fn encode_root(
+    head: &Head,
+    sections: &[(u64, &[Run])],
+    logs: &[PackRecord],
+    packs: &[PackRecord],
+) -> io::Result<Vec<u8>> {
+    let header = serde_json::to_vec(head)?;
+    let runs: usize = sections.iter().map(|(_, runs)| runs.len()).sum();
+    let mut bytes = Vec::with_capacity(
+        8 + header.len()
+            + sections.len() * SECTION_BYTES as usize
+            + runs * RUN_BYTES as usize
+            + (logs.len() + packs.len()) * PACK_BYTES as usize,
+    );
+    bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&header);
+    for (count, runs) in sections {
+        bytes.extend_from_slice(&count.to_le_bytes());
+        bytes.extend_from_slice(&(runs.len() as u64).to_le_bytes());
+    }
+    for (_, runs) in sections {
+        for run in *runs {
+            bytes.extend_from_slice(&run.encode());
+        }
+    }
+    for record in logs.iter().chain(packs) {
+        bytes.extend_from_slice(&record.encode());
+    }
+    Ok(bytes)
+}
+
+/// Section names as a names file lists them: each a little-endian length and
+/// its UTF-8 bytes.
+fn encode_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for name in names {
+        bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(name.as_bytes());
+    }
+    bytes
+}
+
+fn decode_names(bytes: &[u8], count: u64) -> io::Result<Vec<String>> {
+    let mut names = Vec::with_capacity(to_usize(count)?);
+    let mut at = 0;
+    while at < bytes.len() {
+        let length = bytes
+            .get(at..at + 4)
+            .map(|word| u32::from_le_bytes(word.try_into().unwrap()) as usize)
+            .ok_or_else(|| invalid("truncated prepared names"))?;
+        let name = bytes
+            .get(at + 4..at + 4 + length)
+            .ok_or_else(|| invalid("truncated prepared names"))?;
+        names.push(
+            String::from_utf8(name.to_vec()).map_err(|_| invalid("prepared name is not UTF-8"))?,
+        );
+        at += 4 + length;
+    }
+    if names.len() as u64 != count {
+        return Err(invalid("prepared names do not match the manifest"));
+    }
+    Ok(names)
 }
 
 impl Catalog {
     fn open(path: &Path) -> io::Result<Option<Self>> {
+        // A writer that replaced the manifest and a later writer open may
+        // remove the names file between reading the root and opening it:
+        // read the current root again.
+        let mut attempts = 0;
+        loop {
+            match Self::open_once(path) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound && attempts < 3 => {
+                    attempts += 1;
+                }
+                result => return result,
+            }
+        }
+    }
+
+    fn open_once(path: &Path) -> io::Result<Option<Self>> {
         let mut file = match read_file(path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
         };
+        let directory = path.parent().unwrap_or(Path::new(".")).to_path_buf();
         let size = file.metadata()?.len();
         let mut bytes = [0; 8];
         file.read_exact(&mut bytes)?;
         let header_size = u64::from_le_bytes(bytes);
-        let mut offset = 8u64
+        let start = 8u64
             .checked_add(header_size)
             .filter(|end| *end <= size)
             .ok_or_else(|| invalid("invalid manifest header length"))?;
-        let mut bytes = Vec::new();
-        (&mut file).take(header_size).read_to_end(&mut bytes)?;
-        let layout: Layout = serde_json::from_slice(&bytes)?;
+        let mut header = Vec::new();
+        (&mut file).take(header_size).read_to_end(&mut header)?;
+        let layout: Layout = serde_json::from_slice(&header)?;
         if layout.version < VERSION {
             // An older layout is never read: it is a cache miss, producers
             // prepare again, and the next writer open removes its files.
@@ -1066,13 +1288,117 @@ impl Catalog {
         if layout.version != VERSION {
             return Err(invalid("unsupported prepared manifest version"));
         }
-        let header: Header = serde_json::from_slice(&bytes)?;
-        let mut offsets = Vec::new();
-        let mut names = HashSet::new();
-        for section in &header.sections {
-            if section.name.is_empty() || !names.insert(&section.name) {
-                return Err(invalid("empty or repeated manifest section"));
+        if layout.flat {
+            return Self::open_flat(file, directory, &header, start, size).map(Some);
+        }
+        let head: Head = serde_json::from_slice(&header)?;
+        let mut body = Vec::new();
+        file.read_to_end(&mut body)?;
+        let sections = to_usize(head.sections)?;
+        let runs = to_usize(head.runs)?;
+        let logs = to_usize(head.logs)?;
+        let fixed = sections
+            .checked_mul(SECTION_BYTES as usize)
+            .and_then(|bytes| bytes.checked_add(runs.checked_mul(RUN_BYTES as usize)?))
+            .and_then(|bytes| bytes.checked_add(logs.checked_mul(PACK_BYTES as usize)?))
+            .filter(|bytes| *bytes <= body.len())
+            .ok_or_else(|| invalid("manifest length does not match its tables"))?;
+        if (body.len() - fixed) % PACK_BYTES as usize != 0 {
+            return Err(invalid("manifest length does not match its tables"));
+        }
+        let (records, rest) = body.split_at(sections * SECTION_BYTES as usize);
+        let (run_bytes, rest) = rest.split_at(runs * RUN_BYTES as usize);
+        let (log_bytes, pack_bytes) = rest.split_at(logs * PACK_BYTES as usize);
+        let logs: Vec<_> = log_bytes
+            .chunks_exact(PACK_BYTES as usize)
+            .map(PackRecord::decode)
+            .collect();
+        let listed: HashSet<u64> = logs.iter().map(|log| log.id).collect();
+        let packs = pack_bytes
+            .chunks_exact(PACK_BYTES as usize)
+            .map(PackRecord::decode)
+            .collect();
+        let mut all = run_bytes.chunks_exact(RUN_BYTES as usize).map(Run::decode);
+        let mut counts = Vec::with_capacity(sections);
+        let mut section_runs = Vec::with_capacity(sections);
+        let mismatch = || invalid("manifest runs do not match their sections");
+        for record in records.chunks_exact(SECTION_BYTES as usize) {
+            let [count, runs] =
+                [0, 8].map(|at| u64::from_le_bytes(record[at..at + 8].try_into().unwrap()));
+            let mut covered = 0;
+            let mut own = Vec::with_capacity(to_usize(runs)?);
+            for _ in 0..runs {
+                let run = all.next().ok_or_else(mismatch)?;
+                if run.first != covered
+                    || run.count == 0
+                    || !listed.contains(&run.log)
+                    || run
+                        .count
+                        .checked_mul(ENTRY_BYTES)
+                        .and_then(|bytes| run.offset.checked_add(bytes))
+                        .is_none()
+                {
+                    return Err(mismatch());
+                }
+                covered = run.end();
+                own.push(run);
             }
+            if covered != count {
+                return Err(mismatch());
+            }
+            counts.push(count);
+            section_runs.push(own);
+        }
+        if all.next().is_some() {
+            return Err(mismatch());
+        }
+        let names = if head.sections == 0 {
+            Vec::new()
+        } else {
+            let file = read_file(&directory.join(names_name(head.names)))?;
+            let mut bytes = vec![0; to_usize(head.names_bytes)?];
+            if read_at(&file, &mut bytes, 0)? != bytes.len() {
+                return Err(invalid("truncated prepared names"));
+            }
+            decode_names(&bytes, head.sections)?
+        };
+        let mut seen = HashSet::new();
+        let sections = names
+            .into_iter()
+            .zip(counts)
+            .map(|(name, count)| {
+                if name.is_empty() || !seen.insert(name.clone()) {
+                    return Err(invalid("empty or repeated manifest section"));
+                }
+                Ok(Section { name, count })
+            })
+            .collect::<io::Result<_>>()?;
+        Ok(Some(Self {
+            directory,
+            header: Header {
+                source: head.source,
+                sections,
+            },
+            names: (head.names, head.names_bytes),
+            runs: section_runs,
+            logs,
+            packs,
+            entries: Entries::Logs(Mutex::default()),
+        }))
+    }
+
+    /// A snapshot: its sections' entries follow its header.
+    fn open_flat(
+        file: File,
+        directory: PathBuf,
+        header: &[u8],
+        start: u64,
+        size: u64,
+    ) -> io::Result<Self> {
+        let head: FlatHead = serde_json::from_slice(header)?;
+        let mut offsets = Vec::with_capacity(head.sections.len());
+        let mut offset = start;
+        for section in &head.sections {
             offsets.push(offset);
             offset = section
                 .count
@@ -1080,21 +1406,25 @@ impl Catalog {
                 .and_then(|bytes| offset.checked_add(bytes))
                 .ok_or_else(|| invalid("manifest range count overflow"))?;
         }
-        let table = size
-            .checked_sub(offset)
-            .filter(|bytes| bytes % PACK_BYTES == 0)
-            .ok_or_else(|| invalid("manifest length does not match its ranges"))?;
-        Ok(Some(Self {
-            file,
-            header,
-            offsets,
-            table: offset,
-            packs: table / PACK_BYTES,
-        }))
+        if offset != size {
+            return Err(invalid("prepared listing length does not match its ranges"));
+        }
+        Ok(Self {
+            directory,
+            runs: head.sections.iter().map(|_| Vec::new()).collect(),
+            header: Header {
+                source: Uuid::nil(),
+                sections: head.sections,
+            },
+            names: (0, 0),
+            logs: Vec::new(),
+            packs: Vec::new(),
+            entries: Entries::Flat { file, offsets },
+        })
     }
 
-    /// Entries are read at their offsets, never through the handle's cursor, so
-    /// a writer and its forks share one catalog.
+    /// One range's entry: its section's run, then that run's log, read at
+    /// the entry's offset. Logs are opened once per catalog.
     fn entry(&self, section: usize, range: u64) -> io::Result<Option<RangeId>> {
         let Some(s) = self.header.sections.get(section) else {
             return Ok(None);
@@ -1103,65 +1433,53 @@ impl Catalog {
             return Ok(None);
         }
         let mut bytes = [0; ENTRY_BYTES as usize];
-        let offset = self.offsets[section] + range * ENTRY_BYTES;
-        if read_at(&self.file, &mut bytes, offset)? != bytes.len() {
-            return Err(invalid("truncated prepared manifest"));
+        let read = match &self.entries {
+            Entries::Flat { file, offsets } => {
+                read_at(file, &mut bytes, offsets[section] + range * ENTRY_BYTES)?
+            }
+            Entries::Logs(_) => {
+                let runs = &self.runs[section];
+                let run = runs[runs.partition_point(|run| run.end() <= range)];
+                let log = self.log(run.log)?;
+                read_at(
+                    &log,
+                    &mut bytes,
+                    run.offset + (range - run.first) * ENTRY_BYTES,
+                )?
+            }
+        };
+        if read != bytes.len() {
+            return Err(invalid("truncated prepared entry log"));
         }
         RangeId::decode(&bytes).map(Some)
     }
 
-    /// The pack table: every pack an entry names, with its listed bytes.
-    fn packs(&self) -> io::Result<Vec<PackRecord>> {
-        let mut bytes = vec![
-            0;
-            usize::try_from(self.packs * PACK_BYTES)
-                .map_err(|_| invalid("pack table too large"))?
-        ];
-        if read_at(&self.file, &mut bytes, self.table)? != bytes.len() {
-            return Err(invalid("truncated prepared pack table"));
+    /// Every entry of one run, in range order.
+    fn run_entries(&self, run: &Run) -> io::Result<Vec<u8>> {
+        let mut bytes = vec![0; to_usize(run.bytes())?];
+        if read_at(&*self.log(run.log)?, &mut bytes, run.offset)? != bytes.len() {
+            return Err(invalid("truncated prepared entry log"));
         }
-        Ok(bytes
-            .chunks_exact(PACK_BYTES as usize)
-            .map(|record| {
-                let [id, live, size] = words(record);
-                PackRecord { id, live, size }
-            })
-            .collect())
+        Ok(bytes)
     }
 
-    /// Streams `count` entries from `offset`. With a mover, entries in the packs
-    /// it empties are rewritten to their moved bytes.
-    fn copy(
-        &self,
-        offset: u64,
-        count: u64,
-        into: &mut impl Write,
-        buffer: &mut [u8],
-        mut mover: Option<&mut Mover>,
-    ) -> io::Result<()> {
-        let size = count
-            .checked_mul(ENTRY_BYTES)
-            .ok_or_else(|| invalid("manifest range count overflow"))?;
-        let mut done = 0;
-        while done < size {
-            let want = buffer
-                .len()
-                .min(usize::try_from(size - done).unwrap_or(usize::MAX));
-            let read = read_at(&self.file, &mut buffer[..want], offset + done)?;
-            if read != want {
-                return Err(invalid("truncated prepared prefix"));
-            }
-            match mover.as_deref_mut() {
-                None => into.write_all(&buffer[..read])?,
-                Some(mover) => {
-                    for entry in buffer[..read].chunks_exact(ENTRY_BYTES as usize) {
-                        into.write_all(&mover.place(RangeId::decode(entry)?)?.encode())?;
-                    }
-                }
-            }
-            done += read as u64;
+    fn log(&self, id: u64) -> io::Result<Arc<File>> {
+        let Entries::Logs(opened) = &self.entries else {
+            return Err(invalid("a prepared listing snapshot has no entry logs"));
+        };
+        let mut opened = opened.lock().unwrap();
+        if let Some(file) = opened.get(&id) {
+            return Ok(Arc::clone(file));
         }
-        Ok(())
+        count!(log_opens);
+        let file = Arc::new(read_file(&self.directory.join(log_name(id)))?);
+        opened.insert(id, Arc::clone(&file));
+        Ok(file)
+    }
+
+    /// The pack table: every pack an entry names, with its listed bytes.
+    fn packs(&self) -> io::Result<Vec<PackRecord>> {
+        Ok(self.packs.clone())
     }
 }
 
@@ -1296,6 +1614,7 @@ impl Pack {
         Ok(Shared {
             file: Arc::clone(&self.file),
             size: self.flushed,
+            durable: false,
         })
     }
 
@@ -1312,6 +1631,8 @@ impl Pack {
 struct Shared {
     file: Arc<File>,
     size: u64,
+    /// Already flushed, by the fork that wrote it, so commit does not.
+    durable: bool,
 }
 
 /// Empties packs under half live at commit into one new pack, in manifest order.
@@ -1392,18 +1713,53 @@ impl PendingSection {
         }
     }
 
-    /// Lists `id` at `range`, which is at most the current count.
-    fn place(&mut self, range: u64, id: RangeId) {
+    /// Lists `id` at `range`, which is at most the current count. Returns the
+    /// range it displaced in this transaction: None for a published range not
+    /// yet replaced, or for an appended one.
+    fn place(&mut self, range: u64, id: RangeId) -> Option<RangeId> {
         if range < self.old_count {
-            self.replaced.insert(range, id);
+            self.replaced.insert(range, id)
         } else {
             let index = (range - self.old_count) as usize;
             match self.added.get_mut(index) {
-                Some(slot) => *slot = id,
-                None => self.added.push(id),
+                Some(slot) => Some(std::mem::replace(slot, id)),
+                None => {
+                    self.added.push(id);
+                    None
+                }
             }
         }
     }
+
+    /// Takes back the latest [`Self::place`] of `range`, which returned `old`.
+    fn unplace(&mut self, range: u64, old: Option<RangeId>) {
+        if range < self.old_count {
+            match old {
+                Some(id) => self.replaced.insert(range, id),
+                None => self.replaced.remove(&range),
+            };
+        } else {
+            let index = (range - self.old_count) as usize;
+            match old {
+                Some(id) => self.added[index] = id,
+                None => {
+                    self.added.pop();
+                }
+            }
+        }
+    }
+}
+
+/// How to take back one step a refused [`Writer::adopt_all`] replayed.
+enum Undo {
+    /// The batch created the last section.
+    Created,
+    /// The batch listed a range at `range` of section `index`, over `old`.
+    Placed {
+        index: usize,
+        range: u64,
+        old: Option<RangeId>,
+    },
 }
 
 /// Where a range's current bytes live within one transaction.
@@ -1577,7 +1933,9 @@ impl Writer {
     }
 
     /// A fork's closed batches in order, then its open batch if it holds work.
-    /// Writes out the fork's pack.
+    /// Writes out and flushes the fork's pack, on the calling thread: a flush
+    /// failure is this fork's, and forks flush at once rather than in their
+    /// parent's commit.
     pub fn into_staged(self) -> io::Result<Vec<Staged>> {
         let Writer {
             fork,
@@ -1599,7 +1957,9 @@ impl Writer {
             });
         }
         if let Some(mut pack) = pack {
-            let shared = pack.finish()?;
+            let mut shared = pack.finish()?;
+            sync_packs(std::slice::from_ref(&shared.file))?;
+            shared.durable = true;
             for batch in &mut fork.batches {
                 batch.pack = Some((pack.id, shared.clone()));
             }
@@ -1622,12 +1982,62 @@ impl Writer {
         if let Some((id, shared)) = staged.pack {
             self.packs.insert(id, shared);
         }
-        let result = self.replay(staged.operations);
+        let result = self.replay(staged.operations, &mut Vec::new());
         self.incomplete |= result.is_err();
         result
     }
 
-    fn replay(&mut self, operations: Vec<Operation>) -> io::Result<()> {
+    /// Lists every batch, in order, as [`Writer::adopt`] does, or none of them:
+    /// a refused batch (`ErrorKind::Other`) takes back the batches before it,
+    /// leaving this transaction exactly as it was and still publishable. One
+    /// producer's batches thus join a transaction other producers' batches
+    /// share whole or not at all, and a refusal stays that producer's.
+    pub fn adopt_all(&mut self, batches: Vec<Staged>) -> io::Result<()> {
+        if self.fork.is_some()
+            || batches
+                .iter()
+                .any(|staged| staged.transaction != self.transaction)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "staged prepared ranges belong to another transaction",
+            ));
+        }
+        let before = (self.bytes_written, self.bytes_replaced, self.sections.len());
+        let mut undo = Vec::new();
+        let mut packs = Vec::new();
+        for staged in batches {
+            if let Some((id, shared)) = staged.pack
+                && let std::collections::hash_map::Entry::Vacant(entry) = self.packs.entry(id)
+            {
+                entry.insert(shared);
+                packs.push(id);
+            }
+            if let Err(error) = self.replay(staged.operations, &mut undo) {
+                for step in undo.into_iter().rev() {
+                    match step {
+                        Undo::Created => {
+                            self.sections.pop();
+                        }
+                        Undo::Placed { index, range, old } => {
+                            self.sections[index].unplace(range, old);
+                        }
+                    }
+                }
+                debug_assert_eq!(self.sections.len(), before.2);
+                (self.bytes_written, self.bytes_replaced) = (before.0, before.1);
+                for id in packs {
+                    self.packs.remove(&id);
+                }
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    /// Replays a batch's operations, noting in `undo` how to take back each
+    /// step it made.
+    fn replay(&mut self, operations: Vec<Operation>, undo: &mut Vec<Undo>) -> io::Result<()> {
         for operation in operations {
             match operation {
                 Operation::Create(name) => {
@@ -1635,6 +2045,7 @@ impl Writer {
                         return Err(overlap(&name));
                     }
                     self.sections.push(PendingSection::new(&name));
+                    undo.push(Undo::Created);
                 }
                 Operation::Read {
                     section,
@@ -1670,7 +2081,8 @@ impl Writer {
                     let (Some(written), Some(displaced)) = (written, displaced) else {
                         return Err(invalid("prepared byte count overflow"));
                     };
-                    self.sections[index].place(range, id);
+                    let old = self.sections[index].place(range, id);
+                    undo.push(Undo::Placed { index, range, old });
                     self.bytes_written = written;
                     self.bytes_replaced = displaced;
                 }
@@ -1844,11 +2256,15 @@ impl Writer {
         Ok(range)
     }
 
-    /// Publishes the manifest last, streaming old entries without loading them.
-    /// Each pack the transaction lists is flushed once first; packs under half
-    /// live are emptied into one new pack. A post-rename flush error can leave
-    /// the complete new manifest visible. A fork publishes only through its
-    /// parent's [`Writer::adopt`].
+    /// Publishes the root last. The commit's new, replaced and moved entries
+    /// go to one new entry log; every section keeps the runs of its unchanged
+    /// entries where they are, so the root, the log and the names it appends
+    /// grow with what the commit changed, not with what the store holds. Each
+    /// pack and log the commit created or appended to is flushed once first
+    /// (a fork's pack was flushed by its fork); packs under half live are
+    /// emptied into one new pack. A post-rename flush error can leave the
+    /// complete new root visible. A fork publishes only through its parent's
+    /// [`Writer::adopt`].
     pub fn commit(mut self) -> io::Result<()> {
         if self.fork.is_some() {
             return Err(io::Error::new(
@@ -1875,15 +2291,29 @@ impl Writer {
             fresh.insert(pack.id, pack.finish()?);
         }
         let mut table = self.pack_table(&fresh)?;
-        // Packs under half live are emptied into one new pack, so every pack
-        // the manifest lists holds at least as many listed bytes as dead ones.
+        // Packs under half live are emptied into one new pack, so the listed
+        // packs hold at least as many listed bytes as dead ones. Only this
+        // commit's entries name its own packs, so those are emptied at once;
+        // finding the entries that name a published pack reads every entry,
+        // so published packs are emptied together, once the listed packs
+        // hold more than a quarter dead bytes.
+        let under = |live: u64, size: u64| u128::from(live) * 2 < u128::from(size);
+        let (live, size) =
+            table
+                .values()
+                .fold((0u128, 0u128), |(all_live, all_size), &(live, size)| {
+                    (all_live + u128::from(live), all_size + u128::from(size))
+                });
+        let published_too = size.saturating_sub(live) * 4 > live;
         let compact: HashSet<u64> = table
             .iter()
-            .filter(|(_, (live, size))| u128::from(*live) * 2 < u128::from(*size))
+            .filter(|(id, (live, size))| {
+                under(*live, *size) && (published_too || fresh.contains_key(*id))
+            })
             .map(|(&id, _)| id)
             .collect();
         table.retain(|id, _| !compact.contains(id));
-        let moves_published = compact.iter().any(|id| !fresh.contains_key(id));
+        let scan = compact.iter().any(|id| !fresh.contains_key(id));
         let mut mover = Mover {
             directory: &self.directory,
             compact,
@@ -1901,82 +2331,242 @@ impl Writer {
                 source
             }
         };
-        let header = Header {
-            version: VERSION,
-            source,
-            sections: self
-                .sections
-                .iter()
-                .map(|s| Section {
-                    name: s.name.to_string(),
-                    count: s.old_count + s.added.len() as u64,
-                })
-                .collect(),
-        };
-        publish(&self.directory.join(MANIFEST), |file| {
-            let mut out = io::BufWriter::with_capacity(1 << 16, &mut *file);
-            let bytes = serde_json::to_vec(&header)?;
-            out.write_all(&(bytes.len() as u64).to_le_bytes())?;
-            out.write_all(&bytes)?;
-            let mut buffer = vec![0; ENTRY_BYTES as usize * 4096];
-            for (index, s) in self.sections.iter().enumerate() {
-                if s.old_count != 0 {
-                    let base = self
-                        .base
-                        .as_ref()
-                        .ok_or_else(|| invalid("missing prefix"))?;
-                    let start = base.offsets[index];
-                    let mut from = 0;
-                    for (&range, id) in &s.replaced {
-                        base.copy(
-                            start + from * ENTRY_BYTES,
-                            range - from,
-                            &mut out,
-                            &mut buffer,
-                            moves_published.then_some(&mut mover),
-                        )?;
-                        out.write_all(&mover.place(*id)?.encode())?;
-                        from = range + 1;
+        let base = self.base.clone();
+        let base = base.as_deref();
+        let base_sections = base.map_or(0, |base| base.header.sections.len());
+        // This commit's entries, in the order its runs list them.
+        let mut log = Vec::new();
+        let mut section_runs = Vec::with_capacity(self.sections.len());
+        for (index, section) in self.sections.iter().enumerate() {
+            let mut runs = match base {
+                Some(base) if index < base_sections => base.runs[index].clone(),
+                _ => Vec::new(),
+            };
+            let mut changes = section.replaced.clone();
+            if scan {
+                // Published ranges in the packs being emptied move too.
+                for run in &runs {
+                    let entries = base
+                        .ok_or_else(|| invalid("missing prefix"))?
+                        .run_entries(run)?;
+                    for (at, entry) in entries.chunks_exact(ENTRY_BYTES as usize).enumerate() {
+                        let range = run.first + at as u64;
+                        let id = RangeId::decode(entry)?;
+                        if id.len != 0
+                            && mover.compact.contains(&id.pack)
+                            && !section.replaced.contains_key(&range)
+                        {
+                            changes.insert(range, id);
+                        }
                     }
-                    base.copy(
-                        start + from * ENTRY_BYTES,
-                        s.old_count - from,
-                        &mut out,
-                        &mut buffer,
-                        moves_published.then_some(&mut mover),
-                    )?;
-                }
-                for id in &s.added {
-                    out.write_all(&mover.place(*id)?.encode())?;
                 }
             }
-            // The packs this transaction lists, flushed before the manifest
-            // that names them; publication then flushes the directory.
-            let mut durable: Vec<_> = table
-                .keys()
-                .filter_map(|id| fresh.get(id).map(|shared| Arc::clone(&shared.file)))
-                .collect();
-            let mut records: Vec<_> = table
-                .iter()
-                .map(|(&id, &(live, size))| PackRecord { id, live, size })
-                .collect();
-            if let Some(into) = &mut mover.into {
-                let moved = into.finish()?;
-                records.push(PackRecord {
-                    id: into.id,
-                    live: moved.size,
-                    size: moved.size,
+            // Changed ranges, a run for each consecutive span, laid over the
+            // runs they replace in one ordered pass.
+            let mut spans: Vec<Run> = Vec::new();
+            for (&range, &id) in &changes {
+                let placed = mover.place(id)?;
+                match spans.last_mut() {
+                    Some(run) if run.end() == range => run.count += 1,
+                    _ => spans.push(Run {
+                        first: range,
+                        count: 1,
+                        log: NEW_LOG,
+                        offset: log.len() as u64,
+                    }),
+                }
+                log.extend_from_slice(&placed.encode());
+            }
+            if !spans.is_empty() {
+                runs = lay_over(&runs, &spans, base, &mut log)?;
+            }
+            if !section.added.is_empty() {
+                let offset = log.len() as u64;
+                for &id in &section.added {
+                    log.extend_from_slice(&mover.place(id)?.encode());
+                }
+                runs.push(Run {
+                    first: section.old_count,
+                    count: section.added.len() as u64,
+                    log: NEW_LOG,
+                    offset,
                 });
-                durable.push(moved.file);
             }
-            records.sort_by_key(|record| record.id);
-            for record in &records {
-                out.write_all(&record.encode())?;
+            // A new last run absorbs the run before it while that one is no
+            // longer, so an appended section's runs halve in length towards
+            // its end: each entry is copied once per doubling of its section.
+            while let &[.., before, last] = &runs[..]
+                && last.log == NEW_LOG
+                && before.count <= last.count
+            {
+                runs.truncate(runs.len() - 2);
+                let offset = log.len() as u64;
+                copy_run(&before, base, &mut log)?;
+                copy_run(&last, base, &mut log)?;
+                runs.push(Run {
+                    first: before.first,
+                    count: before.count + last.count,
+                    log: NEW_LOG,
+                    offset,
+                });
             }
-            out.flush()?;
-            drop(out);
-            sync_packs(&durable)
-        })?;
+            if runs.len() > MAX_RUNS {
+                let offset = log.len() as u64;
+                for run in &runs {
+                    copy_run(run, base, &mut log)?;
+                }
+                runs = vec![Run {
+                    first: 0,
+                    count: section.count()?,
+                    log: NEW_LOG,
+                    offset,
+                }];
+            }
+            section_runs.push(runs);
+        }
+        // Logs under half live are emptied into this commit's, as packs are.
+        let base_logs = base.map_or(&[][..], |base| &base.logs[..]);
+        let mut live_logs: HashMap<u64, u64> = HashMap::new();
+        for run in section_runs.iter().flatten() {
+            if run.log != NEW_LOG {
+                *live_logs.entry(run.log).or_default() += run.bytes();
+            }
+        }
+        let emptied: HashSet<u64> = base_logs
+            .iter()
+            .filter(|record| {
+                live_logs
+                    .get(&record.id)
+                    .is_some_and(|&live| under(live, record.size))
+            })
+            .map(|record| record.id)
+            .collect();
+        for run in section_runs.iter_mut().flatten() {
+            if emptied.contains(&run.log) {
+                let offset = log.len() as u64;
+                copy_run(run, base, &mut log)?;
+                (run.log, run.offset) = (NEW_LOG, offset);
+            }
+        }
+        // Runs merged within this commit left their first copies behind:
+        // the log holds each listed run once, in section order.
+        let mut packed = Vec::with_capacity(log.len());
+        for run in section_runs.iter_mut().flatten() {
+            if run.log == NEW_LOG {
+                let start = to_usize(run.offset)?;
+                run.offset = packed.len() as u64;
+                packed.extend_from_slice(&log[start..start + to_usize(run.bytes())?]);
+            }
+        }
+        let log = packed;
+        let mut logs: Vec<PackRecord> = base_logs
+            .iter()
+            .filter(|record| !emptied.contains(&record.id))
+            .filter_map(|record| {
+                live_logs.get(&record.id).map(|&live| PackRecord {
+                    id: record.id,
+                    live,
+                    size: record.size,
+                })
+            })
+            .collect();
+        // The packs this transaction lists that no fork flushed, its log and
+        // its names, flushed before the root that names them.
+        let mut durable: Vec<_> = table
+            .keys()
+            .filter_map(|id| fresh.get(id))
+            .filter(|shared| !shared.durable)
+            .map(|shared| Arc::clone(&shared.file))
+            .collect();
+        let mut written = 0;
+        if !log.is_empty() {
+            let (id, file) = create_named(&self.directory, log_name)?;
+            write_all_at(&file, &log, 0)?;
+            let mut live = 0;
+            for run in section_runs.iter_mut().flatten() {
+                if run.log == NEW_LOG {
+                    run.log = id;
+                    live += run.bytes();
+                }
+            }
+            logs.push(PackRecord {
+                id,
+                live,
+                size: log.len() as u64,
+            });
+            durable.push(Arc::new(file));
+            written += log.len();
+        }
+        logs.sort_by_key(|record| record.id);
+        let (mut names, mut names_bytes) = base.map_or((0, 0), |base| base.names);
+        if self.sections.len() > base_sections {
+            let appended = encode_names(
+                self.sections[base_sections..]
+                    .iter()
+                    .map(|section| &*section.name),
+            );
+            let file = if names == 0 {
+                let (id, file) = create_named(&self.directory, names_name)?;
+                names = id;
+                file
+            } else {
+                OpenOptions::new()
+                    .write(true)
+                    .share_mode(SHARING)
+                    .open(self.directory.join(names_name(names)))?
+            };
+            // Readers read only the bytes their root lists; names an
+            // unpublished transaction left past them are written over.
+            file.set_len(names_bytes)?;
+            write_all_at(&file, &appended, names_bytes)?;
+            names_bytes += appended.len() as u64;
+            durable.push(Arc::new(file));
+            written += appended.len();
+        }
+        let mut records: Vec<_> = table
+            .iter()
+            .map(|(&id, &(live, size))| PackRecord { id, live, size })
+            .collect();
+        if let Some(into) = &mut mover.into {
+            let moved = into.finish()?;
+            records.push(PackRecord {
+                id: into.id,
+                live: moved.size,
+                size: moved.size,
+            });
+            durable.push(moved.file);
+        }
+        records.sort_by_key(|record| record.id);
+        sync_packs(&durable)?;
+        #[cfg(test)]
+        if tests::TERMINATE_BEFORE_ROOT.get() {
+            return Err(io::Error::other("simulated termination before the root"));
+        }
+        let sections: Vec<_> = self
+            .sections
+            .iter()
+            .zip(&section_runs)
+            .map(|(section, runs)| Ok((section.count()?, &runs[..])))
+            .collect::<io::Result<_>>()?;
+        let root = encode_root(
+            &Head {
+                version: VERSION,
+                source,
+                names,
+                names_bytes,
+                sections: sections.len() as u64,
+                runs: section_runs.iter().map(|runs| runs.len() as u64).sum(),
+                logs: logs.len() as u64,
+            },
+            &sections,
+            &logs,
+            &records,
+        )?;
+        written += root.len();
+        #[cfg(test)]
+        tests::MANIFEST_BYTES.set(tests::MANIFEST_BYTES.get() + written);
+        let _ = written;
+        publish(&self.directory.join(MANIFEST), |file| file.write_all(&root))?;
         *self.key.binding.lock().unwrap() = Some((self.directory.clone(), source, true));
         Ok(())
     }
@@ -2030,6 +2620,9 @@ fn sync_packs(files: &[Arc<File>]) -> io::Result<()> {
     let workers = std::thread::available_parallelism()
         .map_or(1, |count| count.get())
         .min(files.len());
+    if workers <= 1 {
+        return files.iter().try_for_each(|file| file.sync_all());
+    }
     std::thread::scope(|scope| {
         let tasks: Vec<_> = files
             .chunks(files.len().div_ceil(workers))
@@ -2107,6 +2700,173 @@ fn source_name(id: Uuid) -> String {
 fn parse_pack(name: &str) -> Option<u64> {
     let id = u64::from_str_radix(name.strip_prefix("pack_")?.strip_suffix(".bin")?, 16).ok()?;
     (pack_name(id) == name).then_some(id)
+}
+
+fn log_name(id: u64) -> String {
+    format!("entries_{id:016x}.bin")
+}
+
+fn parse_log(name: &str) -> Option<u64> {
+    let id = u64::from_str_radix(name.strip_prefix("entries_")?.strip_suffix(".bin")?, 16).ok()?;
+    (log_name(id) == name).then_some(id)
+}
+
+fn names_name(id: u64) -> String {
+    format!("names_{id:016x}.bin")
+}
+
+/// Creates a file named by a new random non-zero id.
+fn create_named(directory: &Path, name: fn(u64) -> String) -> io::Result<(u64, File)> {
+    loop {
+        let id = Uuid::new_v4().as_u64_pair().0;
+        if id == NEW_LOG {
+            continue;
+        }
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(SHARING)
+            .create_new(true)
+            .open(directory.join(name(id)))
+        {
+            Ok(file) => {
+                #[cfg(test)]
+                tests::CREATED.set(tests::CREATED.get() + 1);
+                return Ok((id, file));
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// A section's runs once `spans` (this commit's, sorted and disjoint, within
+/// the published ranges) are laid over its `runs`, in one ordered pass that
+/// visits each run and span once. Past [`MAX_RUNS`] pieces the section is
+/// rewritten as one run of this commit's log in the same pass, reading each
+/// published run's entries once.
+fn lay_over(
+    runs: &[Run],
+    spans: &[Run],
+    base: Option<&Catalog>,
+    log: &mut Vec<u8>,
+) -> io::Result<Vec<Run>> {
+    let mut layout = Overlaid {
+        runs,
+        base,
+        log,
+        pieces: Vec::new(),
+        rewrite: None,
+        loaded: None,
+    };
+    let mut next = 0;
+    let mut covered = 0;
+    for (index, run) in runs.iter().enumerate() {
+        let mut at = run.first.max(covered);
+        while at < run.end() {
+            if let Some(span) = spans.get(next)
+                && span.first <= at
+            {
+                layout.push(*span, None)?;
+                (at, covered, next) = (span.end(), span.end(), next + 1);
+                continue;
+            }
+            let stop = spans
+                .get(next)
+                .map_or(run.end(), |span| span.first.min(run.end()));
+            layout.push(
+                Run {
+                    first: at,
+                    count: stop - at,
+                    log: run.log,
+                    offset: run.offset + (at - run.first) * ENTRY_BYTES,
+                },
+                Some(index),
+            )?;
+            (at, covered) = (stop, stop);
+        }
+    }
+    for span in &spans[next..] {
+        layout.push(*span, None)?;
+    }
+    Ok(match layout.rewrite {
+        Some(run) => vec![run],
+        None => layout.pieces.into_iter().map(|(piece, _)| piece).collect(),
+    })
+}
+
+/// The pieces [`lay_over`] lists, or the one run it rewrites them into.
+struct Overlaid<'a> {
+    runs: &'a [Run],
+    base: Option<&'a Catalog>,
+    log: &'a mut Vec<u8>,
+    /// Each piece, and the published run it is part of.
+    pieces: Vec<(Run, Option<usize>)>,
+    rewrite: Option<Run>,
+    /// The published run whose entries were read last, and those entries.
+    loaded: Option<(usize, Vec<u8>)>,
+}
+
+impl Overlaid<'_> {
+    fn push(&mut self, piece: Run, source: Option<usize>) -> io::Result<()> {
+        #[cfg(test)]
+        tests::RUN_VISITS.set(tests::RUN_VISITS.get() + 1);
+        if self.rewrite.is_none() {
+            self.pieces.push((piece, source));
+            if self.pieces.len() <= MAX_RUNS {
+                return Ok(());
+            }
+            self.rewrite = Some(Run {
+                first: self.pieces[0].0.first,
+                count: 0,
+                log: NEW_LOG,
+                offset: self.log.len() as u64,
+            });
+            for (piece, source) in std::mem::take(&mut self.pieces) {
+                self.copy(piece, source)?;
+            }
+            return Ok(());
+        }
+        self.copy(piece, source)
+    }
+
+    /// Appends a piece's entries to the run being rewritten.
+    fn copy(&mut self, piece: Run, source: Option<usize>) -> io::Result<()> {
+        match source {
+            None => copy_run(&piece, None, self.log)?,
+            Some(index) => {
+                if self
+                    .loaded
+                    .as_ref()
+                    .is_none_or(|(loaded, _)| *loaded != index)
+                {
+                    let base = self.base.ok_or_else(|| invalid("missing prefix"))?;
+                    self.loaded = Some((index, base.run_entries(&self.runs[index])?));
+                }
+                let (_, entries) = self.loaded.as_ref().expect("loaded run");
+                let start = to_usize(piece.offset - self.runs[index].offset)?;
+                self.log
+                    .extend_from_slice(&entries[start..start + to_usize(piece.bytes())?]);
+            }
+        }
+        if let Some(rewrite) = &mut self.rewrite {
+            rewrite.count += piece.count;
+        }
+        Ok(())
+    }
+}
+
+/// Appends a run's entries to this commit's log: from the log itself for a
+/// run of this commit, otherwise from the published log that holds them.
+fn copy_run(run: &Run, base: Option<&Catalog>, log: &mut Vec<u8>) -> io::Result<()> {
+    if run.log == NEW_LOG {
+        let start = to_usize(run.offset)?;
+        log.extend_from_within(start..start + to_usize(run.bytes())?);
+    } else {
+        let base = base.ok_or_else(|| invalid("missing prefix"))?;
+        log.extend_from_slice(&base.run_entries(run)?);
+    }
+    Ok(())
 }
 
 fn overlap(section: &str) -> io::Error {

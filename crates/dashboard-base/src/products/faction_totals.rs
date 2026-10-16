@@ -22,6 +22,23 @@ use native_members::NativeMembers;
 
 pub struct FactionTotals;
 
+/// The coverage a series request for factory faction totals waits for: the
+/// faction rosters', the identity history's and the factories', the pages
+/// its exact replies read. Territory totals wait under the product's key
+/// ([`FactionTotals`]), as they read territory's pages too; so do dense
+/// factory summaries, whose member presence is territory's
+/// ([`prepared::query`]).
+pub const FACTORIES_GATE: &str = "faction-totals-factories";
+
+/// The coverage key a faction-totals series request with `params` waits for.
+pub fn gate(params: &serde_json::Value) -> &'static str {
+    if params["family"]["selection"]["source"]["kind"] == "factories" {
+        FACTORIES_GATE
+    } else {
+        <FactionTotals as Product>::KEY
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum FactionMembership {

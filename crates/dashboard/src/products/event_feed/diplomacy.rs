@@ -11,7 +11,7 @@ use crate::{
 use replay::{container::Replay, frame::FrameDecoder};
 use replay::{
     frame::DecodedFrame,
-    rows::{TableId, tables},
+    rows::{RelationTupleRow, SliceReadRow, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -24,6 +24,17 @@ use std::{
 #[cfg(test)]
 use crate::products::country_groups::changes::Refusal as Unavailable;
 use crate::products::country_groups::changes::{Change as GroupMoment, Scan};
+
+/// Whether the observer reads a relation row: an uncancelled guarantee.
+pub(super) fn reads_relation(row: &RelationTupleRow) -> bool {
+    row.type_id == engine::cguarantee_relation::TYPE && row.cancel == 0
+}
+
+/// Whether the observer reads a slice read at `hour`: the relation table's
+/// owners read at that hour.
+pub(super) fn reads_slice(read: &SliceReadRow, hour: i32) -> bool {
+    read.table == TableId::RelationTuples.index() as u32 && read.sample_hour == hour
+}
 
 /// The direct diplomacy walk's continuation, shared with preparation.
 /// Completed moments leave this state; only current countries and seen relation starts remain.
@@ -161,16 +172,14 @@ impl Observer {
             let last = reads.partition_point(|read| read.table <= table);
             for read in reads[first..last]
                 .iter()
-                .filter(|read| read.sample_hour == hour && self.tags.get(read.owner).is_some())
+                .filter(|read| reads_slice(read, hour) && self.tags.get(read.owner).is_some())
             {
                 out.observed.insert(TableId::RelationTuples);
                 // RelationTuples is ordered by owner, target, type and
                 // ordinal. Carried owners require no row traversal.
                 let first = rows.partition_point(|row| row.owner_country < read.owner);
                 let last = rows.partition_point(|row| row.owner_country <= read.owner);
-                for row in rows[first..last].iter().filter(|row| {
-                    row.type_id == engine::cguarantee_relation::TYPE && row.cancel == 0
-                }) {
+                for row in rows[first..last].iter().filter(|row| reads_relation(row)) {
                     // An initial history-file relation is a snapshot, never an
                     // event, including a relation published after the first frame.
                     if row.start_hour <= first_observed || row.start_hour > hour {

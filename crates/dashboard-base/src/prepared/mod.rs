@@ -7,6 +7,7 @@ pub mod coverage;
 pub mod frame_changes;
 pub mod group_sum;
 pub mod kept;
+pub mod pages;
 #[cfg(any(test, feature = "test-support"))]
 pub mod observer_tests;
 pub mod prepass;

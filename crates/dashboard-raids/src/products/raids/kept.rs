@@ -196,6 +196,19 @@ pub struct Kept {
 }
 
 impl Kept {
+    /// What the kept hours hold ([`dashboard_base::prepared::prepass::Extract::bytes`]):
+    /// each kept frame's views once and its change facts.
+    pub fn bytes(&self) -> u64 {
+        let mut held = dashboard_base::prepared::prepass::HeldBytes::default();
+        held.add(self.hours.capacity() * size_of::<Hour>());
+        for hour in &self.hours {
+            if let Hour::Kept { frame, changes } = hour {
+                held.frame(frame).changes(changes);
+            }
+        }
+        held.total()
+    }
+
     /// Hours of a family reading `tables`, in a recording of `format`, its
     /// quiet hours marked `rebuilt`.
     pub fn new(tables: &'static [TableId], format: FormatVersion, rebuilt: Rebuilt) -> Self {

@@ -68,6 +68,11 @@ struct BlockExtract {
 }
 
 impl Extract for BlockExtract {
+    /// What the focus facts built so far hold.
+    fn bytes(&self) -> u64 {
+        self.builder.bytes()
+    }
+
     fn observe(&mut self, _: &Replay, frame: &DecodedFrame, _: &FrameChanges) -> io::Result<()> {
         self.builder.hour(frame)
     }

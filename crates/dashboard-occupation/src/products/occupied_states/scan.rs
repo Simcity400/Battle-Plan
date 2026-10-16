@@ -285,6 +285,17 @@ impl<'a> Scan<'a> {
         scan
     }
 
+    /// Whether a law's eligibility can read the trigger world
+    /// ([`dashboard_text::triggers::RECORDED_TABLES`]): only a bound law with
+    /// a visible or available trigger is evaluated through it.
+    pub(super) fn reads_trigger_world(&self) -> bool {
+        self.laws.as_ref().is_ok_and(|laws| {
+            laws.definitions
+                .values()
+                .any(|law| !law.visible.is_empty() || !law.available.is_empty())
+        })
+    }
+
     /// Retain the carried observation and active state value for the next window.
     pub(super) fn finish_window(&mut self) {
         for state in &mut self.result.states {
@@ -1067,11 +1078,7 @@ pub(in crate::products) fn scan_history(
     // Runtime law bodies read the trigger kit. Decode each block incrementally
     // once rather than seeking its keyframe at every daily read.
     let mut selected = selected.to_vec();
-    if scan.laws.as_ref().is_ok_and(|laws| {
-        laws.definitions
-            .values()
-            .any(|law| !law.visible.is_empty() || !law.available.is_empty())
-    }) {
+    if scan.reads_trigger_world() {
         selected.extend_from_slice(dashboard_text::triggers::RECORDED_TABLES);
         selected.sort_unstable();
         selected.dedup();

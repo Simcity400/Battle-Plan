@@ -1,5 +1,5 @@
 use super::test_fixtures::{research_frame, sliced_research_frame};
-use super::{Country, MAX_BYTES, base_cost, check_budget, history_bytes, remaining};
+use super::{Country, Inventory, MAX_BYTES, base_cost, check_budget, history_bytes, remaining};
 use crate::ResearchOutcome;
 use crate::test_fixtures::{CAMPAIGN, fixture_research_inputs, records};
 use replay::{
@@ -188,7 +188,7 @@ fn resuming_in_the_same_slot_cannot_complete_the_cancelled_assignment() {
         (7, 7),
         1,
         &[&input(2, 0)],
-        Some(&inventory),
+        Some(&Inventory::Table(&inventory)),
         Some(&[]),
         None,
     );
@@ -380,7 +380,7 @@ fn delayed_inventory_completion_keeps_the_assignment_end_and_observation_separat
         (7, 7),
         2,
         &[&input(2, 0)],
-        Some(&inventory),
+        Some(&Inventory::Table(&inventory)),
         Some(&[]),
         None,
     );
@@ -939,7 +939,7 @@ fn repeated_handle_assignments_do_not_complete_transfer_or_share_progress() {
         ..Default::default()
     };
     country.read_after = Some(24);
-    country.observe_inputs((7, 7), 48, &[&later], Some(&[former]), Some(&[]), None);
+    country.observe_inputs((7, 7), 48, &[&later], Some(&Inventory::Table(&[former])), Some(&[]), None);
     let slot = &country.history.slots[0];
     assert_eq!(slot.entries.len(), 2);
     assert_eq!(slot.entries[0].outcome, ResearchOutcome::Switched);
@@ -960,7 +960,7 @@ fn repeated_handle_assignments_do_not_complete_transfer_or_share_progress() {
     let mut idle = later.clone();
     idle.technology_present = 0;
     country.read_after = Some(48);
-    country.observe_inputs((7, 7), 72, &[&idle], Some(&[unrelated]), Some(&[]), None);
+    country.observe_inputs((7, 7), 72, &[&idle], Some(&Inventory::Table(&[unrelated])), Some(&[]), None);
     assert_eq!(
         country.history.slots[0].entries[0].outcome,
         ResearchOutcome::Switched
@@ -1156,7 +1156,7 @@ fn completed_same_name_occurrence_cannot_supply_former_assignment_progress() {
         progress_raw: 100_000,
         ..Default::default()
     };
-    country.observe_inputs((7, 7), 1, &[&completed], Some(&[former]), Some(&[]), None);
+    country.observe_inputs((7, 7), 1, &[&completed], Some(&Inventory::Table(&[former])), Some(&[]), None);
     let slot = &country.history.slots[0];
     assert_eq!(slot.entries.len(), 1);
     assert_eq!(slot.entries[0].outcome, ResearchOutcome::Switched);

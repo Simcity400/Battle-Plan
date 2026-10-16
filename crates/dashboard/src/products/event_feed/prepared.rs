@@ -1,7 +1,14 @@
 //! Feed-only witnessed facts. Topic changes remain in their owning families.
 use super::*;
 use crate::prepared::series::Accumulator;
-use replay::{frame::DecodedFrame, rows::tables};
+use dashboard_base::prepared::kept::Reduced;
+use replay::{
+    frame::DecodedFrame,
+    rows::{
+        CountryCounterInputRow, CountryExperienceGainRow, RelationTupleRow, SliceReadRow, TableId,
+        TableRows, tables,
+    },
+};
 
 pub(crate) const FACT_KEYS: [u64; 22] = [
     1,
@@ -39,6 +46,87 @@ pub(crate) use query::query;
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// Frames as the feed and the identity history it names countries through
+/// read them, for a block's hours kept to be observed later. The countries
+/// keep their keys, the owned-state counters their country and count, the
+/// experience gains their country and instance, the relations the rows the
+/// diplomacy observer reads at any hour and the slice reads those it reads
+/// at the frame's hour; every other field of these tables moves hourly and
+/// is read by neither. The links, the event packs and the strikes are kept
+/// as read: the links are told apart by allocation, the packs and strikes
+/// are this hour's. Kept hours whose reduced rows are equal share one view.
+pub(crate) struct KeptFrames {
+    countries: Reduced<replay::rows::CountryRow>,
+    counters: Reduced<CountryCounterInputRow>,
+    gains: Reduced<CountryExperienceGainRow>,
+    relations: Reduced<RelationTupleRow>,
+    slices: Reduced<SliceReadRow>,
+}
+
+impl Default for KeptFrames {
+    fn default() -> Self {
+        Self {
+            countries: Reduced::new(TableId::Countries),
+            counters: Reduced::new(TableId::CountryCounterInputs),
+            gains: Reduced::new(TableId::CountryExperienceGains),
+            relations: Reduced::new(TableId::RelationTuples),
+            slices: Reduced::new(TableId::SliceReads),
+        }
+    }
+}
+
+impl KeptFrames {
+    /// `frame` as the feed and the identity history read it.
+    pub(crate) fn kept(&mut self, frame: &DecodedFrame) -> DecodedFrame {
+        let mut kept = frame.clone();
+        self.countries.countries(&mut kept);
+        let counters = frame
+            .complete::<tables::CountryCounterInputs>()
+            .ok()
+            .map(|rows| {
+                rows.iter()
+                    .map(|row| CountryCounterInputRow {
+                        country: row.country,
+                        owned_state_count: row.owned_state_count,
+                        ..Default::default()
+                    })
+                    .collect()
+            });
+        self.counters
+            .apply(&mut kept, counters, TableRows::CountryCounterInputs);
+        let gains = frame
+            .complete::<tables::CountryExperienceGains>()
+            .ok()
+            .map(|rows| {
+                rows.iter()
+                    .map(|row| CountryExperienceGainRow {
+                        country: row.country,
+                        instance: row.instance,
+                        ..Default::default()
+                    })
+                    .collect()
+            });
+        self.gains
+            .apply(&mut kept, gains, TableRows::CountryExperienceGains);
+        let relations = frame.complete::<tables::RelationTuples>().ok().map(|rows| {
+            rows.iter()
+                .filter(|row| super::diplomacy::reads_relation(row))
+                .cloned()
+                .collect()
+        });
+        self.relations
+            .apply(&mut kept, relations, TableRows::RelationTuples);
+        let slices = frame.complete::<tables::SliceReads>().ok().map(|rows| {
+            rows.iter()
+                .filter(|read| super::diplomacy::reads_slice(read, frame.hour))
+                .cloned()
+                .collect()
+        });
+        self.slices.apply(&mut kept, slices, TableRows::SliceReads);
+        kept
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Observer {

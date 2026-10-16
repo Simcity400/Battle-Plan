@@ -34,7 +34,7 @@ use replay::{
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     io,
     sync::{Arc, LazyLock, atomic::AtomicBool},
 };
@@ -333,7 +333,7 @@ impl Country {
         identity: (u32, u32),
         hour: i32,
         inputs: &[&replay::rows::ResearchInputRow],
-        inventory: Option<&[ResearchTechnologyRow]>,
+        inventory: Option<&Inventory<'_>>,
         bonuses: Option<&[replay::rows::ResearchAppliedBonusRow]>,
         modifier_rows: Option<&[replay::rows::ResearchModifierRow]>,
     ) {
@@ -385,7 +385,7 @@ impl Country {
         identity: (u32, u32),
         hour: i32,
         inputs: &[&replay::rows::ResearchInputRow],
-        inventory: Option<&[ResearchTechnologyRow]>,
+        inventory: Option<&Inventory<'_>>,
         bonuses: Option<&[replay::rows::ResearchAppliedBonusRow]>,
         modifier_rows: Option<&[replay::rows::ResearchModifierRow]>,
     ) {
@@ -429,10 +429,8 @@ impl Country {
                         .map(|&(_, _, occurrence, _, _)| occurrence),
                 )
             {
-                if let Ok(index) = inventory.binary_search_by_key(&(owner, occurrence), |t| {
-                    (t.country, t.database_index as u32)
-                }) {
-                    technologies.insert(occurrence, inventory[index].clone());
+                if let Some(row) = inventory.find(owner, occurrence) {
+                    technologies.insert(occurrence, row.clone());
                 }
             }
         }
@@ -1202,6 +1200,172 @@ fn joined<'a, T: Clone>(parts: &[&'a [T]]) -> Cow<'a, [T]> {
     }
 }
 
+/// What a fresh read of one slot's owners reads in its hour: their research
+/// rows, the read hour they all share (None when they were not all read at
+/// the hour), the bonuses and modifiers read with them, and the owners'
+/// technology inventory.
+pub(crate) struct FreshRead<'a> {
+    inputs: Vec<&'a replay::rows::ResearchInputRow>,
+    read: Option<i32>,
+    bonuses: Option<Cow<'a, [replay::rows::ResearchAppliedBonusRow]>>,
+    modifiers: Option<Cow<'a, [replay::rows::ResearchModifierRow]>>,
+    inventory: Option<Inventory<'a>>,
+}
+
+/// The technology inventory a read joins its assignments to.
+pub(crate) enum Inventory<'a> {
+    /// Rows sorted by country and template index: the whole table, or one
+    /// owner's part of it.
+    Table(&'a [ResearchTechnologyRow]),
+    /// One owner's rows of the template indexes `covered` names, those it
+    /// holds: a lookup of an index it does not name is not made.
+    Rows {
+        owner: u32,
+        rows: &'a BTreeMap<u32, ResearchTechnologyRow>,
+    },
+}
+
+impl Inventory<'_> {
+    /// The owner's row of a template index.
+    fn find(&self, owner: u32, occurrence: u32) -> Option<&ResearchTechnologyRow> {
+        match self {
+            Self::Table(rows) => rows
+                .binary_search_by_key(&(owner, occurrence), |t| {
+                    (t.country, t.database_index as u32)
+                })
+                .ok()
+                .map(|index| &rows[index]),
+            Self::Rows { owner: held, rows } => {
+                (*held == owner).then(|| rows.get(&occurrence)).flatten()
+            }
+        }
+    }
+}
+
+/// How the country step reads an hour's research rows and read hours.
+pub(crate) trait Reads {
+    /// `owner`'s ResearchInputs read hour; `slot` is its canonical slot.
+    fn read_hour(&self, slot: u32, owner: u32) -> Option<i32>;
+    /// The fresh read of `slot`, whose owners are `owners`.
+    fn fresh(&self, slot: u32, owners: &[u32]) -> io::Result<FreshRead<'_>>;
+}
+
+/// An hour's research rows and read hours, read from its frame.
+pub(crate) struct FrameReads<'a> {
+    hour: i32,
+    inputs: &'a [replay::rows::ResearchInputRow],
+    reads: &'a [replay::rows::SliceReadRow],
+    inventory: Option<&'a [ResearchTechnologyRow]>,
+    bonuses: Option<&'a [replay::rows::ResearchAppliedBonusRow]>,
+    modifiers: Option<&'a [replay::rows::ResearchModifierRow]>,
+}
+
+impl<'a> FrameReads<'a> {
+    /// `frame`'s, when its research rows and read hours are complete.
+    pub(crate) fn of(frame: &'a DecodedFrame) -> Option<Self> {
+        Some(Self {
+            hour: frame.hour,
+            inputs: frame.complete::<tables::ResearchInputs>().ok()?,
+            reads: frame.complete::<tables::SliceReads>().ok()?,
+            inventory: frame.complete::<tables::ResearchTechnologies>().ok(),
+            bonuses: frame.complete::<tables::ResearchAppliedBonuses>().ok(),
+            modifiers: frame.complete::<tables::ResearchModifiers>().ok(),
+        })
+    }
+
+    fn read_hour_of(&self, table: TableId, owner: u32) -> Option<i32> {
+        replay::sliced::read_hour(self.reads, table, owner)
+    }
+
+    /// The fresh read of owners `owners`, with the whole inventory.
+    pub(crate) fn fresh_read(&self, owners: &[u32]) -> FreshRead<'a> {
+        let inputs: Vec<_> = owner_rows(self.inputs, owners, |row| row.country)
+            .into_iter()
+            .flatten()
+            .collect();
+        let read = inputs
+            .first()
+            .and_then(|input| self.read_hour_of(TableId::ResearchInputs, input.country))
+            .filter(|&read| {
+                read == self.hour
+                    && inputs.iter().all(|input| {
+                        self.read_hour_of(TableId::ResearchInputs, input.country) == Some(read)
+                    })
+            });
+        // Bonuses and modifiers join only when they come from the same
+        // read; every row of one owner has that owner's read hour.
+        let (bonuses, modifiers) = match read {
+            Some(read) => (
+                self.bonuses
+                    .map(|rows| owner_rows(rows, owners, |row| row.country))
+                    .filter(|parts| {
+                        parts.iter().all(|part| {
+                            self.read_hour_of(TableId::ResearchAppliedBonuses, part[0].country)
+                                == Some(read)
+                        })
+                    })
+                    .map(|parts| joined(&parts)),
+                self.modifiers
+                    .map(|rows| owner_rows(rows, owners, |row| row.country))
+                    .filter(|parts| {
+                        parts.iter().all(|part| {
+                            self.read_hour_of(TableId::ResearchModifiers, part[0].country)
+                                == Some(read)
+                        })
+                    })
+                    .map(|parts| joined(&parts)),
+            ),
+            None => (None, None),
+        };
+        FreshRead {
+            inputs,
+            read,
+            bonuses,
+            modifiers,
+            inventory: self.inventory.map(Inventory::Table),
+        }
+    }
+}
+
+impl Reads for FrameReads<'_> {
+    fn read_hour(&self, _: u32, owner: u32) -> Option<i32> {
+        self.read_hour_of(TableId::ResearchInputs, owner)
+    }
+
+    fn fresh(&self, _: u32, owners: &[u32]) -> io::Result<FreshRead<'_>> {
+        Ok(self.fresh_read(owners))
+    }
+}
+
+/// The index values an hour's [`Scan::refresh`] changed that the country
+/// step reads: the holders by slot with the slot of each link, the owners by
+/// slot, and the read hours of each slot's owners (all of them, or the slots
+/// whose hours changed, None for a slot with none).
+#[derive(Default)]
+pub(crate) struct IndexChanges {
+    countries: Option<(Arc<HashMap<u32, u32>>, CountryRows)>,
+    owners: Option<BTreeMap<u32, Vec<u32>>>,
+    dates: Option<BTreeMap<u32, Vec<(u32, i32)>>>,
+    slot_dates: Vec<(u32, Option<Vec<(u32, i32)>>)>,
+}
+
+/// Each canonical slot's holders: their Countries row, id and tag.
+type CountryRows = BTreeMap<u32, Vec<(usize, u32, Vec<u8>)>>;
+
+/// A scan's indexes of the frame it last refreshed from ([`Scan::refresh`]),
+/// apart from any country's state.
+pub(crate) struct Index {
+    country_reads: Option<super::territory::CountryReads>,
+    country_count: usize,
+    country_rows: CountryRows,
+    owners: BTreeMap<u32, Vec<u32>>,
+    input_slots: BTreeSet<u32>,
+    input_dates: BTreeMap<u32, Vec<(u32, i32)>>,
+    future_read: Option<i32>,
+    indexed: Option<i32>,
+    ready: bool,
+}
+
 #[derive(Default, Serialize, Deserialize)]
 pub(crate) struct Scan {
     countries: BTreeMap<String, Country>,
@@ -1318,6 +1482,123 @@ impl Scan {
         changes: &crate::prepared::frame_changes::FrameChanges,
         deferred: bool,
     ) -> io::Result<()> {
+        let previous = self.begin_hour(frame.hour);
+        let Some((dirty, countries_changed)) = self.refresh(frame, changes, deferred, None) else {
+            self.close_held(previous);
+            self.last_bad = Some(frame.hour);
+            return Ok(());
+        };
+        let reads = FrameReads::of(frame)
+            .ok_or_else(|| io::Error::other("Refreshed research tables are incomplete"))?;
+        let slots = Arc::clone(self.country_reads.as_ref().unwrap().slots());
+        self.apply(
+            frame.hour,
+            previous,
+            dirty,
+            countries_changed,
+            &slots,
+            &reads,
+            selected_tag,
+            deferred,
+        )
+    }
+
+    /// Hour `hour` from what its [`Self::refresh`] found elsewhere
+    /// (`refreshed`, None for an incomplete hour) and the index values it
+    /// changed, already applied to this scan's indexes, with the holders'
+    /// slots `slots` and the hour's rows read through `reads`: as
+    /// [`Self::observe_selected_changed`] observes the hour.
+    pub(crate) fn observe_refreshed(
+        &mut self,
+        hour: i32,
+        refreshed: Option<(BTreeSet<u32>, bool)>,
+        slots: Option<&HashMap<u32, u32>>,
+        reads: &dyn Reads,
+    ) -> io::Result<()> {
+        let previous = self.begin_hour(hour);
+        let Some((dirty, countries_changed)) = refreshed else {
+            self.ready = false;
+            self.close_held(previous);
+            self.last_bad = Some(hour);
+            return Ok(());
+        };
+        self.ready = true;
+        self.indexed = Some(hour);
+        let slots = slots.ok_or_else(|| io::Error::other("Refreshed research holders are missing"))?;
+        self.apply(
+            hour,
+            previous,
+            dirty,
+            countries_changed,
+            slots,
+            reads,
+            None,
+            true,
+        )
+    }
+
+    /// Apply an hour's index changes to these indexes.
+    pub(crate) fn adopt(&mut self, changes: &IndexChanges) {
+        if let Some((_, rows)) = &changes.countries {
+            self.country_rows = rows.clone();
+        }
+        if let Some(owners) = &changes.owners {
+            self.owners = owners.clone();
+        }
+        if let Some(dates) = &changes.dates {
+            self.input_dates = dates.clone();
+        }
+        for (slot, dates) in &changes.slot_dates {
+            match dates {
+                Some(dates) => {
+                    self.input_dates.insert(*slot, dates.clone());
+                }
+                None => {
+                    self.input_dates.remove(slot);
+                }
+            }
+        }
+    }
+
+    /// Forget the indexes: the next [`Self::refresh`] rebuilds them, as it
+    /// does for a scan read back.
+    pub(crate) fn clear_index(&mut self) {
+        self.take_index();
+    }
+
+    /// The indexes, leaving none.
+    pub(crate) fn take_index(&mut self) -> Index {
+        let ready = std::mem::replace(&mut self.ready, false);
+        Index {
+            country_reads: self.country_reads.take(),
+            country_count: std::mem::take(&mut self.country_count),
+            country_rows: std::mem::take(&mut self.country_rows),
+            owners: std::mem::take(&mut self.owners),
+            input_slots: std::mem::take(&mut self.input_slots),
+            input_dates: std::mem::take(&mut self.input_dates),
+            future_read: self.future_read.take(),
+            indexed: self.indexed.take(),
+            ready,
+        }
+    }
+
+    /// Hold `index` as these indexes.
+    pub(crate) fn set_index(&mut self, index: Index) {
+        self.country_reads = index.country_reads;
+        self.country_count = index.country_count;
+        self.country_rows = index.country_rows;
+        self.owners = index.owners;
+        self.input_slots = index.input_slots;
+        self.input_dates = index.input_dates;
+        self.future_read = index.future_read;
+        self.indexed = index.indexed;
+        self.ready = index.ready;
+    }
+
+    /// An hour's first step, before its tables are read: carries end at the
+    /// deadlines it reaches, a gap ends every carry, and the hour becomes the
+    /// last observed. The hour before it observed, if any.
+    fn begin_hour(&mut self, hour: i32) -> Option<i32> {
         self.observed.clear();
         if !self.ready {
             self.deadlines = self
@@ -1332,18 +1613,14 @@ impl Scan {
                 .collect();
         }
         let previous = self.last_frame;
-        if previous.is_some_and(|hour| hour.checked_add(1) != Some(frame.hour)) {
+        if previous.is_some_and(|before| before.checked_add(1) != Some(hour)) {
             self.seal();
             for (_, tag) in std::mem::take(&mut self.deadlines) {
                 self.countries.get_mut(&tag).unwrap().carry_until = None;
                 self.observed.insert(tag);
             }
         }
-        while self
-            .deadlines
-            .first()
-            .is_some_and(|(due, _)| *due <= frame.hour)
-        {
+        while self.deadlines.first().is_some_and(|(due, _)| *due <= hour) {
             let (due, tag) = self.deadlines.pop_first().unwrap();
             let country = self.countries.get_mut(&tag).unwrap();
             country.materialize(previous.unwrap_or(due - 1).min(due - 1));
@@ -1352,31 +1629,41 @@ impl Scan {
         }
         if self
             .last_frame
-            .is_some_and(|previous| previous.checked_add(1) != Some(frame.hour))
+            .is_some_and(|before| before.checked_add(1) != Some(hour))
         {
-            self.last_bad = Some(frame.hour.saturating_sub(1));
+            self.last_bad = Some(hour.saturating_sub(1));
         }
-        self.last_frame = Some(frame.hour);
+        self.last_frame = Some(hour);
+        previous
+    }
+
+    /// The index step of an hour: the indexes of the frame's holders, links,
+    /// research rows and read hours, refreshed from the hour before's by the
+    /// hour's changes (or rebuilt). It reads the frame alone and the indexes
+    /// the hours before left, never a country's state. The slots to observe
+    /// again and whether the holders changed; None when a table it needs is
+    /// incomplete, so the next hour rebuilds them. `recorded` keeps every
+    /// index value [`Self::apply`] reads that the hour changed.
+    pub(crate) fn refresh(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: &crate::prepared::frame_changes::FrameChanges,
+        deferred: bool,
+        mut recorded: Option<&mut IndexChanges>,
+    ) -> Option<(BTreeSet<u32>, bool)> {
         let (Ok(rows), Ok(links), Ok(inputs)) = (
             frame.complete::<tables::Countries>(),
             frame.complete::<tables::CountryLinks>(),
             frame.complete::<tables::ResearchInputs>(),
         ) else {
-            self.close_held(previous);
-            self.last_bad = Some(frame.hour);
             // Indexes this hour's rows did not refresh are rebuilt at the next.
             self.ready = false;
-            return Ok(());
+            return None;
         };
-        let inventory = frame.complete::<tables::ResearchTechnologies>().ok();
-        let bonuses = frame.complete::<tables::ResearchAppliedBonuses>().ok();
-        let modifier_rows = frame.complete::<tables::ResearchModifiers>().ok();
         // Every sliced row's read hour; without it no read is observable.
         let Ok(reads) = frame.complete::<tables::SliceReads>() else {
-            self.close_held(previous);
-            self.last_bad = Some(frame.hour);
             self.ready = false;
-            return Ok(());
+            return None;
         };
         let read_hour = |table, owner| replay::sliced::read_hour(reads, table, owner);
         let forced = !self.ready;
@@ -1439,6 +1726,9 @@ impl Scan {
                                 .push((index, row.id, row.tag.clone()));
                         }
                     }
+                    if let Some(recorded) = recorded.as_deref_mut() {
+                        recorded.countries = Some((Arc::clone(slots), self.country_rows.clone()));
+                    }
                 }
                 !same
             } else {
@@ -1451,6 +1741,9 @@ impl Scan {
                     .entry(link.canonical_slot)
                     .or_default()
                     .push(link.id);
+            }
+            if let Some(recorded) = recorded.as_deref_mut() {
+                recorded.owners = Some(self.owners.clone());
             }
         }
         let slots = Arc::clone(self.country_reads.as_ref().unwrap().slots());
@@ -1543,6 +1836,9 @@ impl Scan {
                     let dates = (!dates.is_empty()).then_some(dates);
                     if self.input_dates.get(&slot) != dates.as_ref() {
                         dirty.insert(slot);
+                        if let Some(recorded) = recorded.as_deref_mut() {
+                            recorded.slot_dates.push((slot, dates.clone()));
+                        }
                         match dates {
                             Some(dates) => {
                                 self.input_dates.insert(slot, dates);
@@ -1588,11 +1884,42 @@ impl Scan {
                         .copied(),
                 );
                 self.input_dates = dates;
+                if let Some(recorded) = recorded.as_deref_mut() {
+                    recorded.dates = Some(self.input_dates.clone());
+                    recorded.slot_dates.clear();
+                }
             }
         }
         if countries_changed || !deferred {
             dirty.extend(self.country_rows.keys().copied());
         }
+        self.ready = true;
+        self.indexed = Some(frame.hour);
+        #[cfg(test)]
+        {
+            self.row_hours += usize::from(!rebuilt);
+        }
+        Some((dirty, countries_changed))
+    }
+
+    /// The country step of an hour whose indexes are refreshed: holders
+    /// whose identity changed end their carries, and each country of the
+    /// `dirty` slots and of the slots observed again from the hour before
+    /// takes its read, carries the last one or ends its carry. It reads the
+    /// hour's research rows and read hours through `reads` alone, and the
+    /// holders' slots through `slots`.
+    #[allow(clippy::too_many_arguments)]
+    fn apply(
+        &mut self,
+        hour: i32,
+        previous: Option<i32>,
+        mut dirty: BTreeSet<u32>,
+        countries_changed: bool,
+        slots: &HashMap<u32, u32>,
+        reads: &dyn Reads,
+        selected_tag: Option<&str>,
+        deferred: bool,
+    ) -> io::Result<()> {
         if countries_changed {
             let held: Vec<_> = self
                 .deadlines
@@ -1615,12 +1942,6 @@ impl Scan {
             for tag in held {
                 self.close_country(&tag, previous);
             }
-        }
-        self.ready = true;
-        self.indexed = Some(frame.hour);
-        #[cfg(test)]
-        {
-            self.row_hours += usize::from(!rebuilt);
         }
         dirty.extend(std::mem::take(&mut self.recheck));
         let mut selected: Vec<_> = dirty
@@ -1648,7 +1969,7 @@ impl Scan {
             let fresh = self
                 .input_dates
                 .get(&canonical)
-                .is_some_and(|reads| reads.iter().any(|(_, read)| *read == frame.hour));
+                .is_some_and(|reads| reads.iter().any(|(_, read)| *read == hour));
             if !fresh {
                 if let Ok(tag) = std::str::from_utf8(tag_bytes)
                     && let Some(state) = self.countries.get_mut(tag)
@@ -1658,18 +1979,18 @@ impl Scan {
                     }
                     let mut held = owners
                         .iter()
-                        .filter_map(|&owner| read_hour(TableId::ResearchInputs, owner));
+                        .filter_map(|&owner| reads.read_hour(canonical, owner));
                     let first = held.next();
                     let proof = first.is_some()
                         && first == state.last_read
                         && held.all(|read| Some(read) == first);
-                    if proof && state.carries((*country_id, canonical), frame.hour) {
+                    if proof && state.carries((*country_id, canonical), hour) {
                         if deferred {
                             state.carry_until = state.last_read.and_then(|read| {
                                 read.checked_add(replay::cadence::STAGGER_PERIOD - 1)
                             });
                         } else {
-                            state.carry((*country_id, canonical), frame.hour);
+                            state.carry((*country_id, canonical), hour);
                         }
                     } else {
                         if let Some(due) = state.carry_until.and_then(|until| until.checked_add(1))
@@ -1688,23 +2009,10 @@ impl Scan {
             if tag.is_empty() || tag.len() > 512 {
                 continue;
             }
-            let inputs: Vec<_> = owner_rows(inputs, owners, |row| row.country)
-                .into_iter()
-                .flatten()
-                .collect();
             // Rows keep the hour they were read at. Observe a read only in
             // the frame of its own hour; carried rows add nothing.
-            use replay::rows::TableId;
-            let read = inputs
-                .first()
-                .and_then(|input| read_hour(TableId::ResearchInputs, input.country))
-                .filter(|&read| {
-                    read == frame.hour
-                        && inputs.iter().all(|input| {
-                            read_hour(TableId::ResearchInputs, input.country) == Some(read)
-                        })
-                });
-            let Some(read) = read else {
+            let read_rows = reads.fresh(canonical, owners)?;
+            let Some(read) = read_rows.read else {
                 if let Some(state) = self.countries.get_mut(tag) {
                     if let Some(through) = previous {
                         state.materialize(through);
@@ -1732,31 +2040,13 @@ impl Scan {
                     && i64::from(read) - i64::from(last)
                         <= i64::from(replay::cadence::STAGGER_PERIOD)
             });
-            // Bonuses and modifiers join only when they come from the same
-            // read; every row of one owner has that owner's read hour.
-            let bonuses = bonuses
-                .map(|rows| owner_rows(rows, owners, |row| row.country))
-                .filter(|parts| {
-                    parts.iter().all(|part| {
-                        read_hour(TableId::ResearchAppliedBonuses, part[0].country) == Some(read)
-                    })
-                })
-                .map(|parts| joined(&parts));
-            let modifier_rows = modifier_rows
-                .map(|rows| owner_rows(rows, owners, |row| row.country))
-                .filter(|parts| {
-                    parts.iter().all(|part| {
-                        read_hour(TableId::ResearchModifiers, part[0].country) == Some(read)
-                    })
-                })
-                .map(|parts| joined(&parts));
             state.observe_inputs(
                 (*country_id, canonical),
                 read,
-                &inputs,
-                inventory,
-                bonuses.as_deref(),
-                modifier_rows.as_deref(),
+                &read_rows.inputs,
+                read_rows.inventory.as_ref(),
+                read_rows.bonuses.as_deref(),
+                read_rows.modifiers.as_deref(),
             );
             if let Some(due) = state.carry_until.and_then(|until| until.checked_add(1)) {
                 self.deadlines.remove(&(due, tag.to_owned()));
@@ -1776,7 +2066,7 @@ impl Scan {
             if state.carry_until.is_some() {
                 let mut held = owners
                     .iter()
-                    .filter_map(|&owner| read_hour(TableId::ResearchInputs, owner));
+                    .filter_map(|&owner| reads.read_hour(canonical, owner));
                 if !(held.next() == Some(read) && held.all(|hour| hour == read)) {
                     self.recheck.insert(canonical);
                 }

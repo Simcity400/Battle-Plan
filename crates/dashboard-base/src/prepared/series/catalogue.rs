@@ -47,10 +47,21 @@ const MALFORMED: &str = "Prepared catalogue text is malformed";
 const UNPAIRED: &str = "Prepared catalogue patch does not fit its text";
 
 /// Publishes `text` as the current catalogue of `section`.
-pub(super) fn write(writer: &mut store::Writer, section: &str, text: &[u8]) -> io::Result<()> {
-    let Some(stored) = ranges(|range| writer.read_at(section, range))? else {
+pub(super) fn write<W: crate::prepared::pages::Pages + ?Sized>(
+    writer: &mut W,
+    section: &str,
+    text: &[u8],
+) -> io::Result<()> {
+    let mut stored = Vec::new();
+    while let Some(bytes) = writer.read_at(section, stored.len() as u64)? {
+        if bytes.is_empty() {
+            break;
+        }
+        stored.push(bytes);
+    }
+    if stored.is_empty() {
         return writer.write_at(section, 0, base(text)?.as_slice());
-    };
+    }
     let origin = decode_base(&stored[0])?;
     let patches = stored[1..]
         .iter()
@@ -89,7 +100,7 @@ pub(super) fn write(writer: &mut store::Writer, section: &str, text: &[u8]) -> i
     };
     writer.write_at(section, slot as u64, range.as_slice())?;
     for stale in slot + 1..=newest {
-        writer.write_at(section, stale as u64, io::empty())?;
+        writer.write_at(section, stale as u64, &[])?;
     }
     Ok(())
 }

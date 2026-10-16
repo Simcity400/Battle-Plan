@@ -1,5 +1,6 @@
 #[cfg(test)]
 use super::*;
+#[cfg(test)]
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
@@ -54,18 +55,16 @@ impl Fixture {
         self.key = self.key.recapture().unwrap();
         self.store.append(&previous, self.key.clone()).unwrap()
     }
-    /// Every committed payload by section and range: the documented manifest
-    /// header names them, and each is opened through the real store reader.
+    /// Every committed payload by section and range: the store's listing of
+    /// its manifest names them, and each is opened through the real store
+    /// reader.
     pub fn payloads(&self) -> BTreeMap<(String, u64), Vec<u8>> {
-        let mut manifest = fs::File::open(self.directory.join("manifest")).unwrap();
-        let mut length = [0; 8];
-        manifest.read_exact(&mut length).unwrap();
-        let header: Value =
-            serde_json::from_reader(manifest.take(u64::from_le_bytes(length))).unwrap();
+        let listing = store::Listing::open(&self.directory.join("manifest"))
+            .unwrap()
+            .unwrap();
         let mut payloads = BTreeMap::new();
-        for section in header["sections"].as_array().unwrap() {
-            let name = section["name"].as_str().unwrap();
-            for range in 0..section["count"].as_u64().unwrap() {
+        for (name, count) in listing.sections() {
+            for range in 0..count {
                 let mut bytes = Vec::new();
                 self.store
                     .read(&self.key, name, range)

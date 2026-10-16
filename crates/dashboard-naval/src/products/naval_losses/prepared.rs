@@ -715,9 +715,9 @@ impl Prepared {
         self.last = Some(hour);
         Ok(())
     }
-    pub fn flush(
+    pub fn flush<W: dashboard_base::prepared::pages::Pages + ?Sized>(
         &mut self,
-        writer: &mut store::Writer,
+        writer: &mut W,
         branch: u64,
         scan: &sinkings::Scanned,
         flag: &AtomicBool,

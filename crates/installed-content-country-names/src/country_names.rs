@@ -49,6 +49,21 @@ pub struct Operands {
 }
 
 impl Operands {
+    /// Bytes the operands' strings hold, at their capacity.
+    pub fn heap_bytes(&self) -> usize {
+        [
+            &self.tag,
+            &self.cosmetic,
+            &self.overlord_suffix,
+            &self.subtype_suffix,
+            &self.group_suffix,
+            &self.autonomy_suffix,
+        ]
+        .into_iter()
+        .map(String::capacity)
+        .sum()
+    }
+
     /// Static naming operands, without a leader, cosmetic tag or subject.
     pub fn for_tag(tag: &str, group: Option<&str>) -> Self {
         Self {

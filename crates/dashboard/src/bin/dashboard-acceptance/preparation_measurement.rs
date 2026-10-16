@@ -355,12 +355,15 @@ fn advance_payload_manifests(evidence: &Path) -> io::Result<()> {
             "payload-manifest-{}",
             directory.file_name().unwrap().to_string_lossy()
         ));
+        // The manifest's entries live in the store's entry logs: the
+        // snapshot lists them itself.
+        let listing =
+            store::Listing::open(&manifest)?.ok_or_else(|| invalid("Missing payload manifest"))?;
         let temporary = snapshot.with_extension("tmp");
-        fs::copy(manifest, &temporary)?;
-        fs::OpenOptions::new()
-            .write(true)
-            .open(&temporary)?
-            .sync_all()?;
+        let mut file = File::create(&temporary)?;
+        listing.write_snapshot(&mut BufWriter::new(&mut file))?;
+        file.sync_all()?;
+        drop(file);
         replay::publication::replace_file(&temporary, &snapshot)?;
     }
     Ok(())

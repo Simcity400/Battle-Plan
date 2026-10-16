@@ -382,7 +382,7 @@ fn rows_bytes(rows: &TableRows) -> usize {
 }
 
 /// What an update keeps alive beyond its place in its frame.
-fn update_bytes(update: &TableUpdate) -> usize {
+pub(crate) fn update_bytes(update: &TableUpdate) -> usize {
     match update {
         TableUpdate::Snapshot(rows) | TableUpdate::Truncated { rows, .. } => rows_bytes(rows),
         TableUpdate::Delta {
@@ -414,7 +414,7 @@ fn frames_bytes(frames: &Vec<Frame>) -> usize {
 }
 
 /// What one table's view keeps alive: its shared allocation and its rows or reason.
-fn view_bytes(view: &TableView) -> usize {
+pub(crate) fn view_bytes(view: &TableView) -> usize {
     let held = match view {
         TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows_bytes(rows),
         TableView::Unavailable { reason } => reason.capacity(),

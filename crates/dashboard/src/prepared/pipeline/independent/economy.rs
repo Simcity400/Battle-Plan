@@ -113,6 +113,19 @@ impl DailyExtract {
 }
 
 impl Extract for DailyExtract {
+    /// What the block's facts hold: each kept frame's views once, its change
+    /// facts and the hours kept between them.
+    fn bytes(&self) -> u64 {
+        let mut held = dashboard_base::prepared::prepass::HeldBytes::default();
+        held.add(self.hours.capacity() * size_of::<Hour>());
+        for hour in &self.hours {
+            if let Hour::Observed { frame, changes } = hour {
+                held.frame(frame).changes(changes);
+            }
+        }
+        held.total()
+    }
+
     fn observe(
         &mut self,
         _: &Replay,

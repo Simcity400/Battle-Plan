@@ -296,7 +296,7 @@ fn row<'a>(window: &'a Value, id: &str) -> &'a Value {
 /// in the last block, one whose participants are unresolved, one ending at
 /// the last block's first hour with its result read after it, and an early
 /// battle around an unread hour. Branch 2: two blocks, a battle open across
-/// their boundary.
+/// their boundary, whose look-back would start at the branch's first block.
 #[test]
 fn newest_window_page_and_manifest_equal_forward_preparation() {
     let first_branch = |hour: i32| {
@@ -388,10 +388,16 @@ fn newest_window_page_and_manifest_equal_forward_preparation() {
             .any(|reason| reason == "Participant country reference 99 unresolved")
     );
 
-    let (_, read) = assert_newest_equals_forward(&source, 2);
-    assert_eq!(
-        read, 2,
-        "from the branch's first block, the look-back is its walk"
+    assert!(
+        first::prepare(
+            &source,
+            2,
+            &LoadContext { content: None },
+            &AtomicBool::new(false)
+        )
+        .unwrap()
+        .is_none(),
+        "from the branch's first block the look-back would be its walk: the window is left to forward preparation"
     );
 }
 
@@ -421,7 +427,8 @@ fn newest_window_reads_only_the_last_block_and_its_proven_look_back() {
 /// The last block follows a recorded gap, so a look-back of it alone sees
 /// every battle forward preparation still holds open; but a result read in it
 /// closes a battle that ended before the gap. Its coverage moves the
-/// look-back before the gap, and then to that battle's first hour.
+/// look-back before the gap, and then before that battle's first hour, short
+/// of the branch's first block.
 #[test]
 fn newest_window_reaches_the_battles_its_results_close() {
     let present = |hour: i32| {
@@ -432,6 +439,9 @@ fn newest_window_reaches_the_battles_its_results_close() {
         }
     };
     let mut blocks: Vec<_> = [
+        88..=91,
+        92..=95,
+        96..=99,
         100..=103,
         104..=107,
         // Hours 108 to 111 are not recorded.
@@ -440,18 +450,19 @@ fn newest_window_reaches_the_battles_its_results_close() {
     .into_iter()
     .map(|hours| block(1, hours, &present))
     .collect();
-    add_result(&mut blocks[2][1], 6, 106, 105);
+    add_result(&mut blocks[5][1], 6, 106, 105);
     let source = recording(blocks);
     let (window, read) = assert_newest_equals_forward(&source, 1);
-    // The last block, then from the block its result covers, then from the
-    // battle's first block.
-    assert_eq!(read, 1 + 2 + 3);
+    // The last block, then from the block its result covers, then from twice
+    // that look-back's length, before the battle's first hour.
+    assert_eq!(read, 1 + 2 + 4);
     assert_eq!(row(&window, "1:6:101")["result"]["hour"], 106);
 }
 
 /// A loss read in the newest window naming a variant whose naming the
 /// look-back neither read nor forgot moves the look-back back until it is
-/// proven.
+/// proven: here by reaching hours whose variant table was not complete,
+/// where forward preparation forgets every name too.
 #[test]
 fn newest_window_proves_the_equipment_names_its_loss_reads_use() {
     let present = |hour: i32| {
@@ -464,19 +475,31 @@ fn newest_window_proves_the_equipment_names_its_loss_reads_use() {
             Vec::new()
         }
     };
-    let blocks: Vec<_> = [100..=103, 104..=107, 108..=111, 112..=115]
-        .into_iter()
-        .map(|hours| {
-            let mut frames = block(1, hours, &present);
-            for sample in &mut frames {
-                *sample.tables[TableId::VariantDefinitions.index()] =
-                    TableView::Complete(TableRows::VariantDefinitions(Vec::new()));
-            }
-            frames
-        })
-        .collect();
+    // The first three blocks do not record the variant table.
+    let blocks: Vec<_> = [
+        88..=91,
+        92..=95,
+        96..=99,
+        100..=103,
+        104..=107,
+        108..=111,
+        112..=115,
+    ]
+    .into_iter()
+    .map(|hours| {
+        let recorded = *hours.start() >= 100;
+        let mut frames = block(1, hours, &present);
+        for sample in frames.iter_mut().filter(|_| recorded) {
+            *sample.tables[TableId::VariantDefinitions.index()] =
+                TableView::Complete(TableRows::VariantDefinitions(Vec::new()));
+        }
+        frames
+    })
+    .collect();
     let (_, read) = assert_newest_equals_forward(&recording(blocks), 1);
-    assert_eq!(read, 2 + 3 + 4);
+    // The last two blocks, then from the block before, then from twice that
+    // look-back's length, where the variant table was not complete.
+    assert_eq!(read, 2 + 3 + 6);
 }
 
 /// Without an available hour in the look-back, availability is not proven and
@@ -564,4 +587,98 @@ fn newest_window_diagnostics_cover_every_variant_read_on_the_branch() {
         prepared.naming_blocks, 1,
         "the diagnostics read the block before the look-back's by its changes"
     );
+}
+
+/// The earlier blocks' variant reads on parallel workers, each block on a
+/// catalogue of its own joined in block order, hold the versions, operands,
+/// variant warnings and naming outcome of reading them in order on one
+/// catalogue.
+#[test]
+fn newest_window_variant_reads_in_parallel_hold_those_read_in_order() {
+    use dashboard_base::products::equipment::VariantCatalogue;
+    use std::collections::BTreeSet;
+    let quiet = |_: i32| -> Vec<Combat> { Vec::new() };
+    // Whole days, so each block holds a daily read of the variant table: the
+    // second renames variant 7, the third keeps its name, and the fourth
+    // gives it one that is not UTF-8.
+    let names: [&[u8]; 4] = [b"First", b"Second", b"Second", &[0xff]];
+    let blocks: Vec<_> = (0..4)
+        .map(|day| {
+            let mut frames = block(1, 100 + 24 * day..=123 + 24 * day, &quiet);
+            for sample in &mut frames {
+                *sample.tables[TableId::VariantDefinitions.index()] =
+                    TableView::Complete(TableRows::VariantDefinitions(
+                        [(7, names[day as usize]), (8, b"Constant".as_slice())]
+                            .into_iter()
+                            .map(|(id, name)| VariantDefinitionRow {
+                                id,
+                                equipment_token: 5,
+                                creator_link: 1,
+                                display_name: name.to_vec(),
+                                ..Default::default()
+                            })
+                            .collect(),
+                    ));
+                *sample.tables[TableId::LexicalTokens.index()] =
+                    TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                        token: 5,
+                        literal: b"mod_rifle_1".to_vec(),
+                    }]));
+            }
+            frames
+        })
+        .collect();
+    let source = recording(blocks);
+    let replay = source.replay_ref();
+    let positions: Vec<usize> = (0..replay.index.len()).collect();
+    let flag = AtomicBool::new(false);
+    // Every variant's operands read, whatever hour first read them.
+    let operands = |variants: &VariantCatalogue| -> BTreeSet<(u64, String)> {
+        variants
+            .versions
+            .iter()
+            .flat_map(|(id, versions)| {
+                versions.iter().filter_map(move |version| {
+                    let mut raw = version.raw.clone()?;
+                    raw.first_hour = 0;
+                    Some((*id, format!("{raw:?}")))
+                })
+            })
+            .collect()
+    };
+    let in_order = first::variant_reads_in_order(replay, &positions, &flag).unwrap();
+    assert_eq!(
+        operands(&in_order).len(),
+        4,
+        "three names of variant 7 and one of variant 8"
+    );
+    assert!(
+        in_order
+            .warnings()
+            .iter()
+            .any(|warning| warning.contains("not UTF-8")),
+        "{:?}",
+        in_order.warnings()
+    );
+    for workers in [1, 3] {
+        let parallel = first::variant_reads(replay, &positions, workers, &flag).unwrap();
+        assert_eq!(
+            operands(&parallel),
+            operands(&in_order),
+            "{workers} workers"
+        );
+        assert_eq!(
+            parallel.warnings(),
+            in_order.warnings(),
+            "{workers} workers"
+        );
+        let count = |variants: &VariantCatalogue| -> usize {
+            variants.versions.values().map(Vec::len).sum()
+        };
+        assert_eq!(
+            count(&parallel),
+            count(&in_order),
+            "{workers} workers: a block's first read adds no version the in-order catalogue does not"
+        );
+    }
 }

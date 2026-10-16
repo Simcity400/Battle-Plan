@@ -68,6 +68,58 @@ impl Cell {
     }
 }
 
+/// The product whose coverage the pages a column reads wait for
+/// (`pipeline::product_coverage`): its supplier's own while that family is
+/// prepared on its own (territory's with the identity history's), the
+/// branch's otherwise. None for a column that reads no pages.
+fn gate(column: ScoreboardColumnKey) -> Option<&'static str> {
+    use ScoreboardColumnKey::*;
+    if column.factory_count().is_some() {
+        return Some("country-factories");
+    }
+    Some(match column {
+        ArmySize => "army-size",
+        Planes => "air-force-size",
+        Ships => "navy-size",
+        PoliticalPower | CommandPower => "country-measure",
+        Stability | WarSupport => "country-stability",
+        Nukes => "country-nukes",
+        Territory => <crate::products::territory::Territory as Product>::KEY,
+        CasualtiesDealt | CasualtiesTaken => "war-casualties",
+        EquipmentProduced => "production-select",
+        Casualties | Factories | FactoriesBuilt | FactoriesTopbar => return None,
+    })
+}
+
+/// Whether every page `columns` read covers `hour`: the coverage each
+/// column's supplier has ([`gate`]).
+fn suppliers_cover(
+    source: &Source,
+    context: &LoadContext,
+    branch: u64,
+    columns: &[ScoreboardColumnKey],
+    hour: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<bool> {
+    let gates: BTreeSet<&str> = columns.iter().filter_map(|&column| gate(column)).collect();
+    for product in gates {
+        let coverage = match crate::prepared::pipeline::product_coverage(
+            source,
+            context.content.as_ref(),
+            branch,
+            product,
+            cancelled,
+        ) {
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
+            other => other?,
+        };
+        if !coverage.is_some_and(|coverage| coverage.complete || hour <= coverage.last_hour) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 struct Binding {
     family: &'static str,
     section: String,
@@ -518,9 +570,11 @@ pub(crate) fn query(
             other => other?,
         };
         let complete = accepted.as_ref().is_some_and(|coverage| coverage.complete);
-        // Beyond accepted preparation a moment answers only when one frame
-        // proves every cell it needs: the native factory counts. Other
-        // columns carry cumulative or carried facts and stay pending.
+        // Beyond accepted preparation, or beyond the coverage of a supplier
+        // whose pages a needed column reads (one prepared on its own may be
+        // behind the branch), a moment answers only when one frame proves
+        // every cell it needs: the native factory counts. Other columns
+        // carry cumulative or carried facts and stay pending.
         let needed: Vec<ScoreboardColumnKey> = if params.index {
             std::iter::once(params.sort)
                 .chain(
@@ -538,6 +592,14 @@ pub(crate) fn query(
         let sampled = if accepted
             .as_ref()
             .is_some_and(|coverage| coverage.complete || params.hour <= coverage.last_hour)
+            && suppliers_cover(
+                source,
+                context,
+                branch,
+                &needed,
+                params.hour,
+                cancelled,
+            )?
         {
             None
         } else if needed.iter().all(|column| column.factory_count().is_some()) {

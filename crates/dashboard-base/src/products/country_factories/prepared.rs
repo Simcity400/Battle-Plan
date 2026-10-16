@@ -212,14 +212,7 @@ impl Prepared {
     ) -> io::Result<()> {
         self.scan
             .observe_changes(frame, replay.format, Some(changes));
-        self.first.get_or_insert(frame.hour);
-        self.last = frame.hour;
-        for values in &mut self.values {
-            values.advance(frame.hour)?;
-        }
-        self.parts.advance(frame.hour)?;
-        self.mixes.advance(frame.hour)?;
-        self.reads.advance(frame.hour)?;
+        self.advance(frame.hour)?;
         for tag in std::mem::take(&mut self.scan.observed) {
             let track = &self.scan.tracks[&tag];
             let raw = track
@@ -292,6 +285,30 @@ impl Prepared {
             }
         }
         Ok(())
+    }
+    /// The accepted hour every series takes, observed or quiet.
+    fn advance(&mut self, hour: i32) -> io::Result<()> {
+        self.first.get_or_insert(hour);
+        self.last = hour;
+        for values in &mut self.values {
+            values.advance(hour)?;
+        }
+        self.parts.advance(hour)?;
+        self.mixes.advance(hour)?;
+        self.reads.advance(hour)
+    }
+    /// What observing `hour` does when it follows the last hour observed and
+    /// none of the countries' keys, links, availability or factory rows
+    /// changed there, the factory table read (`read`) or not as at the hour
+    /// before: the unchanged hour's counts and every series' accepted hour,
+    /// in constant time. `Ok(false)`, with nothing changed, when observing it
+    /// needs its frame.
+    pub fn advance_quiet(&mut self, hour: i32, read: bool) -> io::Result<bool> {
+        if !self.scan.advance_quiet(hour, read) {
+            return Ok(false);
+        }
+        self.advance(hour)?;
+        Ok(true)
     }
     pub fn bytes(&self) -> usize {
         self.values
@@ -408,15 +425,29 @@ pub fn query(
         .parse()
         .map_err(|_| crate::invalid("Invalid factory branch"))?;
     let (store, source_key) = crate::prepared::files(source, context.content.as_ref())?;
-    let accepted = match crate::prepared::coverage::coverage(
+    // Prepared on their own, the factories and the identity history they are
+    // named through answer from their own coverage.
+    let accepted = match crate::prepared::coverage::product_coverage(
         source,
         context.content.as_ref(),
         branch,
+        CountryFactories::KEY,
         cancelled,
     ) {
         Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
         result => result?,
     };
+    // Pages committed ahead of that coverage (by a family prepared on its own
+    // ahead of the identity history) are not read: the prepared prefix ends
+    // at the last batch committed by its last hour, and the hours after it
+    // are an unprepared tail.
+    let accepted = series::committed_coverage(
+        &store,
+        &source_key,
+        format!("factories-values-{branch}-0"),
+        accepted,
+        cancelled,
+    )?;
     let partial = accepted.as_ref().is_none_or(|coverage| !coverage.complete);
     if accepted.is_none() && matches!(product, "events-page" | "events-clusters") {
         return Ok(Value::Null);
@@ -520,8 +551,12 @@ pub fn query(
         })
         .collect();
     let reader = |section: String| -> io::Result<Reader<'_>> {
-        if accepted.is_some() {
-            Reader::new(&store, &source_key, section, cancelled)
+        if let Some(coverage) = &accepted {
+            let mut reader = Reader::new(&store, &source_key, section, cancelled)?;
+            if !coverage.complete {
+                reader.through_hour(coverage.last_hour)?;
+            }
+            Ok(reader)
         } else {
             Ok(Reader::from_first_file(
                 &store,

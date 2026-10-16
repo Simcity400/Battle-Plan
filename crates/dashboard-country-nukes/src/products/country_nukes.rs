@@ -283,6 +283,12 @@ pub(crate) struct Scan {
     read: Option<bool>,
     #[serde(skip)]
     empty: bool,
+    /// Whether the last hour observed joined its countries and links, and
+    /// whether its stockpile table was complete.
+    #[serde(skip)]
+    joined: bool,
+    #[serde(skip)]
+    complete: bool,
     #[serde(skip)]
     observed: Vec<String>,
     #[cfg(test)]
@@ -290,6 +296,42 @@ pub(crate) struct Scan {
     work: dashboard_base::prepared::observer_tests::Work,
 }
 impl Scan {
+    /// What observing `hour` does when it follows the last hour observed with
+    /// the same country keys, links, name tokens, availability and stockpile
+    /// rows, the stockpile table read (`read`) or not as then: the read hour
+    /// it dates and the unchanged hour's counts, in constant time. False, with
+    /// nothing changed, when observing it would take another path: the hour
+    /// does not follow, its read flag differs, the countries and links did
+    /// not join, or a read of a stockpile table that is not complete names
+    /// its reason from the frame.
+    fn advance_quiet(&mut self, hour: i32, read: bool) -> bool {
+        let continuous = self
+            .frontier
+            .is_some_and(|at| at.checked_add(1) == Some(hour));
+        if !continuous || self.read != Some(read) || !self.joined || read && !self.complete {
+            return false;
+        }
+        self.observed.clear();
+        if read {
+            self.scanned.read_hours.push(hour);
+        }
+        self.unchanged(hour, read);
+        true
+    }
+    /// An hour whose stockpile inputs are the hour before's: the rates of the
+    /// last read count again, and a complete read of all-empty stockpiles is
+    /// dated empty again.
+    fn unchanged(&mut self, hour: i32, complete_read: bool) {
+        self.scanned.unreadable += self.rates.unreadable;
+        self.scanned.unknown_hours += self.rates.unknown;
+        for (&ordinal, &count) in &self.rates.refused {
+            *self.scanned.refused.entry(ordinal).or_default() += count;
+        }
+        if complete_read && self.empty {
+            self.scanned.empty_read_hours.push(hour);
+        }
+        self.frontier = Some(hour);
+    }
     pub(crate) fn observe(
         &mut self,
         decoded: &DecodedFrame,
@@ -341,20 +383,14 @@ impl Scan {
             self.scanned.read_hours.push(hour);
         }
         let joined = self.countries.update(decoded);
+        self.joined = joined.is_ok();
+        self.complete = rows.is_some();
         let changed = !continuous
             || self.read != Some(read)
             || !matches!(joined, Ok(false))
             || changes.is_none_or(|changes| changes.rows_changed[TableId::Nukes.index()]);
         if !changed {
-            self.scanned.unreadable += self.rates.unreadable;
-            self.scanned.unknown_hours += self.rates.unknown;
-            for (&ordinal, &count) in &self.rates.refused {
-                *self.scanned.refused.entry(ordinal).or_default() += count;
-            }
-            if read && rows.is_some() && self.empty {
-                self.scanned.empty_read_hours.push(hour);
-            }
-            self.frontier = Some(hour);
+            self.unchanged(hour, read && rows.is_some());
             return;
         }
         if !continuous {

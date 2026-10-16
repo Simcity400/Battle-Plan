@@ -51,16 +51,7 @@ impl FrameDecoder {
         }
         // Reject frame-wide errors before moving any baseline. From here onward,
         // a failed update clears only its table and becomes a named unavailable view.
-        if frame.keyframe
-            && frame.tables.iter().any(|update| {
-                !matches!(
-                    update,
-                    TableUpdate::Snapshot(_)
-                        | TableUpdate::Unavailable { .. }
-                        | TableUpdate::Incompatible { .. }
-                )
-            })
-        {
+        if frame.keyframe && !frame.tables.iter().all(keyframe_update) {
             return Err(invalid("keyframe contains a dependent or partial table"));
         }
         let mut previous = self
@@ -113,6 +104,16 @@ impl FrameDecoder {
         });
         Ok(self.current.as_ref().unwrap())
     }
+}
+
+/// Whether a keyframe may hold `update`: one that needs no earlier hour.
+/// [`FrameDecoder::advance`] refuses a keyframe holding any other, whichever
+/// tables it reconstructs.
+pub(crate) fn keyframe_update(update: &TableUpdate) -> bool {
+    matches!(
+        update,
+        TableUpdate::Snapshot(_) | TableUpdate::Unavailable { .. } | TableUpdate::Incompatible { .. }
+    )
 }
 
 /// One table's view at `hour`, from its update and the hour before's complete

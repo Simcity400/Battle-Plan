@@ -182,6 +182,11 @@ impl BlockExtract {
 }
 
 impl Extract for BlockExtract {
+    /// What the block's kept hours hold.
+    fn bytes(&self) -> u64 {
+        crate::prepared::kept::hours_bytes(&self.hours)
+    }
+
     fn observe(
         &mut self,
         _: &Replay,

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { laneStops } from '../../charts/timeline/layout.ts';
 import { fitTooltip, tooltipText } from '../../charts/tooltip.ts';
 import type { LineDetail, LineHistory, LineRun, LineStep, OutputRun, ProductionLineDetailReply, ProductionLinesReply, ProductionModifierRun, VariantName } from '../../generated/dashboard';
-import { bandScale, breakdownTooltip, detailOf, efficiencyFraction, efficiencyPercent, factoryScale, finalAt, finalTooltip, gapTooltip, historyLanes, iconImage, laneStatus, lineTooltip,
+import { approximateWithin, bandScale, breakdownItems, breakdownTooltip, detailOf, emptyHistoryState, firstViewLineReason, efficiencyFraction, efficiencyPercent, factoryScale, finalAt, finalTooltip, gapTooltip, historyLanes, iconImage, laneStatus, lineTooltip,
   linesAt, linesKnown, modifierTooltip, organisationAt, organisationText, outputAt, outputTotal, productionLineKey, productionLineToken, stepTooltip, totalNote, totalText, validateDetailReply,
   unreadNote, validateProductionReply, validateBreakdownReply, variantAt, variantName, variantParts, weeklyOutput, weeklyText, windowOf, withNote, productionLineLabel } from './productionData.ts';
 
@@ -69,7 +69,7 @@ const LINES = [
 const REPLY: ProductionLinesReply = {
   branchId: '1', tag: 'GER', decimals: 5, reads: [100, 124, 148], outputHours: [{ firstHour: 100, lastHour: 200 }], detailHours: 720,
   lineHours: [{ firstHour: 100, lastHour: 150 }, { firstHour: 160, lastHour: 200 }], organisationHours: [{ firstHour: 100, lastHour: 190 }],
-  unreadOutput: [], warnings: [],
+  unreadOutput: [], approximate: [], warnings: [],
   lines: LINES.map(item => item.history),
   variants: [
     variant('70', 100, 'Infantry Equipment I', { icon: 'sprite:GFX_infantry_weapons1_medium' }),
@@ -418,6 +418,15 @@ test('hours whose output read was lost say lines made and ended there may be mis
   assert.throws(() => validateProductionReply({ ...REPLY, unreadOutput: [{ firstHour: 130, lastHour: 120 }] }));
 });
 
+test('a first view names the hours it does not answer exactly, and a reply without them is refused', () => {
+  const first = { ...REPLY, approximate: [{ firstHour: 0, lastHour: 100 }] };
+  assert.equal(validateProductionReply(first), first);
+  assert.throws(() => validateProductionReply({ ...REPLY, approximate: [{ firstHour: 100, lastHour: 0 }] }));
+  const missing: Partial<ProductionLinesReply> = { ...REPLY };
+  delete missing.approximate;
+  assert.throws(() => validateProductionReply(missing));
+});
+
 
 test('efficiency and output cells keep recorded operands and point to their breakdown', () => {
   const known = run(148, 171, { variant: '71', activeFactories: 12, maxFactories: 9, speedRaw: '9007199254741499', costRaw: '50001' });
@@ -499,4 +508,35 @@ test('long modifier chart hovers fit while retaining every spoken source and the
   const known = modifierTooltip({ ...group, totalRaw: '4998' }, 'day 150', () => undefined);
   assert.equal(known[0].rows[0].value, '0.04998 IC');
   assert.equal(known[1].rows[0].value, '0.04998 IC');
+});
+
+test("a first view's breakdowns, pins and line choices wait, saying why, until the history is exact", () => {
+  const first: ProductionLinesReply = { ...REPLY, approximate: [{ firstHour: 0, lastHour: 100 }] };
+  assert.match(firstViewLineReason(first) ?? '', /earlier production history is prepared/);
+  assert.equal(firstViewLineReason(REPLY), null);
+  const opened: string[] = [];
+  const waiting = breakdownItems(first, part => opened.push(part));
+  assert.deepEqual(waiting.map(item => [item.label, item.disabled, item.hint]), [
+    ['Efficiency breakdown', true, firstViewLineReason(first)],
+    ['Output breakdown', true, firstViewLineReason(first)],
+  ]);
+  for (const item of waiting) item.run();
+  assert.equal(opened.length, 0);
+  const exact = breakdownItems(REPLY, part => opened.push(part));
+  assert.ok(exact.every(item => !item.disabled && item.hint === undefined));
+  for (const item of exact) item.run();
+  assert.deepEqual(opened, ['efficiency', 'output']);
+});
+
+test("a history without lanes over a first view's approximate hours is still being prepared, not empty", () => {
+  // Lines that ended before the newest blocks: reads, but no lane to draw.
+  const first: ProductionLinesReply = { ...REPLY, lines: [], approximate: [{ firstHour: 0, lastHour: 100 }] };
+  assert.equal(emptyHistoryState(first, [0, 200]), 'preparing');
+  // An earlier range lies within the approximate hours too.
+  assert.equal(emptyHistoryState(first, [20, 40]), 'preparing');
+  // A range after them, and the exact reply, are empty.
+  assert.equal(emptyHistoryState(first, [101, 200]), 'empty');
+  assert.equal(emptyHistoryState({ ...REPLY, lines: [] }, [0, 200]), 'empty');
+  assert.equal(approximateWithin(first, 100, 100), true);
+  assert.equal(approximateWithin(first, 101, 150), false);
 });

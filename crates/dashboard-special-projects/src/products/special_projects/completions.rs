@@ -346,6 +346,7 @@ pub(super) fn present_observations(
                             &history::Actors::read(frame),
                             slot_read(replay.format, &frame.metrics, TableId::Projects, frame.hour),
                             content,
+                            history::Reuse::Every,
                             cancelled,
                         )?;
                         content.scoped.clear();

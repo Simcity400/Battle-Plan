@@ -112,10 +112,11 @@ impl Knobs {
 /// One block's outcome for one family, with the time its extract took.
 pub(crate) type Extracted = (Outcome, Duration);
 
-/// The recorded raw bytes of the blocks claimed and not yet taken, past which
-/// workers wait: a commit budget for read-ahead memory, never a limit on
-/// blocks, hours or families. The block the coordinator takes next is always
-/// claimed.
+/// The bytes of the blocks claimed and not yet taken, past which workers
+/// wait: a commit budget for read-ahead memory, never a limit on blocks,
+/// hours or families. Blocks count their recorded raw bytes and, in a
+/// [`Pool`], the bytes their facts hold. The block the coordinator takes
+/// next is always claimed.
 const AHEAD_BYTES: u64 = 512 * 1024 * 1024;
 
 struct State {
@@ -130,7 +131,8 @@ struct State {
     in_flight: u64,
     budget: u64,
     alive: usize,
-    done: BTreeMap<usize, Vec<Extracted>>,
+    /// Each block extracted and not taken, with the bytes its facts hold.
+    done: BTreeMap<usize, (Vec<Extracted>, u64)>,
     peak: usize,
 }
 
@@ -169,8 +171,13 @@ impl Shared {
         }
     }
 
-    fn finish(&self, position: usize, outcomes: Vec<Extracted>) {
-        self.lock().done.insert(position, outcomes);
+    /// Block `position` extracted, its facts holding `bytes`: they count
+    /// against the budget until the coordinator takes them.
+    fn finish(&self, position: usize, outcomes: Vec<Extracted>, bytes: u64) {
+        let mut state = self.lock();
+        state.in_flight = state.in_flight.saturating_add(bytes);
+        state.done.insert(position, (outcomes, bytes));
+        drop(state);
         self.changed.notify_all();
     }
 }
@@ -266,18 +273,22 @@ impl PrePass {
             crate::metadata::check_cancel(cancelled)?;
             let outcomes = match state.done.remove(&position) {
                 Some(outcomes) => Some(outcomes),
-                None if state.alive == 0 => Some(
+                None if state.alive == 0 => Some((
                     sequential(&self.families)
                         .into_iter()
                         .map(|outcome| (outcome, Duration::ZERO))
                         .collect(),
-                ),
+                    0,
+                )),
                 None => None,
             };
-            if let Some(outcomes) = outcomes {
-                if position < state.next {
-                    state.in_flight = state.in_flight.saturating_sub(state.sizes[position]);
-                }
+            if let Some((outcomes, bytes)) = outcomes {
+                let held = if position < state.next {
+                    state.sizes[position]
+                } else {
+                    0
+                };
+                state.in_flight = state.in_flight.saturating_sub(held.saturating_add(bytes));
                 state.handed += 1;
                 drop(state);
                 self.shared.changed.notify_all();
@@ -314,7 +325,7 @@ impl Drop for PrePass {
 }
 
 /// Pre-pass work yields to the coordinators and the hourly walk.
-fn below_normal_priority() {
+pub(crate) fn below_normal_priority() {
     #[cfg(windows)]
     unsafe {
         use windows_sys::Win32::System::Threading::{
@@ -330,15 +341,20 @@ fn work(replay: &Replay, alive: Alive, families: &[&'static Family], knobs: &Kno
     while let Some(position) = shared.claim() {
         let index = &replay.index[position];
         let outcomes = catch_unwind(AssertUnwindSafe(|| {
-            extract_block(replay, index, families, &shared.stop, knobs)
+            extract_block_measured(replay, index, families, &shared.stop, knobs)
         }))
         .unwrap_or_else(|_| {
             sequential(families)
                 .into_iter()
-                .map(|outcome| (outcome, Duration::ZERO))
+                .map(|outcome| (outcome, Duration::ZERO, 0))
                 .collect()
         });
-        shared.finish(position, outcomes);
+        let bytes = outcomes.iter().map(|(_, _, bytes)| bytes).sum();
+        let outcomes = outcomes
+            .into_iter()
+            .map(|(outcome, took, _)| (outcome, took))
+            .collect();
+        shared.finish(position, outcomes, bytes);
     }
 }
 
@@ -355,8 +371,38 @@ struct Lane {
     next: usize,
     handed: usize,
     end: usize,
-    done: BTreeMap<usize, Extracted>,
+    /// Each block extracted and not taken, with the bytes its facts hold.
+    done: BTreeMap<usize, (Extracted, u64)>,
     retired: bool,
+    /// Extract time of the blocks extracted so far, and their count.
+    spent: Duration,
+    measured: u32,
+    /// The bytes the facts of the blocks extracted so far hold.
+    facts: u64,
+    /// The bytes each block claimed and not yet extracted reserves for its
+    /// facts.
+    reserved: BTreeMap<usize, u64>,
+}
+
+impl Lane {
+    /// The extract time of the blocks not yet claimed, at the mean of those
+    /// extracted so far; none measured yet counts as none left, so every
+    /// family's cost is learnt from its first block.
+    fn remaining(&self) -> Duration {
+        let left = u32::try_from(self.end.saturating_sub(self.next)).unwrap_or(u32::MAX);
+        self.spent
+            .checked_div(self.measured)
+            .unwrap_or_default()
+            .saturating_mul(left)
+    }
+
+    /// The bytes a block's facts are expected to hold: the mean of those
+    /// extracted so far.
+    fn expected(&self) -> u64 {
+        self.facts
+            .checked_div(u64::from(self.measured))
+            .unwrap_or_default()
+    }
 }
 
 struct PoolState {
@@ -364,12 +410,36 @@ struct PoolState {
     /// Each lane's blocks are claimed at most this far beyond the one it
     /// takes next.
     ahead: usize,
-    /// Each block's recorded raw bytes, and those of every lane's blocks
-    /// claimed and not taken.
+    /// Each block's recorded raw bytes, and what every lane's blocks claimed
+    /// and not taken hold: their raw bytes, and once extracted the bytes
+    /// their facts hold.
     sizes: Vec<u64>,
     in_flight: u64,
     budget: u64,
     alive: usize,
+}
+
+impl PoolState {
+    /// The lane whose next block to claim now: of the lanes with a block
+    /// within reach, the one with the least extract work left, then the one
+    /// least far ahead of its family, then the first. A lane's next block to
+    /// take is always within reach; others while what is claimed and not
+    /// taken, this block's raw bytes and its family's expected facts stay
+    /// within the budget.
+    fn pick(&self) -> Option<usize> {
+        self.lanes
+            .iter()
+            .enumerate()
+            .filter(|(_, lane)| {
+                lane.next < lane.end
+                    && lane.next < lane.handed + self.ahead
+                    && (lane.next == lane.handed
+                        || self.in_flight + self.sizes[lane.next] + lane.expected()
+                            <= self.budget)
+            })
+            .min_by_key(|(_, lane)| (lane.remaining(), lane.next - lane.handed))
+            .map(|(position, _)| position)
+    }
 }
 
 struct PoolShared {
@@ -384,10 +454,13 @@ impl PoolShared {
     }
 
     /// The next lane, block and family to extract: of the lanes with a block
-    /// within reach, the one least far ahead of its family, the first on a
-    /// tie. A lane's next block to take is always within reach; others wait
-    /// for the byte budget. None once every lane's blocks are claimed or the
-    /// pool stops.
+    /// within reach, the one with the least extract work left (so the
+    /// cheapest families finish first and most widgets are ready soonest),
+    /// then the one least far ahead of its family, then the first. A lane's
+    /// next block to take is always within reach; others wait for the byte
+    /// budget. None once every lane's blocks are claimed or the pool stops.
+    /// The order of claims changes when a family's pages are ready, never
+    /// what it publishes: each family folds its blocks in block order.
     fn claim(&self) -> Option<(usize, usize, &'static Family)> {
         let mut state = self.lock();
         loop {
@@ -396,23 +469,12 @@ impl PoolShared {
             {
                 return None;
             }
-            let pick = state
-                .lanes
-                .iter()
-                .enumerate()
-                .filter(|(_, lane)| {
-                    lane.next < lane.end
-                        && lane.next < lane.handed + state.ahead
-                        && (lane.next == lane.handed
-                            || state.in_flight + state.sizes[lane.next] <= state.budget)
-                })
-                .min_by_key(|(_, lane)| lane.next - lane.handed)
-                .map(|(position, _)| position);
-            if let Some(position) = pick {
+            if let Some(position) = state.pick() {
                 let block = state.lanes[position].next;
-                let size = state.sizes[block];
-                state.in_flight += size;
+                let expected = state.lanes[position].expected();
+                state.in_flight += state.sizes[block] + expected;
                 let lane = &mut state.lanes[position];
+                lane.reserved.insert(block, expected);
                 lane.next += 1;
                 return Some((position, block, lane.family));
             }
@@ -423,12 +485,21 @@ impl PoolShared {
         }
     }
 
-    fn finish(&self, lane: usize, block: usize, extracted: Extracted) {
+    /// Block `block` of lane `lane` extracted, its facts holding `bytes`:
+    /// they count against the budget until the family takes them.
+    fn finish(&self, lane: usize, block: usize, extracted: Extracted, bytes: u64) {
         let mut state = self.lock();
+        let reserved = state.lanes[lane].reserved.remove(&block).unwrap_or(0);
+        state.in_flight = state.in_flight.saturating_sub(reserved);
         if state.lanes[lane].retired {
             state.in_flight = state.in_flight.saturating_sub(state.sizes[block]);
         } else {
-            state.lanes[lane].done.insert(block, extracted);
+            state.in_flight = state.in_flight.saturating_add(bytes);
+            let lane = &mut state.lanes[lane];
+            lane.spent = lane.spent.saturating_add(extracted.1);
+            lane.measured = lane.measured.saturating_add(1);
+            lane.facts = lane.facts.saturating_add(bytes);
+            lane.done.insert(block, (extracted, bytes));
         }
         drop(state);
         self.changed.notify_all();
@@ -449,10 +520,13 @@ impl Drop for PoolAlive {
 /// Several families' upcoming blocks, each family's from its own first
 /// block, extracted alone on one set of workers below normal priority: no
 /// more workers however many families there are. Workers first serve the
-/// family least far ahead, so every family's next block is extracted before
-/// any family reads further ahead. Each family's blocks claimed and not
+/// family with the least extract work left, by the mean extract time of its
+/// blocks so far, so cheap families are ready before costly ones take the
+/// workers; among equals, the family least far ahead. Each family's blocks claimed and not
 /// taken stay within `workers + 1`, and all families' within [`AHEAD_BYTES`]
-/// of recorded raw bytes (beyond each family's next block). Dropping it
+/// (beyond each family's next block) of recorded raw bytes and the bytes
+/// their facts hold ([`Extract::bytes`]): a block claimed reserves its
+/// family's mean facts so far, replaced by its own once extracted. Dropping it
 /// stops the workers within an hour of work and joins them.
 pub(crate) struct Pool {
     shared: Arc<PoolShared>,
@@ -480,6 +554,10 @@ impl Pool {
                         end,
                         done: BTreeMap::new(),
                         retired: false,
+                        spent: Duration::ZERO,
+                        measured: 0,
+                        facts: 0,
+                        reserved: BTreeMap::new(),
                     })
                     .collect(),
                 ahead: count + 1,
@@ -529,7 +607,7 @@ impl Pool {
                 let lane = &mut state.lanes[lane];
                 let extracted = match lane.done.remove(&position) {
                     Some(extracted) => Some(extracted),
-                    None if alive == 0 => Some((Outcome::Sequential, Duration::ZERO)),
+                    None if alive == 0 => Some(((Outcome::Sequential, Duration::ZERO), 0)),
                     None => None,
                 };
                 let claimed = position < lane.next;
@@ -538,10 +616,9 @@ impl Pool {
                 }
                 (extracted, claimed)
             };
-            if let Some(extracted) = extracted {
-                if claimed {
-                    state.in_flight = state.in_flight.saturating_sub(size);
-                }
+            if let Some((extracted, bytes)) = extracted {
+                let held = if claimed { size } else { 0 };
+                state.in_flight = state.in_flight.saturating_sub(held.saturating_add(bytes));
                 drop(state);
                 self.shared.changed.notify_all();
                 return Ok(extracted);
@@ -559,14 +636,18 @@ impl Pool {
     /// claimed, and what it left extracted is released.
     pub(crate) fn retire(&self, lane: usize) {
         let mut state = self.shared.lock();
-        let left: Vec<usize> = {
+        let left: Vec<(usize, u64)> = {
             let lane = &mut state.lanes[lane];
             lane.retired = true;
             lane.end = lane.next;
-            std::mem::take(&mut lane.done).into_keys().collect()
+            std::mem::take(&mut lane.done)
+                .into_iter()
+                .map(|(block, (_, bytes))| (block, bytes))
+                .collect()
         };
-        for block in left {
-            state.in_flight = state.in_flight.saturating_sub(state.sizes[block]);
+        for (block, bytes) in left {
+            let held = state.sizes[block].saturating_add(bytes);
+            state.in_flight = state.in_flight.saturating_sub(held);
         }
         drop(state);
         self.shared.changed.notify_all();
@@ -592,13 +673,13 @@ fn work_pool(replay: &Replay, alive: PoolAlive, knobs: &Knobs) {
     let shared = &alive.0;
     while let Some((lane, position, family)) = shared.claim() {
         let index = &replay.index[position];
-        let extracted = catch_unwind(AssertUnwindSafe(|| {
-            extract_block(replay, index, &[family], &shared.stop, knobs)
+        let (outcome, took, bytes) = catch_unwind(AssertUnwindSafe(|| {
+            extract_block_measured(replay, index, &[family], &shared.stop, knobs)
         }))
         .ok()
         .and_then(|mut outcomes| outcomes.pop())
-        .unwrap_or((Outcome::Sequential, Duration::ZERO));
-        shared.finish(lane, position, extracted);
+        .unwrap_or((Outcome::Sequential, Duration::ZERO, 0));
+        shared.finish(lane, position, (outcome, took), bytes);
     }
 }
 
@@ -868,14 +949,15 @@ fn visit(
 /// facts that tracker finds there ([`FrameChanges::rebuilt`]), and is told
 /// of the quiet spans between. A family whose extract refuses or fails, or
 /// every family when the block cannot be read, is observed hour by hour
-/// instead.
-pub(crate) fn extract_block(
+/// instead. Each family's outcome comes with the bytes its facts hold
+/// ([`Extract::bytes`]; none for a block observed hour by hour).
+fn extract_block_measured(
     replay: &Replay,
     index: &BlockIndex,
     families: &[&'static Family],
     stop: &AtomicBool,
     knobs: &Knobs,
-) -> Vec<Extracted> {
+) -> Vec<(Outcome, Duration, u64)> {
     let format = replay.format;
     let mut extracts: Vec<Running> = families
         .iter()
@@ -976,17 +1058,23 @@ pub(crate) fn extract_block(
     if read.is_err() {
         return sequential(families)
             .into_iter()
-            .map(|outcome| (outcome, Duration::ZERO))
+            .map(|outcome| (outcome, Duration::ZERO, 0))
             .collect();
     }
     extracts
         .into_iter()
         .map(|running| {
+            let bytes = running.extract.as_ref().map_or(0, |extract| extract.bytes());
             let outcome = running
                 .extract
                 .and_then(|extract| extract.finish().ok())
                 .map_or(Outcome::Sequential, Outcome::Facts);
-            (outcome, running.took)
+            let bytes = if matches!(outcome, Outcome::Facts(_)) {
+                bytes
+            } else {
+                0
+            };
+            (outcome, running.took, bytes)
         })
         .collect()
 }

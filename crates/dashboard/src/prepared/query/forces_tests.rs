@@ -5,7 +5,9 @@ use crate::products::parts_race_prepared::test_fixtures::Fixture;
 use serde_json::Value;
 use std::sync::atomic::AtomicBool;
 
-/// The fixture read through the query hub, as the host reads it.
+/// The fixture read through the query hub, as the host reads it. The fixture
+/// publishes the hourly walk's pages and branch coverage, so its products are
+/// read as when every family is prepared hour by hour.
 trait HubQuery {
     fn query(&self, product: &str, params: Value) -> Value;
 }
@@ -18,12 +20,14 @@ impl HubQuery for Fixture {
             params,
         };
         let reply: Value = serde_json::from_str(
-            &crate::prepared::query::query(
-                &self.source,
-                &request,
-                self.context.content.as_ref(),
-                &AtomicBool::new(false),
-            )
+            &crate::prepared::pipeline::with_test_hourly(|| {
+                crate::prepared::query::query(
+                    &self.source,
+                    &request,
+                    self.context.content.as_ref(),
+                    &AtomicBool::new(false),
+                )
+            })
             .unwrap(),
         )
         .unwrap();

@@ -558,8 +558,8 @@ fn rows_naming_an_unlinked_producer_are_counted_and_never_exact() {
 #[test]
 fn an_unreadable_output_read_is_counted_and_its_hours_marked() {
     use crate::products::{
-        CountryParams, LoadContext, Product,
-        production_lines::{ProductionLines, scan},
+        LoadContext, Product,
+        production_lines::{ProductionLines, ProductionLinesParams, scan},
     };
     let frame = |hour: i32| {
         let mut frame = production_frame(
@@ -612,9 +612,10 @@ fn an_unreadable_output_read_is_counted_and_its_hours_marked() {
     .unwrap();
     let reply = ProductionLines::load(
         &source,
-        &CountryParams {
+        &ProductionLinesParams {
             branch_id: "1".into(),
             tag: "GER".into(),
+            exact: None,
         },
         &LoadContext { content: None },
         &AtomicBool::new(false),
@@ -1067,10 +1068,11 @@ fn organisations_are_named_and_pictured_as_the_game_does() {
 #[test]
 fn production_lines_reply_without_content_names_only_designs_and_answers_again_from_the_cache() {
     use crate::products::{
-        CountryParams, LoadContext, Product,
+        LoadContext, Product,
         equipment::EQUIPMENT_DECIMALS,
         production_lines::{
             DETAIL_HOURS, ProductionDetailParams, ProductionLineDetail, ProductionLines,
+            ProductionLinesParams,
         },
     };
     let replay = Arc::new(
@@ -1110,11 +1112,12 @@ fn production_lines_reply_without_content_names_only_designs_and_answers_again_f
         &AtomicBool::new(false),
     )
     .unwrap();
-    let params = CountryParams {
+    let params = ProductionLinesParams {
         branch_id: "1".into(),
         tag: "GER".into(),
+        exact: None,
     };
-    let load = |params: &CountryParams| {
+    let load = |params: &ProductionLinesParams| {
         ProductionLines::load(
             &source,
             params,
@@ -1200,7 +1203,7 @@ fn production_lines_reply_without_content_names_only_designs_and_answers_again_f
             .any(|warning| warning.starts_with("Equipment names and icons are unavailable"))
     );
     assert_eq!(load(&params).lines, reply.lines);
-    let other = load(&CountryParams {
+    let other = load(&ProductionLinesParams {
         tag: "XXX".into(),
         ..params
     });
@@ -1516,7 +1519,10 @@ fn organisations_are_known_only_where_their_table_is_read_and_carried() {
 
 #[test]
 fn a_variant_made_only_between_two_censuses_is_named_in_the_reply() {
-    use crate::products::{CountryParams, LoadContext, Product, production_lines::ProductionLines};
+    use crate::products::{
+        LoadContext, Product,
+        production_lines::{ProductionLines, ProductionLinesParams},
+    };
     // Line 5 shows variant 70 at both censuses but made some of variant 71 in between.
     let replay = Arc::new(
         Replay::from_records(
@@ -1557,9 +1563,10 @@ fn a_variant_made_only_between_two_censuses_is_named_in_the_reply() {
     .unwrap();
     let reply = ProductionLines::load(
         &source,
-        &CountryParams {
+        &ProductionLinesParams {
             branch_id: "1".into(),
             tag: "GER".into(),
+            exact: None,
         },
         &LoadContext { content: None },
         &AtomicBool::new(false),
@@ -1584,8 +1591,8 @@ fn a_variant_made_only_between_two_censuses_is_named_in_the_reply() {
 #[test]
 fn unresolved_country_identity_marks_lost_between_census_output_and_warns() {
     use crate::products::{
-        CountryParams, LoadContext, Product,
-        production_lines::{ProductionLines, scan},
+        LoadContext, Product,
+        production_lines::{ProductionLines, ProductionLinesParams, scan},
     };
     let frames = (FIRST..=FIRST + 24)
         .map(|hour| {
@@ -1646,9 +1653,10 @@ fn unresolved_country_identity_marks_lost_between_census_output_and_warns() {
     .unwrap();
     let reply = ProductionLines::load(
         &source,
-        &CountryParams {
+        &ProductionLinesParams {
             branch_id: "1".into(),
             tag: "GER".into(),
+            exact: None,
         },
         &LoadContext { content: None },
         &AtomicBool::new(false),
@@ -1666,10 +1674,11 @@ fn unresolved_country_identity_marks_lost_between_census_output_and_warns() {
 #[test]
 fn unresolved_organisation_owner_never_selects_generic_name_or_icon() {
     use crate::products::{
-        CountryParams, LoadContext, Product,
+        LoadContext, Product,
         equipment::Texts,
         production_lines::{
-            ProductionLines, RawOrganisation, organisation_icon, organisation_name, scan,
+            ProductionLines, ProductionLinesParams, RawOrganisation, organisation_icon,
+            organisation_name, scan,
         },
     };
     struct Names;
@@ -1748,9 +1757,10 @@ fn unresolved_organisation_owner_never_selects_generic_name_or_icon() {
     .unwrap();
     let reply = ProductionLines::load(
         &source,
-        &CountryParams {
+        &ProductionLinesParams {
             branch_id: "1".into(),
             tag: "GER".into(),
+            exact: None,
         },
         &LoadContext { content: None },
         &AtomicBool::new(false),
@@ -1848,4 +1858,164 @@ fn organisation_icon_refuses_unread_token_after_independent_stored_candidate() {
         organisation_icon_with_token(&raw, true, |name| name == UNKNOWN_ORGANISATION_ICON),
         Ok(Some(UNKNOWN_ORGANISATION_ICON.into()))
     );
+}
+
+/// The blocks a load reads, as `scan_blocks` counts them on this thread.
+fn blocks_read<T>(load: impl FnOnce() -> T) -> (T, Vec<u64>) {
+    crate::blocks::SCANNED_BLOCKS.with_borrow_mut(Vec::clear);
+    let value = load();
+    (value, crate::blocks::SCANNED_BLOCKS.with_borrow(Clone::clone))
+}
+
+/// The widget's default request reads a fixed number of the branch's newest blocks
+/// however long the recording is, and says which hours it does not answer exactly.
+/// A request with `exact` reads every block once and answers what the whole scan
+/// answers; once that scan is held every request is answered from it, reading nothing.
+#[test]
+fn a_first_view_reads_a_bounded_number_of_newest_blocks_whatever_the_recording_length() {
+    use crate::{
+        products::{
+            LoadContext, Product,
+            country_groups::HourSpan,
+            production_lines::{
+                FIRST_VIEW_BLOCKS, ProductionLines, ProductionLinesParams, line_history, scan,
+            },
+        },
+        test_fixtures::continuation_records,
+    };
+    let bound = FIRST_VIEW_BLOCKS as i32;
+    // Every hour is a read of Germany's lines; line 6 ends halfway.
+    let frame = |hour: i32, length: i32| {
+        let units = i64::from(hour - FIRST);
+        let (lines, output): (Vec<LineFixture>, Vec<OutputFixture>) = if hour - FIRST < length / 2
+        {
+            (
+                vec![(5, 70, 8, 0), (6, 71, 2, 0)],
+                vec![(5, 70, units, true, false), (6, 71, units, true, false)],
+            )
+        } else {
+            (vec![(5, 70, 8, 0)], vec![(5, 70, units, true, false)])
+        };
+        production_frame(hour, true, true, 9001, &lines, Some(&output))
+    };
+    for length in [2 * bound, 10 * bound] {
+        // Each appended segment starts a keyframe, so each hour is its own block.
+        let mut replay = Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(1, vec![frame(FIRST, length)])],
+        )
+        .unwrap();
+        for hour in FIRST + 1..FIRST + length {
+            replay = replay
+                .append(&[continuation_records(
+                    &replay,
+                    1,
+                    vec![frame(hour, length)],
+                )])
+                .unwrap();
+        }
+        assert_eq!(replay.index.len(), length as usize);
+        let newest: Vec<u64> = replay.index[replay.index.len() - FIRST_VIEW_BLOCKS..]
+            .iter()
+            .map(|block| block.offset)
+            .collect();
+        let whole = scan(&replay, 1, "GER", None, &AtomicBool::new(false)).unwrap();
+        let source = crate::Source::from_replay(
+            crate::SourceKey {
+                source_id: "production".into(),
+                revision: "1".into(),
+            },
+            "memory.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let load = |exact: Option<bool>| {
+            ProductionLines::load(
+                &source,
+                &ProductionLinesParams {
+                    branch_id: "1".into(),
+                    tag: "GER".into(),
+                    exact,
+                },
+                &LoadContext { content: None },
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+        };
+        let (first, read) = blocks_read(|| load(None));
+        assert_eq!(read, newest, "a {length}-block recording");
+        let window = FIRST + length - bound;
+        assert_eq!(
+            first.approximate,
+            [HourSpan {
+                first_hour: FIRST,
+                last_hour: window
+            }]
+        );
+        assert_eq!(first.reads, (window..FIRST + length).collect::<Vec<_>>());
+        assert_eq!(
+            first
+                .lines
+                .iter()
+                .map(|line| (line.key.as_str(), line.before_recording, line.ended_by))
+                .collect::<Vec<_>>(),
+            [("5#1", true, None)]
+        );
+        assert!(
+            first
+                .warnings
+                .iter()
+                .any(|warning| warning.starts_with("This first view reads only GER's"))
+        );
+        // Another first view answers from the one held.
+        let (again, read) = blocks_read(|| load(None));
+        assert!(read.is_empty());
+        assert_eq!(
+            (again.approximate, again.lines),
+            (first.approximate.clone(), first.lines.clone())
+        );
+        let (exact, read) = blocks_read(|| load(Some(true)));
+        assert_eq!(read.len(), length as usize);
+        assert!(exact.approximate.is_empty());
+        assert_eq!(
+            exact.lines,
+            whole.lines.iter().map(line_history).collect::<Vec<_>>()
+        );
+        assert_eq!(exact.lines[1].ended_by, Some(FIRST + length / 2));
+        assert_eq!(
+            (&exact.reads, &exact.line_hours, &exact.output_hours),
+            (&whole.reads, &whole.line_hours, &whole.output_hours)
+        );
+        assert!(
+            !exact
+                .warnings
+                .iter()
+                .any(|warning| warning.starts_with("This first view"))
+        );
+        let (held, read) = blocks_read(|| load(None));
+        assert!(read.is_empty());
+        assert!(held.approximate.is_empty());
+        assert_eq!(held.lines, exact.lines);
+    }
+}
+
+/// A first view holds one detail window of the newest blocks, and never reads more
+/// blocks than its bound, whatever their size or number.
+#[test]
+fn a_first_view_holds_a_detail_window_of_newest_blocks_within_its_bound() {
+    let spans = |count: i32, hours: i32| {
+        (0..count)
+            .map(|block| (block * hours, block * hours + hours - 1))
+            .collect::<Vec<_>>()
+    };
+    // Fifty years in blocks of about 660 hours: the newest two hold a window.
+    assert_eq!(first_view_blocks(&spans(663, 660)), 2);
+    assert_eq!(first_view_blocks(&spans(6_630, 660)), 2);
+    assert_eq!(first_view_blocks(&spans(663, DETAIL_HOURS)), 1);
+    // Hour-long blocks (appended segments) stop at the bound.
+    assert_eq!(first_view_blocks(&spans(5_000, 1)), FIRST_VIEW_BLOCKS);
+    // A short branch is read whole.
+    assert_eq!(first_view_blocks(&spans(1, 30)), 1);
+    assert_eq!(first_view_blocks(&[]), 0);
 }

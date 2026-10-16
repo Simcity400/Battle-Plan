@@ -22,6 +22,84 @@ fn frame(hour: i32, count: u32) -> DecodedFrame {
     frame
 }
 
+/// Hours whose keys, links, tokens and stockpile rows are the hour before's
+/// step in constant time to the state observing them reaches (each dates its
+/// read), and on to the same state at the next changed hour. A step that
+/// observing would take otherwise (after a gap, with another read flag, read
+/// back from a continuation, or a read of a stockpile table that is not
+/// complete, whose reason is the frame's) declines and changes nothing.
+#[test]
+fn a_quiet_hour_steps_to_the_state_observing_it_reaches() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let first = frame(100, 3);
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first.clone()])]).unwrap();
+    let state = |prepared: &Prepared| serde_json::to_value(prepared).unwrap();
+    // Each later hour shares every table of `from`: nothing changed.
+    let at = |from: &DecodedFrame, hour: i32| {
+        let mut frame = from.clone();
+        frame.hour = hour;
+        frame
+    };
+    let read = |hour: i32| slot_read(replay.format, &first.metrics, TableId::Nukes, hour);
+    let mut tracker = FrameChangeTracker::new();
+    let changes = tracker.observe(&first, replay.format);
+    let (mut observed, mut stepped) = (Prepared::default(), Prepared::default());
+    observed.observe(&first, &replay, &changes).unwrap();
+    stepped.observe(&first, &replay, &changes).unwrap();
+    for hour in 101..=105 {
+        let frame = at(&first, hour);
+        let changes = tracker.observe(&frame, replay.format);
+        assert!(
+            !changes.rows_changed[TableId::Nukes.index()],
+            "hour {hour} is quiet"
+        );
+        observed.observe(&frame, &replay, &changes).unwrap();
+        assert!(
+            stepped.advance_quiet(hour, read(hour)).unwrap(),
+            "hour {hour} steps"
+        );
+        assert_eq!(state(&stepped), state(&observed), "hour {hour}");
+    }
+    assert_eq!(
+        state(&stepped)["feed_reads"],
+        serde_json::json!([{"firstHour": 100, "lastHour": 105}]),
+        "every quiet read is dated"
+    );
+    // Declined steps change nothing.
+    let held = state(&stepped);
+    assert!(!stepped.advance_quiet(107, read(107)).unwrap(), "a gap");
+    assert!(
+        !stepped.advance_quiet(106, !read(106)).unwrap(),
+        "another read flag"
+    );
+    assert_eq!(state(&stepped), held);
+    let mut reloaded: Prepared = serde_json::from_value(held).unwrap();
+    assert!(
+        !reloaded.advance_quiet(106, read(106)).unwrap(),
+        "read back from a continuation, the next hour needs its frame"
+    );
+    // The next changed hour leaves both in the same state.
+    let mut changed = at(&first, 106);
+    if let TableView::Complete(TableRows::Nukes(rows)) =
+        &mut *changed.tables[TableId::Nukes.index()]
+    {
+        rows[0].amount_raw += 200_000_000;
+    }
+    let changes = tracker.observe(&changed, replay.format);
+    observed.observe(&changed, &replay, &changes).unwrap();
+    stepped.observe(&changed, &replay, &changes).unwrap();
+    assert_eq!(state(&stepped), state(&observed));
+    // A stockpile table read but not complete names its reason from the
+    // frame: the hours after it are observed.
+    let mut unread = at(&changed, 107);
+    *unread.tables[TableId::Nukes.index()] = TableView::Unavailable {
+        reason: "Stockpiles not read".into(),
+    };
+    let changes = tracker.observe(&unread, replay.format);
+    stepped.observe(&unread, &replay, &changes).unwrap();
+    assert!(read(108) && !stepped.advance_quiet(108, true).unwrap());
+}
+
 #[test]
 #[cfg(feature = "slow-tests")]
 fn progressive_nukes_sampler_matches_observer_on_every_key_at_5000_countries() {

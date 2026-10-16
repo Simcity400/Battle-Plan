@@ -1,8 +1,9 @@
 use super::*;
 use std::{io::Read, sync::Mutex, time::Duration};
 
-// Enumerate the documented manifest header, but open every registered payload
-// through the real store reader. UUIDs and physical file names are not payloads.
+// Enumerate the manifest's sections through the store's listing, and open
+// every registered payload through the real store reader. UUIDs and physical
+// file names are not payloads.
 pub(super) fn payloads(
     source: &Source,
     content: Option<&crate::products::ContentOptions>,
@@ -14,15 +15,12 @@ pub(super) fn payloads(
     let directory = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
         .join("HOI4Replay/prepared")
         .join(id.to_string());
-    let mut manifest = std::fs::File::open(directory.join("manifest")).unwrap();
-    let mut length = [0; 8];
-    manifest.read_exact(&mut length).unwrap();
-    let header: serde_json::Value =
-        serde_json::from_reader(manifest.take(u64::from_le_bytes(length))).unwrap();
+    let listing = store::Listing::open(&directory.join("manifest"))
+        .unwrap()
+        .unwrap();
     let mut result = BTreeMap::new();
-    for section in header["sections"].as_array().unwrap() {
-        let name = section["name"].as_str().unwrap();
-        for range in 0..section["count"].as_u64().unwrap() {
+    for (name, count) in listing.sections() {
+        for range in 0..count {
             let mut bytes = Vec::new();
             store
                 .read(&key, name, range)

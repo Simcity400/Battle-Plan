@@ -447,6 +447,267 @@ fn prepared_scoped_project_names_use_the_same_frame_pass_and_preserve_country_re
     );
 }
 
+/// Countries 1 to `countries`, each holding a project whose scoped name
+/// reads its `project_flag` variable, which turns on for country 1 alone at
+/// `on`; every other row equal at every hour.
+fn scoped_countries_frame(hour: i32, countries: u32, on: i32) -> DecodedFrame {
+    use replay::rows::{
+        CountryRow, ProvinceRow, ScriptVariableEntry, ScriptVariablesRow, StateRow,
+    };
+    let mut frame = frame(hour, true, countries);
+    frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        (1..=countries)
+            .map(|id| CountryRow {
+                id,
+                canonical_slot: id,
+                tag: format!("opaque-{id}").into_bytes(),
+                ..Default::default()
+            })
+            .collect(),
+    ))
+    .into();
+    frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        (1..=countries)
+            .map(|id| CountryLinkRow {
+                id,
+                canonical_slot: id,
+            })
+            .collect(),
+    ))
+    .into();
+    frame.tables[TableId::States.index()] =
+        TableView::Complete(TableRows::States(vec![StateRow {
+            id: 1,
+            owner: 1,
+            controller: 1,
+            ..Default::default()
+        }]))
+        .into();
+    frame.tables[TableId::Provinces.index()] =
+        TableView::Complete(TableRows::Provinces(vec![ProvinceRow {
+            id: 1,
+            state: 1,
+            owner: 1,
+            controller: 1,
+            ..Default::default()
+        }]))
+        .into();
+    frame.tables[TableId::ScriptVariables.index()] =
+        TableView::Complete(TableRows::ScriptVariables(
+            std::iter::once(ScriptVariablesRow {
+                scope_kind: 0,
+                scope_id: 0,
+                seed: replay::rows::Recorded::Value(None),
+                entries: Vec::new(),
+            })
+            .chain((1..=countries).map(|id| ScriptVariablesRow {
+                scope_kind: 1,
+                scope_id: id,
+                seed: replay::rows::Recorded::Value(None),
+                entries: vec![ScriptVariableEntry {
+                    name: b"project_flag".to_vec(),
+                    value_raw: if id == 1 && hour >= on { 100_000 } else { 0 },
+                }],
+            }))
+            .collect(),
+        ))
+        .into();
+    frame
+}
+
+/// With hundreds of countries' scoped names, an hour at which only some
+/// names change revisits only those countries' presentations, and
+/// publishes what revisiting every country does (the oracle).
+#[test]
+fn prepared_scoped_project_names_revisit_only_countries_whose_names_changed() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let root = super::super::tests::TempRoot::new("prepared-project-refresh");
+    super::super::history_tests::content(&root.0, "[ROOT.ProjectStage]");
+    let (options, identity) = dashboard_base::test_fixtures::content_identity(&root.0);
+    let countries = 300;
+    let frames: Vec<_> = (100..=105)
+        .map(|hour| scoped_countries_frame(hour, countries, 103))
+        .collect();
+    let mut entries = records(1, frames);
+    let replay::spool::Record::SessionStart(session) = &mut entries[0] else {
+        unreachable!()
+    };
+    session.identity = identity;
+    let source = super::super::history_tests::source(
+        Replay::from_records(CAMPAIGN.into(), &[entries]).unwrap(),
+        "refresh",
+    );
+    let flag = AtomicBool::new(false);
+    let context = LoadContext {
+        content: Some(options),
+    };
+    let mut prepared = Prepared::new(source.replay_ref(), 1);
+    for frame in &decoded(&source) {
+        prepared.observe(&source, &context, frame, &flag).unwrap();
+    }
+    // The first hour observes every country; of the five after it, only
+    // country 1's name changes, at 103: revisiting every active country at
+    // each of them would revisit 5 * 300.
+    assert_eq!(prepared.refreshed, 1);
+    let fixture = Fixture::new();
+    publish(&fixture, &mut prepared);
+    for (tag, expected) in [
+        ("opaque-1", &["Waiting", "Active"][..]),
+        ("opaque-2", &["Waiting"][..]),
+        ("opaque-300", &["Waiting"][..]),
+    ] {
+        let reply = compare(&fixture, &source, &params(tag), &context);
+        let names: Vec<_> = reply.projects[0]
+            .runs
+            .iter()
+            .map(|run| reply.presentations[run.presentation as usize].name.as_str())
+            .collect();
+        assert_eq!(names, expected, "{tag}");
+    }
+}
+
+#[test]
+fn prepared_scoped_project_names_reuse_an_evaluation_whose_inputs_read_the_same() {
+    use replay::rows::{
+        CountryRow, ProvinceRow, ScriptVariableEntry, ScriptVariablesRow, StateRow,
+    };
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let root = super::super::tests::TempRoot::new("prepared-project-reuse");
+    // opaque-1's name reads its `project_flag` variable; opaque-2's reads a
+    // country flag, never the variable.
+    super::super::history_tests::content(&root.0, "[ROOT.ProjectStage]");
+    let localisation = root.0.join("localisation/mod_l_english.yml");
+    let mut text = std::fs::read_to_string(&localisation).unwrap();
+    text.push_str(" opaque-2_mod_project:0 \"[ROOT.MissingProjectProperty]\"\n");
+    std::fs::write(localisation, text).unwrap();
+    std::fs::write(root.0.join("common/scripted_localisation/refusal.txt"), "entry={name=MissingProjectProperty text={trigger={has_country_flag=mod_project} localization_key=ACTIVE}}").unwrap();
+    let (options, identity) = dashboard_base::test_fixtures::content_identity(&root.0);
+    // Every hour equal but the variable, which turns on at 103.
+    let frames: Vec<_> = (100..=105)
+        .map(|hour| {
+            let mut frame = frame(hour, true, 2);
+            frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+                (1..=2)
+                    .map(|id| CountryRow {
+                        id,
+                        canonical_slot: id,
+                        tag: format!("opaque-{id}").into_bytes(),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ))
+            .into();
+            frame.tables[TableId::CountryLinks.index()] =
+                TableView::Complete(TableRows::CountryLinks(
+                    (1..=2)
+                        .map(|id| CountryLinkRow {
+                            id,
+                            canonical_slot: id,
+                        })
+                        .collect(),
+                ))
+                .into();
+            frame.tables[TableId::States.index()] =
+                TableView::Complete(TableRows::States(vec![StateRow {
+                    id: 1,
+                    owner: 1,
+                    controller: 1,
+                    ..Default::default()
+                }]))
+                .into();
+            frame.tables[TableId::Provinces.index()] =
+                TableView::Complete(TableRows::Provinces(vec![ProvinceRow {
+                    id: 1,
+                    state: 1,
+                    owner: 1,
+                    controller: 1,
+                    ..Default::default()
+                }]))
+                .into();
+            frame.tables[TableId::ScriptVariables.index()] =
+                TableView::Complete(TableRows::ScriptVariables(
+                    std::iter::once(ScriptVariablesRow {
+                        scope_kind: 0,
+                        scope_id: 0,
+                        seed: replay::rows::Recorded::Value(None),
+                        entries: Vec::new(),
+                    })
+                    .chain((1..=2).map(|id| ScriptVariablesRow {
+                        scope_kind: 1,
+                        scope_id: id,
+                        seed: replay::rows::Recorded::Value(None),
+                        entries: vec![ScriptVariableEntry {
+                            name: b"project_flag".to_vec(),
+                            value_raw: if hour < 103 { 0 } else { 100_000 },
+                        }],
+                    }))
+                    .collect(),
+                ))
+                .into();
+            frame
+        })
+        .collect();
+    let mut entries = records(1, frames);
+    let replay::spool::Record::SessionStart(session) = &mut entries[0] else {
+        unreachable!()
+    };
+    session.identity = identity;
+    let source = super::super::history_tests::source(
+        Replay::from_records(CAMPAIGN.into(), &[entries]).unwrap(),
+        "reuse",
+    );
+    let flag = AtomicBool::new(false);
+    let context = LoadContext {
+        content: Some(options),
+    };
+    let accepted = decoded(&source);
+    let observe = |prepared: &mut Prepared| {
+        for frame in &accepted {
+            prepared.observe(&source, &context, frame, &flag).unwrap();
+        }
+    };
+    // Without check mode, each name is evaluated at the first hour and
+    // opaque-1's again where its variable changes; every other hour reuses.
+    let mut reused = Prepared::new(source.replay_ref(), 1);
+    dashboard_text::triggers::inputs::reusing(|| observe(&mut reused));
+    let counts = reused.names.reuse;
+    assert_eq!((counts.evaluated, counts.reused, counts.checked), (3, 9, 0));
+    // Check mode evaluates every reused name anyway and finds it the same.
+    let mut checked = Prepared::new(source.replay_ref(), 1);
+    observe(&mut checked);
+    let counts = checked.names.reuse;
+    assert_eq!(
+        (
+            counts.evaluated,
+            counts.reused,
+            counts.checked,
+            counts.mismatched
+        ),
+        (3, 9, 9, 0)
+    );
+    // Both publish what evaluating every name at every hour does.
+    for prepared in [&mut reused, &mut checked] {
+        let fixture = Fixture::new();
+        publish(&fixture, prepared);
+        let reply = compare(&fixture, &source, &params("opaque-1"), &context);
+        let names: Vec<_> = reply.projects[0]
+            .runs
+            .iter()
+            .map(|run| reply.presentations[run.presentation as usize].name.as_str())
+            .collect();
+        assert_eq!(names, ["Waiting", "Active"]);
+        let missing = compare(&fixture, &source, &params("opaque-2"), &context);
+        assert!(
+            missing
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("MissingProjectProperty"))
+        );
+    }
+}
+
 #[test]
 fn prepared_constant_completed_intervals_keep_attribution_boundary_and_count_unknown_hours() {
     use replay::rows::{CharacterRow, ProjectProgramRow};
@@ -2464,4 +2725,298 @@ fn prepared_project_events_name_each_presentation_once() {
     assert_eq!(infos.len(), 1, "equal presentations share one key");
     let info = *infos.first().unwrap();
     assert_eq!(reader.event_count_through(info, i32::MAX).unwrap(), 1);
+}
+
+/// Frames over `count` holders, each with one project: one holder's
+/// prototype progress moves every hour (holder `(hour - 100) % count + 1`),
+/// and the last holder's project is in an unsupported native state, whose
+/// warning every span counts. Holder 3 completes at 110 with its date
+/// recorded; holder 5's project is removed at 115; holder 7 starts a second
+/// project at 118; the table is not read at 120, where holder 21's progress
+/// moves unread; holder 2 completes at 125 with its date recorded in the
+/// same hour.
+fn owner_change_frames(count: u32) -> Vec<DecodedFrame> {
+    (100..=131)
+        .map(|hour| {
+            let mut frame = frame(hour, hour != 120, count);
+            let step = hour - 100;
+            let mut history = Vec::new();
+            if let TableView::Complete(TableRows::Projects(rows)) =
+                &mut *frame.tables[TableId::Projects.index()]
+            {
+                for row in rows.iter_mut() {
+                    let first = row.owner as i32 - 1;
+                    if step >= first {
+                        row.state.prototype_progress += (step - first) / count as i32 + 1;
+                    }
+                    if row.owner == count {
+                        row.state.current_offset = 0xdead;
+                    }
+                }
+                for (owner, at) in [(3, 110), (2, 125)] {
+                    if hour >= at {
+                        let row = rows.iter_mut().find(|row| row.owner == owner).unwrap();
+                        row.state.current_offset = 0xe8;
+                        row.state.not_completed = 0;
+                        history.push(ProjectHistoryRow {
+                            owner,
+                            project: owner,
+                            ordinal: 0,
+                            prototype_reward_handle: COMPLETION_MARKER,
+                            option_handle: COMPLETION_MARKER,
+                            date: at,
+                            ..Default::default()
+                        });
+                    }
+                }
+                if hour >= 115 {
+                    rows.retain(|row| row.owner != 5);
+                }
+                if hour >= 118 {
+                    rows.push(ProjectRow {
+                        owner: 7,
+                        local_id: 1007,
+                        definition_id: 8,
+                        started: 1,
+                        program_reference: (7_u64 << 32) | 83,
+                        state: replay::rows::ProjectState {
+                            current_offset: 0x18,
+                            not_completed: 1,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    });
+                    rows.sort_by_key(|row| (row.owner, row.local_id));
+                }
+            }
+            history.sort_by_key(|row| (row.owner, row.project, row.ordinal));
+            frame.tables[TableId::ProjectHistory.index()] =
+                TableView::Complete(TableRows::ProjectHistory(history)).into();
+            frame
+        })
+        .collect()
+}
+
+/// The tables the projects' observer reads without content.
+const OBSERVED_TABLES: [TableId; 10] = [
+    TableId::Campaign,
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::CountryAppearance,
+    TableId::Projects,
+    TableId::ProjectPrograms,
+    TableId::ProjectHistory,
+    TableId::Characters,
+    TableId::CharacterPortraits,
+    TableId::LexicalTokens,
+];
+
+/// Observe every block of `source` read alone, hour by hour, as preparation
+/// does: with each block's recorded updates when `updates`, so a Projects
+/// change can project its changed owners alone, or without them, so every
+/// Projects change projects the whole table.
+fn observe_blocks(source: &Source, prepared: &mut Prepared, updates: bool) {
+    let replay = source.replay_ref();
+    let format = replay.format;
+    let flag = AtomicBool::new(false);
+    let mut tables = OBSERVED_TABLES.to_vec();
+    tables.sort_unstable();
+    for index in &replay.index {
+        let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
+        replay
+            .read_block_alone(
+                index,
+                &tables,
+                |raw, frame| {
+                    let changes = if updates {
+                        tracker.observe_updates(frame, Arc::new(raw), format)
+                    } else {
+                        tracker.observe(frame, format)
+                    };
+                    prepared.observe_changed(frame, &changes, &flag)
+                },
+                || Ok(()),
+            )
+            .unwrap();
+    }
+}
+
+/// A Projects change recorded as an update projects only the owners whose
+/// rows it changed and observes only their countries; every other holder
+/// repeats the warnings observing it again would count. It publishes and
+/// saves exactly what projecting the whole table does (which the oracle
+/// confirms), through completions with their dates, a removed and an added
+/// project, an unread hour whose holder's completions fall behind (the next
+/// change takes the whole table), a history change in the same hour as a
+/// project change, and an unsupported state counted at every span.
+#[test]
+fn project_changes_project_only_changed_owners_and_publish_what_the_whole_table_does() {
+    let context = LoadContext { content: None };
+    let count = 40;
+    let source = source(&owner_change_frames(count));
+    let run = |updates: bool| {
+        let mut prepared = Prepared::new(source.replay_ref(), 1);
+        prepared.configure(&source, &context).unwrap();
+        observe_blocks(&source, &mut prepared, updates);
+        let fixture = Fixture::new();
+        publish(&fixture, &mut prepared);
+        (prepared, fixture)
+    };
+    let (whole, whole_fixture) = run(false);
+    let (owners, owners_fixture) = run(true);
+    assert_eq!(
+        serde_json::to_value(&owners).unwrap(),
+        serde_json::to_value(&whole).unwrap(),
+        "the saved state"
+    );
+    for id in [1, 2, 3, 5, 7, 21, count] {
+        let params = params(&format!("opaque-{id}"));
+        let actual = compare(&owners_fixture, &source, &params, &context);
+        let expected = compare(&whole_fixture, &source, &params, &context);
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(expected).unwrap(),
+            "opaque-{id}"
+        );
+    }
+    let (rows, metadata) = completion_rows(&owners_fixture);
+    let (expected_rows, expected_metadata) = completion_rows(&whole_fixture);
+    assert_eq!(rows, expected_rows, "completion changes");
+    assert_eq!(
+        serde_json::to_value(&metadata).unwrap(),
+        serde_json::to_value(&expected_metadata).unwrap(),
+        "completion metadata"
+    );
+    let reason = "Project is in unsupported native state 0xdead";
+    assert!(metadata.refusal_keys.contains_key(reason));
+    let keys: Vec<_> = metadata.refusal_keys.values().copied().collect();
+    let flag = AtomicBool::new(false);
+    let mut actual = Reader::new(
+        &owners_fixture.store,
+        &owners_fixture.key,
+        completion_stream::section(1),
+        &flag,
+    )
+    .unwrap();
+    let mut expected = Reader::new(
+        &whole_fixture.store,
+        &whole_fixture.key,
+        completion_stream::section(1),
+        &flag,
+    )
+    .unwrap();
+    for hour in 100..=131 {
+        assert_eq!(
+            actual.values_at(&keys, hour).unwrap(),
+            expected.values_at(&keys, hour).unwrap(),
+            "refusal counts at {hour}"
+        );
+    }
+    assert!(
+        owners.work.row_visits * 4 < whole.work.row_visits,
+        "changed owners alone: {} rows visited, {} by the whole table",
+        owners.work.row_visits,
+        whole.work.row_visits
+    );
+    assert_eq!(owners.work.emitted, whole.work.emitted);
+}
+
+/// At 2,000 holders, an hour where one owner's progress moves visits that
+/// owner's row alone and emits its country alone.
+#[test]
+fn project_change_of_one_owner_visits_its_rows_alone_at_2000_holders() {
+    let context = LoadContext { content: None };
+    let count = 2_000;
+    let first = frame(100, true, count);
+    let mut moved = first.clone();
+    moved.hour = 101;
+    if let TableView::Complete(TableRows::Projects(rows)) =
+        &mut *moved.tables[TableId::Projects.index()]
+    {
+        rows[count as usize / 2].state.prototype_progress += 1;
+    }
+    let source = source(&[first, moved]);
+    let mut prepared = Prepared::new(source.replay_ref(), 1);
+    prepared.configure(&source, &context).unwrap();
+    let replay = source.replay_ref();
+    let format = replay.format;
+    let flag = AtomicBool::new(false);
+    let mut tables = OBSERVED_TABLES.to_vec();
+    tables.sort_unstable();
+    let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
+    let mut before = None;
+    replay
+        .read_block_alone(
+            &replay.index[0],
+            &tables,
+            |raw, frame| {
+                if frame.hour == 101 {
+                    before = Some(prepared.work);
+                }
+                let changes = tracker.observe_updates(frame, Arc::new(raw), format);
+                prepared.observe_changed(frame, &changes, &flag)
+            },
+            || Ok(()),
+        )
+        .unwrap();
+    let before = before.expect("the second hour");
+    assert_eq!(prepared.work.row_visits - before.row_visits, 1);
+    assert_eq!(prepared.work.emitted - before.emitted, 1);
+}
+
+/// Holders 1 and 2 observed at 100; a recorded update changes only holder
+/// 1's progress at 101 and again at 103, and nothing at 102. Projecting the
+/// changed owner alone skips holder 2 at 101 and 103, yet it saves what
+/// projecting the whole table saves: holder 2's last observation at 103 and
+/// its completions' compact run started again at 103 after the hour none
+/// observed, with the same completion changes and refusal counts.
+#[test]
+fn skipped_holders_save_what_observing_them_again_saves() {
+    let context = LoadContext { content: None };
+    let frames: Vec<_> = (100..=103)
+        .map(|hour| {
+            let mut frame = frame(hour, true, 2);
+            if let TableView::Complete(TableRows::Projects(rows)) =
+                &mut *frame.tables[TableId::Projects.index()]
+            {
+                rows[0].state.prototype_progress += match hour {
+                    100 => 0,
+                    101 | 102 => 1,
+                    _ => 2,
+                };
+            }
+            frame
+        })
+        .collect();
+    let source = source(&frames);
+    let run = |updates: bool| {
+        let mut prepared = Prepared::new(source.replay_ref(), 1);
+        prepared.configure(&source, &context).unwrap();
+        observe_blocks(&source, &mut prepared, updates);
+        let fixture = Fixture::new();
+        publish(&fixture, &mut prepared);
+        (prepared, fixture)
+    };
+    let (whole, whole_fixture) = run(false);
+    let (owners, owners_fixture) = run(true);
+    assert!(
+        owners.work.row_visits < whole.work.row_visits,
+        "holder 2 was skipped"
+    );
+    assert_eq!(
+        whole.countries["opaque-2"].last.map(|(hour, _)| hour),
+        Some(103)
+    );
+    assert_eq!(
+        serde_json::to_value(&owners).unwrap(),
+        serde_json::to_value(&whole).unwrap(),
+        "the saved state"
+    );
+    let (rows, metadata) = completion_rows(&owners_fixture);
+    let (expected_rows, expected_metadata) = completion_rows(&whole_fixture);
+    assert_eq!(rows, expected_rows);
+    assert_eq!(
+        serde_json::to_value(&metadata).unwrap(),
+        serde_json::to_value(&expected_metadata).unwrap()
+    );
 }

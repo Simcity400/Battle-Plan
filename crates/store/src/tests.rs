@@ -1,5 +1,6 @@
 use super::*;
 use std::{
+    collections::BTreeSet,
     fs::FileTimes,
     io::{Seek, SeekFrom},
     time::Duration,
@@ -18,6 +19,13 @@ thread_local! {
     pub(super) static FORCE_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The commit content recheck interval; zero rechecks at every commit.
     pub(super) static CONTENT_RECHECK: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
+    /// Commits stop, as a terminated process would, once their entry log and
+    /// names are durable and before the root is written.
+    pub(super) static TERMINATE_BEFORE_ROOT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Manifest bytes commits wrote: roots, entry logs and appended names.
+    pub(super) static MANIFEST_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Runs and spans commits visited laying replacements over sections.
+    pub(super) static RUN_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[test]
@@ -58,12 +66,15 @@ fn a_commit_creates_and_flushes_one_pack_per_writer_whatever_its_range_count() {
             last.to_be_bytes()
         );
     }
-    // Three packs and the manifest's temporary, each manifest flushed before
-    // and after its rename; the first commit also publishes the source stamps.
-    assert_eq!(counts, [(3 + 2, 3 + 4), (3 + 1, 3 + 2)]);
+    // Three packs (each fork flushes its own as it hands over its batches),
+    // the entry log, the names file and the root's temporary; the parent's
+    // pack, the log and the names are flushed, and the root before and after
+    // its rename. The first commit also publishes the source stamps.
+    assert_eq!(counts, [(3 + 3 + 1, 2 + 3 + 2 + 2), (3 + 3, 2 + 3 + 2)]);
     drop(fixture.store.extend(&key).unwrap());
     let names = fixture.names();
-    assert_eq!(names.len(), 6, "{names:?}"); // lock, manifest, stamps, three packs
+    // lock, manifest, stamps, names, one entry log, three packs
+    assert_eq!(names.len(), 8, "{names:?}");
     assert_eq!(
         names
             .iter()
@@ -661,7 +672,8 @@ fn crash_between_data_and_manifest_recovers_previous_complete_state() {
     );
     assert!(fixture.store.read(&key, "wars", 0).unwrap().is_none());
     let recovered = fixture.store.replace(key).unwrap();
-    assert_eq!(fixture.names().len(), 4); // manifest, source stamps, old range, lock
+    // manifest, source stamps, names, entry log, old range, lock
+    assert_eq!(fixture.names().len(), 6);
     assert!(old_path.exists());
     drop(recovered);
 }
@@ -830,11 +842,12 @@ fn commits_recheck_content_once_per_interval_and_reopen_refuses_an_edit_within_i
 }
 
 #[test]
-fn hundred_year_range_count_opens_only_the_manifest_header_and_one_entry() {
+fn hundred_year_range_count_opens_only_the_root_and_one_entry() {
     let fixture = Fixture::new();
     let key = fixture.save(b"placeholder");
-    // One hourly range per section over 100 years. References are synthetic;
-    // all but the final range are deliberately absent: opening cannot touch them.
+    // One hourly range per section over 100 years, each section one run of
+    // one entry log. References are synthetic; all but the final entry are
+    // deliberately absent: opening and lookup cannot touch them.
     let count = 100 * 366 * 24;
     let pack = 0x0123_4567_89ab_cdef;
     let id = RangeId {
@@ -842,46 +855,65 @@ fn hundred_year_range_count_opens_only_the_manifest_header_and_one_entry() {
         offset: 7,
         len: 18,
     };
-    let header = Header {
-        version: VERSION,
-        source: fixture.store.catalog().unwrap().unwrap().header.source,
-        sections: vec![
-            Section {
-                name: "countries".into(),
-                count,
-            },
-            Section {
-                name: "wars".into(),
-                count,
-            },
-        ],
-    };
-    publish(&fixture.store.directory.join(MANIFEST), |file| {
-        let header = serde_json::to_vec(&header)?;
-        file.write_all(&(header.len() as u64).to_le_bytes())?;
-        file.write_all(&header)?;
-        // Seeking over the flat list supplies the logical count without millions of writes.
-        let offset = 8 + header.len() as u64 + (2 * count - 1) * ENTRY_BYTES;
-        file.seek(SeekFrom::Start(offset))?;
-        file.write_all(&id.encode())?;
-        file.write_all(
-            &PackRecord {
-                id: pack,
-                live: 18,
-                size: 25,
-            }
-            .encode(),
-        )
-    })
+    let directory = &fixture.store.directory;
+    let log = 0x0fed_cba9_8765_4321;
+    let entries = 2 * count * ENTRY_BYTES;
+    let file = File::create(directory.join(log_name(log))).unwrap();
+    // Extending the log supplies the logical count without millions of writes.
+    file.set_len(entries).unwrap();
+    write_all_at(&file, &id.encode(), entries - ENTRY_BYTES).unwrap();
+    drop(file);
+    let names = 0x1111_2222_3333_4444;
+    let listed = encode_names(["countries", "wars"].into_iter());
+    fs::write(directory.join(names_name(names)), &listed).unwrap();
+    let runs = [0, count * ENTRY_BYTES].map(|offset| Run {
+        first: 0,
+        count,
+        log,
+        offset,
+    });
+    let root = encode_root(
+        &Head {
+            version: VERSION,
+            source: fixture.store.catalog().unwrap().unwrap().header.source,
+            names,
+            names_bytes: listed.len() as u64,
+            sections: 2,
+            runs: 2,
+            logs: 1,
+        },
+        &[(count, &runs[..1]), (count, &runs[1..])],
+        &[PackRecord {
+            id: log,
+            live: entries,
+            size: entries,
+        }],
+        &[PackRecord {
+            id: pack,
+            live: 18,
+            size: 25,
+        }],
+    )
     .unwrap();
+    publish(&directory.join(MANIFEST), |file| file.write_all(&root)).unwrap();
     let path = fixture.store.directory.join(pack_name(pack));
     publish(&path, |file| file.write_all(b"unused last century range")).unwrap();
     assert!(fixture.store.is_reusable(&key).unwrap());
-    let mut opened = fixture.store.catalog().unwrap().unwrap();
-    assert_eq!(opened.offsets.len(), 2);
-    assert_eq!(opened.file.stream_position().unwrap(), opened.offsets[0]);
+    // The root holds a record per section and per run, whatever the ranges.
+    assert!(fs::metadata(directory.join(MANIFEST)).unwrap().len() < 1024);
+    let before = counters::now();
+    let opened = fixture.store.catalog().unwrap().unwrap();
+    assert_eq!(opened.runs.iter().map(Vec::len).collect::<Vec<_>>(), [1, 1]);
     assert_eq!(opened.entry(1, count - 1).unwrap(), Some(id));
-    assert_eq!(opened.file.stream_position().unwrap(), opened.table);
+    assert_eq!(
+        counters::now() - before,
+        counters::Counters {
+            stats: 0,
+            manifest_reads: 1,
+            pack_opens: 0,
+            log_opens: 1,
+        }
+    );
     assert_eq!(
         bytes(
             fixture
@@ -1191,7 +1223,8 @@ fn an_older_layout_reads_as_absent_and_the_next_writer_removes_it() {
         bytes(fixture.store.read(&key, "countries", 0).unwrap().unwrap()),
         b"current layout"
     );
-    assert_eq!(fixture.names().len(), 4); // lock, manifest, stamps, one pack
+    // lock, manifest, stamps, names, one entry log, one pack
+    assert_eq!(fixture.names().len(), 6);
 }
 
 #[test]
@@ -1232,9 +1265,11 @@ fn packs_under_half_live_are_emptied_at_commit_without_changing_held_readers() {
             .unwrap();
     }
     writer.commit().unwrap();
-    // The writer's pack, the pack the listed bytes moved into and the
-    // manifest's temporary; only the new pack and the manifest are flushed.
-    assert_eq!((CREATED.get(), SYNCS.get()), (3, 1 + 2));
+    // The writer's pack, the pack the listed bytes moved into, the entry log
+    // and the root's temporary; only the new pack, the log and the root are
+    // flushed. Dead bytes passed a quarter of the listed, so the published
+    // pack was emptied too.
+    assert_eq!((CREATED.get(), SYNCS.get()), (4, 2 + 2));
     let expected: Vec<_> = (0..10)
         .map(|range| match range {
             0 => page(0, 11),
@@ -1478,11 +1513,13 @@ fn a_scope_checks_its_key_once_and_shares_pack_handles() {
         assert!(many[1].1.is_none() && many[2].1.is_none());
     }
     let work = counters::now() - before;
-    // The scope's one key check and manifest read happened when it opened.
+    // The scope's one key check and manifest read happened when it opened;
+    // its ranges share one pack handle and one entry log handle.
     assert_eq!(
         work,
         counters::Counters {
             pack_opens: 1,
+            log_opens: 1,
             ..Default::default()
         }
     );
@@ -1586,4 +1623,554 @@ fn empty_ranges_need_no_pack_and_stay_readable_through_append() {
         session.read("catalogue", 1).unwrap().unwrap().id(),
         session.read("catalogue", 2).unwrap().unwrap().id()
     );
+}
+
+/// The producers a group commit joins, each with its own sections.
+const PRODUCERS: [&str; 3] = ["a", "b", "c"];
+
+/// Publishes two equal ranges of each producer's old section.
+fn producers_prefix(fixture: &Fixture) -> SourceKey {
+    let key = fixture.key();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    for producer in PRODUCERS {
+        for range in 0..2 {
+            writer
+                .write(
+                    &format!("{producer}-old"),
+                    format!("{producer} old {range}").as_bytes(),
+                )
+                .unwrap();
+        }
+    }
+    writer.commit().unwrap();
+    key
+}
+
+/// One producer's two batches in its own sections: a replaced and an
+/// appended old range, then a new section with a replaced range, read back.
+fn produce(writer: &mut Writer, producer: &str) {
+    let (old, new) = (format!("{producer}-old"), format!("{producer}-new"));
+    writer
+        .write_at(&old, 0, format!("{producer} old 0 v2").as_bytes())
+        .unwrap();
+    assert_eq!(writer.write(&old, producer.as_bytes()).unwrap(), 2);
+    writer.end_batch();
+    writer.write(&new, &b"new 0"[..]).unwrap();
+    writer.write(&new, &b"new 1"[..]).unwrap();
+    writer
+        .write_at(&new, 1, format!("{producer} new 1 v2").as_bytes())
+        .unwrap();
+    assert_eq!(
+        bytes(writer.read_at(&new, 1).unwrap().unwrap()),
+        format!("{producer} new 1 v2").as_bytes()
+    );
+}
+
+/// Each published section's ranges by name, whatever the manifest order.
+fn by_name(published: &Published) -> BTreeMap<String, Vec<Vec<u8>>> {
+    published
+        .0
+        .iter()
+        .map(|(name, _)| name.clone())
+        .zip(published.1.iter().cloned())
+        .collect()
+}
+
+#[test]
+fn producers_adopted_into_one_commit_publish_what_their_own_commits_publish() {
+    // Alone: each producer forks, writes and commits in turn.
+    let alone = Fixture::new();
+    let key = producers_prefix(&alone);
+    let (mut created, mut syncs, mut change) = (0, 0, 0);
+    for producer in PRODUCERS {
+        let mut writer = alone.store.extend(&key).unwrap();
+        let mut fork = writer.fork().unwrap();
+        produce(&mut fork, producer);
+        writer.adopt_all(fork.into_staged().unwrap()).unwrap();
+        change += writer.payload_bytes_change();
+        CREATED.set(0);
+        SYNCS.set(0);
+        writer.commit().unwrap();
+        created += CREATED.get();
+        syncs += SYNCS.get();
+    }
+    let expected = published(&alone, &key);
+    // Each commit creates its entry log and the root's temporary, flushing
+    // the log, the names it appends and the root before and after its
+    // rename; each producer flushed its own pack as it handed it over.
+    assert_eq!((created, syncs), (3 * 2, 3 * 4));
+
+    // Together: the producers write at once on threads of their own and are
+    // adopted, in another order than they ran alone, into one commit.
+    let together = Fixture::new();
+    let key = producers_prefix(&together);
+    let mut writer = together.store.extend(&key).unwrap();
+    let mut forks: Vec<_> = PRODUCERS.map(|_| writer.fork().unwrap()).into();
+    std::thread::scope(|scope| {
+        for (fork, producer) in forks.iter_mut().zip(PRODUCERS) {
+            scope.spawn(move || produce(fork, producer));
+        }
+    });
+    let mut staged: Vec<_> = forks
+        .into_iter()
+        .map(|fork| fork.into_staged().unwrap())
+        .collect();
+    for batches in [staged.remove(2), staged.remove(0), staged.remove(0)] {
+        assert_eq!(batches.len(), 2);
+        writer.adopt_all(batches).unwrap();
+    }
+    assert_eq!(writer.payload_bytes_change(), change);
+    CREATED.set(0);
+    SYNCS.set(0);
+    writer.commit().unwrap();
+    // One root, one entry log and one flush set for every producer.
+    assert_eq!((CREATED.get(), SYNCS.get()), (2, 4));
+    let actual = published(&together, &key);
+    assert_eq!(by_name(&actual), by_name(&expected));
+    // Range numbering is each section's own; only where sections new to the
+    // manifest are listed follows which producers committed together, and
+    // every lookup is by name.
+    assert_eq!(actual.0[..3], expected.0[..3]);
+    let names = |published: &Published| -> BTreeSet<String> {
+        published.0.iter().map(|(name, _)| name.clone()).collect()
+    };
+    assert_eq!(names(&actual), names(&expected));
+    for producer in PRODUCERS {
+        let read = |section: &str, range| {
+            bytes(
+                together
+                    .store
+                    .read(&key, &format!("{producer}-{section}"), range)
+                    .unwrap()
+                    .unwrap(),
+            )
+        };
+        assert_eq!(read("old", 0), format!("{producer} old 0 v2").as_bytes());
+        assert_eq!(read("old", 2), producer.as_bytes());
+        assert_eq!(read("new", 1), format!("{producer} new 1 v2").as_bytes());
+    }
+}
+
+#[test]
+fn a_refused_producer_is_taken_back_whole_and_the_others_commit_together() {
+    // The reference: only the producers that are not refused, alone.
+    let reference = Fixture::new();
+    let key = producers_prefix(&reference);
+    for producer in ["a", "c"] {
+        let mut writer = reference.store.extend(&key).unwrap();
+        let mut fork = writer.fork().unwrap();
+        produce(&mut fork, producer);
+        writer.adopt_all(fork.into_staged().unwrap()).unwrap();
+        writer.commit().unwrap();
+    }
+    let expected = published(&reference, &key);
+
+    let fixture = Fixture::new();
+    let key = producers_prefix(&fixture);
+    let mut writer = fixture.store.extend(&key).unwrap();
+    let (mut a, mut refused, mut c) = (
+        writer.fork().unwrap(),
+        writer.fork().unwrap(),
+        writer.fork().unwrap(),
+    );
+    produce(&mut a, "a");
+    produce(&mut c, "c");
+    // The refused producer's first batch creates sections, appends, replaces
+    // a range it appended and one published; its second reads a range the
+    // first producer replaced, so adoption refuses it after the first.
+    refused.write("refused-own", &b"own 0"[..]).unwrap();
+    refused.write("refused-own", &b"own 1"[..]).unwrap();
+    refused
+        .write_at("refused-own", 1, &b"own 1 v2"[..])
+        .unwrap();
+    refused.write_at("b-old", 1, &b"b old 1 v2"[..]).unwrap();
+    refused.write("b-old", &b"b old 2"[..]).unwrap();
+    refused.end_batch();
+    refused.write("refused-later", &b"later"[..]).unwrap();
+    assert_eq!(
+        bytes(refused.read_at("a-old", 0).unwrap().unwrap()),
+        b"a old 0"
+    );
+    writer.adopt_all(a.into_staged().unwrap()).unwrap();
+    let adopted = (writer.bytes_written(), writer.payload_bytes_change());
+    let batches = refused.into_staged().unwrap();
+    assert_eq!(batches.len(), 2);
+    let error = writer.adopt_all(batches).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Other, "{error}");
+    // Nothing of it stays listed: its sections, ranges and bytes are gone.
+    assert_eq!(
+        (writer.bytes_written(), writer.payload_bytes_change()),
+        adopted
+    );
+    assert!(writer.read_at("refused-own", 0).unwrap().is_none());
+    assert!(writer.read_at("b-old", 2).unwrap().is_none());
+    assert_eq!(
+        bytes(writer.read_at("b-old", 1).unwrap().unwrap()),
+        b"b old 1"
+    );
+    writer.adopt_all(c.into_staged().unwrap()).unwrap();
+    // The refusal left the transaction publishable.
+    writer.commit().unwrap();
+    let actual = published(&fixture, &key);
+    assert_eq!(by_name(&actual), by_name(&expected));
+    assert_eq!(actual.0, expected.0);
+    // A batch of an earlier transaction is refused before anything is listed.
+    let mut earlier = fixture.store.extend(&key).unwrap();
+    let mut late = earlier.fork().unwrap();
+    late.write("late", &b"late"[..]).unwrap();
+    let late = late.into_staged().unwrap();
+    earlier.commit().unwrap();
+    let mut next = fixture.store.extend(&key).unwrap();
+    assert_eq!(
+        next.adopt_all(late).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    next.commit().unwrap();
+    assert_eq!(by_name(&published(&fixture, &key)), by_name(&expected));
+}
+
+/// Deterministic pseudo-random numbers.
+struct Sequence(u64);
+
+impl Sequence {
+    fn below(&mut self, bound: u64) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.0 >> 33) % bound.max(1)
+    }
+}
+
+/// Every range of every section the store lists, read through one session,
+/// against what was written there last.
+fn assert_reads(fixture: &Fixture, key: &SourceKey, model: &BTreeMap<String, Vec<Vec<u8>>>) {
+    let session = fixture.store.session(key).unwrap().unwrap();
+    for (section, ranges) in model {
+        assert_eq!(
+            session.range_count(section),
+            Some(ranges.len() as u64),
+            "{section}"
+        );
+        for (range, expected) in ranges.iter().enumerate() {
+            let read = session.read(section, range as u64).unwrap().unwrap();
+            assert_eq!(&bytes(read), expected, "{section} {range}");
+        }
+        assert!(
+            session
+                .read(section, ranges.len() as u64)
+                .unwrap()
+                .is_none()
+        );
+    }
+    let catalog = fixture.store.catalog().unwrap().unwrap();
+    assert_eq!(catalog.header.sections.len(), model.len());
+    for runs in &catalog.runs {
+        assert!(runs.len() <= MAX_RUNS, "{runs:?}");
+    }
+    for log in &catalog.logs {
+        assert!(log.live * 2 >= log.size, "{log:?}");
+    }
+}
+
+#[test]
+fn reads_after_many_commits_of_appends_and_replacements_return_every_write() {
+    // What every range read returns is what was last written there, as the
+    // flat manifest listed it: the same sections, counts and bytes, through
+    // appends, tail, middle and first-range replacements, empty ranges, new
+    // sections, forks, extended and appended transactions.
+    let fixture = Fixture::new();
+    let mut key = fixture.key();
+    let mut model: BTreeMap<String, Vec<Vec<u8>>> = BTreeMap::new();
+    let mut sequence = Sequence(7);
+    let mut held = Vec::new();
+    for commit in 0..240u64 {
+        let mut writer = if commit == 0 {
+            fixture.store.replace(key.clone()).unwrap()
+        } else if commit % 60 == 0 {
+            // The recording grew: the prefix carries on under a new key.
+            fs::write(
+                &fixture.recording,
+                "synthetic recording ".repeat((commit / 60) as usize),
+            )
+            .unwrap();
+            let grown = fixture.key();
+            let writer = fixture.store.append(&key, grown.clone()).unwrap();
+            key = grown;
+            writer
+        } else {
+            fixture.store.extend(&key).unwrap()
+        };
+        let mut fork = (commit % 3 == 1).then(|| writer.fork().unwrap());
+        for step in 0..=sequence.below(12) {
+            // Forks write their own sections; new sections appear over time.
+            let (target, prefix) = match &mut fork {
+                Some(fork) if step % 2 == 1 => (fork, "forked"),
+                _ => (&mut writer, "section"),
+            };
+            let section = format!("{prefix}-{}", sequence.below(4 + commit / 30));
+            let ranges = model.entry(section.clone()).or_default();
+            let payload = if sequence.below(5) == 0 {
+                Vec::new()
+            } else {
+                format!("{section} {commit} {step}").into_bytes()
+            };
+            let count = ranges.len() as u64;
+            let range = match sequence.below(4) {
+                0 if count > 0 => count - 1,
+                1 if count > 0 => sequence.below(count),
+                2 if count > 0 => 0,
+                _ => count,
+            };
+            target
+                .write_at(&section, range, payload.as_slice())
+                .unwrap();
+            match ranges.get_mut(range as usize) {
+                Some(slot) => *slot = payload,
+                None => ranges.push(payload),
+            }
+        }
+        // A section that grows by many ranges at every commit.
+        for _ in 0..=sequence.below(20) {
+            let ranges = model.entry("series".to_owned()).or_default();
+            let payload = format!("series {}", ranges.len()).into_bytes();
+            writer.write("series", payload.as_slice()).unwrap();
+            ranges.push(payload);
+        }
+        if let Some(fork) = fork {
+            writer.adopt_all(fork.into_staged().unwrap()).unwrap();
+        }
+        writer.commit().unwrap();
+        if commit % 10 == 9 {
+            assert_reads(&fixture, &key, &model);
+            // A range held now keeps its bytes through every later commit.
+            let section = format!("section-{}", sequence.below(4));
+            if let Some(ranges) = model.get(&section).filter(|ranges| !ranges.is_empty()) {
+                let range = sequence.below(ranges.len() as u64);
+                let read = fixture.store.read(&key, &section, range).unwrap().unwrap();
+                held.push((read, ranges[range as usize].clone()));
+            }
+        }
+    }
+    assert_reads(&fixture, &key, &model);
+    assert!(model["series"].len() > 1_000);
+    for (read, expected) in held {
+        assert_eq!(bytes(read), expected);
+    }
+    // A snapshot lists the same entries without the store's names or logs.
+    let listing = Listing::open(&fixture.store.directory.join(MANIFEST))
+        .unwrap()
+        .unwrap();
+    let snapshot = fixture.root.join("snapshot");
+    let mut file = File::create(&snapshot).unwrap();
+    listing.write_snapshot(&mut file).unwrap();
+    drop(file);
+    let copy = Listing::open(&snapshot).unwrap().unwrap();
+    assert!(copy.sections().eq(listing.sections()));
+    for (index, (_, count)) in listing.sections().enumerate() {
+        for range in 0..count {
+            assert_eq!(
+                copy.range(index, range).unwrap(),
+                listing.range(index, range).unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+fn compaction_keeps_every_entry_and_empties_logs_under_half_live() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let page = |range: u64, round: u64| format!("page {range} round {round}").into_bytes();
+    let mut expected: Vec<_> = (0..200).map(|range| page(range, 0)).collect();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    for payload in &expected {
+        writer.write("pages", payload.as_slice()).unwrap();
+    }
+    writer.write("other", &b"other"[..]).unwrap();
+    writer.commit().unwrap();
+    let first = fixture.store.catalog().unwrap().unwrap();
+    assert_eq!(first.runs[0].len(), 1);
+    let first_log = first.runs[0][0].log;
+    let held = fixture.store.read(&key, "pages", 3).unwrap().unwrap();
+    for round in 1..=5 {
+        // Every seventh range from a new start: 29 spans split the pages'
+        // runs past what a section keeps, so they are rewritten as one.
+        let mut writer = fixture.store.extend(&key).unwrap();
+        for range in (round - 1..200).step_by(7) {
+            writer
+                .write_at("pages", range, page(range, round).as_slice())
+                .unwrap();
+            expected[range as usize] = page(range, round);
+        }
+        writer.commit().unwrap();
+        let catalog = fixture.store.catalog().unwrap().unwrap();
+        assert_eq!(catalog.runs[0].len(), 1, "round {round}");
+        // The first log kept only the other section's entry: under half
+        // live, it was emptied into this commit's log.
+        assert!(catalog.logs.iter().all(|log| log.id != first_log));
+        let model = BTreeMap::from([
+            ("other".to_owned(), vec![b"other".to_vec()]),
+            ("pages".to_owned(), expected.clone()),
+        ]);
+        assert_reads(&fixture, &key, &model);
+    }
+    // The next writer open removed the emptied logs; the held range kept
+    // its bytes.
+    drop(fixture.store.extend(&key).unwrap());
+    let catalog = fixture.store.catalog().unwrap().unwrap();
+    let logs: Vec<_> = fixture
+        .names()
+        .iter()
+        .filter_map(|name| parse_log(name))
+        .collect();
+    assert_eq!(logs.len(), catalog.logs.len());
+    assert!(!logs.contains(&first_log));
+    assert_eq!(bytes(held), page(3, 0));
+}
+
+#[test]
+fn termination_between_the_entry_log_and_the_root_opens_at_the_previous_commit() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("pages", &b"page 0"[..]).unwrap();
+    writer.write("pages", &b"page 1"[..]).unwrap();
+    writer.commit().unwrap();
+    let root = fs::read(fixture.store.directory.join(MANIFEST)).unwrap();
+    let names = fixture.store.catalog().unwrap().unwrap().names;
+    let logs = |fixture: &Fixture| {
+        fixture
+            .names()
+            .iter()
+            .filter(|name| parse_log(name).is_some())
+            .count()
+    };
+    let mut writer = fixture.store.extend(&key).unwrap();
+    writer.write_at("pages", 1, &b"page 1 v2"[..]).unwrap();
+    writer.write("pages", &b"page 2"[..]).unwrap();
+    writer
+        .write("lost-section-with-a-long-name", &b"lost"[..])
+        .unwrap();
+    TERMINATE_BEFORE_ROOT.set(true);
+    let terminated = writer.commit();
+    TERMINATE_BEFORE_ROOT.set(false);
+    terminated.unwrap_err();
+    // Its log and the names it appended are durable; no root lists them.
+    assert_eq!(
+        fs::read(fixture.store.directory.join(MANIFEST)).unwrap(),
+        root
+    );
+    assert_eq!(logs(&fixture), 2);
+    let names_path = fixture.store.directory.join(names_name(names.0));
+    assert!(fs::metadata(&names_path).unwrap().len() > names.1);
+    let previous = BTreeMap::from([(
+        "pages".to_owned(),
+        vec![b"page 0".to_vec(), b"page 1".to_vec()],
+    )]);
+    assert_reads(&fixture, &key, &previous);
+    assert!(
+        fixture
+            .store
+            .read(&key, "lost-section-with-a-long-name", 0)
+            .unwrap()
+            .is_none()
+    );
+    // The next writer removes the log; its names go over the ones left
+    // past the root's.
+    let mut writer = fixture.store.extend(&key).unwrap();
+    assert_eq!(logs(&fixture), 1);
+    writer.write("kept", &b"kept"[..]).unwrap();
+    writer.commit().unwrap();
+    let catalog = fixture.store.catalog().unwrap().unwrap();
+    assert_eq!(catalog.names.0, names.0);
+    assert_eq!(fs::metadata(&names_path).unwrap().len(), catalog.names.1);
+    let mut current = previous;
+    current.insert("kept".to_owned(), vec![b"kept".to_vec()]);
+    assert_reads(&fixture, &key, &current);
+}
+
+#[test]
+fn manifest_bytes_per_commit_follow_what_it_changed_not_what_the_store_holds() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    // 100,000 ranges that later commits never touch: 2.4 MB of entries,
+    // which the flat manifest rewrote at every commit.
+    for _ in 0..100_000 {
+        writer.write("history", io::empty()).unwrap();
+    }
+    writer.write("page", &b"page 0"[..]).unwrap();
+    writer.commit().unwrap();
+    let history = fixture.store.catalog().unwrap().unwrap().runs[0].clone();
+    let (mut most, mut total) = (0, 0);
+    let mut series = Vec::new();
+    for commit in 0..300u64 {
+        let mut writer = fixture.store.extend(&key).unwrap();
+        let payload = format!("series range {commit:>8}").into_bytes();
+        writer.write("series", payload.as_slice()).unwrap();
+        series.push(payload);
+        writer
+            .write_at("page", 0, format!("page {commit}").as_bytes())
+            .unwrap();
+        MANIFEST_BYTES.set(0);
+        writer.commit().unwrap();
+        let written = MANIFEST_BYTES.get();
+        (most, total) = (most.max(written), total + written);
+        let catalog = fixture.store.catalog().unwrap().unwrap();
+        // The history's entries stay where the first commit wrote them.
+        assert_eq!(catalog.runs[0], history, "commit {commit}");
+        // An appended section's runs halve towards its end.
+        assert!(catalog.runs[2].len() as u64 <= commit.max(1).ilog2() as u64 + 2);
+    }
+    // Each commit wrote its root (a record per section, run, log and pack)
+    // and its changed entries, never the history's.
+    assert!(most < 32 * 1024, "{most}");
+    assert!(total < 300 * 8 * 1024, "{total}");
+    let model = BTreeMap::from([
+        ("history".to_owned(), vec![Vec::new(); 100_000]),
+        ("page".to_owned(), vec![b"page 299".to_vec()]),
+        ("series".to_owned(), series),
+    ]);
+    assert_reads(&fixture, &key, &model);
+}
+
+#[test]
+fn scattered_replacements_commit_in_one_pass_over_the_runs() {
+    // 100,000 published ranges, then every odd ordinal replaced in one
+    // transaction: 50,000 spans over one run. Laying each span over the runs
+    // one at a time visits ever more runs (about 2.5 billion here); one
+    // ordered pass visits each run piece and span once and rewrites the
+    // section as one run once it passes the runs a section keeps.
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    const RANGES: u64 = 100_000;
+    let mut expected: Vec<Vec<u8>> = (0..RANGES).map(|range| vec![(range % 251) as u8]).collect();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    for payload in &expected {
+        writer.write("pages", payload.as_slice()).unwrap();
+    }
+    writer.commit().unwrap();
+    let mut writer = fixture.store.extend(&key).unwrap();
+    for range in (1..RANGES).step_by(2) {
+        let payload = format!("odd {range}").into_bytes();
+        writer.write_at("pages", range, payload.as_slice()).unwrap();
+        expected[range as usize] = payload;
+    }
+    RUN_VISITS.set(0);
+    MANIFEST_BYTES.set(0);
+    writer.commit().unwrap();
+    // 50,000 kept pieces and 50,000 spans, each visited once.
+    assert!(RUN_VISITS.get() <= RANGES as usize, "{}", RUN_VISITS.get());
+    // The spans' entries and the rewritten section, each written once, and
+    // the root.
+    assert!(
+        MANIFEST_BYTES.get() <= (2 * RANGES * ENTRY_BYTES) as usize + 64 * 1024,
+        "{}",
+        MANIFEST_BYTES.get()
+    );
+    let catalog = fixture.store.catalog().unwrap().unwrap();
+    assert_eq!(catalog.runs[0].len(), 1);
+    let model = BTreeMap::from([("pages".to_owned(), expected)]);
+    assert_reads(&fixture, &key, &model);
 }

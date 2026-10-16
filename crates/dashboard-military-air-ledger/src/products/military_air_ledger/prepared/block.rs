@@ -20,7 +20,7 @@
 use super::*;
 use dashboard_base::prepared::{
     frame_changes::{FrameChangeTracker, FrameChanges},
-    prepass::{Extract, Family, Folded},
+    prepass::{Extract, Family, Folded, Held, HeldBytes},
     series::{Recording, ReplayTarget},
 };
 use replay::{
@@ -150,7 +150,65 @@ struct BlockExtract {
     frames: usize,
 }
 
+impl Held for LeafKey {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.country)
+            .heap(&self.opponent)
+            .heap(&self.building);
+    }
+}
+
+impl Held for IdentityOperands {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes.heap(&self.by_id).heap(&self.present);
+    }
+}
+
+/// A scan: its spans, each country's spans, its pending leaves, warnings,
+/// and the identities and country keys it read.
+impl Held for FamilyScan {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.observed)
+            .heap(&self.incomplete)
+            .heap(&self.countries)
+            .heap(&self.leaves)
+            .heap(&self.warnings)
+            .heap(&self.identities)
+            .heap(&self.country_keys);
+    }
+}
+
+impl Held for Entered {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes.heap(&self.warnings);
+    }
+}
+
 impl Extract for BlockExtract {
+    /// What the block's facts hold: its first frame and each scan's warnings
+    /// then, its recorded calls, each scan at the block's end, and each
+    /// series' keys by name and leaves.
+    fn bytes(&self) -> u64 {
+        let mut held = HeldBytes::default();
+        if let Some(first) = &self.first {
+            held.frame(&first.frame)
+                .heap(&first.air)
+                .heap(&first.bombing);
+        }
+        held.heap(&self.recording);
+        for events in [&self.prepared.air, &self.prepared.bombing] {
+            // The keys by number, as the facts name them.
+            held.add(events.keys.len() * size_of::<String>())
+                .add(events.keys.keys().map(String::capacity).sum())
+                .heap(&events.leaves);
+        }
+        held.heap(&self.prepared.scan.air)
+            .heap(&self.prepared.scan.bombing)
+            .total()
+    }
+
     fn observe(
         &mut self,
         _: &Replay,

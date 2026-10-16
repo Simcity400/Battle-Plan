@@ -460,10 +460,13 @@ pub fn query(
         return Err(crate::invalid("Invalid top countries"));
     }
     let (store, key) = crate::prepared::files(source, context.content.as_ref())?;
-    let accepted = match crate::prepared::coverage::coverage(
+    // The family's own coverage with the identity history's while it is
+    // prepared on its own.
+    let accepted = match crate::prepared::coverage::product_coverage(
         source,
         context.content.as_ref(),
         branch,
+        <super::Territory as crate::products::Product>::KEY,
         cancelled,
     ) {
         Err(error) if error.kind() == io::ErrorKind::InvalidData => None,

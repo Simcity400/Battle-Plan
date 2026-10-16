@@ -31,6 +31,29 @@ the read kept for the next hour, the census series, publication pruning, native
 day settlement and the captured parts), visiting no country. Every other hour
 takes the whole accounting. Both publish and keep the same bytes.
 
+A block read alone is joined on its own (`prepared::block_extract`, on the
+join's tables `prepared::BLOCK_TABLES`): its facts (`prepared::BlockFacts`)
+are the join the block's first hour leaves and each later hour at which the
+hour's changed captures only extend to it while nothing else joins a country.
+A join's state after an hour follows from its state before and the hour's
+tables and changes alone, whatever rows the observer has recorded. Observing a
+block with its facts (`Prepared::observe_folded`), once the join the first
+hour leaves is the facts' own, such an hour that also takes the advance path
+for the observer (no row it has not recorded is observed again, no linked
+capture is due once the captures move, no day boundary, nothing dirty) takes
+it without visiting its captures: their expiries move at the hour, and their
+witnesses reach the last hour they extended to before any other join reads
+them (`Prepared::end_block` after the block). Every other hour is observed.
+
+An hour presenting many countries presents them on several threads, in
+windows, each as presenting it in turn makes it: a country's presentation
+reads its own rows, holds and coverage and what every country shares (the
+branch's warnings, names, census runs, modifier definitions and read
+extent), and taking an earlier country clears only that country's mutations
+and governments. It does so only once the content's power diagnostics are
+reachable (`PoliticsContent::power_requested`), since a presentation reports
+them only from the first item that demanded the power content.
+
 `cargo test -p dashboard-politics-ledger` builds and runs only this product's
 tests. The `test-support` feature compiles its whole-recording test loader and
 instrumentation for the dashboard's pipeline tests.

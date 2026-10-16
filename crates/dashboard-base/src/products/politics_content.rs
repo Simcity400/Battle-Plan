@@ -276,6 +276,14 @@ impl PoliticsContent {
 
     /// Reading diagnostics already requested by an item's presentation; merely
     /// reporting them never loads the optional power databases.
+    /// Whether a ledger item demanded the power content
+    /// ([`Self::power_content`]): only then are its diagnostics reachable
+    /// ([`Self::power_warnings`]), and never unreachable again.
+    pub fn power_requested(&self) -> bool {
+        self.power_requested
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn power_warnings(&self) -> &[String] {
         if !self
             .power_requested

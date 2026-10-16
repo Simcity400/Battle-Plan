@@ -131,6 +131,11 @@ pub(super) struct Stream {
     first_hour: Option<i32>,
     #[serde(skip)]
     diagnostic_steps: BTreeMap<i32, DiagnosticStep>,
+    /// The structural warnings each identity's last observation returned,
+    /// which observing it again with the same projects returns again
+    /// ([`Self::repeat`]).
+    #[serde(skip)]
+    warned: BTreeMap<(u32, u32), BTreeMap<String, usize>>,
 }
 
 impl Stream {
@@ -231,6 +236,60 @@ impl Stream {
             &mut self.next_id,
             &mut self.pending,
         );
+        self.warned.insert(identity, warnings.clone());
+        self.count(hour, closed, warnings, span_changed);
+    }
+
+    /// Whether `identity` was observed since this stream was made or read
+    /// back, so [`Self::repeat`] knows its warnings.
+    pub(super) fn knows(&self, identity: (u32, u32)) -> bool {
+        self.warned.contains_key(&identity)
+    }
+
+    /// [`Self::observe`] of `identity` at `hour` with the projects it was
+    /// last observed with: its open episodes, their dates and its
+    /// continuation stay as they are (the same projects keep every episode
+    /// open and no date changes), nothing closes, and its warnings count
+    /// again where the span changed.
+    pub(super) fn repeat(&mut self, identity: (u32, u32), hour: i32, span_changed: bool) {
+        self.metadata.available = true;
+        let warnings = self.warned.get(&identity).cloned().unwrap_or_default();
+        self.count(hour, Vec::new(), warnings, span_changed);
+    }
+
+    /// The observations of `identity` that [`Self::repeat`] stood in for, at
+    /// `hours` in order, on its continuation: observing the same projects
+    /// again keeps every episode open with an equal run, which the compact
+    /// continuation extends through each consecutive hour and starts again,
+    /// alone, at an hour after a gap.
+    pub(super) fn advance(&mut self, identity: (u32, u32), hours: &[i32]) {
+        let Some(country) = self.countries.get_mut(&identity) else {
+            return;
+        };
+        for episode in &mut country.episodes {
+            let Some(run) = episode.runs.last_mut() else {
+                continue;
+            };
+            for &hour in hours {
+                if run.last_hour.checked_add(1) == Some(hour) {
+                    run.last_hour = hour;
+                } else if hour > run.last_hour {
+                    run.first_hour = hour;
+                    run.last_hour = hour;
+                }
+            }
+        }
+    }
+
+    /// An observation's closed episodes and, where the span changed, its
+    /// warnings, in the hour's diagnostics and the span's source counts.
+    fn count(
+        &mut self,
+        hour: i32,
+        closed: Vec<u64>,
+        warnings: BTreeMap<String, usize>,
+        span_changed: bool,
+    ) {
         if !closed.is_empty() || span_changed && !warnings.is_empty() {
             let step = self.diagnostic_steps.entry(hour).or_default();
             step.closed.extend(closed);

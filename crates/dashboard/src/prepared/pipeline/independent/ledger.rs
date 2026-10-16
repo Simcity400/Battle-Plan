@@ -14,13 +14,27 @@
 //! Its carried state (published event keys, tag history, open days, coverage
 //! and hold intervals) decides what each hour adds, so a block's observation
 //! cannot run apart from the block before. The family's own thread therefore
-//! observes each block hour by hour, as the hourly walk observes it: on the
-//! block read alone with the tables the observer reads (its native tables, the
+//! observes each block in order, as the hourly walk observes it: on the block
+//! read alone with the tables the observer reads (its native tables, the
 //! census, the naming tables, and the shared trigger kit an item's text
 //! evaluates at its event hour), with the change facts and recorded updates of
 //! the block alone, which are the walk's at every hour (every block starts with
-//! no change facts of the block before). Its pre-pass extract reads each
-//! block's campaign identity only and keeps nothing.
+//! no change facts of the block before).
+//!
+//! What a block's join does follows from the join before it and the block's
+//! tables alone, so a pre-pass worker joins each block on its own
+//! (`prepared::BlockFacts`, on the join's tables only): it keeps the join the
+//! block's first hour leaves and certifies each later hour at which the
+//! hour's changed captures only extend and nothing else joins a country. The
+//! fold observes the block's first hour; when the join it leaves is the
+//! worker's, every later hour is the worker's join too, and a certified hour
+//! that only advances captures for the observer (no row it has not yet
+//! recorded is observed again, no capture is due, no day boundary, nothing
+//! dirty) takes the advance path without visiting its captures: each one's
+//! expiry moves, and its witness reaches the last hour it extended to once,
+//! before any other join reads it. Every other hour is observed as the walk
+//! observes it. At an hour that presents many countries, they are presented
+//! on several threads, each as presenting it in turn would make it.
 //!
 //! Hourly preparation binds the ledger's content and the recording at every
 //! block and, where it resumes a branch (at a run's start and wherever it loads
@@ -33,14 +47,13 @@
 use super::{Block, Branch, Load, Observed, Own};
 use crate::{
     prepared::{
-        frame_changes::{FrameChangeTracker, FrameChanges},
-        prepass::{self, Extract, Folded},
+        frame_changes::FrameChangeTracker,
+        prepass::{self, Folded},
     },
     products::{politics_content::PoliticsContent, politics_ledger::prepared},
 };
 use replay::{
     container::{Replay, SeekResult},
-    format::FormatVersion,
     frame::DecodedFrame,
     rows::TableId,
 };
@@ -57,10 +70,10 @@ static FAMILY: prepass::Family = prepass::Family {
     extract: "politics_ledger.extract",
     sequential: "politics_ledger.sequential",
     fallback: "politics_ledger.fallback",
-    // The extract keeps nothing: the observation reads its own tables.
-    tables: &[TableId::Campaign],
+    // The extract joins the block; the observation reads its own tables.
+    tables: prepared::BLOCK_TABLES,
     fields: None,
-    start,
+    start: prepared::block_extract,
 };
 
 /// Each hour the family's own thread observes, counted in tests.
@@ -71,6 +84,16 @@ pub(in crate::prepared::pipeline) const OBSERVED: &str = "politics_ledger.observ
 /// whole accounting, counted in tests.
 #[cfg(test)]
 pub(in crate::prepared::pipeline) const ADVANCED: &str = "politics_ledger.advanced";
+
+/// Each of those advance hours a pre-pass worker's certificate advanced
+/// without the fold joining its captures, counted in tests.
+#[cfg(test)]
+pub(in crate::prepared::pipeline) const CERTIFIED: &str = "politics_ledger.certified";
+
+/// Each observed hour whose countries were presented on several threads,
+/// counted in tests.
+#[cfg(test)]
+pub(in crate::prepared::pipeline) const PARALLEL: &str = "politics_ledger.parallel";
 
 /// The tables the ledger's observer reads: its native tables, the census and
 /// capture coverage, the holders' and items' naming tables
@@ -115,27 +138,6 @@ fn tables() -> &'static [TableId] {
     &TABLES
 }
 
-/// A block a pre-pass worker read for the ledger.
-struct BlockRead;
-
-/// The ledger's block extract: it reads the block's campaign identity and
-/// keeps nothing.
-struct ReadExtract;
-
-impl Extract for ReadExtract {
-    fn observe(&mut self, _: &Replay, _: &DecodedFrame, _: &FrameChanges) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn finish(self: Box<Self>) -> io::Result<Box<dyn Any + Send>> {
-        Ok(Box::new(BlockRead))
-    }
-}
-
-fn start(_: FormatVersion) -> Box<dyn Extract> {
-    Box::new(ReadExtract)
-}
-
 /// The section hourly preparation saves a branch's ledger state in.
 fn state_section(branch: u64) -> String {
     format!("politics-ledger-state-{branch}")
@@ -153,6 +155,10 @@ impl Own for Ledger {
 
     fn timing(&self) -> &'static str {
         "independent.politics_ledger"
+    }
+
+    fn shared_tables(&self) -> &'static [TableId] {
+        tables()
     }
 
     fn gates(&self) -> &'static [&'static str] {
@@ -201,15 +207,18 @@ impl LedgerBranch {
         Ok(())
     }
 
-    /// Observe the block hour by hour, as hourly preparation does, with the
-    /// change facts of the block alone. The last hour observed.
+    /// Observe the block in order, as hourly preparation does, with the
+    /// change facts of the block alone and, from a pre-pass worker, its
+    /// join's `facts`. The last hour observed.
     fn observe_hours(
         &mut self,
         block: &Block<'_>,
+        facts: Option<prepared::BlockFacts>,
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
         self.prepare(block)?;
+        let mut fold = facts.map(prepared::BlockFold::new);
         let format = block.replay.format;
         let mut tracker = FrameChangeTracker::new();
         // Cancellation is checked between hours; an hour's observation runs
@@ -219,11 +228,10 @@ impl LedgerBranch {
         let mut reached = None;
         let mut stopped = false;
         let mut failure = None;
-        let read = block.replay.read_block_alone(
-            block.index,
+        let read = block.read_alone(
             tables(),
             |raw, frame| {
-                let changes = tracker.observe_updates(frame, Arc::new(raw), format);
+                let changes = tracker.observe_updates(frame, raw, format);
                 if stopped {
                     return Ok(());
                 }
@@ -231,12 +239,25 @@ impl LedgerBranch {
                 #[cfg(test)]
                 prepass::note(OBSERVED);
                 #[cfg(test)]
-                let advanced = ledger.advanced_hours();
-                let result = ledger.observe(frame, &changes, &running);
+                let counts = (
+                    ledger.advanced_hours(),
+                    ledger.certified_hours(),
+                    ledger.parallel_hours(),
+                );
+                let result = match fold.as_mut() {
+                    Some(fold) => ledger.observe_folded(frame, &changes, &running, fold),
+                    None => ledger.observe(frame, &changes, &running),
+                };
                 #[cfg(test)]
                 {
-                    if ledger.advanced_hours() > advanced {
-                        prepass::note(ADVANCED);
+                    for (before, after, name) in [
+                        (counts.0, ledger.advanced_hours(), ADVANCED),
+                        (counts.1, ledger.certified_hours(), CERTIFIED),
+                        (counts.2, ledger.parallel_hours(), PARALLEL),
+                    ] {
+                        if after > before {
+                            prepass::note(name);
+                        }
                     }
                 }
                 match observed(frame.hour, result) {
@@ -252,6 +273,7 @@ impl LedgerBranch {
             },
             || check(),
         );
+        ledger.end_block();
         if let Some(error) = failure {
             return Err(error);
         }
@@ -296,10 +318,10 @@ impl Branch for LedgerBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(Folded, Option<i32>)> {
-        facts
-            .downcast::<BlockRead>()
+        let facts = facts
+            .downcast::<prepared::BlockFacts>()
             .map_err(|_| io::Error::other("Pre-pass facts of another family"))?;
-        let reached = self.observe_hours(block, observed, check)?;
+        let reached = self.observe_hours(block, Some(*facts), observed, check)?;
         Ok((Folded::Fast, reached))
     }
 
@@ -309,7 +331,7 @@ impl Branch for LedgerBranch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
-        self.observe_hours(block, observed, check)
+        self.observe_hours(block, None, observed, check)
     }
 
     fn end_block(&mut self, _: &Replay, _: u64) {}

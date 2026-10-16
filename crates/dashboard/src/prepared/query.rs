@@ -273,7 +273,17 @@ fn query_data(
                 true,
                 cancelled,
             )? {
-                return Ok(Value::Null);
+                // The manifest and the newest window answer from the newest
+                // window published before forward preparation.
+                return Ok(crate::products::naval_battles::newest::query(
+                    source,
+                    product,
+                    branch,
+                    &request.params,
+                    &store,
+                    &key,
+                )?
+                .unwrap_or(Value::Null));
             }
             crate::products::naval_battles::prepared::query(
                 source,
@@ -1142,7 +1152,11 @@ fn query_data(
             // A series request waits for its family kind's coverage, as its
             // refusal answers by that kind: a family prepared on its own gates
             // the kind (peace deals, territory transfers, research events).
-            let gate = family.unwrap_or(product);
+            // Factory faction totals wait only for the families they read.
+            let gate = match family {
+                Some("faction-totals") => crate::products::faction_totals::gate(&request.params),
+                _ => family.unwrap_or(product),
+            };
             if family == Some("game-score") && product == "series-state" {
                 return crate::products::game_score::prepared::state(
                     source,

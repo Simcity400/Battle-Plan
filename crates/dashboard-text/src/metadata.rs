@@ -333,6 +333,24 @@ pub struct LinkProjection {
 }
 
 impl LinkTags {
+    /// Bytes the tags' allocations hold, about: each tag by raw link, and the
+    /// slots and links they were read from.
+    pub fn heap_bytes(&self) -> usize {
+        // A hash table's buckets: at most seven eighths full, a control byte each.
+        let table = |capacity: usize, entry: usize| capacity * 8 / 7 * (entry + 1);
+        table(self.tags.capacity(), size_of::<(u32, String)>())
+            + self.tags.values().map(String::capacity).sum::<usize>()
+            + self.from.as_ref().map_or(0, |from| {
+                from.slots.capacity() * size_of::<(u32, Vec<u8>)>()
+                    + from
+                        .slots
+                        .iter()
+                        .map(|(_, tag)| tag.capacity())
+                        .sum::<usize>()
+                    + table(from.link_slots.capacity(), size_of::<(u32, u32)>())
+            })
+    }
+
     /// Reads this hour's country tables: `Ok(true)` when the tags were rebuilt,
     /// `Ok(false)` when their country identities are unchanged, and an error when
     /// either table is not complete (tags stay held; the next complete read rebuilds).
@@ -474,6 +492,16 @@ impl CountryKeys {
         self.0
             .iter()
             .map(|(id, slot, tag)| (*id, *slot, tag.as_slice()))
+    }
+
+    /// Bytes the keys' allocations hold: the list and each tag.
+    pub fn heap_bytes(&self) -> usize {
+        self.0.capacity() * size_of::<(u32, u32, Vec<u8>)>()
+            + self
+                .0
+                .iter()
+                .map(|(_, _, tag)| tag.capacity())
+                .sum::<usize>()
     }
 
     /// Whether `countries` hold these keys.

@@ -24,8 +24,27 @@ pub(super) struct Counts {
     keys: BTreeMap<(Dimension, Dimension, usize), Counter>,
     series: series::Accumulator,
 }
+impl dashboard_base::prepared::prepass::Held for Dimension {
+    fn held(&self, bytes: &mut dashboard_base::prepared::prepass::HeldBytes) {
+        if let Self::Value(value) = self {
+            bytes.heap(value);
+        }
+    }
+}
+impl dashboard_base::prepared::prepass::Held for Counter {
+    fn held(&self, _: &mut dashboard_base::prepared::prepass::HeldBytes) {}
+}
+/// Each page and count key, and the series' batch.
+impl dashboard_base::prepared::prepass::Held for Counts {
+    fn held(&self, bytes: &mut dashboard_base::prepared::prepass::HeldBytes) {
+        bytes
+            .heap(&self.pages)
+            .heap(&self.keys)
+            .heap(&self.series);
+    }
+}
 impl Counts {
-    fn observe(&mut self, hour: i32, events: &[Event]) -> io::Result<()> {
+    pub(super) fn observe(&mut self, hour: i32, events: &[Event]) -> io::Result<()> {
         self.series.through(hour);
         let mut changed = std::collections::BTreeSet::new();
         for event in events {
@@ -67,7 +86,7 @@ impl Counts {
         }
         Ok(())
     }
-    fn publish(
+    pub(super) fn publish(
         &mut self,
         writer: &mut store::Writer,
         branch: u64,

@@ -28,6 +28,20 @@ pub enum Hour {
     Quiet { first: i32, last: i32 },
 }
 
+/// What `hours` hold ([`crate::prepared::prepass::Extract::bytes`]): each
+/// kept frame's views once and its change facts.
+#[allow(clippy::ptr_arg)]
+pub fn hours_bytes(hours: &Vec<Hour>) -> u64 {
+    let mut held = crate::prepared::prepass::HeldBytes::default();
+    held.add(hours.capacity() * size_of::<Hour>());
+    for hour in hours {
+        if let Hour::Observed { frame, changes } = hour {
+            held.frame(frame).changes(changes);
+        }
+    }
+    held.total()
+}
+
 /// A block's hours as the extract kept them.
 pub struct BlockFacts {
     pub hours: Vec<Hour>,

@@ -15,7 +15,9 @@
 //!
 //! Each input also declares what its value is a function of
 //! ([`Key::dependence`]): some fields of some rows of some tables, their keys
-//! and availability. Given what changed since the hour an evaluation last
+//! and availability; in a table keyed by raw country, the rows of one
+//! canonical country and those whose country does not resolve ([`Owner`]).
+//! Given what changed since the hour an evaluation last
 //! read equal ([`Since`]), an input none of whose declared reads changed
 //! reads the same without being read again, so confirming it needs no
 //! trigger world ([`Inputs::confirm_since`]). An input without a declaration
@@ -118,7 +120,9 @@ impl Key {
             }]),
             Key::World(query) => query.dependence().map(in_world),
             Key::Scopes(query) => query.dependence().map(in_world),
-            Key::Names(_) | Key::Text(_) => None,
+            // Names and texts read the hour's tables, never its world.
+            Key::Names(query) => Some(query.dependence()),
+            Key::Text(query) => query.dependence(),
             Key::ClockSeed => Some(vec![TableRead::fields(TableId::Clock, &["seed"])]),
             Key::FocusTag(_) => Some(vec![
                 TableRead::fields(TableId::Countries, &["canonical_slot", "tag"]),
@@ -166,6 +170,21 @@ pub struct TableRead {
     /// Whether the value also compares the hour with each row's end hour,
     /// as an ongoing relation does: it then changes when a row ends.
     pub ends: bool,
+    /// Of a table keyed by raw country first, only the rows of one
+    /// canonical country and the rows whose country does not resolve
+    /// ([`Owner`]); None for every row.
+    pub owner: Option<Owner>,
+}
+
+/// The rows of one canonical country in a table keyed by raw country
+/// first: those whose key's country (`key >> shift`) the hour's
+/// `CountryLinks` maps to `slot`, and those whose country it does not
+/// map, which a read refuses on. Which rows these are is a function of
+/// every `CountryLinks` row's slot, which such a read also reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Owner {
+    pub slot: u32,
+    pub shift: u32,
 }
 
 impl TableRead {
@@ -184,6 +203,7 @@ impl TableRead {
             fields: 0,
             rows: None,
             ends: false,
+            owner: None,
         }
     }
 
@@ -232,9 +252,51 @@ impl TableRead {
         }
     }
 
-    fn holds(&self, key: u128) -> bool {
+    /// Only the rows of canonical country `slot`, and the rows whose
+    /// country does not resolve, in a table whose key holds the raw
+    /// country above bit `shift` ([`Owner`]).
+    pub fn owned_by(self, slot: u32, shift: u32) -> Self {
+        Self {
+            owner: Some(Owner { slot, shift }),
+            ..self
+        }
+    }
+
+    /// Whether the key range holds `key`; an owned read holds only some of
+    /// those rows, by the hour's links.
+    pub(crate) fn holds(&self, key: u128) -> bool {
         self.rows
             .is_none_or(|(first, last)| first <= key && key <= last)
+    }
+
+    /// Whether this read reads the row keyed `key` of `frame`: in its key
+    /// range and, if owned, its country's or unresolved by `frame`'s links.
+    #[cfg(test)]
+    pub(crate) fn reads_row(&self, key: u128, frame: &DecodedFrame) -> bool {
+        self.holds(key)
+            && self.owner.is_none_or(
+                |owner| match frame.complete::<tables::CountryLinks>().ok() {
+                    Some(links) => owned(links, owner, key),
+                    None => true,
+                },
+            )
+    }
+}
+
+/// What an owned read also reads: every `CountryLinks` row's slot, which
+/// decides the rows it reads.
+fn owner_links() -> TableRead {
+    TableRead::fields(TableId::CountryLinks, &["canonical_slot"])
+}
+
+/// Whether `links` (a `CountryLinks` table's rows, ascending by raw id)
+/// maps a row keyed `key` to `owner`'s country or to none.
+fn owned(links: &[replay::rows::CountryLinkRow], owner: Owner, key: u128) -> bool {
+    // The raw country, the 32 bits above the shift.
+    let country = key.checked_shr(owner.shift).unwrap_or(0) as u32;
+    match links.binary_search_by_key(&country, |link| link.id) {
+        Ok(at) => links[at].canonical_slot == owner.slot,
+        Err(_) => true,
     }
 }
 
@@ -330,6 +392,25 @@ impl TableChanges for QuietTables<'_> {
     }
 }
 
+/// The [`TableChanges`] between two frames of a branch, for tests: a table
+/// whose rows or availability differ may have changed anywhere.
+#[cfg(any(test, feature = "test-support"))]
+pub struct Differing<'a> {
+    pub before: &'a DecodedFrame,
+    pub after: &'a DecodedFrame,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl TableChanges for Differing<'_> {
+    fn table(&self, table: TableId) -> TableChange<'_> {
+        if self.before.tables[table.index()] == self.after.tables[table.index()] {
+            TableChange::Same
+        } else {
+            TableChange::Any
+        }
+    }
+}
+
 /// What changed on a branch from hour `from` to hour `to`, and a frame
 /// holding, of every table these changes leave unchanged, its rows at `to`:
 /// the frame at `to` or at `from`.
@@ -406,19 +487,47 @@ impl<'a> Since<'a> {
                         )
                     }
                 };
-                !deleted.is_empty()
-                    || changed.iter().any(|row| {
-                        inserted(read.table, row) || touches(read.table, read.fields, row)
-                    })
+                let mut keys = deleted.iter().copied().chain(
+                    changed
+                        .iter()
+                        .filter(|row| {
+                            inserted(read.table, row) || touches(read.table, read.fields, row)
+                        })
+                        .map(|row| row.key),
+                );
+                match read.owner {
+                    None => keys.next().is_some(),
+                    Some(owner) => self.owned_moved(owner, keys),
+                }
             }
         };
         // An unmoved read's rows hold the same keys, start and end hours
-        // in `rows` as at `to`.
+        // in `rows` as at `to`; an owned read's rows are its country's while
+        // the links are the same.
         moved
+            || (read.owner.is_some() && self.changed(&owner_links()))
             || (read.ends
                 && self
                     .rows
                     .is_none_or(|rows| ended(rows, read, self.from, self.to)))
+    }
+
+    /// Whether a row keyed by one of `keys` (changed or deleted) is one of
+    /// `owner`'s or names no country, by the links in `rows`, which equal
+    /// the links at `to` whenever an owned read can be unchanged. Without
+    /// them, any row may be.
+    fn owned_moved(&self, owner: Owner, mut keys: impl Iterator<Item = u128>) -> bool {
+        let links = self.rows.and_then(|frame| {
+            view_reads::unrecorded(|| match &*frame.tables[TableId::CountryLinks.index()] {
+                TableView::Complete(rows) => rows.rows::<tables::CountryLinks>(),
+                // A truncated table may lack the row that resolves a key.
+                TableView::Truncated { .. } | TableView::Unavailable { .. } => None,
+            })
+        });
+        match links {
+            Some(links) => keys.any(|key| owned(links, owner, key)),
+            None => keys.next().is_some(),
+        }
     }
 }
 
@@ -890,4 +999,4 @@ impl Inputs {
 
 #[cfg(test)]
 #[path = "inputs_tests.rs"]
-mod tests;
+pub(crate) mod tests;

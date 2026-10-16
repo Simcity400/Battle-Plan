@@ -120,6 +120,29 @@ pub(super) struct PairHistory {
     #[serde(skip)]
     pub(super) work: dashboard_base::prepared::observer_tests::Work,
 }
+impl dashboard_base::prepared::prepass::Held for HolderRun {
+    fn held(&self, _: &mut dashboard_base::prepared::prepass::HeldBytes) {}
+}
+
+impl dashboard_base::prepared::prepass::Held for PairRead {
+    fn held(&self, _: &mut dashboard_base::prepared::prepass::HeldBytes) {}
+}
+
+/// Every pair's coverage runs and reads, its keys and the tags they name
+/// (shared tags once), and the per-country and per-pair indexes.
+impl dashboard_base::prepared::prepass::Held for PairHistory {
+    fn held(&self, bytes: &mut dashboard_base::prepared::prepass::HeldBytes) {
+        bytes
+            .heap(&self.coverage)
+            .heap(&self.keys)
+            .heap(&self.reads)
+            .heap(&self.current)
+            .heap(&self.last_tags)
+            .heap(&self.live)
+            .heap(&self.adjacent);
+    }
+}
+
 impl PairHistory {
     /// Every native lifetime's runs, in key order.
     pub(super) fn runs(&self) -> impl Iterator<Item = (&Key, &[PairRead])> + Clone {

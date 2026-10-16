@@ -109,9 +109,25 @@ impl Scan {
         cancelled: &AtomicBool,
         frame_changes: &FrameChanges,
     ) -> io::Result<()> {
+        self.observe_details_read(source, context, frame, cancelled, frame_changes, true)
+    }
+
+    /// [`Self::observe_details`] of a frame that holds the tables sunk ships'
+    /// scripted place names read only when `places`; a ship first read
+    /// without them stops preparation
+    /// ([`ships_sunk::battle_titles::Prepared::observe_read`]).
+    pub fn observe_details_read(
+        &mut self,
+        source: &Source,
+        context: &LoadContext,
+        frame: &DecodedFrame,
+        cancelled: &AtomicBool,
+        frame_changes: &FrameChanges,
+        places: bool,
+    ) -> io::Result<()> {
         let mut own = std::mem::take(&mut self.details.refusals);
         let observed = catalogue::own_refusals(&mut own, || {
-            self.observe_own_details(source, context, frame, cancelled, frame_changes)
+            self.observe_own_details(source, context, frame, cancelled, frame_changes, places)
         });
         self.details.refusals = own;
         observed
@@ -124,6 +140,7 @@ impl Scan {
         frame: &DecodedFrame,
         cancelled: &AtomicBool,
         frame_changes: &FrameChanges,
+        places: bool,
     ) -> io::Result<()> {
         let details = &mut self.details;
         details.fleet_reads.through(frame.hour);
@@ -166,7 +183,7 @@ impl Scan {
             retention,
             cancelled,
         )?;
-        details.sinking_titles.observe(
+        details.sinking_titles.observe_read(
             source,
             context,
             frame,
@@ -181,6 +198,7 @@ impl Scan {
                 &[]
             },
             cancelled,
+            places,
         )?;
         details.sinking_log.observe(
             &details.ships.scan,
@@ -288,7 +306,7 @@ impl Scan {
         }
         Ok(())
     }
-    fn window_records(&self, window: &BattleWindow) -> Self {
+    pub(super) fn window_records(&self, window: &BattleWindow) -> Self {
         let episodes = self
             .episodes
             .iter()
@@ -360,30 +378,53 @@ impl Scan {
     ) -> io::Result<()> {
         let mut own = std::mem::take(&mut self.details.refusals);
         let published = catalogue::own_refusals(&mut own, || {
-            self.publish_own_block(source, context, writer, branch, ordinal, cancelled)
+            if !self.details.configured {
+                self.configure(
+                    source,
+                    branch,
+                    &ships_sunk::prepared_content(source, context),
+                )?;
+            }
+            self.publish_own_block(source.replay_ref(), writer, branch, ordinal, cancelled)
         });
         self.details.refusals = own;
         published
     }
 
-    fn publish_own_block(
+    /// [`Self::publish_block`] of a scan whose content is bound
+    /// ([`Self::configure`]), which needs only the recording: a family
+    /// prepared on its own publishes the block at the commit that follows it.
+    pub fn publish_configured<W: dashboard_base::prepared::pages::Pages + ?Sized>(
         &mut self,
-        source: &Source,
-        context: &LoadContext,
-        writer: &mut store::Writer,
+        replay: &Replay,
+        writer: &mut W,
+        branch: u64,
+        ordinal: usize,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        if !self.details.configured {
+            return Err(io::Error::other(
+                "Naval battles published before their content was bound",
+            ));
+        }
+        let mut own = std::mem::take(&mut self.details.refusals);
+        let published = catalogue::own_refusals(&mut own, || {
+            self.publish_own_block(replay, writer, branch, ordinal, cancelled)
+        });
+        self.details.refusals = own;
+        published
+    }
+
+    fn publish_own_block<W: dashboard_base::prepared::pages::Pages + ?Sized>(
+        &mut self,
+        replay: &Replay,
+        writer: &mut W,
         branch: u64,
         ordinal: usize,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.extend_results();
-        if !self.details.configured {
-            self.configure(
-                source,
-                branch,
-                &ships_sunk::prepared_content(source, context),
-            )?;
-        }
-        let windows = windows(source.replay_ref(), branch);
+        let windows = windows(replay, branch);
         let window = &windows[ordinal];
         let boundary = if ordinal == 0 {
             i32::MIN
@@ -471,7 +512,7 @@ impl Scan {
             cancelled,
         )?;
         details.sinking_log.publish(
-            source,
+            replay,
             writer,
             branch,
             ordinal,
@@ -495,7 +536,7 @@ impl Scan {
             let section = format!("naval-battle-ships-{branch}");
             if let Some(file) = writer.read_at(&section, page)? {
                 let mut prior: Vec<PreparedShip> =
-                    serde_json::from_reader(zstd::stream::Decoder::new(file)?)?;
+                    serde_json::from_reader(zstd::stream::Decoder::new(file.as_slice())?)?;
                 prior.append(&mut rows);
                 rows = prior;
             }
@@ -520,7 +561,8 @@ impl Scan {
                     .read_at(&format!("ships-sunk-manifest-{branch}"), 0)?
                     .ok_or_else(|| {
                         dashboard_core::invalid("Prepared sinking manifest is missing")
-                    })?,
+                    })?
+                    .as_slice(),
             )?)?;
         series::write_reply(
             writer,

@@ -5,6 +5,7 @@ import { campaignToken } from '../../dashboard/chosen.ts';
 import { contentKey, setToken } from '../../dashboard/options.ts';
 import type { BandStep, TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
+import type { MenuItem } from '../../components/ContextMenu';
 import { formatAmount, formatFixed } from '../../charts/valueAxis.ts';
 import { gbNumber } from '../../charts/numberFormat.ts';
 import type { LineDetail, LineHistory, LineRun, LineStep, OrganisationName, OutputRun, ProductionLineDetailReply, ProductionLinesReply, ProductionLineBreakdownReply, ProductionModifierRun,
@@ -104,7 +105,7 @@ export function validateProductionReply(data: unknown): ProductionLinesReply {
         && NULLABLE(item.nameUnknown) && NULLABLE(item.iconUnknown))
     && Array.isArray(reply.icons) && reply.icons.every(icon => typeof icon.key === 'string' && (icon.image === null || (typeof icon.image === 'string' && icon.image.startsWith('data:image/png;base64,'))))
     && Array.isArray(reply.reads) && reply.reads.every((hour, index) => HOUR(hour) && (index === 0 || reply.reads[index - 1] < hour))
-    && [reply.outputHours, reply.lineHours, reply.organisationHours, reply.unreadOutput].every(spans => Array.isArray(spans) && ordered(spans))
+    && [reply.outputHours, reply.lineHours, reply.organisationHours, reply.unreadOutput, reply.approximate].every(spans => Array.isArray(spans) && ordered(spans))
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string');
   if (!ok) throw new Error('The production lines reply is malformed.');
   return reply;
@@ -193,6 +194,29 @@ export const withNote = (note: string | undefined, ...more: (string | undefined)
 /** Whether the country's lines are recorded at an hour (a complete census, read or
  * carried): outside, the lines are unknown, which is not "none". */
 export const linesKnown = (reply: ProductionLinesReply, hour: number) => runAt(reply.lineHours, hour) != null;
+
+/** Why a line's breakdown, pin and choice wait while the reply is a first view
+ * (null once it is exact): its line keys count a handle's appearances from the
+ * newest blocks only, so they can name another appearance than the exact history. */
+export const firstViewLineReason = (reply: ProductionLinesReply): string | null =>
+  reply.approximate.length ? 'Available once the earlier production history is prepared.' : null;
+
+/** Whether hours `first` to `last` meet hours the reply does not answer exactly yet. */
+export const approximateWithin = (reply: ProductionLinesReply, first: number, last: number) =>
+  reply.approximate.some(span => span.firstHour <= last && span.lastHour >= first);
+
+/** The history's state without a lane to draw over `extent`: still being prepared
+ * where it meets a first view's approximate hours, else empty. */
+export const emptyHistoryState = (reply: ProductionLinesReply, extent: readonly [number, number]): 'preparing' | 'empty' =>
+  approximateWithin(reply, extent[0], extent[1]) ? 'preparing' : 'empty';
+
+/** A line's breakdown entries in its context menu: disabled, saying why, while
+ * the reply is a first view. */
+export function breakdownItems(reply: ProductionLinesReply, open: (part: 'efficiency' | 'output') => void): MenuItem[] {
+  const reason = firstViewLineReason(reply);
+  return (['efficiency', 'output'] as const).map(part => ({ label: `${part === 'output' ? 'Output' : 'Efficiency'} breakdown`,
+    ...(reason ? { disabled: true, hint: reason } : {}), run: () => { if (!firstViewLineReason(reply)) open(part); } }));
+}
 
 /** The final count of a line that has ended by `hour`: what it made in all, with
  * each variant's part. Null while it runs, before the count was published (a census

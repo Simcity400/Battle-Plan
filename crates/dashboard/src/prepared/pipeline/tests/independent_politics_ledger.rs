@@ -564,3 +564,371 @@ fn politics_ledger_prepared_on_its_own_skips_the_whole_accounting_where_captures
     assert_same(&payloads(&source, None), &hourly, "advance path", false);
     clear(source);
 }
+
+/// Countries of the dense campaign: raw ids from [`FIRST`], slots and tags
+/// from 0.
+const DENSE: u32 = 5;
+/// Hours a published power row stays in the dense campaign's window.
+const WINDOW: i32 = 30;
+
+/// One hour of a dense campaign of `DENSE` countries at `hour` of `branch`,
+/// whose captures extend to every hour they are read. Every country gains
+/// its daily political power at each day's first hour, when its daily
+/// application is published, and each spends political power every 23
+/// hours, four hours after the country before; each power row leaves the
+/// published window `WINDOW` hours after its hour. The second country allocates
+/// command power to a leader at +14, held from then on. The third country's
+/// capture stops at +40 and starts again (another instance) at +47. Branch 2
+/// starts at +200.
+fn dense_frame(branch: u64, hour: i32) -> DecodedFrame {
+    let mut observed = frame(branch, hour, DENSE);
+    let start = BASE + if branch == 2 { 200 } else { 0 };
+    let captures = (0..DENSE)
+        .map(|index| {
+            let country = FIRST + index;
+            if branch == 1 && index == 2 && hour > BASE + 40 {
+                if hour < BASE + 47 {
+                    capture(country, 1, start, BASE + 40)
+                } else {
+                    capture(country, 2, BASE + 47, hour)
+                }
+            } else {
+                capture(country, 1, start, hour)
+            }
+        })
+        .collect();
+    set(&mut observed, TableRows::PoliticsCaptureCoverage(captures));
+    let instance = |index: u32, at: i32| {
+        if branch == 1 && index == 2 && at >= BASE + 47 {
+            2
+        } else {
+            1
+        }
+    };
+    let held = |at: i32| at <= hour && hour < at + WINDOW && at >= start;
+    let mut power = Vec::new();
+    let mut daily = Vec::new();
+    let today = hour.div_euclid(24) * 24;
+    for index in 0..DENSE {
+        let country = FIRST + index;
+        // The daily gains of the days in the window, and today's application.
+        for day in (start.div_euclid(24) * 24..=today).step_by(24) {
+            let sequence = u64::try_from(day - BASE).unwrap() * 10 + 1;
+            if held(day) {
+                power.push(CountryPowerChangeRow {
+                    country,
+                    instance: instance(index, day),
+                    epoch: 1,
+                    sequence,
+                    hour: day,
+                    currency: PowerCurrency::Political,
+                    operation: PowerOperation::Add,
+                    balance_before_raw: 4_975_000,
+                    balance_after_raw: 4_975_500,
+                    requested_delta_raw: Some(500),
+                    cause: PowerCause::DailyGain,
+                    ..Default::default()
+                });
+            }
+            if day == today && day >= start {
+                daily.push(CountryPowerDailyRow {
+                    country,
+                    instance: instance(index, day),
+                    epoch: 1,
+                    day_hour: day,
+                    pp_gross_gain_raw: Some(500),
+                    pp_cost_raw: Some(0),
+                    pp_net_gain_raw: Some(500),
+                    pp_realized_delta_raw: Some(500),
+                    pp_sequence: Some(sequence),
+                    cp_gain_raw: Some(30),
+                    cp_realized_delta_raw: Some(30),
+                    cp_sequence: Some(sequence + 2),
+                });
+            }
+        }
+        // Its spends in the window.
+        let offset = 3 + 4 * i32::try_from(index).unwrap();
+        for at in (start..=hour).filter(|at| (at - BASE) % 23 == offset) {
+            if held(at) && !(branch == 1 && index == 2 && (BASE + 41..BASE + 47).contains(&at)) {
+                power.push(CountryPowerChangeRow {
+                    country,
+                    instance: instance(index, at),
+                    epoch: 1,
+                    sequence: u64::try_from(at - BASE).unwrap() * 10 + 2,
+                    hour: at,
+                    currency: PowerCurrency::Political,
+                    operation: PowerOperation::Subtract,
+                    balance_before_raw: 5_000_000,
+                    balance_after_raw: 4_975_000,
+                    requested_delta_raw: Some(-25_000),
+                    cause: PowerCause::Decision,
+                    ..Default::default()
+                });
+            }
+        }
+    }
+    if branch == 1 && hour >= BASE + 14 {
+        power.push(CountryPowerChangeRow {
+            country: SECOND,
+            instance: 1,
+            epoch: 1,
+            // After its spend at +7, in sequence.
+            sequence: 145,
+            hour: BASE + 14,
+            currency: PowerCurrency::Command,
+            operation: PowerOperation::Subtract,
+            balance_before_raw: 1_000_000,
+            balance_after_raw: 700_000,
+            requested_delta_raw: Some(-300_000),
+            cause: PowerCause::LeaderAssignment,
+            site: PowerSite::AllocateCommandPower,
+            identity: PowerIdentity {
+                object_kind: PowerObjectKind::Leader,
+                object_reference: Some((7_u64 << 32) | 2),
+                ..Default::default()
+            },
+        });
+    }
+    power.sort_by_key(|row| (row.country, row.sequence));
+    set(&mut observed, TableRows::CountryPowerChanges(power));
+    daily.sort_by_key(|row| row.country);
+    set(&mut observed, TableRows::CountryPowerDaily(daily));
+    set(&mut observed, TableRows::CountryPowerDailyCosts(Vec::new()));
+    set(&mut observed, TableRows::GovernmentChanges(Vec::new()));
+    set(
+        &mut observed,
+        TableRows::CountryCommandPower(
+            (0..DENSE)
+                .map(|canonical_slot| CountryCommandPowerRow {
+                    canonical_slot,
+                    allocated_command_power_raw: if branch == 1
+                        && canonical_slot == 1
+                        && hour >= BASE + 14
+                    {
+                        300_000
+                    } else {
+                        0
+                    },
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    observed
+}
+
+/// Branch 1's first `blocks` blocks of the dense campaign (+58 and +59 are
+/// a gap inside the fourth block), then branch 2's two blocks when
+/// `second`. Every block but the last of a branch holds sixteen recorded
+/// hours, and every one but the first a day's first hour.
+fn dense_scenario(blocks: usize, second: bool) -> Replay {
+    let hours: [Vec<i32>; 6] = [
+        (0..=15).collect(),
+        (16..=31).collect(),
+        (32..=47).collect(),
+        (48..=65).filter(|hour| !(58..=59).contains(hour)).collect(),
+        (66..=81).collect(),
+        (82..=97).collect(),
+    ];
+    let frames = |hours: &[i32]| -> Vec<DecodedFrame> {
+        hours
+            .iter()
+            .map(|&offset| dense_frame(1, BASE + offset))
+            .collect()
+    };
+    let mut replay =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, frames(&hours[0]))]).unwrap();
+    for hours in &hours[1..blocks] {
+        replay = replay
+            .append(&[continuation_records(&replay, 1, frames(hours))])
+            .unwrap();
+    }
+    if second {
+        let frames = |hours: std::ops::RangeInclusive<i32>| -> Vec<DecodedFrame> {
+            hours.map(|offset| dense_frame(2, BASE + offset)).collect()
+        };
+        replay = replay.append(&[records(2, frames(200..=215))]).unwrap();
+        replay = replay
+            .append(&[continuation_records(&replay, 2, frames(216..=229))])
+            .unwrap();
+    }
+    replay
+}
+
+/// What the ledger's own preparation counted on this thread while `run`
+/// ran: hours observed, those advanced from a worker's certificate without
+/// joining their captures, and those presenting their countries on several
+/// threads.
+fn folded<T>(run: impl FnOnce() -> T) -> (T, [usize; 3]) {
+    let names = [ledger::OBSERVED, ledger::CERTIFIED, ledger::PARALLEL];
+    let before = names.map(prepass::noted);
+    let result = run();
+    let after = names.map(prepass::noted);
+    (result, std::array::from_fn(|at| after[at] - before[at]))
+}
+
+/// The ledger's own preparation presenting its countries on three threads
+/// wherever an hour presents two or more.
+fn presented<T>(run: impl FnOnce() -> T) -> T {
+    crate::products::politics_ledger::prepared::with_test_presentation(2, 3, run)
+}
+
+/// The dense campaign prepared on its own, with one and three workers,
+/// publishes and saves exactly what hourly preparation does, through every
+/// day boundary, spend, window drop, hold, a capture stopping and starting
+/// again, a gap inside a block and the second branch, with each hour's
+/// countries presented on several threads. The fold observes every
+/// recorded hour, joins the captures of only some of them in full (each
+/// block's first hour, each day boundary, spend and window drop, and the
+/// capture's stop and restart), and advances the others from the workers'
+/// certificates.
+#[test]
+fn politics_ledger_folds_dense_blocks_from_worker_joins_as_hourly_preparation_does() {
+    let replay = dense_scenario(6, true);
+    let total = hours(&replay);
+    let mut fixture = Fixture::new(&replay);
+    let hourly = hourly(&mut fixture, "politics-ledger-fold", plain);
+    for workers in [1, 3] {
+        let source = fixture.source("politics-ledger-fold");
+        let sequential = prepass::noted("politics_ledger.sequential");
+        let ((), [observed, certified, parallel]) = folded(|| {
+            prepass::with_test_prepass(workers, None, || own(|| presented(|| plain(&source))))
+        });
+        let label = format!("{workers} workers");
+        assert_same(&payloads(&source, None), &hourly, &label, false);
+        assert_eq!(
+            prepass::noted("politics_ledger.sequential"),
+            sequential,
+            "{label}: every block was joined by a pre-pass worker"
+        );
+        assert_eq!(
+            observed, total,
+            "{label}: every recorded hour observed once"
+        );
+        // The hours the fold joins in full: each block's first hour, a day's
+        // first hours, the spends, window drops and capture changes.
+        let joined = observed - certified;
+        assert!(
+            certified > 0 && certified * 4 >= total,
+            "{label}: a quarter of the hours advance from the workers' certificates; {certified} of {total} did"
+        );
+        assert!(
+            joined >= replay.index.len(),
+            "{label}: every block's first hour is joined in full"
+        );
+        assert!(
+            parallel > 0,
+            "{label}: the hours presenting several countries present them on several threads"
+        );
+        clear(source);
+    }
+}
+
+/// The dense campaign committed every block, resumed per run, reloaded and
+/// appended to publishes what hourly preparation does, and its folds still
+/// advance hours from the workers' certificates after each resume.
+#[test]
+fn politics_ledger_folds_dense_blocks_across_commits_resume_reload_and_append() {
+    let first = dense_scenario(3, false);
+    let grown = dense_scenario(6, true);
+    let resumed = |source: &Source| {
+        let flag = AtomicBool::new(false);
+        while unprepared_blocks(source, None).unwrap() != Some(0) {
+            run_measured(source, None, &flag, false, Duration::ZERO, |_| {}).unwrap();
+        }
+    };
+    let modes: [(&str, &dyn Fn(&Source), bool); 4] = [
+        ("run", &plain, false),
+        ("measured", &measured, false),
+        ("measured, reloaded", &measured, true),
+        ("resumed", &resumed, false),
+    ];
+    let mut fixture = Fixture::new(&first);
+    for (mode, prepare, reload) in modes {
+        let both = |fixture: &mut Fixture| -> Payloads {
+            super::super::RELOAD_FLUSHED.with(|flag| flag.set(reload));
+            fixture.replace(&first);
+            let source = fixture.source("politics-ledger-fold-commits");
+            prepare(&source);
+            drop(source);
+            fixture.replace(&grown);
+            let source = fixture.source("politics-ledger-fold-commits");
+            prepare(&source);
+            super::super::RELOAD_FLUSHED.with(|flag| flag.set(false));
+            let payloads = payloads(&source, None);
+            clear(source);
+            payloads
+        };
+        let hourly = independent::with_test_hourly(|| both(&mut fixture));
+        let (own, [_, certified, _]) = folded(|| {
+            own(|| prepass::with_test_prepass(3, None, || presented(|| both(&mut fixture))))
+        });
+        assert_same(&own, &hourly, mode, false);
+        assert!(
+            certified > 0,
+            "{mode}: hours advance from the workers' certificates"
+        );
+    }
+}
+
+/// The dense campaign refuses where hourly preparation does, at the hour and
+/// with the text it refuses with: at an hour a worker certifies (+20, which
+/// neither spends nor drops a spend), at a day's first hour and at a block's
+/// first hour. The refusing block is observed
+/// hour by hour; the blocks before it are folded from their certificates.
+#[test]
+fn politics_ledger_folding_dense_blocks_refuses_where_hourly_preparation_does() {
+    let replay = dense_scenario(6, true);
+    for hour in [BASE + 20, BASE + 48, BASE + 66] {
+        let refusals = [("politics_ledger", hour)];
+        let mut fixture = Fixture::new(&replay);
+        let (hourly, hourly_refused) = independent::with_test_hourly(|| {
+            lanes::with_test_refusals(&refusals, || {
+                let source = fixture.source("politics-ledger-fold-refusal");
+                measured(&source);
+                let (store, key) = super::super::super::files(&source, None).unwrap();
+                let refused = checkpoint(&store, &key, None).unwrap().unwrap().0.refused;
+                let result = (payloads(&source, None), refused);
+                clear(source);
+                result
+            })
+        });
+        let source = fixture.source("politics-ledger-fold-refusal");
+        let sequential = prepass::noted("politics_ledger.sequential");
+        let label = format!("politics ledger refused at {hour}");
+        let ((), [_, certified, _]) = folded(|| {
+            own(|| {
+                lanes::with_test_refusals(&refusals, || {
+                    prepass::with_test_prepass(3, None, || presented(|| measured(&source)))
+                })
+            })
+        });
+        assert_eq!(
+            prepass::noted("politics_ledger.sequential") - sequential,
+            1,
+            "{label}: the refusing block is observed hour by hour"
+        );
+        assert!(certified > 0, "{label}: the blocks before it are folded");
+        let own = payloads(&source, None);
+        assert_same(&own, &hourly, &label, true);
+        let expected = &hourly_refused[&1].0["politics_ledger"];
+        let page: CoveragePage =
+            serde_json::from_slice(&own[&(independent::coverage_section("politics_ledger", 1), 0)])
+                .unwrap();
+        assert_eq!(page.refused.0["politics_ledger"].hour, hour, "{label}");
+        assert_eq!(
+            page.refused.0["politics_ledger"].hour, expected.hour,
+            "{label}"
+        );
+        assert_eq!(
+            page.refused.0["politics_ledger"].error, expected.error,
+            "{label}"
+        );
+        let flag = AtomicBool::new(false);
+        let error = refusal(&source, None, 1, "politics-ledger", &flag).unwrap_err();
+        assert_eq!(error.to_string(), expected.error, "{label}");
+        refusal(&source, None, 2, "politics-ledger", &flag).unwrap();
+        clear(source);
+    }
+}

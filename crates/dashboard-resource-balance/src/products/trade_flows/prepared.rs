@@ -411,6 +411,23 @@ impl Prepared {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        self.flush_named(
+            writer,
+            &dashboard_base::products::resources::ResourceNaming::of(source, context),
+            branch,
+            cancelled,
+        )
+    }
+
+    /// [`Self::flush`], with the resources named through `naming`, taken from
+    /// the source where the flows were last observed.
+    pub fn flush_named(
+        &mut self,
+        writer: &mut store::Writer,
+        naming: &dashboard_base::products::resources::ResourceNaming,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
         self.scan.seal();
         if let Some(hour) = self.scan.last_hour {
             // Cumulative endpoints carry their value over unknown observations
@@ -478,13 +495,12 @@ impl Prepared {
             0,
             cancelled,
         )?;
-        let mut reply = super::reply(
-            source,
+        let mut reply = super::reply_named(
+            naming,
             &TradeFlowParams {
                 branch_id: branch.to_string(),
                 tags: None,
             },
-            context,
             &self.scan.result,
             cancelled,
         )?;
@@ -715,11 +731,17 @@ pub fn query(
     };
     TradeFlows::validate(&selection).map_err(dashboard_core::invalid)?;
     let branch = selection.branch();
-    let coverage =
-        match dashboard_base::prepared::coverage::coverage(source, content, branch, cancelled) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-            result => result?,
-        };
+    // The family's own coverage while it is prepared on its own.
+    let coverage = match dashboard_base::prepared::coverage::product_coverage(
+        source,
+        content,
+        branch,
+        "trade-flows",
+        cancelled,
+    ) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        result => result?,
+    };
     let complete = coverage.as_ref().is_some_and(|coverage| coverage.complete);
     if input.require_complete && !complete {
         return Ok(None);

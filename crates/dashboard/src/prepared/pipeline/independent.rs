@@ -12,12 +12,16 @@
 //! ([`prepass::Pool`]), sized as the hourly walk's and serving every
 //! family's blocks, over the source's one opened recording, so each block is
 //! verified once. Each family folds its blocks in order on a thread of its
-//! own and commits on its own: commits share one store writer and take turns,
-//! and while other families run, a family's writes go through a fork of the
-//! writer adopted only once they all succeed, so each commit holds one
-//! family's whole batch or nothing of it. A family's refusals, coverage and
-//! progress are its own; one that fails or panics leaves the others to
-//! finish, and its error is reported once they have.
+//! own and commits on its own, through one store writer. While other families
+//! run, a family writes its batch into a fork of the open transaction on its
+//! own thread and queues it; one family's thread adopts every queued batch,
+//! each whole or not at all, and publishes them in one store commit (a group
+//! commit, [`commit`]), so families reaching their commits together share one
+//! manifest rewrite and one set of flushes. Each family learns its own
+//! outcome: its write's and its adoption's errors are its own, and the
+//! others' batches still commit. A family's refusals, coverage and progress
+//! are its own; one that fails or panics leaves the others to finish, and its
+//! error is reported once they have.
 //!
 //! The hourly walk skips a family prepared on its own ([`hourly`]), unless
 //! another family reads its state in the same hour: then it keeps its own
@@ -28,12 +32,24 @@
 //! keeps a private read of the family instead, as air superiority does of
 //! the country groups.
 //!
+//! A family whose own thread observes every block hour by hour on the block
+//! read alone declares the tables it reads ([`Own::shared_tables`]); those
+//! families read each block once, together, ahead of them on reader threads,
+//! and each reconstructs its own tables from that read on its own thread
+//! ([`shared`]), so each observes exactly the frames of its own read.
+//!
 //! A family commits by the hourly batch rules (at each branch's end, after
 //! every block budget of its branch ([`super::Batches`]), every block in
 //! measured runs, and at the byte budget of what it holds), so its pages are
 //! those hourly preparation publishes. Where its batches end follows from the
 //! recording and its own bytes alone, never from wall time or from what other
 //! families committed meanwhile.
+//!
+//! Work beside the families ([`Beside`], the newest battle windows) runs on
+//! threads of its own while they prepare and publishes each batch, as soon as
+//! it has one, through the same group commits: a batch with no progress of
+//! its own, in sections no family writes, so no family's pages, ranges or
+//! progress depend on it.
 
 use super::super::Section;
 use super::{
@@ -50,17 +66,48 @@ use crate::{
         country_history::HistoryScan,
     },
 };
-use replay::container::{BlockIndex, Replay};
+use dashboard_base::prepared::pages::{Committed, HeldPages, Pages};
+use replay::{
+    container::{BlockIndex, Replay},
+    frame::{DecodedFrame, Frame},
+    rows::TableId,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     any::Any,
     collections::{BTreeMap, BTreeSet},
     io,
     panic::resume_unwind,
-    sync::{Mutex, PoisonError, atomic::AtomicBool},
+    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, atomic::AtomicBool},
 };
 
-type Timings = Option<BTreeMap<&'static str, FamilyTimings>>;
+pub(super) type Timings = Option<BTreeMap<&'static str, FamilyTimings>>;
+
+/// Work beside the families: its name among the commits' members, and its
+/// run, which publishes each batch through [`Publish`] and counts its own
+/// time in its timings.
+pub(super) struct Beside<'a> {
+    pub name: &'static str,
+    #[allow(clippy::type_complexity)]
+    pub run: Box<dyn FnOnce(&mut Publish<'_>, &mut Timings) -> io::Result<()> + Send + 'a>,
+}
+
+/// Publishes a batch of work beside the families in their next group commit.
+pub(super) struct Publish<'p> {
+    commit:
+        &'p mut dyn FnMut(&mut dyn FnMut(&mut store::Writer) -> io::Result<()>) -> io::Result<()>,
+}
+
+impl Publish<'_> {
+    /// Writes the batch (`write`) into a fork of the open transaction and
+    /// returns once a group commit published it, or with its error.
+    pub(super) fn commit(
+        &mut self,
+        write: &mut dyn FnMut(&mut store::Writer) -> io::Result<()>,
+    ) -> io::Result<()> {
+        (self.commit)(write)
+    }
+}
 
 /// A family prepared on its own.
 pub(super) trait Own: Sync {
@@ -87,6 +134,13 @@ pub(super) trait Own: Sync {
     /// does now). None named keeps the family in the walk whatever the
     /// registry holds.
     fn read_by(&self) -> &'static [&'static str] {
+        &[]
+    }
+    /// The tables its own thread reads from every block it observes hour by
+    /// hour on the block read alone ([`Block::read_alone`]): every selection
+    /// it reads is among them. Families that declare them read each block
+    /// once, together ([`shared`]); none for a family that does not.
+    fn shared_tables(&self) -> &'static [TableId] {
         &[]
     }
     /// One branch's state as `load` last committed it, or new without a
@@ -123,6 +177,54 @@ pub(super) struct Block<'a> {
     pub index: &'a BlockIndex,
     pub source: &'a Source,
     pub context: &'a LoadContext,
+    /// The family's share of the shared block reader, when it declares its
+    /// tables ([`Own::shared_tables`]).
+    pub shared: Option<shared::Lease<'a>>,
+}
+
+impl Block<'_> {
+    /// The block read alone with `tables`, as [`Replay::read_block_alone`]
+    /// reads it: each hour handed to `visit` with its recorded updates. A
+    /// family that declares its tables reconstructs them from the block's
+    /// one shared read, so its frames, their allocations and their recorded
+    /// updates of its tables are those of its own read ([`shared`]).
+    pub(super) fn read_alone(
+        &self,
+        tables: &[TableId],
+        visit: impl FnMut(Arc<Frame>, &DecodedFrame) -> io::Result<()>,
+        check: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
+        shared::read_alone(
+            self.replay,
+            self.index,
+            self.shared,
+            tables,
+            None,
+            visit,
+            check,
+        )
+    }
+
+    /// [`Self::read_alone`] through the hour `last`. A family that reads
+    /// more of its declared tables at some hours reconstructs them through
+    /// each such hour from the same shared read, which decodes them once.
+    pub(super) fn read_through(
+        &self,
+        tables: &[TableId],
+        last: i32,
+        visit: impl FnMut(Arc<Frame>, &DecodedFrame) -> io::Result<()>,
+        check: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
+        shared::read_alone(
+            self.replay,
+            self.index,
+            self.shared,
+            tables,
+            Some(last),
+            visit,
+            check,
+        )
+    }
 }
 
 /// A family's observation of one hour's outcome: `Ok(true)` while it goes on,
@@ -169,6 +271,16 @@ pub(super) trait Branch {
         let _ = (writer, branch, cancelled);
         Ok(())
     }
+    /// Publish the block it just went through, as hourly preparation does
+    /// at the block's end, into pages its next commit writes before
+    /// [`Self::publish`]: `pages` reads what earlier blocks of the batch
+    /// published there, then what the family committed. Its error refuses
+    /// the branch at the block's last hour observed, where hourly
+    /// preparation's publication refuses it.
+    fn publish_block(&mut self, pages: &mut dyn Pages, block: &Block<'_>) -> io::Result<()> {
+        let _ = (pages, block);
+        Ok(())
+    }
     /// Bytes held for its next flush, against the batch budget.
     fn pending(&self) -> usize;
     /// Measure the parts of its folds from now on, for a measured run's
@@ -204,7 +316,7 @@ struct Groups;
 static GROUPS: Groups = Groups;
 
 /// Every family prepared on its own, in registry order.
-static REGISTRY: [&dyn Own; 19] = [
+static REGISTRY: [&dyn Own; 37] = [
     &GROUPS,
     &IDENTITIES,
     &WARS,
@@ -224,7 +336,29 @@ static REGISTRY: [&dyn Own; 19] = [
     &focus::FOCUS,
     &air_superiority::AIR_SUPERIORITY,
     &world_tension::TENSION,
+    &evaluated::RESEARCH,
+    &evaluated::PROJECTS,
+    &evaluated::OCCUPATION,
+    &census::FACTORIES,
+    &census::NUKES,
+    &event_feed::FEED,
+    &windowed::DIVISIONS,
+    &windowed::NAVAL,
+    &leaders::LEADERS,
+    &sampled::AIR,
+    &sampled::STABILITY,
+    &sampled::NAVY,
+    &sampled::FUEL,
+    &sampled::EQUIPMENT_LOSSES,
+    &sampled::SUPPLY,
+    &sampled::PARTIES,
+    &sampled::TRADE,
+    &sampled::TERRITORY,
 ];
+
+/// One read of each block for the families that observe every block hour by
+/// hour on their own thread.
+pub(super) mod shared;
 
 /// Subjects, peace outcomes and idea history.
 pub(super) mod quiet_politics;
@@ -249,6 +383,25 @@ pub(super) mod air_superiority;
 
 /// World tension.
 pub(super) mod world_tension;
+
+/// Research, special projects and occupation.
+pub(super) mod evaluated;
+
+/// Country factories and nuclear stockpiles.
+pub(super) mod census;
+
+/// The event feed, with its own read of the identity history.
+pub(super) mod event_feed;
+
+/// The division log and the naval battles, ships sunk and naval losses.
+pub(super) mod windowed;
+
+/// Unit leaders' careers, commands and battles.
+pub(super) mod leaders;
+
+/// Air force and navy size, stability and its parts, fuel, equipment losses,
+/// supply health, the party history, trade flows and territory.
+pub(super) mod sampled;
 
 impl Own for Groups {
     fn family(&self) -> &'static prepass::Family {
@@ -382,8 +535,11 @@ impl Branch for GroupsBranch {
 }
 
 /// The country identity history. Territory's owned-state observation drives
-/// it and the event feed reads it in the same hour, so the hourly walk keeps
-/// its own read under territory's name.
+/// it and reads it in the same hour: while territory is in the hourly walk,
+/// the walk keeps its own read under territory's name; prepared on its own,
+/// territory makes that read itself ([`sampled`]). The event feed, which
+/// reads it in the same hour too, makes its own read prepared on its own
+/// ([`event_feed`]).
 pub(super) struct Identities;
 
 pub(super) static IDENTITIES: Identities = Identities;
@@ -409,6 +565,12 @@ impl Own for Identities {
 
     fn kept(&self) -> &'static [(&'static str, &'static str)] {
         &[("country-identities", "territory-identities")]
+    }
+
+    /// Territory, prepared on its own, makes its own read of the history
+    /// ([`sampled`]).
+    fn read_by(&self) -> &'static [&'static str] {
+        &["territory"]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
@@ -750,6 +912,57 @@ pub(super) fn gating(product: &str) -> Option<&'static str> {
         .map(|own| own.family().name)
 }
 
+/// Products whose replies read the pages of several families up to the
+/// hours they answer, with those families. Such a product waits for the
+/// coverage every one of them has: its own of a family prepared on its own,
+/// the hourly walk's of any other ([`joint`]). Its refusals are those of the
+/// families `FAMILIES` lists as read by it.
+const JOINT: &[(&str, &[&str])] = &[
+    // Named through the identity history up to their coverage.
+    ("country-factories", &["factories", "identities"]),
+    ("country-nukes", &["nukes", "identities"]),
+    ("supply-health", &["supply", "identities"]),
+    ("equipment-losses", &["equipment_losses", "identities"]),
+    ("territory", &["territory", "identities"]),
+    // Factory faction totals read the faction rosters, the identity history
+    // and the factories (dense factory summaries read territory too, and
+    // wait for its coverage through their window).
+    (
+        crate::products::faction_totals::FACTORIES_GATE,
+        &["groups", "identities", "factories"],
+    ),
+    // Territory faction totals read the faction rosters, the identity
+    // history and territory's pages.
+    (
+        <crate::products::faction_totals::FactionTotals as crate::products::Product>::KEY,
+        &["groups", "identities", "territory"],
+    ),
+    // The feed's own facts and the changes it merges with them.
+    (
+        "event-feed",
+        &[
+            "event_feed",
+            "groups",
+            "subjects",
+            "ideas",
+            "focus",
+            "nukes",
+            "projects",
+        ],
+    ),
+];
+
+/// The families whose coverage `product`'s queries wait for together
+/// ([`JOINT`]), while any of them is prepared on its own; None otherwise,
+/// when the product waits as [`gating`] says.
+pub(super) fn joint(product: &str) -> Option<&'static [&'static str]> {
+    JOINT
+        .iter()
+        .find(|(name, _)| *name == product)
+        .map(|&(_, families)| families)
+        .filter(|families| families.iter().any(|family| registered(family)))
+}
+
 /// A family's coverage page for one branch, with its refusals there.
 pub(super) fn coverage_section(family: &str, branch: u64) -> String {
     format!("preparation-family-{family}-{branch}")
@@ -786,18 +999,188 @@ fn note(timings: &mut Timings, name: &'static str) {
     prepass::note(name);
 }
 
-/// The store writer and checkpoint every family commits through, in turn.
+/// The store writer and checkpoint every family commits through, in groups
+/// ([`commit`]).
 struct Commits<'s> {
-    /// The open transaction; None once a failed commit lost it.
+    /// The open transaction: None while a group publishes it, and once a
+    /// failed commit lost it (`lost`).
     writer: Option<store::Writer>,
+    lost: bool,
     state: &'s mut Checkpoint,
     saved: &'s mut Option<store::SourceKey>,
     bytes: &'s mut u64,
     committed: bool,
+    /// Forks of the open transaction a family is still writing: it joins the
+    /// group that publishes the transaction.
+    forked: usize,
+    /// The open transaction takes no more forks: a group is collecting or
+    /// publishing it.
+    closed: bool,
+    /// A family's thread leads the group commit.
+    leading: bool,
+    /// Families' batches written, waiting for the group commit.
+    queue: Vec<Queued>,
+    /// Each queued family's outcome, by its ticket, until it takes it.
+    outcomes: BTreeMap<u64, io::Result<Accepted>>,
+    tickets: u64,
+    /// Families preparing at once that have not finished.
+    running: usize,
+    grouping: Grouping,
+    /// Store commits holding a family's batch, and the family commits they
+    /// held.
+    published: (usize, usize),
 }
 
-fn lock<'m, 's>(commits: &'m Mutex<Commits<'s>>) -> std::sync::MutexGuard<'m, Commits<'s>> {
-    commits.lock().unwrap_or_else(PoisonError::into_inner)
+/// One family's written batch, or one of work beside the families (without
+/// progress), queued for the group commit.
+struct Queued {
+    ticket: u64,
+    lane: usize,
+    name: &'static str,
+    progress: Option<Progress>,
+    staged: Vec<store::Staged>,
+}
+
+/// The commits, and the condition families wait on for a fork or an outcome.
+struct Group<'s> {
+    commits: Mutex<Commits<'s>>,
+    changed: Condvar,
+}
+
+impl<'s> Group<'s> {
+    fn wait<'m>(&'m self, guard: MutexGuard<'m, Commits<'s>>) -> MutexGuard<'m, Commits<'s>> {
+        self.changed
+            .wait(guard)
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+fn lock<'m, 's>(group: &'m Group<'s>) -> MutexGuard<'m, Commits<'s>> {
+    group.commits.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// How families' commits join groups. Preparation publishes every batch
+/// queued while a group forms; tests also force groupings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Grouping {
+    /// A group holds the batches queued and being written when its leader
+    /// queued its own; families reaching their commits while it publishes
+    /// join the next.
+    Natural,
+    /// Every family commits alone, one after another.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Alone,
+    /// A group waits until every family still preparing has queued.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Together,
+}
+
+impl Commits<'_> {
+    /// Whether a family may fork the open transaction now.
+    fn admits(&self) -> bool {
+        !self.closed
+            && self.writer.is_some()
+            && (self.grouping != Grouping::Alone
+                || (self.forked == 0 && self.queue.is_empty() && !self.leading))
+    }
+
+    /// Whether the group the leader collects is complete. Work beside the
+    /// families joins whichever group forms; families wait for each other
+    /// alone.
+    fn collected(&mut self) -> bool {
+        match self.grouping {
+            Grouping::Together => {
+                self.forked == 0
+                    && self
+                        .queue
+                        .iter()
+                        .filter(|queued| queued.progress.is_some())
+                        .count()
+                        >= self.running
+            }
+            Grouping::Natural | Grouping::Alone => {
+                self.closed = true;
+                self.forked == 0
+            }
+        }
+    }
+}
+
+/// A family's fork of the open transaction, counted until its batch is queued
+/// or given up, however its write ends.
+struct Forked<'m, 's> {
+    group: &'m Group<'s>,
+    armed: bool,
+}
+
+impl<'m, 's> Forked<'m, 's> {
+    /// No longer writing; queues `queued` in the same step, under a ticket of
+    /// its own, so the group collecting the transaction holds it.
+    fn finish(mut self, queued: Option<Queued>) -> (MutexGuard<'m, Commits<'s>>, u64) {
+        self.armed = false;
+        let mut guard = lock(self.group);
+        guard.forked -= 1;
+        let ticket = guard.tickets;
+        if let Some(mut queued) = queued {
+            guard.tickets += 1;
+            queued.ticket = ticket;
+            guard.queue.push(queued);
+        }
+        self.group.changed.notify_all();
+        (guard, ticket)
+    }
+}
+
+impl Drop for Forked<'_, '_> {
+    fn drop(&mut self) {
+        if self.armed {
+            lock(self.group).forked -= 1;
+            self.group.changed.notify_all();
+        }
+    }
+}
+
+/// Leads a group commit until it hands every member its outcome; one that
+/// panics loses the writer and releases the members, which then fail.
+struct Leading<'m, 's> {
+    group: &'m Group<'s>,
+    armed: bool,
+}
+
+impl Drop for Leading<'_, '_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let mut guard = lock(self.group);
+            guard.lost = true;
+            guard.writer = None;
+            guard.leading = false;
+            guard.closed = false;
+            drop(guard);
+            self.group.changed.notify_all();
+        }
+    }
+}
+
+/// A family preparing at once that has finished, however it ended.
+struct Finished<'m, 's>(&'m Group<'s>);
+
+impl Drop for Finished<'_, '_> {
+    fn drop(&mut self) {
+        let mut guard = lock(self.0);
+        guard.running = guard.running.saturating_sub(1);
+        drop(guard);
+        self.0.changed.notify_all();
+    }
+}
+
+fn lost() -> io::Error {
+    io::Error::other("The prepared writer was lost to a failed commit")
+}
+
+/// Why a family cannot commit once the writer is lost: cancellation, as a
+/// commit after a cancelled one always reported, or the lost writer.
+fn lost_to(phase: &Phase<'_>) -> io::Error {
+    check_cancel(phase.cancelled).err().unwrap_or_else(lost)
 }
 
 /// One family's run: its registry entry, its lane in the pool and its
@@ -812,8 +1195,9 @@ struct Run {
 type Ran = (io::Result<()>, Timings, Timings, Counts);
 
 /// Prepares every family of its own through the recording's last block,
-/// committing through `writer`. Returns the open writer and whether anything
-/// was committed (with the writer's pending metadata).
+/// committing through `writer`, with the work `beside` them on threads of its
+/// own, publishing in the same group commits. Returns the open writer and
+/// whether anything was committed (with the writer's pending metadata).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prepare(
     phase: &Phase<'_>,
@@ -823,6 +1207,7 @@ pub(super) fn prepare(
     bytes: &mut u64,
     timings: &mut Timings,
     workers: &mut Timings,
+    beside: Vec<Beside<'_>>,
     accepted: &mut dyn FnMut(&Accepted),
 ) -> io::Result<(store::Writer, bool)> {
     let replay = phase.replay;
@@ -841,7 +1226,7 @@ pub(super) fn prepare(
             });
         }
     }
-    if runs.is_empty() {
+    if runs.is_empty() && beside.is_empty() {
         return Ok((writer, false));
     }
     // The phase's wall time is the walk's; each family's own rows are worker
@@ -854,57 +1239,154 @@ pub(super) fn prepare(
         knobs.refusals = lanes::test_refusals();
     }
     // Every family's blocks from its own first one, on one set of workers.
-    let pool = Pool::start(
-        phase.source.replay(),
-        runs.iter()
-            .map(|run| (run.own.family(), run.progress.next_block))
-            .collect(),
-        prepass::workers(lanes::parallelism()),
-        knobs,
-    );
-    // With other families committing too, each commit adopts a family's
-    // writes only once all of them succeeded.
-    let atomic = runs.len() > 1;
-    let commits = Mutex::new(Commits {
-        writer: Some(writer),
-        state,
-        saved,
-        bytes,
-        committed: false,
+    let pool = (!runs.is_empty()).then(|| {
+        Pool::start(
+            phase.source.replay(),
+            runs.iter()
+                .map(|run| (run.own.family(), run.progress.next_block))
+                .collect(),
+            prepass::workers(lanes::parallelism()),
+            knobs,
+        )
     });
+    let at_once = !(runs.len() == 1 || one_after_another());
+    // The families observing every block hour by hour read each block once,
+    // together, each from its own first block: all from the start when they
+    // prepare at once, each from its own start otherwise.
+    let consumers: Vec<(&[TableId], usize)> = runs
+        .iter()
+        .map(|run| (run.own.shared_tables(), run.progress.next_block))
+        .collect();
+    let shared = if runs.is_empty() {
+        None
+    } else {
+        shared::Shared::start(phase.source.replay(), &consumers, at_once)
+    };
+    // With other families or work beside them committing too, each commit
+    // adopts a family's writes only once all of them succeeded, in group
+    // commits.
+    let atomic = runs.len() + beside.len() > 1;
+    let families = runs.len();
+    let commits = Group {
+        commits: Mutex::new(Commits {
+            writer: Some(writer),
+            lost: false,
+            state,
+            saved,
+            bytes,
+            committed: false,
+            forked: 0,
+            closed: false,
+            leading: false,
+            queue: Vec::new(),
+            outcomes: BTreeMap::new(),
+            tickets: 0,
+            // One after another, only the family preparing now runs.
+            running: if at_once { families } else { families.min(1) },
+            grouping: grouping(),
+            published: (0, 0),
+        }),
+        changed: Condvar::new(),
+    };
     let local = || -> (Timings, Timings) {
         (
             timings.as_ref().map(|_| BTreeMap::new()),
             workers.as_ref().map(|_| BTreeMap::new()),
         )
     };
-    let ran: Vec<std::thread::Result<Ran>> = if runs.len() == 1 || one_after_another() {
-        let mut ran = Vec::with_capacity(runs.len());
-        for run in runs {
+    #[cfg(test)]
+    let context = TestContext::capture();
+    let (ran, besides) = std::thread::scope(|scope| {
+        let (sender, receiver) = std::sync::mpsc::channel::<Accepted>();
+        // The work beside the families, each on a thread of its own however
+        // the families prepare, its lanes after theirs.
+        let mut besides = Vec::with_capacity(beside.len());
+        for (at, job) in beside.into_iter().enumerate() {
+            let sender = sender.clone();
+            let commits = &commits;
             let (mut own_timings, mut own_workers) = local();
-            let result = prepare_family(
-                phase,
-                &pool,
-                run,
-                &commits,
-                atomic,
-                &mut own_timings,
-                &mut own_workers,
-                &mut |next| accepted(&next),
+            #[cfg(test)]
+            let context = context.clone();
+            let name = job.name;
+            besides.push(
+                crate::prepared::runner::worker_thread(format!("preparation of {name}"))
+                    .spawn_scoped(scope, move || {
+                        #[cfg(test)]
+                        let _installed = context.install();
+                        let result = {
+                            let mut publish =
+                                |write: &mut dyn FnMut(&mut store::Writer) -> io::Result<()>| {
+                                    let next = commit(
+                                        commits,
+                                        phase,
+                                        atomic,
+                                        families + at,
+                                        name,
+                                        None,
+                                        &mut own_workers,
+                                        |writer, _| write(writer),
+                                    )?;
+                                    // The caller reports it; a caller that
+                                    // has gone only misses the report.
+                                    let _ = sender.send(next);
+                                    Ok(())
+                                };
+                            (job.run)(
+                                &mut Publish {
+                                    commit: &mut publish,
+                                },
+                                &mut own_timings,
+                            )
+                        };
+                        (result, own_timings, own_workers, Counts::take())
+                    }),
             );
-            ran.push(Ok((result, own_timings, own_workers, Counts::default())));
         }
-        ran
-    } else {
-        #[cfg(test)]
-        let context = TestContext::capture();
-        std::thread::scope(|scope| {
-            let (sender, receiver) = std::sync::mpsc::channel::<Accepted>();
+        let ran: Vec<std::thread::Result<Ran>> = if !at_once {
+            let mut ran = Vec::with_capacity(runs.len());
+            for run in runs {
+                let (mut own_timings, mut own_workers) = local();
+                let member = shared
+                    .as_ref()
+                    .and_then(|shared| shared.member(run.lane, true));
+                let result = prepare_family(
+                    phase,
+                    pool.as_ref().expect("the families' pool"),
+                    member,
+                    run,
+                    &commits,
+                    atomic,
+                    &mut own_timings,
+                    &mut own_workers,
+                    &mut |next| {
+                        // What the work beside committed first is reported
+                        // first.
+                        for earlier in receiver.try_iter() {
+                            accepted(&earlier);
+                        }
+                        accepted(&next);
+                    },
+                );
+                ran.push(Ok((result, own_timings, own_workers, Counts::default())));
+            }
+            // No group waits for the families once they have finished.
+            drop(Finished(&commits));
+            drop(sender);
+            for next in receiver.iter() {
+                accepted(&next);
+            }
+            ran
+        } else {
             let mut started = Vec::with_capacity(runs.len());
             for run in runs {
                 let sender = sender.clone();
-                let (pool, commits) = (&pool, &commits);
+                let (pool, commits) = (pool.as_ref().expect("the families' pool"), &commits);
                 let (mut own_timings, mut own_workers) = local();
+                // Moved to the family's thread: dropped with it however it
+                // ends, also when it cannot start, so no family waits for it.
+                let member = shared
+                    .as_ref()
+                    .and_then(|shared| shared.member(run.lane, false));
                 #[cfg(test)]
                 let context = context.clone();
                 let thread = crate::prepared::runner::worker_thread(format!(
@@ -912,11 +1394,14 @@ pub(super) fn prepare(
                     run.own.family().name
                 ))
                 .spawn_scoped(scope, move || {
+                    // No group waits for it once it has finished.
+                    let _finished = Finished(commits);
                     #[cfg(test)]
                     let _installed = context.install();
                     let result = prepare_family(
                         phase,
                         pool,
+                        member,
                         run,
                         commits,
                         atomic,
@@ -931,11 +1416,15 @@ pub(super) fn prepare(
                     (result, own_timings, own_workers, Counts::take())
                 });
                 // A family whose thread cannot start fails; the others go on.
+                if thread.is_err() {
+                    drop(Finished(&commits));
+                }
                 started.push(thread);
             }
             drop(sender);
-            // Each family's accepted commits, reported in the order they
-            // committed, until every family has finished.
+            // Each family's accepted commits, and those of the work beside
+            // them, reported in the order they committed, until every one
+            // has finished.
             for next in receiver.iter() {
                 accepted(&next);
             }
@@ -946,9 +1435,31 @@ pub(super) fn prepare(
                     Err(error) => Ok((Err(error), None, None, Counts::default())),
                 })
                 .collect()
-        })
-    };
+        };
+        let besides: Vec<std::thread::Result<Ran>> = besides
+            .into_iter()
+            .map(|thread| match thread {
+                Ok(handle) => handle.join(),
+                Err(error) => Ok((Err(error), None, None, Counts::default())),
+            })
+            .collect();
+        (ran, besides)
+    });
     drop(pool);
+    if let Some(shared) = shared {
+        let (spent, reads) = shared.read_time();
+        drop(shared);
+        if let Some(workers) = workers.as_mut() {
+            let entry = workers.entry(shared::SHARED_READ).or_default();
+            entry.observe += spent;
+            entry.calls += reads;
+        }
+        #[cfg(test)]
+        prepass::add_notes(&BTreeMap::from([(
+            shared::SHARED_READ,
+            usize::try_from(reads).unwrap_or(usize::MAX),
+        )]));
+    }
     let mut first_error = None;
     let mut panic = None;
     for ran in ran {
@@ -966,18 +1477,46 @@ pub(super) fn prepare(
             }
         }
     }
+    // The work beside the families counts its own rows as the caller's, as
+    // when it ran before them, and its commits' as the families'. Its errors
+    // follow theirs.
+    for ran in besides {
+        match ran {
+            Ok((result, own_timings, own_workers, counts)) => {
+                lanes::merge(timings, own_timings);
+                lanes::merge(workers, own_workers);
+                counts.add();
+                if let Err(error) = result {
+                    first_error.get_or_insert(error);
+                }
+            }
+            Err(payload) => {
+                panic.get_or_insert(payload);
+            }
+        }
+    }
     super::finish_timing(timings, phase_started, "independent", false);
     if let Some(payload) = panic {
         resume_unwind(payload);
     }
     let Commits {
-        writer, committed, ..
-    } = commits.into_inner().unwrap_or_else(PoisonError::into_inner);
+        writer,
+        committed,
+        published: _published,
+        ..
+    } = commits
+        .commits
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner);
+    #[cfg(test)]
+    TEST_PUBLISHED.with(|counts| {
+        let (stores, families) = counts.get();
+        counts.set((stores + _published.0, families + _published.1));
+    });
     if let Some(error) = first_error {
         return Err(error);
     }
-    let writer = writer
-        .ok_or_else(|| io::Error::other("The prepared writer was lost to a failed commit"))?;
+    let writer = writer.ok_or_else(lost)?;
     Ok((writer, committed))
 }
 
@@ -997,8 +1536,9 @@ impl Drop for Retire<'_> {
 fn prepare_family(
     phase: &Phase<'_>,
     pool: &Pool,
+    member: Option<shared::Member<'_>>,
     run: Run,
-    commits: &Mutex<Commits<'_>>,
+    commits: &Group<'_>,
     atomic: bool,
     timings: &mut Timings,
     workers: &mut Timings,
@@ -1015,11 +1555,21 @@ fn prepare_family(
     let name = family.name;
     let started = super::start_timing(timings);
     let mut held: Option<(u64, Box<dyn Branch>)> = None;
+    // The pages its blocks published since its last commit.
+    let mut pages = HeldPages::default();
     let mut touched = BTreeSet::new();
     for block in progress.next_block..replay.index.len() {
         check_cancel(phase.cancelled)?;
         let index = &replay.index[block];
         let branch = index.branch;
+        if let Some(member) = &member {
+            // A family that refused the branch reads none of its blocks.
+            let reads = progress
+                .refused
+                .get(&branch)
+                .is_none_or(|refused| refused.open(name));
+            member.at(block, reads);
+        }
         if held.as_ref().is_none_or(|(held, _)| *held != branch) {
             let saved = lock(commits).saved.clone();
             let refused = progress.refused.entry(branch).or_default();
@@ -1056,6 +1606,9 @@ fn prepare_family(
                 index,
                 source: phase.source,
                 context: phase.context,
+                shared: member
+                    .as_ref()
+                    .map(|member| shared::Lease { member, block }),
             };
             reached = match outcome {
                 Outcome::Facts(facts) => {
@@ -1072,6 +1625,14 @@ fn prepare_family(
             };
             if refused.open(name) {
                 state.end_block(replay, branch);
+                let saved = lock(commits).saved.clone();
+                let mut view = pages.view(Committed {
+                    store: phase.store,
+                    key: phase.key,
+                    saved: saved.as_ref(),
+                });
+                let result = state.publish_block(&mut view, &at);
+                refused.check(name, reached.unwrap_or(index.last_hour), result)?;
             }
             if let Some(families) = timings.as_mut() {
                 for (part, took, times) in state.parts() {
@@ -1092,7 +1653,7 @@ fn prepare_family(
         if continues
             && !phase.measured
             && !phase.batches.full(block)
-            && state.pending() < BATCH_BYTES
+            && state.pending().saturating_add(pages.bytes()) < BATCH_BYTES
         {
             continue;
         }
@@ -1103,11 +1664,16 @@ fn prepare_family(
             commits,
             phase,
             atomic,
+            lane,
             name,
-            &mut progress,
+            Some(&mut progress),
+            workers,
             |writer, progress| {
+                let progress = progress.expect("a family's progress");
                 let refused = progress.refused.entry(branch).or_default();
-                // The pages of the blocks it went through, refused since or not.
+                // The pages of the blocks it went through, refused since or
+                // not: those each block published, then those it holds.
+                pages.write(writer)?;
                 let result = state.publish(writer, branch, phase.cancelled);
                 refused.check(name, hour, result)?;
                 if refused.open(name) {
@@ -1141,55 +1707,238 @@ fn prepare_family(
 }
 
 /// Commits one family's batch (`write`, with its progress) and its progress
-/// in the checkpoint, then opens the next transaction. With other families
-/// committing too (`atomic`), the batch is written into a fork of the writer
-/// and adopted only when all of it succeeded, so a failed batch leaves
-/// nothing behind for another family's commit. Returns what was accepted.
+/// in the checkpoint, then opens the next transaction; or a batch of the work
+/// beside the families, without progress. Returns what was accepted.
+///
+/// With other families committing too (`atomic`), the family forks the open
+/// transaction, writes its batch into the fork on its own thread and queues
+/// it. The first family to queue while no group forms leads one: it closes
+/// the transaction to new forks, waits for the forks still being written,
+/// adopts every queued batch (in lane order, each whole or not at all) and
+/// publishes them in one store commit. A family reaching its commit while a
+/// group publishes forks the next transaction once that is open, and joins
+/// the next group. A family's own write and adoption errors are its own: its
+/// batch is never listed, and the others' batches commit without it. An
+/// error of the joint publication (sources changed, cancellation, the
+/// checkpoint or the store's own writes) belongs to no family's batch and
+/// would fail any of them alone; it is every member's, and loses the writer
+/// as a failed commit always has. A family's pages, ranges and progress are
+/// what it writes whoever it commits with: each section is one family's, its
+/// ranges numbered by that family's writes alone.
+#[allow(clippy::too_many_arguments)]
 fn commit(
-    commits: &Mutex<Commits<'_>>,
+    group: &Group<'_>,
     phase: &Phase<'_>,
     atomic: bool,
-    name: &str,
-    progress: &mut Progress,
-    write: impl FnOnce(&mut store::Writer, &mut Progress) -> io::Result<()>,
+    lane: usize,
+    name: &'static str,
+    mut progress: Option<&mut Progress>,
+    workers: &mut Timings,
+    write: impl FnOnce(&mut store::Writer, Option<&mut Progress>) -> io::Result<()>,
 ) -> io::Result<Accepted> {
-    let mut guard = lock(commits);
-    let commits = &mut *guard;
-    let writer = commits
-        .writer
-        .as_mut()
-        .ok_or_else(|| io::Error::other("The prepared writer was lost to a failed commit"))?;
-    if atomic {
-        let mut fork = writer.fork()?;
-        write(&mut fork, progress)?;
-        for staged in fork.into_staged()? {
-            writer.adopt(staged)?;
-        }
-    } else {
-        write(writer, progress)?;
+    if !atomic {
+        let mut guard = lock(group);
+        let writer = guard.writer.as_mut().ok_or_else(|| lost_to(phase))?;
+        write(writer, progress.as_deref_mut())?;
+        let started = super::start_timing(workers);
+        let (guard, result) = publish(group, guard, phase, &[(name, progress.as_deref().cloned())]);
+        super::finish_timing(workers, started, "independent.publish", true);
+        return result.map(|()| accepted_now(&guard, phase));
     }
-    commits
-        .state
-        .independent
-        .insert(name.to_owned(), progress.clone());
-    *commits.bytes = super::write_checkpoint(
-        writer,
+    // Declared first, dropped last: the fork, and its duplicate of the
+    // writer's lock, close before the fork stops counting.
+    let forked;
+    let mut fork;
+    {
+        let mut guard = lock(group);
+        while !guard.admits() {
+            if guard.lost {
+                return Err(lost_to(phase));
+            }
+            guard = group.wait(guard);
+        }
+        fork = guard.writer.as_mut().expect("an open writer").fork()?;
+        guard.forked += 1;
+        forked = Forked { group, armed: true };
+    }
+    let written = write(&mut fork, progress.as_deref_mut()).and_then(|()| fork.into_staged());
+    let staged = match written {
+        Ok(staged) => staged,
+        Err(error) => {
+            drop(forked.finish(None));
+            return Err(error);
+        }
+    };
+    let (mut guard, ticket) = forked.finish(Some(Queued {
+        ticket: 0,
+        lane,
+        name,
+        progress: progress.as_deref().cloned(),
+        staged,
+    }));
+    if !guard.leading {
+        guard.leading = true;
+        guard = lead(group, guard, phase, workers);
+    }
+    loop {
+        if let Some(outcome) = guard.outcomes.remove(&ticket) {
+            return outcome;
+        }
+        if !guard.leading {
+            // Its leader panicked before handing it an outcome.
+            return Err(lost_to(phase));
+        }
+        guard = group.wait(guard);
+    }
+}
+
+/// Collects, adopts and publishes one group, handing each member its
+/// outcome. Returns with no group leading.
+fn lead<'m, 's>(
+    group: &'m Group<'s>,
+    guard: MutexGuard<'m, Commits<'s>>,
+    phase: &Phase<'_>,
+    workers: &mut Timings,
+) -> MutexGuard<'m, Commits<'s>> {
+    // Declared before the guard, so a panic releases the lock first.
+    let mut leading = Leading { group, armed: true };
+    let mut guard = guard;
+    while !guard.collected() {
+        guard = group.wait(guard);
+    }
+    guard.closed = true;
+    let started = super::start_timing(workers);
+    let mut queued = std::mem::take(&mut guard.queue);
+    // Which families commit together follows timing; the order they are
+    // listed in a group does not.
+    queued.sort_by_key(|queued| queued.lane);
+    let mut members = Vec::with_capacity(queued.len());
+    let mut refused = Vec::new();
+    match guard.writer.as_mut() {
+        Some(writer) => {
+            for queued in queued {
+                match writer.adopt_all(queued.staged) {
+                    Ok(()) => members.push((queued.ticket, (queued.name, queued.progress))),
+                    Err(error) => refused.push((queued.ticket, Err(error))),
+                }
+            }
+        }
+        None => refused.extend(
+            queued
+                .into_iter()
+                .map(|queued| (queued.ticket, Err(lost_to(phase)))),
+        ),
+    }
+    guard.outcomes.extend(refused);
+    if !members.is_empty() {
+        let (tickets, members): (Vec<u64>, Vec<_>) = members.into_iter().unzip();
+        let (published, result) = publish(group, guard, phase, &members);
+        guard = published;
+        match result {
+            Ok(()) => {
+                let accepted = accepted_now(&guard, phase);
+                guard.outcomes.extend(
+                    tickets
+                        .into_iter()
+                        .map(|ticket| (ticket, Ok(accepted.clone()))),
+                );
+            }
+            Err(error) => {
+                let copies: Vec<_> = tickets[1..]
+                    .iter()
+                    .map(|&ticket| (ticket, Err(io::Error::new(error.kind(), error.to_string()))))
+                    .collect();
+                guard.outcomes.insert(tickets[0], Err(error));
+                guard.outcomes.extend(copies);
+            }
+        }
+        super::finish_timing(workers, started, "independent.publish", true);
+    }
+    leading.armed = false;
+    guard.closed = false;
+    guard.leading = false;
+    group.changed.notify_all();
+    guard
+}
+
+/// Writes the checkpoint with `members`' progress into the open transaction
+/// and publishes it, then opens the next. The lock is released while the
+/// store commits; returns with it held again. A failure loses the writer.
+fn publish<'m, 's>(
+    group: &'m Group<'s>,
+    mut guard: MutexGuard<'m, Commits<'s>>,
+    phase: &Phase<'_>,
+    members: &[(&'static str, Option<Progress>)],
+) -> (MutexGuard<'m, Commits<'s>>, io::Result<()>) {
+    let commits = &mut *guard;
+    for (name, progress) in members {
+        if let Some(progress) = progress {
+            commits
+                .state
+                .independent
+                .insert((*name).to_owned(), progress.clone());
+        }
+    }
+    let Some(mut writer) = commits.writer.take() else {
+        commits.lost = true;
+        return (guard, Err(lost()));
+    };
+    let written = super::write_checkpoint(
+        &mut writer,
         commits.state,
         phase.replay,
         phase.map,
         *commits.bytes,
-    )?;
-    check_cancel(phase.cancelled)?;
-    commits
-        .writer
-        .take()
-        .expect("the open prepared writer")
-        .commit()?;
+    )
+    .and_then(|bytes| check_cancel(phase.cancelled).map(|()| bytes));
+    let bytes = match written {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            commits.lost = true;
+            return (guard, Err(error));
+        }
+    };
+    // Families keep folding meanwhile: they read the published store, and
+    // those reaching their commits wait for the next transaction.
+    drop(guard);
+    let committed = writer.commit();
+    let next = committed
+        .as_ref()
+        .ok()
+        .map(|()| phase.store.extend(phase.key));
+    let mut guard = lock(group);
+    let commits = &mut *guard;
+    if let Err(error) = committed {
+        commits.lost = true;
+        return (guard, Err(error));
+    }
     commits.committed = true;
     *commits.saved = Some(phase.key.clone());
-    commits.writer = Some(phase.store.extend(phase.key)?);
+    *commits.bytes = bytes;
+    let families = members
+        .iter()
+        .filter(|(_, progress)| progress.is_some())
+        .count();
+    if families > 0 {
+        commits.published.0 += 1;
+        commits.published.1 += families;
+    }
+    match next.expect("the next transaction after a commit") {
+        Ok(writer) => {
+            commits.writer = Some(writer);
+            (guard, Ok(()))
+        }
+        Err(error) => {
+            commits.lost = true;
+            (guard, Err(error))
+        }
+    }
+}
+
+/// What every family has accepted, as the last commit published it.
+fn accepted_now(commits: &Commits<'_>, phase: &Phase<'_>) -> Accepted {
     let state = &*commits.state;
-    Ok(Accepted {
+    Accepted {
         sections: super::preparing_sections(
             state,
             state.cursor.next_block,
@@ -1199,7 +1948,7 @@ fn commit(
         next_block: state.cursor.next_block,
         new_blocks: 0,
         coverage: super::accepted_coverage(&state.map, phase.last_blocks),
-    })
+    }
 }
 
 /// The family's accepted extent of one branch, with its refusals there.
@@ -1369,8 +2118,43 @@ fn one_after_another() -> bool {
     }
 }
 
+/// How families' commits join groups: as they reach them, unless a test
+/// forces a grouping.
+fn grouping() -> Grouping {
+    #[cfg(test)]
+    {
+        TEST_GROUPING.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        Grouping::Natural
+    }
+}
+
+/// Run `run` with the families' commits grouped by `grouping`.
+#[cfg(test)]
+pub(super) fn with_test_grouping<T>(grouping: Grouping, run: impl FnOnce() -> T) -> T {
+    struct Reset(Grouping);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_GROUPING.with(|value| value.set(self.0));
+        }
+    }
+    let _reset = Reset(TEST_GROUPING.with(|value| value.replace(grouping)));
+    run()
+}
+
+/// The store commits families prepared on their own published on this
+/// thread's preparations since last taken, and the family commits they held.
+#[cfg(test)]
+pub(super) fn take_test_publications() -> (usize, usize) {
+    TEST_PUBLISHED.with(|counts| counts.replace((0, 0)))
+}
+
 #[cfg(test)]
 thread_local! {
+    static TEST_GROUPING: std::cell::Cell<Grouping> = const { std::cell::Cell::new(Grouping::Natural) };
+    static TEST_PUBLISHED: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
     static TEST_HOURLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_FAMILIES: std::cell::Cell<Option<&'static [&'static dyn Own]>> =
         const { std::cell::Cell::new(None) };

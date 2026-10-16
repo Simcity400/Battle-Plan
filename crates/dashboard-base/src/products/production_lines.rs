@@ -14,6 +14,16 @@
 //! a large country's lines too big for one reply. Full histories grow with the
 //! campaign; every reply is measured and refused past [`MAX_REPLY_BYTES`].
 //!
+//! The whole-branch scan reads every hour of the branch in order on one thread, so
+//! its cost grows with the recording. Until it is held, `production-lines` answers a
+//! **first view**: the same scan over only the branch's newest blocks (at least
+//! [`FIRST_VIEW_HOURS`], at most [`FIRST_VIEW_BLOCKS`]), its `approximate` spans
+//! naming the hours it does not answer exactly (the branch from its start through
+//! the window's first read, where the lines it lists are taken as begun). A request
+//! with `exact` scans the whole branch, or answers from the held scan; a held whole
+//! scan answers every request exactly. Detail windows and breakdowns always read
+//! the whole scan.
+//!
 //! Ordinary line values are recorded `ProductionLines` fields, compared with
 //! the save by the fresh-save oracle (`recorder::oracle::production`):
 //!
@@ -62,7 +72,7 @@ use crate::{
     metadata::{TaggedCountry, link_slot, slot_read, tagged_country, validate_campaign},
 };
 use replay::{
-    container::Replay,
+    container::{BlockIndex, Replay},
     frame::FrameDecoder,
     rows::{
         IndustrialOrganisationRow, LexicalTokenRow, ProductionLineOutputRow, ProductionLineRow,
@@ -92,6 +102,12 @@ const CACHED_COUNTRIES: usize = 8;
 
 /// The hours one detail reply covers: 30 days, so playback asks about once a month.
 pub const DETAIL_HOURS: i32 = 720;
+/// The hours a first view reads at least, when the newest blocks hold them: one
+/// detail window.
+pub const FIRST_VIEW_HOURS: i64 = DETAIL_HOURS as i64;
+/// The most blocks a first view reads, however few hours they hold; with blocks of
+/// at most one keyframe interval, its cost does not grow with the recording.
+pub const FIRST_VIEW_BLOCKS: usize = 4;
 /// Each reply's bound, inside the transport's.
 pub use super::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
 /// Longest side of an equipment or organisation icon.
@@ -413,9 +429,36 @@ pub struct ProductionLinesReply {
     /// Hours whose lines made and ended there may be missing: a due read of the
     /// output, the only place such a line's rows are published, could not be read.
     pub unread_output: Vec<super::country_groups::HourSpan>,
+    /// Hours this reply does not answer exactly yet, ascending spans: a first view
+    /// read only the branch's newest blocks, so the history before them, through
+    /// the first read among them, is still being prepared. Empty when every hour is
+    /// answered; a request with `exact` answers them all.
+    pub approximate: Vec<super::country_groups::HourSpan>,
     /// The hours one `production-line-detail` window covers.
     pub detail_hours: i32,
     pub warnings: Vec<String>,
+}
+
+/// A request for one country's production lines over a branch.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProductionLinesParams {
+    pub branch_id: String,
+    pub tag: String,
+    /// Answer every hour exactly, scanning the whole branch when its scan is not
+    /// held, instead of a first view of its newest blocks.
+    #[serde(default)]
+    #[ts(optional)]
+    pub exact: Option<bool>,
+}
+
+impl ProductionLinesParams {
+    fn country(&self) -> CountryParams {
+        CountryParams {
+            branch_id: self.branch_id.clone(),
+            tag: self.tag.clone(),
+        }
+    }
 }
 
 /// A request for one window of a country's line reads: hours
@@ -597,6 +640,45 @@ fn scan_holder(
     holder: Option<(u32, u32)>,
     cancelled: &AtomicBool,
 ) -> io::Result<ScannedLines> {
+    let blocks: Vec<&BlockIndex> = branch_blocks(replay, branch);
+    scan_blocks_of(replay, &blocks, tag, icons, holder, cancelled)
+}
+
+/// A branch's blocks, in recorded order.
+fn branch_blocks(replay: &Replay, branch: u64) -> Vec<&BlockIndex> {
+    replay
+        .index
+        .iter()
+        .filter(|block| block.branch == branch)
+        .collect()
+}
+
+/// How many of a branch's newest blocks (their hour spans, oldest first) a first
+/// view reads: the fewest holding [`FIRST_VIEW_HOURS`], never more than
+/// [`FIRST_VIEW_BLOCKS`].
+pub fn first_view_blocks(spans: &[(i32, i32)]) -> usize {
+    let mut hours = 0i64;
+    let mut count = 0;
+    for &(first, last) in spans.iter().rev() {
+        if count == FIRST_VIEW_BLOCKS || hours >= FIRST_VIEW_HOURS {
+            break;
+        }
+        hours += i64::from(last) - i64::from(first) + 1;
+        count += 1;
+    }
+    count
+}
+
+/// The scan of `blocks` (a branch's, in recorded order, or its newest ones): what
+/// it knows starts at their first block.
+fn scan_blocks_of(
+    replay: &Replay,
+    blocks: &[&BlockIndex],
+    tag: &str,
+    icons: Option<&IconContent>,
+    holder: Option<(u32, u32)>,
+    cancelled: &AtomicBool,
+) -> io::Result<ScannedLines> {
     // The variant catalogue's tables include the countries and tokens read here too.
     let mut selected = vec![
         TableId::Campaign,
@@ -652,7 +734,7 @@ fn scan_holder(
     let mut last_modifier_country: Option<Arc<replay::rows::CountryProductionModifiersRow>> = None;
     crate::blocks::scan_blocks(
         replay,
-        replay.index.iter().filter(|block| block.branch == branch),
+        blocks.iter().copied(),
         &selected,
         cancelled,
         |blocks| {
@@ -1532,6 +1614,9 @@ fn keep_image<T>(
 #[derive(Default)]
 struct Cache {
     entries: VecDeque<(ScanKey, Arc<ScannedLines>)>,
+    /// First views by the same key, with the hours each does not answer exactly;
+    /// one is dropped once its whole scan is held.
+    first_views: VecDeque<(ScanKey, FirstView)>,
     icons: Option<Arc<IconContent>>,
     /// Pictures of the catalogue they were decoded from: a request for another
     /// catalogue never reads them, and a decode finishing after the content changed
@@ -1635,6 +1720,23 @@ fn cancelled_error() -> io::Error {
     io::Error::new(io::ErrorKind::Interrupted, "Production request cancelled")
 }
 
+/// The scan of a branch's newest blocks a first view answers from, and the hours
+/// it does not answer exactly.
+#[derive(Clone)]
+struct FirstView {
+    scanned: Arc<ScannedLines>,
+    approximate: Vec<super::country_groups::HourSpan>,
+}
+
+/// Which scan a request answers from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum View {
+    /// The whole branch's.
+    Whole,
+    /// The whole branch's when held, else a first view of its newest blocks.
+    First,
+}
+
 /// The catalogue, the icon rule's content (loaded once per catalogue) and the
 /// country's scan (cached by branch, tag and icon content), shared by both products
 /// so a detail window reuses the scan its history was answered from.
@@ -1646,6 +1748,33 @@ fn scanned_lines(
     cancelled: &AtomicBool,
     warnings: &mut Vec<String>,
 ) -> io::Result<(Option<Arc<Catalogue>>, Arc<ScannedLines>)> {
+    let (catalogue, scanned, _) = scanned_view(
+        source,
+        params,
+        holder,
+        context,
+        cancelled,
+        warnings,
+        View::Whole,
+    )?;
+    Ok((catalogue, scanned))
+}
+
+/// As [`scanned_lines`], for `view`: with the hours the scan does not answer
+/// exactly (none for a whole scan).
+fn scanned_view(
+    source: &Source,
+    params: &CountryParams,
+    holder: Option<(u32, u32)>,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+    warnings: &mut Vec<String>,
+    view: View,
+) -> io::Result<(
+    Option<Arc<Catalogue>>,
+    Arc<ScannedLines>,
+    Vec<super::country_groups::HourSpan>,
+)> {
     let state = source.state::<Cache>();
     let catalogue = match context
         .content()
@@ -1696,32 +1825,84 @@ fn scanned_lines(
         warnings.extend(icons.warnings());
     }
     let key: ScanKey = (params.branch(), params.tag.clone(), icons.clone(), holder);
-    let cached = {
+    let (cached, first_view) = {
         let cache = state.lock().unwrap_or_else(|error| error.into_inner());
-        cache
-            .entries
-            .iter()
-            .find(|(cached, _)| same_scan(cached, &key))
-            .map(|(_, scanned)| Arc::clone(scanned))
+        (
+            cache
+                .entries
+                .iter()
+                .find(|(cached, _)| same_scan(cached, &key))
+                .map(|(_, scanned)| Arc::clone(scanned)),
+            cache
+                .first_views
+                .iter()
+                .find(|(cached, _)| same_scan(cached, &key))
+                .map(|(_, view)| view.clone()),
+        )
     };
-    let scanned = match cached {
-        Some(scanned) => scanned,
-        None => {
-            let scanned = Arc::new(scan_holder(
-                &source.replay(),
-                params.branch(),
-                &params.tag,
-                icons.as_deref(),
-                holder,
-                cancelled,
-            )?);
-            let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-            cache.entries.retain(|(cached, _)| !same_scan(cached, &key));
-            cache.entries.push_back((key, Arc::clone(&scanned)));
-            while cache.entries.len() > CACHED_COUNTRIES {
-                cache.entries.pop_front();
+    let (scanned, approximate) = match (cached, first_view, view) {
+        (Some(scanned), ..) => (scanned, Vec::new()),
+        (None, Some(first), View::First) => (first.scanned, first.approximate),
+        (None, _, view) => {
+            let replay = source.replay();
+            let blocks = branch_blocks(&replay, params.branch());
+            let spans: Vec<(i32, i32)> = blocks
+                .iter()
+                .map(|block| (block.first_hour, block.last_hour))
+                .collect();
+            let newest = first_view_blocks(&spans);
+            if view == View::First && newest < blocks.len() {
+                let window = &blocks[blocks.len() - newest..];
+                let scanned = Arc::new(scan_blocks_of(
+                    &replay,
+                    window,
+                    &params.tag,
+                    icons.as_deref(),
+                    holder,
+                    cancelled,
+                )?);
+                // Before the window nothing is read; at its first read the lines
+                // listed are taken as begun there, their appearances counted from it.
+                let last_hour = scanned
+                    .reads
+                    .first()
+                    .copied()
+                    .unwrap_or(spans[spans.len() - 1].1);
+                let approximate = vec![super::country_groups::HourSpan {
+                    first_hour: spans[0].0,
+                    last_hour,
+                }];
+                let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+                cache.first_views.retain(|(cached, _)| !same_scan(cached, &key));
+                cache.first_views.push_back((
+                    key,
+                    FirstView {
+                        scanned: Arc::clone(&scanned),
+                        approximate: approximate.clone(),
+                    },
+                ));
+                while cache.first_views.len() > CACHED_COUNTRIES {
+                    cache.first_views.pop_front();
+                }
+                (scanned, approximate)
+            } else {
+                let scanned = Arc::new(scan_blocks_of(
+                    &replay,
+                    &blocks,
+                    &params.tag,
+                    icons.as_deref(),
+                    holder,
+                    cancelled,
+                )?);
+                let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+                cache.entries.retain(|(cached, _)| !same_scan(cached, &key));
+                cache.first_views.retain(|(cached, _)| !same_scan(cached, &key));
+                cache.entries.push_back((key, Arc::clone(&scanned)));
+                while cache.entries.len() > CACHED_COUNTRIES {
+                    cache.entries.pop_front();
+                }
+                (scanned, Vec::new())
             }
-            scanned
         }
     };
     warnings.extend(
@@ -1730,13 +1911,13 @@ fn scanned_lines(
             .iter()
             .map(|(reason, count)| format!("{reason} ({count} supplying reads)")),
     );
-    Ok((catalogue, scanned))
+    Ok((catalogue, scanned, approximate))
 }
 
 impl Product for ProductionLines {
     const KEY: &'static str = "production-lines";
     const CONTENT_DEPENDENT: bool = true;
-    type Params = CountryParams;
+    type Params = ProductionLinesParams;
     type Reply = ProductionLinesReply;
 
     fn types() -> Vec<String> {
@@ -1749,12 +1930,13 @@ impl Product for ProductionLines {
             VariantName::decl(),
             OrganisationName::decl(),
             EquipmentIcon::decl(),
+            ProductionLinesParams::decl(),
             ProductionLinesReply::decl(),
         ]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.validate()
+        params.country().validate()
     }
 
     fn load(
@@ -1765,8 +1947,25 @@ impl Product for ProductionLines {
     ) -> io::Result<Self::Reply> {
         let state = source.state::<Cache>();
         let mut warnings = Vec::new();
-        let (catalogue, scanned) =
-            scanned_lines(source, params, None, context, cancelled, &mut warnings)?;
+        let view = match params.exact {
+            Some(true) => View::Whole,
+            Some(false) | None => View::First,
+        };
+        let (catalogue, scanned, approximate) = scanned_view(
+            source,
+            &params.country(),
+            None,
+            context,
+            cancelled,
+            &mut warnings,
+            view,
+        )?;
+        if !approximate.is_empty() {
+            warnings.push(format!(
+                "This first view reads only {}'s newest recorded production; its history before then is still being prepared. Until it is, lines listed at the view's first read are shown as begun before it, and a line's number counts its appearances from there.",
+                params.tag
+            ));
+        }
         let texts = catalogue
             .as_ref()
             .map(|catalogue| catalogue.as_ref() as &dyn Texts);
@@ -1883,7 +2082,8 @@ impl Product for ProductionLines {
                 scanned.unlinked_rows, params.tag
             ));
         }
-        if scanned.reads.is_empty() {
+        // A first view without reads says nothing of the hours before it.
+        if scanned.reads.is_empty() && approximate.is_empty() {
             warnings.push(format!(
                 "{}: no recorded production lines in this branch",
                 params.tag
@@ -1906,6 +2106,7 @@ impl Product for ProductionLines {
                 line_hours: scanned.line_hours.clone(),
                 organisation_hours: scanned.organisation_hours.clone(),
                 unread_output: scanned.unread_output.clone(),
+                approximate,
                 detail_hours: DETAIL_HOURS,
                 warnings,
             },

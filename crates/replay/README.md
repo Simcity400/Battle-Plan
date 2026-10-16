@@ -78,6 +78,15 @@ the decoder keeps no earlier baseline, and the index already orders each
 branch's blocks. Each hour therefore equals the continuing stream's, including
 availability, sample hours, metrics and which hours share a table's allocation;
 anchored keyframes are read from the blocks they name, as every read does.
+`Replay::reconstruct_alone` reconstructs a block already read by
+`read_block_selected` for a selection holding the reader's tables, with a fresh
+decoder for those tables alone, so one read serves readers of several
+selections. A selected read decodes each table's updates on their own, so each
+reader's hours, recorded updates of its tables, metrics and allocation sharing
+are those of its own `read_block_alone`. The decoder's one all-table check, that
+a keyframe holds only updates needing no earlier hour, would see the other
+tables: a block where one of those fails it is refused unvisited, for the
+caller to read alone.
 
 `Replay::read_block_changes` ([container/changes.rs](src/container/changes.rs))
 reads a block as `read_block_alone` does for a selection of tables and, per

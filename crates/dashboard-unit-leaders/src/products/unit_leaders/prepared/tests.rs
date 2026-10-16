@@ -1171,3 +1171,219 @@ fn prepared_leaders_reread_identity_only_for_leaders_whose_rows_changed() {
     publish(&mut state, &fixture, &cancelled);
     assert_parity(&fixture, &replay);
 }
+
+/// Observe `frames` with the change facts of their recorded updates, as the
+/// hourly walk observes them; each hour's leader rows read so far.
+fn observe_recorded(state: &mut Prepared, replay: &Replay, frames: &[DecodedFrame]) -> Vec<usize> {
+    use replay::frame::{FrameDecoder, FrameEncoder};
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    let mut tracker = FrameChangeTracker::new();
+    frames
+        .iter()
+        .enumerate()
+        .map(|(index, frame)| {
+            let wire = encoder.encode(frame.clone(), index == 0).unwrap();
+            let decoded = decoder.advance(&wire).unwrap().clone();
+            let changes =
+                tracker.observe_updates(&decoded, std::sync::Arc::new(wire), replay.format);
+            state.observe(&decoded, replay, None, &changes).unwrap();
+            work(state).row_visits
+        })
+        .collect()
+}
+
+/// Of the combat details leaders read only each combat and its sides'
+/// commanders, and nothing of task force positions, mission fuel or country
+/// balances, all of which move every hour of the war: such an hour carries
+/// every career on without reading a leader. A commander's change and a
+/// combat's start or end (with its result) take the battle step alone; only
+/// the changed command reads every leader again. Every reply is the per-hour
+/// oracle's.
+#[test]
+fn prepared_leaders_read_every_leader_only_where_a_leader_input_changed() {
+    let countries = 200;
+    let hours: Vec<i32> = (100..=165).collect();
+    let frames: Vec<_> = hours
+        .iter()
+        .map(|&hour| super::test_fixtures::war_frame(1, hour, countries))
+        .collect();
+    let replay = replay(&frames);
+    let mut state = Prepared::new(&replay, 1);
+    let visits = observe_recorded(&mut state, &replay, &frames);
+    let read: BTreeMap<i32, usize> = hours[1..]
+        .iter()
+        .zip(visits.windows(2))
+        .map(|(&hour, pair)| (hour, pair[1] - pair[0]))
+        .collect();
+    // An hour whose reads differ from the hour before's reads every leader.
+    let masks: Vec<u32> = frames
+        .iter()
+        .map(|frame| super::super::read_mask(replay.format, &frame.metrics, frame.hour, true))
+        .collect();
+    let reads_changed: BTreeSet<i32> = hours[1..]
+        .iter()
+        .zip(masks.windows(2))
+        .filter(|(_, pair)| pair[0] != pair[1])
+        .map(|(&hour, _)| hour)
+        .collect();
+    // The commander swap, the second combat's start, each end with its
+    // result, and the results read no more.
+    let battles = [120, 130, 151, 152, 161, 162];
+    for (&hour, &rows) in &read {
+        if hour == 140 {
+            assert!(
+                rows >= countries as usize,
+                "hour {hour}: the changed command reads every leader, not {rows} rows"
+            );
+        } else if reads_changed.contains(&hour) {
+            continue;
+        } else if battles.contains(&hour) {
+            assert!(
+                rows < countries as usize,
+                "hour {hour}: {rows} rows read where only battles changed"
+            );
+        } else {
+            assert_eq!(rows, 0, "hour {hour} carries every career on");
+        }
+    }
+    for hour in [120, 130, 151, 161] {
+        assert!(read[&hour] > 0, "hour {hour} reads its battles");
+    }
+    assert!(state.scan.materialized < state.scan.frontier);
+    let fixture = Fixture::new();
+    let cancelled = AtomicBool::new(false);
+    publish(&mut state, &fixture, &cancelled);
+    assert_parity(&fixture, &replay);
+}
+
+/// Published and resumed in the middle of both combats, the battle step goes
+/// on from the restored careers exactly as the per-hour oracle reads them.
+#[test]
+fn prepared_leaders_battle_step_after_publication_and_resume_matches_the_oracle() {
+    let frames: Vec<_> = (100..=170)
+        .map(|hour| super::test_fixtures::war_frame(1, hour, 6))
+        .collect();
+    let split = frames
+        .iter()
+        .position(|frame| frame.hour == 135)
+        .unwrap();
+    let whole = replay(&frames);
+    let prefix = replay(&frames[..split]);
+    let fixture = Fixture::new();
+    let cancelled = AtomicBool::new(false);
+    let mut state = Prepared::new(&whole, 1);
+    observe_recorded(&mut state, &whole, &frames[..split]);
+    publish(&mut state, &fixture, &cancelled);
+    assert_parity(&fixture, &prefix);
+    let mut state = resume(&fixture);
+    observe_recorded(&mut state, &whole, &frames[split..]);
+    publish(&mut state, &fixture, &cancelled);
+    assert_parity(&fixture, &whole);
+}
+
+/// The continuation holds no count of the identity, owner and trait views
+/// read: those count the hours read, which differ where hours are read
+/// differently, while the careers do not.
+#[test]
+fn prepared_leaders_continuation_keeps_no_counts_of_views_read() {
+    let frames: Vec<_> = (100..=103)
+        .map(|hour| {
+            let mut frame = frame(hour, 3);
+            if hour >= 102
+                && let TableView::Complete(TableRows::Characters(rows)) =
+                    &mut *frame.tables[TableId::Characters.index()]
+            {
+                rows[0].token = b"Renamed synthetic commander".to_vec();
+            }
+            frame
+        })
+        .collect();
+    let replay = replay(&frames);
+    let fixture = Fixture::new();
+    let cancelled = AtomicBool::new(false);
+    let mut state = Prepared::new(&replay, 1);
+    observe(&mut state, &replay, &frames);
+    publish(&mut state, &fixture, &cancelled);
+    let saved: serde_json::Value = serde_json::from_slice(
+        &zstd::stream::decode_all(
+            fixture
+                .store
+                .read(&fixture.key, "unit-leaders-1", 0)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let scan = saved["scan"].as_object().unwrap();
+    for counted in ["identity_epoch", "owner_epoch", "trait_epoch"] {
+        assert!(!scan.contains_key(counted), "{counted} is saved");
+    }
+    assert!(scan.contains_key("people"));
+}
+
+/// The battles read at an hour whose leaders, commands and reads are the
+/// hour before's but whose combat details become unavailable, and again at
+/// the hour they are read again: the missing battle reads, the coverage and
+/// the careers made partial there are the per-hour oracle's, as only the
+/// leader walk records them.
+#[test]
+fn prepared_leaders_battle_availability_changes_read_coverage_as_the_oracle() {
+    let mut base = frame(100, 3);
+    let combat = TableRows::LandCombatDetails(vec![LandCombatDetailsRow {
+        combat: 91,
+        sides: [
+            LandCombatSideDetails {
+                commander: reference(0),
+                ..Default::default()
+            },
+            LandCombatSideDetails {
+                commander: reference(1),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    }]);
+    set(&mut base, combat.clone());
+    let frames: Vec<_> = (100..=108)
+        .map(|hour| {
+            let mut frame = base.clone();
+            frame.hour = hour;
+            // A new view every hour with the same commanders, as a combat
+            // whose operands move; unavailable from 103 to 105.
+            *frame.tables[TableId::LandCombatDetails.index()] = if (103..=105).contains(&hour) {
+                TableView::Unavailable {
+                    reason: "Synthetic missing combat read".into(),
+                }
+            } else {
+                TableView::Complete(combat.clone())
+            };
+            frame
+        })
+        .collect();
+    let replay = replay(&frames);
+    let mut state = Prepared::new(&replay, 1);
+    observe(&mut state, &replay, &frames);
+    let fixture = Fixture::new();
+    let cancelled = AtomicBool::new(false);
+    publish(&mut state, &fixture, &cancelled);
+    assert_parity(&fixture, &replay);
+    let actual = query(&fixture.store, &fixture.key, &full_params("1"), None, &cancelled)
+        .unwrap()
+        .unwrap();
+    assert!(
+        actual
+            .observed
+            .iter()
+            .any(|span| !span.land_battles && span.first_hour == 103 && span.last_hour == 105),
+        "{:?}",
+        actual.observed
+    );
+    assert!(
+        actual
+            .leaders
+            .iter()
+            .any(|leader| leader.partial_from == Some(103))
+    );
+}

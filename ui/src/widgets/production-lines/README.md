@@ -8,6 +8,8 @@ One country’s active production table at a moment, or line histories across th
 
 `production-lines`, `production-line-detail` and `production-line-breakdown` are owned by [production_lines.rs](../../../../crates/dashboard-base/src/products/production_lines.rs). Detail loads in month windows of recorded line values, without modifier trees; a selected factor has its own branch history from the breakdown.
 
+On a recording longer than a few blocks, `production-lines` first answers a first view of the newest recorded blocks, whose `approximate` spans name the hours it does not answer exactly. The history marks those hours unobserved under a note that earlier history is still being prepared, and the widget asks again with `exact`; the exact history replaces the first view. Detail windows wait for the exact history. A first view's line keys count a handle's appearances from the newest blocks only, so breakdowns, pins and line choices wait too: the context menu's breakdown entries are disabled with the reason. A history with no lane over approximate hours shows that it is being prepared, not that there were no lines.
+
 ## Settings
 
 Campaign/follow/pin/range; order/columns in follow and pin, ended lines in campaign and range, selected line, Show and drill placement. The breakdown body owns the factor selector. Whole campaign is the default.

@@ -32,17 +32,21 @@
 //! catalogue's are the look-back's, configured alike. Its variant naming
 //! refusals are those of every variant read on the branch, in whatever order:
 //! the look-back's reads, and the earlier blocks' read by the changes of the
-//! naming tables alone. Its census's own text refusals come from naming the
+//! naming tables alone, each block on its own on spare cores. Its census's
+//! own text refusals come from naming the
 //! variants its loss reads use, each one a variant read on the branch; when
 //! naming every variant read on the branch refuses nothing, forward
 //! preparation's naming refuses nothing either, and otherwise nothing is
 //! published.
 //!
 //! A look-back not proven moves back to the block its failure names, and
-//! after its first retry at least doubles its length. A census refusal or a
-//! block that cannot be read publishes nothing: forward preparation refuses
-//! the branch or reports the error itself. The page is saved under names of
-//! its own, with the bytes forward preparation writes for the window.
+//! after its first retry at least doubles its length. A look-back that would
+//! start at the branch's first block would be forward preparation's walk of
+//! the branch: none is tried, and the window is left to forward preparation.
+//! A census refusal or a block that cannot be read publishes nothing: forward
+//! preparation refuses the branch or reports the error itself. The page is
+//! saved under names of its own, with the bytes forward preparation writes
+//! for the window.
 use super::*;
 use dashboard_base::{prepared::series, products::equipment::VariantCatalogue};
 use replay::container::{BlockChange, TableFields};
@@ -114,9 +118,10 @@ struct Page {
 }
 
 /// The branch's newest window, when a look-back proves it, its availability
-/// and its diagnostics; None when the branch has no block, forward
-/// preparation would refuse or fail where the look-back or the diagnostics
-/// read, no hour read is available, or naming the variants read refuses text.
+/// and its diagnostics; None when the branch has no block, the look-back
+/// would start at the branch's first block, forward preparation would refuse
+/// or fail where the look-back or the diagnostics read, no hour read is
+/// available, or naming the variants read refuses text.
 pub fn prepare(
     source: &Source,
     branch: u64,
@@ -152,6 +157,11 @@ pub fn prepare(
     } else {
         last - 1
     };
+    // From the branch's first block the look-back is forward preparation's
+    // walk of the branch: the window is left to it.
+    if from == 0 {
+        return Ok(None);
+    }
     #[cfg(any(test, feature = "test-support"))]
     let mut read = 0;
     let mut retries = 0;
@@ -203,10 +213,6 @@ pub fn prepare(
             Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
             Err(_) => return Ok(None),
         };
-        // A look-back from the branch's first block is always proven.
-        let Some(earlier) = from.checked_sub(1) else {
-            return Ok(None);
-        };
         // The block holding that hour, or the first after the gap holding it.
         let hinted = blocks.partition_point(|&at| replay.index[at].last_hour < before);
         let doubled = blocks.len().saturating_sub(2 * (blocks.len() - from));
@@ -215,7 +221,10 @@ pub fn prepare(
         } else {
             hinted.min(doubled)
         }
-        .min(earlier);
+        .min(from - 1);
+        if from == 0 {
+            return Ok(None);
+        }
         retries += 1;
     }
 }
@@ -320,7 +329,7 @@ fn diagnostics(
 ) -> io::Result<Option<Vec<String>>> {
     // Every variant read on the branch: its refusals do not depend on the
     // order of the reads, nor on the forgetting between them.
-    let mut variants = variant_reads(replay, earlier, cancelled)?;
+    let mut variants = variant_reads(replay, earlier, workers(), cancelled)?;
     for (id, versions) in std::mem::take(&mut census.variants.versions) {
         variants.versions.entry(id).or_default().extend(versions);
     }
@@ -377,21 +386,22 @@ fn naming_fields() -> io::Result<Vec<TableFields>> {
         .collect()
 }
 
-/// A catalogue of every variant read on `blocks`, each block read only at
-/// the hours its naming tables change. A read of the variant table (its
-/// daily slot) is observed when a naming table changed since the last read
-/// observed, on the frame of the block read alone there; a read with no such
-/// change derives the operands the last one observed did. Each read is
-/// observed as continuing
-/// the last observed, so the catalogue keeps one version per change of a
-/// variant's operands: forgetting between reads would add only versions
-/// without operands, which name and refuse nothing.
-fn variant_reads(
+/// One block's reads of the variant table onto `variants`, the block read
+/// only at the hours its naming tables change. A read (the table's daily
+/// slot) is observed when a naming table changed since the last read the
+/// block observed, the block's first read always, on the frame of the block
+/// read alone there; a read with no such change derives the operands the
+/// last one observed did. Each read is observed as continuing the last
+/// observed, so the catalogue keeps one version per change of a variant's
+/// operands: forgetting between reads would add only versions without
+/// operands, which name and refuse nothing.
+fn block_variant_reads(
     replay: &Replay,
-    blocks: &[usize],
+    index: &replay::container::BlockIndex,
+    fields: &[TableFields],
+    variants: &mut VariantCatalogue,
     cancelled: &AtomicBool,
-) -> io::Result<VariantCatalogue> {
-    let fields = naming_fields()?;
+) -> io::Result<()> {
     let format = replay.format;
     let read = |metrics: &replay::frame::Metrics, hour: i32| {
         slot_read(format, metrics, TableId::VariantDefinitions, hour)
@@ -400,50 +410,142 @@ fn variant_reads(
         variants.advance(frame.hour.saturating_sub(1));
         variants.observe(format, frame);
     };
-    let mut variants = VariantCatalogue::default();
-    for &block in blocks {
-        // The block's last changed frame, which every quiet hour after it
-        // holds for the watched tables; and whether a naming table changed
-        // since the last read observed.
-        let mut last: Option<DecodedFrame> = None;
-        let mut stale = true;
-        replay.read_block_changes(
-            &replay.index[block],
-            &fields,
-            |change| {
-                match change {
-                    BlockChange::Changed { frame, .. } => {
-                        stale = true;
-                        if read(&frame.metrics, frame.hour) {
-                            observe(&mut variants, frame);
-                            stale = false;
-                        }
-                        last = Some(frame.clone());
-                    }
-                    BlockChange::Quiet(quiet) => {
-                        if !stale {
-                            return Ok(());
-                        }
-                        let Some(position) = (0..quiet.hours().len())
-                            .find(|&at| read(&quiet.metrics()[at], quiet.hours()[at]))
-                        else {
-                            return Ok(());
-                        };
-                        let mut frame = last.clone().ok_or_else(|| {
-                            io::Error::other("A quiet hour came before the block's first")
-                        })?;
-                        frame.hour = quiet.hours()[position];
-                        frame.metrics = quiet.metrics()[position].clone();
-                        observe(&mut variants, &frame);
+    // The block's last changed frame, which every quiet hour after it
+    // holds for the watched tables; and whether a naming table changed
+    // since the last read observed.
+    let mut last: Option<DecodedFrame> = None;
+    let mut stale = true;
+    replay.read_block_changes(
+        index,
+        &fields,
+        |change| {
+            match change {
+                BlockChange::Changed { frame, .. } => {
+                    stale = true;
+                    if read(&frame.metrics, frame.hour) {
+                        observe(&mut *variants, frame);
                         stale = false;
                     }
+                    last = Some(frame.clone());
                 }
-                Ok(())
-            },
-            || check_cancel(cancelled),
+                BlockChange::Quiet(quiet) => {
+                    if !stale {
+                        return Ok(());
+                    }
+                    let Some(position) = (0..quiet.hours().len())
+                        .find(|&at| read(&quiet.metrics()[at], quiet.hours()[at]))
+                    else {
+                        return Ok(());
+                    };
+                    let mut frame = last.clone().ok_or_else(|| {
+                        io::Error::other("A quiet hour came before the block's first")
+                    })?;
+                    frame.hour = quiet.hours()[position];
+                    frame.metrics = quiet.metrics()[position].clone();
+                    observe(&mut *variants, &frame);
+                    stale = false;
+                }
+            }
+            Ok(())
+        },
+        || check_cancel(cancelled),
+    )?;
+    Ok(())
+}
+
+/// A catalogue of every variant read on `blocks`, each block's reads
+/// ([`block_variant_reads`]) on a catalogue of its own on `workers` threads
+/// within the shared block-read core budget
+/// ([`dashboard_core::blocks::scan_blocks_by`]), joined in block order. The
+/// same reads are observed (a block's first read always is), every version
+/// holds the operands of a read observed, and each read's operands are those
+/// of the version it adds or of the one before, which also holds them. A
+/// block's first version of a variant whose operands the variant's last
+/// joined version holds is dropped, as reading in order adds none there, so
+/// the joined catalogue keeps about the in-order catalogue's versions (the
+/// in-order one's alone, but for the versions without operands a read
+/// forgetting earlier blocks' names adds), and their operands exactly. Naming refusals and variant warnings are of the operands read,
+/// whatever their order and however often each is read
+/// ([`VariantCatalogue::warnings`] notes each variant once per reason), so
+/// they are the in-order catalogue's.
+pub(super) fn variant_reads(
+    replay: &Replay,
+    blocks: &[usize],
+    workers: usize,
+    cancelled: &AtomicBool,
+) -> io::Result<VariantCatalogue> {
+    let fields = naming_fields()?;
+    let indices = blocks.iter().map(|&block| &replay.index[block]).collect();
+    dashboard_core::blocks::scan_blocks_by(
+        indices,
+        workers.saturating_sub(1),
+        cancelled,
+        &|index| {
+            let mut variants = VariantCatalogue::default();
+            block_variant_reads(replay, index, &fields, &mut variants, cancelled)?;
+            Ok(variants)
+        },
+        |reads| {
+            let mut variants = VariantCatalogue::default();
+            for (_, read) in reads {
+                for (id, versions) in read?.versions {
+                    let held = variants.versions.entry(id).or_default();
+                    let mut versions = versions.into_iter().peekable();
+                    // Reading in order adds no version where a read's
+                    // operands are the variant's last version's.
+                    if let (Some(last), Some(first)) = (held.last(), versions.peek())
+                        && same_operands(last, first)
+                    {
+                        versions.next();
+                    }
+                    held.extend(versions);
+                }
+            }
+            Ok(variants)
+        },
+    )
+}
+
+/// Whether `next` holds the operands `last` holds, whatever read first read
+/// them.
+fn same_operands(
+    last: &dashboard_base::products::equipment::VariantVersion,
+    next: &dashboard_base::products::equipment::VariantVersion,
+) -> bool {
+    last.raw
+        .as_ref()
+        .zip(next.raw.as_ref())
+        .is_some_and(|(last, next)| {
+            let mut probe = next.clone();
+            probe.first_hour = last.first_hour;
+            probe == *last
+        })
+}
+
+/// [`variant_reads`] block after block on one catalogue, in order.
+#[cfg(test)]
+pub(super) fn variant_reads_in_order(
+    replay: &Replay,
+    blocks: &[usize],
+    cancelled: &AtomicBool,
+) -> io::Result<VariantCatalogue> {
+    let fields = naming_fields()?;
+    let mut variants = VariantCatalogue::default();
+    for &block in blocks {
+        block_variant_reads(
+            replay,
+            &replay.index[block],
+            &fields,
+            &mut variants,
+            cancelled,
         )?;
     }
     Ok(variants)
+}
+
+/// Threads the earlier blocks' naming tables are read on: one per core.
+fn workers() -> usize {
+    std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
 }
 
 impl Newest {

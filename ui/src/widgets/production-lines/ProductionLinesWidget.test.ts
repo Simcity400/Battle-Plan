@@ -48,7 +48,7 @@ test('registered production pins publish local body dates and native aliases, re
       if (path.endsWith('/production-lines/useProductionLines.ts')) return `
         import { datedCountrySpans } from '../../dashboard/datedCountry';
         export const useProductionLines = (widget, runtime) => ({ track: runtime.tracks[0], tag: widget.countries.tags[0],
-          data: globalThis.__productionPin.overview ? { branchId: 'b', tag: 'X', lines: [], reads: [100], detailHours: 720, warnings: [] } : undefined });
+          data: globalThis.__productionPin.overview ? { branchId: 'b', tag: 'X', lines: [], reads: [100], approximate: [], detailHours: 720, warnings: [] } : undefined });
         export const useLineDetail = () => ({ data: new Map(), errors: new Map(), retry() {} });
         export const useProductionCountry = (selection, _runtime, track) => ({ spans: selection ? datedCountrySpans([
           { tag: 'X', identities: [{ firstHour: 100, lastHour: 109, slot: 1, countryId: 10 }, { firstHour: 110, lastHour: 120, slot: 2, countryId: 20 }] },

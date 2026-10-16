@@ -37,12 +37,13 @@ use ts_rs::TS;
 #[cfg(any(test, feature = "test-support"))]
 use {dashboard_text::metadata::validate_campaign, replay::frame::FrameDecoder};
 
+pub mod block;
 pub mod prepared;
 
 pub struct DivisionLog;
 pub struct DivisionLogManifest;
 pub struct DivisionLogTotals;
-#[cfg(any(test, feature = "test-support"))]
+/// The tables the division observer reads.
 const TABLES: [TableId; 10] = [
     TableId::Campaign,
     TableId::Countries,
@@ -399,13 +400,46 @@ pub struct Scan {
     #[serde(with = "dashboard_core::map_pairs")]
     warnings: BTreeMap<(i32, String), usize>,
     counts: prepared::Counts,
+    /// While a block's extract follows the block alone ([`block`]): each
+    /// division absent from the last census, by the index of the event it
+    /// opened and its id. The extract cannot know which of them earlier
+    /// blocks saw; its fold keeps the events of those the carried scan never
+    /// saw, as this scan's own record of seen divisions would.
+    #[serde(skip)]
+    candidates: Option<Vec<(usize, u64)>>,
+    /// While following, a census met without a census before it in the
+    /// block, which the carried scan may have had.
+    #[serde(skip)]
+    irregular: bool,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
 }
+/// The warning of an hour whose country tables were not read completely.
+const IDENTITY_UNAVAILABLE: &str =
+    "Country identity unavailable; division events retain unknown countries";
 impl Scan {
     fn warn(&mut self, hour: i32, reason: impl Into<String>) {
         *self.warnings.entry((hour, reason.into())).or_default() += 1;
+    }
+    /// Whether a division absent from the last census is seen for the
+    /// first time on the branch, and so logged unless this census is the
+    /// first available one (`baseline`). While a block's extract follows,
+    /// every such division outside a baseline is a candidate its fold
+    /// decides.
+    fn first_seen(&mut self, id: u64, baseline: bool) -> bool {
+        let next = self.events.len();
+        match self.candidates.as_mut() {
+            Some(candidates) => {
+                if baseline {
+                    self.irregular = true;
+                    return false;
+                }
+                candidates.push((next, id));
+                true
+            }
+            None => self.seen.insert(id) && !baseline,
+        }
     }
     fn gap(&mut self) {
         self.previous_hour = None;
@@ -480,10 +514,7 @@ impl Scan {
         }
         let labels = self.links.update(frame).is_ok();
         if !labels {
-            self.warn(
-                hour,
-                "Country identity unavailable; division events retain unknown countries",
-            );
+            self.warn(hour, IDENTITY_UNAVAILABLE);
         }
         if changes.map_or_else(
             || {
@@ -526,8 +557,7 @@ impl Scan {
                     // Every division of the last census was seen then.
                     while held.next_if(|id| **id < division.id).is_some() {}
                     if held.next_if(|id| **id == division.id).is_none()
-                        && self.seen.insert(division.id)
-                        && !baseline
+                        && self.first_seen(division.id, baseline)
                     {
                         let presentation = current_presentation.get(division.id, None);
                         // Division owner is the positive expeditionary owner, otherwise

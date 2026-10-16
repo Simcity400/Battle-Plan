@@ -15,6 +15,12 @@ keeps its dashboard path and names what it uses at the crates that own it
 `dashboard::products::` path, registers it, and prepares and queries it in its
 pipeline.
 
+The family is prepared on its own: [products/unit_leaders/block.rs](src/products/unit_leaders/block.rs)
+holds its pre-pass extract (a block read by the fields leaders read, kept as
+whole, reduced and quiet hours with the block reader's change facts) and its
+fold on the carried prepared state, described in the
+[dashboard's prepared leaders](../dashboard/README.md#prepared-leaders).
+
 `cargo test -p dashboard-unit-leaders` builds and runs only this crate's tests.
 The `test-support` feature compiles the outcome frames
 (`prepared::test_fixtures`) the dashboard's pipeline tests build on and the

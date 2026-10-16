@@ -71,6 +71,14 @@ pub(super) struct Inputs {
     /// How many [daily upkeep or gain power, government] rows date at each
     /// native day: the newest is the newest native day they publish.
     days: [BTreeMap<i32, usize>; 2],
+    /// The captures this hour's join from its changed rows only extended to
+    /// the hour, each with its first hour, by country: none after a join of
+    /// the whole tables.
+    pub advanced: Vec<(u32, i32)>,
+    /// Captures extended to an hour by [`Self::refresh_advanced`] whose
+    /// witnesses still hold the last hour before: the captures and the hour
+    /// they reached. [`Self::materialize_advance`] moves them there.
+    deferred: Option<(Arc<[(u32, i32)]>, i32)>,
     #[cfg(any(test, feature = "test-support"))]
     pub row_visits: usize,
 }
@@ -167,22 +175,20 @@ fn advances(old: &PoliticsCaptureCoverageRow, row: &PoliticsCaptureCoverageRow, 
 }
 
 /// Move the deadlines of the captures that advanced to `hour` (each country
-/// with its first hour) exactly as unscheduling each one's old hours and
-/// scheduling its first hour and its next expiry does, one capture at a
-/// time: each leaves the hour before (its old last hour), unless it began
-/// then, and its expiry at `hour`, keeps its first hour, and expires at the
-/// hour after. When every capture due at `hour` advanced, their expiries
-/// move together.
+/// with its first hour, in country order) exactly as unscheduling each one's
+/// old hours and scheduling its first hour and its next expiry does, one
+/// capture at a time: each leaves the hour before (its old last hour),
+/// unless it began then, and its expiry at `hour`, keeps its first hour, and
+/// expires at the hour after. When every capture due at `hour` advanced,
+/// their expiries move together.
 fn advance_deadlines(
     deadlines: &mut BTreeMap<i32, BTreeSet<u32>>,
-    advanced: &mut [(u32, i32)],
+    advanced: &[(u32, i32)],
     hour: i32,
 ) {
     if advanced.is_empty() {
         return;
     }
-    advanced.sort_unstable_by_key(|&(raw, _)| raw);
-    let advanced = &*advanced;
     let first_hour = |raw: &u32| {
         advanced
             .binary_search_by_key(raw, |&(raw, _)| raw)
@@ -218,6 +224,54 @@ fn advance_deadlines(
     };
     if let Some(next) = hour.checked_add(1) {
         deadlines.entry(next).or_default().append(&mut moving);
+    }
+}
+
+/// What a join holds: its event views once, and every country, link,
+/// witness, capture, deadline, sum, key, index and set it keeps beside them.
+impl dashboard_base::prepared::prepass::Held for Inputs {
+    fn held(&self, held: &mut dashboard_base::prepared::prepass::HeldBytes) {
+        held.heap(&self.countries)
+            .heap(&self.census)
+            .heap(&self.naming_ids)
+            .heap(&self.tag_slots)
+            .heap(&self.refused)
+            .heap(&self.refused_reasons)
+            .heap(&self.links)
+            .heap(&self.witnesses)
+            .heap(&self.deadlines)
+            .heap(&self.by_slot)
+            .heap(&self.sums)
+            .heap(&self.applications)
+            .heap(&self.unreconciled)
+            .heap(&self.unreconciled_counts)
+            .heap(&self.daily_mutations)
+            .heap(&self.unknown_additions)
+            .heap(&self.power)
+            .heap(&self.governments)
+            .heap(&self.daily)
+            .heap(&self.costs)
+            .heap(&self.daily_keys)
+            .heap(&self.cost_keys)
+            .heap(&self.slots)
+            .heap(&self.previous_tags)
+            .heap(&self.identity_slots)
+            .heap(&self.identity_countries)
+            .heap(&self.raw_slots)
+            .heap(&self.power_index)
+            .heap(&self.government_index)
+            .heap(&self.daily_index)
+            .heap(&self.cost_index)
+            .heap(&self.character_slots)
+            .heap(&self.command)
+            .heap(&self.keys)
+            .heap(&self.touched)
+            .heap(&self.latest_power)
+            .heap(&self.mutation_hours)
+            .heap(&self.changed_rows)
+            .heap(&self.days)
+            .heap(&self.advanced)
+            .heap(&self.deferred);
     }
 }
 
@@ -335,6 +389,8 @@ impl Inputs {
         changes: &FrameChanges,
         pending: Option<&[BTreeSet<u128>; 2]>,
     ) {
+        // Both joins read the captures' last hours.
+        self.materialize_advance();
         if !pending.is_some_and(|pending| self.refresh_rows(frame, changes, pending)) {
             self.refresh(frame, Some(changes));
         }
@@ -346,6 +402,8 @@ impl Inputs {
                 changes.rows_changed[table.index()] || changes.table_read[table.index()]
             })
         };
+        self.materialize_advance();
+        self.advanced.clear();
         self.narrow = false;
         self.changed_rows = None;
         self.touched = Default::default();
@@ -925,7 +983,9 @@ impl Inputs {
             self.identity_countries.insert(raw);
             self.witnesses.insert(raw, row.clone());
         }
-        advance_deadlines(&mut self.deadlines, &mut advanced, frame.hour);
+        advanced.sort_unstable_by_key(|&(raw, _)| raw);
+        advance_deadlines(&mut self.deadlines, &advanced, frame.hour);
+        self.advanced = advanced;
         self.identity_slots.extend(
             self.identity_countries
                 .iter()
@@ -1109,6 +1169,171 @@ impl Inputs {
             .into_iter()
             .any(read);
         true
+    }
+
+    /// [`Self::refresh_rows`] of an hour a pre-pass worker certified for this
+    /// join: from its changed rows, every changed capture (`advanced`, each
+    /// with its first hour, in country order) only extends to the hour, and
+    /// nothing else joins a country (see `prepared::BlockFacts`); the caller
+    /// has checked that no row not yet recorded as an event is observed
+    /// again. It does what that join does there, in its order: no country is
+    /// joined, each capture's expiry moves to the hour after, and the tables
+    /// read are held as the hour decodes them. Only the captures' witnesses
+    /// keep their last hour until [`Self::materialize_advance`], which every
+    /// other join runs first: nothing an hour that only advances captures
+    /// reads takes it from them.
+    pub(super) fn refresh_advanced(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        advanced: &Arc<[(u32, i32)]>,
+    ) {
+        let read = |table: TableId| {
+            changes.rows_changed[table.index()] || changes.table_read[table.index()]
+        };
+        // Captures other than those deferred reach their last hour first.
+        if self
+            .deferred
+            .as_ref()
+            .is_some_and(|(deferred, _)| !Arc::ptr_eq(deferred, advanced) && deferred != advanced)
+        {
+            self.materialize_advance();
+        }
+        self.narrow = true;
+        self.advanced.clear();
+        self.touched = Default::default();
+        self.slots.clear();
+        self.previous_tags.clear();
+        self.identity_slots.clear();
+        self.identity_countries.clear();
+        self.countries_changed = false;
+        let links = read(TableId::CountryLinks);
+        let coverage_read = read(TableId::PoliticsCaptureCoverage);
+        advance_deadlines(&mut self.deadlines, advanced, frame.hour);
+        self.deferred = Some((Arc::clone(advanced), frame.hour));
+        self.identity_changed = links || coverage_read;
+        self.power_changed = read(TableId::CountryPowerChanges);
+        self.governments_changed = read(TableId::GovernmentChanges);
+        self.daily_changed = read(TableId::CountryPowerDaily);
+        self.costs_changed = read(TableId::CountryPowerDailyCosts);
+        // No power or government row changed: the held rows, their native
+        // days and indexes are the hour's.
+        if self.power_changed {
+            self.power = Some(frame.tables[TableId::CountryPowerChanges.index()].clone());
+        }
+        if self.governments_changed {
+            self.governments = Some(frame.tables[TableId::GovernmentChanges.index()].clone());
+        }
+        self.changed_rows = Some(Default::default());
+        if self.daily_changed {
+            self.daily = Some(frame.tables[TableId::CountryPowerDaily.index()].clone());
+        }
+        if self.costs_changed {
+            self.costs = Some(frame.tables[TableId::CountryPowerDailyCosts.index()].clone());
+        }
+        // The tables stay as readable as they were; the dictionary's
+        // readability is the hour's.
+        self.observe_completeness(frame);
+        // Each changed allocation holds its amount; no country's power rows
+        // or capture identity changed, so no unknown addition is read again.
+        self.changed = self.identity_changed
+            || self.power_changed
+            || self.governments_changed
+            || self.daily_changed
+            || self.costs_changed
+            || [
+                TableId::CountryCommandPower,
+                TableId::Characters,
+                TableId::CharacterPortraits,
+                TableId::LexicalTokens,
+            ]
+            .into_iter()
+            .any(read);
+    }
+
+    /// Move the deferred captures' witnesses to the last hour they reached,
+    /// as each hour's join from its changed rows moves them.
+    pub(super) fn materialize_advance(&mut self) {
+        let Some((advanced, through)) = self.deferred.take() else {
+            return;
+        };
+        for &(raw, _) in advanced.iter() {
+            if let Some(witness) = self.witnesses.get_mut(&raw) {
+                witness.through_hour = through;
+            }
+            if let Some(slot) = self.links.get(&raw)
+                && let Some(witness) = self.by_slot.get_mut(slot)
+                && witness.country == raw
+            {
+                witness.through_hour = through;
+            }
+        }
+    }
+
+    /// Whether captures are deferred ([`Self::refresh_advanced`]).
+    pub(super) fn deferred(&self) -> bool {
+        self.deferred.is_some()
+    }
+
+    /// Whether, once `advanced` (in country order) extended to `hour` and
+    /// their expiries moved, a linked capture is due from `next` through
+    /// `hour`: the captures the whole accounting observes there.
+    pub(super) fn due_after_advance(&self, next: i32, hour: i32, advanced: &[(u32, i32)]) -> bool {
+        self.deadlines.range(next..=hour).any(|(&at, raws)| {
+            raws.iter().any(|raw| {
+                let moved = advanced
+                    .binary_search_by_key(raw, |&(raw, _)| raw)
+                    .is_ok_and(|position| {
+                        // Its expiry at the hour moves to the hour after, and
+                        // it leaves its old last hour unless it began then.
+                        at == hour
+                            || (Some(at) == hour.checked_sub(1) && advanced[position].1 != at)
+                    });
+                !moved && self.links.contains_key(raw)
+            })
+        })
+    }
+
+    /// Whether this join and `other` hold the same state for every later
+    /// hour's join: everything a join reads from the hour before, beside the
+    /// hour's own selections (the countries, slots and rows it observes, the
+    /// tables it read, and how it joined) and the row indexes, which find the
+    /// same rows as the rows' order does.
+    pub(super) fn same_join(&self, other: &Self) -> bool {
+        self.deferred.is_none()
+            && other.deferred.is_none()
+            && self.countries == other.countries
+            && self.census == other.census
+            && self.naming_ids == other.naming_ids
+            && self.tag_slots == other.tag_slots
+            && self.refused == other.refused
+            && self.refused_reasons == other.refused_reasons
+            && self.links == other.links
+            && self.witnesses == other.witnesses
+            && self.deadlines == other.deadlines
+            && self.by_slot == other.by_slot
+            && self.sums == other.sums
+            && self.applications == other.applications
+            && self.unreconciled == other.unreconciled
+            && self.unreconciled_counts == other.unreconciled_counts
+            && self.daily_mutations == other.daily_mutations
+            && self.unknown_additions == other.unknown_additions
+            && self.power() == other.power()
+            && self.governments() == other.governments()
+            && self.daily() == other.daily()
+            && self.costs() == other.costs()
+            && self.daily_keys == other.daily_keys
+            && self.cost_keys == other.cost_keys
+            && self.raw_slots == other.raw_slots
+            && self.character_slots == other.character_slots
+            && self.command == other.command
+            && self.complete == other.complete
+            && self.lexical_complete == other.lexical_complete
+            // The census keys are read with the census, which holds them.
+            && self.keys.is_some() == other.keys.is_some()
+            && self.latest_power == other.latest_power
+            && self.mutation_hours == other.mutation_hours
+            && self.days == other.days
     }
 
     /// Each identity slot's capture: that of its last linked country with one.
@@ -1368,7 +1593,8 @@ mod tests {
             let mut advanced: Vec<_> = advancing.iter().map(|raw| (*raw, first[raw])).collect();
             let mut expected = deadlines.clone();
             one_at_a_time(&mut expected, &advanced, hour);
-            advance_deadlines(&mut deadlines, &mut advanced, hour);
+            advanced.sort_unstable_by_key(|&(raw, _)| raw);
+            advance_deadlines(&mut deadlines, &advanced, hour);
             assert_eq!(deadlines, expected, "case {case}");
             assert!(
                 deadlines.values().all(|raws| !raws.is_empty()),

@@ -2,6 +2,13 @@ use super::*;
 
 #[test]
 fn equipment_losses_unprepared_spans_are_pending_until_drain_totals_are_published() {
+    independent::with_test_hourly(
+        equipment_losses_unprepared_spans_are_pending_until_drain_totals_are_published_hourly,
+    );
+}
+
+/// The loss pages are written as the hourly walk publishes them.
+fn equipment_losses_unprepared_spans_are_pending_until_drain_totals_are_published_hourly() {
     use crate::products::{country_history::HistoryScan, equipment_losses::prepared::Prepared};
     use crate::test_fixtures::scale_tag;
     use replay::rows::{EquipmentDestructionCause, EquipmentDestructionRow};

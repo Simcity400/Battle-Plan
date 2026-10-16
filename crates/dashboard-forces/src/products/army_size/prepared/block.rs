@@ -6,11 +6,11 @@
 //! state breaks an assumption of the fast fold, the fold observes the rest of
 //! the block hour by hour.
 
-use super::super::{Scan, Track};
+use super::super::{RawRun, Scan, Track, composition::RawMixRun};
 use super::{Prepared, Publication, TABLES, publish_mix, scan_state};
 use dashboard_base::prepared::{
     frame_changes::{FrameChangeTracker, FrameChanges},
-    prepass::{Extract, Failure, Family, Folded},
+    prepass::{Extract, Failure, Family, Folded, Held, HeldBytes},
     series::{self, Accumulator, Recording, ReplayTarget},
 };
 use replay::{
@@ -71,7 +71,66 @@ struct BlockFacts {
     last: i32,
 }
 
+impl Held for AfterFirst {
+    fn held(&self, _: &mut HeldBytes) {}
+}
+
+impl Held for RawRun {
+    fn held(&self, _: &mut HeldBytes) {}
+}
+
+impl Held for RawMixRun {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes.heap(&self.parts);
+    }
+}
+
+impl Held for Track {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes.heap(&self.runs).heap(&self.segments).heap(&self.mix);
+    }
+}
+
+impl Held for Scan {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.tracks)
+            .heap(&self.invalid_table_reads)
+            .heap(&self.live)
+            .heap(&self.removed)
+            .heap(&self.observed);
+    }
+}
+
+/// A composition recorded for the fold: its tag and its serialized parts.
+impl Held for Publication {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes.heap(&self.tag).heap(&self.parts);
+    }
+}
+
 impl Extract for BlockExtract {
+    /// What the block's facts hold: its first frame and what the scan held
+    /// after it, its recorded calls, the compositions recorded for the fold,
+    /// its keys by name and its scan at the block's end (every track's runs,
+    /// compositions and segments).
+    fn bytes(&self) -> u64 {
+        let mut held = HeldBytes::default();
+        if let Some(first) = &self.first {
+            held.frame(&first.frame)
+                .heap(&first.invalid_table_reads)
+                .heap(&first.tracks);
+        }
+        let prepared = &self.prepared;
+        // The keys by number, as the facts name them.
+        held.add(prepared.tags.len() * size_of::<String>())
+            .add(prepared.tags.keys().map(String::capacity).sum());
+        held.heap(&self.recording)
+            .heap(&prepared.recorded)
+            .value(&prepared.scan)
+            .total()
+    }
+
     fn observe(
         &mut self,
         replay: &Replay,

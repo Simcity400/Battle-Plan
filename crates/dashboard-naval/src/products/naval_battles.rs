@@ -34,6 +34,7 @@ use {
 };
 
 mod details;
+pub mod newest;
 pub mod prepared;
 pub use details::NavalBattleDetails;
 
@@ -1329,13 +1330,42 @@ fn bounded<T: Serialize>(reply: T) -> io::Result<T> {
     Ok(reply)
 }
 
+/// The tables prepared naval observation reads from a frame: the battle and
+/// result census, the fleet rosters, the sunk ships and convoys, and the
+/// tables sunk ships' place names read. Scripted place names also evaluate
+/// the shared trigger kit's tables, which the dashboard adds.
+pub const PREPARED_TABLES: &[TableId] = &[
+    TableId::Campaign,
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::NavalCombats,
+    TableId::NavalCombatParticipants,
+    TableId::NavalResults,
+    TableId::NavalResultMembers,
+    TableId::NavalResultCountries,
+    TableId::NavalCombatDetails,
+    TableId::NavalCombatResultDetails,
+    TableId::NavalResultSources,
+    TableId::TaskForces,
+    TableId::Fleets,
+    TableId::SunkShips,
+    TableId::SunkConvoys,
+    TableId::LexicalTokens,
+    TableId::Provinces,
+    TableId::ProvinceNames,
+    TableId::States,
+    TableId::ReservedCountryNaming,
+    TableId::CountryAppearance,
+];
+
 const RESULT_TABLES: [TableId; 4] = [
     TableId::NavalResults,
     TableId::NavalResultMembers,
     TableId::NavalResultCountries,
     TableId::NavalCombatResultDetails,
 ];
-#[cfg(any(test, feature = "test-support"))]
+/// The tables the battle census reads, which the newest window's look-back
+/// reads.
 const CENSUS_TABLES: [TableId; 11] = [
     TableId::Campaign,
     TableId::Countries,

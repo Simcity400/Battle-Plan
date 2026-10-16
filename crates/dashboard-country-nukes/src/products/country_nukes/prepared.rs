@@ -190,44 +190,25 @@ impl Prepared {
     ) -> io::Result<()> {
         self.scan
             .observe_changes(frame, replay.format, Some(changes));
-        self.first.get_or_insert(frame.hour);
-        self.last = frame.hour;
-        self.values.advance(frame.hour)?;
-        self.parts.advance(frame.hour)?;
-        self.mixes.advance(frame.hour)?;
-        self.increases.advance(frame.hour)?;
-        if slot_read(replay.format, &frame.metrics, TableId::Nukes, frame.hour)
+        let refused = if slot_read(replay.format, &frame.metrics, TableId::Nukes, frame.hour)
             && let Err(error) = frame.complete::<tables::Nukes>()
         {
-            let reason = if let replay::frame::TableView::Unavailable { reason } =
-                &*frame.tables[TableId::Nukes.index()]
-            {
-                reason.clone()
-            } else {
-                let text = error.to_string();
-                text.strip_prefix(&format!("hour {} ", frame.hour))
-                    .unwrap_or(&text)
-                    .to_owned()
-            };
-            dashboard_base::products::country_groups::mark_unobserved(
-                self.feed_refusals.entry(reason).or_default(),
-                frame.hour,
-                frame.hour,
-            );
-        }
-        for hour in self.scan.scanned.read_hours.drain(..) {
-            dashboard_base::products::country_groups::mark_unobserved(
-                &mut self.feed_reads,
-                hour,
-                hour,
-            );
-            self.mixes.event(
-                READS,
-                hour,
-                &self.scan.scanned.empty_read_hours.contains(&hour),
-            )?;
-        }
-        self.scan.scanned.empty_read_hours.clear();
+            Some(
+                if let replay::frame::TableView::Unavailable { reason } =
+                    &*frame.tables[TableId::Nukes.index()]
+                {
+                    reason.clone()
+                } else {
+                    let text = error.to_string();
+                    text.strip_prefix(&format!("hour {} ", frame.hour))
+                        .unwrap_or(&text)
+                        .to_owned()
+                },
+            )
+        } else {
+            None
+        };
+        self.advance(frame.hour, refused)?;
         for tag in std::mem::take(&mut self.scan.observed) {
             let track = &self.scan.tracks[&tag];
             let raw = track
@@ -311,6 +292,51 @@ impl Prepared {
             }
         }
         Ok(())
+    }
+    /// The accepted hour every series takes, observed or quiet: a dated read
+    /// of a stockpile table that is not complete (`refused`, its reason), and
+    /// each read hour the scan dated, with whether its stockpiles were empty.
+    fn advance(&mut self, hour: i32, refused: Option<String>) -> io::Result<()> {
+        self.first.get_or_insert(hour);
+        self.last = hour;
+        self.values.advance(hour)?;
+        self.parts.advance(hour)?;
+        self.mixes.advance(hour)?;
+        self.increases.advance(hour)?;
+        if let Some(reason) = refused {
+            dashboard_base::products::country_groups::mark_unobserved(
+                self.feed_refusals.entry(reason).or_default(),
+                hour,
+                hour,
+            );
+        }
+        for hour in self.scan.scanned.read_hours.drain(..) {
+            dashboard_base::products::country_groups::mark_unobserved(
+                &mut self.feed_reads,
+                hour,
+                hour,
+            );
+            self.mixes.event(
+                READS,
+                hour,
+                &self.scan.scanned.empty_read_hours.contains(&hour),
+            )?;
+        }
+        self.scan.scanned.empty_read_hours.clear();
+        Ok(())
+    }
+    /// What observing `hour` does when it follows the last hour observed and
+    /// none of the countries' keys, links, name tokens, availability or
+    /// stockpile rows changed there, the stockpile table read (`read`) or not
+    /// as at the hour before: the read it dates, the unchanged hour's counts
+    /// and every series' accepted hour, in constant time. `Ok(false)`, with
+    /// nothing changed, when observing it needs its frame.
+    pub fn advance_quiet(&mut self, hour: i32, read: bool) -> io::Result<bool> {
+        if !self.scan.advance_quiet(hour, read) {
+            return Ok(false);
+        }
+        self.advance(hour, None)?;
+        Ok(true)
     }
     pub fn bytes(&self) -> usize {
         self.values.bytes()
@@ -428,15 +454,29 @@ pub fn query(
         .parse()
         .map_err(|_| dashboard_core::invalid("Invalid nuclear branch"))?;
     let (store, source_key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
-    let accepted = match dashboard_base::prepared::coverage::coverage(
+    // Prepared on their own, the stockpiles and the identity history they are
+    // named through answer from their own coverage.
+    let accepted = match dashboard_base::prepared::coverage::product_coverage(
         source,
         context.content.as_ref(),
         branch,
+        CountryNukes::KEY,
         cancelled,
     ) {
         Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
         result => result?,
     };
+    // Pages committed ahead of that coverage (by a family prepared on its own
+    // ahead of the identity history) are not read: the prepared prefix ends
+    // at the last batch committed by its last hour, and the hours after it
+    // are an unprepared tail.
+    let accepted = series::committed_coverage(
+        &store,
+        &source_key,
+        format!("nukes-values-{branch}"),
+        accepted,
+        cancelled,
+    )?;
     let partial = accepted.as_ref().is_none_or(|coverage| !coverage.complete);
     if accepted.is_none() && matches!(product, "events-page" | "events-clusters") {
         return Ok(Value::Null);
@@ -537,8 +577,12 @@ pub fn query(
         })
         .collect();
     let reader = |section: String| -> io::Result<Reader<'_>> {
-        if accepted.is_some() {
-            Reader::new(&store, &source_key, section, cancelled)
+        if let Some(coverage) = &accepted {
+            let mut reader = Reader::new(&store, &source_key, section, cancelled)?;
+            if !coverage.complete {
+                reader.through_hour(coverage.last_hour)?;
+            }
+            Ok(reader)
         } else {
             Ok(Reader::from_first_file(
                 &store,

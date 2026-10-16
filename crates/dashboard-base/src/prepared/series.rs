@@ -591,9 +591,9 @@ impl Accumulator {
     pub fn bytes(&self) -> usize {
         self.batch.bytes()
     }
-    pub fn flush(
+    pub fn flush<W: super::pages::Pages + ?Sized>(
         &mut self,
-        writer: &mut store::Writer,
+        writer: &mut W,
         section: &str,
         decimals: u8,
         cancelled: &AtomicBool,
@@ -682,6 +682,20 @@ pub trait ReplayTarget {
 }
 
 impl Recording {
+    /// What the recording holds, about: every call, and each recorded
+    /// event's row at its length.
+    pub fn bytes(&self) -> usize {
+        self.calls.capacity() * size_of::<Call>()
+            + self
+                .calls
+                .iter()
+                .map(|call| match call {
+                    Call::Event { row, .. } => row.len(),
+                    _ => 0,
+                })
+                .sum::<usize>()
+            + self.spans.len() * 3 * size_of::<usize>()
+    }
     /// Recorded calls, advance spans included.
     pub fn len(&self) -> usize {
         self.calls.len()
@@ -872,8 +886,8 @@ fn parse_catalogue<T: DeserializeOwned>(text: Option<Vec<u8>>) -> io::Result<Opt
 /// All families publish the same catalogue shape, the JSON text of
 /// `(keys, metadata)`. A flush writes only what changed in that text since
 /// the last flush (a base range, then patches: `series/catalogue.rs`).
-pub fn write_catalogue(
-    writer: &mut store::Writer,
+pub fn write_catalogue<W: super::pages::Pages + ?Sized>(
+    writer: &mut W,
     family: &str,
     branch: u64,
     keys: &BTreeMap<String, u64>,
@@ -884,6 +898,34 @@ pub fn write_catalogue(
         &catalogue_section(family, branch),
         &serde_json::to_vec(&(keys, metadata))?,
     )
+}
+/// The prepared prefix of `section` a query waiting for `coverage` reads.
+/// When the section holds batches committed beyond a coverage that is not
+/// complete (a family prepared on its own ahead of another its replies read
+/// with), the coverage ends at the last batch committed by its last hour, or
+/// is None when none was; the query reads the section only through that hour
+/// ([`Reader::through_hour`]) and the hours after it as an unprepared tail.
+/// Otherwise the coverage is unchanged.
+pub fn committed_coverage(
+    store: &store::Store,
+    key: &store::SourceKey,
+    section: String,
+    coverage: Option<super::coverage::Coverage>,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<super::coverage::Coverage>> {
+    let Some(partial) = coverage.as_ref().filter(|coverage| !coverage.complete) else {
+        return Ok(coverage);
+    };
+    let mut reader = Reader::new(store, key, section, cancelled)?;
+    let all = reader.count;
+    let reached = reader.through_hour(partial.last_hour)?;
+    if reader.count == all {
+        return Ok(coverage);
+    }
+    Ok(reached.map(|last_hour| super::coverage::Coverage {
+        last_hour,
+        ..partial.clone()
+    }))
 }
 pub fn read_catalogue<T: DeserializeOwned>(
     store: &store::Store,
@@ -1095,9 +1137,9 @@ impl Batch {
         rows.state.events = state.events;
         Ok(())
     }
-    pub fn write(
+    pub fn write<W: super::pages::Pages + ?Sized>(
         self,
-        writer: &mut store::Writer,
+        writer: &mut W,
         section: &str,
         decimals: u8,
         cancelled: &AtomicBool,
@@ -1867,6 +1909,18 @@ impl<'a> Reader<'a> {
             self.cached.insert((batch, key), decoded);
         }
         Ok(&self.cached[&(batch, key)])
+    }
+    /// Read only the batches committed by `hour` (those ending by then): the
+    /// section as a preparation that had accepted no later hour published it,
+    /// for a reader whose accepted coverage ends before pages a family
+    /// prepared on its own committed ahead of it. The last hour that prefix
+    /// reaches; None when no batch ends by then.
+    pub fn through_hour(&mut self, hour: i32) -> io::Result<Option<i32>> {
+        self.count = lower(self.count, |batch| Ok(self.hours(batch)?.1 <= hour))?;
+        match self.count.checked_sub(1) {
+            Some(last) => Ok(Some(self.hours(last)?.1)),
+            None => Ok(None),
+        }
     }
     fn batches(&mut self, from: i32, to: i32) -> io::Result<std::ops::Range<u64>> {
         let first = lower(self.count, |batch| Ok(self.hours(batch)?.1 < from))?;
@@ -2673,8 +2727,8 @@ mod catalogue;
 pub mod tests;
 
 /// Whole product replies have no series directory or event wrapper.
-pub fn write_reply(
-    writer: &mut store::Writer,
+pub fn write_reply<W: super::pages::Pages + ?Sized>(
+    writer: &mut W,
     section: &str,
     ordinal: u64,
     value: &impl Serialize,

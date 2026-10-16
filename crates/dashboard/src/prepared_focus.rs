@@ -15,6 +15,7 @@ use crate::{
         series::{self, Accumulator},
     },
 };
+use dashboard_base::prepared::prepass::{Held, HeldBytes};
 use replay::{
     container::Replay,
     frame::{DecodedFrame, TableView, ViewIdentity},
@@ -476,6 +477,60 @@ fn add(tally: &mut BTreeMap<&'static str, u64>, counts: &BTreeMap<&'static str, 
     }
 }
 
+impl Held for Recorded {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes.heap(&self.0);
+    }
+}
+
+/// A completed list: its tokens added after the list before it, and that
+/// list, each shared allocation once.
+impl Held for Completed {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes.heap(&self.added).heap(&self.before);
+    }
+}
+
+impl Held for OrderObs {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.completed)
+            .heap(&self.current)
+            .heap(&self.continuous);
+    }
+}
+
+impl Held for RunStart {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes.heap(&self.previous);
+    }
+}
+
+impl Held for Stretch {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes.heap(&self.orders).heap(&self.run);
+    }
+}
+
+impl Held for TableRefusal {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.table)
+            .heap(&self.reason)
+            .heap(&self.missing_rows);
+    }
+}
+
+impl Held for Facts {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.runs)
+            .heap(&self.availability)
+            .heap(&self.tags)
+            .heap(&self.tally);
+    }
+}
+
 /// Builds one block's [`Facts`] from its hours in order: the hours whose
 /// tables it is given, and the quiet hours between them, at which no field
 /// it reads changed. An hour whose tables read as the hour before is quiet
@@ -493,6 +548,15 @@ pub(crate) struct Builder {
 }
 
 impl Builder {
+    /// What the facts built so far hold, about: each recorded run, the
+    /// refusals where they change and their reasons, each country's
+    /// stretches with their order changes, and the focus lists and tokens
+    /// those hold (each shared list and token once).
+    pub(crate) fn bytes(&self) -> u64 {
+        let mut held = HeldBytes::default();
+        held.heap(&self.facts).total()
+    }
+
     /// A builder of every country's facts, or only `filter`'s.
     pub(crate) fn new(filter: Option<&str>) -> Self {
         Self {

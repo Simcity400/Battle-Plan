@@ -2914,3 +2914,197 @@ fn prepared_advance_only_hours_match_the_whole_accounting_byte_for_byte() {
         hours.len()
     );
 }
+
+/// One block of [`advancing_hour`]'s campaign, from its keyframe: each hour
+/// decoded with its updates.
+fn advancing_block(
+    recorded: &mut Recorded,
+    input: &mut DecodedFrame,
+    captures: &mut Vec<PoliticsCaptureCoverageRow>,
+    power: &mut Vec<CountryPowerChangeRow>,
+    hours: &[i32],
+) -> Vec<(DecodedFrame, Arc<replay::frame::Frame>)> {
+    hours
+        .iter()
+        .map(|&hour| {
+            input.hour = hour;
+            advancing_hour(input, captures, power);
+            recorded.next(input, hour == hours[0])
+        })
+        .collect()
+}
+
+/// A pre-pass worker's join of `frames` read alone, with the change facts of
+/// those hours alone.
+fn worker_facts(frames: &[(DecodedFrame, Arc<replay::frame::Frame>)]) -> BlockFacts {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let format = replay::format::FormatVersion::CURRENT;
+    // The worker reads no table of the recording through it.
+    let replay = replay::container::Replay::from_records(
+        dashboard_base::test_fixtures::CAMPAIGN.into(),
+        &[dashboard_base::test_fixtures::records(
+            1,
+            vec![frame(24, 1)],
+        )],
+    )
+    .unwrap();
+    let mut extract = block_extract(format);
+    let mut tracker = FrameChangeTracker::new();
+    for (decoded, wire) in frames {
+        let changes = tracker.observe_updates(decoded, Arc::clone(wire), format);
+        extract.observe(&replay, decoded, &changes).unwrap();
+    }
+    *extract
+        .finish()
+        .unwrap()
+        .downcast::<BlockFacts>()
+        .expect("the ledger's block facts")
+}
+
+/// Blocks folded from a pre-pass worker's join of each block alone publish
+/// and keep exactly what observing every hour does, byte for byte, through
+/// payments, daily gains at day boundaries, a stale capture and one starting
+/// again, a deleted capture, a lost stream, a recording gap inside a block
+/// and two resumes, with each hour's countries presented on three threads.
+/// The fold advances certified hours without joining their captures, takes
+/// the same path as the hourly observer at every hour, observes every
+/// block's first hour, and certifies nothing in a block whose worker join is
+/// not its own (here a worker that read the block from its second hour).
+#[test]
+fn prepared_blocks_folded_from_worker_joins_match_hourly_observation_byte_for_byte() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    let fixtures = [Fixture::new(), Fixture::new()];
+    // Observed hour by hour, and folded from each block's worker join.
+    let mut observers = [Prepared::default(), Prepared::default()];
+    let mut recorded = Recorded::new();
+    let mut input = frame(24, 4);
+    put(&mut input, command_power(4));
+    let mut captures: Vec<_> = (1..=4).map(|country| capture(country, 24, 24)).collect();
+    let mut power = Vec::new();
+    // Hours 52 and 53 are a recording gap inside the third block.
+    let hours: Vec<i32> = (24..=95).filter(|hour| !(52..=53).contains(hour)).collect();
+    let blocks: Vec<&[i32]> = hours.chunks(12).collect();
+    let misjoined = 4;
+    let mut paths = [BTreeSet::new(), BTreeSet::new()];
+    let mut certified = BTreeSet::new();
+    for (number, block) in blocks.iter().enumerate() {
+        let frames = advancing_block(&mut recorded, &mut input, &mut captures, &mut power, block);
+        let facts = if number == misjoined {
+            worker_facts(&frames[1..])
+        } else {
+            worker_facts(&frames)
+        };
+        let mut fold = BlockFold::new(facts);
+        let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+        for (decoded, wire) in &frames {
+            let [hourly, folded] = &mut observers;
+            let before = [
+                hourly.advanced_hours(),
+                folded.advanced_hours(),
+                folded.certified_hours(),
+            ];
+            let changes = trackers[0].observe_updates(decoded, Arc::clone(wire), format);
+            hourly.observe(decoded, &changes, &flag).unwrap();
+            let changes = trackers[1].observe_updates(decoded, Arc::clone(wire), format);
+            with_test_presentation(1, 3, || {
+                folded.observe_folded(decoded, &changes, &flag, &mut fold)
+            })
+            .unwrap();
+            let hour = decoded.hour;
+            if hourly.advanced_hours() > before[0] {
+                paths[0].insert(hour);
+            }
+            if folded.advanced_hours() > before[1] {
+                paths[1].insert(hour);
+            }
+            if folded.certified_hours() > before[2] {
+                certified.insert(hour);
+            }
+            let [hourly, folded] = &observers;
+            assert_eq!(hourly.scan.events, folded.scan.events, "hour {hour}");
+            assert_eq!(
+                hourly.scan.clock.next, folded.scan.clock.next,
+                "hour {hour}"
+            );
+            assert_eq!(
+                hourly.scan.inputs.deadlines, folded.scan.inputs.deadlines,
+                "hour {hour}"
+            );
+            assert_eq!(hourly.day_tags, folded.day_tags, "hour {hour}");
+        }
+        observers[1].end_block();
+        let [hourly, folded] = &observers;
+        assert!(
+            hourly.scan.inputs.same_join(&folded.scan.inputs),
+            "block {number}: the folded join is the hourly one"
+        );
+        let saved = observers
+            .each_mut()
+            .map(|observer| observer.saved_bytes().unwrap());
+        assert_eq!(saved[0], saved[1], "state saved after block {number}");
+        if number % 2 == 0 && number + 1 < blocks.len() {
+            continue;
+        }
+        for (observer, fixture) in observers.iter_mut().zip(&fixtures) {
+            publish(observer, fixture);
+        }
+        let published = fixtures.each_ref().map(sections);
+        assert!(!published[0].is_empty());
+        assert_eq!(
+            published[0].keys().collect::<Vec<_>>(),
+            published[1].keys().collect::<Vec<_>>(),
+            "sections published after block {number}"
+        );
+        for (section, bytes) in &published[0] {
+            assert!(
+                published[1][section] == *bytes,
+                "{section:?} published after block {number}"
+            );
+        }
+        if number + 1 == blocks.len() || number == 5 {
+            continue;
+        }
+        // Both resume from their saved state at the next block.
+        let last = &frames.last().unwrap().0;
+        for observer in &mut observers {
+            let (paths, folds) = (observer.paths, observer.folds);
+            *observer = Prepared::read(observer.saved_bytes().unwrap().as_slice()).unwrap();
+            observer.paths = paths;
+            observer.folds = folds;
+            observer.resume(last);
+        }
+    }
+    let [hourly, folded] = &observers;
+    assert_eq!(paths[0], paths[1], "the fold takes the hourly paths");
+    assert_eq!(hourly.accounted_hours(), folded.accounted_hours());
+    assert!(
+        certified.is_subset(&paths[0]),
+        "only hours that advance captures are certified: {certified:?}"
+    );
+    assert!(
+        certified.len() >= 10,
+        "the fold joins most advance hours from their certificates, not {certified:?}"
+    );
+    for (number, block) in blocks.iter().enumerate() {
+        assert!(
+            !certified.contains(&block[0]),
+            "block {number}'s first hour is observed"
+        );
+        if number == misjoined {
+            assert!(
+                block.iter().all(|hour| !certified.contains(hour)),
+                "block {number}'s worker join is not the observer's"
+            );
+        }
+    }
+    assert!(
+        !certified.contains(&54),
+        "the hour after the gap joins the whole tables"
+    );
+    assert!(
+        folded.parallel_hours() > 0,
+        "the accounting hours present their countries on several threads"
+    );
+}

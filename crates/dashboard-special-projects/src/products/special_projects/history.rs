@@ -3,6 +3,7 @@ use super::*;
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::validate_campaign;
 use dashboard_text::metadata::{check_cancel, tagged_countries};
+use dashboard_text::triggers::inputs::{self as reuse, ReuseCounts, Since, TableChanges};
 use replay::rows::CountryRow;
 #[cfg(any(test, feature = "test-support"))]
 use replay::{
@@ -573,6 +574,14 @@ struct Actor {
     open: BTreeSet<(u32, u32)>,
 }
 
+/// A scoped name's last evaluation: the key it localised, the name it gave
+/// and every input it read ([`dashboard_text::triggers::inputs`]).
+struct Evaluation {
+    key: String,
+    name: Name,
+    inputs: reuse::Inputs,
+}
+
 #[derive(Default, Serialize, Deserialize)]
 pub(super) struct NameScan {
     #[serde(with = "dashboard_core::map_pairs")]
@@ -584,14 +593,88 @@ pub(super) struct NameScan {
     #[serde(skip)]
     active: BTreeSet<(u32, String)>,
     pub(super) names: Names,
+    /// Each owner, slot and definition's last evaluation: an hour at which
+    /// every input it read reads the same gives the same name, without
+    /// evaluating it ([`reused_name`]).
+    #[serde(skip)]
+    evaluations: BTreeMap<(String, u32, u32), Evaluation>,
+    /// The scoped names evaluated, reused and (in check mode) evaluated
+    /// anyway.
+    #[serde(skip)]
+    pub(super) reuse: ReuseCounts,
+    /// Each owner, slot and definition's name at the last hour it was
+    /// observed, which tells a name that changed at the next.
+    #[serde(skip)]
+    previous: BTreeMap<(String, u32, u32), (i32, Name)>,
 }
+/// Whether the name of `at` observed at `hour` is not the one `previous`
+/// holds from the hour before (or it holds none), remembering it for the
+/// next.
+fn changed(
+    previous: &mut BTreeMap<(String, u32, u32), (i32, Name)>,
+    at: &(String, u32, u32),
+    hour: i32,
+    value: &Name,
+) -> bool {
+    let changed = previous
+        .get(at)
+        .is_none_or(|(last, name)| last.checked_add(1) != Some(hour) || name != value);
+    previous.insert(at.clone(), (hour, value.clone()));
+    changed
+}
+
+/// How a name scan reuses its scoped names' last evaluations.
+#[derive(Clone, Copy)]
+pub(super) enum Reuse<'a> {
+    /// Evaluate every name.
+    Every,
+    /// Reuse a name every input of whose last evaluation reads the same at
+    /// the frame's hour, given these changes since the hour before (an
+    /// input whose declared reads did not change reads the same without
+    /// reading it); evaluate any other.
+    Confirm(&'a dyn TableChanges),
+    /// Reuse every name, none of whose inputs' declared reads these changes
+    /// changed, without reading the frame, which holds the hour's rows only
+    /// of the tables the family watches whole ([`NameScan::advances`]).
+    Advance(&'a dyn TableChanges),
+}
+
 impl NameScan {
+    /// Whether every active name reads the same at the frame's hour without
+    /// reading the frame: its last evaluation is of the key it localises
+    /// now, at the hour before, and none of its inputs' declared reads
+    /// `changes` changed ([`Reuse::Advance`]).
+    pub(super) fn advances(
+        &self,
+        frame: &DecodedFrame,
+        actors: &Actors,
+        changes: &dyn TableChanges,
+    ) -> bool {
+        let Some(since) = Since::hour_before(frame, changes) else {
+            return false;
+        };
+        self.active.iter().all(|(definition, tag)| {
+            let Some(&(_, slot)) = actors.tags.get(tag.as_bytes()) else {
+                return true;
+            };
+            let Some(Some(key)) = self.keys.get(&(*definition, tag.clone())) else {
+                return true;
+            };
+            self.evaluations
+                .get(&(tag.clone(), slot, *definition))
+                .is_some_and(|last| last.key == *key && last.inputs.unchanged(&since))
+        })
+    }
+
+    /// Observe the frame's projects' scoped names, reusing them as `reuse`
+    /// says.
     pub(super) fn observe(
         &mut self,
         frame: &DecodedFrame,
         input: &Actors,
         read: bool,
         content: &Content,
+        reuse: Reuse<'_>,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         check_cancel(cancelled)?;
@@ -659,12 +742,26 @@ impl NameScan {
                     continue;
                 };
                 self.active.insert((project.definition_id, tag.to_owned()));
-                let value = name_at(frame, slot, key, content);
-                self.names.observe(
-                    (tag.to_owned(), slot, project.definition_id),
-                    frame.hour,
-                    value,
+                let value = reused_name(
+                    &mut self.evaluations,
+                    &mut self.reuse,
+                    (tag, slot, project.definition_id),
+                    key,
+                    frame,
+                    content,
+                    reuse,
                 );
+                let at = (tag.to_owned(), slot, project.definition_id);
+                // The hour's first name of a key holds, as its runs keep it.
+                if self
+                    .previous
+                    .get(&at)
+                    .is_none_or(|(hour, _)| *hour != frame.hour)
+                {
+                    self.previous
+                        .insert(at.clone(), (frame.hour, value.clone()));
+                }
+                self.names.observe(at, frame.hour, value);
             }
             actor.open = next;
         }
@@ -695,11 +792,17 @@ impl NameScan {
     pub(super) fn active_countries(&self) -> impl Iterator<Item = String> + '_ {
         self.active.iter().map(|(_, tag)| tag.clone())
     }
+    /// Evaluate the active scoped names at the frame's hour, reusing them as
+    /// `reuse` says ([`Self::observe`]). The countries any of whose names
+    /// changed since the hour before: one not observed then, or another
+    /// name or refusal. Every other country's presentation reads at this
+    /// hour the names it read at the hour before.
     pub(super) fn evaluate_current(
         &mut self,
         frame: &DecodedFrame,
         actors: &Actors,
         content: &Content,
+        reuse: Reuse<'_>,
         cancelled: &AtomicBool,
     ) -> io::Result<BTreeSet<String>> {
         let mut countries = BTreeSet::new();
@@ -711,10 +814,20 @@ impl NameScan {
             let Some(Some(key)) = self.keys.get(&(*definition, tag.clone())) else {
                 continue;
             };
-            let value = name_at(frame, *slot, key, content);
-            self.names
-                .observe((tag.clone(), *slot, *definition), frame.hour, value);
-            countries.insert(tag.clone());
+            let value = reused_name(
+                &mut self.evaluations,
+                &mut self.reuse,
+                (tag, *slot, *definition),
+                key,
+                frame,
+                content,
+                reuse,
+            );
+            let at = (tag.clone(), *slot, *definition);
+            if changed(&mut self.previous, &at, frame.hour, &value) {
+                countries.insert(tag.clone());
+            }
+            self.names.observe(at, frame.hour, value);
         }
         Ok(countries)
     }
@@ -738,6 +851,18 @@ fn scope_key(
     needs_scope(&content.catalogue.localisation, &key).then_some(key)
 }
 fn name_at(frame: &DecodedFrame, slot: u32, key: &str, content: &Content) -> Name {
+    evaluated_name(frame, slot, key, content).0
+}
+
+/// [`name_at`], and when it expanded scripted text, every input the
+/// expansion read. The hour's text context is built outside the recorded
+/// evaluation: what it holds is read only through recorded queries.
+fn evaluated_name(
+    frame: &DecodedFrame,
+    slot: u32,
+    key: &str,
+    content: &Content,
+) -> (Name, Option<reuse::Inputs>) {
     match content.catalogue.scripted_content() {
         Ok(scripted) => {
             let context = dashboard_text::scripted_text::ScriptedText::new(
@@ -746,26 +871,125 @@ fn name_at(frame: &DecodedFrame, slot: u32, key: &str, content: &Content) -> Nam
                 scripted,
                 slot,
             );
-            let (text, mut findings) = catalogue::localised_in_details(
-                &content.catalogue.localisation,
-                key,
-                &[],
-                &context,
-            );
+            let ((text, mut findings), inputs) = reuse::capture(frame, || {
+                catalogue::localised_in_details(&content.catalogue.localisation, key, &[], &context)
+            });
             let text = text.map_err(|finding| findings.push(*finding)).ok();
-            Name {
+            let name = Name {
                 text,
                 warnings: findings
                     .into_iter()
                     .map(|finding| format!("{}: {}", finding.subject, finding.message))
                     .collect(),
-            }
+            };
+            (name, Some(inputs))
         }
-        Err(reason) => Name {
-            text: None,
-            warnings: vec![format!("Project name {key}: {reason}")],
-        },
+        Err(reason) => (
+            Name {
+                text: None,
+                warnings: vec![format!("Project name {key}: {reason}")],
+            },
+            None,
+        ),
     }
+}
+
+/// The scoped name of `key` for `at` (owner, slot, definition) at the
+/// frame's hour: with `changes` since the hour before, the last
+/// evaluation's name while every input it read reads the same, else
+/// evaluated. An input whose declared dependence did not change reads the
+/// same without the hour's text context; the context is built only to read
+/// an input again. The name is a function of what its evaluation read, and
+/// a reused one notes nothing new: the content's refusals and readers are
+/// sets, which its first evaluation noted. Check mode evaluates a reused
+/// name anyway, and a change fails a test.
+fn reused_name(
+    evaluations: &mut BTreeMap<(String, u32, u32), Evaluation>,
+    counts: &mut ReuseCounts,
+    (owner, slot, definition): (&str, u32, u32),
+    key: &str,
+    frame: &DecodedFrame,
+    content: &Content,
+    reuse: Reuse<'_>,
+) -> Name {
+    let changes = match reuse {
+        Reuse::Every => return name_at(frame, slot, key, content),
+        Reuse::Confirm(changes) | Reuse::Advance(changes) => changes,
+    };
+    let at = (owner.to_owned(), slot, definition);
+    let since = Since::hour_before(frame, changes);
+    if let Reuse::Advance(_) = reuse {
+        // The hour's frame holds its rows only of the tables the family
+        // watches whole: every name was found to read the same without it
+        // ([`NameScan::advances`]).
+        let last = evaluations
+            .get_mut(&at)
+            .filter(|last| last.key == key)
+            .expect("a kept hour's names were checked to advance");
+        let advanced = since
+            .as_ref()
+            .is_some_and(|since| last.inputs.advance(since));
+        assert!(advanced, "a kept hour's names were checked to advance");
+        counts.reused += 1;
+        return last.name.clone();
+    }
+    let confirmed = match (
+        evaluations.get_mut(&at),
+        content.catalogue.scripted_content(),
+    ) {
+        (Some(last), Ok(scripted)) if last.key == key => {
+            let text = std::cell::OnceCell::new();
+            last.inputs.confirm_since(frame, since.as_ref(), |read| {
+                text.get_or_init(|| {
+                    dashboard_text::scripted_text::ScriptedText::new(
+                        frame,
+                        &content.catalogue.localisation,
+                        scripted,
+                        slot,
+                    )
+                })
+                .reread(read)
+            })
+        }
+        _ => false,
+    };
+    if confirmed {
+        counts.reused += 1;
+        if !reuse::check_reuse() {
+            return evaluations[&at].name.clone();
+        }
+    }
+    let (name, inputs) = evaluated_name(frame, slot, key, content);
+    if confirmed {
+        // Check mode: the reused name, evaluated anyway, must not change.
+        counts.checked += 1;
+        if evaluations[&at].name != name {
+            counts.mismatched += 1;
+            #[cfg(test)]
+            panic!(
+                "{owner}'s project {definition} name {key}: a reused evaluation changed at hour {}",
+                frame.hour
+            );
+        }
+    } else {
+        counts.evaluated += 1;
+    }
+    match inputs {
+        Some(inputs) => {
+            evaluations.insert(
+                at,
+                Evaluation {
+                    key: key.to_owned(),
+                    name: name.clone(),
+                    inputs,
+                },
+            );
+        }
+        None => {
+            evaluations.remove(&at);
+        }
+    }
+    name
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -822,6 +1046,7 @@ pub(super) fn scoped_names(
                         &span.inputs.actors,
                         span.reads.binary_search(&frame.hour).is_ok(),
                         content,
+                        Reuse::Every,
                         cancelled,
                     )?;
                 }

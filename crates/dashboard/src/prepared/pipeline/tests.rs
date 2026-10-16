@@ -20,17 +20,24 @@ mod equipment_loss_pending;
 mod family_lanes;
 mod family_refusal;
 mod independent_air;
+mod independent_census;
+mod independent_evaluated;
 mod independent_families;
+mod independent_feed;
 mod independent_focus;
 mod independent_groups;
 mod independent_identities;
 mod independent_intelligence;
+mod independent_leaders;
 mod independent_ledgers;
 mod independent_politics;
 mod independent_politics_ledger;
+mod independent_sampled;
+mod independent_shared;
 mod independent_superiority;
 mod independent_tension;
 mod independent_wars;
+mod independent_windowed;
 mod newest_windows;
 mod parallel_flush;
 mod prepass_parity;
@@ -3032,6 +3039,12 @@ fn prepared_wars_match_oracle_after_commits_cancel_resume_append_and_5000_countr
     ignore = "slow: runs in the full suite (--features slow-tests)"
 )]
 fn prepared_feed_matches_after_discarded_batch_cancel_resume_and_append() {
+    // The hourly walk's own batches; prepared on its own, the feed commits
+    // before the walk (`independent_feed`).
+    independent::with_test_hourly(feed_discarded_batch_cancel_resume_and_append);
+}
+
+fn feed_discarded_batch_cancel_resume_and_append() {
     use crate::products::event_feed::prepared::tests::{assert_store_pages, frame};
     let old = Replay::from_records(
         CAMPAIGN.into(),
@@ -3724,6 +3737,13 @@ fn progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_w
     ignore = "slow: runs in the full suite (--features slow-tests)"
 )]
 fn progressive_stability_parts_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing() {
+    independent::with_test_hourly(
+        progressive_stability_parts_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing_hourly,
+    );
+}
+
+/// Stability parts are written as the hourly walk publishes them.
+fn progressive_stability_parts_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing_hourly() {
     use crate::test_fixtures::{stability_frame, stability_inputs};
     fn sampled(hour: i32) -> DecodedFrame {
         let mut inputs = stability_inputs();
@@ -4063,6 +4083,11 @@ fn unprepared_peace_deals_span_returns_pending_through_the_real_query_path() {
 )]
 fn progressive_fuel_factory_and_nukes_queries_join_prefix_and_tail_then_zoom_exactly_without_writing()
  {
+    // The pages and coverage below are those hourly preparation publishes.
+    independent::with_test_hourly(progressive_fuel_factories_and_nukes);
+}
+
+fn progressive_fuel_factories_and_nukes() {
     fn sampled(hour: i32) -> DecodedFrame {
         let count = if hour < 2 { 1 } else { 2 };
         let mut frame = crate::test_fixtures::scale_frame(1, hour, count);
@@ -4296,6 +4321,11 @@ fn progressive_fuel_factory_and_nukes_queries_join_prefix_and_tail_then_zoom_exa
     ignore = "slow: runs in the full suite (--features slow-tests)"
 )]
 fn progressive_nukes_bind_an_unprepared_origin_outside_the_view_and_keep_unchanged_read_dates() {
+    // The pages and coverage below are those hourly preparation publishes.
+    independent::with_test_hourly(progressive_nukes_origin);
+}
+
+fn progressive_nukes_origin() {
     let original = String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap();
     let make = |hour: i32| {
         let mut frame = scale_frame(1, hour, 2);
@@ -4406,6 +4436,13 @@ fn progressive_nukes_bind_an_unprepared_origin_outside_the_view_and_keep_unchang
     ignore = "slow: runs in the full suite (--features slow-tests)"
 )]
 fn territory_progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing() {
+    independent::with_test_hourly(
+        territory_progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing_hourly,
+    );
+}
+
+/// Territory's pages are written as the hourly walk publishes them.
+fn territory_progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly_without_writing_hourly() {
     use crate::products::{LoadContext, country_history::HistoryScan, territory};
     use replay::rows::{CountryLinkRow, CountryRow, ProvinceRow};
     fn sampled(hour: i32) -> DecodedFrame {
@@ -5237,17 +5274,13 @@ fn prepared_country_nukes_matches_native_after_two_commits_resume_append_gaps_al
         vec![100, 101, 103, 104]
     );
     assert_eq!(page.rows[2].row, serde_json::json!(true));
-    let state = load_branch(
-        &store,
-        &key,
-        Some(&key),
-        source.replay_ref(),
-        1,
-        100,
-        &Refused::default(),
-    )
-    .unwrap();
-    let json = serde_json::to_value(&state.nukes).unwrap();
+    // Prepared on their own, the stockpiles keep their continuation apart.
+    let file = store
+        .read(&key, "nukes-continuation-1", 0)
+        .unwrap()
+        .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_reader(zstd::stream::Decoder::new(file).unwrap()).unwrap();
     assert_eq!(json["scan"]["scanned"]["read_hours"], serde_json::json!([]));
     assert_eq!(
         json["scan"]["scanned"]["empty_read_hours"],
@@ -5386,17 +5419,12 @@ fn prepared_country_factories_matches_native_after_two_commits_resume_append_gap
         })
         .collect();
     assert_eq!(dates, vec![100, 104]);
-    let state = load_branch(
-        &store,
-        &key,
-        Some(&key),
-        source.replay_ref(),
-        1,
-        100,
-        &Refused::default(),
-    )
-    .unwrap();
-    let bytes = serde_json::to_vec(&state.factories).unwrap().len();
+    // Prepared on their own, the factories keep their continuation apart.
+    let bytes = store
+        .read(&key, "factories-continuation-1", 0)
+        .unwrap()
+        .map(|file| zstd::stream::decode_all(file).unwrap().len())
+        .unwrap();
     eprintln!("factory continuation / 5000 countries: {bytes} bytes");
 }
 

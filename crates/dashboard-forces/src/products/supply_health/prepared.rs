@@ -4,6 +4,9 @@ use dashboard_base::prepared::series::{self, Accumulator, Reader};
 use std::collections::BTreeMap;
 const SHARE_DECIMALS: u8 = 12;
 const SHARE_SCALE: i128 = 100_000_000_000_000;
+/// The product key supply health's queries wait for: with the identity
+/// history, while the family is prepared on its own; the branch's otherwise.
+const PRODUCT: &str = "supply-health";
 pub const TABLES: &[TableId] = &[
     TableId::Campaign,
     TableId::Countries,
@@ -266,10 +269,11 @@ pub fn query(
         .as_str()
         .and_then(|id| id.parse().ok())
         .ok_or_else(|| dashboard_core::invalid("Invalid supply branch"))?;
-    let coverage = dashboard_base::prepared::coverage::coverage(
+    let coverage = dashboard_base::prepared::coverage::product_coverage(
         source,
         context.content.as_ref(),
         branch,
+        PRODUCT,
         cancelled,
     )?;
     if !coverage.as_ref().is_some_and(|coverage| coverage.complete) {
@@ -310,10 +314,11 @@ fn prepared_query(
         .parse()
         .map_err(|_| dashboard_core::invalid("Invalid branch"))?;
     let (store, key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
-    let coverage = dashboard_base::prepared::coverage::coverage(
+    let coverage = dashboard_base::prepared::coverage::product_coverage(
         source,
         context.content.as_ref(),
         branch,
+        PRODUCT,
         cancelled,
     )?;
     let history = dashboard_base::prepared::query::progressive::histories(
@@ -465,10 +470,11 @@ pub fn next_change(
         .branch_id
         .parse()
         .map_err(|_| dashboard_core::invalid("Invalid branch"))?;
-    let accepted = dashboard_base::prepared::coverage::coverage(
+    let accepted = dashboard_base::prepared::coverage::product_coverage(
         source,
         context.content.as_ref(),
         branch,
+        PRODUCT,
         cancelled,
     )?;
     if !accepted.as_ref().is_some_and(|coverage| coverage.complete) {

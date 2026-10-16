@@ -1,0 +1,968 @@
+//! Country factories and nuclear stockpiles prepared on their own, before the
+//! hourly walk, from blocks read by their changes: each publishes and saves
+//! exactly what hourly preparation does across quiet spans (both tables read
+//! every hour, mostly with equal rows), changed counts inside blocks, a
+//! country renamed and one gone whose rows stay unresolved, a stockpile
+//! table unavailable for two hours, a gap, two branches, append, resume and
+//! refusals, with one and several pre-pass workers; its quiet hours build no
+//! frame; and factory faction totals, country factories and country
+//! stockpiles answer from their families' coverage while the hourly walk
+//! has accepted nothing, as hourly preparation answers them.
+use super::family_lanes::{assert_payloads_equal, payloads};
+use super::*;
+use crate::prepared::prepass;
+use dashboard_base::prepared::kept::counted;
+use independent::Own;
+use replay::rows::{CountryFactoriesRow, FactionMemberRow, FactionRow, NukeRow, TableRows};
+
+type Payloads = BTreeMap<(String, u64), Vec<u8>>;
+
+const A: u32 = 100_000;
+const B: u32 = 100_001;
+const C: u32 = 100_002;
+const D: u32 = 100_003;
+
+/// Branch 1's last hour.
+const LAST: i32 = 216;
+
+/// The census tables at `hour` of `branch` over the four countries A to D
+/// (`frame`), whose balances move every hour. Both census tables are read
+/// every hour (hourly in the current format), mostly with equal rows.
+///
+/// A's military factories rise at 110 (inside a block) and 150, B's civilian
+/// factories at 125; C is renamed at 140; D's country and link rows are gone
+/// from 180 while its factory and stockpile rows stay, unresolved. A's
+/// stockpile rises at 120 and 160 (increases the feed reads), B holds a
+/// second bomb type from 130 to 190; with `unavailable`, the stockpile table
+/// is not read complete at 170 and 171 (a dated read of an incomplete table
+/// at an hour whose rows are the hour before's). A and B form a faction, C
+/// joins it at 150.
+fn census_frame(branch: u64, hour: i32, unavailable: bool) -> DecodedFrame {
+    let mut observed = frame(branch, hour, 4);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *observed.tables[TableId::Countries.index()]
+    {
+        if hour >= 140 {
+            rows[2].tag = b"RNM".to_vec();
+        }
+        if hour >= 180 {
+            rows.retain(|row| row.id != D);
+        }
+    }
+    if hour >= 180
+        && let TableView::Complete(TableRows::CountryLinks(rows)) =
+            &mut *observed.tables[TableId::CountryLinks.index()]
+    {
+        rows.retain(|row| row.id != D);
+    }
+    let military = |country: u32| match country {
+        A if hour >= 150 => 15,
+        A if hour >= 110 => 12,
+        A => 10,
+        B => 4,
+        C => 3,
+        _ => 2,
+    };
+    let civilian = |country: u32| match country {
+        B if hour >= 125 => 7,
+        B => 5,
+        _ => 1,
+    };
+    *observed.tables[TableId::CountryFactories.index()] =
+        TableView::Complete(TableRows::CountryFactories(
+            [A, B, C, D]
+                .into_iter()
+                .map(|country| CountryFactoriesRow {
+                    country,
+                    military_total_raw: military(country) * 100_000,
+                    civilian_total_raw: civilian(country) * 100_000,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    let mut nukes = vec![NukeRow {
+        country: A,
+        nuke_type: 0,
+        amount_raw: match hour {
+            160.. => 4,
+            120.. => 2,
+            _ => 1,
+        } * 100_000_000,
+        ..Default::default()
+    }];
+    if (130..=190).contains(&hour) {
+        nukes.push(NukeRow {
+            country: B,
+            nuke_type: 1,
+            amount_raw: 100_000_000,
+            ..Default::default()
+        });
+    }
+    nukes.push(NukeRow {
+        country: D,
+        nuke_type: 0,
+        amount_raw: 100_000_000,
+        ..Default::default()
+    });
+    *observed.tables[TableId::Nukes.index()] = if unavailable && (170..=171).contains(&hour) {
+        TableView::Unavailable {
+            reason: "Stockpiles not read".into(),
+        }
+    } else {
+        TableView::Complete(TableRows::Nukes(nukes))
+    };
+    *observed.tables[TableId::Factions.index()] =
+        TableView::Complete(TableRows::Factions(vec![FactionRow {
+            id: 42,
+            name: b"Recorded pact".to_vec(),
+            ..Default::default()
+        }]));
+    *observed.tables[TableId::FactionMembers.index()] =
+        TableView::Complete(TableRows::FactionMembers(
+            [A, B]
+                .into_iter()
+                .chain((hour >= 150).then_some(C))
+                .enumerate()
+                .map(|(ordinal, country)| FactionMemberRow {
+                    faction: 42,
+                    country,
+                    ordinal: ordinal as u32,
+                })
+                .collect(),
+        ));
+    for rows in [
+        TableRows::HumanControllers(Vec::new()),
+        TableRows::WarRelations(Vec::new()),
+        TableRows::Capitulation(Vec::new()),
+    ] {
+        let table = rows.table();
+        *observed.tables[table.index()] = TableView::Complete(rows);
+    }
+    observed
+}
+
+/// Branch 1's hours from 100 through `last`, without 136 and 137 (a gap
+/// between blocks), in blocks of 12, then branch 2's one block (hours 20 to
+/// 25) when `second`.
+fn scenario(last: i32, second: bool, unavailable: bool) -> Replay {
+    let hours: Vec<i32> = (100..=last)
+        .filter(|hour| !(136..=137).contains(hour))
+        .collect();
+    let frames = |hours: &[i32]| -> Vec<DecodedFrame> {
+        hours
+            .iter()
+            .map(|&hour| census_frame(1, hour, unavailable))
+            .collect()
+    };
+    let mut blocks = hours.chunks(12);
+    let mut replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, frames(blocks.next().unwrap()))],
+    )
+    .unwrap();
+    for block in blocks {
+        replay = replay
+            .append(&[continuation_records(&replay, 1, frames(block))])
+            .unwrap();
+    }
+    if second {
+        replay = replay
+            .append(&[records(
+                2,
+                (20..=25)
+                    .map(|hour| census_frame(2, hour, unavailable))
+                    .collect(),
+            )])
+            .unwrap();
+    }
+    replay
+}
+
+fn factories() -> &'static dyn Own {
+    &independent::census::FACTORIES
+}
+
+fn nukes() -> &'static dyn Own {
+    &independent::census::NUKES
+}
+
+/// Each census family's name and the field hourly preparation keeps its
+/// state in.
+const CENSUS: [(&str, &str); 2] = [("factories", "factories"), ("nukes", "nukes")];
+
+fn clear(source: Arc<Source>) {
+    super::super::super::files(&source, None)
+        .unwrap()
+        .0
+        .clear()
+        .unwrap();
+}
+
+/// Every block committed on its own.
+fn measured(source: &Source) {
+    run_measured_through(
+        source,
+        None,
+        &AtomicBool::new(false),
+        true,
+        Duration::ZERO,
+        Some(u64::MAX),
+        |_| Ok(()),
+        |_| {},
+    )
+    .unwrap();
+}
+
+fn plain(source: &Source) {
+    run(source, None, &AtomicBool::new(false), |_| {}).unwrap();
+}
+
+/// Prepare a fresh source with `prepare` and take its payloads.
+fn prepared(fixture: &mut Fixture, name: &str, prepare: &dyn Fn(&Source)) -> Payloads {
+    let source = fixture.source(name);
+    prepare(&source);
+    let payloads = payloads(&source, None);
+    clear(source);
+    payloads
+}
+
+/// Sections only one mode writes: the checkpoint, the families' own coverage
+/// pages and continuations, the hourly branch state (compared apart) and the
+/// identity history the walk keeps under territory's name while the
+/// identities are prepared on their own.
+fn mode_specific(name: &str) -> bool {
+    name == "preparation-checkpoint-v1"
+        || name.starts_with("preparation-family-")
+        || name.starts_with("preparation-branch-")
+        || name.contains("-continuation-")
+        || name.starts_with("territory-identities-")
+}
+
+/// A continuation or branch state page as JSON.
+fn decoded(bytes: &[u8]) -> serde_json::Value {
+    serde_json::from_slice(&zstd::stream::decode_all(bytes).unwrap()).unwrap()
+}
+
+/// Every section both modes publish is byte-identical (with `refusals`, but
+/// for each branch's coverage page, whose refusals the families keep in
+/// their own pages), each census family named in `own` published, the
+/// hourly branch state is the same apart from their fields and, without
+/// `refusals`, each one's continuation is the field hourly preparation keeps
+/// in its branch state.
+fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, own: &[&str], refusals: bool) {
+    let shared = |payloads: &Payloads| -> Payloads {
+        payloads
+            .iter()
+            .filter(|((name, _), _)| {
+                !mode_specific(name) && !(refusals && name.starts_with("preparation-coverage-"))
+            })
+            .map(|(key, bytes)| (key.clone(), bytes.clone()))
+            .collect()
+    };
+    assert_payloads_equal(&shared(actual), &shared(hourly), label);
+    for published in [
+        "factories-values-1-0",
+        "factories-1-catalogue",
+        "nukes-values-1",
+        "nukes-increases-1",
+    ] {
+        assert!(
+            actual.keys().any(|(name, _)| name == published),
+            "{label}: nothing published as {published}"
+        );
+    }
+    let fields: Vec<_> = CENSUS
+        .iter()
+        .filter(|(family, _)| own.contains(family))
+        .collect();
+    let mut states = 0;
+    for ((name, range), bytes) in hourly {
+        let Some(branch) = name.strip_prefix("preparation-branch-") else {
+            continue;
+        };
+        let mut saved = decoded(bytes);
+        let mut kept = decoded(
+            actual
+                .get(&(name.clone(), *range))
+                .unwrap_or_else(|| panic!("{label}: no {name}")),
+        );
+        for (family, field) in &fields {
+            let state = saved.as_object_mut().unwrap().remove(*field).unwrap();
+            // The walk saves no state of a family it does not run.
+            assert_eq!(
+                kept.as_object_mut().unwrap().remove(*field),
+                None,
+                "{label}: branch {branch}'s saved state holds {field}"
+            );
+            if !refusals {
+                let section = (format!("{family}-continuation-{branch}"), 0);
+                let continuation = actual
+                    .get(&section)
+                    .unwrap_or_else(|| panic!("{label}: {family} saved no continuation"));
+                assert_eq!(
+                    decoded(continuation),
+                    state,
+                    "{label}: branch {branch}'s {family} continuation"
+                );
+                states += 1;
+            }
+        }
+        assert_eq!(kept, saved, "{label}: branch {branch}'s hourly state");
+    }
+    assert!(
+        refusals || fields.is_empty() || states > 0,
+        "{label}: no continuation"
+    );
+}
+
+/// Blocks each census observed hour by hour, and folds that fell back.
+fn notes() -> [usize; 4] {
+    [
+        prepass::noted("factories.sequential"),
+        prepass::noted("factories.fallback"),
+        prepass::noted("nukes.sequential"),
+        prepass::noted("nukes.fallback"),
+    ]
+}
+
+/// Hours recorded in `replay`.
+fn hours(replay: &Replay) -> usize {
+    let mut hours = 0;
+    for index in &replay.index {
+        replay
+            .read_block_alone(
+                index,
+                &[TableId::Campaign],
+                |_, _| {
+                    hours += 1;
+                    Ok(())
+                },
+                || Ok(()),
+            )
+            .unwrap();
+    }
+    hours
+}
+
+#[test]
+fn census_families_prepared_on_their_own_publish_and_save_what_hourly_preparation_does() {
+    for unavailable in [false, true] {
+        let replay = scenario(LAST, true, unavailable);
+        let mut fixture = Fixture::new(&replay);
+        let hourly =
+            independent::with_test_hourly(|| prepared(&mut fixture, "census-parity", &plain));
+        // Alone, together, and with the identity history they are named
+        // through prepared on its own too.
+        let registries: [Vec<&'static dyn Own>; 4] = [
+            vec![factories()],
+            vec![nukes()],
+            vec![factories(), nukes()],
+            vec![factories(), nukes(), &independent::IDENTITIES],
+        ];
+        for families in registries {
+            let own: Vec<&str> = families.iter().map(|own| own.family().name).collect();
+            for workers in [1, 3] {
+                for together in [true, false] {
+                    let label = format!(
+                        "{own:?}, {workers} workers, at once {together}, unavailable {unavailable}"
+                    );
+                    let before = notes();
+                    let payloads = prepass::with_test_prepass(workers, None, || {
+                        independent::with_test_families(&families, || {
+                            if together {
+                                prepared(&mut fixture, "census-parity", &plain)
+                            } else {
+                                independent::with_test_one_after_another(|| {
+                                    prepared(&mut fixture, "census-parity", &plain)
+                                })
+                            }
+                        })
+                    });
+                    assert_same(&payloads, &hourly, &label, &own, false);
+                    let after = notes();
+                    let [
+                        factories_sequential,
+                        factories_fallback,
+                        nukes_sequential,
+                        nukes_fallback,
+                    ] = [0, 1, 2, 3].map(|index| after[index] - before[index]);
+                    assert_eq!(
+                        (factories_sequential, nukes_sequential),
+                        (0, 0),
+                        "{label}: every block folded from its extract"
+                    );
+                    assert_eq!(factories_fallback, 0, "{label}: factories never fall back");
+                    // A stockpile read at 171 that is not complete names its
+                    // reason from the frame: unless the pre-pass gives that
+                    // hour a frame, its block is observed hour by hour from
+                    // there. No other block falls back.
+                    let allowed = usize::from(unavailable && own.contains(&"nukes"));
+                    assert!(nukes_fallback <= allowed, "{label}: stockpile fallbacks");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn census_families_prepared_on_their_own_commit_resume_reload_and_append_as_hourly_preparation() {
+    let first = scenario(161, false, true);
+    let grown = scenario(LAST, true, true);
+    // The hourly walk prepares one block per run.
+    let resumed = |source: &Source| {
+        let flag = AtomicBool::new(false);
+        while unprepared_blocks(source, None).unwrap() != Some(0) {
+            run_measured(source, None, &flag, false, Duration::ZERO, |_| {}).unwrap();
+        }
+    };
+    // Cancelled at the first accepted report, then prepared again; every
+    // block commits on its own in both runs.
+    let cancelled = |source: &Source| {
+        let flag = AtomicBool::new(false);
+        match run_measured_through(
+            source,
+            None,
+            &flag,
+            true,
+            Duration::ZERO,
+            Some(u64::MAX),
+            |_| Ok(()),
+            |_| flag.store(true, Ordering::Release),
+        ) {
+            Ok(_) => {}
+            Err(error) => assert_eq!(error.kind(), io::ErrorKind::Interrupted),
+        }
+        flag.store(false, Ordering::Release);
+        measured(source);
+    };
+    let modes: [(&str, &dyn Fn(&Source), bool); 5] = [
+        ("run", &plain, false),
+        ("measured", &measured, false),
+        ("measured, reloaded", &measured, true),
+        ("resumed", &resumed, false),
+        ("cancelled", &cancelled, false),
+    ];
+    let mut fixture = Fixture::new(&first);
+    for (mode, prepare, reload) in modes {
+        let both = |fixture: &mut Fixture| -> Payloads {
+            super::super::RELOAD_FLUSHED.with(|flag| flag.set(reload));
+            fixture.replace(&first);
+            let source = fixture.source("census-commits");
+            prepare(&source);
+            drop(source);
+            fixture.replace(&grown);
+            let source = fixture.source("census-commits");
+            prepare(&source);
+            super::super::RELOAD_FLUSHED.with(|flag| flag.set(false));
+            let payloads = payloads(&source, None);
+            clear(source);
+            payloads
+        };
+        let hourly = independent::with_test_hourly(|| both(&mut fixture));
+        let own = prepass::with_test_prepass(2, None, || {
+            independent::with_test_families(&[factories(), nukes()], || both(&mut fixture))
+        });
+        assert_same(&own, &hourly, mode, &["factories", "nukes"], false);
+    }
+}
+
+/// `family`'s refusal of each branch, from the checkpoint in hourly
+/// preparation, or from its own coverage page.
+fn refusals_of(source: &Source, family: &str, own: bool) -> BTreeMap<u64, Option<Refusal>> {
+    let (store, key) = super::super::super::files(source, None).unwrap();
+    let (state, _) = checkpoint(&store, &key, None).unwrap().unwrap();
+    [1, 2]
+        .into_iter()
+        .map(|branch| {
+            let refusal = if own {
+                store
+                    .read(&key, &independent::coverage_section(family, branch), 0)
+                    .unwrap()
+                    .and_then(|file| {
+                        serde_json::from_reader::<_, CoveragePage>(std::io::BufReader::new(file))
+                            .unwrap()
+                            .refused
+                            .0
+                            .get(family)
+                            .cloned()
+                    })
+            } else {
+                state
+                    .refused
+                    .get(&branch)
+                    .and_then(|refused| refused.0.get(family).cloned())
+            };
+            (branch, refusal)
+        })
+        .collect()
+}
+
+#[test]
+fn census_families_prepared_on_their_own_refuse_where_hourly_preparation_does() {
+    let replay = scenario(LAST, true, true);
+    let mut fixture = Fixture::new(&replay);
+    let flag = AtomicBool::new(false);
+    for (family, query) in [
+        ("factories", "country-factories"),
+        ("nukes", "country-nukes"),
+    ] {
+        // At a block's first hour, and at an hour inside a block whose rows
+        // are the hour before's.
+        for hour in [124, 128] {
+            let label = format!("{family} refusing at {hour}");
+            let refusals = [(family, hour)];
+            let (hourly, hourly_refused) = independent::with_test_hourly(|| {
+                lanes::with_test_refusals(&refusals, || {
+                    let source = fixture.source("census-refusal");
+                    measured(&source);
+                    let result = (payloads(&source, None), refusals_of(&source, family, false));
+                    clear(source);
+                    result
+                })
+            });
+            let source = fixture.source("census-refusal");
+            let sequential = prepass::noted(if family == "factories" {
+                "factories.sequential"
+            } else {
+                "nukes.sequential"
+            });
+            lanes::with_test_refusals(&refusals, || {
+                prepass::with_test_prepass(2, None, || {
+                    independent::with_test_families(&[factories(), nukes()], || measured(&source))
+                })
+            });
+            assert_eq!(
+                prepass::noted(if family == "factories" {
+                    "factories.sequential"
+                } else {
+                    "nukes.sequential"
+                }) - sequential,
+                1,
+                "{label}: the refusing block is observed hour by hour"
+            );
+            assert_same(
+                &payloads(&source, None),
+                &hourly,
+                &label,
+                &["factories", "nukes"],
+                true,
+            );
+            let own_refused = refusals_of(&source, family, true);
+            assert_eq!(own_refused, hourly_refused, "{label}");
+            assert_eq!(own_refused[&1].as_ref().unwrap().hour, hour, "{label}");
+            assert!(own_refused[&2].is_none(), "{label}: branch 2 goes on");
+            independent::with_test_families(&[factories(), nukes()], || {
+                let error = refusal(&source, None, 1, query, &flag).unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{label}");
+                assert_eq!(
+                    error.to_string(),
+                    format!("Injected refusal of {family} at hour {hour}"),
+                    "{label}"
+                );
+                refusal(&source, None, 2, query, &flag).unwrap();
+                // Faction totals read the factories: they refuse with them.
+                if family == "factories" {
+                    let error = refusal(&source, None, 1, "faction-totals", &flag).unwrap_err();
+                    assert_eq!(
+                        error.to_string(),
+                        format!("Injected refusal of factories at hour {hour}"),
+                        "{label}"
+                    );
+                }
+            });
+            clear(source);
+        }
+    }
+}
+
+/// Read by its changes, each census alone builds frames only at the hours a
+/// row, key, link or availability it reads changes and at each block's first
+/// hour: fewer than half the recorded hours although every hour reads its
+/// table, every one kept and observed once on the carried census. Read
+/// whole, every hour is a frame. Both publish what hourly preparation does.
+#[test]
+fn census_quiet_hours_build_no_frame() {
+    let replay = scenario(LAST, true, false);
+    let recorded = hours(&replay);
+    let mut fixture = Fixture::new(&replay);
+    let hourly = independent::with_test_hourly(|| prepared(&mut fixture, "census-frames", &plain));
+    for (family, own) in [("factories", factories()), ("nukes", nukes())] {
+        for whole in [true, false] {
+            let label = format!("{family}, read whole {whole}");
+            let before = (counted(family), notes());
+            let source = fixture.source("census-frames");
+            let read = || {
+                prepass::with_test_prepass(2, None, || {
+                    independent::with_test_families(&[own], || plain(&source))
+                })
+            };
+            if whole {
+                prepass::with_test_alone(read);
+            } else {
+                read();
+            }
+            let payloads = payloads(&source, None);
+            clear(source);
+            assert_eq!(notes(), before.1, "{label}: every block folded");
+            assert_same(&payloads, &hourly, &label, &[family], false);
+            let (observed, frames) = counted(family);
+            let (observed, frames) = (observed - before.0.0, frames - before.0.1);
+            if whole {
+                assert_eq!(frames, recorded, "{label}: a frame every hour");
+            } else {
+                assert!(
+                    frames * 2 < recorded,
+                    "{label}: {frames} frames of {recorded} hours"
+                );
+            }
+            assert_eq!(
+                observed, frames,
+                "{label}: every frame kept and observed once"
+            );
+        }
+    }
+}
+
+fn query(source: &Source, product: &str, params: serde_json::Value) -> serde_json::Value {
+    let request = crate::transport::ProductRequest {
+        source_id: source.key().source_id.clone(),
+        revision: source.key().revision.clone(),
+        product: product.into(),
+        params,
+    };
+    let reply =
+        super::super::super::query::query(source, &request, None, &AtomicBool::new(false)).unwrap();
+    let mut reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+    reply["data"].take()
+}
+
+/// A faction-totals series request of `branch` with the factory or the
+/// territory measure.
+fn faction_request(branch: &str, factories: bool, extra: serde_json::Value) -> serde_json::Value {
+    let source = if factories {
+        serde_json::json!({"kind": "factories", "mode": "built", "groups": []})
+    } else {
+        serde_json::json!({"kind": "territory", "measure": "states", "rule": "owned"})
+    };
+    let mut params = serde_json::json!({
+        "branchId": branch,
+        "family": {"kind": "faction-totals", "selection": {
+            "branchId": branch, "source": source, "membership": "hour", "top": 5,
+        }},
+    });
+    for (key, value) in extra.as_object().unwrap() {
+        params[key] = value.clone();
+    }
+    params
+}
+
+/// Product requests, as (product, params).
+type Requests = Vec<(&'static str, serde_json::Value)>;
+
+/// The requests of `branch` (hours `first` to `last`) answered from the
+/// families' own coverage: factory faction totals at reached hours, in an
+/// exact window and the next change, the countries' factories and stockpiles
+/// at reached hours. Then those that wait for the hourly walk: territory
+/// faction totals and a dense factory summary, which joins territory's
+/// member presence.
+fn requests(branch: &str, first: i32, last: i32) -> (Requests, Requests) {
+    let tag = |index| String::from_utf8(crate::test_fixtures::scale_tag(index)).unwrap();
+    let reads = serde_json::json!([
+        {"tag": tag(0), "hour": last},
+        {"tag": tag(1), "hour": (last - 7).max(first)},
+    ]);
+    let own = vec![
+        (
+            "series-state",
+            faction_request(branch, true, serde_json::json!({"reads": [{"hour": last}]})),
+        ),
+        (
+            "series-summary",
+            faction_request(
+                branch,
+                true,
+                serde_json::json!({"from": (last - 9).max(first), "to": last, "width": 30}),
+            ),
+        ),
+        (
+            "series-next-change",
+            faction_request(
+                branch,
+                true,
+                serde_json::json!({"key": "ArrowLeft", "from": last, "firstHour": first,
+                    "lastHour": last}),
+            ),
+        ),
+        (
+            "series-state",
+            serde_json::json!({"branchId": branch, "family": {"kind": "country-factories"},
+                "reads": reads}),
+        ),
+        (
+            "series-state",
+            serde_json::json!({"branchId": branch, "family": {"kind": "country-nukes"},
+                "reads": reads}),
+        ),
+    ];
+    let walked = vec![
+        (
+            "series-state",
+            faction_request(
+                branch,
+                false,
+                serde_json::json!({"reads": [{"hour": last}]}),
+            ),
+        ),
+        (
+            "series-summary",
+            faction_request(
+                branch,
+                true,
+                serde_json::json!({"from": first, "to": last, "width": 3}),
+            ),
+        ),
+    ];
+    (own, walked)
+}
+
+#[test]
+fn faction_factories_and_census_answer_from_their_families_while_the_hourly_walk_accepts_nothing() {
+    let replay = scenario(LAST, true, true);
+    let mut fixture = Fixture::new(&replay);
+    let branches = [("1", 100, LAST), ("2", 20, 25)];
+    // The replies of hourly preparation, with every block accepted.
+    let expected: Vec<Vec<serde_json::Value>> = independent::with_test_hourly(|| {
+        let source = fixture.source("census-hourly-replies");
+        plain(&source);
+        let replies = branches
+            .iter()
+            .map(|&(branch, first, last)| {
+                let (own, walked) = requests(branch, first, last);
+                own.into_iter()
+                    .chain(walked)
+                    .map(|(product, params)| query(&source, product, params))
+                    .collect()
+            })
+            .collect();
+        clear(source);
+        replies
+    });
+    for replies in &expected {
+        assert!(
+            replies.iter().all(|reply| !reply.is_null()),
+            "hourly preparation answers every request"
+        );
+    }
+    // The faction rosters and the identity history factory totals read are
+    // prepared on their own too.
+    independent::with_test_only(&["factories", "nukes", "groups", "identities"], || {
+        let source = fixture.source("census-stalled");
+        let flag = AtomicBool::new(false);
+        let (own, _) = requests("1", 100, LAST);
+        let (product, params) = own[0].clone();
+        assert!(
+            query(&source, product, params).is_null(),
+            "nothing is prepared yet"
+        );
+        // The hourly walk stalls: it is cancelled at its first commit.
+        let mut commits = 0;
+        let error = run_checked(
+            &source,
+            None,
+            &flag,
+            |_| {},
+            |_| {
+                commits += 1;
+                flag.store(true, Ordering::Release);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(commits, 1);
+        flag.store(false, Ordering::Release);
+        assert_eq!(
+            unprepared_blocks(&source, None).unwrap(),
+            Some(replay.index.len()),
+            "the hourly walk accepted no block"
+        );
+        for (position, &(branch, first, last)) in branches.iter().enumerate() {
+            let id = branch.parse().unwrap();
+            assert!(
+                coverage(&source, None, id, &flag).unwrap().is_none(),
+                "branch {branch}: the hourly walk covers nothing"
+            );
+            for product in [
+                crate::products::faction_totals::FACTORIES_GATE,
+                "country-factories",
+                "country-nukes",
+            ] {
+                assert!(
+                    complete(&source, None, id, product, &flag).unwrap(),
+                    "branch {branch}: {product} is covered by its families"
+                );
+            }
+            assert!(
+                !complete(&source, None, id, "faction-totals", &flag).unwrap(),
+                "branch {branch}: territory faction totals wait for the walk"
+            );
+            let (own, walked) = requests(branch, first, last);
+            let count = own.len();
+            for (index, (product, params)) in own.into_iter().enumerate() {
+                let reply = query(&source, product, params);
+                assert!(
+                    !reply.is_null(),
+                    "branch {branch}: {product} {index} answers"
+                );
+                assert_eq!(
+                    reply, expected[position][index],
+                    "branch {branch}: {product} {index} answers as hourly preparation does"
+                );
+            }
+            for (index, (product, params)) in walked.into_iter().enumerate() {
+                assert!(
+                    query(&source, product, params).is_null(),
+                    "branch {branch}: {product} {} waits for the walk",
+                    count + index
+                );
+            }
+        }
+        // Once the walk has prepared too, the dense and territory requests
+        // answer as hourly preparation does.
+        plain(&source);
+        for (position, &(branch, first, last)) in branches.iter().enumerate() {
+            let (own, walked) = requests(branch, first, last);
+            for (index, (product, params)) in own.into_iter().chain(walked).enumerate() {
+                assert_eq!(
+                    query(&source, product, params),
+                    expected[position][index],
+                    "branch {branch}: {product} {index} after the walk"
+                );
+            }
+        }
+        clear(source);
+    });
+}
+
+/// Rewrite `section`'s coverage page of branch 1 to end at `last_hour`, not
+/// complete: a family whose preparation has reached no further.
+fn stagger(source: &Source, section: &str, last_hour: i32) {
+    let (store, key) = super::super::super::files(source, None).unwrap();
+    let mut writer = store.extend(&key).unwrap();
+    json(
+        &mut writer,
+        section,
+        &CoveragePage {
+            coverage: Coverage {
+                schema: SCHEMA,
+                first_hour: 100,
+                last_hour,
+                complete: false,
+            },
+            refused: Refused::default(),
+        },
+    )
+    .unwrap();
+    writer.commit().unwrap();
+}
+
+/// Whether each run of every series begins after the one before it ends.
+fn ordered(series: &serde_json::Value, field: &str) -> bool {
+    series.as_array().unwrap().iter().all(|series| {
+        series[field].as_array().is_none_or(|runs| {
+            runs.windows(2)
+                .all(|pair| pair[0]["lastHour"].as_i64() < pair[1]["firstHour"].as_i64())
+        })
+    })
+}
+
+/// A family prepared on its own ahead of another its queries read with: the
+/// factories and stockpiles prepared through the branch while the identity
+/// history (or, for faction totals, the faction rosters) covers less. The
+/// queries read the census pages only through the last batch committed by
+/// the joint coverage and the hours after it as an unprepared tail: no run
+/// or supplying read overlaps another, and the replies are those of hourly
+/// preparation whose coverage ends there with its pages ahead of it. A
+/// faction total past that batch waits.
+#[test]
+fn census_queries_read_only_through_their_joint_coverage_when_one_family_is_ahead() {
+    let replay = scenario(LAST, true, false);
+    let mut fixture = Fixture::new(&replay);
+    let tag = String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap();
+    let census = |kind: &str| {
+        serde_json::json!({"branchId": "1", "family": {"kind": kind}, "tags": [tag],
+            "from": 140, "to": LAST, "width": 200})
+    };
+    // At a block's end (149, where every family commits) and inside the next
+    // block (155: the census pages committed by then end at 149).
+    for (behind, reached) in [(149, 149), (155, 149)] {
+        let label = format!("covered through {behind}");
+        // Hourly preparation whose coverage ends there, its pages ahead.
+        let expected: Vec<serde_json::Value> = independent::with_test_hourly(|| {
+            let source = fixture.source("census-staggered-hourly");
+            measured(&source);
+            stagger(&source, &coverage_section(1), behind);
+            let replies = ["country-factories", "country-nukes"]
+                .map(|kind| query(&source, "series-summary", census(kind)))
+                .to_vec();
+            clear(source);
+            replies
+        });
+        independent::with_test_only(&["factories", "nukes", "identities"], || {
+            let source = fixture.source("census-staggered");
+            measured(&source);
+            stagger(
+                &source,
+                &independent::coverage_section("identities", 1),
+                behind,
+            );
+            for (index, kind) in ["country-factories", "country-nukes"]
+                .into_iter()
+                .enumerate()
+            {
+                let reply = query(&source, "series-summary", census(kind));
+                assert_eq!(reply["coverage"]["lastHour"], reached, "{label}: {kind}");
+                assert!(
+                    ordered(&reply["series"], "runs"),
+                    "{label}: {kind} runs overlap"
+                );
+                assert!(
+                    ordered(&reply["series"], "reads"),
+                    "{label}: {kind} reads overlap"
+                );
+                assert_eq!(
+                    reply, expected[index],
+                    "{label}: {kind} as hourly preparation"
+                );
+            }
+            clear(source);
+        });
+        // Factory faction totals with the faction rosters behind.
+        let state =
+            |hour: i32| faction_request("1", true, serde_json::json!({"reads": [{"hour": hour}]}));
+        let complete = independent::with_test_hourly(|| {
+            let source = fixture.source("census-staggered-hourly");
+            measured(&source);
+            let reply = query(&source, "series-state", state(reached));
+            clear(source);
+            reply
+        });
+        independent::with_test_only(&["factories", "groups", "identities"], || {
+            let source = fixture.source("census-staggered");
+            measured(&source);
+            stagger(&source, &independent::coverage_section("groups", 1), behind);
+            assert_eq!(
+                query(&source, "series-state", state(reached)),
+                complete,
+                "{label}: faction totals at {reached}"
+            );
+            let past = query(&source, "series-state", state(behind));
+            assert_eq!(
+                past.is_null(),
+                behind > reached,
+                "{label}: faction totals past the committed factories wait"
+            );
+            clear(source);
+        });
+    }
+}

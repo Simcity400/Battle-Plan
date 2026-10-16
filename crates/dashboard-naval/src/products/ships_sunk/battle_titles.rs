@@ -505,6 +505,25 @@ impl Prepared {
         indices: &[u32],
         flag: &AtomicBool,
     ) -> io::Result<()> {
+        self.observe_read(source, context, frame, ships, indices, flag, true)
+    }
+
+    /// [`Self::observe`] of a frame that holds the tables a place name's
+    /// scripted text reads only when `places`. Without them no ship may be
+    /// new there: a frame read so is one whose hour no sinking can first be
+    /// read at, and a new ship stops preparation rather than be titled from
+    /// a frame without the tables its place name reads.
+    #[allow(clippy::too_many_arguments)]
+    pub fn observe_read(
+        &mut self,
+        source: &Source,
+        context: &LoadContext,
+        frame: &DecodedFrame,
+        ships: &[sinkings::ShipEvent],
+        indices: &[u32],
+        flag: &AtomicBool,
+        places: bool,
+    ) -> io::Result<()> {
         check_cancel(flag)?;
         // Global immutable scan indices; the shared scan alone discovers occurrences.
         let first = indices.partition_point(|index| (*index as usize) < self.published);
@@ -513,6 +532,12 @@ impl Prepared {
             .copied()
             .zip(&ships[first..])
             .collect();
+        if !places && !new.is_empty() {
+            return Err(io::Error::other(format!(
+                "A sunk ship was first read at hour {}, which was read without the tables its place name reads",
+                frame.hour
+            )));
+        }
         let mut rows: Vec<_> = new
             .iter()
             .map(|(index, ship)| PreparedTitle {
@@ -668,9 +693,9 @@ impl Prepared {
         }
         Ok(())
     }
-    pub fn flush(
+    pub fn flush<W: dashboard_base::prepared::pages::Pages + ?Sized>(
         &mut self,
-        writer: &mut store::Writer,
+        writer: &mut W,
         branch: u64,
         flag: &AtomicBool,
     ) -> io::Result<()> {

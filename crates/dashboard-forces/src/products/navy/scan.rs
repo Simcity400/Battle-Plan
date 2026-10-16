@@ -677,7 +677,11 @@ impl Scan {
             }
             let tag = tag.as_str();
             let track = tracks.entry(tag.to_owned()).or_default();
-            if let Some(hour) = previous {
+            // An unchanged join extends a live track through the hour before.
+            // Where the join changed, the tags live then were extended above;
+            // a tag entering now was absent then, so its track (from before
+            // it left) is not extended across the hours it was away.
+            if let Some(hour) = previous.filter(|_| !changed) {
                 track.advance(hour);
             }
             let mut after_notes = ([0; 2], [0; 2]);
@@ -854,6 +858,651 @@ pub(super) fn scan_with_decode(
         },
     )?;
     Ok(observer.finish())
+}
+
+/// A live track's last run in one run list, as the next hour reads it.
+#[derive(PartialEq)]
+struct RunTail {
+    total: Option<i64>,
+    classes: Arc<BTreeMap<u32, i64>>,
+    reference_total: Option<i64>,
+    last_hour: i32,
+}
+
+/// A live track's state after an hour, as the next hour reads it: each run
+/// list's last run, the track's last identity and hour, its identity track
+/// and its last identity segment's hour.
+#[derive(PartialEq)]
+struct TrackTail {
+    runs: [Option<RunTail>; 4],
+    last: Option<(Identity, i32)>,
+    identity: String,
+    segment: Option<i32>,
+}
+
+impl TrackTail {
+    /// A live track's tail as advancing it to `hour` leaves it. A live track
+    /// the hour did not observe stays where it was last observed: whatever
+    /// reads it next (its next observation, a change of the country join, a
+    /// gap or a flush) first advances it through the hours since, so its
+    /// state then is the advanced one. A track the hour observed is there.
+    fn advanced(track: &Track, hour: i32) -> Self {
+        let before = track.last.map(|(_, at)| at);
+        let mut last_identity = track.last_identity.clone();
+        if before.is_some() {
+            last_identity.advance(hour);
+        }
+        let run = |runs: &[RawNavyRun]| {
+            runs.last().map(|run| RunTail {
+                total: run.total,
+                classes: Arc::clone(&run.classes),
+                reference_total: run.reference_total,
+                last_hour: if before == Some(run.last_hour) {
+                    hour
+                } else {
+                    run.last_hour
+                },
+            })
+        };
+        Self {
+            runs: [
+                run(track.runs[0].as_slice()),
+                run(track.strength_runs[0].as_slice()),
+                run(track.runs[1].as_slice()),
+                run(track.strength_runs[1].as_slice()),
+            ],
+            last: track.last.map(|(identity, _)| (identity, hour)),
+            identity: serde_json::to_string(&last_identity).unwrap_or_default(),
+            segment: track.segments.last().map(|segment| {
+                if before.is_some() {
+                    hour
+                } else {
+                    segment.last_hour
+                }
+            }),
+        }
+    }
+
+    /// This tail with its runs' classes renumbered.
+    fn renumbered(&self, numbering: &Numbering) -> Self {
+        Self {
+            runs: std::array::from_fn(|index| {
+                self.runs[index].as_ref().map(|run| RunTail {
+                    total: run.total,
+                    classes: numbering.classes(&run.classes),
+                    reference_total: run.reference_total,
+                    last_hour: run.last_hour,
+                })
+            }),
+            last: self.last,
+            identity: self.identity.clone(),
+            segment: self.segment,
+        }
+    }
+}
+
+/// What decides a scan's next hours besides its live tracks: its last hour
+/// and the hour its tables were last applied, the country join and the live
+/// tags, slots and undisplayable tags it gives, the census's readiness and
+/// read evidence, whether the last counts were exact, each country's notes
+/// and their totals, and the counter rates an unchanged hour adds. The census
+/// itself holds the hour's ships either way, read from the same frame.
+/// Whether the hour's join changed is left out: every hour sets it before
+/// reading it, and a census starting afresh joins anew where the carried one
+/// finds its join held.
+#[derive(PartialEq)]
+struct Decision {
+    last_hour: Option<i32>,
+    applied: Option<i32>,
+    countries: Vec<(Vec<u8>, Option<Identity>)>,
+    live: BTreeSet<String>,
+    slots: HashMap<u32, Vec<(String, Identity)>>,
+    undisplayable: Vec<Vec<u8>>,
+    census: (bool, Option<bool>, Option<bool>),
+    previous_exact: Option<[bool; 2]>,
+    notes: HashMap<String, ([usize; 2], [usize; 2])>,
+    note_totals: ([usize; 2], [usize; 2]),
+    rates: [usize; 7],
+}
+
+/// The counters a scan adds to, which a fold carries by the block's
+/// increase after its first hour.
+struct Counters {
+    unread: usize,
+    unattributed: [usize; 2],
+    refused_strength: [usize; 2],
+    maximum_overflows: [usize; 2],
+    undisplayable_tags: BTreeMap<Vec<u8>, usize>,
+    /// The ships updated and the work done by then, which tests count.
+    #[cfg(test)]
+    updated: usize,
+    #[cfg(test)]
+    work: dashboard_base::prepared::observer_tests::Work,
+}
+
+/// The scan right after a block's first hour.
+pub struct Tail {
+    hour: i32,
+    decision: Decision,
+    /// Each live tag's track, in tag order.
+    tracks: Vec<(String, TrackTail)>,
+    counters: Counters,
+}
+
+/// How a worker's class numbers name the carried scan's ([`Scan::numbering`]).
+pub struct Numbering {
+    /// The carried number of each of the worker's classes, by its number.
+    ids: Vec<u32>,
+    /// Whether every class keeps its number.
+    same: bool,
+    /// For each count of the worker's first classes, how many of them the
+    /// carried catalogue lacks.
+    added: Vec<usize>,
+    /// The carried catalogue as it stood.
+    carried: Arc<Vec<ClassKey>>,
+    /// The carried catalogue with every class it lacks added, in the order
+    /// the worker first saw them.
+    full: Arc<Vec<ClassKey>>,
+    /// The catalogues between, by the count of classes added: made only for
+    /// a count an hour's projection base asks for, once.
+    between: std::sync::Mutex<HashMap<usize, Arc<Vec<ClassKey>>>>,
+}
+
+impl Numbering {
+    fn class(&self, class: u32) -> u32 {
+        self.ids[class as usize]
+    }
+
+    /// A class map of the worker's, renumbered.
+    pub(super) fn classes(&self, classes: &Arc<BTreeMap<u32, i64>>) -> Arc<BTreeMap<u32, i64>> {
+        if self.same {
+            return Arc::clone(classes);
+        }
+        Arc::new(
+            classes
+                .iter()
+                .map(|(&class, &count)| (self.class(class), count))
+                .collect(),
+        )
+    }
+
+    /// The carried catalogue as it stands where the worker's had `len`
+    /// classes: with the classes it lacked among those added. The carried
+    /// and full catalogues are shared; one between them is made for the
+    /// first hour that asks for it and shared by the later ones, so the
+    /// catalogues kept grow with the hours that added classes, never with
+    /// every class added.
+    pub(super) fn catalogue(&self, len: usize) -> Arc<Vec<ClassKey>> {
+        let added = self.added[len];
+        let length = self.carried.len() + added;
+        if length == self.carried.len() {
+            return Arc::clone(&self.carried);
+        }
+        if length == self.full.len() {
+            return Arc::clone(&self.full);
+        }
+        let mut between = self
+            .between
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        Arc::clone(
+            between
+                .entry(added)
+                .or_insert_with(|| Arc::new(self.full[..length].to_vec())),
+        )
+    }
+
+    /// The classes every catalogue it keeps holds, counted per catalogue.
+    #[cfg(test)]
+    fn kept(&self) -> usize {
+        let between = self
+            .between
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.carried.len()
+            + self.full.len()
+            + between.values().map(|catalogue| catalogue.len()).sum::<usize>()
+    }
+}
+
+impl Census {
+    /// Renumber the census's classes, and name `classes` by number.
+    fn renumber(&mut self, numbering: &Numbering, classes: &[ClassKey]) {
+        if !numbering.same {
+            for ship in self.ships.values_mut() {
+                ship.class = numbering.class(ship.class);
+            }
+            for class in self.class_keys.values_mut() {
+                *class = numbering.class(*class);
+            }
+            for totals in self.totals.iter_mut().flat_map(HashMap::values_mut) {
+                totals.classes = std::mem::take(&mut totals.classes)
+                    .into_iter()
+                    .map(|(class, sums)| (numbering.class(class), sums))
+                    .collect();
+                // Summaries are made again from the renumbered sums.
+                totals.count_snapshot = None;
+                totals.snapshot = None;
+            }
+        }
+        self.class_ids = classes.iter().cloned().zip(0..).collect();
+    }
+}
+
+impl Scan {
+    fn decision(&self) -> Decision {
+        Decision {
+            last_hour: self.last_hour,
+            applied: self.applied,
+            countries: self.countries.tags.clone(),
+            live: self.live.clone(),
+            slots: self.slots.clone(),
+            undisplayable: self.undisplayable.clone(),
+            census: (
+                self.census.ready,
+                self.census.lexical_complete,
+                self.census.models_complete,
+            ),
+            previous_exact: self.previous_exact,
+            notes: self.notes.clone(),
+            note_totals: self.note_totals,
+            rates: self.rates,
+        }
+    }
+
+    /// Each live tag's track tail, advanced to `hour`, in tag order.
+    fn track_tails(&self, hour: i32) -> Vec<(String, TrackTail)> {
+        self.live
+            .iter()
+            .map(|tag| (tag.clone(), TrackTail::advanced(&self.tracks[tag], hour)))
+            .collect()
+    }
+
+    /// The scan right after a block's first hour, `hour`.
+    pub(super) fn tail(&self, hour: i32) -> Tail {
+        Tail {
+            hour,
+            decision: self.decision(),
+            tracks: self.track_tails(hour),
+            counters: Counters {
+                unread: self.result.unread,
+                unattributed: self.result.unattributed,
+                refused_strength: self.result.refused_strength,
+                maximum_overflows: self.result.maximum_overflows,
+                undisplayable_tags: self.result.undisplayable_tags.clone(),
+                #[cfg(test)]
+                updated: self.census.updated,
+                #[cfg(test)]
+                work: self.work,
+            },
+        }
+    }
+
+    /// How `block`'s class numbers name this scan's: a class this scan knows
+    /// keeps its number here, and the others take the next numbers in the
+    /// order `block` first saw them. After a block's first hour, which both
+    /// observed, both step through the same rows, so this scan would have
+    /// numbered them in that order.
+    pub(super) fn numbering(&self, block: &Scan) -> Numbering {
+        let carried = &self.result.classes;
+        let known: HashMap<&ClassKey, u32> = carried.iter().zip(0..).collect();
+        let mut ids = Vec::with_capacity(block.result.classes.len());
+        let mut added = Vec::with_capacity(block.result.classes.len() + 1);
+        let mut lacked = Vec::new();
+        added.push(0);
+        for key in block.result.classes.iter() {
+            let id = known.get(key).copied().unwrap_or_else(|| {
+                lacked.push(key.clone());
+                (carried.len() + lacked.len() - 1) as u32
+            });
+            ids.push(id);
+            added.push(lacked.len());
+        }
+        let same = ids.iter().zip(0..).all(|(&id, at)| id == at);
+        let full = if lacked.is_empty() {
+            Arc::clone(carried)
+        } else {
+            let mut full = Vec::with_capacity(carried.len() + lacked.len());
+            full.extend(carried.iter().cloned());
+            full.extend(lacked);
+            Arc::new(full)
+        };
+        Numbering {
+            ids,
+            same,
+            added,
+            carried: Arc::clone(carried),
+            full,
+            between: Default::default(),
+        }
+    }
+
+    /// Whether this carried scan, after the block's first hour, decides every
+    /// later hour as the worker's did from `tail`: then each later step is
+    /// the worker's, as every step reads only the hour's frame, what the
+    /// decision holds and the live tracks' tails.
+    ///
+    /// The worker's tracks live at the first hour each opened every run list
+    /// and their identity segment there. A track not live then continues
+    /// only through adjacent hours, so its history decides nothing later: a
+    /// country entering later in the block was away at its first hour, and
+    /// an entering country's track is not extended across the hours it was
+    /// away, so it opens new runs and a new segment, as a worker's track
+    /// starting afresh does.
+    pub(super) fn continues(&self, tail: &Tail, block: &Scan, numbering: &Numbering) -> bool {
+        let hour = tail.hour;
+        self.decision() == tail.decision
+            && self
+                .track_tails(hour)
+                .iter()
+                .zip(&tail.tracks)
+                .all(|((tag, carried), (other, extracted))| {
+                    tag == other && *carried == extracted.renumbered(numbering)
+                })
+            && tail.tracks.iter().all(|(tag, _)| {
+                block.tracks.get(tag).is_some_and(|track| {
+                    track
+                        .runs
+                        .iter()
+                        .chain(&track.strength_runs)
+                        .all(|runs| runs.first().is_some_and(|run| run.first_hour == hour))
+                        && track
+                            .segments
+                            .first()
+                            .is_some_and(|segment| segment.first_hour == hour)
+                })
+            })
+    }
+
+    /// Carry this scan to the block's end: the runs and segment each track
+    /// live at the first hour opened then extend the carried ones it
+    /// continued, later ones follow, tags only the worker tracked take its
+    /// tracks, the counters add their increase after the first hour, every
+    /// class the worker numbered is renumbered as this scan numbers it, and
+    /// everything else is the worker's.
+    pub(super) fn carry(&mut self, tail: Tail, block: Scan, numbering: Numbering) {
+        let Scan {
+            result,
+            tracks,
+            last_hour,
+            countries,
+            mut census,
+            live,
+            observed,
+            removed,
+            applied,
+            joined,
+            slots,
+            previous_exact,
+            notes,
+            note_totals,
+            rates,
+            undisplayable,
+            #[cfg(test)]
+            work,
+        } = block;
+        let Tail {
+            hour,
+            tracks: opened,
+            counters: before,
+            ..
+        } = tail;
+        let held = &mut self.result;
+        held.unread += result.unread - before.unread;
+        for owner in 0..2 {
+            held.unattributed[owner] += result.unattributed[owner] - before.unattributed[owner];
+            held.refused_strength[owner] +=
+                result.refused_strength[owner] - before.refused_strength[owner];
+            held.maximum_overflows[owner] +=
+                result.maximum_overflows[owner] - before.maximum_overflows[owner];
+        }
+        for (tag, now) in result.undisplayable_tags {
+            let then = before.undisplayable_tags.get(&tag).copied().unwrap_or(0);
+            *held.undisplayable_tags.entry(tag).or_default() += now - then;
+        }
+        held.classes = Arc::clone(&numbering.full);
+        #[cfg(test)]
+        {
+            census.updated = self.census.updated + census.updated - before.updated;
+            add_work(&mut self.work, work, before.work);
+        }
+        census.renumber(&numbering, &held.classes);
+        let opened: std::collections::HashSet<String> =
+            opened.into_iter().map(|(tag, _)| tag).collect();
+        for (tag, mut track) in tracks {
+            for runs in track.runs.iter_mut().chain(&mut track.strength_runs) {
+                for run in runs {
+                    run.classes = numbering.classes(&run.classes);
+                }
+            }
+            match self.tracks.get_mut(&tag) {
+                Some(carried) => carry_track(carried, track, opened.contains(&tag), hour),
+                None => {
+                    self.tracks.insert(tag, track);
+                }
+            }
+        }
+        self.last_hour = last_hour;
+        self.countries = countries;
+        self.census = census;
+        self.live = live;
+        self.observed = observed;
+        self.removed = removed;
+        self.applied = applied;
+        self.joined = joined;
+        self.slots = slots;
+        self.previous_exact = previous_exact;
+        self.notes = notes;
+        self.note_totals = note_totals;
+        self.rates = rates;
+        self.undisplayable = undisplayable;
+    }
+}
+
+/// Carry one track: with `opened`, the worker's track opened its first run
+/// in each list and its first segment at `hour`, where the carried track's
+/// continue, so they extend those; every later run and segment follows, and
+/// a track the worker observed takes its last identity and hour.
+fn carry_track(carried: &mut Track, extracted: Track, opened: bool, hour: i32) {
+    let Track {
+        runs,
+        strength_runs,
+        last,
+        mut segments,
+        last_identity,
+    } = extracted;
+    let lists = runs
+        .into_iter()
+        .zip(carried.runs.iter_mut())
+        .chain(strength_runs.into_iter().zip(carried.strength_runs.iter_mut()));
+    for (mut runs, held) in lists {
+        if opened
+            && runs.first().is_some_and(|run| run.first_hour == hour)
+            && let Some(open) = held.last_mut()
+        {
+            open.last_hour = runs[0].last_hour;
+            runs.remove(0);
+        }
+        held.extend(runs);
+    }
+    if opened
+        && segments
+            .first()
+            .is_some_and(|segment| segment.first_hour == hour)
+        && let Some(open) = carried.segments.last_mut()
+    {
+        open.last_hour = segments[0].last_hour;
+        segments.remove(0);
+    }
+    carried.segments.extend(segments);
+    if last.is_some() {
+        carried.last = last;
+        carried.last_identity = last_identity;
+    }
+}
+
+/// `work` adds what `now` did beyond `then`.
+#[cfg(test)]
+fn add_work(
+    work: &mut dashboard_base::prepared::observer_tests::Work,
+    now: dashboard_base::prepared::observer_tests::Work,
+    then: dashboard_base::prepared::observer_tests::Work,
+) {
+    work.content_loads += now.content_loads - then.content_loads;
+    work.row_visits += now.row_visits - then.row_visits;
+    work.history_visits += now.history_visits - then.history_visits;
+    work.emitted += now.emitted - then.emitted;
+    work.interpreter_calls += now.interpreter_calls - then.interpreter_calls;
+    work.dictionary_interpretations +=
+        now.dictionary_interpretations - then.dictionary_interpretations;
+}
+
+/// What a block extract keeps of a navy census ([`Held`]): its tracks and
+/// runs (each shared class map once), its census of ships, totals, task-force
+/// owners and class names, its country join and its per-country notes, and
+/// the tail kept after a block's first hour.
+mod held {
+    use super::*;
+    use dashboard_base::prepared::prepass::{Held, HeldBytes};
+
+    impl Held for RawNavyRun {
+        fn held(&self, bytes: &mut HeldBytes) {
+            bytes.heap(&self.classes);
+        }
+    }
+
+    impl Held for ScannedNavy {
+        fn held(&self, bytes: &mut HeldBytes) {
+            bytes
+                .heap(&self.classes)
+                .heap(&self.series)
+                .heap(&self.strength_series)
+                .heap(&self.segments)
+                .heap(&self.undisplayable_tags);
+        }
+    }
+
+    impl Held for Track {
+        fn held(&self, bytes: &mut HeldBytes) {
+            bytes
+                .heap(&self.runs)
+                .heap(&self.strength_runs)
+                .heap(&self.segments);
+        }
+    }
+
+    impl Held for Ship {
+        fn held(&self, _: &mut HeldBytes) {}
+    }
+
+    impl Held for Summary {
+        fn held(&self, bytes: &mut HeldBytes) {
+            bytes.heap(&self.classes).heap(&self.hp_classes);
+        }
+    }
+
+    impl Held for Totals {
+        fn held(&self, bytes: &mut HeldBytes) {
+            bytes
+                .heap(&self.classes)
+                .heap(&self.maximums)
+                .heap(&self.missing)
+                .heap(&self.count_snapshot)
+                .heap(&self.snapshot);
+        }
+    }
+
+    impl Held for Census {
+        fn held(&self, bytes: &mut HeldBytes) {
+            bytes
+                .heap(&self.ships)
+                .heap(&self.dirty)
+                .heap(&self.totals)
+                .heap(&self.forces)
+                .heap(&self.class_keys)
+                .heap(&self.class_ids);
+        }
+    }
+
+    impl Held for RunTail {
+        fn held(&self, bytes: &mut HeldBytes) {
+            bytes.heap(&self.classes);
+        }
+    }
+
+    impl Held for TrackTail {
+        fn held(&self, bytes: &mut HeldBytes) {
+            bytes.heap(&self.runs).heap(&self.identity);
+        }
+    }
+
+    impl Held for Tail {
+        fn held(&self, bytes: &mut HeldBytes) {
+            let decision = &self.decision;
+            bytes
+                .heap(&decision.countries)
+                .heap(&decision.live)
+                .heap(&decision.slots)
+                .heap(&decision.undisplayable)
+                .heap(&decision.notes)
+                .heap(&self.tracks)
+                .heap(&self.counters.undisplayable_tags);
+        }
+    }
+
+    impl Held for Scan {
+        fn held(&self, bytes: &mut HeldBytes) {
+            bytes
+                .heap(&self.result)
+                .heap(&self.tracks)
+                .heap(&self.countries.tags)
+                .heap(&self.census)
+                .heap(&self.live)
+                .heap(&self.observed)
+                .heap(&self.removed)
+                .heap(&self.slots)
+                .heap(&self.notes)
+                .heap(&self.undisplayable);
+        }
+    }
+}
+
+#[cfg(test)]
+mod numbering_tests {
+    use super::*;
+
+    fn key(token: u32) -> ClassKey {
+        (token, Some(format!("mod_class_{token}")))
+    }
+
+    /// A block whose first hour has no ships and whose second names 5,000
+    /// classes the carried catalogue lacks keeps the carried and full
+    /// catalogues alone, not one per class added; an hour between makes its
+    /// own catalogue once, shared by the hours after it.
+    #[test]
+    fn navy_numbering_keeps_catalogues_linear_in_classes_added_at_once() {
+        let mut carried = Scan::default();
+        carried.result.classes = Arc::new((0..10).map(key).collect());
+        let mut block = Scan::default();
+        block.result.classes = Arc::new((10..5_010).map(key).collect());
+        let numbering = carried.numbering(&block);
+        // The first hour's base (no classes), then every later hour's.
+        assert_eq!(*numbering.catalogue(0), *carried.result.classes);
+        for _ in 0..100 {
+            let full = numbering.catalogue(5_000);
+            assert_eq!(full.len(), 5_010);
+            assert!(full.iter().zip((0..5_010).map(key)).all(|(a, b)| *a == b));
+        }
+        assert_eq!(numbering.kept(), 10 + 5_010);
+        // An hour between makes one catalogue, which later asks share.
+        let between = numbering.catalogue(2_500);
+        assert_eq!(*between, (0..2_510).map(key).collect::<Vec<_>>());
+        assert!(Arc::ptr_eq(&between, &numbering.catalogue(2_500)));
+        assert_eq!(numbering.kept(), 10 + 5_010 + 2_510);
+        // The worker's numbers follow the carried ones.
+        assert_eq!(numbering.class(0), 10);
+        assert_eq!(numbering.class(4_999), 5_009);
+    }
 }
 
 #[cfg(test)]

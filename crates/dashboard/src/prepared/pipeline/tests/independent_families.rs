@@ -2,7 +2,10 @@
 //! families publish at once what they publish one after another, one that
 //! fails or refuses leaves the others committed, the registry alone decides
 //! what the hourly walk skips, keeps and gates, and a family's deadline
-//! splits the quiet spans of blocks read by their changes.
+//! splits the quiet spans of blocks read by their changes. Group commits
+//! publish what each family committing alone publishes, in fewer store
+//! commits, and a family refused at adoption or failing its write inside a
+//! group leaves the others' batches committed.
 use super::family_lanes::{assert_payloads_equal, payloads};
 use super::*;
 use crate::prepared::{
@@ -127,6 +130,10 @@ struct Hours {
     fail: Option<i32>,
     kept: &'static [(&'static str, &'static str)],
     read_by: &'static [&'static str],
+    /// Fails its commit's write once it has folded this hour.
+    fail_commit: Option<i32>,
+    /// A section it writes at every commit beside its own.
+    overlap: Option<&'static str>,
 }
 
 /// Each fold's family key, thread and observed hours.
@@ -155,6 +162,8 @@ struct HoursBranch {
     key: &'static str,
     refuse: Option<i32>,
     fail: Option<i32>,
+    fail_commit: Option<i32>,
+    overlap: Option<&'static str>,
     saved: Saved,
     /// The last hour of each block it went through since its last commit,
     /// each a page of its own, as hourly preparation publishes per block.
@@ -248,6 +257,17 @@ impl Branch for HoursBranch {
         branch: u64,
         _: &AtomicBool,
     ) -> io::Result<()> {
+        if let (Some(at), Some(&last)) = (self.fail_commit, self.saved.hours.last())
+            && last >= at
+        {
+            return Err(io::Error::other(format!(
+                "Injected commit failure of {} after hour {last}",
+                self.name
+            )));
+        }
+        if let Some(section) = self.overlap {
+            writer.write_at(section, 0, self.name.as_bytes())?;
+        }
         for hour in std::mem::take(&mut self.ended) {
             writer.write_at(
                 &format!("synthetic-{}-ended-{branch}-{hour}", self.name),
@@ -329,6 +349,8 @@ impl Own for Hours {
             key: self.key,
             refuse: self.refuse,
             fail: self.fail,
+            fail_commit: self.fail_commit,
+            overlap: self.overlap,
             saved,
             ended: Vec::new(),
         }))
@@ -350,6 +372,8 @@ const fn hours(
         fail: None,
         kept: &[],
         read_by: &[],
+        fail_commit: None,
+        overlap: None,
     }
 }
 
@@ -794,4 +818,196 @@ fn the_registry_decides_what_the_hourly_walk_skips_keeps_and_gates() {
         refusal(&source, None, 2, "event-feed", &flag).unwrap();
     });
     clear(source);
+}
+
+static GROUPED_READER: Hours = hours(&READER, "independent.reader", &[], "grouped-reader");
+/// Both write `synthetic-shared` at every commit: adopted into one group,
+/// the second is refused.
+static SHARING_ALPHA: Hours = Hours {
+    overlap: Some("synthetic-shared"),
+    ..hours(
+        &ALPHA,
+        "independent.alpha",
+        &["alpha-product"],
+        "sharing-alpha",
+    )
+};
+static SHARING_BETA: Hours = Hours {
+    overlap: Some("synthetic-shared"),
+    ..hours(&BETA, "independent.beta", &["beta-product"], "sharing-beta")
+};
+/// Its second commit's write fails.
+static FAILING_READER: Hours = Hours {
+    fail_commit: Some(104),
+    ..hours(&READER, "independent.reader", &[], "failing-reader")
+};
+
+/// Prepares the first recording, then the grown one, each first cancelled at
+/// its first accepted commit and run again when `resume`; returns what the
+/// grown one published.
+fn prepared_twice(fixture: &mut Fixture, first: &Replay, grown: &Replay, resume: bool) -> Payloads {
+    for replay in [first, grown] {
+        fixture.replace(replay);
+        let source = fixture.source("grouped");
+        if resume {
+            let flag = AtomicBool::new(false);
+            match run(&source, None, &flag, |_| {
+                flag.store(true, Ordering::Release)
+            }) {
+                Ok(_) => {}
+                Err(error) => assert_eq!(error.kind(), io::ErrorKind::Interrupted),
+            }
+        }
+        measured(&source).unwrap();
+        if std::ptr::eq(replay, grown) {
+            let payloads = payloads(&source, None);
+            clear(source);
+            return payloads;
+        }
+    }
+    unreachable!("the grown recording is prepared last")
+}
+
+#[test]
+fn group_commits_publish_what_each_family_committing_alone_publishes() {
+    let first = recording(2, false);
+    let grown = recording(3, true);
+    let families = registered(&[&PARITY_ALPHA, &PARITY_BETA, &GROUPED_READER]);
+    let mut fixture = Fixture::new(&first);
+    for workers in [1, 3] {
+        for resume in [false, true] {
+            let label = format!("{workers} workers, resumed {resume}");
+            let mut prepare = |grouping| {
+                independent::take_test_publications();
+                let payloads = prepass::with_test_prepass(workers, None, || {
+                    independent::with_test_families(&families, || {
+                        independent::with_test_grouping(grouping, || {
+                            prepared_twice(&mut fixture, &first, &grown, resume)
+                        })
+                    })
+                });
+                (payloads, independent::take_test_publications())
+            };
+            // A resumed run's cancelled commits follow timing; what both
+            // runs end with does not, saved state included when not resumed.
+            let compared = |payloads: &Payloads| -> Payloads {
+                payloads
+                    .iter()
+                    .filter(|((name, _), _)| !resume || name != "preparation-checkpoint-v1")
+                    .map(|(key, bytes)| (key.clone(), bytes.clone()))
+                    .collect()
+            };
+            let (alone, (stores, commits)) = prepare(independent::Grouping::Alone);
+            assert!(commits > 0, "{label}");
+            assert_eq!(stores, commits, "{label}: alone, each commit is a store's");
+            for family in ["alpha", "beta", "reader"] {
+                assert_eq!(
+                    page(&alone, &format!("synthetic-{family}-1")),
+                    (100..=107).chain(110..=113).collect::<Vec<_>>(),
+                    "{label}: {family}"
+                );
+            }
+            for grouping in [
+                independent::Grouping::Natural,
+                independent::Grouping::Together,
+            ] {
+                let label = format!("{label}, {grouping:?}");
+                let (grouped, (grouped_stores, grouped_commits)) = prepare(grouping);
+                assert_payloads_equal(&compared(&grouped), &compared(&alone), &label);
+                assert!(grouped_stores <= grouped_commits, "{label}");
+                if resume {
+                    continue;
+                }
+                // Batches end by the recording, whoever commits together.
+                assert_eq!(grouped_commits, commits, "{label}");
+                if grouping == independent::Grouping::Together {
+                    // Each family commits at every block, so every group
+                    // holds all three: one store commit per block.
+                    assert_eq!(grouped_stores * 3, grouped_commits, "{label}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_family_failing_inside_a_group_commit_leaves_the_others_batches_committed() {
+    let replay = recording(3, true);
+    let mut fixture = Fixture::new(&replay);
+    let alpha_sections = |payloads: &Payloads| -> Payloads {
+        payloads
+            .iter()
+            .filter(|((name, _), _)| {
+                name.starts_with("synthetic-alpha-")
+                    || name.starts_with("preparation-family-alpha-")
+                    || name == "synthetic-shared"
+            })
+            .map(|(key, bytes)| (key.clone(), bytes.clone()))
+            .collect()
+    };
+    let reference = independent::with_test_families(&registered(&[&SHARING_ALPHA]), || {
+        let source = fixture.source("group-failure");
+        measured(&source).unwrap();
+        let payloads = payloads(&source, None);
+        clear(source);
+        alpha_sections(&payloads)
+    });
+    assert_eq!(reference[&("synthetic-shared".to_owned(), 0)], b"alpha");
+    let families = registered(&[&SHARING_ALPHA, &SHARING_BETA, &FAILING_READER]);
+    for workers in [1, 3] {
+        let label = format!("{workers} workers");
+        let source = fixture.source("group-failure");
+        independent::take_test_publications();
+        // Every group waits for every family still preparing, so the first
+        // holds all three: alpha (adopted first, in registry order), beta
+        // (refused, since alpha's batch created the section it shares) and
+        // the reader. The reader's second write fails; alpha goes on alone.
+        let result = prepass::with_test_prepass(workers, None, || {
+            independent::with_test_families(&families, || {
+                independent::with_test_grouping(independent::Grouping::Together, || {
+                    measured(&source)
+                })
+            })
+        });
+        let publications = independent::take_test_publications();
+        let actual = payloads(&source, None);
+        // Beta's refusal at adoption is its own error, reported first in
+        // registry order; the reader's failure is its own too.
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other, "{label}");
+        assert_eq!(
+            error.to_string(),
+            "parallel prepared writers overlapped in section synthetic-shared",
+            "{label}"
+        );
+        // Nothing of beta's batch is listed.
+        assert!(
+            actual
+                .keys()
+                .all(|(name, _)| !name.starts_with("synthetic-beta-")
+                    && !name.starts_with("preparation-family-beta-")),
+            "{label}"
+        );
+        // Alpha published, through every group, what it publishes alone.
+        assert_payloads_equal(&alpha_sections(&actual), &reference, &label);
+        // The reader's first batch committed with alpha's; its second, whose
+        // write failed, is not listed.
+        assert_eq!(
+            page(&actual, "synthetic-reader-1"),
+            vec![100, 101, 102, 103]
+        );
+        let coverage = family_coverage(&actual, "reader", 1).expect("the reader's first batch");
+        assert_eq!(coverage.coverage.last_hour, 103, "{label}");
+        assert!(!coverage.coverage.complete, "{label}");
+        let checkpoint: serde_json::Value =
+            serde_json::from_slice(&actual[&("preparation-checkpoint-v1".to_owned(), 0)]).unwrap();
+        let progress = &checkpoint["independent"];
+        assert_eq!(progress["alpha"]["next_block"], 4, "{label}");
+        assert_eq!(progress["reader"]["next_block"], 1, "{label}");
+        assert!(progress.get("beta").is_none(), "{label}");
+        // Four store commits: the first held alpha's and the reader's
+        // batches, then alpha committed alone at each later block.
+        assert_eq!(publications, (4, 5), "{label}");
+        clear(source);
+    }
 }

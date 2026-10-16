@@ -16,7 +16,7 @@ mod encoder;
 mod provenance;
 mod wire;
 
-pub(crate) use self::decoder::{advance_table, not_selected};
+pub(crate) use self::decoder::{advance_table, keyframe_update, not_selected};
 pub(crate) use self::wire::decode_update;
 pub use self::{
     decoder::FrameDecoder,

@@ -57,15 +57,16 @@ use dashboard_text::{
 };
 use replay::{
     container::Replay,
+    format::FormatVersion,
     frame::{DecodedFrame, FrameDecoder, SharedView, ViewIdentity},
     rows::{
-        CharacterPortraitRow, CharacterRow, Recorded, TableId, UnitLeaderRow, UnitLeaderTraitRow,
-        tables,
+        CharacterPortraitRow, CharacterRow, LandCombatDetailsRow, NavalCombatDetailsRow, Recorded,
+        TableId, UnitLeaderRow, UnitLeaderTraitRow, full_mask, tables,
     },
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    cell::OnceCell,
+    cell::{Cell, OnceCell},
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{
@@ -82,6 +83,7 @@ use std::{
 use ts_rs::TS;
 
 pub struct UnitLeaders;
+pub mod block;
 pub mod portraits;
 pub mod prepared;
 pub const MAX_REPLY_BYTES: usize = dashboard_base::products::MAX_PRODUCT_REPLY_BYTES;
@@ -650,6 +652,64 @@ struct HourWorld<'a> {
     world: OnceCell<Result<World<'a>, String>>,
     /// The core-table check, read without the World.
     gap: OnceCell<Option<String>>,
+    /// How `frame`'s rows may differ from the hour's whole frame, when it is
+    /// a frame kept from a block read by its changes; None for a whole frame.
+    kept: Option<&'a Kept<'a>>,
+}
+
+/// A frame kept from a block read by its changes and observed in place of
+/// the hour's whole frame: its rows differ from the whole frame's only as
+/// `reduced` says (tables kept with the fields leaders and the declared
+/// trigger reads read, or not kept). A trigger world built on it gives a read
+/// the value it has on the whole frame exactly when the read's declared
+/// dependence avoids those differences ([`Kept::reads_whole`]). An
+/// evaluation that read anything else, or a read that could not be made
+/// again on it, stops the hour's observation before it changes the scan
+/// ([`Kept::blocked`]): the hour is then observed on its whole frame.
+pub(crate) struct Kept<'a> {
+    reduced: &'a dyn TableChanges,
+    blocked: Cell<bool>,
+}
+
+impl<'a> Kept<'a> {
+    pub(crate) fn new(reduced: &'a dyn TableChanges) -> Self {
+        Self {
+            reduced,
+            blocked: Cell::new(false),
+        }
+    }
+
+    /// Whether the hour needs its whole frame.
+    pub(crate) fn blocked(&self) -> bool {
+        self.blocked.get()
+    }
+
+    fn block(&self) {
+        self.blocked.set(true);
+    }
+
+    /// Whether every input of `inputs`, which last read its value at `from`
+    /// on `frame`'s branch, reads on `frame` what it reads on the hour's
+    /// whole frame: each declares its dependence and none reads a field,
+    /// row key or table this frame does not keep as the whole frame holds it.
+    fn reads_whole(&self, inputs: &Inputs, frame: &DecodedFrame, from: i32) -> bool {
+        inputs.unchanged(&Since::span(
+            frame.branch,
+            from,
+            frame.hour,
+            Some(frame),
+            self.reduced,
+        ))
+    }
+
+    /// Whether the tables a leader's template visibility reads
+    /// (`World::decoded_leader_visibility`: its character and the tokens
+    /// spelling its template tag) are kept whole.
+    fn identity_whole(&self) -> bool {
+        [TableId::Characters, TableId::LexicalTokens]
+            .into_iter()
+            .all(|table| matches!(self.reduced.table(table), TableChange::Same))
+    }
 }
 
 impl<'a> HourWorld<'a> {
@@ -696,7 +756,9 @@ struct Evaluation {
     hour: i32,
 }
 
-use dashboard_text::triggers::inputs::{ReuseCounts, Since, check_reuse};
+use dashboard_text::triggers::inputs::{
+    Inputs, ReuseCounts, Since, TableChange, TableChanges, TableRead, check_reuse,
+};
 
 /// The hour's rereads of recorded inputs, each key read once however many
 /// leaders' evaluations read it.
@@ -755,12 +817,21 @@ impl Reuse<'_> {
         } = self;
         let frame = hour.frame;
         let confirmed = evaluation.as_mut().is_some_and(|last| {
-            last.owner == row.owner
-                && last.visibility == *visibility
-                && last.inputs.confirm_since(frame, since, |key| {
-                    let world = hour.get().ok()?;
-                    reread(rereads, world, frame, key)
-                })
+            if last.owner != row.owner || last.visibility != *visibility {
+                return false;
+            }
+            // On a kept frame an input is read again only where it reads
+            // what it reads on the whole frame.
+            let whole = hour.kept.is_none_or(|kept| {
+                kept.reads_whole(&last.inputs, frame, frame.hour.saturating_sub(1))
+            });
+            last.inputs.confirm_since(frame, since, |key| {
+                if !whole {
+                    return None;
+                }
+                let world = hour.get().ok()?;
+                reread(rereads, world, frame, key)
+            })
         });
         if confirmed {
             counts.reused += 1;
@@ -774,6 +845,15 @@ impl Reuse<'_> {
         let (value, inputs) = dashboard_text::triggers::inputs::capture(frame, || {
             Evaluator::new(world, None).decide_leader_visibility(row, visibility.clone(), true)
         });
+        // An evaluation on a kept frame gives the whole frame's verdict when
+        // every value it read is the whole frame's: it then took the same
+        // steps and read the same values there. Otherwise the hour is
+        // observed on its whole frame.
+        if let Some(kept) = hour.kept
+            && (check_reuse() || !kept.reads_whole(&inputs, frame, frame.hour))
+        {
+            kept.block();
+        }
         if confirmed {
             // Check mode: the reused evaluation, run anyway, must not change.
             counts.checked += 1;
@@ -845,6 +925,14 @@ fn visible_reusing(
         // earlier hour's World read this, only the core tables can refuse.
         hour.gap()?;
     } else {
+        // The template's visibility reads the character and its tag's
+        // tokens, which a kept frame keeps whole.
+        if let Some(kept) = hour.kept
+            && !kept.identity_whole()
+        {
+            kept.block();
+            return Err(None);
+        }
         *read = Some(VisibilityRead {
             key,
             visibility: hour.get()?.decoded_leader_visibility(row),
@@ -863,6 +951,11 @@ fn visible_reusing(
         LeaderVisibility::Unconditioned if linked => Eval::True,
         visibility => match reuse {
             Some(reuse) => reuse.decide(hour, row, visibility)?,
+            // Evaluated every hour, never on a kept frame.
+            None if hour.kept.is_some() => {
+                hour.kept.expect("kept frame").block();
+                return Err(None);
+            }
             None => Evaluator::new(hour.get()?, None).decide_leader_visibility(
                 row,
                 visibility.clone(),
@@ -1375,6 +1468,11 @@ pub(crate) struct Scan {
     people: HashMap<String, u32>,
     #[serde(skip)]
     last_people: HashMap<(u32, u8), PersonRead>,
+    /// How often the identity, owner and trait tables' views changed at the
+    /// hours read: runtime only, as the caches they key are, since they
+    /// count reads, which differ where hours are read differently but give
+    /// the same careers.
+    #[serde(skip)]
     identity_epoch: u64,
     #[serde(skip)]
     identity_tables: Option<[ViewIdentity; 3]>,
@@ -1382,9 +1480,11 @@ pub(crate) struct Scan {
     /// its cached owners exactly when a continued one would.
     #[serde(with = "owner_projection", default)]
     owner_tags: LinkTags,
+    #[serde(skip)]
     owner_epoch: u64,
     #[serde(skip)]
     trait_table: Option<(ViewIdentity, bool)>,
+    #[serde(skip)]
     trait_epoch: u64,
     #[serde(skip)]
     formation_names: HashMap<u64, (Option<Vec<u8>>, Option<String>)>,
@@ -1412,7 +1512,185 @@ pub(crate) struct Scan {
     missing_battles: [Option<i32>; 2],
     /// Each kind's combats at the last read, sorted.
     previous_combats: [Option<(i32, Vec<u64>)>; 2],
+    /// Each kind's combats with their sides' commanders at the last read,
+    /// None when that kind's battles were not read: all the battle step
+    /// reads of the combat details, whose other operands move every combat
+    /// hour.
+    #[serde(skip)]
+    combats: [Option<Commanders>; 2],
+    /// Whether the last read reached the leaders (their table was read and
+    /// complete), and so the battles.
+    #[serde(skip)]
+    walked: bool,
 }
+
+/// One kind's combats at an hour, each with its sides' commanders.
+pub(crate) type Commanders = Vec<(u64, [u64; 2])>;
+
+/// The land combats' commanders.
+pub(crate) fn land_commanders(rows: &[LandCombatDetailsRow]) -> Commanders {
+    rows.iter()
+        .map(|row| (row.combat, row.sides.each_ref().map(|side| side.commander)))
+        .collect()
+}
+
+/// The naval combats' commanders.
+pub(crate) fn naval_commanders(rows: &[NavalCombatDetailsRow]) -> Commanders {
+    rows.iter()
+        .map(|row| (row.combat, row.sides.each_ref().map(|side| side.commander)))
+        .collect()
+}
+
+/// Whether `held` are the commanders of `rows` (None for battles not read).
+fn same_commanders<R>(
+    held: Option<&Commanders>,
+    rows: Option<&[R]>,
+    commanders: impl Fn(&R) -> (u64, [u64; 2]),
+) -> bool {
+    match (held, rows) {
+        (None, None) => true,
+        (Some(held), Some(rows)) => {
+            held.len() == rows.len()
+                && held
+                    .iter()
+                    .zip(rows)
+                    .all(|(held, row)| *held == commanders(row))
+        }
+        _ => false,
+    }
+}
+
+/// The battle tables an hour reads (complete and read at the hour): what the
+/// battle step joins and what each leader's partial coverage depends on.
+pub(crate) fn battle_tables<'f>(
+    format: FormatVersion,
+    decoded: &'f DecodedFrame,
+) -> (
+    Option<&'f [LandCombatDetailsRow]>,
+    Option<&'f [NavalCombatDetailsRow]>,
+) {
+    let hour = decoded.hour;
+    let land = decoded
+        .complete::<tables::LandCombatDetails>()
+        .ok()
+        .filter(|_| {
+            slot_read(
+                format,
+                &decoded.metrics,
+                TableId::LandCombatDetails,
+                hour,
+            )
+        });
+    let navy = decoded
+        .complete::<tables::NavalCombatDetails>()
+        .ok()
+        .filter(|_| {
+            slot_read(
+                format,
+                &decoded.metrics,
+                TableId::NavalCombatDetails,
+                hour,
+            )
+        });
+    (land, navy)
+}
+
+/// What the scan reads of each leader table, besides its row keys and
+/// availability: an hour at which none of these changed reads what the
+/// hour before read.
+pub(crate) struct Reads {
+    /// The leaders, their identity and traits: every leader field but
+    /// `experience` (retired, and moving every hour in older formats;
+    /// nothing reads it), and every character, portrait, token and trait
+    /// field.
+    pub leaders: Vec<TableRead>,
+    /// The leaders alone, whose visibility inputs decide whether any leader
+    /// is evaluated in its owner's scope.
+    pub unit_leaders: TableRead,
+    /// The owners and holders: the countries' slots and tags and the links,
+    /// which the holders' comparison reads ([`Scan::refresh_holders`]).
+    pub holders: [TableRead; 2],
+    /// Commands: the formation's leader, name and kind, every plan and fleet
+    /// field, a mission's leader and a task force's fleet. Task forces'
+    /// positions and routes and missions' fuel, ranges and replenishment
+    /// move every hour while fleets sail; nothing reads them.
+    pub commands: Vec<TableRead>,
+    /// Results, read whole (event rows).
+    pub results: Vec<TableRead>,
+    /// The combat details' sides, of which the battle step reads the
+    /// commanders ([`Commanders`]).
+    pub combats: [TableRead; 2],
+}
+
+pub(crate) fn reads() -> &'static Reads {
+    static READS: std::sync::OnceLock<Reads> = std::sync::OnceLock::new();
+    READS.get_or_init(|| {
+        let unit_leaders = TableRead {
+            fields: full_mask(TableId::UnitLeaders.schema().len()) & !experience_field(),
+            ..TableRead::keys(TableId::UnitLeaders)
+        };
+        let holders = [
+            TableRead::fields(TableId::Countries, &["canonical_slot", "tag"]),
+            TableRead::all(TableId::CountryLinks),
+        ];
+        let leaders = vec![
+            unit_leaders,
+            TableRead::all(TableId::Characters),
+            TableRead::all(TableId::CharacterPortraits),
+            TableRead::all(TableId::LexicalTokens),
+            TableRead::all(TableId::UnitLeaderTraits),
+        ];
+        Reads {
+            leaders,
+            unit_leaders,
+            holders,
+            commands: vec![
+                TableRead::fields(TableId::OrdersGroups, &["leader", "name", "is_army_group"]),
+                TableRead::all(TableId::OrdersGroupPlans),
+                TableRead::all(TableId::Fleets),
+                TableRead::fields(TableId::NavalMissionTaskForces, &["leader"]),
+                TableRead::fields(TableId::TaskForces, &["fleet"]),
+            ],
+            results: [
+                TableId::LandCombatResults,
+                TableId::NavalResultSources,
+                TableId::NavalResults,
+                TableId::NavalCombatResultDetails,
+            ]
+            .map(TableRead::all)
+            .to_vec(),
+            combats: [
+                TableRead::fields(TableId::LandCombatDetails, &["sides"]),
+                TableRead::fields(TableId::NavalCombatDetails, &["sides"]),
+            ],
+        }
+    })
+}
+
+/// The change-mask bit of `UnitLeaders.experience`; none when the schema
+/// does not name it, so every field is read.
+pub(crate) fn experience_field() -> u64 {
+    (0..TableId::UnitLeaders.schema().len())
+        .find(|&field| TableId::UnitLeaders.field_name(field) == Some("experience"))
+        .map_or(0, |field| 1_u64 << field)
+}
+
+/// The scan's read mask of an hour: which of its tables were read there.
+pub(crate) fn read_mask(
+    format: FormatVersion,
+    metrics: &replay::frame::Metrics,
+    hour: i32,
+    career: bool,
+) -> u32 {
+    LEADER_TABLES
+        .iter()
+        .chain(COMMAND_TABLES.iter().filter(|_| career))
+        .enumerate()
+        .fold(0u32, |mask, (index, &table)| {
+            mask | (u32::from(slot_read(format, metrics, table, hour)) << index)
+        })
+}
+
 impl Scan {
     fn recount_pending(&mut self) {
         self.pending_bytes = self.stored_runs.len() * std::mem::size_of::<StoredRun>()
@@ -1431,12 +1709,12 @@ impl Scan {
                 })
                 .sum::<usize>();
     }
-    fn refresh_holders(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> bool {
-        if self.holders.is_some()
-            && ![TableId::Countries, TableId::CountryLinks]
-                .iter()
-                .any(|table| changes.rows_changed[table.index()])
-        {
+    /// Read the admission holders again when the countries' slots and tags
+    /// or the links may have changed (`moved`); whether they changed.
+    fn refresh_holders(&mut self, frame: &DecodedFrame, moved: &dyn Fn(&TableRead) -> bool) -> bool {
+        let [countries_read, links_read] = reads().holders;
+        let links_moved = moved(&links_read);
+        if self.holders.is_some() && !links_moved && !moved(&countries_read) {
             return false;
         }
         let (Ok(countries), Ok(links)) = (
@@ -1445,9 +1723,7 @@ impl Scan {
         ) else {
             return self.holders.take().is_some();
         };
-        if !changes.rows_changed[TableId::CountryLinks.index()]
-            && let Some((keys, _)) = &self.holders
-        {
+        if !links_moved && let Some((keys, _)) = &self.holders {
             #[cfg(test)]
             {
                 self.work.row_visits += countries.len();
@@ -1471,7 +1747,7 @@ impl Scan {
                 _ => None,
             })
             .collect();
-        let changed = changes.rows_changed[TableId::CountryLinks.index()]
+        let changed = links_moved
             || self
                 .holders
                 .as_ref()
@@ -1583,6 +1859,7 @@ impl Scan {
             ..Default::default()
         })
     }
+    #[cfg(test)]
     fn observe(
         &mut self,
         decoded: &DecodedFrame,
@@ -1592,19 +1869,51 @@ impl Scan {
         changes: &FrameChanges,
         admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
     ) -> io::Result<()> {
-        let holders_changed = self.refresh_holders(decoded, changes);
-        let inputs = LEADER_TABLES.iter().chain(
-            COMMAND_TABLES
-                .iter()
-                .filter(|_| params.view == LeaderView::Career),
-        );
+        self.observe_changes(decoded, replay, params, content, changes, changes, None, admit)
+            .map(drop)
+    }
+
+    /// [`Self::observe`] with what changed since the hour before as `tables`
+    /// tells it (`changes` keep the hour's reads and table-level facts), on
+    /// a kept frame when `kept` says how it differs from the hour's whole
+    /// frame. An hour at which nothing the scan reads changed carries its
+    /// careers on; one at which only combats and results changed takes the
+    /// battle step alone ([`Self::observe_battles`]); any other reads every
+    /// leader. Returns false, having changed nothing the hour's observation
+    /// on its whole frame would not, when a kept frame cannot give the
+    /// hour's visibility verdicts: the hour must be observed on its whole
+    /// frame.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn observe_changes(
+        &mut self,
+        decoded: &DecodedFrame,
+        replay: &Replay,
+        params: &UnitLeadersParams,
+        content: Option<&Content>,
+        changes: &FrameChanges,
+        tables: &dyn TableChanges,
+        kept: Option<&Kept<'_>>,
+        admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
+    ) -> io::Result<bool> {
+        // Check mode reads every reused input again, which needs the whole
+        // frame.
+        if kept.is_some() && content.is_some() && check_reuse() {
+            return Ok(false);
+        }
+        let since = Since::hour_before(decoded, tables);
+        let moved = |read: &TableRead| since.as_ref().is_none_or(|since| since.changed(read));
+        let holders_changed = self.refresh_holders(decoded, &moved);
+        let career = params.view == LeaderView::Career;
+        let inputs = LEADER_TABLES
+            .iter()
+            .chain(COMMAND_TABLES.iter().filter(|_| career));
         let mask = inputs
-            .clone()
             .enumerate()
             .fold(0u32, |mask, (index, table)| {
                 mask | (u32::from(changes.slot_read[table.index()]) << index)
             });
-        if changes.rows_changed[TableId::UnitLeaders.index()] {
+        let reads = reads();
+        if moved(&reads.unit_leaders) {
             self.scoped_visibility = decoded.complete::<tables::UnitLeaders>().is_ok_and(|rows| {
                 #[cfg(test)]
                 {
@@ -1614,37 +1923,211 @@ impl Scan {
                     .any(|row| row.visibility_choice != 0 || row.template_visibility != 0)
             });
         }
-        let carried = self.commands_continuous
+        let steady = self.commands_continuous
             && !holders_changed
             && self
                 .frontier
                 .is_some_and(|last| last.checked_add(1) == Some(decoded.hour))
             && self.read_mask == Some(mask)
-            && !inputs
-                .clone()
-                .any(|table| changes.rows_changed[table.index()]);
-        if carried
-            && (!self.scoped_visibility
-                || content.is_none_or(|content| self.visibility_carries(decoded, content, changes)))
-        {
-            self.advance(decoded.hour);
-            return Ok(());
+            && !reads.leaders.iter().any(&moved)
+            && !(career && reads.commands.iter().any(&moved));
+        if steady {
+            let (land, navy) = battle_tables(replay.format, decoded);
+            let [land_read, navy_read] = &reads.combats;
+            // Only the commanders and the combats themselves are read of the
+            // combat details.
+            let combats = moved(land_read)
+                && !same_commanders(self.combats[0].as_ref(), land, |row| {
+                    (row.combat, row.sides.each_ref().map(|side| side.commander))
+                })
+                || moved(navy_read)
+                    && !same_commanders(self.combats[1].as_ref(), navy, |row| {
+                        (row.combat, row.sides.each_ref().map(|side| side.commander))
+                    });
+            let results = reads.results.iter().any(&moved);
+            // Whether each kind's battles are read as at the last read: a
+            // change of their availability changes the coverage, the
+            // missing battle reads and partial careers, which only the
+            // leader walk records.
+            let available = self.combats[0].is_some() == land.is_some()
+                && self.combats[1].is_some() == navy.is_some();
+            if !self.scoped_visibility
+                || content.is_none_or(|content| {
+                    self.visibility_carries(decoded, content, since.as_ref(), kept)
+                })
+            {
+                if !combats && !results {
+                    self.advance(decoded.hour);
+                    return Ok(true);
+                }
+                if career && available {
+                    self.observe_battles(decoded, replay, land, navy);
+                    return Ok(true);
+                }
+            }
         }
         self.seal();
         self.frontier = Some(decoded.hour);
         self.materialized = Some(decoded.hour);
         self.read_mask = Some(mask);
-        self.observe_rows(decoded, replay, params, content, Some(changes), admit)
+        self.observe_rows(
+            decoded,
+            replay,
+            params,
+            content,
+            Some(changes),
+            since.as_ref(),
+            kept,
+            admit,
+        )
+    }
+
+    /// The hour's step when only its combats and results changed since the
+    /// hour before, whose leaders, commands, holders and visibility verdicts
+    /// it reads as that hour did: the careers, commands, coverage and missing
+    /// battle reads go on through the hour, as the leader walk would carry
+    /// them, and the results and battles are read as it reads them, each
+    /// side's commander joined while visible at the hour before (so at this
+    /// one). After a read that did not reach the leaders, the walk would not
+    /// reach them either: only the results are read.
+    fn observe_battles(
+        &mut self,
+        decoded: &DecodedFrame,
+        replay: &Replay,
+        land: Option<&[LandCombatDetailsRow]>,
+        navy: Option<&[NavalCombatDetailsRow]>,
+    ) {
+        let hour = decoded.hour;
+        self.seal();
+        let visits = record_results(
+            replay.format,
+            decoded,
+            &mut self.outcomes,
+            &mut self.naval_sources,
+            &mut self.results_recorded,
+            &mut self.refusals,
+        );
+        #[cfg(test)]
+        {
+            self.work.row_visits += visits;
+        }
+        #[cfg(not(test))]
+        let _ = visits;
+        if self.walked {
+            let visits = record_battles(
+                replay.format,
+                decoded,
+                land,
+                navy,
+                hour.saturating_sub(1),
+                &self.leaders,
+                &self.leader_indices,
+                &self.naval_sources,
+                &mut self.battle_hours,
+                &mut self.battle_indices,
+                &mut self.previous_combats,
+                &mut self.pending_bytes,
+            );
+            #[cfg(test)]
+            {
+                self.work.row_visits += visits;
+            }
+            #[cfg(not(test))]
+            let _ = visits;
+        }
+        self.combats = [land.map(land_commanders), navy.map(naval_commanders)];
+        // The careers, commands and coverage of the hour before go on
+        // through this one; this hour's combat reads are already its own.
+        self.frontier = Some(hour);
+        self.seal();
+    }
+
+    /// Carry the scan through the quiet hours `first..=last` that follow its
+    /// last read, at which `tables` says what may have changed since the
+    /// hour before `first` and `rows` holds the rows of every table they
+    /// leave unchanged: each such hour would carry it as [`Self::observe`]
+    /// does (no input the scan reads changed, its reads are the last read's,
+    /// and every visibility verdict reads the same inputs). False, having
+    /// changed nothing, when one would not.
+    pub(crate) fn advance_quiet(
+        &mut self,
+        first: i32,
+        last: i32,
+        tables: &dyn TableChanges,
+        rows: &DecodedFrame,
+        content: Option<&Content>,
+    ) -> bool {
+        let Some(from) = first.checked_sub(1) else {
+            return false;
+        };
+        if last < first
+            || !self.commands_continuous
+            || self.frontier != Some(from)
+            || self.read_mask.is_none()
+        {
+            return false;
+        }
+        let since = Since::span(rows.branch, from, last, Some(rows), tables);
+        let reads = reads();
+        if reads
+            .leaders
+            .iter()
+            .chain(&reads.holders)
+            .chain(&reads.commands)
+            .chain(&reads.results)
+            .any(|read| since.changed(read))
+        {
+            return false;
+        }
+        if self.scoped_visibility && content.is_some() {
+            // As `visibility_carries` decides at each hour.
+            if !self.reuse_evaluations {
+                return false;
+            }
+            let gap = core_gap(rows);
+            if self.read_gap.as_ref().is_some_and(|read| gap != *read) {
+                return false;
+            }
+            if !self.evaluated.is_empty() {
+                let Some(content) = content else {
+                    return false;
+                };
+                if content.catalogue.scripted_content().is_err() || gap.is_some() {
+                    return false;
+                }
+                let leaders = &self.leaders;
+                if !self.evaluated.iter().all(|&index| {
+                    leaders[index]
+                        .evaluation
+                        .as_ref()
+                        .is_some_and(|evaluation| evaluation.inputs.unchanged(&since))
+                }) {
+                    return false;
+                }
+                for &index in &self.evaluated {
+                    if let Some(evaluation) = &mut self.leaders[index].evaluation {
+                        evaluation.inputs.advance(&since);
+                    }
+                }
+                let hours = u64::try_from(i64::from(last) - i64::from(first) + 1).unwrap_or(0);
+                self.reuse.reused += self.evaluated.len() as u64 * hours;
+            }
+        }
+        self.frontier = Some(last);
+        true
     }
 
     /// Whether every visibility verdict of the last read holds this hour,
     /// whose leader inputs are unchanged: the core tables refuse as they did,
-    /// and every evaluation that gave a verdict reads the same inputs.
+    /// and every evaluation that gave a verdict reads the same inputs. On a
+    /// kept frame an input is read again only where it reads what it reads
+    /// on the whole frame.
     fn visibility_carries(
         &mut self,
         decoded: &DecodedFrame,
         content: &Content,
-        changes: &FrameChanges,
+        since: Option<&Since<'_>>,
+        kept: Option<&Kept<'_>>,
     ) -> bool {
         if !self.reuse_evaluations {
             return false;
@@ -1667,13 +2150,13 @@ impl Scan {
             frame: decoded,
             world: OnceCell::new(),
             gap: OnceCell::new(),
+            kept,
         };
         if hour.gap().is_err() {
             return false;
         }
         // Inputs whose declared dependence did not change since the hour
         // before read the same without the hour's World.
-        let since = Since::hour_before(decoded, changes);
         let mut rereads = Rereads::new();
         let leaders = &mut self.leaders;
         let carried = self.evaluated.iter().all(|&index| {
@@ -1681,12 +2164,20 @@ impl Scan {
                 .evaluation
                 .as_mut()
                 .is_some_and(|evaluation| {
-                    evaluation
-                        .inputs
-                        .confirm_since(decoded, since.as_ref(), |key| {
-                            let world = hour.get().ok()?;
-                            reread(&mut rereads, world, decoded, key)
-                        })
+                    let whole = kept.is_none_or(|kept| {
+                        kept.reads_whole(
+                            &evaluation.inputs,
+                            decoded,
+                            decoded.hour.saturating_sub(1),
+                        )
+                    });
+                    evaluation.inputs.confirm_since(decoded, since, |key| {
+                        if !whole {
+                            return None;
+                        }
+                        let world = hour.get().ok()?;
+                        reread(&mut rereads, world, decoded, key)
+                    })
                 })
         });
         if carried {
@@ -1705,12 +2196,20 @@ impl Scan {
         content: Option<&Content>,
         admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
     ) -> io::Result<()> {
-        self.observe_rows(decoded, replay, params, content, None, admit)
+        self.observe_rows(decoded, replay, params, content, None, None, None, admit)
+            .map(drop)
     }
 
     /// The per-hour oracle and changed-frame preparation share this exact
     /// step; `changes` lets a leader whose own identity rows did not change
-    /// keep its identity reads.
+    /// keep its identity reads, and `since` (what changed since the hour
+    /// before) an evaluation whose inputs' declared dependence did not change
+    /// keep its verdict without the hour's World. Every leader's visibility
+    /// is decided before any career changes: on a kept frame (`kept`) that
+    /// cannot give a verdict, the step returns false there, having changed
+    /// only what observing the hour on its whole frame changes the same way
+    /// (caches, read hours, holders, refusal sets and new leaders' states).
+    #[allow(clippy::too_many_arguments)]
     fn observe_rows(
         &mut self,
         decoded: &DecodedFrame,
@@ -1718,8 +2217,10 @@ impl Scan {
         params: &UnitLeadersParams,
         content: Option<&Content>,
         changes: Option<&FrameChanges>,
+        since: Option<&Since<'_>>,
+        kept: Option<&Kept<'_>>,
         admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
-    ) -> io::Result<()> {
+    ) -> io::Result<bool> {
         self.active_commands.clear();
         self.commands_continuous = true;
         self.evaluated.clear();
@@ -1767,6 +2268,8 @@ impl Scan {
             results_recorded,
             missing_battles,
             previous_combats,
+            combats,
+            walked,
             active_commands,
             commands_continuous,
             holders: admission_holders,
@@ -1783,88 +2286,20 @@ impl Scan {
             ..
         } = self;
         let hour = decoded.hour;
-        if slot_read(
+        let visits = record_results(
             replay.format,
-            &decoded.metrics,
-            TableId::LandCombatResults,
-            hour,
-        ) && let Ok(results) = decoded.complete::<tables::LandCombatResults>()
+            decoded,
+            outcomes,
+            naval_sources,
+            results_recorded,
+            refusals,
+        );
+        #[cfg(test)]
         {
-            *results_recorded = true;
-            for result in results {
-                #[cfg(test)]
-                {
-                    work.row_visits += 1;
-                }
-                if record_outcome(
-                    outcomes,
-                    (1, result.combat),
-                    (result.end_hour, hour, result.winners),
-                ) {
-                    refusals.note(
-                        "Conflicting native land battle outcomes",
-                        result.combat.to_string(),
-                    );
-                }
-            }
+            work.row_visits += visits;
         }
-        if slot_read(
-            replay.format,
-            &decoded.metrics,
-            TableId::NavalResultSources,
-            hour,
-        ) && let Ok(sources) = decoded.complete::<tables::NavalResultSources>()
-        {
-            *results_recorded = true;
-            for source in sources {
-                #[cfg(test)]
-                {
-                    work.row_visits += 1;
-                }
-                if !source.transient && !source.merged {
-                    naval_sources.insert(
-                        source.result,
-                        NavalSource {
-                            combat: source.combat,
-                            game_hour: source.game_hour,
-                        },
-                    );
-                }
-            }
-        }
-        if let Ok(results) = decoded.complete::<tables::NavalResults>() {
-            for result in results {
-                #[cfg(test)]
-                {
-                    work.row_visits += 1;
-                }
-                if let Some(source) = naval_sources.get(&result.id) {
-                    // Results copy the combat's first and second sides; the recorded
-                    // selector chooses those exact embedded sides.
-                    let winners = match result.winning_side {
-                        1 => 1,
-                        2 => 2,
-                        _ => 0,
-                    };
-                    if result.winning_side > 2 {
-                        refusals.note(
-                            "Unsupported native naval winner selector",
-                            result.id.to_string(),
-                        );
-                    }
-                    if record_outcome(
-                        outcomes,
-                        (2, source.combat),
-                        (source.game_hour, hour, winners),
-                    ) {
-                        refusals.note(
-                            "Conflicting native naval battle outcomes",
-                            source.combat.to_string(),
-                        );
-                    }
-                }
-            }
-        }
+        #[cfg(not(test))]
+        let _ = visits;
         // Failed table reads allocate errors: resolve each once, never per leader.
         let characters = decoded.complete::<tables::Characters>().ok();
         let holders = if choices {
@@ -1897,31 +2332,8 @@ impl Scan {
             .and_then(IdentityChanges::read);
         // The hour's rereads of recorded inputs, shared by every evaluation.
         let mut rereads = Rereads::new();
-        // What changed since the hour before, which confirms an input
-        // without reading it again.
-        let since = changes.and_then(|changes| Since::hour_before(decoded, changes));
-        let land = decoded
-            .complete::<tables::LandCombatDetails>()
-            .ok()
-            .filter(|_| {
-                slot_read(
-                    replay.format,
-                    &decoded.metrics,
-                    TableId::LandCombatDetails,
-                    hour,
-                )
-            });
-        let navy = decoded
-            .complete::<tables::NavalCombatDetails>()
-            .ok()
-            .filter(|_| {
-                slot_read(
-                    replay.format,
-                    &decoded.metrics,
-                    TableId::NavalCombatDetails,
-                    hour,
-                )
-            });
+        let (land, navy) = battle_tables(replay.format, decoded);
+        *combats = [land.map(land_commanders), navy.map(naval_commanders)];
         for (i, known) in [land.is_some(), navy.is_some()].into_iter().enumerate() {
             if !known {
                 missing_battles[i] = Some(hour);
@@ -1959,7 +2371,8 @@ impl Scan {
                 land_commands,
                 naval_commands,
             );
-            return Ok(());
+            *walked = false;
+            return Ok(true);
         }
         let (Ok(rows), Ok(_), Ok(links)) = (
             decoded.complete::<tables::UnitLeaders>(),
@@ -1975,7 +2388,8 @@ impl Scan {
                 land_commands,
                 naval_commands,
             );
-            return Ok(());
+            *walked = false;
+            return Ok(true);
         };
         if stored_runs.capacity() == 0 && !rows.is_empty() {
             let count = if only.is_some() { 1 } else { rows.len() };
@@ -1999,6 +2413,7 @@ impl Scan {
                     frame: decoded,
                     world: OnceCell::new(),
                     gap: OnceCell::new(),
+                    kept,
                 }),
                 Err(reason) => {
                     refusals.note(reason, "leader visibility content");
@@ -2027,6 +2442,9 @@ impl Scan {
             *trait_epoch += 1;
             *trait_table = Some((now_traits.identity(), traits.is_some()));
         }
+        // Every leader's visibility first, so a kept frame that cannot give
+        // a verdict stops the hour before any career changes.
+        let mut planned = Vec::with_capacity(rows.len());
         for (row_index, row) in rows.iter().enumerate() {
             #[cfg(test)]
             {
@@ -2116,7 +2534,7 @@ impl Scan {
                         evaluation: &mut state.evaluation,
                         rereads: &mut rereads,
                         counts: &mut *reuse_counts,
-                        since: since.as_ref(),
+                        since,
                     })
                 } else {
                     None
@@ -2131,6 +2549,32 @@ impl Scan {
             {
                 evaluated.push(index);
             }
+            planned.push((row_index, index, owner_unchanged, owner_slot, decided));
+        }
+        if let Some(kept) = kept
+            && kept.blocked()
+        {
+            // Verdicts read on this frame stand only where they read what
+            // the whole frame holds: the hour evaluates again there. Its
+            // visibility reads are read again too, so a refusal this pass
+            // marked as noted, but never recorded, is recorded there.
+            for &(_, index, ..) in &planned {
+                let state = &mut leaders[index];
+                if state
+                    .evaluation
+                    .as_ref()
+                    .is_some_and(|evaluation| evaluation.hour == hour)
+                {
+                    state.evaluation = None;
+                }
+                state.visibility = None;
+            }
+            return Ok(false);
+        }
+        for (row_index, index, owner_unchanged, owner_slot, decided) in planned {
+            let row = &rows[row_index];
+            let reference = handle(row);
+            let state = &mut leaders[index];
             match decided {
                 Ok(true) => {}
                 Ok(false) => {
@@ -2581,126 +3025,29 @@ impl Scan {
             naval_commands,
         );
         if !choices {
-            let combat_sets = [
-                land.map(|rows| sorted_combats(rows.iter().map(|c| c.combat))),
-                navy.map(|rows| sorted_combats(rows.iter().map(|c| c.combat))),
-            ];
-            let sides =
-                land.into_iter()
-                    .flatten()
-                    .flat_map(|c| {
-                        c.sides.iter().enumerate().map(move |(side, s)| {
-                            (1u8, c.combat, s.commander, 1u8 << side, hour, true)
-                        })
-                    })
-                    .chain(navy.into_iter().flatten().flat_map(|c| {
-                        c.sides.iter().enumerate().map(move |(side, s)| {
-                            (2u8, c.combat, s.commander, 1u8 << side, hour, true)
-                        })
-                    }))
-                    .chain(
-                        decoded
-                            .complete::<tables::LandCombatResults>()
-                            .ok()
-                            .filter(|_| {
-                                slot_read(
-                                    replay.format,
-                                    &decoded.metrics,
-                                    TableId::LandCombatResults,
-                                    hour,
-                                )
-                            })
-                            .into_iter()
-                            .flatten()
-                            .flat_map(|result| {
-                                result
-                                    .sides
-                                    .iter()
-                                    .enumerate()
-                                    .map(move |(side, operands)| {
-                                        (
-                                            1u8,
-                                            result.combat,
-                                            operands.commander,
-                                            1u8 << side,
-                                            result.end_hour,
-                                            false,
-                                        )
-                                    })
-                            }),
-                    )
-                    .chain(
-                        decoded
-                            .complete::<tables::NavalCombatResultDetails>()
-                            .ok()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|result| {
-                                naval_sources
-                                    .get(&result.result)
-                                    .map(|source| (result, source))
-                            })
-                            .flat_map(|(result, source)| {
-                                result
-                                    .sides
-                                    .iter()
-                                    .enumerate()
-                                    .map(move |(side, operands)| {
-                                        (
-                                            2u8,
-                                            source.combat,
-                                            operands.leader,
-                                            1u8 << side,
-                                            source.game_hour,
-                                            false,
-                                        )
-                                    })
-                            }),
-                    );
-            for (kind, combat, commander, side, participation_hour, active) in sides {
-                #[cfg(test)]
-                {
-                    work.row_visits += 1;
-                }
-                let Some(&index) = leader_indices.get(&commander) else {
-                    continue;
-                };
-                if leaders[index].visible_hour != Some(hour) {
-                    continue;
-                }
-                let reads = battle_hours.entry(commander).or_default();
-                if let Some(&index) = battle_indices.get(&(commander, kind, combat)) {
-                    reads[index].5 |= side;
-                } else {
-                    let combat_new_this_hour = active
-                        && previous_combats[usize::from(kind - 1)]
-                            .as_ref()
-                            .is_some_and(|(h, set)| {
-                                h.checked_add(1) == Some(hour)
-                                    && set.binary_search(&combat).is_err()
-                            });
-                    battle_indices.insert((commander, kind, combat), reads.len());
-                    reads.push((
-                        participation_hour,
-                        hour,
-                        !combat_new_this_hour,
-                        kind,
-                        combat,
-                        side,
-                    ));
-                    *pending_bytes = pending_bytes.saturating_add(std::mem::size_of::<(
-                        i32,
-                        i32,
-                        bool,
-                        u8,
-                        u64,
-                        u8,
-                    )>());
-                }
+            let visits = record_battles(
+                replay.format,
+                decoded,
+                land,
+                navy,
+                hour,
+                leaders,
+                leader_indices,
+                naval_sources,
+                battle_hours,
+                battle_indices,
+                previous_combats,
+                pending_bytes,
+            );
+            #[cfg(test)]
+            {
+                work.row_visits += visits;
             }
-            *previous_combats = combat_sets.map(|set| set.map(|set| (hour, set)));
+            #[cfg(not(test))]
+            let _ = visits;
         }
-        Ok(())
+        *walked = true;
+        Ok(true)
     }
     fn finish(
         mut self,
@@ -3185,6 +3532,214 @@ fn sorted_combats(combats: impl Iterator<Item = u64>) -> Vec<u64> {
     combats.sort_unstable();
     combats.dedup();
     combats
+}
+
+/// Read the hour's results: land outcomes, naval result sources and the
+/// naval outcomes they link. Returns the rows visited.
+fn record_results(
+    format: FormatVersion,
+    decoded: &DecodedFrame,
+    outcomes: &mut BattleOutcomes,
+    naval_sources: &mut BTreeMap<u64, NavalSource>,
+    results_recorded: &mut bool,
+    refusals: &mut catalogue::Refusals,
+) -> usize {
+    let hour = decoded.hour;
+    let mut visits = 0;
+    if slot_read(format, &decoded.metrics, TableId::LandCombatResults, hour)
+        && let Ok(results) = decoded.complete::<tables::LandCombatResults>()
+    {
+        *results_recorded = true;
+        for result in results {
+            visits += 1;
+            if record_outcome(
+                outcomes,
+                (1, result.combat),
+                (result.end_hour, hour, result.winners),
+            ) {
+                refusals.note(
+                    "Conflicting native land battle outcomes",
+                    result.combat.to_string(),
+                );
+            }
+        }
+    }
+    if slot_read(format, &decoded.metrics, TableId::NavalResultSources, hour)
+        && let Ok(sources) = decoded.complete::<tables::NavalResultSources>()
+    {
+        *results_recorded = true;
+        for source in sources {
+            visits += 1;
+            if !source.transient && !source.merged {
+                naval_sources.insert(
+                    source.result,
+                    NavalSource {
+                        combat: source.combat,
+                        game_hour: source.game_hour,
+                    },
+                );
+            }
+        }
+    }
+    if let Ok(results) = decoded.complete::<tables::NavalResults>() {
+        for result in results {
+            visits += 1;
+            if let Some(source) = naval_sources.get(&result.id) {
+                // Results copy the combat's first and second sides; the recorded
+                // selector chooses those exact embedded sides.
+                let winners = match result.winning_side {
+                    1 => 1,
+                    2 => 2,
+                    _ => 0,
+                };
+                if result.winning_side > 2 {
+                    refusals.note(
+                        "Unsupported native naval winner selector",
+                        result.id.to_string(),
+                    );
+                }
+                if record_outcome(
+                    outcomes,
+                    (2, source.combat),
+                    (source.game_hour, hour, winners),
+                ) {
+                    refusals.note(
+                        "Conflicting native naval battle outcomes",
+                        source.combat.to_string(),
+                    );
+                }
+            }
+        }
+    }
+    visits
+}
+
+/// Read the hour's battles: each side of each combat (`land`, `navy`, as the
+/// hour reads them) and of each result, joined to its commander when that
+/// leader is visible at `visible_at` (the hour itself after the leader walk;
+/// the hour before when the leaders carry on unchanged). Ends with the
+/// hour's combats as the last read's. Returns the sides visited.
+#[allow(clippy::too_many_arguments)]
+fn record_battles(
+    format: FormatVersion,
+    decoded: &DecodedFrame,
+    land: Option<&[LandCombatDetailsRow]>,
+    navy: Option<&[NavalCombatDetailsRow]>,
+    visible_at: i32,
+    leaders: &[LeaderState],
+    leader_indices: &HashMap<u64, usize>,
+    naval_sources: &BTreeMap<u64, NavalSource>,
+    battle_hours: &mut HashMap<u64, Vec<(i32, i32, bool, u8, u64, u8)>>,
+    battle_indices: &mut HashMap<(u64, u8, u64), usize>,
+    previous_combats: &mut [Option<(i32, Vec<u64>)>; 2],
+    pending_bytes: &mut usize,
+) -> usize {
+    let hour = decoded.hour;
+    let mut visits = 0;
+    let combat_sets = [
+        land.map(|rows| sorted_combats(rows.iter().map(|c| c.combat))),
+        navy.map(|rows| sorted_combats(rows.iter().map(|c| c.combat))),
+    ];
+    let sides = land
+        .into_iter()
+        .flatten()
+        .flat_map(|c| {
+            c.sides
+                .iter()
+                .enumerate()
+                .map(move |(side, s)| (1u8, c.combat, s.commander, 1u8 << side, hour, true))
+        })
+        .chain(navy.into_iter().flatten().flat_map(|c| {
+            c.sides
+                .iter()
+                .enumerate()
+                .map(move |(side, s)| (2u8, c.combat, s.commander, 1u8 << side, hour, true))
+        }))
+        .chain(
+            decoded
+                .complete::<tables::LandCombatResults>()
+                .ok()
+                .filter(|_| slot_read(format, &decoded.metrics, TableId::LandCombatResults, hour))
+                .into_iter()
+                .flatten()
+                .flat_map(|result| {
+                    result
+                        .sides
+                        .iter()
+                        .enumerate()
+                        .map(move |(side, operands)| {
+                            (
+                                1u8,
+                                result.combat,
+                                operands.commander,
+                                1u8 << side,
+                                result.end_hour,
+                                false,
+                            )
+                        })
+                }),
+        )
+        .chain(
+            decoded
+                .complete::<tables::NavalCombatResultDetails>()
+                .ok()
+                .into_iter()
+                .flatten()
+                .filter_map(|result| {
+                    naval_sources
+                        .get(&result.result)
+                        .map(|source| (result, source))
+                })
+                .flat_map(|(result, source)| {
+                    result
+                        .sides
+                        .iter()
+                        .enumerate()
+                        .map(move |(side, operands)| {
+                            (
+                                2u8,
+                                source.combat,
+                                operands.leader,
+                                1u8 << side,
+                                source.game_hour,
+                                false,
+                            )
+                        })
+                }),
+        );
+    for (kind, combat, commander, side, participation_hour, active) in sides {
+        visits += 1;
+        let Some(&index) = leader_indices.get(&commander) else {
+            continue;
+        };
+        if leaders[index].visible_hour != Some(visible_at) {
+            continue;
+        }
+        let reads = battle_hours.entry(commander).or_default();
+        if let Some(&index) = battle_indices.get(&(commander, kind, combat)) {
+            reads[index].5 |= side;
+        } else {
+            let combat_new_this_hour = active
+                && previous_combats[usize::from(kind - 1)]
+                    .as_ref()
+                    .is_some_and(|(h, set)| {
+                        h.checked_add(1) == Some(hour) && set.binary_search(&combat).is_err()
+                    });
+            battle_indices.insert((commander, kind, combat), reads.len());
+            reads.push((
+                participation_hour,
+                hour,
+                !combat_new_this_hour,
+                kind,
+                combat,
+                side,
+            ));
+            *pending_bytes = pending_bytes
+                .saturating_add(std::mem::size_of::<(i32, i32, bool, u8, u64, u8)>());
+        }
+    }
+    *previous_combats = combat_sets.map(|set| set.map(|set| (hour, set)));
+    visits
 }
 
 fn record_outcome(outcomes: &mut BattleOutcomes, key: (u8, u64), result: (i32, i32, u8)) -> bool {

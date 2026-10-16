@@ -27,6 +27,43 @@ pub struct Prepared {
     bound: bool,
 }
 
+/// One block's occupied-states window page and the manifest after it,
+/// encoded as [`series::write_reply`] writes them, for a writer that commits
+/// them after the block ([`Prepared::hold_block`]).
+pub struct HeldWindow {
+    branch: u64,
+    window: u64,
+    page: Vec<u8>,
+    manifest: Vec<u8>,
+}
+
+impl HeldWindow {
+    /// Write the window page, then the manifest, where
+    /// [`Prepared::finish_block`] writes them.
+    pub fn write(&self, writer: &mut store::Writer) -> io::Result<()> {
+        writer.write_at(
+            &format!("occupied-states-{}", self.branch),
+            self.window,
+            self.page.as_slice(),
+        )?;
+        writer.write_at(
+            &format!("occupied-states-manifest-{}", self.branch),
+            0,
+            self.manifest.as_slice(),
+        )
+    }
+
+    /// The bytes held.
+    pub fn bytes(&self) -> usize {
+        self.page.len() + self.manifest.len()
+    }
+}
+
+/// A reply as [`series::write_reply`] stores it.
+fn encoded_reply(value: &impl Serialize) -> io::Result<Vec<u8>> {
+    series::compress(serde_json::to_vec(value)?.as_slice(), 3)
+}
+
 impl Prepared {
     pub fn configure(&mut self, source: &Source, context: &LoadContext) {
         if !self.bound {
@@ -171,6 +208,33 @@ impl Prepared {
         )
     }
 
+    /// The pages [`Self::finish_block`] writes at the end of a block of
+    /// `branch` spanning `first_hour..=last_hour`, held to be written at a
+    /// later commit ([`HeldWindow::write`]). The window advances now, as
+    /// [`Self::finish_block`] advances it.
+    pub fn hold_block(
+        &mut self,
+        branch: u64,
+        first_hour: i32,
+        last_hour: i32,
+    ) -> io::Result<HeldWindow> {
+        self.hold_window(
+            branch,
+            self.next_window,
+            HourSpan {
+                first_hour,
+                last_hour,
+            },
+        )
+    }
+
+    /// Whether this occupation's law eligibility can read the trigger world,
+    /// once configured: its frames then need the shared trigger tables
+    /// ([`dashboard_text::triggers::RECORDED_TABLES`]).
+    pub fn reads_trigger_world(&self) -> bool {
+        self.scan.reads_trigger_world()
+    }
+
     fn write_window(
         &mut self,
         writer: &mut store::Writer,
@@ -178,44 +242,47 @@ impl Prepared {
         window: usize,
         interval: HourSpan,
     ) -> io::Result<()> {
-        self.own(|state| state.write_own_window(writer, branch, window, interval))
+        self.hold_window(branch, window, interval)?.write(writer)
     }
 
-    fn write_own_window(
+    fn hold_window(
         &mut self,
-        writer: &mut store::Writer,
         branch: u64,
         window: usize,
         interval: HourSpan,
-    ) -> io::Result<()> {
+    ) -> io::Result<HeldWindow> {
+        self.own(|state| state.hold_own_window(branch, window, interval))
+    }
+
+    fn hold_own_window(
+        &mut self,
+        branch: u64,
+        window: usize,
+        interval: HourSpan,
+    ) -> io::Result<HeldWindow> {
         self.scan.seal();
         let scan = std::mem::take(&mut self.scan).bind(self.catalogue.as_deref());
         let snapshot = scan.snapshot();
         let reply = window_reply(&snapshot.states, &branch.to_string(), window, interval);
-        let written = series::write_reply(
-            writer,
-            &format!("occupied-states-{}", branch),
-            window as u64,
-            &reply,
-        );
+        let page = encoded_reply(&reply);
         self.scan = scan.bind(None);
-        written?;
-        series::write_reply(
-            writer,
-            &format!("occupied-states-manifest-{}", branch),
-            0,
-            &OccupiedStatesManifestReply {
-                branch_id: branch.to_string(),
-                decimals: 5,
-                windows: Vec::new(),
-                laws: snapshot.states.laws,
-                strength_missing: STRENGTH_MISSING.into(),
-                warnings: snapshot.states.warnings,
-            },
-        )?;
+        let page = page?;
+        let manifest = encoded_reply(&OccupiedStatesManifestReply {
+            branch_id: branch.to_string(),
+            decimals: 5,
+            windows: Vec::new(),
+            laws: snapshot.states.laws,
+            strength_missing: STRENGTH_MISSING.into(),
+            warnings: snapshot.states.warnings,
+        })?;
         self.scan.finish_window();
         self.next_window = window + 1;
-        Ok(())
+        Ok(HeldWindow {
+            branch,
+            window: window as u64,
+            page,
+            manifest,
+        })
     }
 
     pub fn bytes(&self) -> usize {

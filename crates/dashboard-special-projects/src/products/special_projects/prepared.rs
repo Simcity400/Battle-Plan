@@ -4,6 +4,7 @@ use dashboard_base::prepared::frame_changes::FrameChanges;
 use dashboard_base::prepared::series::{self, Accumulator, Reader};
 use std::collections::BTreeSet;
 
+pub mod block;
 pub mod completion_stream;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +53,50 @@ fn look_key(
     looks.insert(hash, key);
     Ok(key)
 }
+/// The observations of holder `tag` that the changed-owner path skipped (the
+/// hours of `skipped` from the first it missed), as observing it again with
+/// the projects it held there makes them: its last observation becomes the
+/// last such hour under its identity there, and its completions' compact
+/// runs advance through the hours its completions would have been observed.
+/// Everything else those observations make is unchanged or already counted
+/// ([`completion_stream::Stream::repeat`]).
+fn catch_up(
+    countries: &mut BTreeMap<String, Country>,
+    completions: &mut completion_stream::Stream,
+    behind: &mut BTreeMap<String, (usize, (u32, u32))>,
+    skipped: &[(i32, bool)],
+    tag: &str,
+) {
+    let Some((first, identity)) = behind.remove(tag) else {
+        return;
+    };
+    let hours = &skipped[first..];
+    if let (Some(country), Some(&(last, _))) = (countries.get_mut(tag), hours.last()) {
+        country.last = Some((last, identity));
+    }
+    let observed: Vec<i32> = hours
+        .iter()
+        .filter(|(_, observed)| *observed)
+        .map(|&(hour, _)| hour)
+        .collect();
+    completions.advance(identity, &observed);
+}
+
+/// Every holder behind takes the observations it missed ([`catch_up`]), and
+/// the skipped hours are forgotten.
+fn catch_up_all(
+    countries: &mut BTreeMap<String, Country>,
+    completions: &mut completion_stream::Stream,
+    behind: &mut BTreeMap<String, (usize, (u32, u32))>,
+    skipped: &mut Vec<(i32, bool)>,
+) {
+    let tags: Vec<String> = behind.keys().cloned().collect();
+    for tag in tags {
+        catch_up(countries, completions, behind, skipped, &tag);
+    }
+    skipped.clear();
+}
+
 /// Publishes `observation` as the event of `key` at `hour`.
 fn emit(
     values: &mut Accumulator,
@@ -245,6 +290,27 @@ pub struct Prepared {
     linked_owners: BTreeSet<u32>,
     #[serde(skip)]
     project_countries: BTreeSet<String>,
+    /// Countries whose completions were observed with the projects they hold
+    /// now: observing them again with those projects changes nothing but
+    /// their counted warnings ([`completion_stream::Stream::repeat`]).
+    #[serde(skip)]
+    completions_current: BTreeSet<String>,
+    /// The hours at which the changed-owner path skipped the holders whose
+    /// rows did not change, in order, each with whether their completions
+    /// would have been observed there; cleared once no holder is behind.
+    #[serde(skip)]
+    skipped: Vec<(i32, bool)>,
+    /// Each holder skipped since then: the first of `skipped` it missed and
+    /// its identity there. It takes those observations ([`catch_up`]) before
+    /// it is observed again, before any hour that observes every holder, and
+    /// before a flush.
+    #[serde(skip)]
+    behind: BTreeMap<String, (usize, (u32, u32))>,
+    /// A kept hour's owners whose project rows changed since the hour
+    /// before, found by its fold, which a recorded delta would name
+    /// ([`Self::observe_kept`]).
+    #[serde(skip)]
+    kept_owners: Option<BTreeSet<u32>>,
     #[serde(skip)]
     project_owners_unmapped: usize,
     #[serde(skip)]
@@ -271,11 +337,51 @@ pub struct Prepared {
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
+    /// The countries whose names [`Self::refresh_names`] revisited, counted
+    /// in tests.
+    #[cfg(any(test, feature = "test-support"))]
+    #[serde(skip)]
+    refreshed: usize,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     test_changes: Option<dashboard_base::prepared::frame_changes::FrameChangeTracker>,
 }
 const LEXICAL: u64 = 1;
+/// The tables this observer reads of a frame, besides the countries' keys
+/// and scoped names' inputs, which a block read by its changes watches
+/// whole (`block::fields`): a frame built on the last one read holds their
+/// hour's rows.
+pub const WATCHED_WHOLE: [TableId; 7] = [
+    TableId::Projects,
+    TableId::ProjectPrograms,
+    TableId::ProjectHistory,
+    TableId::Characters,
+    TableId::CharacterPortraits,
+    TableId::LexicalTokens,
+    TableId::CountryLinks,
+];
+/// A kept hour's changes as its scoped names' inputs read them: a table its
+/// update rebuilt may have changed only in fields the block reader does not
+/// watch (`watched`), and anywhere when it watches none of it; any other
+/// table did not change ([`dashboard_text::triggers::inputs::QuietTables`]).
+struct KeptChanges<'a> {
+    rows_changed: &'a [bool; replay::frame::TABLE_COUNT],
+    watched: &'a [replay::container::TableFields],
+}
+impl dashboard_text::triggers::inputs::TableChanges for KeptChanges<'_> {
+    fn table(&self, table: TableId) -> dashboard_text::triggers::inputs::TableChange<'_> {
+        use dashboard_text::triggers::inputs::TableChange;
+        if !self.rows_changed[table.index()] {
+            return TableChange::Same;
+        }
+        self.watched
+            .iter()
+            .filter(|watch| watch.table == table)
+            .map(|watch| watch.fields)
+            .reduce(|all, fields| all | fields)
+            .map_or(TableChange::Any, |fields| TableChange::Fields(!fields))
+    }
+}
 fn section(branch: u64) -> String {
     format!("special-projects-{branch}")
 }
@@ -312,6 +418,16 @@ impl Prepared {
     }
     pub fn configure(&mut self, source: &Source, context: &LoadContext) -> io::Result<()> {
         self.own(|state| state.configure_own(source, context))
+    }
+    /// Whether, once configured, an observation can evaluate scoped text,
+    /// which reads the trigger kit ([`dashboard_text::triggers::RECORDED_TABLES`]):
+    /// only when the bound content holds a project name key, or a
+    /// country-prefixed variant of one, that needs scope. Every other text
+    /// the observation resolves (unscoped names, specialisations, iteration
+    /// counts, people) reads no frame, and a scoped name is evaluated only by
+    /// the name scan, which runs only then.
+    pub fn reads_trigger_world(&self) -> bool {
+        self.scoped
     }
     fn configure_own(&mut self, source: &Source, context: &LoadContext) -> io::Result<()> {
         if self.content_ready {
@@ -393,14 +509,95 @@ impl Prepared {
         changes: &FrameChanges,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        self.own(|state| state.observe_own_changes(frame, changes, cancelled))
+        self.own(|state| state.observe_own_changes(frame, changes, None, cancelled))
+    }
+    /// Observe an hour of a block read by its changes (`block`): on its
+    /// whole frame (`whole`), as [`Self::observe_changed`]; otherwise on a
+    /// frame holding the hour's rows only of the tables the family watches
+    /// whole and the countries' keys (an hour the block reader built on the
+    /// last one read, a quiet hour on the last kept frame, or an hour it read
+    /// whose frame carries tables built at an earlier hour), whose other
+    /// tables changed at most as `changes` and `watched` tell. Those tables
+    /// are all this observer reads of a frame but for scoped names, which
+    /// then take their last evaluations, every one checked to read the same
+    /// without the frame ([`history::NameScan::advances`]). False, having
+    /// observed nothing, where that cannot be told without the whole frame:
+    /// the hour is then observed on it. `owners` are the owners whose
+    /// project rows changed since the hour before, where the fold found
+    /// them, which the hour's recorded delta would name.
+    pub fn observe_kept(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        whole: bool,
+        watched: &[replay::container::TableFields],
+        owners: Option<BTreeSet<u32>>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<bool> {
+        self.own(|state| {
+            state.kept_owners = owners;
+            let observed = state.observe_kept_own(frame, changes, whole, watched, cancelled);
+            state.kept_owners = None;
+            observed
+        })
+    }
+    fn observe_kept_own(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        whole: bool,
+        watched: &[replay::container::TableFields],
+        cancelled: &AtomicBool,
+    ) -> io::Result<bool> {
+        let state = self;
+        {
+            if whole || !state.scoped {
+                state.observe_own_changes(frame, changes, None, cancelled)?;
+                return Ok(true);
+            }
+            let kept = KeptChanges {
+                rows_changed: &changes.rows_changed,
+                watched,
+            };
+            if !state.continues_kept(frame, changes, &kept) {
+                return Ok(false);
+            }
+            state.observe_own_changes(frame, changes, Some(&kept), cancelled)?;
+            Ok(true)
+        }
+    }
+    /// Whether a kept frame's hour observes as its whole frame would: it
+    /// follows the hour before, no table watched whole was decoded again
+    /// (each is an hour this observer reacts to by its allocations, read
+    /// on the whole frame), the country keys it compares are held, and
+    /// every scoped name reads the same without the frame.
+    fn continues_kept(
+        &self,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        kept: &KeptChanges<'_>,
+    ) -> bool {
+        let Some(actors) = self.actors.as_ref() else {
+            return false;
+        };
+        self.last_hour.and_then(|hour| hour.checked_add(1)) == Some(frame.hour)
+            && !WATCHED_WHOLE
+                .iter()
+                .any(|table| changes.rows_changed[table.index()])
+            && (!changes.rows_changed[TableId::Countries.index()] || self.country_keys.is_some())
+            && self.names.advances(frame, actors, kept)
     }
     fn observe_own_changes(
         &mut self,
         frame: &DecodedFrame,
         changes: &FrameChanges,
+        kept: Option<&KeptChanges<'_>>,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        let reuse = match kept {
+            Some(kept) => history::Reuse::Advance(kept),
+            None => history::Reuse::Confirm(changes),
+        };
         dashboard_text::metadata::check_cancel(cancelled)?;
         self.values.advance(frame.hour)?;
         let previous_hour = self.last_hour.replace(frame.hour);
@@ -642,6 +839,7 @@ impl Prepared {
                     frame,
                     self.actors.as_ref().expect("project identities"),
                     content,
+                    reuse,
                     cancelled,
                 )?);
                 content.scoped.clear();
@@ -702,6 +900,7 @@ impl Prepared {
                     frame,
                     self.actors.as_ref().expect("project identities"),
                     content,
+                    reuse,
                     cancelled,
                 )?);
                 content.scoped.clear();
@@ -741,10 +940,10 @@ impl Prepared {
         {
             if identity_changed || gap || changes.rows_changed[TableId::Projects.index()] {
                 self.names
-                    .observe(frame, actors, read, content, cancelled)?;
+                    .observe(frame, actors, read, content, reuse, cancelled)?;
             } else {
                 self.names
-                    .evaluate_current(frame, actors, content, cancelled)?;
+                    .evaluate_current(frame, actors, content, reuse, cancelled)?;
             }
             content.scoped.clear();
             content
@@ -754,7 +953,51 @@ impl Prepared {
         let previous_project_known = self.project_inputs.is_some();
         let previous_history = self.history_inputs.clone();
         let mut reached_dates = BTreeSet::new();
-        if changes.rows_changed[TableId::Projects.index()] {
+        let changed_owners = self.changed_owners(frame, changes, identity_changed || gap);
+        if let Some(owners) = &changed_owners {
+            // Only the changed owners' projections: every other owner's rows,
+            // and so its projection, are the hour before's.
+            let rows = frame
+                .complete::<tables::Projects>()
+                .expect("a recorded update of a complete table");
+            let inputs = Arc::make_mut(
+                self.project_inputs
+                    .as_mut()
+                    .expect("the hour before's projection"),
+            );
+            for &owner in owners {
+                let first = rows.partition_point(|row| row.owner < owner);
+                let count = rows[first..].partition_point(|row| row.owner == owner);
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    self.work.row_visits += count;
+                }
+                if count == 0 {
+                    inputs.remove(&owner);
+                } else {
+                    inputs.insert(
+                        owner,
+                        rows[first..first + count]
+                            .iter()
+                            .map(|row| ProjectInput {
+                                facts: ProjectFacts::project(
+                                    row,
+                                    None,
+                                    frame.hour,
+                                    self.metadata.start,
+                                ),
+                                program_reference: row.program_reference,
+                            })
+                            .collect(),
+                    );
+                }
+            }
+            self.project_owners_unmapped = inputs
+                .iter()
+                .filter(|(owner, _)| actors.known && !self.linked_owners.contains(*owner))
+                .map(|(_, rows)| rows.len())
+                .sum();
+        } else if changes.rows_changed[TableId::Projects.index()] {
             self.project_owners_unmapped = 0;
             self.project_inputs = frame.complete::<tables::Projects>().ok().map(|rows| {
                 #[cfg(any(test, feature = "test-support"))]
@@ -846,14 +1089,27 @@ impl Prepared {
         } else {
             BTreeSet::new()
         };
-        if project_change || history_status_changed {
+        // Only some owners' rows changed: their countries alone are observed
+        // again (with any whose history changed), and every other project
+        // holder repeats what observing it again would count (below).
+        let partial = changed_owners.is_some() && !history_status_changed;
+        if partial {
+            for owner in changed_owners.iter().flatten() {
+                if let Some(tag) = self.owner_countries.get(owner) {
+                    affected.insert(tag.clone());
+                }
+            }
+        } else if project_change || history_status_changed {
             affected.extend(self.project_countries.iter().cloned());
             for owner in projects.as_ref().into_iter().flat_map(|rows| rows.keys()) {
                 if let Some(tag) = self.owner_countries.get(owner) {
                     affected.insert(tag.clone());
                 }
             }
-        } else if changes.rows_changed[TableId::ProjectHistory.index()] {
+        }
+        if (partial || !(project_change || history_status_changed))
+            && changes.rows_changed[TableId::ProjectHistory.index()]
+        {
             // Compare only the projected history table's current owners. Removed
             // history inputs revisit their former owner; no country catalogue sweep.
             let owners: BTreeSet<_> = previous_history
@@ -894,6 +1150,26 @@ impl Prepared {
                 self.history_owners_unmapped,
             );
             self.completions.repeat_source_counts(frame.hour);
+        }
+        // Holders the changed-owner path skipped take the observations it
+        // stood in for before anything here reads their state.
+        if partial {
+            for tag in &affected {
+                catch_up(
+                    &mut self.countries,
+                    &mut self.completions,
+                    &mut self.behind,
+                    &self.skipped,
+                    tag,
+                );
+            }
+        } else {
+            catch_up_all(
+                &mut self.countries,
+                &mut self.completions,
+                &mut self.behind,
+                &mut self.skipped,
+            );
         }
         let mut seen = BTreeSet::new();
         for tag in &affected {
@@ -1085,6 +1361,9 @@ impl Prepared {
                     &completion_rows.iter().collect::<Vec<_>>(),
                     span_changed && project_change,
                 );
+                self.completions_current.insert(tag.to_owned());
+            } else {
+                self.completions_current.remove(tag);
             }
             let observation = Observation {
                 identity,
@@ -1124,6 +1403,30 @@ impl Prepared {
             country.last = Some((frame.hour, identity));
             seen.insert(tag.to_owned());
         }
+        if partial {
+            // The holders whose rows did not change: observing them again
+            // with the projects they hold would change nothing but their
+            // last observation, their open episodes' compact runs (where
+            // their completions are observed) and the warnings counted where
+            // the span changed. The counts go now; the rest when next read.
+            let observed = projects.is_some() && read;
+            self.skipped.push((frame.hour, observed));
+            let at = self.skipped.len() - 1;
+            for tag in self.project_countries.difference(&affected) {
+                if let Some(&(country_id, slot)) = actors.tags.get(tag.as_bytes()) {
+                    self.behind
+                        .entry(tag.clone())
+                        .or_insert((at, (slot, country_id)));
+                    if observed {
+                        self.completions.repeat(
+                            (slot, country_id),
+                            frame.hour,
+                            span_changed && project_change,
+                        );
+                    }
+                }
+            }
+        }
         if full {
             for tag in self.active_countries.difference(&seen) {
                 let country = self
@@ -1161,6 +1464,69 @@ impl Prepared {
         self.values.through(frame.hour);
         Ok(())
     }
+    /// The owners whose Projects rows this hour's recorded update changed,
+    /// when the hour can project those owners' rows alone: the table changed
+    /// by one recorded update from the hour before, whose projection is held,
+    /// without an identity change or a gap (`whole`); and every project
+    /// holder whose rows did not change had its completions observed with the
+    /// projects it holds, with warnings the stream knows, so observing it
+    /// again would change nothing but the counts it repeats. None projects
+    /// the whole table, as when no update is recorded.
+    fn changed_owners(
+        &self,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        whole: bool,
+    ) -> Option<BTreeSet<u32>> {
+        if whole
+            || !changes.rows_changed[TableId::Projects.index()]
+            || self.project_inputs.is_none()
+            || frame.complete::<tables::Projects>().is_err()
+        {
+            return None;
+        }
+        // Projects rows are keyed by owner, then project.
+        let owners: BTreeSet<u32> = match changes.rows(TableId::Projects) {
+            Some((changed, deleted)) => changed
+                .iter()
+                .map(|row| row.key)
+                .chain(deleted.iter().copied())
+                .map(|key| (key >> 32) as u32)
+                .collect(),
+            None => self.kept_owners.clone()?,
+        };
+        let actors = self.actors.as_ref()?;
+        let touched: BTreeSet<&str> = owners
+            .iter()
+            .filter_map(|owner| self.owner_countries.get(owner))
+            .map(String::as_str)
+            .collect();
+        self.project_countries
+            .iter()
+            .filter(|tag| !touched.contains(tag.as_str()))
+            .all(|tag| {
+                self.completions_current.contains(tag)
+                    && actors
+                        .tags
+                        .get(tag.as_bytes())
+                        .is_none_or(|&(country_id, slot)| {
+                            self.completions.knows((slot, country_id))
+                        })
+            })
+            .then_some(owners)
+    }
+
+    /// Every holder the changed-owner path skipped takes the observations it
+    /// stood in for ([`catch_up`]).
+    fn catch_up_all(&mut self) {
+        catch_up_all(
+            &mut self.countries,
+            &mut self.completions,
+            &mut self.behind,
+            &mut self.skipped,
+        );
+    }
+
     pub fn buffered_bytes(&self) -> usize {
         self.values
             .bytes()
@@ -1174,6 +1540,10 @@ impl Prepared {
     ) -> io::Result<()> {
         for tag in affected {
             dashboard_text::metadata::check_cancel(cancelled)?;
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                self.refreshed += 1;
+            }
             let country = self
                 .countries
                 .get_mut(tag)
@@ -1334,6 +1704,8 @@ impl Prepared {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        // What is published and saved holds every skipped observation.
+        self.catch_up_all();
         self.completions.flush(
             writer,
             branch,

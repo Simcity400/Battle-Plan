@@ -184,6 +184,97 @@ impl Scanned {
         changed
     }
 
+    /// Whether an hour a pre-pass worker certified for the current join
+    /// (every changed capture, `advanced`, only extends to the hour and
+    /// nothing else joins a country) only advances captures here too, with
+    /// no day boundary due (`day_due`): [`Self::inputs_changed`] would join
+    /// it from its changed rows, observing again no row not yet recorded as
+    /// an event, dirtying no country and checking none again; no linked
+    /// capture is due once the captures moved; and [`Self::advances_only`]
+    /// holds. Nothing is changed.
+    pub(super) fn certified_advance(
+        &self,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        advanced: &[(u32, i32)],
+        day_due: bool,
+    ) -> bool {
+        let read = |table: TableId| {
+            changes.rows_changed[table.index()] || changes.table_read[table.index()]
+        };
+        #[cfg(not(test))]
+        let rows_known = true;
+        #[cfg(test)]
+        let rows_known = !self.whole_tables;
+        // The hour continues the last one joined, from its changed rows.
+        let continuous =
+            self.clock.through.and_then(|last| last.checked_add(1)) == Some(frame.hour);
+        if advanced.is_empty()
+            || day_due
+            || !continuous
+            || !self.pending_known
+            || !rows_known
+            || !self.clock.stable
+            || !self.clock.bound
+            || !self.clock.recheck.is_empty()
+            || self.clock.presence_refreshed
+            || !self.dirty.is_empty()
+            || self.clock.census_known != frame.complete::<tables::Countries>().is_ok()
+            || !self.holds.naming_slots(changes, rows_known).is_empty()
+        {
+            return false;
+        }
+        // The rows not yet recorded as events that the join would observe
+        // again: every one of a table read whole, and those of a linked
+        // country with links read or of a captured one.
+        let links = read(TableId::CountryLinks);
+        let coverage = read(TableId::PoliticsCaptureCoverage);
+        let inputs = &self.inputs;
+        for (keys, shift, whole) in [
+            (&self.pending[0], 64, read(TableId::CountryPowerChanges)),
+            (&self.pending[1], 32, read(TableId::CountryPowerDailyCosts)),
+        ] {
+            if keys.iter().any(|&key| {
+                let raw = (key >> shift) as u32;
+                whole
+                    || (links && inputs.links.contains_key(&raw))
+                    || (coverage && inputs.witnesses.contains_key(&raw))
+            }) {
+                return false;
+            }
+        }
+        // The captures due at the hour that the whole accounting observes.
+        !self.clock.next.is_some_and(|next| {
+            next <= frame.hour && inputs.due_after_advance(next, frame.hour, advanced)
+        })
+    }
+
+    /// [`Self::inputs_changed`] of an hour [`Self::certified_advance`]
+    /// accepted: its join from its changed rows only extends the captures
+    /// (`Inputs::refresh_advanced`); no country is dirtied, named again or
+    /// checked again. Whether anything joined changed, as there.
+    pub(super) fn inputs_advanced(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        advanced: &Arc<[(u32, i32)]>,
+    ) -> bool {
+        Arc::make_mut(&mut self.inputs).refresh_advanced(frame, changes, advanced);
+        #[cfg(test)]
+        {
+            self.row_hours += 1;
+        }
+        self.inputs.changed
+    }
+
+    /// Move captures extended without moving their witnesses to the last
+    /// hour they reached.
+    pub(super) fn materialize_advance(&mut self) {
+        if self.inputs.deferred() {
+            Arc::make_mut(&mut self.inputs).materialize_advance();
+        }
+    }
+
     pub(super) fn begin_accounting(&mut self, frame: &DecodedFrame) -> io::Result<()> {
         self.clock.selected = self
             .inputs

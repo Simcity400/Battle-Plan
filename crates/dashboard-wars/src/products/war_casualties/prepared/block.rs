@@ -46,7 +46,7 @@ use dashboard_base::{
     Source,
     prepared::{
         frame_changes::{FrameChangeTracker, FrameChanges},
-        prepass::{Extract, Family, Folded},
+        prepass::{Extract, Family, Folded, Held, HeldBytes},
     },
     products::LoadContext,
 };
@@ -199,7 +199,152 @@ struct BlockExtract {
     frames: usize,
 }
 
+macro_rules! inline {
+    ($($type:ty),* $(,)?) => {
+        $(impl Held for $type {
+            fn held(&self, _: &mut HeldBytes) {}
+        })*
+    };
+}
+
+inline!(
+    Country,
+    super::super::HeldPair,
+    super::super::Checkpoint,
+    super::Observation,
+);
+
+impl Held for super::super::Track {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes.heap(&self.packed).heap(&self.checkpoints);
+    }
+}
+
+impl Held for super::super::Scan {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.identities)
+            .heap(&self.indices)
+            .heap(&self.countries)
+            .heap(&self.pairs)
+            .heap(&self.live)
+            .heap(&self.holders)
+            .heap(&self.tracks)
+            .heap(&self.bounds)
+            .heap(&self.active)
+            .heap(&self.observed)
+            .heap(&self.touched)
+            .heap(&self.partial_changed)
+            .heap(&self.inserted)
+            .heap(&self.relative);
+        // Each tag's naming operands where they change: the list, each tag,
+        // each operand read (its tag, cosmetic tag and suffixes) and each
+        // reason an operand could not be read.
+        fn element<T>(_: &[T]) -> usize {
+            size_of::<T>()
+        }
+        bytes.add(self.names.capacity() * element(&self.names));
+        for (tag, inputs) in &self.names {
+            bytes.heap(tag).add(inputs.capacity() * element(inputs));
+            for (_, read) in inputs {
+                match read {
+                    Some(Ok(operands)) => {
+                        bytes.add(operands.heap_bytes());
+                    }
+                    Some(Err(reason)) => {
+                        bytes.heap(reason);
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+}
+
+impl Held for super::super::ScanFrames {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.scan)
+            .heap(&self.census)
+            .heap(&self.live)
+            .heap(&self.by_slot)
+            .heap(&self.seen)
+            .heap(&self.endpoints)
+            .heap(&self.relation_keys)
+            .heap(&self.current_tags)
+            .heap(&self.supplying_pairs)
+            .heap(&self.changed_pairs)
+            .heap(&self.changed_endpoints)
+            .heap(&self.changed_tags)
+            .heap(&self.name_snapshot)
+            .heap(&self.name_entries)
+            .heap(&self.name_views);
+    }
+}
+
+impl Held for super::Catalogue {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.actors)
+            .heap(&self.holders)
+            .heap(&self.holder_coverage)
+            .heap(&self.unknown_label)
+            .heap(&self.warnings);
+    }
+}
+
+/// The block's own observer: its series, its scan and pair history (every
+/// country's packed samples, every pair's runs), and its keys and catalogue.
+impl Held for Prepared {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.builder)
+            .heap(&self.pairs)
+            .heap(&self.tags)
+            .heap(&self.values)
+            .heap(&self.observations)
+            .heap(&self.coverage)
+            .heap(&self.ranks)
+            .heap(&self.latest)
+            .heap(&self.actors)
+            .heap(&self.catalogue)
+            .heap(&self.presentation_error);
+    }
+}
+
 impl Extract for BlockExtract {
+    /// What the block's facts hold: its first frame, each hour's renamed
+    /// frame, pairs, tags (once however many hours share them) and values,
+    /// and the block's own observer.
+    fn bytes(&self) -> u64 {
+        let mut held = HeldBytes::default();
+        if let Some(first) = &self.first {
+            held.frame(&first.frame).changes(&first.changes);
+            held.add(size_of_val(first.countries.as_slice()));
+        }
+        held.add(self.hours.capacity() * size_of::<Hour>());
+        for hour in &self.hours {
+            if let Hour::Observed {
+                renamed,
+                inserted,
+                tags,
+                values,
+                ..
+            } = hour
+            {
+                if let Some(frame) = renamed {
+                    held.frame(frame);
+                }
+                held.add(size_of_val(inserted.as_slice()) + size_of_val(values.as_slice()));
+                held.shared(
+                    Arc::as_ptr(tags),
+                    tags.iter().map(|tag| size_of::<String>() + tag.len()).sum(),
+                );
+            }
+        }
+        held.heap(&self.prepared).total()
+    }
+
     fn observe(
         &mut self,
         replay: &Replay,
@@ -910,4 +1055,43 @@ pub fn observed_hours() -> usize {
 #[cfg(any(test, feature = "test-support"))]
 pub fn built_frames() -> usize {
     FRAMES.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+mod bytes_tests {
+    use super::*;
+    use installed_content::country_names::Operands;
+
+    /// What a scan holds when `countries` tags each name again at each of
+    /// `hours` hours, every operand read carrying a cosmetic tag of
+    /// `COSMETIC` bytes.
+    fn held(countries: usize, hours: usize) -> u64 {
+        let mut scan = super::super::super::Scan::new();
+        for hour in 0..hours {
+            for country in 0..countries {
+                let tag = format!("T{country:03}");
+                let mut operands = Operands::for_tag(&tag, Some(&format!("group_{hour}")));
+                operands.cosmetic = "c".repeat(COSMETIC);
+                scan.names
+                    .push((tag, vec![(country as u32, Some(Ok(operands)))]));
+            }
+        }
+        let mut bytes = HeldBytes::default();
+        bytes.heap(&scan);
+        bytes.total()
+    }
+
+    const COSMETIC: usize = 1024;
+
+    /// Every naming change keeps its operands' own strings, so the naming
+    /// history holds at least each cosmetic tag once per country and hour.
+    #[test]
+    fn naming_history_bytes_grow_with_countries_times_hours() {
+        let per = COSMETIC as u64;
+        let (small, wide, long, both) = (held(4, 4), held(32, 4), held(4, 32), held(32, 32));
+        assert!(wide - small >= (32 - 4) * 4 * per, "{small} {wide}");
+        assert!(long - small >= 4 * (32 - 4) * per, "{small} {long}");
+        assert!(both - wide >= 32 * (32 - 4) * per, "{wide} {both}");
+        assert!(both - long >= (32 - 4) * 32 * per, "{long} {both}");
+    }
 }

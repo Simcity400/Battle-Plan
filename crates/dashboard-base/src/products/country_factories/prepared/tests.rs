@@ -89,6 +89,111 @@ fn progressive_factory_sampler_keeps_absent_and_ambiguous_rows_unknown() {
     assert!(sample(&frame, Some(&[(tag, "31".into())])).is_err());
 }
 
+/// Hours whose keys, links and factory rows are the hour before's step in
+/// constant time to the state observing them reaches, an unresolved row's
+/// count included, and on to the same state at the next changed hour. A step
+/// that observing would take otherwise (after a gap, with another read flag,
+/// read back from a continuation, or with countries that did not join)
+/// declines and changes nothing.
+#[test]
+fn a_quiet_hour_steps_to_the_state_observing_it_reaches() {
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    let mut first = frame(100, 4);
+    // A row no link names: an unreadable count every hour.
+    if let TableView::Complete(TableRows::CountryFactories(rows)) =
+        &mut *first.tables[TableId::CountryFactories.index()]
+    {
+        rows.push(CountryFactoriesRow {
+            country: 999_999,
+            ..Default::default()
+        });
+    }
+    let replay = Replay::from_records(
+        crate::test_fixtures::CAMPAIGN.into(),
+        &[crate::test_fixtures::records(1, vec![first.clone()])],
+    )
+    .unwrap();
+    let state = |prepared: &Prepared| serde_json::to_value(prepared).unwrap();
+    // Each later hour shares every table of the first: nothing changed.
+    let at = |hour: i32| {
+        let mut frame = first.clone();
+        frame.hour = hour;
+        frame
+    };
+    let read = |hour: i32| {
+        crate::metadata::slot_read(
+            replay.format,
+            &first.metrics,
+            TableId::CountryFactories,
+            hour,
+        )
+    };
+    let mut tracker = FrameChangeTracker::new();
+    let changes = tracker.observe(&first, replay.format);
+    let (mut observed, mut stepped) = (Prepared::default(), Prepared::default());
+    observed.observe(&first, &replay, &changes).unwrap();
+    stepped.observe(&first, &replay, &changes).unwrap();
+    for hour in 101..=105 {
+        let frame = at(hour);
+        let changes = tracker.observe(&frame, replay.format);
+        assert!(
+            !changes.rows_changed[TableId::CountryFactories.index()],
+            "hour {hour} is quiet"
+        );
+        observed.observe(&frame, &replay, &changes).unwrap();
+        assert!(
+            stepped.advance_quiet(hour, read(hour)).unwrap(),
+            "hour {hour} steps"
+        );
+        assert_eq!(state(&stepped), state(&observed), "hour {hour}");
+    }
+    assert!(
+        state(&stepped)["scan"]["result"]["unreadable"]
+            .as_u64()
+            .unwrap()
+            >= 6,
+        "the unresolved row counts at every hour"
+    );
+    // Declined steps change nothing.
+    let held = state(&stepped);
+    assert!(!stepped.advance_quiet(107, read(107)).unwrap(), "a gap");
+    assert!(
+        !stepped.advance_quiet(106, !read(106)).unwrap(),
+        "another read flag"
+    );
+    assert_eq!(state(&stepped), held);
+    let mut reloaded: Prepared = serde_json::from_value(held).unwrap();
+    assert!(
+        !reloaded.advance_quiet(106, read(106)).unwrap(),
+        "read back from a continuation, the next hour needs its frame"
+    );
+    // The next changed hour leaves both in the same state.
+    let mut changed = at(106);
+    if let TableView::Complete(TableRows::CountryFactories(rows)) =
+        &mut *changed.tables[TableId::CountryFactories.index()]
+    {
+        rows[0].military_total_raw += 300_000;
+    }
+    let changes = tracker.observe(&changed, replay.format);
+    observed.observe(&changed, &replay, &changes).unwrap();
+    stepped.observe(&changed, &replay, &changes).unwrap();
+    assert_eq!(state(&stepped), state(&observed));
+    // Countries that did not join leave every later hour to its frame.
+    let mut unjoined = first.clone();
+    *unjoined.tables[TableId::Countries.index()] = TableView::Unavailable {
+        reason: "Countries not read".into(),
+    };
+    let mut alone = Prepared::default();
+    alone
+        .observe(
+            &unjoined,
+            &replay,
+            &FrameChangeTracker::new().observe(&unjoined, replay.format),
+        )
+        .unwrap();
+    assert!(!alone.advance_quiet(101, read(101)).unwrap());
+}
+
 #[test]
 fn phase_b_unchanged_hours_and_retained_holders_are_flat_and_one_row_is_bounded() {
     use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};

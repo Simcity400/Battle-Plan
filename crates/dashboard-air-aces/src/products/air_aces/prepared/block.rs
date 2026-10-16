@@ -168,6 +168,11 @@ impl BlockExtract {
 }
 
 impl Extract for BlockExtract {
+    /// What the block's kept hours hold.
+    fn bytes(&self) -> u64 {
+        self.kept.bytes()
+    }
+
     fn observe(
         &mut self,
         _: &Replay,

@@ -45,6 +45,12 @@ pub fn field_mask(table: TableId, names: &[&str]) -> u64 {
 }
 
 impl FrameChanges {
+    /// The hour's recorded updates, which every hour of one read shares
+    /// none of: what keeping these facts keeps alive besides its flags.
+    pub fn recorded(&self) -> Option<&Arc<replay::frame::Frame>> {
+        self.updates.as_ref().map(|updates| &updates.frame)
+    }
+
     /// The facts of an hour observed with no hour before it, as preparation
     /// observes the first hour of every block: any row may have changed.
     pub fn alone(frame: &DecodedFrame, format: FormatVersion) -> Self {

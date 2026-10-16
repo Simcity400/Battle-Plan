@@ -37,7 +37,7 @@ use super::resource_balance::mark;
 use dashboard_base::products::{
     Product,
     country_history::{self, CountryIdentityRun, Identity, RecordedHistories},
-    resources::{Learned, RESOURCE_DECIMALS, resource_infos},
+    resources::{Learned, RESOURCE_DECIMALS, ResourceNaming},
 };
 use dashboard_base::{
     prepared::frame_changes::field_mask, products::country_groups::HourSpan, source::Source,
@@ -1269,8 +1269,23 @@ pub(crate) fn reply(
     scanned: &ScannedFlows,
     cancelled: &AtomicBool,
 ) -> io::Result<TradeFlowsReply> {
+    reply_named(
+        &ResourceNaming::of(source, context),
+        params,
+        scanned,
+        cancelled,
+    )
+}
+
+/// [`reply`], with the resources named through `naming`.
+pub(crate) fn reply_named(
+    naming: &ResourceNaming,
+    params: &TradeFlowParams,
+    scanned: &ScannedFlows,
+    cancelled: &AtomicBool,
+) -> io::Result<TradeFlowsReply> {
     // Without the game folders the flows still draw, resources named by token.
-    let (resources, mut warnings) = resource_infos(source, context, &scanned.resources, cancelled)?;
+    let (resources, mut warnings) = naming.infos(&scanned.resources, cancelled)?;
     recording_warnings(
         scanned.unnamed,
         scanned.unresolved,

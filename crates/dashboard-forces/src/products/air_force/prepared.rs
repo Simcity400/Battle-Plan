@@ -44,6 +44,7 @@ impl shared::Family for Air {
     type PointContent = ();
     const POINT_PARTS: bool = false;
     const NAME: &'static str = "air";
+    const PRODUCT: &'static str = "air-force-size";
     const GROUPS: usize = 1;
     const MIXES: usize = 1;
     const REFERENCES: usize = 0;
@@ -202,6 +203,26 @@ impl shared::Family for Air {
             roster: (index < 2).then(|| Arc::clone(&counts)),
             effective: (index >= 2).then_some(counts),
         })
+    }
+    type Tail = scan::Tail;
+    fn tail(scan: &Self::Scan, hour: i32) -> Self::Tail {
+        scan.tail(hour)
+    }
+    /// Air names its equipment by token: nothing is renumbered.
+    type Numbering = ();
+    fn numbering(_: &Self::Scan, _: &Self::Scan) -> Self::Numbering {}
+    fn renumber(_: &Self::Numbering, _: &mut Self::Raw) {}
+    fn renumber_base(_: &Self::Numbering, _: &mut Self::Scanned) {}
+    fn continues(
+        carried: &Self::Scan,
+        tail: &Self::Tail,
+        block: &Self::Scan,
+        _: &Self::Numbering,
+    ) -> bool {
+        carried.continues(tail, block)
+    }
+    fn carry(carried: &mut Self::Scan, tail: Self::Tail, block: Self::Scan, _: Self::Numbering) {
+        carried.carry(tail, block);
     }
     fn part_key(part: &Self::Part) -> &str {
         &part.key

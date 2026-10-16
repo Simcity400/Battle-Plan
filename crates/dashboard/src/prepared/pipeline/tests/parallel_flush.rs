@@ -2,7 +2,7 @@
 //! publishes, and run each step at its serial refusal state.
 use super::family_lanes::{assert_payloads_equal, payloads};
 use super::*;
-use std::{collections::HashSet, io::Read, thread::ThreadId};
+use std::{collections::HashSet, thread::ThreadId};
 
 type Steps = Vec<(usize, i32, ThreadId)>;
 
@@ -167,16 +167,11 @@ fn section_order(source: &Source) -> Vec<String> {
     let directory = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
         .join("HOI4Replay/prepared")
         .join(id.to_string());
-    let mut manifest = std::fs::File::open(directory.join("manifest")).unwrap();
-    let mut length = [0; 8];
-    manifest.read_exact(&mut length).unwrap();
-    let header: serde_json::Value =
-        serde_json::from_reader(manifest.take(u64::from_le_bytes(length))).unwrap();
-    header["sections"]
-        .as_array()
+    store::Listing::open(&directory.join("manifest"))
         .unwrap()
-        .iter()
-        .map(|section| section["name"].as_str().unwrap().to_owned())
+        .unwrap()
+        .sections()
+        .map(|(name, _)| name.to_owned())
         .collect()
 }
 

@@ -16,5 +16,11 @@ re-exports them at `dashboard::products::<name>`, registers them, and prepares
 and queries them in its pipeline; [dashboard-naval](../dashboard-naval/README.md)
 reads the land battles' country filter.
 
+The division log's block preparation, for the dashboard's family prepared on
+its own, is in [products/division_log/block.rs](src/products/division_log/block.rs):
+the block extract a pre-pass worker runs from the block's first hour, its fold
+onto the carried scan, and the branch whose block windows, manifest and totals
+are written at its next commit.
+
 `cargo test -p dashboard-land-battles` builds and runs only these products'
 tests.

@@ -102,6 +102,7 @@ pub const TABLES: &[replay::rows::TableId] = &[
 ];
 
 mod balance;
+mod dependence;
 mod entries;
 mod numeric;
 pub use entries::{
@@ -2203,3 +2204,6 @@ mod tests_effect_scopes;
 
 #[cfg(test)]
 mod organisation_tests;
+
+#[cfg(test)]
+mod dependence_tests;
