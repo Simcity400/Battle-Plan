@@ -341,8 +341,10 @@ pub const fn cadence(table: TableId) -> Cadence {
         | TableId::AirTheatreGroups
         | TableId::AirTheatreMembers => Daily(13),
         // The daily network pass writes every network inside the hour-23
-        // daily tick: roster, topology, selectors, graph strengths and cached
-        // subnetwork strengths. An operative's build or recall mission and a
+        // daily tick: roster, topology, selectors, graph strengths and gains,
+        // and the subnetworks it rebuilds there (their strengths, targets,
+        // gain factors and quiet flags; the game reaches that rebuild only
+        // from the daily tick). An operative's build or recall mission and a
         // state's controller change reach the rows only through that pass.
         // Slot 0, like CountryIntel, observes its first completed state.
         // Outside it, a country's dynamic reuse (civil war, dynamic and

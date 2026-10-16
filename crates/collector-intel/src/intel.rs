@@ -1525,6 +1525,15 @@ impl Captured {
                     strength_raw: r.strength_raw,
                     subnetwork_selector: r.subnetwork_selector,
                     local_strength_raw: r.local_strength_raw,
+                    gain_raw: r.gain_raw,
+                    gain_from_operatives_raw: r.gain_from_operatives_raw,
+                    gain_from_adjacency_raw: r.gain_from_adjacency_raw,
+                    local_quiet: r.local_quiet,
+                    gain_factor_raw: r.gain_factor_raw,
+                    strength_target_raw: r.strength_target_raw,
+                    target_from_operatives_raw: r.target_from_operatives_raw,
+                    target_from_counterintelligence_raw: r.target_from_counterintelligence_raw,
+                    subnetwork_quiet: r.subnetwork_quiet,
                 },
             )),
             flags,
@@ -4818,6 +4827,10 @@ mod tests {
             strength_raw: None,
             subnetwork_selector: i32::MIN,
             local_strength_raw: i64::MIN,
+            gain_raw: -175_000,
+            gain_from_operatives_raw: 0,
+            gain_from_adjacency_raw: 0,
+            ..Default::default()
         };
         capture.networks.rows[1] = ccountry_intel_network::Row {
             owner_country: 1,
@@ -4826,6 +4839,15 @@ mod tests {
             strength_raw: Some(i64::MIN),
             subnetwork_selector: 0,
             local_strength_raw: i64::MAX,
+            gain_raw: 85_000,
+            gain_from_operatives_raw: 42_500,
+            gain_from_adjacency_raw: 21_250,
+            local_quiet: 1,
+            gain_factor_raw: Some(100_000),
+            strength_target_raw: Some(7_250_000),
+            target_from_operatives_raw: Some(3_000_000),
+            target_from_counterintelligence_raw: Some(-4_750_000),
+            subnetwork_quiet: 1,
         };
         capture.operations.outcome = Outcome::Rows { len: 1 };
         capture.operations.rows[0] = coperation_instance::Row {
@@ -4888,6 +4910,39 @@ mod tests {
         let networks = complete::<tables::IntelNetworks>(&views[6]);
         assert_eq!(networks[0].local_strength_raw, i64::MIN);
         assert_eq!(networks[1].local_strength_raw, i64::MAX);
+        assert_eq!(
+            (
+                networks[0].gain_raw,
+                networks[0].local_quiet,
+                networks[0].subnetwork_quiet,
+                networks[0].strength_target_raw,
+            ),
+            (-175_000, 0, 0, None)
+        );
+        assert_eq!(
+            (
+                networks[1].gain_raw,
+                networks[1].gain_from_operatives_raw,
+                networks[1].gain_from_adjacency_raw,
+                networks[1].local_quiet,
+                networks[1].gain_factor_raw,
+                networks[1].strength_target_raw,
+                networks[1].target_from_operatives_raw,
+                networks[1].target_from_counterintelligence_raw,
+                networks[1].subnetwork_quiet,
+            ),
+            (
+                85_000,
+                42_500,
+                21_250,
+                1,
+                Some(100_000),
+                Some(7_250_000),
+                Some(3_000_000),
+                Some(-4_750_000),
+                1
+            )
+        );
         assert_eq!(
             (networks[0].subnetwork_selector, networks[0].strength_raw),
             (i32::MIN, None)

@@ -951,7 +951,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         )
     }
 
-    fn static_modifier(&self, token: &str) -> Result<(Option<String>, Modifiers), String> {
+    pub(super) fn static_modifier(
+        &self,
+        token: &str,
+    ) -> Result<(Option<String>, Modifiers), String> {
         self.context
             .content
             .static_modifiers

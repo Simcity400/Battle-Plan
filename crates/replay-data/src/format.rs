@@ -232,6 +232,9 @@ mod tests {
             if version < crate::rows::compatibility::ESSENTIAL_STOCK_FORMAT {
                 expected.push(TableId::StockpileArchetypes);
             }
+            if version < crate::rows::compatibility::INTEL_NETWORK_MAP_FORMAT {
+                expected.push(TableId::IntelNetworks);
+            }
             if version <= 100 {
                 expected.extend([
                     TableId::ResearchTechnologies,

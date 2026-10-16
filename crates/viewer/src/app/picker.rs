@@ -164,9 +164,7 @@ pub fn mode_hover(
             Stock::Resources => ModeHover::Unbuilt(
                 "the resources mode's hover (each resource produced) is not built".to_owned(),
             ),
-            Stock::Operatives => ModeHover::Unbuilt(
-                "the operatives mode's hover (intelligence networks) is not built".to_owned(),
-            ),
+            Stock::Operatives => ModeHover::Operatives,
             Stock::Supply | Stock::Infrastructure => {
                 ModeHover::Unbuilt(stock.unavailable().unwrap_or_default().to_owned())
             }
@@ -826,6 +824,7 @@ mod tests {
         );
         assert_eq!(hover(Stock::Resistance), ModeHover::Occupation);
         assert_eq!(hover(Stock::Compliance), ModeHover::Occupation);
+        assert_eq!(hover(Stock::Operatives), ModeHover::Operatives);
         for stock in [
             Stock::Factions,
             Stock::Players,

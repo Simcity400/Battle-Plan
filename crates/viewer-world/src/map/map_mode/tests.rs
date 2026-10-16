@@ -5,7 +5,8 @@ use replay::{
     frame::{Metrics, TableView},
     rows::{
         CapitulationRow, CountryAppearanceRow, CountryLinkRow, CountryRow, FactionMemberRow,
-        FactionRow, PlayerRow, ProvinceRow, Recorded, StateRow, SubjectRow, TableId, TableRows,
+        FactionRow, IntelNetworkRow, PlayerRow, ProvinceRow, Recorded, StateRow, SubjectRow,
+        TableId, TableRows,
     },
 };
 
@@ -39,6 +40,8 @@ fn defines() -> ModeDefines {
         resistance_uninitialised: [1.0, 1.0, 1.0, 0.05],
         manpower_max: 20_000_000.0,
         manpower_colors: [[0.2, 0.2, 0.7, 0.18], [1.0, 0.125, 0.0, 0.6]],
+        network_colors: [[0.1, 0.1, 0.5, 0.2], [0.4, 0.3, 0.9, 1.0]],
+        quiet_network_colors: [[0.1, 0.5, 0.1, 0.2], [0.4, 0.9, 0.3, 1.0]],
         configurable_slots: [4, 10],
     }
 }
@@ -412,6 +415,113 @@ fn manpower_blends_each_states_population_over_the_range_and_clamps_it() {
         [Source::Empty, Source::Country]
     );
     assert_eq!(unrecorded.warnings.len(), 1);
+}
+
+#[test]
+fn operatives_colour_the_selected_countrys_network_states_its_targets_control() {
+    let network = |owner, target, state_id, strength, quiet| IntelNetworkRow {
+        owner_country: owner,
+        target_country: target,
+        state_id,
+        local_strength_raw: strength,
+        local_quiet: quiet,
+        ..Default::default()
+    };
+    let mut frame = frame();
+    // GER (raw 100) controls state 1, SOV (200) state 2 and ITA (300) state 3.
+    frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
+        [(1, 100), (2, 200), (3, 300)]
+            .into_iter()
+            .map(|(id, controller)| StateRow {
+                id,
+                controller,
+                ..Default::default()
+            })
+            .collect(),
+    ))
+    .into();
+    frame.tables[TableId::IntelNetworks.index()] =
+        TableView::Complete(TableRows::IntelNetworks(vec![
+            // SOV's network in GER: 72.5% in state 1, and state 2, which GER does not
+            // control.
+            network(200, 100, 1, 7_250_000, 0),
+            network(200, 100, 2, 10_000_000, 0),
+            // SOV's quiet network in ITA at 30%, and a state the recording does not hold.
+            network(200, 300, 3, 3_000_000, 1),
+            network(200, 300, 99, 3_000_000, 0),
+            // GER's own network, which SOV's view does not show.
+            network(100, 200, 2, 10_000_000, 0),
+        ]))
+        .into();
+    let content = content(MapModes::default());
+    let run = |frame: &DecodedFrame, selected| {
+        fill(
+            &MapMode::Stock(Stock::Operatives),
+            &Inputs {
+                content: &content,
+                map: &map(),
+                frame,
+                selected,
+            },
+        )
+        .unwrap()
+    };
+    let fill = run(&frame, Some(1));
+    let draw = fill.draw.unwrap();
+    assert_eq!(draw.channels, [Source::Country, Source::Mode]);
+    let layer = draw.layer.unwrap();
+    // 72.5% blends by 0.725 * 0.725 between the low and high colours.
+    assert_eq!(
+        layer.styles[&2].color,
+        pack([0.2576875, 0.205125, 0.71025, 0.6205])
+    );
+    // 30% blends by 0.3 * 0.5 between the quiet pair.
+    assert_eq!(layer.styles[&4].color, pack([0.145, 0.56, 0.13, 0.32]));
+    assert_eq!(layer.styles.len(), 2);
+    assert_eq!(&layer.region_of[1..6], &[2, 2, 0, 4, 0]);
+    assert_eq!(layer.gradient, Some(LEVEL_GRADIENT));
+    assert_eq!(layer.thickness, Some(5.0));
+    assert_eq!(layer.channel, [0.0, 0.973]);
+    // The unrecorded state and the icons are named.
+    assert_eq!(fill.warnings.len(), 2, "{:?}", fill.warnings);
+    // A network at or past 100% takes the high colour; a share below one half blends by
+    // half of itself.
+    let defines = defines();
+    assert_eq!(
+        network_color(&defines, 15_000_000, false),
+        [0.4, 0.3, 0.9, 1.0]
+    );
+    assert_eq!(
+        network_color(&defines, 10_000_000, true),
+        [0.4, 0.9, 0.3, 1.0]
+    );
+    assert_eq!(network_color(&defines, 0, false), [0.1, 0.1, 0.5, 0.2]);
+    // GER's view shows its own network in SOV.
+    let german = run(&frame, Some(0)).draw.unwrap().layer.unwrap();
+    assert_eq!(german.styles.keys().copied().collect::<Vec<_>>(), [3]);
+    // Without a viewing country, or without the networks, the layer is refused by name.
+    let refused = run(&frame, None);
+    assert_eq!(
+        refused.draw.unwrap().channels,
+        [Source::Country, Source::Empty]
+    );
+    assert_eq!(refused.warnings.len(), 2);
+    let mut unavailable = frame.clone();
+    unavailable.tables[TableId::IntelNetworks.index()] = TableView::Unavailable {
+        reason: "not recorded".into(),
+    }
+    .into();
+    let refused = run(&unavailable, Some(1));
+    assert_eq!(
+        refused.draw.unwrap().channels,
+        [Source::Country, Source::Empty]
+    );
+    assert!(
+        refused
+            .warnings
+            .iter()
+            .any(|why| why.contains("IntelNetworks"))
+    );
 }
 
 #[test]

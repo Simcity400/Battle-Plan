@@ -1141,6 +1141,41 @@ fn static_relation_and_province_descriptions_preserve_indentation() {
 }
 
 #[test]
+fn scaled_static_modifiers_scale_each_value_and_prefix_each_line() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let fixture = fixture();
+    let modifiers = installed_content::modifiers::values(
+        &installed_content::parser::parse(b"attack=1 defense=2")
+            .unwrap()
+            .items,
+    );
+    let static_modifiers = installed_content::static_modifiers::Descriptions::from_blocks([(
+        "SYN_NETWORK".to_owned(),
+        modifiers,
+    )]);
+    let content = Content {
+        static_modifiers: Some(&static_modifiers),
+        ..Default::default()
+    };
+    let list = |scale| {
+        fixture.with_context(content, |context| {
+            crate::effect_description::scaled_static_modifiers(context, "SYN_NETWORK", "  ", scale)
+        })
+    };
+    // A quarter of each value, the prefix before each line's label (the fixture's
+    // labels start with a space).
+    assert_eq!(
+        list(25_000),
+        Ok("   Attack: \u{11}G+0.25\u{11}!\n   Defense: \u{11}G+0.50\u{11}!".to_owned())
+    );
+    assert_eq!(
+        list(100_000),
+        Ok("   Attack: \u{11}G+1.00\u{11}!\n   Defense: \u{11}G+2.00\u{11}!".to_owned())
+    );
+}
+
+#[test]
 fn state_modifier_uses_breakdown_colour_and_keeps_zero() {
     engine::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

@@ -975,6 +975,46 @@ fn compare_cryptology(
     Ok(())
 }
 
+/// One network state's compared values, saved or recorded. Subnetwork values
+/// are `None` for a negative selector; quiet bytes compare as flags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NetworkState {
+    state: i32,
+    strength: Option<i64>,
+    selector: i32,
+    local_strength: i64,
+    gain: i64,
+    gain_from_operatives: i64,
+    gain_from_adjacency: i64,
+    local_quiet: bool,
+    gain_factor: Option<i64>,
+    strength_target: Option<i64>,
+    target_from_operatives: Option<i64>,
+    target_from_counterintelligence: Option<i64>,
+    subnetwork_quiet: bool,
+}
+
+impl NetworkState {
+    fn recorded(row: &replay::rows::IntelNetworkRow) -> Self {
+        let subnetwork = |value: Option<i64>| value.filter(|_| row.subnetwork_selector >= 0);
+        Self {
+            state: row.state_id,
+            strength: subnetwork(row.strength_raw),
+            selector: row.subnetwork_selector,
+            local_strength: row.local_strength_raw,
+            gain: row.gain_raw,
+            gain_from_operatives: row.gain_from_operatives_raw,
+            gain_from_adjacency: row.gain_from_adjacency_raw,
+            local_quiet: row.local_quiet != 0,
+            gain_factor: subnetwork(row.gain_factor_raw),
+            strength_target: subnetwork(row.strength_target_raw),
+            target_from_operatives: subnetwork(row.target_from_operatives_raw),
+            target_from_counterintelligence: subnetwork(row.target_from_counterintelligence_raw),
+            subnetwork_quiet: row.subnetwork_quiet != 0,
+        }
+    }
+}
+
 /// Intel subnetworks by target with positional state join.
 ///
 /// The writer saves target (0x6B), local net (0x3D1D), subnetworks
@@ -991,7 +1031,7 @@ fn compare_intel_networks(
     tokens: &TokenNames<'_>,
     report: &mut Report,
 ) -> io::Result<()> {
-    let mut saved = BTreeMap::<(u32, Vec<u8>), Vec<(i32, Option<i64>, i32, i64)>>::new();
+    let mut saved = BTreeMap::<(u32, Vec<u8>), Vec<NetworkState>>::new();
     // Built once: a per-network scan of every link is quadratic in countries.
     let slots: BTreeSet<u32> = countries.values().map(|row| row.canonical_slot).collect();
     if let Some(operatives) = &save.strategic_operatives {
@@ -1006,32 +1046,45 @@ fn compare_intel_networks(
                 let entries = saved
                     .entry((operative.index, network.target.clone()))
                     .or_default();
-                for ((state, selector), local_strength) in network
-                    .state_ids
-                    .iter()
-                    .zip(&network.selectors)
-                    .zip(&network.strengths)
+                for (index, (state, selector)) in
+                    network.state_ids.iter().zip(&network.selectors).enumerate()
                 {
-                    let strength = if *selector < 0 {
+                    let subnetwork = if *selector < 0 {
                         None
                     } else {
-                        Some(
-                            network
-                                .subnetwork_strengths
-                                .get(*selector as usize)
-                                .ok_or_else(|| {
-                                    invalid("saved intel subnetwork selector outside array")
-                                })?
-                                .raw,
-                        )
+                        Some(network.subnetworks.get(*selector as usize).ok_or_else(|| {
+                            invalid("saved intel subnetwork selector outside array")
+                        })?)
                     };
-                    entries.push((*state, strength, *selector, local_strength.raw));
+                    // A selector outside the saved quiet list is not quiet.
+                    let local_quiet = usize::try_from(*selector)
+                        .ok()
+                        .and_then(|selector| network.local_quiet.get(selector))
+                        .copied()
+                        .unwrap_or(false);
+                    entries.push(NetworkState {
+                        state: *state,
+                        strength: subnetwork.map(|sub| sub.strength.raw),
+                        selector: *selector,
+                        local_strength: network.strengths[index].raw,
+                        gain: network.gains[index].raw,
+                        gain_from_operatives: network.gains_from_operatives[index].raw,
+                        gain_from_adjacency: network.gains_from_adjacency[index].raw,
+                        local_quiet,
+                        gain_factor: subnetwork.map(|sub| sub.gain_factor.raw),
+                        strength_target: subnetwork.map(|sub| sub.strength_target.raw),
+                        target_from_operatives: subnetwork
+                            .map(|sub| sub.target_from_operatives.raw),
+                        target_from_counterintelligence: subnetwork
+                            .map(|sub| sub.target_from_counterintelligence.raw),
+                        subnetwork_quiet: subnetwork.is_some_and(|sub| sub.quiet),
+                    });
                 }
             }
         }
     }
     for entries in saved.values_mut() {
-        entries.sort_unstable_by_key(|(state, _, _, _)| *state);
+        entries.sort_unstable_by_key(|entry| entry.state);
     }
     let mut recorded = BTreeMap::<(u32, Vec<u8>), Vec<&replay::rows::IntelNetworkRow>>::new();
     for actual in complete::<tables::IntelNetworks>(frame)? {
@@ -1051,97 +1104,96 @@ fn compare_intel_networks(
     let mut matched = 0;
     for ((owner_slot, target), expected) in &saved {
         let label = format!("intel_network.owner_slot.{owner_slot}.{}", text(target));
-        let actual = recorded
+        let mut actual = recorded
             .remove(&(*owner_slot, target.clone()))
-            .unwrap_or_default();
-        let mut actual_values = actual
-            .iter()
-            .map(|row| {
-                (
-                    row.state_id,
-                    row.strength_raw,
-                    row.subnetwork_selector,
-                    row.local_strength_raw,
-                )
-            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(NetworkState::recorded)
             .collect::<Vec<_>>();
-        actual_values.sort_unstable();
-        let mut expected_values = expected
-            .iter()
-            .map(|(state, strength, selector, local)| (*state, *strength, *selector, *local))
-            .collect::<Vec<_>>();
-        expected_values.sort_unstable();
-        // Negative selectors carry no strength: save uses strength 0 with
-        // sub_network_id -1, native uses None. Normalize before comparing.
-        let normalize = |values: Vec<(i32, Option<i64>, i32, i64)>| {
-            values
-                .into_iter()
-                .map(|(state, strength, selector, local)| {
-                    if selector < 0 {
-                        (state, None, selector, local)
-                    } else {
-                        (state, strength, selector, local)
-                    }
-                })
-                .collect::<Vec<_>>()
-        };
-        let actual_norm = normalize(actual_values);
-        let expected_norm = normalize(expected_values);
-        if actual_norm.len() != expected_norm.len() {
-            report.difference(
-                format!("{label}.count"),
-                actual_norm.len(),
-                expected_norm.len(),
-            );
+        actual.sort_unstable_by_key(|entry| entry.state);
+        if actual.len() != expected.len() {
+            report.difference(format!("{label}.count"), actual.len(), expected.len());
         }
-        for (state, strength, selector, local) in &expected_norm {
-            match actual_norm
-                .binary_search_by_key(state, |(state, _, _, _)| *state)
-                .ok()
-                .map(|index| &actual_norm[index])
-            {
-                None => {
-                    report.difference(format!("{label}.state.{state}"), "absent", *selector);
-                }
-                Some((_, actual_strength, actual_selector, actual_local)) => {
-                    equal(
-                        report,
-                        &format!("{label}.state.{state}.local_strength"),
-                        *actual_local,
-                        *local,
-                    );
-                    matched += 1;
-                    equal(
-                        report,
-                        &format!("{label}.state.{state}.selector"),
-                        *actual_selector,
-                        *selector,
-                    );
-                    match (actual_strength, strength) {
-                        (None, None) => {}
-                        (Some(actual), Some(expected)) => {
-                            if actual != expected {
-                                report.difference(
-                                    format!("{label}.state.{state}.strength"),
-                                    *actual,
-                                    *expected,
-                                );
-                            }
-                        }
-                        _ => {
-                            report.difference(
-                                format!("{label}.state.{state}.strength"),
-                                *actual_strength,
-                                *strength,
-                            );
-                        }
-                    }
+        for expected in expected {
+            let state = expected.state;
+            let Ok(index) = actual.binary_search_by_key(&state, |entry| entry.state) else {
+                report.difference(
+                    format!("{label}.state.{state}"),
+                    "absent",
+                    expected.selector,
+                );
+                continue;
+            };
+            let actual = &actual[index];
+            let field = |name: &str| format!("{label}.state.{state}.{name}");
+            equal(
+                report,
+                &field("local_strength"),
+                actual.local_strength,
+                expected.local_strength,
+            );
+            matched += 1;
+            equal(
+                report,
+                &field("selector"),
+                actual.selector,
+                expected.selector,
+            );
+            equal(report, &field("gain"), actual.gain, expected.gain);
+            equal(
+                report,
+                &field("gain_from_operatives"),
+                actual.gain_from_operatives,
+                expected.gain_from_operatives,
+            );
+            equal(
+                report,
+                &field("gain_from_adjacency"),
+                actual.gain_from_adjacency,
+                expected.gain_from_adjacency,
+            );
+            equal(
+                report,
+                &field("local_quiet"),
+                actual.local_quiet,
+                expected.local_quiet,
+            );
+            // Negative selectors carry no subnetwork: the save writes strength
+            // 0 with sub_network_id -1, and the row holds none of its values.
+            for (name, actual, expected) in [
+                ("strength", actual.strength, expected.strength),
+                ("gain_factor", actual.gain_factor, expected.gain_factor),
+                (
+                    "strength_target",
+                    actual.strength_target,
+                    expected.strength_target,
+                ),
+                (
+                    "target_from_operatives",
+                    actual.target_from_operatives,
+                    expected.target_from_operatives,
+                ),
+                (
+                    "target_from_counterintelligence",
+                    actual.target_from_counterintelligence,
+                    expected.target_from_counterintelligence,
+                ),
+            ] {
+                if actual != expected {
+                    report.difference(field(name), format!("{actual:?}"), format!("{expected:?}"));
                 }
             }
+            equal(
+                report,
+                &field("subnetwork_quiet"),
+                actual.subnetwork_quiet,
+                expected.subnetwork_quiet,
+            );
         }
-        for (state, _, _, _) in &actual_norm {
-            if expected_norm
-                .binary_search_by_key(state, |(state, _, _, _)| *state)
+        for entry in &actual {
+            let state = entry.state;
+            if expected
+                .binary_search_by_key(&state, |entry| entry.state)
                 .is_err()
             {
                 report.difference(format!("{label}.state.{state}"), "present", "absent");
@@ -5546,7 +5598,7 @@ mod tests {
 
     const NETWORK_SAVE: &[u8] = br#"countries={ENG={} SOV={} AUS={}}
         strategic_operatives={ strategic_operative={
-            2={ intel_network={ target="SOV" intel_network={ state_id={ 219 253 } strength={ 71 0 } sub_network_id={ 0 -1 } } sub_intel_networks={ { strength=72.5 } } } }
+            2={ intel_network={ target="SOV" intel_network={ state_id={ 219 253 } gain={ 0.85 -1.75 } gain_breakdown={ { operatives=0.425 adjacencies=0.2125 } { operatives=0 adjacencies=0 } } strength={ 71 0 } sub_network_id={ 0 -1 } sub_network_is_quiet={ yes } } sub_intel_networks={ { modifiers={ intel_network_gain_factor=1 } sub_network_strength_target=57.5 sub_network_strength_target_from_operatives=15 sub_network_strength_target_from_counterintelligence=-47.5 strength=72.5 sub_network_is_quiet=yes } } } }
         }}"#;
 
     fn network_links() -> BTreeMap<u32, CountryRow> {
@@ -5588,6 +5640,15 @@ mod tests {
                 strength_raw: Some(7_250_000),
                 subnetwork_selector: 0,
                 local_strength_raw: 7_100_000,
+                gain_raw: 85_000,
+                gain_from_operatives_raw: 42_500,
+                gain_from_adjacency_raw: 21_250,
+                local_quiet: 1,
+                gain_factor_raw: Some(100_000),
+                strength_target_raw: Some(5_750_000),
+                target_from_operatives_raw: Some(1_500_000),
+                target_from_counterintelligence_raw: Some(-4_750_000),
+                subnetwork_quiet: 1,
             },
             replay::rows::IntelNetworkRow {
                 owner_country: 101,
@@ -5596,8 +5657,69 @@ mod tests {
                 strength_raw: None,
                 subnetwork_selector: -1,
                 local_strength_raw: 0,
+                gain_raw: -175_000,
+                ..Default::default()
             },
         ]
+    }
+
+    /// Every recorded network value is compared against the save on its own.
+    #[test]
+    fn intel_networks_compare_gains_quiet_bytes_and_subnetwork_targets() {
+        let map = network_links();
+        let owned: BTreeMap<u32, &CountryRow> = map.iter().map(|(id, row)| (*id, row)).collect();
+        let pack = parsed(NETWORK_SAVE);
+        let tokens: TokenNames<'_> = [(0x006b_u32, b"target".as_slice())].into_iter().collect();
+        let run = |rows: Vec<replay::rows::IntelNetworkRow>| {
+            let mut report = Report::default();
+            compare_intel_networks(
+                &frame(TableId::IntelNetworks, TableRows::IntelNetworks(rows)),
+                &pack,
+                &owned,
+                &tokens,
+                &mut report,
+            )
+            .unwrap();
+            report
+                .differences
+                .iter()
+                .map(|line| line.split(':').next().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert!(run(network_rows()).is_empty());
+        type Change = fn(&mut replay::rows::IntelNetworkRow);
+        let changes: [(&str, usize, Change); 10] = [
+            ("gain", 0, |row| row.gain_raw += 1),
+            ("gain", 1, |row| row.gain_raw = 0),
+            ("gain_from_operatives", 0, |row| {
+                row.gain_from_operatives_raw = 0
+            }),
+            ("gain_from_adjacency", 0, |row| {
+                row.gain_from_adjacency_raw = 0
+            }),
+            ("local_quiet", 0, |row| row.local_quiet = 0),
+            ("gain_factor", 0, |row| row.gain_factor_raw = Some(50_000)),
+            ("strength_target", 0, |row| row.strength_target_raw = None),
+            ("target_from_operatives", 0, |row| {
+                row.target_from_operatives_raw = Some(0)
+            }),
+            ("target_from_counterintelligence", 0, |row| {
+                row.target_from_counterintelligence_raw = Some(0)
+            }),
+            ("subnetwork_quiet", 0, |row| row.subnetwork_quiet = 0),
+        ];
+        for (name, index, change) in changes {
+            let mut rows = network_rows();
+            change(&mut rows[index]);
+            let state = rows[index].state_id;
+            assert_eq!(
+                run(rows),
+                [format!(
+                    "intel_network.owner_slot.2.SOV.state.{state}.{name}"
+                )],
+                "{name}"
+            );
+        }
     }
 
     /// Positional state join within each canonical owner's target network.
@@ -5655,8 +5777,8 @@ mod tests {
         let owned = map.iter().map(|(id, row)| (*id, row)).collect();
         let pack = parsed(br#"countries={ENG={} SOV={} AUS={}}
             strategic_operatives={ strategic_operative={
-                2={ intel_network={ target="SOV" intel_network={ state_id={ 219 } strength={ 11 } sub_network_id={ 0 } } sub_intel_networks={ { strength=12 } } } }
-                3={ intel_network={ target="SOV" intel_network={ state_id={ 219 } strength={ 21 } sub_network_id={ 0 } } sub_intel_networks={ { strength=22 } } } }
+                2={ intel_network={ target="SOV" intel_network={ state_id={ 219 } gain={ 0.85 } gain_breakdown={ { operatives=0.425 adjacencies=0.2125 } } strength={ 11 } sub_network_id={ 0 } sub_network_is_quiet={ yes } } sub_intel_networks={ { modifiers={ intel_network_gain_factor=1 } sub_network_strength_target=57.5 sub_network_strength_target_from_operatives=15 sub_network_strength_target_from_counterintelligence=-47.5 strength=12 sub_network_is_quiet=yes } } } }
+                3={ intel_network={ target="SOV" intel_network={ state_id={ 219 } gain={ 0.85 } gain_breakdown={ { operatives=0.425 adjacencies=0.2125 } } strength={ 21 } sub_network_id={ 0 } sub_network_is_quiet={ yes } } sub_intel_networks={ { modifiers={ intel_network_gain_factor=1 } sub_network_strength_target=57.5 sub_network_strength_target_from_operatives=15 sub_network_strength_target_from_counterintelligence=-47.5 strength=22 sub_network_is_quiet=yes } } } }
             }}"#);
         let tokens = TokenNames::new();
         let mut rows = vec![network_rows()[0].clone(); 2];

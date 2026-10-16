@@ -7,6 +7,7 @@ mod air_region;
 mod border;
 pub(super) mod clock;
 mod mode_lines;
+mod operatives;
 mod selected_attack;
 mod selection;
 pub(super) mod units;
@@ -47,6 +48,9 @@ pub struct Content {
     air_log_timeout: Result<i32, String>,
     /// The `NCountry` resistance and compliance defines the occupation hover reads.
     occupation: Result<mode_lines::OccupationDefines, String>,
+    /// `NOperatives.INTEL_NETWORK_BASE_STRENGTH_TARGET_COUNTERINTELLIGENCE_OFFSET`, the base
+    /// the Operatives hover shows for a network's strength cap.
+    network_base_target: Result<i64, String>,
 }
 
 impl Content {
@@ -87,6 +91,12 @@ impl Content {
                 .int32("NGame", "AIR_LOG_TIMEOUT_HOURS")
                 .map_err(|e| e.to_string()),
             occupation: mode_lines::OccupationDefines::load(defines).map_err(|e| e.to_string()),
+            network_base_target: defines
+                .fixed5(
+                    "NOperatives",
+                    "INTEL_NETWORK_BASE_STRENGTH_TARGET_COUNTERINTELLIGENCE_OFFSET",
+                )
+                .map_err(|e| e.to_string()),
         }
     }
 
@@ -164,6 +174,8 @@ pub enum ModeHover {
     Diplomacy { very_good: i32, very_bad: i32 },
     /// The name of the owner's ruling ideology.
     Ideology,
+    /// The viewing country's intelligence network section for the state.
+    Operatives,
     /// The state's resistance and compliance, the same in both modes.
     Occupation,
     /// A scripted mode's `<name>_tooltip` and `<name>_tooltip_delayed`.
@@ -188,12 +200,9 @@ type TooltipSources = (
 
 #[derive(Default)]
 pub struct Cache {
-    /// The held tooltip with the roster answers' generation it was built at.
-    held: Option<(CacheKey, u64, Arc<Tooltip>)>,
+    held: Holder<CacheKey>,
     // Keep source identities alive across hour refreshes.
     source: Option<TooltipSources>,
-    /// The recording's daily air rosters, read on demand and kept for its replay.
-    rosters: Option<air_region::PassRosters>,
 }
 impl Cache {
     #[allow(clippy::too_many_arguments)] // Cache identities, shared movement reads and existing hover choices.
@@ -211,6 +220,68 @@ impl Cache {
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Arc<Tooltip> {
         let key = (province, vision.ours(), vision.fog(), nato, mode.clone());
+        let same = self.source.as_ref().is_some_and(
+            |(held_content, held_frame, held_vision, held_selected)| {
+                Arc::ptr_eq(content, held_content)
+                    && Arc::ptr_eq(frame, held_frame)
+                    && Arc::ptr_eq(vision, held_vision)
+                    && Arc::ptr_eq(selected, held_selected)
+            },
+        );
+        let text = self.held.get(key, same, replay, wake, |rosters| {
+            build(
+                content, reads, frame, province, vision, nato, selected, rosters, mode,
+            )
+        });
+        self.source = Some((
+            Arc::clone(content),
+            Arc::clone(frame),
+            Arc::clone(vision),
+            Arc::clone(selected),
+        ));
+        text
+    }
+
+    /// Whether the held tooltip was built while a roster answer it asked for was still
+    /// being read, so asking again after [`Self::wait`] adds what it lacked.
+    pub fn pending(&self) -> bool {
+        self.held.pending()
+    }
+
+    /// Blocks until the roster service answers after the held tooltip was built, or its
+    /// worker stops, after which every question refuses by name; returns at once when
+    /// nothing it asked for was pending.
+    pub fn wait(&self) {
+        self.held.wait();
+    }
+}
+
+/// The held tooltip with its key, the roster answers' generation it was built at, and
+/// whether one of its questions was still pending; the recording's daily air rosters,
+/// read on demand and kept for its replay.
+struct Holder<K> {
+    held: Option<(K, u64, bool, Arc<Tooltip>)>,
+    rosters: Option<air_region::PassRosters>,
+}
+impl<K> Default for Holder<K> {
+    fn default() -> Self {
+        Self {
+            held: None,
+            rosters: None,
+        }
+    }
+}
+impl<K: PartialEq> Holder<K> {
+    /// The held tooltip when `key` and the sources (`same`) are unchanged and no roster
+    /// answer has completed since it was built; otherwise `build`'s.
+    fn get(
+        &mut self,
+        key: K,
+        same: bool,
+        replay: &Arc<replay::container::Replay>,
+        wake: impl Fn() + Send + Sync + 'static,
+        build: impl FnOnce(&dyn air_region::Rosters) -> Tooltip,
+    ) -> Arc<Tooltip> {
         if !self
             .rosters
             .as_ref()
@@ -221,28 +292,52 @@ impl Cache {
         }
         let rosters = self.rosters.as_ref().expect("installed above");
         let generation = rosters.generation();
-        if let Some((held_content, held_frame, held_vision, held_selected)) = &self.source
-            && Arc::ptr_eq(content, held_content)
-            && Arc::ptr_eq(frame, held_frame)
-            && Arc::ptr_eq(vision, held_vision)
-            && Arc::ptr_eq(selected, held_selected)
-            && let Some((held, built, text)) = &self.held
+        if same
+            && let Some((held, built, _, text)) = &self.held
             && *held == key
             && *built == generation
         {
             return Arc::clone(text);
         }
-        let text = Arc::new(build(
-            content, reads, frame, province, vision, nato, selected, rosters, mode,
-        ));
-        self.source = Some((
-            Arc::clone(content),
-            Arc::clone(frame),
-            Arc::clone(vision),
-            Arc::clone(selected),
-        ));
-        self.held = Some((key, generation, Arc::clone(&text)));
+        let asked = Asked {
+            rosters,
+            pending: std::cell::Cell::new(false),
+        };
+        let text = Arc::new(build(&asked));
+        self.held = Some((key, generation, asked.pending.get(), Arc::clone(&text)));
         text
+    }
+
+    fn pending(&self) -> bool {
+        self.held
+            .as_ref()
+            .is_some_and(|(_, _, pending, _)| *pending)
+    }
+
+    fn wait(&self) {
+        if let (Some((_, generation, true, _)), Some(rosters)) = (&self.held, &self.rosters) {
+            rosters.wait_beyond(*generation);
+        }
+    }
+}
+
+/// The rosters a build asks, noting whether any answer was still pending.
+struct Asked<'a> {
+    rosters: &'a air_region::PassRosters,
+    pending: std::cell::Cell<bool>,
+}
+impl air_region::Rosters for Asked<'_> {
+    fn visiting_pass(
+        &self,
+        branch: replay::BranchId,
+        hour: replay::Hour,
+        slot: u32,
+    ) -> Option<Result<Option<replay::Hour>, String>> {
+        let answer = air_region::Rosters::visiting_pass(self.rosters, branch, hour, slot);
+        if answer.is_none() {
+            self.pending.set(true);
+        }
+        answer
     }
 }
 
@@ -393,7 +488,10 @@ impl Context<'_> {
             .ok_or_else(|| format!("CountryLinks lacks {raw}"))
     }
     fn marked_country(&self, raw: u32) -> Result<String, String> {
-        let slot = self.slot(raw)?;
+        self.marked_slot(self.slot(raw)?)
+    }
+    /// The flag, tag and name of the country in `slot`.
+    fn marked_slot(&self, slot: u32) -> Result<String, String> {
         let operands = self
             .countries
             .operands(slot)
@@ -401,7 +499,9 @@ impl Context<'_> {
             .as_ref()
             .map_err(Clone::clone)?;
         if operands.tag.chars().count() != 3 {
-            return Err(format!("country {raw} flag tag is not three codepoints"));
+            return Err(format!(
+                "country slot {slot} flag tag is not three codepoints"
+            ));
         }
         // Resolve the tag through the small flag atlas.
         let name = installed_content::localisation::crt_case_text(
@@ -410,6 +510,30 @@ impl Context<'_> {
             true,
         );
         Ok(format!("{}{} {name}", FLAG, operands.tag))
+    }
+    /// A content static modifier's list, two spaces before each line, scaled by `scale`.
+    fn scaled_static_modifiers(&self, token: &str, scale: i64) -> Result<String, String> {
+        let scripted = self
+            .content
+            .scripted
+            .as_ref()
+            .as_ref()
+            .map_err(Clone::clone)?;
+        let text = dashboard_text::scripted_text::ScriptedText::new(
+            self.frame,
+            &self.content.localisation,
+            scripted,
+            self.vision.ours(),
+        );
+        let effects = scripted.effects()?;
+        let context = dashboard_text::effect_description::Context::new(
+            &text,
+            &self.content.localisation,
+            self.vision.ours(),
+            "common/modifiers",
+            effects.view(None),
+        );
+        dashboard_text::effect_description::scaled_static_modifiers(&context, token, "  ", scale)
     }
     fn state_name(&self) -> Result<String, String> {
         let id = self.province.state;

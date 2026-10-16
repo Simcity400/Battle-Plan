@@ -1115,7 +1115,7 @@ fixture!(AutonomyRow, |key| {subject: key as u32}, {score: i64, lower_score: i64
 fixture!(IntelligenceAgencyRow, |key| {country: key as u32}, {upgrade_progress_raw: i64, defense_raw: i64, active_count: i32, admission_ceiling: i32, unknown_f0: u32, name: Vec<u8>, created: u8});
 fixture!(OperativeMembershipRow, |key| {id: (key >> 40) as u64, roster_country: (key >> 8) as u32, roster_kind: key as u8}, {owner_country: u32, legacy_description_length: u8, assignment: u32, experience_raw: i64, skill: Option<i32>, capturer_country: u32, captured_hour: i32, action_variant: Option<u32>, ordinal: Recorded<u32>, target_country: Recorded<Option<u32>>, operation: Recorded<Option<u64>>, name: Recorded<Vec<u8>>, cooldown_kind: Recorded<Option<u32>>, cooldown_start_hour: Recorded<Option<i32>>, cooldown_end_hour: Recorded<Option<i32>>});
 fixture!(CryptologyRow, |key| {owner_country: (key >> 32) as u32, target_country: key as u32}, {amount_raw: i64, bonus_days: i32, bonus_active: u8, decrypting: u8});
-fixture!(IntelNetworkRow, |key| {owner_country: (key >> 64) as u32, target_country: (key >> 32) as u32, state_id: key as u32 as i32}, {strength_raw: Option<i64>, subnetwork_selector: i32, local_strength_raw: i64});
+fixture!(IntelNetworkRow, |key| {owner_country: (key >> 64) as u32, target_country: (key >> 32) as u32, state_id: key as u32 as i32}, {strength_raw: Option<i64>, subnetwork_selector: i32, local_strength_raw: i64, gain_raw: i64, gain_from_operatives_raw: i64, gain_from_adjacency_raw: i64, local_quiet: u8, gain_factor_raw: Option<i64>, strength_target_raw: Option<i64>, target_from_operatives_raw: Option<i64>, target_from_counterintelligence_raw: Option<i64>, subnetwork_quiet: u8});
 fixture!(ScriptFlagRow, |key| {scope_kind: (key >> 64) as u8, scope_id: (key >> 32) as u32, token: key as u32}, {set_hour: i32, value: i16, remaining_days: i16});
 impl Fixture for ReserveModifierBreakdownRow {
     fn fixture(key: u128, tick: usize) -> Self {
@@ -4229,6 +4229,7 @@ fn intel_networks_preserve_unassigned_selectors_and_optional_native_strength() {
         strength_raw: None,
         subnetwork_selector: -1,
         local_strength_raw: i64::MIN,
+        ..Default::default()
     };
     for (subnetwork_selector, strength_raw, mask) in [
         (i32::MIN, None, 2),
@@ -4254,6 +4255,39 @@ fn intel_networks_preserve_unassigned_selectors_and_optional_native_strength() {
         input.finish().unwrap();
         previous = next;
     }
+}
+
+#[test]
+fn intel_networks_carry_gains_quiet_bytes_and_the_selected_subnetworks_targets() {
+    let previous = IntelNetworkRow {
+        owner_country: 1,
+        target_country: 2,
+        state_id: 219,
+        strength_raw: Some(7_250_000),
+        subnetwork_selector: 0,
+        local_strength_raw: 7_250_000,
+        ..Default::default()
+    };
+    let next = IntelNetworkRow {
+        gain_raw: -175_000,
+        gain_from_operatives_raw: i64::MIN,
+        gain_from_adjacency_raw: i64::MAX,
+        local_quiet: u8::MAX,
+        gain_factor_raw: Some(100_000),
+        strength_target_raw: Some(7_250_000),
+        target_from_operatives_raw: Some(3_000_000),
+        target_from_counterintelligence_raw: Some(-4_750_000),
+        subnetwork_quiet: 1,
+        ..previous.clone()
+    };
+    let delta = next.delta(Some(&previous)).unwrap().unwrap();
+    assert_eq!(delta.mask, 0b1111_1111_1000);
+    assert_eq!(delta.apply(Some(previous)).unwrap(), next);
+    let mut bytes = Vec::new();
+    encode_row(&next, 0, &mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    assert_eq!(decode_row::<IntelNetworkRow>(0, &mut input).unwrap(), next);
+    input.finish().unwrap();
 }
 
 #[test]

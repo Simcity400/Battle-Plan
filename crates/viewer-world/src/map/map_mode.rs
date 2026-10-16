@@ -10,8 +10,8 @@
 //! | political, navy | strategic regions | countries |
 //! | air | strategic regions | none |
 //! | factions, players, ideology | countries in that variant | none |
-//! | resources, raids, operatives | countries | none; operatives' intelligence layer refused |
-//! | states, resistance, compliance | countries | the mode's layer |
+//! | resources, raids | countries | none |
+//! | states, resistance, compliance, operatives | countries | the mode's layer |
 //! | diplomacy | the mode's layer | none |
 //! | infrastructure, manpower, terrain | the mode's layer, refused | countries |
 //! | supply | the supply-border layer, refused | the supply layer, refused |
@@ -26,6 +26,7 @@
 //! | states | state | the state category's colour; none: the fixed blue below | `THICKNESS_STATE`; state defines |
 //! | diplomacy | controller | relation to the selected country, in the fixed colours below | `THICKNESS_DIPLOMACY`; diplomacy defines |
 //! | resistance, compliance | the selected country's controlled states | the level through the content's colour list, or `OCCUPATION_RESISTANCE_NON_INITIALIZED_COLOR` without an occupier | `THICKNESS_RESISTANCE`, gradient 241; camera 0 / resistance cutoff |
+//! | operatives | each state with positive strength in one of the selected country's networks, while the network's target controls it | the strength's share of 100% between the `MAP_MODE_INTEL_NETWORK_STRENGTH` low and high colours, or the quiet pair for a quiet subnetwork | `THICKNESS_STATE`, gradient 241; camera 0 / state cutoff |
 //!
 //! In the players mode the selected country pulses and its fill factor is
 //! `SELECTED_COUNTRY_HIGHLIGHT_THICKNESS_MULT`. The selected country is the viewing country:
@@ -421,6 +422,9 @@ pub struct ModeDefines {
     /// The population that takes the manpower mode's last colour, and its two colours.
     manpower_max: f32,
     manpower_colors: [[f32; 4]; 2],
+    /// The operatives mode's low and high network colours, and the quiet pair.
+    network_colors: [[f32; 4]; 2],
+    quiet_network_colors: [[f32; 4]; 2],
     /// `UI_CONFIGURABLE_SLOT_FROM` and `_TO`: the picker slots the user can reassign.
     pub configurable_slots: [i32; 2],
 }
@@ -490,6 +494,30 @@ impl ModeDefines {
             manpower_colors: [
                 color4(defines, "NMapMode", "MAP_MODE_MANPOWER_RANGE_COLOR_FROM")?,
                 color4(defines, "NMapMode", "MAP_MODE_MANPOWER_RANGE_COLOR_TO")?,
+            ],
+            network_colors: [
+                color4(
+                    defines,
+                    "NMapMode",
+                    "MAP_MODE_INTEL_NETWORK_STRENGTH_COLOR_LOW",
+                )?,
+                color4(
+                    defines,
+                    "NMapMode",
+                    "MAP_MODE_INTEL_NETWORK_STRENGTH_COLOR_HIGH",
+                )?,
+            ],
+            quiet_network_colors: [
+                color4(
+                    defines,
+                    "NMapMode",
+                    "MAP_MODE_INTEL_NETWORK_STRENGTH_QUIET_COLOR_LOW",
+                )?,
+                color4(
+                    defines,
+                    "NMapMode",
+                    "MAP_MODE_INTEL_NETWORK_STRENGTH_QUIET_COLOR_HIGH",
+                )?,
             ],
             configurable_slots: [
                 defines.int32("NMapMode", "UI_CONFIGURABLE_SLOT_FROM")?,
@@ -901,11 +929,7 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
     };
     let draw = match stock {
         Stock::Default => return Ok(ModeFill::default()),
-        Stock::StrategicNavy
-        | Stock::StrategicAir
-        | Stock::Operatives
-        | Stock::Resources
-        | Stock::Raids => {
+        Stock::StrategicNavy | Stock::StrategicAir | Stock::Resources | Stock::Raids => {
             warnings.push(unbuilt(stock).to_owned());
             match stock {
                 Stock::StrategicNavy => return Ok(refusal(warnings)),
@@ -919,6 +943,10 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
         Stock::States => over_countries(states(inputs, &mut warnings)?),
         Stock::Resistance => over_countries(occupation(false, inputs, &mut warnings)?),
         Stock::Compliance => over_countries(occupation(true, inputs, &mut warnings)?),
+        Stock::Operatives => {
+            warnings.push(unbuilt(stock).to_owned());
+            over_countries(operatives(inputs, &mut warnings)?)
+        }
         Stock::Diplomacy => {
             let layer = diplomacy(inputs, &mut warnings)?;
             Draw {
@@ -977,7 +1005,7 @@ fn unbuilt(stock: Stock) -> &'static str {
             "Resources map mode: the countries show without the state resource icons, which are not drawn"
         }
         Stock::Operatives => {
-            "Operatives map mode: the intelligence network layer and the operative icons are not drawn; the countries show alone"
+            "Operatives map mode: the operative, operation and counterintelligence icons are not drawn; operative locations and missions are not recorded"
         }
         Stock::Raids => {
             "Raids map mode: the countries show without the raid target layer's ranges, which are not drawn"
@@ -1419,6 +1447,96 @@ fn manpower(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<Mo
         }
     }
     let provinces = core::<tables::Provinces>(inputs.frame)?;
+    let mut region_of = vec![0; region_table_len(inputs.map, provinces.iter().map(|row| row.id))];
+    for province in provinces {
+        if province.state != 0 {
+            region_of[province.id as usize] = province.state + 1;
+        }
+    }
+    Ok(Some(finish(
+        region_of,
+        styles,
+        Some(defines.state_thickness),
+        Some(LEVEL_GRADIENT),
+        [0.0, defines.state_channel[1]],
+    )))
+}
+
+/// Network strengths are fixed5 percentages.
+const NETWORK_STRENGTH_SCALE: f32 = 100_000.0;
+const NETWORK_STRENGTH_FULL: f32 = 100.0;
+
+/// The operatives mode's colour for a state's network strength: its share of 100%, clamped,
+/// times the larger of one half and itself, blends the pair; quiet subnetworks take the quiet
+/// pair. Single precision throughout, as the game computes it.
+fn network_color(defines: &ModeDefines, strength: i64, quiet: bool) -> [f32; 4] {
+    let share = (strength as f32 / NETWORK_STRENGTH_SCALE / NETWORK_STRENGTH_FULL).clamp(0.0, 1.0);
+    let t = (share * share.max(0.5)).clamp(0.0, 1.0);
+    let [from, to] = if quiet {
+        defines.quiet_network_colors
+    } else {
+        defines.network_colors
+    };
+    std::array::from_fn(|i| (to[i] - from[i]) * t + from[i])
+}
+
+/// The selected country's intelligence networks: each state of positive strength whose
+/// controller is the network's target, coloured by that strength.
+fn operatives(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<ModeLayer>> {
+    let defines = &inputs.content.defines;
+    let Some(selected) = inputs.selected else {
+        warnings.push("The operatives map mode needs a viewing country".to_owned());
+        return Ok(None);
+    };
+    let frame = inputs.frame;
+    let networks = match complete::<tables::IntelNetworks>(frame, "operatives") {
+        Ok(rows) => rows,
+        Err(why) => {
+            warnings.push(why);
+            return Ok(None);
+        }
+    };
+    let countries = Countries::read(frame)?;
+    let controllers = core::<tables::States>(frame)?
+        .iter()
+        .map(|state| (state.id, state.controller))
+        .collect::<HashMap<_, _>>();
+    let mut styles = BTreeMap::new();
+    let mut unknown_states = 0;
+    for row in networks {
+        if countries.slot(row.owner_country) != Some(selected) || row.local_strength_raw <= 0 {
+            continue;
+        }
+        let Ok(state) = u32::try_from(row.state_id) else {
+            unknown_states += 1;
+            continue;
+        };
+        let Some(&controller) = controllers.get(&state) else {
+            unknown_states += 1;
+            continue;
+        };
+        // The network covers the state only while its target controls it.
+        if controller == 0
+            || countries.slot(controller).is_none()
+            || countries.slot(controller) != countries.slot(row.target_country)
+        {
+            continue;
+        }
+        styles.insert(
+            state + 1,
+            style(network_color(
+                defines,
+                row.local_strength_raw,
+                row.local_quiet != 0,
+            )),
+        );
+    }
+    if unknown_states != 0 {
+        warnings.push(format!(
+            "The operatives map mode leaves {unknown_states} network states unfilled that are not recorded states"
+        ));
+    }
+    let provinces = core::<tables::Provinces>(frame)?;
     let mut region_of = vec![0; region_table_len(inputs.map, provinces.iter().map(|row| row.id))];
     for province in provinces {
         if province.state != 0 {

@@ -314,10 +314,33 @@ pub struct IntelNetworkEntry {
     pub target: Vec<u8>,
     pub state_ids: Vec<i32>,
     pub strengths: Vec<Decimal>,
-    /// Subnetwork values, selected by sub_network_id; distinct
+    /// Each state's daily gain (`gain`) and its parts from operatives and from
+    /// adjacent states (`gain_breakdown`), parallel to `state_ids`.
+    pub gains: Vec<Decimal>,
+    pub gains_from_operatives: Vec<Decimal>,
+    pub gains_from_adjacency: Vec<Decimal>,
+    /// The local `sub_network_is_quiet` list, one entry per subnetwork. Any
+    /// subnetwork past its end is not quiet, so an absent list reads empty.
+    pub local_quiet: Vec<bool>,
+    /// Subnetworks, selected by sub_network_id; their strength is distinct
     /// from the local graph's per-state strength array above.
-    pub subnetwork_strengths: Vec<Decimal>,
+    pub subnetworks: Vec<SavedSubnetwork>,
     pub selectors: Vec<i32>,
+}
+
+/// One saved subnetwork (`sub_intel_networks` entry).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedSubnetwork {
+    pub strength: Decimal,
+    /// `modifiers` `intel_network_gain_factor`.
+    pub gain_factor: Decimal,
+    /// `sub_network_strength_target` and its parts `_from_operatives` and
+    /// `_from_counterintelligence`.
+    pub strength_target: Decimal,
+    pub target_from_operatives: Decimal,
+    pub target_from_counterintelligence: Decimal,
+    /// `sub_network_is_quiet`; the subnetwork is not quiet without it.
+    pub quiet: bool,
 }
 
 /// One strategic-operative index with its networks; save-root tie unproved.
@@ -624,7 +647,42 @@ fn parse_intel_network_entry(items: &[Item]) -> io::Result<IntelNetworkEntry> {
         }
         selectors.push(integer(scalar(&entry.value)?)?);
     }
-    if state_ids.len() != strengths.len() || state_ids.len() != selectors.len() {
+    let mut gains = Vec::new();
+    for entry in required_block(inner, b"gain")? {
+        if entry.key.is_some() {
+            return Err(invalid("intel gain list must be anonymous"));
+        }
+        gains.push(Decimal::parse(scalar(&entry.value)?)?);
+    }
+    let mut gains_from_operatives = Vec::new();
+    let mut gains_from_adjacency = Vec::new();
+    for entry in required_block(inner, b"gain_breakdown")? {
+        if entry.key.is_some() {
+            return Err(invalid("intel gain_breakdown list must be anonymous"));
+        }
+        let parts = block(&entry.value)?;
+        gains_from_operatives.push(Decimal::parse(&required_bytes(parts, b"operatives")?)?);
+        gains_from_adjacency.push(Decimal::parse(&required_bytes(parts, b"adjacencies")?)?);
+    }
+    let local_quiet = field(inner, b"sub_network_is_quiet")?
+        .map(|value| {
+            block(value)?
+                .iter()
+                .map(|entry| {
+                    if entry.key.is_some() {
+                        return Err(invalid("intel sub_network_is_quiet list must be anonymous"));
+                    }
+                    boolean(&entry.value)
+                })
+                .collect::<io::Result<Vec<_>>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    if state_ids.len() != strengths.len()
+        || state_ids.len() != selectors.len()
+        || state_ids.len() != gains.len()
+        || state_ids.len() != gains_from_operatives.len()
+    {
         return Err(invalid("intel parallel arrays have different lengths"));
     }
     if state_ids.is_empty() {
@@ -638,21 +696,41 @@ fn parse_intel_network_entry(items: &[Item]) -> io::Result<IntelNetworkEntry> {
             return Err(invalid("duplicate intel state id in network"));
         }
     }
-    let mut subnetwork_strengths = Vec::new();
+    let mut subnetworks = Vec::new();
     if let Some(value) = field(items, b"sub_intel_networks")? {
         for entry in block(value)? {
             if entry.key.is_some() {
                 return Err(invalid("intel subnetworks list must be anonymous"));
             }
             let fields = block(&entry.value)?;
-            subnetwork_strengths.push(
-                decimal(fields, b"strength")?
-                    .ok_or_else(|| invalid("intel subnetwork lacks saved strength"))?,
-            );
+            let required = |key: &[u8]| -> io::Result<Decimal> {
+                decimal(fields, key)?.ok_or_else(|| {
+                    invalid(format!(
+                        "intel subnetwork lacks saved {}",
+                        String::from_utf8_lossy(key)
+                    ))
+                })
+            };
+            let modifiers = required_block(fields, b"modifiers")?;
+            subnetworks.push(SavedSubnetwork {
+                strength: required(b"strength")?,
+                gain_factor: decimal(modifiers, b"intel_network_gain_factor")?.ok_or_else(
+                    || invalid("intel subnetwork lacks saved intel_network_gain_factor"),
+                )?,
+                strength_target: required(b"sub_network_strength_target")?,
+                target_from_operatives: required(b"sub_network_strength_target_from_operatives")?,
+                target_from_counterintelligence: required(
+                    b"sub_network_strength_target_from_counterintelligence",
+                )?,
+                quiet: field(fields, b"sub_network_is_quiet")?
+                    .map(boolean)
+                    .transpose()?
+                    .unwrap_or(false),
+            });
         }
     }
     for selector in &selectors {
-        if *selector >= 0 && *selector as usize >= subnetwork_strengths.len() {
+        if *selector >= 0 && *selector as usize >= subnetworks.len() {
             return Err(invalid(
                 "intel subnetwork selector outside saved subnetworks",
             ));
@@ -662,7 +740,11 @@ fn parse_intel_network_entry(items: &[Item]) -> io::Result<IntelNetworkEntry> {
         target,
         state_ids,
         strengths,
-        subnetwork_strengths,
+        gains,
+        gains_from_operatives,
+        gains_from_adjacency,
+        local_quiet,
+        subnetworks,
         selectors,
     })
 }
@@ -1948,7 +2030,7 @@ mod tests {
 
     const NETWORKS: &[u8] = br#"countries={ENG={} SOV={} AUS={}}
         strategic_operatives={ strategic_operative={
-            2={ intel_network={ target="SOV" intel_network={ state_id={ 219 253 } strength={ 71 0 } sub_network_id={ 0 -1 } } sub_intel_networks={ { strength=72.5 } } } intel_network={ target="AUS" intel_network={ state_id={ 4 } strength={ 100 } sub_network_id={ 0 } } sub_intel_networks={ { strength=100 } } } }
+            2={ intel_network={ target="SOV" intel_network={ state_id={ 219 253 } gain={ 0.85 -1.75 } gain_breakdown={ { operatives=0.85 adjacencies=0 } { operatives=0 adjacencies=0.2125 } } strength={ 71 0 } sub_network_id={ 0 -1 } sub_network_is_quiet={ yes } } sub_intel_networks={ { modifiers={ intel_network_gain_factor=1 } strength=72.5 sub_network_strength_target=57.5 sub_network_strength_target_from_operatives=15 sub_network_strength_target_from_counterintelligence=-47.5 sub_network_is_quiet=yes } } } intel_network={ target="AUS" intel_network={ state_id={ 4 } gain={ 0 } gain_breakdown={ { operatives=0 adjacencies=0 } } strength={ 100 } sub_network_id={ 0 } } sub_intel_networks={ { modifiers={ intel_network_gain_factor=0.5 } strength=100 sub_network_strength_target=105 sub_network_strength_target_from_operatives=15 sub_network_strength_target_from_counterintelligence=0 } } } }
         }}"#;
 
     #[test]
@@ -1961,13 +2043,43 @@ mod tests {
         assert_eq!(networks[0].target, b"SOV");
         assert_eq!(networks[0].state_ids, [219, 253]);
         assert_eq!(networks[0].selectors, [0, -1]);
-        // Mismatched parallel lengths, duplicate states/targets and empty
-        // state lists are refused rather than partly read.
+        let decimal = |text: &str| Decimal::parse(text.as_bytes()).unwrap();
+        assert_eq!(networks[0].gains, [decimal("0.85"), decimal("-1.75")]);
+        assert_eq!(
+            networks[0].gains_from_operatives,
+            [decimal("0.85"), decimal("0")]
+        );
+        assert_eq!(
+            networks[0].gains_from_adjacency,
+            [decimal("0"), decimal("0.2125")]
+        );
+        assert_eq!(networks[0].local_quiet, [true]);
+        assert_eq!(
+            networks[0].subnetworks,
+            [SavedSubnetwork {
+                strength: decimal("72.5"),
+                gain_factor: decimal("1"),
+                strength_target: decimal("57.5"),
+                target_from_operatives: decimal("15"),
+                target_from_counterintelligence: decimal("-47.5"),
+                quiet: true,
+            }]
+        );
+        // Without its quiet entries a network and its subnetwork are not quiet.
+        assert!(networks[1].local_quiet.is_empty());
+        assert!(!networks[1].subnetworks[0].quiet);
+        assert_eq!(networks[1].subnetworks[0].gain_factor, decimal("0.5"));
+        // Mismatched parallel lengths, duplicate states/targets, empty state
+        // lists and subnetworks without their targets are refused rather
+        // than partly read.
         for broken in [
-            "countries={ENG={}} strategic_operatives={ strategic_operative={ 0={ intel_network={ target=\"SOV\" intel_network={ state_id={ 1 2 } strength={ 1 } sub_network_id={ 0 0 } } } } }}",
-            "countries={ENG={}} strategic_operatives={ strategic_operative={ 0={ intel_network={ target=\"SOV\" intel_network={ state_id={ 1 1 } strength={ 1 1 } sub_network_id={ 0 0 } } } } }}",
-            "countries={ENG={}} strategic_operatives={ strategic_operative={ 0={ intel_network={ target=\"SOV\" intel_network={ state_id={ 1 } strength={ 1 } sub_network_id={ 0 } } } intel_network={ target=\"SOV\" intel_network={ state_id={ 2 } strength={ 1 } sub_network_id={ 0 } } } } }}",
+            "countries={ENG={}} strategic_operatives={ strategic_operative={ 0={ intel_network={ target=\"SOV\" intel_network={ state_id={ 1 2 } gain={ 0 0 } gain_breakdown={ { operatives=0 adjacencies=0 } { operatives=0 adjacencies=0 } } strength={ 1 } sub_network_id={ 0 0 } } } } }}",
+            "countries={ENG={}} strategic_operatives={ strategic_operative={ 0={ intel_network={ target=\"SOV\" intel_network={ state_id={ 1 1 } gain={ 0 0 } gain_breakdown={ { operatives=0 adjacencies=0 } { operatives=0 adjacencies=0 } } strength={ 1 1 } sub_network_id={ 0 0 } } } } }}",
+            "countries={ENG={}} strategic_operatives={ strategic_operative={ 0={ intel_network={ target=\"SOV\" intel_network={ state_id={ 1 } gain={ 0 } gain_breakdown={ { operatives=0 adjacencies=0 } } strength={ 1 } sub_network_id={ 0 } } } intel_network={ target=\"SOV\" intel_network={ state_id={ 2 } gain={ 0 } gain_breakdown={ { operatives=0 adjacencies=0 } } strength={ 1 } sub_network_id={ 0 } } } } }}",
             "countries={ENG={}} strategic_operatives={ strategic_operative={ 0={ intel_network={ target=\"SOV\" } } }}",
+            "countries={ENG={}} strategic_operatives={ strategic_operative={ 0={ intel_network={ target=\"SOV\" intel_network={ state_id={ 1 2 } gain={ 0 } gain_breakdown={ { operatives=0 adjacencies=0 } { operatives=0 adjacencies=0 } } strength={ 1 1 } sub_network_id={ -1 -1 } } } } }}",
+            "countries={ENG={}} strategic_operatives={ strategic_operative={ 0={ intel_network={ target=\"SOV\" intel_network={ state_id={ 1 } gain={ 0 } strength={ 1 } sub_network_id={ -1 } } } } }}",
+            "countries={ENG={}} strategic_operatives={ strategic_operative={ 0={ intel_network={ target=\"SOV\" intel_network={ state_id={ 1 } gain={ 0 } gain_breakdown={ { operatives=0 adjacencies=0 } } strength={ 1 } sub_network_id={ 0 } } sub_intel_networks={ { modifiers={ intel_network_gain_factor=1 } strength=1 sub_network_strength_target=1 sub_network_strength_target_from_operatives=1 } } } } }}",
         ] {
             assert!(parsed(broken.as_bytes()).is_err(), "{broken}");
         }

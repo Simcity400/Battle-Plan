@@ -58,6 +58,8 @@
 //!   `cached_modifier_description_with(entries: &[CachedModifier], prefix: &str,
 //!   options: ModifierListOptions) -> Result<String, String>` takes recorded
 //!   definition IDs in native cache order, sharing that formatter.
+//! `scaled_static_modifiers(context, token, prefix, scale)` lists a static
+//!   modifier's raw text with its values scaled, sharing that formatter.
 //! `Content::{static_modifiers, dynamic_modifiers, opinion_modifiers,
 //!   power_balances}` supplies description catalogues from the same stack;
 //!   static descriptions resolve each requested name once.
@@ -122,6 +124,7 @@ pub use ability::ability_description;
 mod diplomacy;
 mod doctrine_sources;
 pub use doctrine_sources::doctrine_tactic_sources;
+pub use static_lists::scaled_static_modifiers;
 mod dispatch;
 mod empty;
 mod events;
@@ -132,6 +135,7 @@ mod politics;
 mod scope_names;
 mod scopes;
 mod states;
+mod static_lists;
 mod technology;
 #[cfg(test)]
 mod tests;

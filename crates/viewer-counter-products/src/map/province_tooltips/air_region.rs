@@ -227,13 +227,25 @@ struct Shared {
     demand: Arc<(Mutex<Demand>, Condvar)>,
     /// Advances with every answer, so a held hover built while one was pending rebuilds.
     generation: AtomicU64,
+    /// Signalled after each answer advances the generation.
+    answered: (Mutex<()>, Condvar),
+    /// Why the worker stopped while the service was open; every later question gets
+    /// this refusal instead of waiting for an answer that cannot come.
+    stopped: Mutex<Option<String>>,
     wake: Box<dyn Fn() + Send + Sync>,
+    /// Makes the next search panic, to stop the worker as a failed read would.
+    #[cfg(test)]
+    fail: AtomicBool,
 }
 
 impl Shared {
     /// Search the latest demand, if any, and keep its answer unless a newer demand or
     /// closing superseded it. False once the service is closed.
     fn run_one(&self) -> bool {
+        #[cfg(test)]
+        if self.fail.load(Ordering::Acquire) {
+            panic!("injected air roster worker failure");
+        }
         let key = {
             let (demand, _) = &*self.demand;
             let mut demand = demand
@@ -271,9 +283,53 @@ impl Shared {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(key, answer);
-        self.generation.fetch_add(1, Ordering::AcqRel);
-        (self.wake)();
+        self.advance();
         true
+    }
+
+    /// Count an answer, signal waiters and wake the hover.
+    fn advance(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        {
+            let (gate, signal) = &self.answered;
+            let _held = gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            signal.notify_all();
+        }
+        (self.wake)();
+    }
+}
+
+/// Held by the worker thread. If the worker ends while the service is still open (a
+/// panicking read, or any other exit), it records why and advances the generation, so a
+/// hover held while pending rebuilds with the refusal and a waiter returns.
+struct Exit(Arc<Shared>);
+impl Drop for Exit {
+    fn drop(&mut self) {
+        let closed = self
+            .0
+            .demand
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .closed;
+        if closed {
+            return;
+        }
+        *self
+            .0
+            .stopped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
+            if std::thread::panicking() {
+                "the air roster worker panicked"
+            } else {
+                "the air roster worker stopped"
+            }
+            .into(),
+        );
+        self.0.advance();
     }
 }
 
@@ -322,7 +378,11 @@ impl PassRosters {
                 answers: Mutex::default(),
                 demand,
                 generation: AtomicU64::new(0),
+                answered: Default::default(),
+                stopped: Mutex::default(),
                 wake: Box::new(wake),
+                #[cfg(test)]
+                fail: AtomicBool::new(false),
             }),
             started: AtomicBool::new(false),
             spawn,
@@ -338,6 +398,20 @@ impl PassRosters {
         self.shared.generation.load(Ordering::Acquire)
     }
 
+    /// Blocks until an answer completes after `generation` answers had, or the worker
+    /// stops, which counts as an answer refusing every question.
+    pub fn wait_beyond(&self, generation: u64) {
+        let (gate, signal) = &self.shared.answered;
+        let mut held = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while self.generation() <= generation {
+            held = signal
+                .wait(held)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
     fn start(&self) -> Result<(), String> {
         if !self.spawn || self.started.swap(true, Ordering::AcqRel) {
             return Ok(());
@@ -346,6 +420,7 @@ impl PassRosters {
         std::thread::Builder::new()
             .name("air roster history".into())
             .spawn(move || {
+                let _exit = Exit(Arc::clone(&shared));
                 viewer_foundation::worker_priority::lowest_priority();
                 loop {
                     {
@@ -396,6 +471,15 @@ impl Rosters for PassRosters {
             .get(&key)
         {
             return Some(answer.clone());
+        }
+        if let Some(reason) = self
+            .shared
+            .stopped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            return Some(Err(reason));
         }
         if let Err(reason) = self.start() {
             return Some(Err(reason));
@@ -605,7 +689,7 @@ pub(super) fn append(context: &Context<'_>, out: &mut Tooltip) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     /// Eligibility by hour for slot 5 on branch 1, which starts at hour 24.
@@ -648,7 +732,7 @@ mod tests {
 
     /// A recording of branch 1 from hour 20 to 130 whose roster holds country 7 (slot 5)
     /// until hour `until`, and lacks the hours in `missing`.
-    fn recording(until: Hour, missing: &[Hour]) -> Arc<Replay> {
+    pub(in super::super) fn recording(until: Hour, missing: &[Hour]) -> Arc<Replay> {
         use replay::{
             branches::{BranchReason, BranchStart, Parentage},
             frame::{FrameEncoder, Metrics, TableView},
@@ -773,6 +857,49 @@ mod tests {
                 .unwrap_err()
                 .contains("lacks country slot 6")
         );
+    }
+
+    /// A worker that stops before answering (here a panicking search) still releases a
+    /// waiter: the stop advances the generation, wakes the hover, and every question from
+    /// then on refuses by name instead of staying pending.
+    #[test]
+    fn a_worker_that_stops_unanswered_refuses_instead_of_leaving_the_hover_pending() {
+        let woken = Arc::new(AtomicU64::new(0));
+        // The stop signals waiters before it wakes the hover, so the wake has its own signal.
+        let (rang, rung) = std::sync::mpsc::channel();
+        let wake = {
+            let woken = Arc::clone(&woken);
+            move || {
+                woken.fetch_add(1, Ordering::AcqRel);
+                rang.send(()).unwrap();
+            }
+        };
+        let rosters = Arc::new(PassRosters::new(recording(80, &[]), wake));
+        rosters.shared.fail.store(true, Ordering::Release);
+        assert_eq!(
+            rosters.visiting_pass(1, 127, 5),
+            None,
+            "asked on the worker"
+        );
+        let (done, waited) = std::sync::mpsc::channel();
+        let waiter = {
+            let rosters = Arc::clone(&rosters);
+            std::thread::spawn(move || {
+                rosters.wait_beyond(0);
+                done.send(()).unwrap();
+            })
+        };
+        waited
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the waiter returns once the worker stops");
+        waiter.join().unwrap();
+        assert_eq!(rosters.generation(), 1);
+        rung.recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the stop wakes the hover");
+        assert_eq!(woken.load(Ordering::Acquire), 1);
+        let refusal = Some(Err("the air roster worker panicked".to_owned()));
+        assert_eq!(rosters.visiting_pass(1, 127, 5), refusal);
+        assert_eq!(rosters.visiting_pass(1, 103, 5), refusal);
     }
 
     /// Only the latest question is searched: an older one still pending is dropped, not

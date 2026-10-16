@@ -307,6 +307,15 @@ pub const FUEL_DEMAND_PARTS_FORMAT: u16 = FORMAT_VERSION;
 /// recipients (Capitulation `war_goal_recipients`). Format-102 captures
 /// written before them hold none of these fields.
 pub const MAP_MODE_INPUTS_FORMAT: u16 = FORMAT_VERSION;
+/// Provisional main+1: IntelNetworks rows carry each state's daily gain and
+/// its two parts, the network's quiet byte for the row's selector and the
+/// selected subnetwork's gain factor, strength target, the target's two parts
+/// and quiet byte (fields 3 to 11), which the Operatives map mode reads.
+/// Format 101 and earlier refuse the table by name. Format-102 captures
+/// written before this change share the version number but not the table's
+/// field count, so their blocks read as malformed; no published build wrote
+/// them.
+pub const INTEL_NETWORK_MAP_FORMAT: u16 = FORMAT_VERSION;
 
 /// Provisional main+1: MapEvents records the simulation edges behind the
 /// game's floating map text and critical shore bombardment explosions as an
@@ -948,6 +957,11 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         TableId::CountryAppearance,
         EFFECT_INPUTS_FORMAT,
         "ffd3e03cc6",
+    );
+    history[TableId::IntelNetworks.index()] = table(
+        TableId::IntelNetworks,
+        INTEL_NETWORK_MAP_FORMAT,
+        "pol/mapmode-operatives network map inputs",
     );
     history[TableId::States.index()] = appended_at(
         TableId::States,

@@ -276,7 +276,11 @@ pub struct CryptologyRow {
 typed_codec!(CryptologyRow, 64, |row| (row.owner_country as u128) << 32 | row.target_country as u128, |key| Self { owner_country: (key >> 32) as u32, target_country: key as u32, amount_raw: Default::default(), bonus_days: Default::default(), bonus_active: Default::default(), decrypting: Default::default() },
  { 0 => (amount_raw): I64, 1 => (bonus_days): I32, 2 => (bonus_active): U8, 3 => (decrypting): U8 }, |_row| Ok(()));
 
-/// IntelNetworks: key owner_country:target_country:state_id (96 bits), 3 payload mask bits.
+/// IntelNetworks: key owner_country:target_country:state_id (96 bits), 12 payload mask bits.
+///
+/// Fixed-point values are scaled by 100000. The Operatives map mode's network
+/// layer reads the local strength and quiet byte; its state tooltip reads the
+/// gains and the selected subnetwork's values.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct IntelNetworkRow {
     pub owner_country: u32,
@@ -288,9 +292,27 @@ pub struct IntelNetworkRow {
     pub subnetwork_selector: i32,
     /// Exact graph-row state strength, including zero and negative values.
     pub local_strength_raw: i64,
+    /// The state's daily gain and its parts from the network's operatives and
+    /// from adjacent states (saved `gain` and `gain_breakdown`).
+    pub gain_raw: i64,
+    pub gain_from_operatives_raw: i64,
+    pub gain_from_adjacency_raw: i64,
+    /// The network's quiet byte for the selector (the local
+    /// `sub_network_is_quiet` list); zero for a selector outside the list.
+    pub local_quiet: u8,
+    /// The selected subnetwork's gain factor, strength target and the
+    /// target's parts from operatives and from counterintelligence; absent,
+    /// like the strength, for a negative selector.
+    pub gain_factor_raw: Option<i64>,
+    pub strength_target_raw: Option<i64>,
+    pub target_from_operatives_raw: Option<i64>,
+    pub target_from_counterintelligence_raw: Option<i64>,
+    /// The selected subnetwork's own quiet byte; zero for a negative selector,
+    /// which selects no subnetwork.
+    pub subnetwork_quiet: u8,
 }
-typed_codec!(IntelNetworkRow, 96, |row| (row.owner_country as u128) << 64 | (row.target_country as u128) << 32 | row.state_id as u32 as u128, |key| Self { owner_country: (key >> 64) as u32, target_country: (key >> 32) as u32, state_id: key as u32 as i32, strength_raw: Default::default(), subnetwork_selector: Default::default(), local_strength_raw: Default::default() },
- { 0 => (strength_raw): OptionalI64, 1 => (subnetwork_selector): I32, 2 => (local_strength_raw): I64 }, |_row| Ok(()));
+typed_codec!(IntelNetworkRow, 96, |row| (row.owner_country as u128) << 64 | (row.target_country as u128) << 32 | row.state_id as u32 as u128, |key| Self { owner_country: (key >> 64) as u32, target_country: (key >> 32) as u32, state_id: key as u32 as i32, ..Default::default() },
+ { 0 => (strength_raw): OptionalI64, 1 => (subnetwork_selector): I32, 2 => (local_strength_raw): I64, 3 => (gain_raw): I64, 4 => (gain_from_operatives_raw): I64, 5 => (gain_from_adjacency_raw): I64, 6 => (local_quiet): U8, 7 => (gain_factor_raw): OptionalI64, 8 => (strength_target_raw): OptionalI64, 9 => (target_from_operatives_raw): OptionalI64, 10 => (target_from_counterintelligence_raw): OptionalI64, 11 => (subnetwork_quiet): U8 }, |_row| Ok(()));
 
 /// Operations: key id (64 bits), 16 payload mask bits.
 ///

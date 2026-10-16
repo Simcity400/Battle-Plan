@@ -462,7 +462,11 @@ impl Fixture {
         })
     }
 
-    fn with_context<T>(&self, content: Content<'_>, run: impl FnOnce(&Context<'_, '_>) -> T) -> T {
+    pub(super) fn with_context<T>(
+        &self,
+        content: Content<'_>,
+        run: impl FnOnce(&Context<'_, '_>) -> T,
+    ) -> T {
         let scripted = self.catalogue.scripted_content().unwrap();
         let text = ScriptedText::new(&self.frame, &self.catalogue.localisation, scripted, 1);
         let mut facts = ContentFacts::content_only(&self.dlcs, &self.triggers, &self.aliases);

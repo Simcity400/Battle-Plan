@@ -47,6 +47,7 @@ impl Context<'_> {
                 very_bad,
             } => line(out, "diplomacy", 0, self.diplomacy(*very_good, *very_bad)),
             ModeHover::Ideology => line(out, "ideology", 0, self.ideology()),
+            ModeHover::Operatives => super::operatives::append(self, out),
             ModeHover::Occupation => self.occupation(out),
             ModeHover::Scripted(name) => {
                 line(

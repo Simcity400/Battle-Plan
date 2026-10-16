@@ -122,6 +122,7 @@ Dump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, 
              rails include trains/bridges; weather omits particles only, preserving terrain snow/mud
            --counters-json <out.json>, submitted plates with interface rectangles
              (device pixels at --ui-scale 1), sprite frames and text
+           --province-hover <id>, print the province's hover text in the dump's map mode
            --ui-scale <0.5..3>, --dump and --window-dump: device pixels per map-interface pixel
              (counters, icons, labels, combat window); default 1.0, the game's frame at gui_scale 1
 Compare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
@@ -371,6 +372,9 @@ struct Options {
     layers: Omissions,
     /// Write the actual rendered counter quads, grouped into plates.
     counters_json: Option<PathBuf>,
+    /// Dump-only: print this province's hover text in the dump's map mode, its
+    /// control codepoints escaped, and its refusals.
+    province_hover: Option<u32>,
     /// `--ui-scale`: device pixels per interface pixel of the screen-space map
     /// interface. A dump renders at the game's frame size, where the verified
     /// comparison pipeline uses 1.0, so that is the default; the desktop app's
@@ -476,6 +480,15 @@ impl Options {
                 Some("--counters-json") => {
                     options.counters_json =
                         Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
+                }
+                Some("--province-hover") => {
+                    let value = args.next().ok_or_else(|| invalid(USAGE))?;
+                    options.province_hover = Some(
+                        value
+                            .to_string_lossy()
+                            .parse()
+                            .map_err(|_| invalid("--province-hover needs a province id"))?,
+                    );
                 }
                 // colour
                 Some("--no-water") => options.no_water = true,
@@ -793,6 +806,9 @@ impl Options {
         }
         if !options.building_cameras.is_empty() && !options.headless_dump {
             return Err(invalid("--building-camera requires --dump"));
+        }
+        if options.province_hover.is_some() && !options.headless_dump {
+            return Err(invalid("--province-hover requires --dump"));
         }
         if options.counters_json.is_some() && !options.headless_dump {
             return Err(invalid("--counters-json requires --dump"));
@@ -1452,6 +1468,53 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for warning in viewer_foundation::diagnostics_panel::tooltip_warning_lines(&tooltip_refused)
         {
             eprintln!("Warning: {warning}");
+        }
+        if let (Some(province), crate::playback::Current::Frame(frame)) =
+            (options.province_hover, document.playback.current())
+        {
+            let mode = crate::app::picker::mode_hover(
+                &options.map_mode,
+                document.map_modes.defines.opinion_thresholds(),
+            );
+            // The hover's air statistics wait for the roster history worker, as the
+            // interactive hover does through its wake: ask again until nothing is pending.
+            let mut cache = viewer_counter_products::map::province_tooltips::Cache::default();
+            let selected = Arc::new(Vec::new());
+            let replay = document.playback.replay_handle();
+            let text = loop {
+                let text = cache.request(
+                    &document.counter_content,
+                    document.icons.raids.movement_reads(),
+                    frame,
+                    province,
+                    &counter_report.perspective,
+                    options.counter_settings(document.game_counters).nato,
+                    &selected,
+                    &replay,
+                    &mode,
+                    || {},
+                );
+                if !cache.pending() {
+                    break text;
+                }
+                cache.wait();
+            };
+            let escaped = |text: &str| {
+                text.chars()
+                    .map(|c| match c {
+                        '\u{11}' => "\\u{11}".to_owned(),
+                        '\u{12}' => "\\u{12}".to_owned(),
+                        c => c.to_string(),
+                    })
+                    .collect::<String>()
+            };
+            println!("Province {province} hover:\n{}", escaped(&text.title));
+            if !text.body.is_empty() {
+                println!("Province {province} hover body:\n{}", escaped(&text.body));
+            }
+            for (reason, count) in &text.refused {
+                println!("Province {province} hover refused ({count}): {reason}");
+            }
         }
         if let Some(path) = &options.counters_json {
             let mut census =

@@ -72,8 +72,37 @@ pub struct Row {
     pub strength_raw: Option<i64>,
     /// Signed graph-row selector retained exactly, including unassigned values.
     pub subnetwork_selector: i32,
-    /// The graph row's value, used by raid target intel; independent of selector.
+    /// Graph-row state strength, which raid target intel and the map mode's
+    /// network layer read; independent of selector.
     pub local_strength_raw: i64,
+    /// Graph-row daily gain and its parts from operatives and from adjacent states.
+    pub gain_raw: i64,
+    pub gain_from_operatives_raw: i64,
+    pub gain_from_adjacency_raw: i64,
+    /// The local network's quiet byte for the selector, which the map mode's
+    /// network layer reads; zero for a selector outside its list.
+    pub local_quiet: u8,
+    /// The selected subnetwork's gain factor, strength target and the
+    /// target's parts from operatives and from counterintelligence, which the
+    /// state tooltip reads; none for a negative selector.
+    pub gain_factor_raw: Option<i64>,
+    pub strength_target_raw: Option<i64>,
+    pub target_from_operatives_raw: Option<i64>,
+    pub target_from_counterintelligence_raw: Option<i64>,
+    /// The selected subnetwork's own quiet byte, which the state tooltip
+    /// reads; zero for a negative selector, which selects no subnetwork.
+    pub subnetwork_quiet: u8,
+}
+
+/// The selected subnetwork's copied values.
+#[derive(Clone, Copy)]
+struct Subnetwork {
+    strength_raw: i64,
+    gain_factor_raw: i64,
+    strength_target_raw: i64,
+    target_from_operatives_raw: i64,
+    target_from_counterintelligence_raw: i64,
+    quiet: u8,
 }
 
 /// Reads the country-rooted network roster and its state-to-subnetwork mapping.
@@ -183,6 +212,7 @@ pub fn walk_buffer(
                     SUBNETWORKS_DATA,
                     csub_intel_network::STRIDE,
                 )?;
+                let quiet = array(memory, local, clocal_intel_network::QUIET_DATA, 1)?;
                 output.ensure(
                     len.checked_add(vertices.count as usize)
                         .ok_or("intel network row demand overflow")?,
@@ -237,8 +267,13 @@ pub fn walk_buffer(
                             })
                             .ok_or("intel graph row address overflow")?;
                     }
-                    const ROW_END: usize = intel_network_graph_row::STATE_STRENGTH + 8
+                    // One copy per row spans the selector through the state id.
+                    const ROW_END: usize = intel_network_graph_row::STATE_ID + 4
                         - intel_network_graph_row::SUBNETWORK_SELECTOR;
+                    let row_field = |bytes: &[u8], offset: usize| {
+                        let at = offset - intel_network_graph_row::SUBNETWORK_SELECTOR;
+                        i64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
+                    };
                     let mut selectors = [[0_u8; ROW_END]; BATCH];
                     let mut fields = selectors.iter_mut().enumerate();
                     let mut destinations = std::array::from_fn(|_| {
@@ -249,25 +284,44 @@ pub fn walk_buffer(
                         return Err("intel graph selector unreadable");
                     }
                     let mut strength_addresses = [0; BATCH];
+                    let mut quiet_addresses = [0; BATCH];
                     for (index, bytes) in selectors[..count].iter().enumerate() {
+                        const STATE_AT: usize = intel_network_graph_row::STATE_ID
+                            - intel_network_graph_row::SUBNETWORK_SELECTOR;
+                        let row_state =
+                            i32::from_le_bytes(bytes[STATE_AT..STATE_AT + 4].try_into().unwrap());
+                        let at = index * intel_network_graph_vertex::STRIDE;
+                        let vertex_state =
+                            i32::from_le_bytes(vertex_bytes[at..at + 4].try_into().unwrap());
+                        if row_state != vertex_state {
+                            return Err("intel graph row state differs from its vertex");
+                        }
                         let selector = i32::from_le_bytes(bytes[..4].try_into().unwrap());
-                        // Only nonnegative selectors reach strength. Negative vertices remain
-                        // present without strength.
+                        // Only nonnegative selectors reach a subnetwork. Negative vertices remain
+                        // present without its values.
                         if selector >= 0 {
                             strength_addresses[index] = subnetworks
                                 .element(selector as u32, csub_intel_network::STRIDE)
                                 .ok_or("intel subnetwork selector outside array")?;
+                            // A selector outside the quiet list is not quiet.
+                            if (selector as u32) < quiet.count {
+                                quiet_addresses[index] = quiet
+                                    .element(selector as u32, 1)
+                                    .ok_or("intel quiet list address overflow")?;
+                            }
                         }
                     }
-                    // Copy the authenticated prefix through the saved strength, excluding the
-                    // unrelated gain modifier.
-                    const STRENGTH_END: usize = csub_intel_network::STRENGTH + 8;
-                    let mut strengths = [[0_u8; STRENGTH_END]; BATCH];
+                    // Copy each selected subnetwork from its vtable through its quiet flag.
+                    const SUBNETWORK_END: usize = csub_intel_network::QUIET + 1;
+                    let subnetwork_field = |bytes: &[u8], offset: usize| {
+                        i64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+                    };
+                    let mut strengths = [[0_u8; SUBNETWORK_END]; BATCH];
                     let mut fields = strengths.iter_mut().enumerate();
                     let mut destinations = std::array::from_fn(|_| {
                         let (index, bytes) = fields.next().unwrap();
                         &mut bytes[..if strength_addresses[index] != 0 {
-                            STRENGTH_END
+                            SUBNETWORK_END
                         } else {
                             0
                         }]
@@ -275,25 +329,49 @@ pub fn walk_buffer(
                     if memory.copy_scattered(strength_addresses, &mut destinations) != BATCH {
                         return Err("intel subnetwork strength unreadable");
                     }
+                    let mut quiet_bytes = [[0_u8; 1]; BATCH];
+                    let mut fields = quiet_bytes.iter_mut().enumerate();
+                    let mut destinations = std::array::from_fn(|_| {
+                        let (index, bytes) = fields.next().unwrap();
+                        &mut bytes[..usize::from(quiet_addresses[index] != 0)]
+                    });
+                    if memory.copy_scattered(quiet_addresses, &mut destinations) != BATCH {
+                        return Err("intel quiet list unreadable");
+                    }
                     let expected_vtable =
                         base.checked_add(csub_intel_network::VTABLE_RVA)
                             .ok_or("intel module address overflow")? as u64;
                     for index in 0..count {
-                        let selector =
-                            i32::from_le_bytes(selectors[index][..4].try_into().unwrap());
-                        let strength_raw = if selector < 0 {
+                        let row = &selectors[index];
+                        let selector = i32::from_le_bytes(row[..4].try_into().unwrap());
+                        let subnetwork = if selector < 0 {
                             None
                         } else {
-                            if u64::from_le_bytes(strengths[index][..8].try_into().unwrap())
-                                != expected_vtable
+                            let bytes = &strengths[index];
+                            if u64::from_le_bytes(bytes[..8].try_into().unwrap()) != expected_vtable
                             {
                                 return Err("intel network object vtable mismatch");
                             }
-                            Some(i64::from_le_bytes(
-                                strengths[index][csub_intel_network::STRENGTH..]
-                                    .try_into()
-                                    .unwrap(),
-                            ))
+                            Some(Subnetwork {
+                                strength_raw: subnetwork_field(bytes, csub_intel_network::STRENGTH),
+                                gain_factor_raw: subnetwork_field(
+                                    bytes,
+                                    csub_intel_network::GAIN_FACTOR,
+                                ),
+                                strength_target_raw: subnetwork_field(
+                                    bytes,
+                                    csub_intel_network::STRENGTH_TARGET,
+                                ),
+                                target_from_operatives_raw: subnetwork_field(
+                                    bytes,
+                                    csub_intel_network::TARGET_FROM_OPERATIVES,
+                                ),
+                                target_from_counterintelligence_raw: subnetwork_field(
+                                    bytes,
+                                    csub_intel_network::TARGET_FROM_COUNTERINTELLIGENCE,
+                                ),
+                                quiet: bytes[csub_intel_network::QUIET],
+                            })
                         };
                         let at = index * intel_network_graph_vertex::STRIDE;
                         output[len] = Row {
@@ -302,11 +380,33 @@ pub fn walk_buffer(
                             state_id: i32::from_le_bytes(
                                 vertex_bytes[at..at + 4].try_into().unwrap(),
                             ),
-                            strength_raw,
+                            strength_raw: subnetwork.map(|sub| sub.strength_raw),
                             subnetwork_selector: selector,
-                            local_strength_raw: i64::from_le_bytes(
-                                selectors[index][ROW_END - 8..].try_into().unwrap(),
+                            local_strength_raw: row_field(
+                                row,
+                                intel_network_graph_row::STATE_STRENGTH,
                             ),
+                            gain_raw: row_field(row, intel_network_graph_row::GAIN),
+                            gain_from_operatives_raw: row_field(
+                                row,
+                                intel_network_graph_row::GAIN_FROM_OPERATIVES,
+                            ),
+                            gain_from_adjacency_raw: row_field(
+                                row,
+                                intel_network_graph_row::GAIN_FROM_ADJACENCY,
+                            ),
+                            local_quiet: if quiet_addresses[index] != 0 {
+                                quiet_bytes[index][0]
+                            } else {
+                                0
+                            },
+                            gain_factor_raw: subnetwork.map(|sub| sub.gain_factor_raw),
+                            strength_target_raw: subnetwork.map(|sub| sub.strength_target_raw),
+                            target_from_operatives_raw: subnetwork
+                                .map(|sub| sub.target_from_operatives_raw),
+                            target_from_counterintelligence_raw: subnetwork
+                                .map(|sub| sub.target_from_counterintelligence_raw),
+                            subnetwork_quiet: subnetwork.map_or(0, |sub| sub.quiet),
                         };
                         len += 1;
                     }
@@ -384,6 +484,7 @@ mod tests {
     const VERTICES: usize = 0xd000;
     const GRAPH_ROWS: usize = 0xe000;
     const SUBNETWORKS: usize = 0xf000;
+    const QUIET: usize = 0x10800;
 
     fn p32(bytes: &mut [u8], at: usize, value: u32) {
         bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
@@ -449,6 +550,11 @@ mod tests {
                 &mut bytes,
                 row + intel_network_graph_row::STATE_STRENGTH,
                 index as u64,
+            );
+            p32(
+                &mut bytes,
+                row + intel_network_graph_row::STATE_ID,
+                index as u32 + 1,
             );
         }
         let mut expected = vec![Row::default(); COUNT];
@@ -623,12 +729,28 @@ mod tests {
                     + intel_network_graph_row::SUBNETWORK_SELECTOR,
                 index as u32,
             );
+            let row = GRAPH_ROWS + index * intel_network_graph_row::STRIDE;
             p64(
                 &mut bytes,
-                GRAPH_ROWS
-                    + index * intel_network_graph_row::STRIDE
-                    + intel_network_graph_row::STATE_STRENGTH,
+                row + intel_network_graph_row::STATE_STRENGTH,
                 (!strength) as u64,
+            );
+            p32(
+                &mut bytes,
+                row + intel_network_graph_row::STATE_ID,
+                id as u32,
+            );
+            let base = 10 * (index as u64 + 1);
+            p64(&mut bytes, row + intel_network_graph_row::GAIN, base + 1);
+            p64(
+                &mut bytes,
+                row + intel_network_graph_row::GAIN_FROM_OPERATIVES,
+                base + 2,
+            );
+            p64(
+                &mut bytes,
+                row + intel_network_graph_row::GAIN_FROM_ADJACENCY,
+                base + 3,
             );
             let subnetwork = SUBNETWORKS + index * csub_intel_network::STRIDE;
             p64(
@@ -641,7 +763,29 @@ mod tests {
                 subnetwork + csub_intel_network::STRENGTH,
                 strength as u64,
             );
+            for (offset, value) in [
+                (csub_intel_network::GAIN_FACTOR, base + 4),
+                (csub_intel_network::STRENGTH_TARGET, base + 5),
+                (csub_intel_network::TARGET_FROM_OPERATIVES, base + 6),
+                (
+                    csub_intel_network::TARGET_FROM_COUNTERINTELLIGENCE,
+                    base + 7,
+                ),
+            ] {
+                p64(&mut bytes, subnetwork + offset, value);
+            }
+            bytes[subnetwork + csub_intel_network::QUIET] = index as u8;
         }
+        // The local list makes subnetwork 1 quiet and is one byte too short
+        // to cover a selector of 2.
+        header(
+            &mut bytes,
+            NETWORK + LOCAL_NETWORK + clocal_intel_network::QUIET_DATA,
+            QUIET,
+            2,
+        );
+        bytes[QUIET] = 0;
+        bytes[QUIET + 1] = 1;
         bytes
     }
     fn capture(bytes: &[u8], output: &mut [Row]) -> Outcome {
@@ -662,12 +806,37 @@ mod tests {
                 strength_raw: Some(i64::MIN),
                 subnetwork_selector: 0,
                 local_strength_raw: i64::MAX,
+                gain_raw: 11,
+                gain_from_operatives_raw: 12,
+                gain_from_adjacency_raw: 13,
+                local_quiet: 0,
+                gain_factor_raw: Some(14),
+                strength_target_raw: Some(15),
+                target_from_operatives_raw: Some(16),
+                target_from_counterintelligence_raw: Some(17),
+                subnetwork_quiet: 0,
             }
         );
-        assert_eq!(output[1].state_id, i32::MAX);
-        assert_eq!(output[1].strength_raw, Some(i64::MAX));
-        assert_eq!(output[1].subnetwork_selector, 1);
-        assert_eq!(output[1].local_strength_raw, i64::MIN);
+        assert_eq!(
+            output[1],
+            Row {
+                owner_country: 3,
+                target_country: 2,
+                state_id: i32::MAX,
+                strength_raw: Some(i64::MAX),
+                subnetwork_selector: 1,
+                local_strength_raw: i64::MIN,
+                gain_raw: 21,
+                gain_from_operatives_raw: 22,
+                gain_from_adjacency_raw: 23,
+                local_quiet: 1,
+                gain_factor_raw: Some(24),
+                strength_target_raw: Some(25),
+                target_from_operatives_raw: Some(26),
+                target_from_counterintelligence_raw: Some(27),
+                subnetwork_quiet: 1,
+            }
+        );
         assert_eq!(
             capture(&bytes, &mut output[..1]),
             Outcome::Truncated {
@@ -680,6 +849,47 @@ mod tests {
             Outcome::Truncated {
                 len: 0,
                 unread_rows: 2
+            }
+        );
+    }
+
+    #[test]
+    fn a_selector_past_the_local_quiet_list_is_not_quiet_but_keeps_its_subnetwork_flag() {
+        let mut bytes = fixture();
+        header(
+            &mut bytes,
+            NETWORK + LOCAL_NETWORK + clocal_intel_network::QUIET_DATA,
+            QUIET,
+            1,
+        );
+        let mut output = [Row::default(); 2];
+        assert_eq!(capture(&bytes, &mut output), Outcome::Rows { len: 2 });
+        assert_eq!(output[1].local_quiet, 0);
+        assert_eq!(output[1].subnetwork_quiet, 1);
+        // With the full list the same selector reads its quiet byte.
+        header(
+            &mut bytes,
+            NETWORK + LOCAL_NETWORK + clocal_intel_network::QUIET_DATA,
+            QUIET,
+            2,
+        );
+        assert_eq!(capture(&bytes, &mut output), Outcome::Rows { len: 2 });
+        assert_eq!(output[1].local_quiet, 1);
+    }
+
+    #[test]
+    fn a_graph_row_naming_another_state_than_its_vertex_fails() {
+        let mut bytes = fixture();
+        p32(
+            &mut bytes,
+            GRAPH_ROWS + intel_network_graph_row::STRIDE + intel_network_graph_row::STATE_ID,
+            7,
+        );
+        let mut output = [Row::default(); 2];
+        assert_eq!(
+            capture(&bytes, &mut output),
+            Outcome::Unavailable {
+                reason: "intel graph row state differs from its vertex"
             }
         );
     }
@@ -748,6 +958,13 @@ mod tests {
                     + (64 - index) * intel_network_graph_row::STRIDE
                     + intel_network_graph_row::SUBNETWORK_SELECTOR,
                 if index % 2 == 0 { 1 } else { (-2_i32) as u32 },
+            );
+            p32(
+                &mut bytes,
+                begin
+                    + (64 - index) * intel_network_graph_row::STRIDE
+                    + intel_network_graph_row::STATE_ID,
+                index as u32 + 1,
             );
         }
         let mut rows = [Row::default(); 65];
