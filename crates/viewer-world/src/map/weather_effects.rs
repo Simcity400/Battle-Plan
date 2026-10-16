@@ -1519,8 +1519,12 @@ impl Pass {
                 &mut packets,
             );
         } else {
-            // Destroy weather pairs when the local weather option
-            // is off. Entity events and the shared submit callback still run.
+            // As the game does: its weather update rereads the map-rendering weather option
+            // (`draw_weather_effects`) each time. Off, the weather kind it wants is none, so it
+            // releases every particle pair it holds; back on, it builds new pairs from a freshly
+            // seeded random stream. This is the one display switch that changes presentation
+            // state (checked against the game's 1.19.2 executable). Entity events and the shared
+            // submit callback still run.
             self.simulations.clear();
             self.clock = Clock::default();
         }

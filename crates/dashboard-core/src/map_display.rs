@@ -7,8 +7,9 @@
 //! Display switches gate drawing only. Simulation, hover and picking, selection, combat windows,
 //! engagement and every presentation clock keep running while something is hidden; a hidden
 //! world object also stops casting its shadow. Weather is the one exception, as in the game:
-//! turning it off clears its particle simulations and their clock. A part switch (Advanced) draws only while its main
-//! switch is on as well.
+//! turning it off releases its particle pairs, and turning it back on builds new ones from a
+//! freshly seeded random stream. A part switch (Advanced) draws only while its main switch is on
+//! as well.
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
