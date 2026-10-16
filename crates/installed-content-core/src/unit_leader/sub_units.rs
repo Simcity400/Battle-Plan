@@ -67,6 +67,8 @@ pub struct SubUnits {
     /// Each definition's `is_artillery_brigade` by the same byte identity
     /// as `indices`, or why the reading that gives it cannot be followed.
     artillery: BTreeMap<Vec<u8>, Result<bool, String>>,
+    /// Each definition's `special_forces`, read as `is_artillery_brigade` is.
+    special_forces: BTreeMap<Vec<u8>, Result<bool, String>>,
     /// The support bit, used by division-template placement.
     support: BTreeMap<Vec<u8>, Result<bool, String>>,
     /// Authored C-string spelling of the group token, or token zero.
@@ -202,6 +204,22 @@ impl SubUnits {
         }
     }
 
+    /// A definition's `special_forces`, found without case: absent is `no`. `Err`
+    /// names why the reading that gives it cannot be followed, or why a name no
+    /// definition has may still be one.
+    pub fn special_forces(&self, name: &[u8]) -> Result<bool, String> {
+        match self.special_forces.get(&identity(name)) {
+            Some(value) => value.clone(),
+            None => match &self.uncertain {
+                Some(reason) => Err(reason.clone()),
+                None => Err(format!(
+                    "sub-unit {} is not in the content's sub_units",
+                    String::from_utf8_lossy(name)
+                )),
+            },
+        }
+    }
+
     /// The support category (bit 24), by the same database identity.
     /// An unknown definition or unread tail is refused.
     pub fn support(&self, name: &[u8]) -> Result<bool, String> {
@@ -305,6 +323,7 @@ impl SubUnits {
                     Shape::Object(Node::Body)
                 }
                 Node::Body if field.keyword_is("is_artillery_brigade") => Shape::One,
+                Node::Body if field.keyword_is("special_forces") => Shape::One,
                 Node::Body if field.keyword_is("group") => Shape::One,
                 Node::Body if field.keyword_is("type") => {
                     if field.opens() {
@@ -355,8 +374,9 @@ impl SubUnits {
             .filter(|item| item.keyword_is("sub_units"))
             .flat_map(|item| item.value.items().unwrap_or_default());
         for (index, entry) in entries.enumerate() {
-            // Reset categories/artillery, but preserve the group.
+            // Reset categories, artillery and special forces, but preserve the group.
             let mut artillery = false;
+            let mut special_forces = false;
             let mut categories = scalar_categories[index];
             let unit = identity(entry.key.as_deref().unwrap_or_default());
             let mut group = self.groups.get(&unit).cloned().unwrap_or_else(|| {
@@ -373,6 +393,12 @@ impl SubUnits {
                         .scalar()
                         .and_then(crate::parser::read_bool)
                         .unwrap_or(artillery);
+                } else if field.keyword_is("special_forces") {
+                    special_forces = field
+                        .value
+                        .scalar()
+                        .and_then(crate::parser::read_bool)
+                        .unwrap_or(special_forces);
                 } else if field.keyword_is("type") {
                     // Raw category tokens resolve into the lexer and never update
                     // the reader's value slot.
@@ -392,6 +418,10 @@ impl SubUnits {
             self.artillery.insert(
                 identity(entry.key.as_deref().unwrap_or_default()),
                 Ok(artillery),
+            );
+            self.special_forces.insert(
+                identity(entry.key.as_deref().unwrap_or_default()),
+                Ok(special_forces),
             );
             self.support.insert(
                 identity(entry.key.as_deref().unwrap_or_default()),
@@ -424,11 +454,14 @@ impl SubUnits {
                 ""
             };
             self.warnings.push(format!(
-                "Sub-unit database content: {reason}; {indices}every sub-unit's is_artillery_brigade is unknown until a later file defines it again; its support category is unknown under the same condition; its group is unknown until explicitly assigned again."
+                "Sub-unit database content: {reason}; {indices}every sub-unit's is_artillery_brigade and special_forces are unknown until a later file defines it again; its support category is unknown under the same condition; its group is unknown until explicitly assigned again."
             ));
             // The unread tail may define any name again, which may reset
             // and assign its value.
             for value in self.artillery.values_mut() {
+                *value = Err(reason.clone());
+            }
+            for value in self.special_forces.values_mut() {
                 *value = Err(reason.clone());
             }
             for value in self.support.values_mut() {
@@ -442,6 +475,8 @@ impl SubUnits {
             }
             if let Some(key) = keys.last() {
                 self.artillery.insert(identity(key), Err(reason.clone()));
+                self.special_forces
+                    .insert(identity(key), Err(reason.clone()));
                 self.support.insert(identity(key), Err(reason.clone()));
                 self.categories_by_unit
                     .insert(identity(key), Err(reason.clone()));

@@ -316,6 +316,7 @@ mod tests {
                 river_crossing_two: 0,
                 river_crossing_three: 0,
                 organisation: None,
+                rail: None,
             },
             rail: Ok(installed_content::movement::RailMovementDefines {
                 speed: [0; 4],

@@ -1310,9 +1310,15 @@ impl CounterContent {
             region_provinces.insert(id, members);
         }
         let (terrain, default_map) = installed_content::terrain::read(layers)?;
-        let attrition = viewer_foundation::map::counter_attrition::Content::read(defines, &terrain)
-            .map(Arc::new)
-            .map_err(|error| error.to_string());
+        let attrition = viewer_foundation::map::counter_attrition::Content::read(
+            defines,
+            &terrain,
+            installed_content::unit_leader::sub_units(layers)
+                .map(Arc::new)
+                .map_err(|error| error.to_string()),
+        )
+        .map(Arc::new)
+        .map_err(|error| error.to_string());
         let mission_content =
             naval_mission_inputs::Content::read(terrain.clone(), regions, defines)
                 .map_err(|error| error.to_string());

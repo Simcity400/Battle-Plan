@@ -172,6 +172,7 @@ fn content() -> Content {
                 attrition: Some(30_000),
             },
         ],
+        sub_units: Err("the content's sub-unit database is unavailable".into()),
     }
 }
 
@@ -232,6 +233,70 @@ fn rendered(frame: &DecodedFrame) -> Tooltip {
         assert_eq!((country, state), (100, 3));
         Ok(40_000)
     };
+    let lookups = Lookups {
+        content: &content,
+        terrain: &terrain,
+        border: &border,
+    };
+    render_with(frame, Ok(&lookups))
+}
+
+/// The division's template (0, as its row holds it): one `marine` and one `infantry`,
+/// `unreadable` its model-unreadable flag; the hour's lexical tokens name both.
+fn composition(frame: &mut DecodedFrame, unreadable: u8) {
+    const MARINE: u32 = 900_002;
+    const INFANTRY: u32 = 900_003;
+    put(
+        frame,
+        TableRows::DivisionTemplateIcons(vec![replay::rows::DivisionTemplateIconRow {
+            template: 0,
+            subunits: [MARINE, INFANTRY]
+                .into_iter()
+                .map(|token| replay::rows::TemplateSubunit {
+                    token,
+                    local: 0,
+                    count: 1,
+                })
+                .collect(),
+            model_unreadable: unreadable,
+            ..Default::default()
+        }]),
+    );
+    let mut tokens = frame
+        .complete::<replay::rows::tables::LexicalTokens>()
+        .map(<[_]>::to_vec)
+        .unwrap_or_default();
+    tokens.retain(|row| row.token < MARINE);
+    tokens.extend(
+        [(MARINE, &b"marine"[..]), (INFANTRY, b"infantry")]
+            .into_iter()
+            .map(|(token, literal)| LexicalTokenRow {
+                token,
+                literal: literal.to_vec(),
+            }),
+    );
+    put(frame, TableRows::LexicalTokens(tokens));
+}
+
+/// [`rendered`] with a sub-unit database naming `marine` special forces.
+fn rendered_with_sub_units(frame: &DecodedFrame) -> Tooltip {
+    let mut units = installed_content::unit_leader::SubUnits::default();
+    units.read(
+        b"sub_units={ marine={special_forces=yes type=infantry} infantry={type=infantry} }",
+        "common/units/test.txt",
+    );
+    let content = Content {
+        sub_units: Ok(std::sync::Arc::new(units)),
+        ..content()
+    };
+    let terrain = |province: u32| -> Result<i32, String> {
+        Ok(match province {
+            7 => 2,
+            8 => 1,
+            _ => 0,
+        })
+    };
+    let border = |_: u32, _: u32| -> Result<i64, String> { Ok(40_000) };
     let lookups = Lookups {
         content: &content,
         terrain: &terrain,
@@ -360,19 +425,46 @@ fn the_supply_line_follows_the_recorded_supply_and_days() {
         rendered(&frame).title,
         "total 2.50%\nsupply \u{11}R+3.57%\u{11}!"
     );
-    // A special-forces factor needs the template's share, which is refused by name.
-    put(
-        &mut frame,
-        TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
-            country: 100,
-            movement_modifiers: Recorded::Value(Some(CountryMovementModifiers {
-                special_forces_out_of_supply_factor: Some(-50_000),
+    // A special-forces factor applies at the template's special-forces share: one
+    // marine and one infantry give 0.5, so -0.5 scales the severity as a -0.25 country
+    // factor does.
+    let factors = |frame: &mut DecodedFrame, country: Option<i64>, special: Option<i64>| {
+        put(
+            frame,
+            TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
+                country: 100,
+                movement_modifiers: Recorded::Value(Some(CountryMovementModifiers {
+                    out_of_supply_factor: country,
+                    special_forces_out_of_supply_factor: special,
+                    ..Default::default()
+                })),
                 ..Default::default()
-            })),
-            ..Default::default()
-        }]),
+            }]),
+        );
+    };
+    composition(&mut frame, 0);
+    factors(&mut frame, Some(-25_000), None);
+    let country = rendered_with_sub_units(&frame).title;
+    factors(&mut frame, None, Some(-50_000));
+    let special = rendered_with_sub_units(&frame);
+    assert!(
+        !refused(&special, "attrition supply"),
+        "{:?}",
+        special.refused
     );
-    assert!(refused(&rendered(&frame), "attrition supply"));
+    assert_eq!(special.title, country);
+    // A composition unreadable when recorded refuses the line by name.
+    composition(&mut frame, 1);
+    let unreadable = rendered_with_sub_units(&frame);
+    assert!(
+        unreadable
+            .refused
+            .keys()
+            .any(|key| key.starts_with("counter attrition supply:")
+                && key.contains("composition was unreadable")),
+        "{:?}",
+        unreadable.refused
+    );
     // No days out of supply: no line.
     status(&mut frame).out_of_supply_days = Recorded::Value(Some(0));
     assert!(!refused(&rendered(&frame), "attrition supply"));

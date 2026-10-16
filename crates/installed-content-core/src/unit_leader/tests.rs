@@ -1562,3 +1562,33 @@ fn inline_unit_icon_categories_follow_mask_or_and_reset() {
     assert_eq!(units.category(b"reset"), Ok(mask("infantry")));
     assert!(units.category(b"absent").unwrap_err().contains("absent"));
 }
+
+/// `special_forces` reads as `is_artillery_brigade` does: only an exact `yes` or `no`
+/// assigns it, each appearance starts at `no`, and the last appearance gives it.
+#[test]
+fn special_forces_follows_the_last_appearance() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let units = sub_units(&[
+        br#"sub_units={
+            marine={special_forces=yes}
+            line={special_forces=no}
+            plain={}
+            unclear={special_forces=yes special_forces=maybe}
+            redefined={special_forces=yes}
+        }"#,
+        b"sub_units={REDEFINED={type=infantry}}",
+    ]);
+    assert_eq!(units.special_forces(b"MARINE"), Ok(true));
+    assert_eq!(units.special_forces(b"line"), Ok(false));
+    assert_eq!(units.special_forces(b"plain"), Ok(false));
+    // A value that is neither `yes` nor `no` leaves the flag as it was.
+    assert_eq!(units.special_forces(b"unclear"), Ok(true));
+    assert_eq!(units.special_forces(b"redefined"), Ok(false));
+    assert!(
+        units
+            .special_forces(b"absent")
+            .unwrap_err()
+            .contains("absent")
+    );
+}

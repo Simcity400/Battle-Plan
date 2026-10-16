@@ -80,11 +80,12 @@ fn defines() -> Defines {
             threshold: 30_000,
             penalty: -80_000,
         }),
+        rail: None,
     }
 }
 
-fn no_edge_terms(_: u32, _: u32) -> Result<NormalEdgeOperands, String> {
-    Ok(NormalEdgeOperands::default())
+fn no_edge_terms(_: u32, _: u32) -> Result<EdgeTerm, String> {
+    Ok(EdgeTerm::Normal(NormalEdgeOperands::default()))
 }
 
 /// The common modifier one, no edge term and no organisation or fuel factor.
@@ -101,10 +102,10 @@ fn with_infrastructure(
     test: impl FnOnce(&SpeedTerms<'_>),
 ) {
     let edge = |_: u32, to: u32| {
-        Ok(edge_operands(&EdgeTerms {
+        Ok(EdgeTerm::Normal(edge_operands(&EdgeTerms {
             infrastructure: infrastructure(to)?,
             ..Default::default()
-        }))
+        })))
     };
     test(&SpeedTerms {
         edge: &edge,
@@ -539,6 +540,7 @@ fn the_common_modifier_adds_country_commander_weather_supply_and_retreat_terms()
         leader_speed: 5_000,
         country_attack_speed: 20_000,
         weather: [-30_000, -10_000, -20_000, -40_000],
+        armour_speed: [0; 2],
     };
     // Acclimatization 0.5 halves each weather entry; a peaceful move takes no attack
     // speed entry.
@@ -561,14 +563,14 @@ fn the_common_modifier_adds_country_commander_weather_supply_and_retreat_terms()
     );
     // The edge's terms and the common modifier multiply the base speed together.
     let edge = |_: u32, _: u32| {
-        Ok(edge_operands(&EdgeTerms {
+        Ok(EdgeTerm::Normal(edge_operands(&EdgeTerms {
             terrain: -20_000,
             fort: Some(-10_000),
             snow: None,
             leader_terrain: 5_000,
             infrastructure: -5_000,
             river: None,
-        }))
+        })))
     };
     let terms = SpeedTerms {
         modifier: 90_000,

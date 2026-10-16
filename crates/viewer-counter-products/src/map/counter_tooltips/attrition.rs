@@ -162,6 +162,7 @@ fn supply(
             division,
             movement,
             lookups.content.supply_threshold,
+            lookups.content,
         )
     })();
     match value {

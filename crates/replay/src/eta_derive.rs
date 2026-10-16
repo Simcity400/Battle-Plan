@@ -3,14 +3,16 @@
 //! Progress follows the native first-edge fraction. Arrival times walk each division's
 //! recorded route natively, each edge at the native land speed ([`edge_speed`]) of its
 //! recorded stat-block base speed and the speed terms the hour records ([`SpeedTerms`]):
-//! the common modifier ([`common_modifier`]) of country, commander, weather, supply,
-//! enemy air ([`air_term`]) and retreat terms, each edge's terrain, fort, snow, commander
-//! terrain, river and infrastructure terms ([`edge_operands`]), the low-organisation
-//! factor of a hostile move ([`organisation_factor`]) and the fuel factor
-//! ([`fuel_factor`]). The game also applies the location state's speed modifiers, the
-//! template's priority sub-unit armour and category terms, the noncore-supply term and a
-//! relation's river crossing factor, which the recording does not hold, so an arrival
-//! time drifts from the game wherever those apply.
+//! the common modifier ([`common_modifier`]) of country, commander, armour, weather,
+//! supply (with the template's special-forces share), enemy air ([`air_term`]) and
+//! retreat terms, each edge's terrain, fort, snow, commander terrain, river and
+//! infrastructure terms ([`edge_operands`]), the low-organisation factor of a hostile
+//! move ([`organisation_factor`]) and the fuel factor ([`fuel_factor`]). A strategic
+//! redeployment that no modifier blocks moves at the road or rail speed instead, and
+//! land edges past a landing at the invasion speed ([`EdgeTerm`]). The game also applies
+//! the location state's speed modifiers, the priority sub-unit's category terms, the
+//! noncore-supply term and a relation's river crossing factor, which the recording does
+//! not hold, so an arrival time drifts from the game wherever those apply.
 
 use crate::rows::{DivisionMovementRow, RailwayGunCounterInputRow, Recorded};
 use engine::carmy::{NormalEdgeOperands, PreparedNormalSpeed};
@@ -90,6 +92,17 @@ pub struct Defines {
     pub river_crossing_three: i64,
     /// The organisation term's defines; None when the content refused them.
     pub organisation: Option<OrganisationDefines>,
+    /// The strategic redeployment speed's defines; None when the content refused them.
+    pub rail: Option<RailDefines>,
+}
+
+/// `NMilitary.STRATEGIC_SPEED_INFRA_BASE`, `STRATEGIC_SPEED_INFRA_MAX`,
+/// `STRATEGIC_SPEED_RAIL_BASE` and `STRATEGIC_SPEED_RAIL_MAX` (fixed5), and the railway
+/// building's maximum level, the rail percentage's denominator.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RailDefines {
+    pub speed: [i64; 4],
+    pub maximum_level: i32,
 }
 
 /// `NMilitary.LOW_ORG_FOR_ATTACK` and `NMilitary.ZERO_ORG_MOVEMENT_MODIFIER`, fixed5.
@@ -106,9 +119,9 @@ pub struct OrganisationDefines {
 pub struct SpeedTerms<'a> {
     /// The division's common movement modifier ([`common_modifier`]).
     pub modifier: i64,
-    /// The edge operands of a move `from -> to` ([`edge_operands`]); an error names the
-    /// missing operand.
-    pub edge: &'a dyn Fn(u32, u32) -> Result<NormalEdgeOperands, String>,
+    /// The speed term of a move `from -> to` ([`EdgeTerm`]); an error names the missing
+    /// operand.
+    pub edge: &'a dyn Fn(u32, u32) -> Result<EdgeTerm, String>,
     /// The division's organisation factor ([`organisation_factor`]), None where the
     /// game applies none.
     pub organisation: Option<i64>,
@@ -116,21 +129,35 @@ pub struct SpeedTerms<'a> {
     pub fuel: Option<i64>,
 }
 
+/// How the game moves a division over one edge: the normal speed with the edge's
+/// operands ([`edge_operands`]); a speed the outer movement scale multiplies, without
+/// the common modifier, organisation or fuel factors (a strategic redeployment's road
+/// or rail speed); or a fixed speed (a naval invasion's).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeTerm {
+    Normal(NormalEdgeOperands),
+    Scaled(i64),
+    Fixed(i64),
+}
+
 /// The effective modifier values the common term adds, each zero where the game finds
-/// no entry: the country's and the selected commander block's army speed, the country's
-/// attack speed (added only for a hostile move), and the location's province and region
-/// weather speed and attack speed entries.
+/// no entry: the country's and the selected commander block's army speed, their armour
+/// speed (for a division with a commander whose priority sub-unit is armour), the
+/// country's attack speed (added only for a hostile move), and the location's province
+/// and region weather speed and attack speed entries.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CommonModifiers {
     pub country_speed: i64,
     pub leader_speed: i64,
+    /// The country's and the commander block's armour speed, each added on its own.
+    pub armour_speed: [i64; 2],
     pub country_attack_speed: i64,
     /// Province speed, province attack speed, region speed, region attack speed.
     pub weather: [i64; 4],
 }
 
 /// The division's common movement modifier: one, plus the country's and commander's
-/// army speed, the country's attack speed for a hostile move (`attacking`), each weather
+/// army speed and armour speed, the country's attack speed for a hostile move (`attacking`), each weather
 /// entry times the acclimatization factor (the attack speed entries only for a hostile
 /// move), the out-of-supply term ([`supply_term`]), the enemy air term ([`air_term`])
 /// and the retreat or withdrawal term ([`retreat_term`]), each sum the native wrapping
@@ -145,7 +172,9 @@ pub fn common_modifier(
 ) -> i64 {
     let mut value = MOVEMENT_ONE
         .wrapping_add(modifiers.country_speed)
-        .wrapping_add(modifiers.leader_speed);
+        .wrapping_add(modifiers.leader_speed)
+        .wrapping_add(modifiers.armour_speed[0])
+        .wrapping_add(modifiers.armour_speed[1]);
     if attacking {
         value = value.wrapping_add(modifiers.country_attack_speed);
     }
@@ -532,14 +561,18 @@ pub fn edge_speed(
     terms: &SpeedTerms<'_>,
     defines: &Defines,
 ) -> Result<i64, String> {
-    Ok(PreparedNormalSpeed {
-        modifier: terms.modifier,
-        base_speed,
-        organisation: terms.organisation,
-        fuel: terms.fuel,
-        outer_scale: defines.outer_scale,
-    }
-    .evaluate((terms.edge)(from, to)?))
+    Ok(match (terms.edge)(from, to)? {
+        EdgeTerm::Normal(edge) => PreparedNormalSpeed {
+            modifier: terms.modifier,
+            base_speed,
+            organisation: terms.organisation,
+            fuel: terms.fuel,
+            outer_scale: defines.outer_scale,
+        }
+        .evaluate(edge),
+        EdgeTerm::Scaled(speed) => movement_product(speed, defines.outer_scale),
+        EdgeTerm::Fixed(speed) => speed,
+    })
 }
 
 /// Estimated `(next_remaining, destination_remaining)` for one division, in

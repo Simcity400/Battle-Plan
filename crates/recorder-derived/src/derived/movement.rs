@@ -13,8 +13,8 @@ use std::collections::BTreeMap;
 use installed_content::movement::MovementMap;
 use replay::{
     eta_derive::{
-        self, Defines, OrganisationDefines,
-        frame_terms::{FrameTerms, Geography},
+        self, Defines, OrganisationDefines, RailDefines,
+        frame_terms::{FrameTerms, Geography, SubUnitContent},
     },
     frame::DecodedFrame,
     rows::{DivisionRow, Recorded, tables},
@@ -28,6 +28,8 @@ pub struct Content {
     pub terrain_movement: Vec<i64>,
     /// Each province's strategic region id.
     pub regions: BTreeMap<u32, u32>,
+    /// The sub-unit database: special forces and type masks.
+    pub sub_units: Result<installed_content::unit_leader::SubUnits, String>,
 }
 
 impl Content {
@@ -49,6 +51,10 @@ impl Content {
                     .organisation
                     .ok()
                     .map(|(threshold, penalty)| OrganisationDefines { threshold, penalty }),
+                rail: movement.rail.as_ref().ok().map(|rail| RailDefines {
+                    speed: rail.speed,
+                    maximum_level: rail.maximum_level,
+                }),
             },
             terrain_movement: terrain
                 .categories
@@ -60,7 +66,24 @@ impl Content {
                 .iter()
                 .flat_map(|(&id, region)| region.provinces.iter().map(move |&p| (p, id)))
                 .collect(),
+            sub_units: installed_content::unit_leader::sub_units(layers).map_err(|error| error.to_string()),
         })
+    }
+}
+
+impl SubUnitContent for Content {
+    fn special_forces(&self, name: &[u8]) -> Result<bool, String> {
+        self.sub_units
+            .as_ref()
+            .map_err(Clone::clone)?
+            .special_forces(name)
+    }
+
+    fn sub_unit_types(&self, name: &[u8]) -> Result<u64, String> {
+        self.sub_units
+            .as_ref()
+            .map_err(Clone::clone)?
+            .category(name)
     }
 }
 
@@ -92,29 +115,14 @@ impl Geography for Content {
     }
 }
 
-/// The tables the speed terms read.
-pub const TABLES: [replay::rows::TableId; 17] = {
-    use replay::rows::TableId::*;
-    [
-        Divisions,
-        DivisionMovement,
-        DivisionStatus,
-        Provinces,
-        States,
-        CountryLinks,
-        Countries,
-        CountryCounterInputs,
-        OrdersGroupCounterInputs,
-        WeatherProvinces,
-        WeatherRegions,
-        ModifierDefinitions,
-        LexicalTokens,
-        SimulationFeatures,
-        WarRelations,
-        Clock,
-        RaidAirScores,
-    ]
-};
+/// The tables the speed witness decodes: each mover's Divisions and DivisionMovement
+/// rows and every table the speed terms read ([`replay::eta_derive::frame_terms::TABLES`]).
+pub fn tables() -> impl Iterator<Item = replay::rows::TableId> {
+    use replay::rows::TableId::{DivisionMovement, Divisions};
+    [Divisions, DivisionMovement]
+        .into_iter()
+        .chain(replay::eta_derive::frame_terms::TABLES)
+}
 
 /// One division's edge at an hour: its location, first route province, route,
 /// numerator and the speed playback derives for the edge.

@@ -15,6 +15,24 @@ pub struct Content {
     /// The terrain database in load order: one-based ordinal
     /// ordinal minus one.
     pub terrains: Vec<Terrain>,
+    /// The sub-unit database: the out-of-supply line's special-forces share reads it.
+    pub sub_units: Result<std::sync::Arc<installed_content::unit_leader::SubUnits>, String>,
+}
+
+impl replay::eta_derive::frame_terms::SubUnitContent for Content {
+    fn special_forces(&self, name: &[u8]) -> Result<bool, String> {
+        self.sub_units
+            .as_ref()
+            .map_err(Clone::clone)?
+            .special_forces(name)
+    }
+
+    fn sub_unit_types(&self, name: &[u8]) -> Result<u64, String> {
+        self.sub_units
+            .as_ref()
+            .map_err(Clone::clone)?
+            .category(name)
+    }
 }
 
 pub struct Terrain {
@@ -30,6 +48,7 @@ impl Content {
     pub fn read(
         defines: &installed_content::defines::Defines,
         terrain: &installed_content::terrain::TerrainDefinitions,
+        sub_units: Result<std::sync::Arc<installed_content::unit_leader::SubUnits>, String>,
     ) -> io::Result<Self> {
         Ok(Self {
             training: defines.fixed5("NMilitary", "TRAINING_ATTRITION")?,
@@ -50,6 +69,7 @@ impl Content {
                         .map(|value| value.value),
                 })
                 .collect(),
+            sub_units,
         })
     }
 }

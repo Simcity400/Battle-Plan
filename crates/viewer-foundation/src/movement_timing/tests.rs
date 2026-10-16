@@ -33,13 +33,14 @@ fn content(map: MovementMap) -> MovementContent {
         land: Ok(LandSpeedContent {
             terrain_movement: vec![0],
             regions: BTreeMap::new(),
+            ..Default::default()
         }),
     }
 }
 
 /// The edge speed of `base` with no term but `organisation`.
 fn plain_speed(base: i64, organisation: Option<i64>, defines: &Defines) -> i64 {
-    let edge = |_: u32, _: u32| Ok(Default::default());
+    let edge = |_: u32, _: u32| Ok(eta_derive::EdgeTerm::Normal(Default::default()));
     eta_derive::edge_speed(
         base,
         1,
@@ -541,6 +542,7 @@ fn recorded_speed_terms_move_each_edge() {
     map.land = Ok(LandSpeedContent {
         terrain_movement: vec![0, -10_000],
         regions: BTreeMap::new(),
+        ..Default::default()
     });
     let mut frame = hour(Some(SPEED).into());
     put(
@@ -631,6 +633,7 @@ fn enemy_air_superiority_slows_an_owner_at_war() {
     map.land = Ok(LandSpeedContent {
         terrain_movement: vec![0],
         regions: BTreeMap::from([(1, 70), (2, 70), (3, 70)]),
+        ..Default::default()
     });
     let mut frame = hour(Some(SPEED).into());
     put(
@@ -983,4 +986,339 @@ fn a_zero_supply_days_define_refuses_by_name() {
             .unwrap_err()
             .contains("supply-days define is zero")
     );
+}
+
+/// A strategic redeployment no disable-redeployment modifier blocks moves at the larger
+/// of the road speed (over the destination state's railway infrastructure) and the rail
+/// speed (over the departure province's directed railway percentage), times the outer
+/// scale, without the common modifier. A blocked one moves at the ordinary speed; one
+/// whose redeployment inputs were withheld refuses by name.
+#[test]
+fn a_strategic_redeployment_moves_at_the_road_or_rail_speed() {
+    use replay::rows::{
+        RailCooldownRow, RailEdgeRow, RailwayBuildingHealth, RailwayBuildingState, StrategicAction,
+        StrategicActionFailure, StrategicRedeploymentInputs,
+    };
+    let mut map = content(two_leg_map());
+    map.defines.rail = Some(eta_derive::RailDefines {
+        speed: [500_000, 1_000_000, 1_000_000, 2_500_000],
+        maximum_level: 5,
+    });
+    let mut frame = hour(Some(SPEED).into());
+    // Province 3 lies in state 9, whose railway infrastructure is half its maximum.
+    put(
+        &mut frame,
+        TableRows::Provinces(
+            (1..=3)
+                .map(|id| ProvinceRow {
+                    id,
+                    state: if id == 3 { 9 } else { 0 },
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    put(
+        &mut frame,
+        TableRows::States(vec![StateRow {
+            id: 9,
+            railway_infrastructure: Recorded::Value(Some(50_000)),
+            ..Default::default()
+        }]),
+    );
+    // Province 1 has a healthy level-5 railway to 2; province 2 has no rail info.
+    put(
+        &mut frame,
+        TableRows::RailCooldowns(vec![RailCooldownRow {
+            province: 1,
+            cooldown_ticks: 0,
+            building: Recorded::Value(Some(RailwayBuildingState {
+                building: Some(RailwayBuildingHealth {
+                    level: 5,
+                    healthy: 5,
+                    partial: None,
+                }),
+            })),
+            ..Default::default()
+        }]),
+    );
+    put(
+        &mut frame,
+        TableRows::RailEdges(vec![RailEdgeRow {
+            from: 1,
+            to: 2,
+            level: 5,
+        }]),
+    );
+    let mut row = moving(Some(SPEED).into());
+    row.strategic_redeployment = 1;
+    row.strategic_action = Recorded::Value(StrategicAction::Available(
+        StrategicRedeploymentInputs::default(),
+    ));
+    put(&mut frame, TableRows::DivisionMovement(vec![row.clone()]));
+    let etas = Etas::read(&frame, Some(&map)).unwrap();
+    // 1 -> 2: max(5 + 0 * 10, 10 + 1 * 25) = 35 km/h. 2 -> 3: max(5 + 0.5 * 10, 10 + 0)
+    // = 10 km/h.
+    assert_eq!(etas.estimate(DIVISION), two_legs(3_500_000, 1_000_000));
+    assert_eq!(
+        restricted_estimate(&frame, &map),
+        two_legs(3_500_000, 1_000_000).map_err(str::to_owned)
+    );
+    // A disable-redeployment modifier blocks the rail: the ordinary speed applies.
+    row.strategic_action =
+        Recorded::Value(StrategicAction::Available(StrategicRedeploymentInputs {
+            country_modifier: 1,
+            ..Default::default()
+        }));
+    put(&mut frame, TableRows::DivisionMovement(vec![row.clone()]));
+    let blocked = Etas::read(&frame, Some(&map)).unwrap();
+    assert_eq!(blocked.estimate(DIVISION), two_legs(SPEED, SPEED));
+    row.strategic_action = Recorded::Value(StrategicAction::Withheld(
+        StrategicActionFailure::CountryModifier,
+    ));
+    put(&mut frame, TableRows::DivisionMovement(vec![row]));
+    let withheld = Etas::read(&frame, Some(&map)).unwrap();
+    assert!(
+        withheld
+            .estimate(DIVISION)
+            .unwrap_err()
+            .contains("owner-country modifier unavailable")
+    );
+}
+
+/// The estimate on `frame` with every table but the mover's own and those the speed terms
+/// read ([`replay::eta_derive::frame_terms::TABLES`]) unavailable, as the derivation
+/// checker's selected decoder leaves them.
+fn restricted_estimate(frame: &DecodedFrame, map: &MovementContent) -> Result<(i64, i64), String> {
+    use replay::rows::TableId;
+    let mut restricted = frame.clone();
+    for table in TableId::ALL {
+        if !matches!(table, TableId::Divisions | TableId::DivisionMovement)
+            && !replay::eta_derive::frame_terms::TABLES.contains(&table)
+        {
+            *restricted.tables[table.index()] = TableView::Unavailable {
+                reason: "not selected".into(),
+            };
+        }
+    }
+    Etas::read(&restricted, Some(map))
+        .unwrap()
+        .estimate(DIVISION)
+        .map_err(str::to_owned)
+}
+
+/// Sub-units `light_armor` (type `armor`), `marine` (special forces) and `infantry`.
+fn sub_unit_database() -> std::sync::Arc<installed_content::unit_leader::SubUnits> {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
+    let mut units = installed_content::unit_leader::SubUnits::default();
+    units.read(
+        b"sub_units={ light_armor={type=armor} marine={special_forces=yes type=infantry} infantry={type=infantry} }",
+        "common/units/test.txt",
+    );
+    std::sync::Arc::new(units)
+}
+
+/// Lexical tokens naming `light_armor`, `marine` and `infantry`, above every modifier
+/// definition token the neutral world installs.
+const ARMOUR: u32 = 900_001;
+const MARINE: u32 = 900_002;
+const INFANTRY: u32 = 900_003;
+
+/// The division's template 0x42, whose priority sub-unit is `priority` and whose
+/// composition is `units` of (token, count), with the sub-unit names added to the
+/// hour's lexical tokens.
+fn template(frame: &mut DecodedFrame, priority: &[u8], units: &[(u32, i32)]) {
+    put(
+        frame,
+        TableRows::DivisionTemplateIcons(vec![replay::rows::DivisionTemplateIconRow {
+            template: 0x42,
+            priority_unit_name: priority.to_vec(),
+            subunits: units
+                .iter()
+                .map(|&(token, count)| replay::rows::TemplateSubunit {
+                    token,
+                    local: 0,
+                    count,
+                })
+                .collect(),
+            ..Default::default()
+        }]),
+    );
+    let mut tokens = frame
+        .complete::<replay::rows::tables::LexicalTokens>()
+        .map(<[_]>::to_vec)
+        .unwrap_or_default();
+    tokens.retain(|row| row.token < ARMOUR);
+    tokens.extend(
+        [
+            (ARMOUR, &b"light_armor"[..]),
+            (MARINE, b"marine"),
+            (INFANTRY, b"infantry"),
+        ]
+        .into_iter()
+        .map(|(token, literal)| replay::rows::LexicalTokenRow {
+            token,
+            literal: literal.to_vec(),
+        }),
+    );
+    put(frame, TableRows::LexicalTokens(tokens));
+}
+
+/// The out-of-supply severity's special-forces factor applies at the template's
+/// special-forces share: 3 marines and 1 infantry give 0.75, so a -0.5 factor adds
+/// -0.375 to the multiplier, as a -0.375 country out-of-supply factor would; a template
+/// without special forces takes none of it.
+#[test]
+fn the_special_forces_factor_applies_at_the_template_share() {
+    let mut map = content(two_leg_map());
+    let mut frame = hour(Some(SPEED).into());
+    map.land = Ok(LandSpeedContent {
+        terrain_movement: vec![0],
+        regions: BTreeMap::new(),
+        sub_units: Ok(sub_unit_database()),
+    });
+    put(
+        &mut frame,
+        TableRows::Divisions(vec![DivisionRow {
+            id: DIVISION,
+            province: 1,
+            roster_owner: 1,
+            logical_owner: 1,
+            template: 0x42,
+            ..Default::default()
+        }]),
+    );
+    // Ten days out of supply at half the received supply, without grace.
+    put(
+        &mut frame,
+        TableRows::DivisionStatus(vec![DivisionStatusRow {
+            supply_ratio: 50_000,
+            out_of_supply_days: Recorded::Value(Some(10)),
+            supply_ratio_exact: Recorded::Value(Some(50_000)),
+            supply_grace_exact: Recorded::Value(Some(0)),
+            ..status_row(DIVISION)
+        }]),
+    );
+    let factors = |frame: &mut DecodedFrame, country: Option<i64>, special: Option<i64>| {
+        put(
+            frame,
+            TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
+                country: 1,
+                movement_modifiers: Recorded::Value(Some(CountryMovementModifiers {
+                    out_of_supply_factor: country,
+                    special_forces_out_of_supply_factor: special,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }]),
+        );
+    };
+    template(&mut frame, b"marine", &[(MARINE, 3), (INFANTRY, 1)]);
+    factors(&mut frame, None, Some(-50_000));
+    let special = Etas::read(&frame, Some(&map))
+        .unwrap()
+        .estimate(DIVISION)
+        .map_err(str::to_owned);
+    assert!(special.is_ok(), "{special:?}");
+    factors(&mut frame, Some(-37_500), None);
+    let country = Etas::read(&frame, Some(&map))
+        .unwrap()
+        .estimate(DIVISION)
+        .map_err(str::to_owned);
+    assert_eq!(special, country);
+    // A composition unreadable when recorded refuses the estimate by name.
+    let unreadable = |frame: &mut DecodedFrame| {
+        let mut rows = frame
+            .complete::<replay::rows::tables::DivisionTemplateIcons>()
+            .unwrap()
+            .to_vec();
+        rows[0].model_unreadable = 1;
+        put(frame, TableRows::DivisionTemplateIcons(rows));
+    };
+    factors(&mut frame, None, Some(-50_000));
+    let mut refused = frame.clone();
+    unreadable(&mut refused);
+    let reason = Etas::read(&refused, Some(&map))
+        .unwrap()
+        .estimate(DIVISION)
+        .map_err(str::to_owned);
+    assert!(
+        reason
+            .as_ref()
+            .unwrap_err()
+            .contains("composition was unreadable"),
+        "{reason:?}"
+    );
+    assert_eq!(restricted_estimate(&frame, &map), special);
+    // Without special forces the factor adds nothing.
+    template(&mut frame, b"infantry", &[(INFANTRY, 4)]);
+    factors(&mut frame, None, Some(-50_000));
+    let none = Etas::read(&frame, Some(&map))
+        .unwrap()
+        .estimate(DIVISION)
+        .map_err(str::to_owned);
+    factors(&mut frame, None, None);
+    let neither = Etas::read(&frame, Some(&map))
+        .unwrap()
+        .estimate(DIVISION)
+        .map_err(str::to_owned);
+    assert_eq!(none, neither);
+    assert_ne!(none, special);
+}
+
+/// A division with a commander whose priority sub-unit is of type `armor` takes the
+/// country's armour speed (+0.2); without a commander, or with another priority
+/// sub-unit, it takes none.
+#[test]
+fn an_armoured_priority_sub_unit_with_a_commander_takes_the_armour_speed() {
+    let mut map = content(two_leg_map());
+    let mut frame = hour(Some(SPEED).into());
+    map.land = Ok(LandSpeedContent {
+        terrain_movement: vec![0, 0],
+        regions: BTreeMap::new(),
+        sub_units: Ok(sub_unit_database()),
+    });
+    commanded(&mut frame, vec![0, 0], [None; 5]);
+    let division = |frame: &mut DecodedFrame, group: u64| {
+        put(
+            frame,
+            TableRows::Divisions(vec![DivisionRow {
+                id: DIVISION,
+                province: 1,
+                roster_owner: 1,
+                logical_owner: 1,
+                orders_group: group,
+                template: 0x42,
+                ..Default::default()
+            }]),
+        );
+    };
+    division(&mut frame, 5);
+    put(
+        &mut frame,
+        TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
+            country: 1,
+            movement_modifiers: Recorded::Value(Some(CountryMovementModifiers {
+                army_armor_speed_factor: Some(20_000),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }]),
+    );
+    template(&mut frame, b"light_armor", &[(ARMOUR, 2)]);
+    let fast = SPEED * 120_000 / 100_000;
+    let armoured = Etas::read(&frame, Some(&map)).unwrap();
+    assert_eq!(armoured.estimate(DIVISION), two_legs(fast, fast));
+    assert_eq!(
+        restricted_estimate(&frame, &map),
+        two_legs(fast, fast).map_err(str::to_owned)
+    );
+    template(&mut frame, b"infantry", &[(INFANTRY, 2)]);
+    let infantry = Etas::read(&frame, Some(&map)).unwrap();
+    assert_eq!(infantry.estimate(DIVISION), two_legs(SPEED, SPEED));
+    template(&mut frame, b"light_armor", &[(ARMOUR, 2)]);
+    division(&mut frame, 0);
+    let leaderless = Etas::read(&frame, Some(&map)).unwrap();
+    assert_eq!(leaderless.estimate(DIVISION), two_legs(SPEED, SPEED));
 }

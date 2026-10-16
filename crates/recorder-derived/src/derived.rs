@@ -365,7 +365,7 @@ fn run(
         TableId::NavalModifierTrees,
         TableId::NavalModifierTreeSamples,
     ];
-    for table in movement::TABLES {
+    for table in movement::tables() {
         if !selected.contains(&table) {
             selected.push(table);
         }

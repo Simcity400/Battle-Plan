@@ -377,6 +377,7 @@ mod tests {
         content.land = Ok(viewer_foundation::movement_timing::LandSpeedContent {
             terrain_movement: vec![0, 0],
             regions: Default::default(),
+            ..Default::default()
         });
         viewer_foundation::movement_timing::test_support::neutral_world(&mut frame, 11);
         put(

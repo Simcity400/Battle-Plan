@@ -6,13 +6,15 @@
 //! over the recorded route from `Divisions.province`, each edge at the native
 //! land speed of the recorded stat-block base speed (`DivisionMovement.base_speed`)
 //! with the recorded speed terms ([`viewer_foundation::movement_timing::HourTerms`]):
-//! the country and commander block modifiers, location weather, supply, enemy air and
-//! retreat terms, each edge's terrain, fort, snow, commander terrain, river and
-//! infrastructure terms, and the organisation and fuel factors, floored at the
-//! native 1 km/h and scaled by the content's movement scale. The game also applies
-//! the location state's speed modifiers, the priority sub-unit's armour and category
-//! terms, the noncore-supply term and a relation's river crossing factor, which the
-//! recording does not hold, so an estimate drifts from the game wherever those apply.
+//! the country and commander block modifiers and armour speed, location weather,
+//! supply (at the template's special-forces share), enemy air and retreat terms, each
+//! edge's terrain, fort, snow, commander terrain, river and infrastructure terms, and
+//! the organisation and fuel factors, floored at the native 1 km/h and scaled by the
+//! content's movement scale; a strategic redeployment no modifier blocks at the road
+//! or rail speed. The game also applies the location state's speed modifiers, the
+//! priority sub-unit's category terms, the noncore-supply term and a relation's river
+//! crossing factor, which the recording does not hold, so an estimate drifts from the
+//! game wherever those apply.
 //! Edge distances, terrain flags and the movement defines come from the
 //! matching content stack ([`MovementContent`]), never the recording.
 //!

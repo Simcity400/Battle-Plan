@@ -7,7 +7,10 @@ use installed_content::{
     unit_path::Fact,
 };
 use replay::{
-    eta_derive::{self, Defines, OrganisationDefines, ProvinceOperands, frame_terms::Geography},
+    eta_derive::{
+        self, Defines, OrganisationDefines, ProvinceOperands, RailDefines,
+        frame_terms::{Geography, SubUnitContent},
+    },
     frame::DecodedFrame,
     rows::{DivisionRow, tables},
 };
@@ -150,13 +153,25 @@ pub struct MovementContent {
 }
 
 /// The content the land movement speed reads beyond the movement map.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct LandSpeedContent {
     /// Each terrain category's common unit adjuster movement, in database order: entry
     /// `i` is terrain index `i + 1`.
     pub terrain_movement: Vec<i64>,
     /// Each province's strategic region id.
     pub regions: BTreeMap<u32, u32>,
+    /// The sub-unit database: the special-forces share and the armour term read it.
+    pub sub_units: Result<Arc<installed_content::unit_leader::SubUnits>, String>,
+}
+
+impl Default for LandSpeedContent {
+    fn default() -> Self {
+        Self {
+            terrain_movement: Vec::new(),
+            regions: BTreeMap::new(),
+            sub_units: Err("the content's sub-unit database is unavailable".into()),
+        }
+    }
 }
 
 impl MovementContent {
@@ -174,6 +189,10 @@ impl MovementContent {
                     .organisation
                     .ok()
                     .map(|(threshold, penalty)| OrganisationDefines { threshold, penalty }),
+                rail: defines.rail.as_ref().ok().map(|rail| RailDefines {
+                    speed: rail.speed,
+                    maximum_level: rail.maximum_level,
+                }),
             },
             rail: defines.rail,
             task_force_terrain: Err("fresh task force terrain content is unavailable".into()),
@@ -186,6 +205,7 @@ impl MovementContent {
         terrain: Result<Arc<installed_content::terrain::TerrainDefinitions>, String>,
         regions: &BTreeMap<u32, installed_content::regions::StrategicRegion>,
         subunits: Result<TokenKeys, String>,
+        sub_units: Result<Arc<installed_content::unit_leader::SubUnits>, String>,
     ) {
         self.land = terrain
             .as_ref()
@@ -202,6 +222,7 @@ impl MovementContent {
                         region.provinces.iter().map(move |&province| (province, id))
                     })
                     .collect(),
+                sub_units,
             });
         self.task_force_terrain =
             terrain.map(|terrain| TerrainSpeedContent::new(terrain, regions, subunits));
@@ -308,6 +329,24 @@ pub fn operands(map: &MovementMap, province: u32) -> Option<ProvinceOperands> {
 
 /// The hour's recorded speed-term operands ([`replay::eta_derive::frame_terms`]).
 pub use replay::eta_derive::frame_terms::FrameTerms as HourTerms;
+
+impl SubUnitContent for MovementContent {
+    fn special_forces(&self, name: &[u8]) -> Result<bool, String> {
+        let land = self.land.as_ref().map_err(Clone::clone)?;
+        land.sub_units
+            .as_ref()
+            .map_err(Clone::clone)?
+            .special_forces(name)
+    }
+
+    fn sub_unit_types(&self, name: &[u8]) -> Result<u64, String> {
+        let land = self.land.as_ref().map_err(Clone::clone)?;
+        land.sub_units
+            .as_ref()
+            .map_err(Clone::clone)?
+            .category(name)
+    }
+}
 
 impl Geography for MovementContent {
     fn terrain_index(&self, province: u32) -> Option<i32> {

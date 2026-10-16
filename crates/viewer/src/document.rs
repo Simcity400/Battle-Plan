@@ -1500,6 +1500,7 @@ impl Document {
                     combat_assets.movement_terrain(),
                     &regions,
                     counters.subunit_tokens.clone(),
+                    combat_assets.shared_sub_units(),
                 );
                 Ok(movement)
             });
