@@ -9,7 +9,7 @@ fn doc(bytes: &[u8]) -> io::Result<parser::Document> {
 
 #[test]
 fn raid_reader_notes_keep_diagnostic_kinds() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut notes = Vec::new();
     reader::document(
@@ -58,7 +58,7 @@ types = {
 
 #[test]
 fn a_type_keeps_the_fields_offers_read_in_database_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let categories =
         doc(b"categories = { air_raids = { free_targeting = yes visible = { has_dlc = x } } }")
@@ -126,7 +126,7 @@ fn a_type_keeps_the_fields_offers_read_in_database_order() {
 
 #[test]
 fn every_field_updates_the_types_persistent_objects() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let catalog = parse(
         &[],
@@ -208,7 +208,7 @@ fn every_field_updates_the_types_persistent_objects() {
 
 #[test]
 fn type_and_category_names_are_folded_tokens() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let categories =
         doc(b"categories = { Air = { free_targeting = no } AIR = { free_targeting = yes } }")
@@ -230,7 +230,7 @@ fn type_and_category_names_are_folded_tokens() {
 
 #[test]
 fn scalar_selector_names_read_the_lexers_current_token() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // `type` has no operator: `no` remains in the value slot, while the
     // building list registers the lexer's current token, `custom_fort`.
@@ -249,7 +249,7 @@ fn scalar_selector_names_read_the_lexers_current_token() {
 
 #[test]
 fn launch_buildings_resolve_types_and_tags_in_database_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = crate::buildings::parse(
         b"buildings = {
@@ -287,7 +287,7 @@ fn launch_buildings_resolve_types_and_tags_in_database_order() {
 
 #[test]
 fn a_scalar_container_enters_nothing_and_skipped_fields_are_noted() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut notes = Vec::new();
     let types = reader::document(
@@ -315,7 +315,7 @@ fn a_scalar_container_enters_nothing_and_skipped_fields_are_noted() {
 
 #[test]
 fn a_lost_equipment_database_refuses_only_types_with_an_undecided_key() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // Known before the loss: convoy. Anything else is undecided.
     let partial: Equipment<'static> = &|key| (key == b"convoy").then_some(true);
@@ -358,7 +358,7 @@ fn a_lost_equipment_database_refuses_only_types_with_an_undecided_key() {
 
 #[test]
 fn reported_keys_add_nothing_and_list_readers_leave_the_value_slot() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut notes = Vec::new();
     let types = reader::document(
@@ -410,7 +410,7 @@ fn reported_keys_add_nothing_and_list_readers_leave_the_value_slot() {
 
 #[test]
 fn the_icon_key_follows_the_documented_two_step_lookup() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let catalog = parse(&[], &[doc(TYPES).unwrap()], EQUIPMENT).unwrap();
     let facility = &catalog.types[0];
@@ -424,7 +424,7 @@ fn the_icon_key_follows_the_documented_two_step_lookup() {
 
 #[test]
 fn raids_empty_custom_map_icon_uses_generated_base_and_building_suffix() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // Sprite-key selection tests the authored string's length, so an
     // explicit empty override uses the generated key just as absence does.
@@ -454,7 +454,7 @@ fn raids_empty_custom_map_icon_uses_generated_base_and_building_suffix() {
 
 #[test]
 fn a_name_declared_twice_or_thrice_is_refused_once() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let catalog = parse(
         &[],
@@ -474,7 +474,7 @@ fn a_name_declared_twice_or_thrice_is_refused_once() {
 
 #[test]
 fn a_type_with_an_unreadable_field_is_refused_and_the_rest_load() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let catalog = parse(
             &[],
@@ -509,7 +509,7 @@ fn a_type_with_an_unreadable_field_is_refused_and_the_rest_load() {
 
 #[test]
 fn the_arrow_and_unit_model_keep_the_constructor_values_until_read() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let catalog = parse(
             &[],
@@ -684,7 +684,7 @@ fn segment_and_subdivision_counts_are_at_least_one() {
 
 #[test]
 fn unit_animation_stages_keep_authored_order_across_blocks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let catalog = parse(
         &[],
@@ -724,7 +724,7 @@ fn unit_animation_stages_keep_authored_order_across_blocks() {
 
 #[test]
 fn a_repeated_category_is_the_later_declaration_alone() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let categories = doc(
         b"categories = { air = { free_targeting = yes visible = { always = yes } } }

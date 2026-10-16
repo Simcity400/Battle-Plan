@@ -594,7 +594,7 @@ pub fn parse_default_map(input: &[u8]) -> io::Result<DefaultMap> {
 #[cfg(test)]
 #[test]
 fn default_map_replays_keyword_and_array_readers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let source = br#"
         @path = "p.bmp"

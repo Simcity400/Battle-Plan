@@ -239,7 +239,7 @@ type={
 
     #[test]
     fn synthetic_placements_read_with_their_scale_and_position() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let types = parse(PLACEMENTS, &KeyNames::default()).unwrap();
         assert_eq!(types.len(), 2);
@@ -260,7 +260,7 @@ type={
 
     #[test]
     fn a_block_without_scale_or_flags_takes_the_defaults() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let types = parse(
             b"type={ type=\"a\" object={ position={ 1 2 3 } } }",
@@ -277,7 +277,7 @@ type={
 
     #[test]
     fn several_objects_of_one_type_are_all_kept() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let types = parse(
             b"type={ type=\"a\" object={ position={ 1 2 3 } } object={ position={ 4 5 6 } } }",
@@ -290,7 +290,7 @@ type={
 
     #[test]
     fn span_reads_tokens_and_recovers_only_at_first_overflow() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let types = parse(
             br#"@x=1 TYPE={type=a object={position={@x 2}} object={position={x=1 2 3}}
@@ -325,7 +325,7 @@ type={
 
     #[test]
     fn routing_uses_the_flag_at_each_object_but_actor_inputs_use_final_type_values() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let types = parse(
             br#"type={type=changed
@@ -351,7 +351,7 @@ type={
 
     #[test]
     fn vectors_keep_fixed5_truncation_and_float_conversion_order() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let types = parse(b"type={type=a object={position={1.234567 -0.123456 3000.12345} rotation={0 30.000009 0}}}", &KeyNames::default()).unwrap();
         let object = &types[0].objects[0];
@@ -368,7 +368,7 @@ type={
 
     #[test]
     fn anything_that_is_not_a_type_block_is_ignored() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         assert!(
             parse(b"# a comment\nother={ type=\"a\" }", &KeyNames::default())
@@ -379,7 +379,7 @@ type={
 
     #[test]
     fn the_loader_keeps_a_leading_mark_as_part_of_the_first_key() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let types = parse(
             b"\xef\xbb\xbftype={type=lost} type={type=kept object={name=placed}}",

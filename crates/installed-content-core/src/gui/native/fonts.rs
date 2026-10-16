@@ -433,15 +433,19 @@ impl Layout for FontBytes<'_> {
             // `cursor_offset` and `selection_offset`.
             0x30..=0x3C => font.offsets[(offset - 0x30) / 4] = bits as i32,
             0x40 | 0x44 => {
-                return Err("the font's lost-device interface vtable (font virtual-function table at \
+                return Err(
+                    "the font's lost-device interface vtable (font virtual-function table at \
                  the image's load address, which the replay does not hold), registered for the \
                  renderer to call through at every device reset"
-                    .into());
+                        .into(),
+                );
             }
             0x48 | 0x4C => {
-                return Err("the font's graphics context pointer, which the glyph loader reads when \
+                return Err(
+                    "the font's graphics context pointer, which the glyph loader reads when \
                  the font's files load: a heap address the replay does not hold"
-                    .into());
+                        .into(),
+                );
             }
             0x50 | 0x54 => font.viewport[(offset - 0x50) / 4] = Some(bits as i32),
             0x58 => font.color = bits,
@@ -488,21 +492,17 @@ impl Layout for FontBytes<'_> {
                 // vertex count, vertex buffer), zero until the first draw.
                 match (offset - 0x3118) % 0x20 {
                     0 if bits != 0 => {
-                        return Err(
-                            "a glyph cache record's text key, which the font draw \
+                        return Err("a glyph cache record's text key, which the font draw \
                          matches with a drawn text's hash until the slot ages out on the game's \
                          render clock, drawing nothing for a null buffer: a clock the replay does \
                          not hold"
-                                .into(),
-                        );
+                            .into());
                     }
                     0x18 | 0x1C if bits != 0 => {
-                        return Err(
-                            "a glyph cache record's vertex buffer, which font \
+                        return Err("a glyph cache record's vertex buffer, which font \
                          destruction and glyph vertex buffer release free, and drawing binds: \
                          bits that are no buffer"
-                                .into(),
-                        );
+                            .into());
                     }
                     // The last use only picks the slot a miss reuses; the texture and count are
                     // read only past a non-null buffer.
@@ -680,7 +680,7 @@ mod tests {
     /// `colorCodes` skips the raw value block, using braces as written.
     #[test]
     fn a_font_skips_its_deprecated_keys_as_the_game_does() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let font = |text: &[u8]| -> FontFacts {
             let read = events(text);
@@ -711,7 +711,7 @@ mod tests {
     /// `{` under `path` is its text, the block read on as keys.
     #[test]
     fn a_font_keeps_its_ordered_file_operations() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let read = events(
             b"bitmapfonts = { bitmapfont = { name = \"f\" path = \"a\" fontfiles = { \"b\" \"c\" } \
@@ -740,7 +740,7 @@ mod tests {
     /// through.
     #[test]
     fn offset_components_land_on_the_font() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let font = |text: &str| {
             let read = events(
@@ -759,7 +759,9 @@ mod tests {
         );
         let vtable = font("selection_offset = { 1 2 3 }");
         assert!(
-            vtable.refusals[0].reason.contains("lost-device interface vtable"),
+            vtable.refusals[0]
+                .reason
+                .contains("lost-device interface vtable"),
             "{:?}",
             vtable.refusals
         );
@@ -776,7 +778,7 @@ mod tests {
     /// a text colour entry, the icon keys, the glyph cache, then the object's end.
     #[test]
     fn offset_components_reach_every_field_of_the_font() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let font = |before: &str, offsets: &[(usize, &str)], after: &str| {
             let last = offsets.iter().map(|(at, _)| (at - 0x30) / 4).max().unwrap();
@@ -841,7 +843,11 @@ mod tests {
             null.refusals
         );
         let families = font("", &[(0xF4, "1")], "");
-        assert!(families.refusals[0].reason.contains("the font's families vector"));
+        assert!(
+            families.refusals[0]
+                .reason
+                .contains("the font's families vector")
+        );
         let key = font("", &[(0x3118 + 0x20 * 3, "1")], "");
         assert!(key.refusals[0].reason.contains("render clock"));
         let buffer = font("", &[(0x3118 + 0x18, "1")], "");
@@ -858,7 +864,7 @@ mod tests {
     /// overrides appended to the font found when read, and the family a language selects.
     #[test]
     fn overrides_and_fallbacks_follow_the_registry() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let fonts = Fonts::new(&events(
             b"bitmapfonts = { bitmapfont = { name = \"f\" path = \"one\" } \
@@ -888,7 +894,7 @@ mod tests {
     /// values, the first file winning per codepoint and pair, and `kerning` records.
     #[test]
     fn glyphs_load_in_token_order() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let files: BTreeMap<&[u8], &[u8]> = BTreeMap::from([
             (
@@ -938,7 +944,7 @@ mod tests {
     /// passed over while walking to the next `char` or `kerning`.
     #[test]
     fn glyphs_keep_negative_ids_and_skip_trailing_pairs() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let fnt: &[u8] = b"info face=\"Monofonto\" size=-20\n\
             common lineHeight=24 base=20 scaleW=1024 scaleH=512 pages=1\n\

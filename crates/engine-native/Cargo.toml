@@ -12,12 +12,17 @@ doctest = false
 [features]
 # Tests that take more than about two seconds; see AGENTS.md.
 slow-tests = []
-alloc-fault-injection = []
+alloc-fault-injection = ["engine-allocation/alloc-fault-injection"]
 batch-fallback-test-counts = []
-test-support = ["batch-fallback-test-counts"]
+test-support = ["batch-fallback-test-counts", "engine-allocation/test-support"]
 
 [dependencies]
+engine-allocation.workspace = true
 engine-executable.workspace = true
+
+[dev-dependencies]
+# The denying global allocator its tests install.
+engine-allocation = { workspace = true, features = ["test-support"] }
 
 [build-dependencies]
 # The guarded native-copy helper is linked once, with the workspace cc feature set.

@@ -7,7 +7,7 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 /// diagnostics retain their own kinds for live consumers.
 #[test]
 fn loader_warnings_are_only_nonpositive_and_duplicate_id_skips() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::DiagnosticKind;
     struct Folder(std::path::PathBuf);
@@ -83,7 +83,7 @@ fn loader_warnings_are_only_nonpositive_and_duplicate_id_skips() {
 
 #[test]
 fn state_reading_note_keeps_misread_kind() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let names = KeyNames::default();
     let context = Context {
@@ -103,7 +103,7 @@ fn state_reading_note_keeps_misread_kind() {
 
 #[test]
 fn state_field_recovery_causes_keep_offline_notes() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let input = b"@bad nope orphan=yes state={id=1 impassable=yes impassable=maybe provinces={1 100} resources={unknown=2} history={victory_points={1} buildings=4}}";
     let parsed = attributed(input);
@@ -169,7 +169,7 @@ fn attributed(input: &[u8]) -> ParsedStates {
 
 #[test]
 fn states_deferred_readers_affect_their_template_and_every_later_template() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let parsed = attributed(b"state = { id = 1 provinces = { 1 } } state = { id = 2 state_startup_effect = { free_operative = { operative = authored } } } state = { id = 3 }");
     assert_eq!(parsed.states.len(), 3);
@@ -193,7 +193,7 @@ fn states_deferred_readers_affect_their_template_and_every_later_template() {
 
 #[test]
 fn states_settled_diagnostics_inside_one_template_affect_only_that_state() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let parsed = attributed(b"state = { id = 1 impassable = maybe } state = { id = 2 }");
     assert!(parsed.states[0].1[0].contains("not yes or no"));
@@ -202,7 +202,7 @@ fn states_settled_diagnostics_inside_one_template_affect_only_that_state() {
 
 #[test]
 fn states_repeated_deferred_diagnostics_keep_each_templates_count() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let parsed = attributed(b"state = { id = 1 state_startup_effect = { free_operative = { operative = first } free_operative = { operative = second } } } state = { id = 2 history = { free_operative = { operative = third } } } state = { id = 3 }");
     assert_eq!(parsed.states[0].1.len(), 1, "{:?}", parsed.states[0].1);
@@ -226,7 +226,7 @@ fn states_repeated_deferred_diagnostics_keep_each_templates_count() {
 
 #[test]
 fn states_unattributable_diagnostics_affect_every_template_in_the_file() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let parsed = attributed(b"state = { id = 1 } orphan tail state = { id = 2 }");
     assert_eq!(parsed.states.len(), 2);
@@ -241,7 +241,7 @@ fn states_unattributable_diagnostics_affect_every_template_in_the_file() {
 
 #[test]
 fn states_variable_definition_diagnostics_affect_every_template() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for input in [
         b"@a bad state = { id = 1 } state = { id = 2 }".as_slice(),
@@ -293,7 +293,7 @@ fn states_variable_definition_diagnostics_affect_every_template() {
 
 #[test]
 fn states_file_diagnostics_without_kept_templates_remain_notes() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // A valid non-state item follows the failed definition, so recovery
     // consumes that item without reusing the key slot at end of text.
@@ -356,7 +356,7 @@ fn resource_definitions_read_their_own_fields() {
 /// following block leaves the current state and later file content unknown.
 #[test]
 fn resources_resolve_by_token() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut resources = Resources::default();
     read_resources(
@@ -463,7 +463,7 @@ state = {
 
 #[test]
 fn a_state_keeps_its_provinces_points_buildings_and_repeated_category() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // Conditional effects consume their own body without deferral.
     let (mut states, misreads) = parse(ORIGINAL_STATE).unwrap();
@@ -502,7 +502,7 @@ fn a_state_keeps_its_provinces_points_buildings_and_repeated_category() {
 
 #[test]
 fn an_impassable_state_without_history_buildings_still_parses() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let state = parse(
         br#"state = { id = 1022 name = "STATE_1022" impassable = yes
@@ -523,7 +523,7 @@ fn an_impassable_state_without_history_buildings_still_parses() {
 /// in source order.
 #[test]
 fn every_state_and_every_provinces_block_is_read_in_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, _) = parse(
         br#"state = { id = 1 name = "A" provinces = { 3 1 } PROVINCES = { 2 1 } }
@@ -540,7 +540,7 @@ fn every_state_and_every_provinces_block_is_read_in_order() {
 /// A quoted state key reports and skips its block.
 #[test]
 fn names_read_in_keyword_order_through_the_files_variables() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, misreads) = parse(
         br#"@n = "STATE_KEY"
@@ -576,7 +576,7 @@ fn names_read_in_keyword_order_through_the_files_variables() {
 /// `}` is a top-level key consuming the next `state`.
 #[test]
 fn names_follow_the_games_reading_when_the_text_leaves_the_tree() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, misreads) = parse(b"@a = 1 @a = 2 state = { id = 1 name = A }").unwrap();
     assert_eq!(states[0].name_key.as_deref(), Ok("A"));
@@ -594,7 +594,7 @@ fn names_follow_the_games_reading_when_the_text_leaves_the_tree() {
 /// triggers and preserve the following start-state fields without notes.
 #[test]
 fn a_dated_conditional_in_history_reads_without_diagnostics() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, misreads) = parse(
         br#"state = {
@@ -629,7 +629,7 @@ fn a_dated_conditional_in_history_reads_without_diagnostics() {
 
 #[test]
 fn conditional_history_bodies_preserve_following_fields_and_next_state() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, misreads) = parse(
         br#"state = {
@@ -685,7 +685,7 @@ fn conditional_history_bodies_preserve_following_fields_and_next_state() {
 /// body. Resource amounts convert to signed integers; unknown names report.
 #[test]
 fn a_templates_own_readers_consume_what_the_game_consumes() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, misreads) = parse(
         br#"state = {
@@ -722,7 +722,7 @@ fn a_templates_own_readers_consume_what_the_game_consumes() {
 /// entries, levels cap at the define, and non-block buildings read no entries.
 #[test]
 fn history_commands_keep_what_the_game_keeps() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, misreads) = parse(
         br#"state = { id = 1 name = N history = {
@@ -770,7 +770,7 @@ fn history_commands_keep_what_the_game_keeps() {
 /// a key without an operator can consume that brace as its operator.
 #[test]
 fn reported_keys_skip_their_blocks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, misreads) = parse(
         b"wrapper = { state = { id = 5 name = X } } state = { id = 6 name = Y
@@ -802,7 +802,7 @@ fn reported_keys_skip_their_blocks() {
 /// definition of a repeated id can be determined from the prefix.
 #[test]
 fn an_unsettled_state_is_not_published() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let error = parse(
             b"state = { id = 1 name = A }
@@ -835,7 +835,7 @@ fn an_unsettled_state_is_not_published() {
 /// and discard nonpositive templates.
 #[test]
 fn only_positive_signed_ids_enter_the_state_database() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, notes) = parse(
         br#"
@@ -867,7 +867,7 @@ fn only_positive_signed_ids_enter_the_state_database() {
 /// stored C-string prefix before the first NUL must be representable as UTF-8.
 #[test]
 fn state_names_keep_c_string_prefixes_and_line_feed_replacement() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, _) = parse(
         b"@n = \"cut\0\xfe\"
@@ -896,7 +896,7 @@ fn state_names_keep_c_string_prefixes_and_line_feed_replacement() {
 /// the previous value; category lookup uses its C-string prefix.
 #[test]
 fn state_fields_keep_keyword_dispatch_and_failed_boolean_values() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (states, notes) = parse(b"state = { id = 1 name = N
             state_category = \"\xfe\" STATE_CATEGORY = \"Town\0suffix\" \"state_category\" = ignored

@@ -369,7 +369,7 @@ mod tests {
     /// and a defined sprite without a texture is not the fallback.
     #[test]
     fn lookups_distinguish_undefined_from_textureless() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let registry = registry(&[
             (
@@ -420,7 +420,7 @@ mod tests {
     /// causes the text color reader to index past its table.
     #[test]
     fn refusals_include_the_fonts() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let registry = registry(&[(
             "interface/fonts.gfx",
@@ -439,7 +439,7 @@ mod tests {
     /// every decoder refuses, an absent file and an oversized file are the game's own failures.
     #[test]
     fn mod_textures_decode_in_the_native_order() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let rgba = [1, 2, 3, 4, 5, 6, 7, 8];
         let png = crate::image::native::tests_support::png_rgba(2, 1, &rgba);
@@ -509,7 +509,7 @@ mod tests {
     /// a vertical strip divides the height.
     #[test]
     fn frames_have_an_integer_extent_and_a_floating_geometry() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let read = read_sprites(
             b"spriteTypes = { spriteType = { name = \"h\" noOfFrames = 3 } \

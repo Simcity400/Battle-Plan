@@ -583,7 +583,7 @@ mod tests {
 
     #[test]
     fn national_lookup_excludes_continuous_database() -> io::Result<()> {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root =
             std::env::temp_dir().join(format!("national-focus-names-{}", std::process::id()));
@@ -607,7 +607,7 @@ mod tests {
 
     #[test]
     fn layer_warnings_name_and_count_deferred_effect_readers() -> io::Result<()> {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!("focus-effect-gap-{}", std::process::id()));
         std::fs::create_dir_all(root.join("common/national_focus"))?;
@@ -643,7 +643,7 @@ free_operative = { operative = a } free_operative = { operative = b }
     }
     #[test]
     fn focus_variables_keywords_and_scripted_key_dispatch() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let defs = parse(
             br#"@name=A @sprite=GFX_a focus_tree={FOCUS={id=@name "text"=ignored
@@ -661,7 +661,7 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn focus_scripted_icons_preserve_repeated_cases_and_refuse_unknown_conditions() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let defs = parse(
             br#"focus_tree={focus={id=A
@@ -695,7 +695,7 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn authored_text_shared_and_conditional_icons() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let defs = parse(br#"focus_tree={focus={id=A icon=GFX_goal_a text=TITLE} focus={id=B icon={value=GFX_goal_b}}} shared_focus={id=C icon=GFX_goal_c}"#, Database::National, &KeyNames::default()).unwrap();
         assert_eq!(defs["A"].localisation, "TITLE");
@@ -709,7 +709,7 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn unknown_description_is_skipped_by_the_focus_reader() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let defs = parse(
             br#"focus_tree={focus={id=A text=TITLE desc=DESCRIPTION}}"#,
@@ -722,7 +722,7 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn inlay_positions_take_only_the_read_int_point_form() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         // This malformed point would consume closing braces and the next
         // focus identifier, so it remains refused.
@@ -747,7 +747,7 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn each_database_reads_only_its_own_roots() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let text = br#"focus_tree={focus={id=A}} continuous_focus_palette={focus={id=E}} shared_focus={id=B}"#;
         let national = parse(text, Database::National, &KeyNames::default()).unwrap();
@@ -758,7 +758,7 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn a_failed_repeated_cost_keeps_the_stored_one() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let defs = parse(
             br#"focus_tree={focus={id=A cost=2 cost=bad} focus={id=B cost=bad}}"#,
@@ -771,7 +771,7 @@ free_operative = { operative = a } free_operative = { operative = b }
 
     #[test]
     fn authored_costs_and_scripted_costs() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let defs = parse(br#"focus_tree={focus={id=A cost=10} focus={id=B cost=2.5} focus={id=C cost=@scripted} focus={id=D cost=-1}}"#, Database::National, &KeyNames::default()).unwrap();
         let continuous = parse(
@@ -807,7 +807,7 @@ mod icon_selection_tests {
 
     #[test]
     fn first_true_case_wins_and_an_earlier_unknown_is_not_skipped() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let definition = focus();
         let mut visited = 0;
@@ -843,7 +843,7 @@ mod icon_selection_tests {
 
     #[test]
     fn fallback_agreement_needs_no_window_mode() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (definitions, _) = parse(
             br#"focus_tree={

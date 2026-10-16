@@ -283,7 +283,7 @@ mod tests {
     /// read wins, found without case, with its definitions consumed.
     #[test]
     fn names_register_first_and_bodies_read_last() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let a: &[u8] = b"@x = yes My_Check = { is_attacker = @x } other = { }";
         let b: &[u8] = b"MY_CHECK = { has_reserves = yes }";
@@ -317,7 +317,7 @@ mod tests {
     /// logged and holds no condition.
     #[test]
     fn a_mismatch_leaves_the_file_out_of_step() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let top: &[u8] = b"first = { is_attacker = yes } later = { has_reserves = yes } flat = yes";
         let nested: &[u8] =
@@ -351,7 +351,7 @@ mod tests {
     /// as its operator.
     #[test]
     fn an_unproven_name_pass_makes_misses_unproven() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let triggers = read_files(&[("a.txt", b"a = { } 5 b = { } c = { }")], &[]);
         assert!(matches!(triggers.lookup(b"A"), Lookup::Template(_)));
@@ -370,7 +370,7 @@ mod tests {
     /// there, until a later file reads it.
     #[test]
     fn an_unsettled_body_leaves_every_template_unproven_until_read_again() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let a: &[u8] = b"first = { is_attacker = yes } second = { OR = { x = { } } }";
         let b: &[u8] = b"FIRST = { has_reserves = yes }";
@@ -388,7 +388,7 @@ mod tests {
     /// `}` ends that body, so the file is read on from there.
     #[test]
     fn a_block_under_a_scripted_trigger_is_read_as_one_value() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let a: &[u8] =
             b"inner = { } outer = { inner = { is_attacker = yes } } after = { is_attacker = no }";
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn description_read_retains_bindings_without_changing_consumption() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let text = b"target={FROM={custom_trigger_tooltip={tooltip=SYN_POS not_tooltip=SYN_NEG @limit=2 skill > @limit}}}";
         for retain in [false, true] {

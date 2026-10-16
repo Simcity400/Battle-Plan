@@ -12,7 +12,8 @@ fn fixture(states: &str) -> (Save, PartialMapMembership) {
 
 #[test]
 fn omission_is_a_separate_current_emission_and_strict_control_still_refuses() {
-    let (save, membership) = fixture("1={name=label manpower_pool={available=-5 locked=0 total=1}}");
+    let (save, membership) =
+        fixture("1={name=label manpower_pool={available=-5 locked=0 total=1}}");
     assert_eq!(
         save.state_control_emissions(&membership).unwrap(),
         [StateControlEmission::NonPositiveOwner { id: 1 }]

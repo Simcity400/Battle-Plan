@@ -402,7 +402,7 @@ mod tests {
     #[test]
     #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
     fn keys_load_in_dispatch_order() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("set BATTLE_PLAN_GAME_DIR to the supported installation");
         let mut names = KeyNames {
             scripted: [b"my_check".to_vec(), b"ger".to_vec()].into(),

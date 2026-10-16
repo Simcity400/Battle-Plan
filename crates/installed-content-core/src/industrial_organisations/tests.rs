@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn display_projection_keeps_name_initial_trait_and_include_overrides() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut database = Database::default();
     database.read_file(b"Base={name=BASE_NAME initial_trait={name=BASE_TRAIT}} Child={include=Base initial_trait={}} Local={include=Base name=LOCAL_NAME initial_trait={name=LOCAL_TRAIT}} Deleted={include=Base delete_included_values={name initial_trait}} TraitDeleted={include=Base initial_trait={delete_included_values={name}}}", &KeyNames::default()).unwrap();
@@ -28,7 +28,7 @@ fn display_projection_keeps_name_initial_trait_and_include_overrides() {
 
 #[test]
 fn visibility_projection_keeps_first_definition_and_include_delete_tokens() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut db = Database::default();
     let names = KeyNames::default();
@@ -51,7 +51,7 @@ fn visibility_projection_keeps_first_definition_and_include_delete_tokens() {
 
 #[test]
 fn a_misread_template_does_not_drop_the_database() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!("hoi4_mio_projection_{}", std::process::id()));
     let directory = root.join("common/military_industrial_organization/organizations");

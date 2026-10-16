@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn ability_notes_keep_kind() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let notes = apply_with_terrain(
             b"ability = { a = { duration = { x = 1 } } }",
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn unknown_fields_leave_contents_in_the_ability() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sprites = AbilitySprites::default();
         apply(
@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn default_and_authored_sprites_take_the_animated_suffix() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sprites = AbilitySprites::default();
         apply(
@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn lookup_keeps_the_first_exact_token_and_later_malformed_fields_still_fail() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sprites = AbilitySprites::default();
         apply(b"ability={ special={ icon=GFX_old } }", &mut sprites).unwrap();
@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn repeated_adjusters_are_read_again_only_on_the_default_token() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let terrains = BTreeMap::from([
             (b"none".to_vec(), b"none".to_vec()),
@@ -472,7 +472,7 @@ mod tests {
 
     #[test]
     fn a_comment_only_file_declares_nothing() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sprites = AbilitySprites::default();
         apply(b"# no abilities in this layer\n", &mut sprites).unwrap();
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn value_effect_scopes_follow_ability_type_in_authored_order() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut sprites = AbilitySprites::default();
         let notes = apply_with_terrain(br#"
@@ -502,7 +502,7 @@ mod tests {
 
     #[test]
     fn description_keeps_accumulators_adjusters_and_appended_effect_order() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut catalog = AbilitySprites::default();
         let terrains = BTreeMap::from([(b"synthetic".to_vec(), b"SYNTHETIC".to_vec())]);
@@ -561,7 +561,7 @@ mod tests {
 
     #[test]
     fn description_defaults_and_duplicate_lookup_preserve_exact_case() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut catalog = AbilitySprites::default();
         apply(

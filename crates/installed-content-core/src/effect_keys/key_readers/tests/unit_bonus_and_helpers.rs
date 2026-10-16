@@ -24,7 +24,7 @@ fn no_deferred(result: &crate::parser::native::Read) {
 
 #[test]
 fn own_keys_only_rejects_unknown_blocks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for effect in [
         "add_days_remove",
@@ -46,7 +46,7 @@ fn own_keys_only_rejects_unknown_blocks() {
 
 #[test]
 fn no_skip_fallback_keeps_opening_value_scalar() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for effect in [
         "set_division_force_allow_recruiting",
@@ -69,7 +69,7 @@ fn no_skip_fallback_keeps_opening_value_scalar() {
 
 #[test]
 fn own_keys_then_effect_dispatches_nested_effects() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for effect in ["free_random_operative", "add_random_valid_trait_from_unit"] {
         let text = format!(
@@ -84,7 +84,7 @@ fn own_keys_then_effect_dispatches_nested_effects() {
 
 #[test]
 fn state_province_limits_are_unconditional_trigger_bodies() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { set_state_province_controller = { limit = { always = yes } limit = { @seen = 3 always = yes invalid = { @hidden = 9 marker = 1 } } } } final = @seen hidden = @hidden",
@@ -97,7 +97,7 @@ fn state_province_limits_are_unconditional_trigger_bodies() {
 
 #[test]
 fn random_mio_limits_reject_repeat_after_a_child() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { random_military_industrial_organization = { tooltip = { arg = { @seen = 3 marker = 1 } } limit = { always = yes } limit = { @hidden = 9 marker = 1 } } } final = @seen hidden = @hidden",
@@ -110,7 +110,7 @@ fn random_mio_limits_reject_repeat_after_a_child() {
 
 #[test]
 fn print_variables_string_list_does_not_define_entries() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { print_variables = { var_list = { @hidden = 9 } @seen = 3 marker = 1 } } final = @seen hidden = @hidden",
@@ -123,7 +123,7 @@ fn print_variables_string_list_does_not_define_entries() {
 
 #[test]
 fn scientist_template_uses_trigger_raw_list_and_scalar_skill_readers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { add_scientist_role = { scientist = { traits = { @list = 9 } visible = { invalid = { @hidden = 7 marker = 1 } always = yes } skills = { @seen = 3 arbitrary_specialization = @seen } invalid = { @bad = 8 marker = 1 } } } } final = @seen list = @list hidden = @hidden bad = @bad",
@@ -138,7 +138,7 @@ fn scientist_template_uses_trigger_raw_list_and_scalar_skill_readers() {
 
 #[test]
 fn generated_scientist_gender_errors_skip_blocks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { generate_scientist_character = { gender = { @hidden = 9 marker = 1 } traits = { @list = 7 } skills = { @seen = 3 arbitrary_specialization = @seen } } } final = @seen hidden = @hidden list = @list",
@@ -152,7 +152,7 @@ fn generated_scientist_gender_errors_skip_blocks() {
 
 #[test]
 fn purchase_equipment_own_keys_rejects_unknown_blocks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { create_purchase_contract = { equipment = { type = var:equipment amount = 1 producer = var:producer variant_name = variant invalid = { @hidden = 9 marker = 1 } @seen = 3 amount = @seen } } } final = @seen hidden = @hidden",
@@ -165,7 +165,7 @@ fn purchase_equipment_own_keys_rejects_unknown_blocks() {
 
 #[test]
 fn party_rule_override_keeps_definitions_and_reads_scalar_entry_as_an_object() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { set_party_rule = { override = { @inside = 4 0 = @inside } @seen = 3 desc = @seen } } final = @seen inside = @inside",
@@ -198,7 +198,7 @@ fn party_rule_override_keeps_definitions_and_reads_scalar_entry_as_an_object() {
 
 #[test]
 fn unit_bonus_uses_recorded_unit_category_terrain_and_equipment_names() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let mut names = KeyNames {
         sub_units: Some(sub_units()),
@@ -232,7 +232,7 @@ fn unit_bonus_uses_recorded_unit_category_terrain_and_equipment_names() {
 
 #[test]
 fn unit_bonus_does_not_match_quoted_content_keys() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let names = KeyNames {
         sub_units: Some(sub_units()),
@@ -249,7 +249,7 @@ fn unit_bonus_does_not_match_quoted_content_keys() {
 
 #[test]
 fn unit_bonus_transport_reads_the_current_token_like_technology_units() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let names = KeyNames {
         sub_units: Some(sub_units()),
@@ -269,7 +269,7 @@ fn unit_bonus_transport_reads_the_current_token_like_technology_units() {
 
 #[test]
 fn unit_bonus_transport_block_is_a_counted_refusal() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let names = KeyNames {
         sub_units: Some(sub_units()),

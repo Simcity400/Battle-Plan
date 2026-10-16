@@ -56,7 +56,7 @@ mod tests {
     /// through the public reader.
     #[test]
     fn nested_collection_and_mtth_triggers_keep_content_names() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let names = KeyNames::default();
         let read = read(
@@ -90,7 +90,7 @@ mod tests {
     /// the names cannot tell, the rest is unsettled.
     #[test]
     fn a_skipped_limit_defines_nothing() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let none = KeyNames::default();
         let read = read(
@@ -147,7 +147,7 @@ mod tests {
     /// whose skip passes a block.
     #[test]
     fn a_body_class_reads_its_own_keys_first() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let names = KeyNames::default();
         let read = read(
@@ -175,7 +175,7 @@ mod tests {
     /// empty conjunction.
     #[test]
     fn a_body_keeps_each_key_operator_and_value() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let read = read(
             b"a > 2 b<2 OR = { has_tech = radar c = yes } flat = yes",

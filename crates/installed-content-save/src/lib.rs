@@ -1697,7 +1697,7 @@ fn content_state_history(
 #[test]
 #[ignore = "reads the game's files; set BATTLE_PLAN_GAME_DIR"]
 fn vanilla_state_history_reads_without_diagnostics() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let Some(root) = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")) else {
         return;
@@ -1713,7 +1713,7 @@ fn vanilla_state_history_reads_without_diagnostics() {
 
 #[cfg(test)]
 fn history_fixture(input: &[u8]) -> installed_content::states::StateDefinition {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let context = installed_content::states::Context {
         resource: &|_| installed_content::states::Resource::Found,

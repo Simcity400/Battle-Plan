@@ -619,7 +619,7 @@ mod tests {
 
     #[test]
     fn source_order_and_first_entry_follow_declaration_order() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let read = |path: &[u8]| {
             Some(match path {
@@ -652,7 +652,7 @@ mod tests {
 
     #[test]
     fn only_cube_samplers_change_the_dx11_texture_type() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let program = read_with(b"gfx/FX/t.lua", &|path| {
             Some(match path {
@@ -676,7 +676,7 @@ mod tests {
 
     #[test]
     fn declarations_preserve_code_and_buffer_layout() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let file = parse("test", b"VertexStruct V { float3 p : POSITION;\n@ifdef TEST\nfloat2 uv : TEXCOORD0;\n@endif\n};\nConstantBuffer(2, 9) { float4x4 matrix;\nfloat4 array[3];\n};\nCode [[ float x[2] = {1,2}; // kept\n]]\n").unwrap();
         assert_eq!(file.program.common.buffers[0].legacy_register, 9);
@@ -691,7 +691,7 @@ mod tests {
 
     #[test]
     fn includes_contribute_declarations_but_never_replace_root_states() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let program = read_with(b"gfx/FX/mod.lua", &|path| {
             Some(match path {
@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn parse_failures_name_the_effect_and_missing_main_names_the_technique() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let error =
             read_with(b"mod/broken.lua", &|_| Some(b"Code [[ \x80 ]]".to_vec())).unwrap_err();
@@ -738,7 +738,7 @@ mod tests {
     /// label, leaving the path identity unchanged.
     #[test]
     fn effect_and_include_names_open_by_their_bytes() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let read = |path: &[u8]| {
             Some(match path {
@@ -771,7 +771,7 @@ mod tests {
 
     #[test]
     fn constant_array_counts_use_the_integer_scanner() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let file = parse("arrays", b"ConstantBuffer(0,0) { float4 octal[010];\nfloat4 hex[0x10];\nfloat4 no_count[MACRO];\nfloat4 zero[0];\n}\n").unwrap();
         assert_eq!(
@@ -782,7 +782,7 @@ mod tests {
 
     #[test]
     fn only_sources_outside_the_covered_effect_root_are_named_unverified() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "hoi4_effect_coverage_{}_{:?}",

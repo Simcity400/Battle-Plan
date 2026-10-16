@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn deferred_trait_effect_keeps_unsupported_kind() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let leaders = Leaders::<crate::Diagnostic>::read_files(
         vec![(
@@ -53,7 +53,7 @@ fn entries(block: &Modifiers) -> Vec<(String, i64)> {
 /// spelling; a quoted `"leader_traits"` is no keyword.
 #[test]
 fn registered_traits_keep_their_first_spelling_in_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let leaders = leaders(
             &[
@@ -91,7 +91,7 @@ fn effects(body: &str) -> TraitEffects {
 
 #[test]
 fn trait_type_mask_warns_only_for_field_marshal_alone() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for body in [
         "type = field_marshal",
@@ -119,7 +119,7 @@ fn trait_type_mask_warns_only_for_field_marshal_alone() {
 
 #[test]
 fn categories_sparse_levels_and_duplicate_definitions_match_lookup() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let first: &[u8] = br#"leader_skills = {
                     1 = { type = navy cost = 100 }
@@ -148,7 +148,7 @@ fn categories_sparse_levels_and_duplicate_definitions_match_lookup() {
 
 #[test]
 fn component_skills_keep_modifiers_hidden_sets_and_last_definition() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let tables = [
         (Component::Attack, "attack"),
@@ -208,7 +208,7 @@ fn component_skills_keep_modifiers_hidden_sets_and_last_definition() {
 
 #[test]
 fn component_skill_modifier_conditions_settle_with_the_registry() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let unknown = leaders(
         &[
@@ -239,7 +239,7 @@ fn component_skill_modifier_conditions_settle_with_the_registry() {
 /// as the game has it.
 #[test]
 fn an_unscannable_cost_keeps_the_previous_value() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let skills = skills(&[b"leader_skills={ 2={type=navy cost=50 cost=@cost} }"]);
     assert_eq!(skills.next_required_experience(1, 2), Some(Some(50)));
@@ -256,7 +256,7 @@ fn an_unscannable_cost_keeps_the_previous_value() {
 
 #[test]
 fn trait_blocks_keep_authored_entries_adjusters_and_sub_units() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let effects = effects(
         r#"type = corps_commander
@@ -359,7 +359,7 @@ fn trait_blocks_keep_authored_entries_adjusters_and_sub_units() {
 /// `Forest` and `forest` are one.
 #[test]
 fn repeated_adjusters_follow_the_default_token_rule() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let read = |body: &str| {
         let text = format!("leader_traits = {{ t = {{ {body} }} }}");
@@ -388,7 +388,7 @@ fn repeated_adjusters_follow_the_default_token_rule() {
 /// the trait table early and c is read at the top level, which skips it.
 #[test]
 fn repeated_trait_keys_merge_and_a_misread_reading_goes_on() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let leaders = leaders(
         &[br#"leader_traits = {
@@ -433,7 +433,7 @@ fn repeated_trait_keys_merge_and_a_misread_reading_goes_on() {
 /// starts empty.
 #[test]
 fn variables_follow_the_game_reader_through_the_file() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let leaders = leaders(
         &[
@@ -515,7 +515,7 @@ fn variables_follow_the_game_reader_through_the_file() {
 /// e's `}` ends the modifier block and `after` is e's unknown field.
 #[test]
 fn quoted_references_stay_text_and_expressions_split() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let leaders = leaders(
         &[br#"@a = 0.5
@@ -547,7 +547,7 @@ fn quoted_references_stay_text_and_expressions_split() {
 /// define nothing.
 #[test]
 fn unread_blocks_define_as_their_readers_do() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let leaders = leaders(
             &[br#"leader_attack_skills = { 1 = { modifier = { @skill = 0.1 x = 1 } } 0 = { modifier = { @zero = 1 x = 1 } } }
@@ -598,7 +598,7 @@ fn unread_blocks_define_as_their_readers_do() {
 /// one through a variable is a category.
 #[test]
 fn a_quoted_skill_type_is_no_category_keyword() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for text in [
         &br#"leader_skills = { 1 = { type = "navy" cost = 5 } }"#[..],
@@ -628,7 +628,7 @@ fn a_quoted_skill_type_is_no_category_keyword() {
 /// What reaches `t` follows.
 #[test]
 fn forms_the_tree_cannot_hold_are_read_as_the_game_reads_them() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (text, attack, misread) in [
             (
@@ -693,7 +693,7 @@ fn forms_the_tree_cannot_hold_are_read_as_the_game_reads_them() {
 /// the previous value) are read as the game reads them.
 #[test]
 fn scalar_fields_given_blocks_and_keyless_values_read_on() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // The block's fields become t's; its `}` ends t, so `after`'s body is
     // read at the table level, and t's own `}` ends the table.
@@ -730,7 +730,7 @@ fn scalar_fields_given_blocks_and_keyless_values_read_on() {
 /// Known keys read on.
 #[test]
 fn mean_time_and_parent_readers_skip_nothing_for_unknown_keys() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for body in [
         &b"ai_will_do = { odd = { attack_skill = 1 } }"[..],
@@ -759,7 +759,7 @@ fn mean_time_and_parent_readers_skip_nothing_for_unknown_keys() {
 /// string field names the encoding, never the block shape.
 #[test]
 fn text_that_is_not_utf8_is_named_as_such() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let text = b"leader_traits = { t = { attack_skill = 3\xfe slot = x\xfe \
                      modifier = { custom_modifier_tooltip = \"t\xfe\" } } }";
@@ -782,7 +782,7 @@ fn text_that_is_not_utf8_is_named_as_such() {
 /// display refusal must not change the later traits' operands.
 #[test]
 fn non_utf8_trait_names_still_dispatch_their_bodies() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let text = b"leader_traits = {
             x\xfe = { @n = 3 attack_skill = 1 }
@@ -815,7 +815,7 @@ fn non_utf8_trait_names_still_dispatch_their_bodies() {
 /// both passes.
 #[test]
 fn quoted_keys_are_no_keywords() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let leaders = leaders(
             &[br#""leader_skills" = { 1 = { type = navy cost = 5 } }
@@ -865,7 +865,7 @@ fn quoted_keys_are_no_keywords() {
 /// defines.
 #[test]
 fn a_block_under_a_modifier_entry_conditions_the_rest_of_the_file() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let leaders = leaders(
             &[
@@ -907,7 +907,7 @@ fn a_block_under_a_modifier_entry_conditions_the_rest_of_the_file() {
 /// Neither leaves a condition.
 #[test]
 fn the_registry_settles_a_block_under_a_modifier_entry() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let text: &[u8] =
             b"leader_traits = { t = { modifier = { army_org = { y = 0.2 } x = 0.1 } attack_skill = 3 } }";
@@ -947,7 +947,7 @@ fn sub_unit_directories_read_modifiers_and_tags_first() {
 }
 
 fn sub_units(files: &[&[u8]]) -> SubUnits {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
     let mut indices = SubUnits::default();
     for (index, text) in files.iter().enumerate() {
@@ -1243,7 +1243,7 @@ fn a_scalar_sub_units_is_read_as_the_game_reads_it() {
 /// text, and a terrain adjuster takes the content's spelling.
 #[test]
 fn mixed_case_keywords_read_as_the_lowercase_ones() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let traits = leaders(
         &[br#"LEADER_TRAITS = {
@@ -1314,7 +1314,7 @@ fn mixed_case_keywords_read_as_the_lowercase_ones() {
 /// note.
 #[test]
 fn mixed_case_leader_skills_fold_and_notes_name_the_field() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mixed = skills(&[
         b"LEADER_SKILLS = { 1 = { TYPE = NAVY COST = 100 } 2 = { Type = Field_Marshal Cost = 7 } }",
@@ -1352,7 +1352,7 @@ fn mixed_case_leader_skills_fold_and_notes_name_the_field() {
 /// the level keeps its category and the cost after the block is its own.
 #[test]
 fn an_invalid_skill_type_skips_its_block() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for text in [
             &b"leader_skills = { 1 = { type = corps_commander cost = 5 type = { cost = 99 } cost = 7 } }"[..],
@@ -1370,7 +1370,7 @@ fn an_invalid_skill_type_skips_its_block() {
 /// file included, and the skill table are refused.
 #[test]
 fn a_gap_leaves_every_trait_and_the_skills_unknown() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let leaders = leaders(
             &[
@@ -1398,7 +1398,7 @@ fn a_gap_leaves_every_trait_and_the_skills_unknown() {
 /// read as `Unreadable String`.
 #[test]
 fn string_fields_convert_as_their_readers_do() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let effects = effects(
         "custom_effect_tooltip = \"tip\0tail\" override_effect_tooltip = \"two\nlines\" \
@@ -1419,7 +1419,7 @@ fn string_fields_convert_as_their_readers_do() {
 /// the value slot) names no trait either.
 #[test]
 fn advisor_traits_keep_the_current_tokens_kind() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let effects = effects(
         "Specialist_Advisor_Trait = chief expert_advisor_trait = \"quoted\" \
@@ -1440,7 +1440,7 @@ fn advisor_traits_keep_the_current_tokens_kind() {
 #[cfg(feature = "test-support")]
 #[test]
 fn the_loaders_do_not_read_subdirectories() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "installed_content_unit_leader_{}_{:?}",
@@ -1541,7 +1541,7 @@ fn an_unread_tail_leaves_support_unknown_until_a_later_definition_resets_it() {
 
 #[test]
 fn inline_unit_icon_categories_follow_mask_or_and_reset() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let units = sub_units(&[
         br#"sub_units={
@@ -1567,7 +1567,7 @@ fn inline_unit_icon_categories_follow_mask_or_and_reset() {
 /// assigns it, each appearance starts at `no`, and the last appearance gives it.
 #[test]
 fn special_forces_follows_the_last_appearance() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let units = sub_units(&[
         br#"sub_units={

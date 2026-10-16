@@ -1,4 +1,5 @@
 //! Passive process discovery, injection, detach and finalization.
+use replay::identity::IdentityCodec;
 use crate::{
     directories::{default_capture_directory, resolve_user_directory},
     replay_io,

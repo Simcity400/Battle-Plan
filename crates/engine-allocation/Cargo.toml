@@ -1,0 +1,16 @@
+[package]
+name = "engine-allocation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+# Before-growth hooks that let tests deny chosen allocations.
+alloc-fault-injection = []
+# The denying global allocator, for other crates' tests.
+test-support = []

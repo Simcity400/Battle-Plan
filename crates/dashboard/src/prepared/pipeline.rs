@@ -1,5 +1,6 @@
 //! One accepted selected-frame walk, with domain state and cursor published together.
 
+use replay::identity::IdentityCodec;
 use super::frame_changes::{FrameChangeTracker, FrameChanges};
 use super::{Section, State};
 use crate::prepared_focus::{FocusAccumulator, FocusEvaluator, FocusIndex};

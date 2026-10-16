@@ -251,7 +251,7 @@ fn weather_refuses_a_requested_name_from_an_unreadable_later_descriptor() {
 
 #[test]
 fn particle_consumer_refuses_loader_abort_and_thermal_notes_survive() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!("hoi4-weather-consumer-{}", std::process::id()));
     std::fs::create_dir_all(root.join("common/modifiers")).unwrap();

@@ -1744,7 +1744,7 @@ mod tests {
 
     #[test]
     fn advisor_case_aliases_preserve_first_spelling_and_role_identity() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut characters = parse(br#"characters = {
             mod_holder = { advisor = { slot = mod_slot idea_token = Joseph_Votel traits = { mod_Trait } } }
@@ -1792,7 +1792,7 @@ mod tests {
 
     #[test]
     fn advisor_case_aliases_share_ambiguity_and_coverage() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut characters = parse(br#"characters = {
             mod_holder = {
@@ -1838,7 +1838,7 @@ mod tests {
     /// when their ideology names agree.
     #[test]
     fn country_leader_sets_keep_overrides_and_alternative_identity() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let characters = parse(
             br#"characters = {
@@ -1878,7 +1878,7 @@ mod tests {
 
     #[test]
     fn agreeing_template_projection_does_not_prove_startup_presence() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut characters = parse(
             br#"characters = {
@@ -1913,7 +1913,7 @@ mod tests {
 
     #[test]
     fn recorded_country_leader_template_decides_disagreeing_instances() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "installed-content-held-country-leader-{}",
@@ -1967,7 +1967,7 @@ mod tests {
 
     #[test]
     fn effect_role_projections_share_character_role_field_application() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let fields = parser::parse(b"ideology = left traits = { a } traits = { b }")
             .unwrap()
@@ -1989,7 +1989,7 @@ mod tests {
 
     #[test]
     fn repeated_character_alternatives_count_each_problem_once() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (characters, _, _) = parse_file(
             b"characters = { mod_character = { \
@@ -2029,7 +2029,7 @@ mod tests {
 
     #[test]
     fn missing_role_identity_stays_in_template() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut characters, _, roles) = parse_file(
             b"characters={c={advisor={slot=army_chief} country_leader={desc=only_desc}}}",
@@ -2074,7 +2074,7 @@ mod tests {
 
     #[test]
     fn advisors_and_leaders_keep_their_roles_and_traits() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let characters = parse(FILE, &KeyNames::default()).unwrap();
         assert!(characters.notes.is_empty(), "{:?}", characters.notes);
@@ -2105,7 +2105,7 @@ mod tests {
     /// closing `allowed`; a plain body starts at its `{`.
     #[test]
     fn a_disagreeing_advisor_role_is_its_built_templates() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root =
             std::env::temp_dir().join(format!("installed-content-built-advisor-{}", std::process::id()));
@@ -2211,7 +2211,7 @@ mod tests {
 
     #[test]
     fn alternatives_that_disagree_are_ambiguous_and_agreeing_ones_are_kept() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let characters = parse(FILE, &KeyNames::default()).unwrap();
         assert_eq!(characters.advisor("GER_split_idea"), Ok(None));
@@ -2232,7 +2232,7 @@ mod tests {
 
     #[test]
     fn portraits_of_one_kind_match_the_full_parse() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (army, stop) = portraits(FILE, &KeyNames::default(), "army", "large").unwrap();
         assert_eq!(stop, None);
@@ -2245,7 +2245,7 @@ mod tests {
     /// object. Only conditional instances are compared.
     #[test]
     fn only_agreeing_army_large_alternatives_are_usable() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (characters, stop) = portraits(
             br#"characters = {
@@ -2301,7 +2301,7 @@ mod tests {
     /// and later characters by name; [`portraits`] names each cause.
     #[test]
     fn instances_require_leading_allowed_and_refuse_unsettled_suffixes() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let characters = parse(
             br#"characters = { late = { name = own instance = { allowed = { always = yes } name = inner } } }"#, &KeyNames::default(),
@@ -2339,7 +2339,7 @@ mod tests {
     /// lexer text, so `@name` keeps that text. Country-leader traits accumulate too.
     #[test]
     fn role_fields_apply_in_order() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let characters = parse(
             br#"@slot = other characters = { c = {
@@ -2375,7 +2375,7 @@ mod tests {
     /// the character.
     #[test]
     fn military_roles_read_as_their_templates_read() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let characters = parse(
             br#"characters = {
@@ -2409,7 +2409,7 @@ mod tests {
     /// and end-of-text closes every loop.
     #[test]
     fn the_replay_classes_hold_for_characters() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let characters = parse(
             br#"@p = GFX_p characters = {
@@ -2455,7 +2455,7 @@ mod tests {
 
     #[test]
     fn leader_templates_follow_the_database_and_its_lines() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let templates = parse_leader_templates(
             "common/characters/X.txt",

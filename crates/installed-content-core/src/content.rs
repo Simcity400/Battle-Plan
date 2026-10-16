@@ -21,7 +21,7 @@ use std::{
     time::{Instant, UNIX_EPOCH},
 };
 
-use replay::identity::{COVERAGE_POLICY_VERSION, Dlc, Identity, Mod, Verification};
+use replay_identity::{COVERAGE_POLICY_VERSION, Dlc, Identity, Mod, Verification};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 

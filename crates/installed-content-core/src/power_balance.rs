@@ -15,7 +15,7 @@ use std::{collections::BTreeMap, io};
 
 /// Rule name, localisation label, default and fulfilled value by rule index.
 pub fn rules() -> &'static [(&'static str, &'static str, bool, bool)] {
-    &engine::executable_tables::get().auxiliary.rules
+    &engine_executable::executable_tables::get().auxiliary.rules
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

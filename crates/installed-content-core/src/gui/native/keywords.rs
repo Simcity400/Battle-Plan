@@ -13,7 +13,7 @@ use crate::parser::native::Token;
 /// The static keyword `word` (the text up to its first NUL) names, lowered, if the lexer's table
 /// holds it.
 pub(super) fn static_keyword(word: &[u8]) -> Option<&'static str> {
-    engine::executable_tables::get()
+    engine_executable::executable_tables::get()
         .keywords
         .static_keyword(word)
         .map(|(_, name)| name)
@@ -129,7 +129,7 @@ mod tests {
     #[test]
     #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
     fn supported_static_keywords_keep_folded_identity() {
-        let tables = engine::executable_tables::initialize_for_tests()
+        let tables = engine_executable::executable_tables::initialize_for_tests()
             .expect("set BATTLE_PLAN_GAME_DIR to the supported installation");
         let names = &tables.keywords.names;
         assert_eq!(names.len(), 10_765);
@@ -144,7 +144,7 @@ mod tests {
     #[test]
     #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
     fn words_are_classed_as_the_lexer_classes_them() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("set BATTLE_PLAN_GAME_DIR to the supported installation");
         // A word ending at the file's end supplies no token.
         let dynamic = DynamicTokens::from_files([&b"Coal \"-x\" 3y { kept\n"[..], b"cut"]);

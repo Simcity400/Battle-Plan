@@ -34,7 +34,7 @@ fn fixture(name: &str, files: &[(&str, &str)]) -> (Ideologies, Vec<String>) {
 #[cfg(feature = "test-support")]
 #[test]
 fn duplicate_groups_keep_the_first_file_and_skip_the_later_body() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (db, warnings) = fixture(
         "duplicates",
@@ -76,7 +76,7 @@ fn duplicate_groups_keep_the_first_file_and_skip_the_later_body() {
 #[cfg(feature = "test-support")]
 #[test]
 fn top_level_stop_keeps_the_prefix_and_only_stops_its_file() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (db, warnings) = fixture(
         "top-stop",
@@ -109,7 +109,7 @@ fn top_level_stop_keeps_the_prefix_and_only_stops_its_file() {
 #[cfg(feature = "test-support")]
 #[test]
 fn later_blocks_in_the_defining_file_reset_group_contents() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (db, warnings) = fixture(
         "same-file",
@@ -131,7 +131,7 @@ fn later_blocks_in_the_defining_file_reset_group_contents() {
 /// No `color` leaves the initial white.
 #[test]
 fn groups_keep_colours_and_sub_ideologies() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let ideologies = parsed(
             b"ideologies = { democratic = { types = { conservatism = { } liberalism = { } } color = { 0 0 255 } rules = { a = yes } } \
@@ -160,7 +160,7 @@ fn groups_keep_colours_and_sub_ideologies() {
 /// changes nothing (reported). A variable resolves first.
 #[test]
 fn colours_follow_component_reads_in_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let ideologies = parsed(
             b"@r = 2 ideologies = { a = { color = { 0 0 255 } COLOR = { @r x 0.5 } } b = { color = 16711680 } \
@@ -322,7 +322,7 @@ fn a_group_frame_is_its_place_in_the_defining_block() {
 
 #[test]
 fn count_names_preserve_sub_ideology_identity() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let db = parsed(b"ideologies={synthetic_group={types={synthetic_type={}}}}");
     let names = crate::trigger_keys::CountTriggerNames::new(

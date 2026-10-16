@@ -7,7 +7,7 @@ use crate::test_support::Stack;
 
 #[test]
 fn a_mod_adds_replaces_and_removes_idea_categories_and_ideas() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("ideas");
     let (base, addon) = (stack.base(), stack.addon());
@@ -106,7 +106,7 @@ fn a_mod_adds_replaces_and_removes_idea_categories_and_ideas() {
 
 #[test]
 fn a_mod_ideology_brings_its_colour_and_a_replaced_folder_drops_the_base_ones() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("ideologies");
     let (base, addon) = (stack.base(), stack.addon());
@@ -209,7 +209,7 @@ fn every_portrait_role_the_engine_accepts_is_read_and_others_are_refused_by_name
 
 #[test]
 fn one_unreadable_mod_sprite_costs_only_itself_and_keys_match_without_case() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("sprites");
     let (base, addon) = (stack.base(), stack.addon());
@@ -247,7 +247,7 @@ fn one_unreadable_mod_sprite_costs_only_itself_and_keys_match_without_case() {
 
 #[test]
 fn a_refused_sprite_override_withdraws_the_earlier_declaration() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("sprite_override");
     let (base, addon) = (stack.base(), stack.addon());
@@ -284,7 +284,7 @@ fn a_refused_sprite_override_withdraws_the_earlier_declaration() {
 
 #[test]
 fn a_tree_unreadable_sprite_file_keeps_its_native_prefix_and_later_replacements() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("sprite_unreadable");
     let (base, addon) = (stack.base(), stack.addon());
@@ -368,7 +368,7 @@ fn resource_icon(stack: &Stack) -> (std::io::Result<String>, Vec<String>) {
 
 #[test]
 fn a_gui_window_is_found_in_whichever_file_declares_it_and_a_later_file_replaces_it() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("gui");
     stack.write(
@@ -418,7 +418,7 @@ fn a_gui_window_is_found_in_whichever_file_declares_it_and_a_later_file_replaces
 
 #[test]
 fn every_declaration_of_a_gui_window_in_one_file_is_weighed_as_the_registry_does() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("gui_one_file");
     let row = |sprite: &str| {
@@ -528,7 +528,7 @@ fn every_declaration_of_a_gui_window_in_one_file_is_weighed_as_the_registry_does
 
 #[test]
 fn a_gui_override_is_closed_at_eof_and_a_stray_close_ends_the_file() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("gui_unclosed");
     stack.write(
@@ -600,7 +600,7 @@ fn a_gui_override_is_closed_at_eof_and_a_stray_close_ends_the_file() {
 
 #[test]
 fn a_gui_button_is_the_first_direct_button_of_its_name_in_its_own_window() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("gui_scope");
     stack.write(
@@ -678,7 +678,7 @@ fn a_gui_button_is_the_first_direct_button_of_its_name_in_its_own_window() {
 
 #[test]
 fn a_gui_unread_suffix_refuses_only_until_a_later_declaration_settles_it() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("gui_poison");
     let row = "guiTypes = { containerWindowType = { name = resources_info_entry \
@@ -707,7 +707,7 @@ fn a_gui_unread_suffix_refuses_only_until_a_later_declaration_settles_it() {
 
 #[test]
 fn unrelated_gui_refusals_do_not_reach_a_window_lookup() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("gui_unrelated");
     stack.write(
@@ -791,7 +791,7 @@ fn resource_and_modifier_integer_notes_do_not_count_misread_blocks_as_scans() {
 
 #[test]
 fn a_mod_may_blank_a_base_building_file() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("buildings");
     stack.write(
@@ -823,7 +823,7 @@ fn a_mod_may_blank_a_base_building_file() {
 /// and modifier registrations keep their first match, and characters agree.
 #[test]
 fn malformed_redeclarations_follow_each_native_database_s_duplicate_rule() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("withdrawn");
     let (base, addon) = (stack.base(), stack.addon());
@@ -960,7 +960,7 @@ fn malformed_redeclarations_follow_each_native_database_s_duplicate_rule() {
 
 #[test]
 fn name_reader_kinds_follow_logged_fields() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let stack = Stack::new("name_kinds");
     stack.write(

@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn native_dispatch_variables_recovery_and_integer_scans() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = parse(
             br#"
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn resources_keep_their_icon_frames_and_refuse_unusable_ones() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let resources = parse(
             b"resources = { oil = { icon_frame = 1 cic = 0.125 } mod_ore = { icon_frame = 9 } \

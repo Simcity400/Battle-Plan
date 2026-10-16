@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn repeated_formulas_preserve_modifier_order_and_defaults() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let got = tooltip(
             br#"days_to_prepare = 4 target_loc_key = "some_target"
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn an_unconfigured_custom_modifier_is_dropped() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         // A quoted key is looked up as no token: a custom class, even
         // `strength`.

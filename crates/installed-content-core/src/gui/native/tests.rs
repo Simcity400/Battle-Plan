@@ -74,7 +74,7 @@ const SYNTHETIC_COMBAT: &str = r#"
 
 #[test]
 fn nested_paths_keep_native_name_order_without_losing_backgrounds() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = read(
         br#"guiTypes={containerWindowType={name=view size={width=20 height=20}
@@ -100,7 +100,7 @@ fn nested_paths_keep_native_name_order_without_losing_backgrounds() {
 
 #[test]
 fn a_synthetic_window_reads_without_refusal_into_typed_children() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = gui(&format!(
         "guiTypes = {{ containerWindowType = {{ {SYNTHETIC_COMBAT} }} }}\n"
@@ -161,7 +161,7 @@ fn a_synthetic_window_reads_without_refusal_into_typed_children() {
 /// the root extent.
 #[test]
 fn window_types_list_their_children_and_inherit_as_the_game_does() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = gui("guiTypes = {
          windowType = { name = \"base\" size = { x = 40 y = 20 } position = { x = 5 y = 6 }
@@ -254,7 +254,7 @@ fn window_types_list_their_children_and_inherit_as_the_game_does() {
 /// Lexer comments and separators decide what readers see.
 #[test]
 fn comments_and_separators_are_the_game_lexer_s() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "gridBoxType = { name = \"g\" position = { x = 0 y = 0; x = 40\n } }\n\
@@ -268,7 +268,7 @@ fn comments_and_separators_are_the_game_lexer_s() {
 /// keys and `3dposition`, which the lexer numbers before keyword lookup.
 #[test]
 fn an_unknown_key_or_kind_is_skipped_whole() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "my_mod_key = { name = \"renamed\" iconType = { name = \"inner\" } }\n\
@@ -290,7 +290,7 @@ fn an_unknown_key_or_kind_is_skipped_whole() {
 /// element, whose `}` then ends the element.
 #[test]
 fn a_block_under_a_scalar_key_is_read_as_further_keys() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "iconType = { name = \"i\" frame = { name = \"renamed\" scale = 2 } rotation = 1 }\n\
@@ -311,7 +311,7 @@ fn a_block_under_a_scalar_key_is_read_as_further_keys() {
 /// parser.
 #[test]
 fn a_key_without_an_operator_reads_the_previous_value() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "iconType = { name = \"i\" frame = 3 scale \"x\" }\n\
@@ -326,7 +326,7 @@ fn a_key_without_an_operator_reads_the_previous_value() {
 /// a reference.
 #[test]
 fn script_variables_resolve_in_file_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "@a = 4 @a = 5 @b = @a\n\
@@ -391,7 +391,7 @@ const SHARED_VARIABLE_RULES: &[(&str, &[(&[u8], &[u8], bool)], (&[u8], bool), (&
 /// Variable resolution and definition through the shared file-scoped token reader.
 #[test]
 fn variables_agree_with_the_parser_model() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::parser::native;
     let token = |text: &[u8], quoted: bool| {
@@ -439,7 +439,7 @@ fn variables_agree_with_the_parser_model() {
 /// to a stored `{` starts nesting.
 #[test]
 fn a_bound_skips_what_it_does_not_read_as_the_game_does() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "@o = {
@@ -455,7 +455,7 @@ position = { min = { junk x = 3 } max = { other = { a = { @o } } y = 9 } }",
 /// bit, and `min`, `max` and `step` are kept.
 #[test]
 fn positions_and_sizes_keep_their_bits() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "position = { x = 10% x = 7 y = auto min = { x = 3 } step = { y = 99999999999 } }\n\
@@ -489,7 +489,7 @@ fn positions_and_sizes_keep_their_bits() {
 /// unchecked string byte lookup: the field is refused for good.
 #[test]
 fn short_coordinate_tokens_refuse_the_field_for_good() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for body in [
         "position = { x = \"\" x = 3 }",
@@ -510,7 +510,7 @@ fn short_coordinate_tokens_refuse_the_field_for_good() {
 /// ends it, however the lexer's token was left.
 #[test]
 fn components_end_at_the_end_of_the_text() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for tail in [&b""[..], b"\xff", b"\xff x = 2"] {
         let text = [
@@ -531,7 +531,7 @@ fn components_end_at_the_end_of_the_text() {
 /// value; empty C strings and lone `%` sizes make the unchecked read.
 #[test]
 fn coordinates_read_their_value_to_its_nul() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let marked = window("position = { x = 10%\0ignored } size = { width = 10%%\0ignored }");
     let container = marked.container().unwrap();
@@ -553,7 +553,7 @@ fn coordinates_read_their_value_to_its_nul() {
 /// floats, infinities; nothing is refused.
 #[test]
 fn numbers_scan_as_the_crt_scans_them() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "iconType = { name = \"hex\" frame = 0x1F scale = 0x1p3 rotation = -inf }\n\
@@ -580,7 +580,7 @@ fn numbers_scan_as_the_crt_scans_them() {
 /// child is named `unnamed_gui_<n>` after the counter, `positionType` included.
 #[test]
 fn the_first_child_of_a_name_wins() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "iconType = { name = \"a\" frame = 2 }\n\
@@ -605,7 +605,7 @@ fn the_first_child_of_a_name_wins() {
 /// for a destroyed duplicate.
 #[test]
 fn generated_names_follow_the_load_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut context = Context::new();
     let first = context.read(
@@ -630,7 +630,7 @@ fn generated_names_follow_the_load_order() {
 /// `X` is inserted last and remains regardless of their declaration order.
 #[test]
 fn templates_register_in_the_batch_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for text in [
         "guiTypes = { iconType = { name = \"x\" frame = 1 } iconType = { name = \"X\" frame = 2 } }",
@@ -652,7 +652,7 @@ fn templates_register_in_the_batch_order() {
 /// A button's keys.
 #[test]
 fn a_button_reads_every_key_its_parser_reads() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "buttonType = { name = \"b\" enabled = no origo = \"Main_14\" buttonText = \"KEY\" \
@@ -687,7 +687,7 @@ fn a_button_reads_every_key_its_parser_reads() {
 /// type-confused read.
 #[test]
 fn buttons_inherit_their_sprite_in_the_post_load_pass() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "buttonType = { name = \"base\" spriteType = \"GFX_base\" }\n\
@@ -731,7 +731,7 @@ fn buttons_inherit_their_sprite_in_the_post_load_pass() {
 /// An instant text box's keys, the bound text included.
 #[test]
 fn a_text_box_reads_every_key_its_parser_reads() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "instantTextBoxType = { name = \"t\" fixedsize = yes truncate = no multiline = no \
@@ -766,7 +766,7 @@ fn a_text_box_reads_every_key_its_parser_reads() {
 /// root without a key empties the whole result.
 #[test]
 fn bound_localisations_read_their_tree() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "iconType = { name = \"a\" bound_tooltip = \"KEY\" }\n\
@@ -799,7 +799,7 @@ fn bound_localisations_read_their_tree() {
 /// fifth writes `add_horizontal`'s byte), padding and the first background.
 #[test]
 fn a_grid_reads_every_key_its_parser_reads() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "gridBoxType = { name = \"h\" orientation = \"CENTER_LEFT\" }\n\
@@ -842,7 +842,7 @@ fn a_grid_reads_every_key_its_parser_reads() {
 /// game's walk is undefined from there.
 #[test]
 fn a_label_past_four_components_is_not_followed() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = gui("guiTypes = { containerWindowType = { name = \"w\"\n\
          gridBoxType = { name = \"g\" max_slots = { 1 2 3 4 q = 5 } } }\n\
@@ -859,7 +859,7 @@ fn a_label_past_four_components_is_not_followed() {
 /// An overlapping list's keys.
 #[test]
 fn a_list_reads_every_key_its_parser_reads() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "OverlappingElementsBoxType = { name = \"l\" format = up format = { spacing = 9 } \
@@ -878,7 +878,7 @@ fn a_list_reads_every_key_its_parser_reads() {
 /// A container's own keys, the hover, scroll and sound keys included.
 #[test]
 fn a_container_reads_every_key_its_parser_reads() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "orientation = \"center\" origo = CENTER_DOWN clipping = maybe scale = 0.5 \
@@ -921,7 +921,7 @@ fn a_container_reads_every_key_its_parser_reads() {
 /// Common element keys on every kind: `hide`, tooltip hashes and anchor.
 #[test]
 fn generic_keys_are_read_on_every_kind() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "iconType = { name = \"i\" hide = yes pdx_tooltip = \"x\" hint_tag = y \
@@ -940,7 +940,7 @@ fn generic_keys_are_read_on_every_kind() {
 /// A refusal names the element by its path from its template.
 #[test]
 fn a_refusal_names_the_template_path() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window("gridBoxType = { name = \"g\" position = { x = \"\" } }");
     let refusal = &window.find(Kind::Grid, "g").unwrap().refusals()[0];
@@ -954,7 +954,7 @@ fn a_refusal_names_the_template_path() {
 /// block or any family is refused.
 #[test]
 fn valid_native_keys_do_not_poison_later_siblings() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for body in [
         "iconType = { name = \"i\" 3dposition = { 1 2 3 } }",
@@ -987,7 +987,7 @@ fn valid_native_keys_do_not_poison_later_siblings() {
 /// The admitted families keep their fields.
 #[test]
 fn widget_families_keep_their_fields() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "listBoxType = { name = \"l\" size = { x = 3 y = 4 } spacing = 5 scrollbar_side = LEFT \
@@ -1076,7 +1076,7 @@ fn widget_families_keep_their_fields() {
 /// reaches the child factory, which only a later child kind calls through.
 #[test]
 fn components_land_in_strings_and_pointers_past_their_fields() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "browserType = { name = \"a\" spriteType = \"abcdef\" position = { 1 2 3 4 65 } }\n\
@@ -1106,7 +1106,7 @@ fn components_land_in_strings_and_pointers_past_their_fields() {
 /// fields post-load pass tests and copies from the parent, and a count past the twelve is refused.
 #[test]
 fn slider_components_reach_the_scrollbar_types_end() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let spill = |values: &[(usize, &str)]| {
         let last = values.iter().map(|(at, _)| (at - 0x1F0) / 4).max().unwrap();
@@ -1160,7 +1160,7 @@ fn slider_components_reach_the_scrollbar_types_end() {
 /// empty background with `parent` inherits that sprite from the container's tree.
 #[test]
 fn an_extended_scrollbar_background_inherits_through_the_lookup_it_was_given() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "buttonType = { name = \"p\" spriteType = \"GFX_from_parent\" }\n\
@@ -1193,7 +1193,7 @@ fn an_extended_scrollbar_background_inherits_through_the_lookup_it_was_given() {
 /// old value; the icon stores floats.
 #[test]
 fn points_read_seven_tokens_through_one_local() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let window = window(
         "iconType = { name = \"a\" position = { y = 3 x = 4 } }\n\
@@ -1228,7 +1228,7 @@ fn points_read_seven_tokens_through_one_local() {
 /// which is then no key; a NUL cuts a name.
 #[test]
 fn the_stream_ends_as_the_game_ends_it() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = read(
         b"guiTypes = { containerWindowType = { name = \"w\" } \xff guiTypes = { \
@@ -1253,7 +1253,7 @@ fn the_stream_ends_as_the_game_ends_it() {
 
 #[test]
 fn instance_lookup_checks_exact_local_position_names() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = self::gui(
         r#"guiTypes = { containerWindowType = { name = root
@@ -1282,7 +1282,7 @@ fn instance_lookup_checks_exact_local_position_names() {
 
 #[test]
 fn recursive_lookup_tries_local_kind_then_child_containers_in_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let gui = self::gui(
         r#"guiTypes = { containerWindowType = { name = root
@@ -1324,7 +1324,7 @@ fn recursive_lookup_tries_local_kind_then_child_containers_in_order() {
 /// thread could hold is read, walked and dropped.
 #[test]
 fn deep_nesting_is_read_on_the_reader_s_own_stack() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let depth = 3000;
     let mut text = String::from("guiTypes = { ");
@@ -1353,7 +1353,7 @@ fn deep_nesting_is_read_on_the_reader_s_own_stack() {
 #[test]
 #[ignore = "reads the game's files; set BATTLE_PLAN_GAME_DIR"]
 fn every_shipped_gui_file_reads() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let Some(root) = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")) else {
         return;

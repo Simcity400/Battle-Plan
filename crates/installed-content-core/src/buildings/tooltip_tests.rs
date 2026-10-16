@@ -1,7 +1,7 @@
 use super::*;
 #[test]
 fn tooltip_operands_follow_authored_lists_and_last_valid_lane() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let data = parse(
         br#"buildings = {

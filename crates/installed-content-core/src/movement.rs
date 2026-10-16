@@ -679,7 +679,7 @@ mod tests {
 
     #[test]
     fn refused_rail_defines_preserve_common_movement_content() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let defines = Defines::new().unwrap();
         defines.load("fixture.lua", b"NDefines = { NMilitary = { AMPHIBIOUS_INVADE_MOVEMENT_COST = 4, LAND_SPEED_MODIFIER = 1, RIVER_CROSSING_SPEED_PENALTY = -0.1, RIVER_CROSSING_SPEED_PENALTY_LARGE = -0.2 }, NNavy = { NAVAL_SPEED_MODIFIER = 1, AMPHIBIOUS_INVADE_SPEED_BASE = 2 } }").unwrap();
@@ -718,7 +718,7 @@ mod tests {
 
     #[test]
     fn naval_range_defines_use_recorded_types_and_preserve_signed_scale() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let defines = Defines::new().unwrap();
         defines.load("fixture.lua", b"NDefines = { NNavy = { NAVAL_RANGE_TO_INGAME_DISTANCE = -2 }, NCountry = { NAVY_USE_HOME_BASE_FOR_RANGE = false } }").unwrap();
@@ -913,7 +913,7 @@ mod tests {
 
     #[test]
     fn distances_sum_terrain_costs_along_the_native_route() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let map = synthetic(
             &["1;land;false;plains", "2;land;false;Forest"],
@@ -947,7 +947,7 @@ mod tests {
 
     #[test]
     fn terrain_ordinals_resolve_case_insensitively_and_unknown_names_are_null() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let map = synthetic(
             &["1;land;false;PLAINS", "2;land;false;missing"],
@@ -965,7 +965,7 @@ mod tests {
 
     #[test]
     fn kind_coast_and_hidden_bits_come_from_the_csv_and_raster_neighbours() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let map = synthetic(
             &[
@@ -998,7 +998,7 @@ mod tests {
 
     #[test]
     fn a_four_province_crossing_repairs_the_diagonal_coast() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let map = synthetic(
             &[
@@ -1018,7 +1018,7 @@ mod tests {
 
     #[test]
     fn without_an_authored_file_only_raster_neighbours_remain() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let rows: &[&[u32]] = &[&[1, 2], &[3, 4]];
         let records = [
@@ -1047,7 +1047,7 @@ mod tests {
 
     #[test]
     fn front_border_targets_use_signed_authored_through_and_last_row_updates() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let records = [
             "1;land;false;plains",
@@ -1098,7 +1098,7 @@ mod tests {
 
     #[test]
     fn front_border_redirect_is_one_hop_and_does_not_demand_movement_distance() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut map = synthetic(
             &[
@@ -1138,7 +1138,7 @@ mod tests {
 
     #[test]
     fn selected_river_kind_samples_the_existing_raster_and_first_qualifying_pixel() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let terrain = NativeBitmap::decode(&test_bmp(4, &[&[0; 4]], 8)).unwrap();
         for (pixels, kind) in [([255, 3, 7, 255], 2), ([255, 7, 3, 255], 3), ([255; 4], 0)] {
@@ -1155,7 +1155,7 @@ mod tests {
 
     #[test]
     fn selected_authored_kind_suppresses_raster_river_sampling() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let terrain = NativeBitmap::decode(&test_bmp(4, &[&[0; 4]], 8)).unwrap();
         let river = rivers(4, &[&[3; 4]]);
@@ -1166,7 +1166,7 @@ mod tests {
 
     #[test]
     fn selected_raster_kind_survives_unavailable_terrain_distance() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         // The native bitmap loader admits this packed row but the byte-addressed
         // movement read has no stored byte. It is a real distance refusal pathway.
@@ -1184,7 +1184,7 @@ mod tests {
 
     #[test]
     fn selected_unknown_river_kind_is_not_clear_and_distance_error_priority_is_preserved() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         // Inject a river-domain fault after decoding; the normal loader rejects
         // mismatched dimensions. This verifies the per-pair refusal representation.
@@ -1207,7 +1207,7 @@ mod tests {
 
     #[test]
     fn selected_kind_distinguishes_known_absence_from_an_unknown_province_domain() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let terrain = NativeBitmap::decode(&test_bmp(4, &[&[0; 4]], 8)).unwrap();
         let map = crossing_fixture(&terrain, &rivers(4, &[&[255; 4]]), b"");
@@ -1221,7 +1221,7 @@ mod tests {
 
     #[test]
     fn selected_kind_uses_the_first_directional_neighbour_without_distance() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let terrain = NativeBitmap::decode(&test_bmp(4, &[&[0; 4]], 8)).unwrap();
         let mut map = crossing_fixture(&terrain, &rivers(4, &[&[255; 4]]), b"");

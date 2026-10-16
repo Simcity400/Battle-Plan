@@ -1172,7 +1172,7 @@ fn a_byte_0xff_is_one_end_of_the_stream() {
 
 #[test]
 fn modifiers_keep_scoped_operands_before_trigger_dispatch() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let names = KeyNames::default();
     let read = read(

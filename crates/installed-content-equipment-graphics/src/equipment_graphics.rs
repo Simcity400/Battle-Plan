@@ -744,7 +744,7 @@ mod tests {
 
     #[test]
     fn the_graphic_db_trigger_reader_keeps_content_names() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let key_names = KeyNames {
             countries: [b"EST".to_vec()].into(),
@@ -781,7 +781,7 @@ mod tests {
 
     #[test]
     fn aircraft_override_keeps_pool_visit_ties_and_reverse_strings() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let names = Names {
             countries: ["AAA".to_owned()].into(),
@@ -859,7 +859,7 @@ mod tests {
 
     #[test]
     fn aircraft_override_refuses_unknown_relevant_limits_before_selecting() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let pools = content(
             br#"default = { tank = {
@@ -887,7 +887,7 @@ mod tests {
 
     #[test]
     fn buckets_accept_declared_tags_factions_and_continents_and_skip_the_rest() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let factions = ["EN2".to_owned()];
         let pools = content(
@@ -935,7 +935,7 @@ mod tests {
 
     #[test]
     fn filters_and_dlc_limits_decide_pools_and_unknown_predicates_fail() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let pools = content(
             br#"
@@ -1002,7 +1002,7 @@ mod tests {
 
     #[test]
     fn refusals_identify_each_pool_and_repeated_predicate() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let pools = content(
             br#"
@@ -1038,7 +1038,7 @@ mod tests {
 
     #[test]
     fn limit_parse_failure_refusals_identify_the_pool() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let mut pools = content(
             b"default = { plane = { \
@@ -1096,7 +1096,7 @@ mod tests {
 
     #[test]
     fn pools_follow_the_field_readers() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let pools = content(
             br#"
@@ -1129,7 +1129,7 @@ mod tests {
     }
     #[test]
     fn icons_come_from_pools_without_a_sub_unit_filter_by_icon_weight_last_first() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let pools = content(
             br#"
@@ -1184,7 +1184,7 @@ mod tests {
 
     #[test]
     fn null_equipment_names_do_not_match_authored_empty_pools() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let pools = content(
             br#"default = {

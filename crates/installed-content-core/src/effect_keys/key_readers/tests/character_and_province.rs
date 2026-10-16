@@ -15,7 +15,7 @@ fn native(read: &crate::parser::native::Read) {
 
 #[test]
 fn own_keys_then_skip_or_dispatch_are_native() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for effect in [
         "set_capital",
@@ -62,7 +62,7 @@ fn own_keys_then_skip_or_dispatch_are_native() {
 
 #[test]
 fn raw_and_value_lists_define_nothing() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for (effect, field) in [
         ("give_resource_rights", "resources"),
@@ -81,7 +81,7 @@ fn raw_and_value_lists_define_nothing() {
 
 #[test]
 fn civil_war_filters_read_every_trigger_body() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for filter in [
         "states_filter",
@@ -103,7 +103,7 @@ fn civil_war_filters_read_every_trigger_body() {
 
 #[test]
 fn unit_leader_data_delegates_and_rank_skips() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for effect in [
         "add_corps_commander_role",
@@ -124,7 +124,7 @@ fn unit_leader_data_delegates_and_rank_skips() {
 
 #[test]
 fn portrait_roles_read_only_native_sizes() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(b"body = { set_portraits = { army = { invalid = { @hidden = 9 } small = portrait @seen = 3 large = portrait } unknown_role = { @role_hidden = 8 } } } final = @seen hidden = @hidden role = @role_hidden", &KeyNames::default());
     assert_eq!(scalar(&result.items, "final"), b"3");
@@ -135,7 +135,7 @@ fn portrait_roles_read_only_native_sizes() {
 
 #[test]
 fn production_equipment_reads_an_unconditional_object() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(b"body = { create_production_license = { equipment = scalar invalid = { @hidden = 9 } @seen = 3 type = model } } final = @seen hidden = @hidden", &KeyNames::default());
 
@@ -149,7 +149,7 @@ fn production_equipment_reads_an_unconditional_object() {
 
 #[test]
 fn province_targets_skip_invalid_comparisons() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(b"body = { add_province_modifier = { province = { limit_to_victory_point = { @hidden = 9 } @seen = 3 limit_to_coastal = yes } } } final = @seen hidden = @hidden", &KeyNames::default());
     assert_eq!(scalar(&result.items, "final"), b"3");
@@ -163,7 +163,7 @@ fn province_targets_skip_invalid_comparisons() {
 
 #[test]
 fn province_id_accepts_opening_as_scoped_variable_text() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(b"body = { add_province_modifier = { province = { id = { @seen = 3 limit_to_coastal = yes } days = 2 } } final = @seen", &KeyNames::default());
     assert_eq!(scalar(&result.items, "final"), b"3");
@@ -182,7 +182,7 @@ fn province_id_accepts_opening_as_scoped_variable_text() {
 
 #[test]
 fn war_selector_chains_report_against_current_token() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(b"body = { add_to_war = { enemy = invalid.root enemy { @hidden = 9 } @seen = 3 single_target_only = yes } } final = @seen hidden = @hidden", &KeyNames::default());
     assert_eq!(scalar(&result.items, "final"), b"3");
@@ -203,7 +203,7 @@ fn war_selector_chains_report_against_current_token() {
 
 #[test]
 fn raid_damage_unknown_keys_read_one_without_skip() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { raid_damage_units = { arbitrary = { @seen = 3 ratio = yes } final = @seen",
@@ -222,7 +222,7 @@ fn raid_damage_unknown_keys_read_one_without_skip() {
 
 #[test]
 fn mastery_track_filter_reads_scalar_braces() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for effect in ["add_mastery", "add_mastery_bonus"] {
         let text =
@@ -239,7 +239,7 @@ fn mastery_track_filter_reads_scalar_braces() {
 
 #[test]
 fn state_modifier_embeds_the_modifier_reader() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(b"body = { add_state_modifier = { modifier = { custom_modifier_tooltip = label hidden_modifier = scalar added_modifier = { @seen = 3 name = label } } invalid = { @hidden = 9 } } } final = @seen hidden = @hidden", &KeyNames::default());
     assert_eq!(scalar(&result.items, "final"), b"3");
@@ -249,7 +249,7 @@ fn state_modifier_embeds_the_modifier_reader() {
 
 #[test]
 fn equipment_bonus_entries_embed_the_specific_reader() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(b"body = { add_equipment_bonus = { bonus = { equipment = { instant = yes @seen = 3 instant = no } } invalid = { @hidden = 9 } } } final = @seen hidden = @hidden", &KeyNames::default());
     assert_eq!(scalar(&result.items, "final"), b"3");
@@ -259,7 +259,7 @@ fn equipment_bonus_entries_embed_the_specific_reader() {
 
 #[test]
 fn character_iterators_reject_duplicate_nonempty_limits() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for effect in [
         "every_character",
@@ -282,7 +282,7 @@ fn character_iterators_reject_duplicate_nonempty_limits() {
 
 #[test]
 fn generate_character_registers_before_reading_fields() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(b"body = { generate_character = { token_base = sample @seen = 3 name = label token_base = sample name = { @hidden = 9 } } } final = @seen hidden = @hidden", &KeyNames::default());
     assert_eq!(scalar(&result.items, "final"), b"3");
@@ -292,7 +292,7 @@ fn generate_character_registers_before_reading_fields() {
 
 #[test]
 fn rejected_generated_token_base_counts_the_external_claim_refusal() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { generate_character = { token_base = 1invalid name = { inherited = yes } } }",
@@ -316,7 +316,7 @@ fn rejected_generated_token_base_counts_the_external_claim_refusal() {
 
 #[test]
 fn generate_character_has_a_separate_generated_database() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let mut names = KeyNames::default();
     names.characters.insert(b"sample".to_vec());
@@ -327,7 +327,7 @@ fn generate_character_has_a_separate_generated_database() {
 
 #[test]
 fn generated_gender_uses_current_token() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(b"body = { generate_character = { token_base = sample gender = male gender { @hidden = 9 } @seen = 3 name = label } } final = @seen hidden = @hidden", &KeyNames::default());
     assert_eq!(scalar(&result.items, "final"), b"3");
@@ -360,7 +360,7 @@ fn generated_gender_uses_current_token() {
 
 #[test]
 fn generated_gender_rejects_quoted_keyword_values() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for gender in ["male", "female", "undefined"] {
         let text = format!(

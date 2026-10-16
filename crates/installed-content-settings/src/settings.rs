@@ -893,7 +893,7 @@ mod tests {
 
     #[test]
     fn counter_options_clamp_as_the_game_reads_them_and_default_to_its_constructor() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let read = |text: &str| Counters::read(&SettingsKeys::read(text.as_bytes()));
         assert_eq!(read(""), Ok(Counters::default()));
         assert_eq!(
@@ -980,7 +980,7 @@ TEMPLATE_counter=0"
 
     #[test]
     fn language_is_the_bare_name_and_refuses_other_forms() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let language = |text: &str| SettingsKeys::read(text.as_bytes()).language();
         assert_eq!(language(r#"language="l_english""#).unwrap(), "english");
         assert_eq!(language("language=l_braz_por").unwrap(), "braz_por");
@@ -1010,7 +1010,7 @@ TEMPLATE_counter=0"
     };
 
     fn display(settings: &str, pdx: Option<&str>) -> io::Result<Display> {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let pdx = pdx.map(|text| parser::parse(text.as_bytes())).transpose()?;
         Display::read(
             &SettingsKeys::read(settings.as_bytes()),
@@ -1037,7 +1037,7 @@ TEMPLATE_counter=0"
     /// resolve, and every occurrence is read in order.
     #[test]
     fn settings_keys_follow_the_lexers_tokens() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let pow2 = |text: &str| SettingsKeys::read(text.as_bytes()).force_pow2_textures();
         assert!(!pow2(""));
         assert!(pow2("force_pow2_textures=yes"));

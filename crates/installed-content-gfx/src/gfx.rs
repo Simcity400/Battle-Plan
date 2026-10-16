@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn each_kind_gives_its_texture_and_frames() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let set = set(&[(
             "interface/mapicons.gfx",
@@ -262,7 +262,7 @@ mod tests {
     /// a block ends all open levels. `<` is read as a `textcolors` code.
     #[test]
     fn a_file_the_tree_could_not_parse_reads_as_the_game_reads_it() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let set = set(&[
             (
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn a_later_declaration_replaces_an_earlier_one_and_a_refused_one_hides_it() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let set = set(&[
             (
@@ -330,7 +330,7 @@ mod tests {
 
     #[test]
     fn a_declaration_the_game_does_not_define_is_refused_by_name() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         // The integer point reader stores an uninitialised local if the first value scans
         // nothing.
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn a_file_with_no_sprite_block_yields_nothing() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         assert!(
             set(&[(

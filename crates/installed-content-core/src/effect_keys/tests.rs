@@ -6,7 +6,7 @@ use crate::parser::{
 
 #[test]
 fn class_metadata_covers_the_reader_registry_and_aliases() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     assert!(
         classes::CLASS_IDENTITIES
@@ -44,7 +44,7 @@ fn class_metadata_covers_the_reader_registry_and_aliases() {
 }
 
 pub(super) fn read(text: &[u8], names: &KeyNames) -> Read {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     native::read(
         text,
@@ -83,7 +83,7 @@ pub(super) fn scalar<'a>(items: &'a [Item], key: &str) -> &'a [u8] {
 
 #[test]
 fn registry_is_sorted_complete_and_names_fold() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     assert!(EFFECT_CLASSES.windows(2).all(|pair| pair[0].0 < pair[1].0));
     let names: std::collections::BTreeSet<_> =
@@ -110,7 +110,7 @@ fn registry_is_sorted_complete_and_names_fold() {
 
 #[test]
 fn description_conditional_adjacency_uses_added_children() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let mut names = KeyNames::default();
     names.countries.insert(b"SYN".to_vec());
@@ -130,7 +130,7 @@ fn description_conditional_adjacency_uses_added_children() {
 }
 #[test]
 fn invalid_effect_skips_without_defining_names() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let read = read(
         b"body = { invalid_effect = { @hidden = 7 } } final = @hidden",
@@ -143,7 +143,7 @@ fn invalid_effect_skips_without_defining_names() {
 
 #[test]
 fn a_scope_body_uses_effect_dispatch() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let names = KeyNames {
         countries: [b"ABC".to_vec()].into(),
@@ -156,7 +156,7 @@ fn a_scope_body_uses_effect_dispatch() {
 }
 #[test]
 fn a_scripted_effect_reads_one_value_and_no_block() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let names = KeyNames {
         scripted_effects: [b"my_effect".to_vec()].into(),
@@ -173,7 +173,7 @@ fn a_scripted_effect_reads_one_value_and_no_block() {
 
 #[test]
 fn else_and_else_if_read_the_conditional_before_attachment() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     for key in ["else", "else_if"] {
         let text = format!("body = {{ {key} = {{ @seen = 7 add_stability = 0 }} }} final = @seen");
@@ -201,7 +201,7 @@ fn read_effect_nonblock(text: &[u8]) -> Read {
 
 #[test]
 fn readscript_default_body_dispatches_each_effect() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     for key in ["hidden_effect", "effect_tooltip"] {
         let text = format!(
@@ -217,7 +217,7 @@ fn readscript_default_body_dispatches_each_effect() {
 
 #[test]
 fn generic_value_reader_does_not_consume_a_body() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let read = read(
         b"body = { add_stability = { @seen = 7 add_stability = 0 } final = @seen",
@@ -230,7 +230,7 @@ fn generic_value_reader_does_not_consume_a_body() {
 
 #[test]
 fn conditional_limit_keeps_scope_and_scripted_trigger_names() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let names = KeyNames {
         countries: [b"ABC".to_vec()].into(),
@@ -250,7 +250,7 @@ fn conditional_limit_keeps_scope_and_scripted_trigger_names() {
 
 #[test]
 fn missing_operator_uses_stale_value_and_current_error_skip() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     for (key, expected) in [
         ("hidden_effect", b"7".as_slice()),
@@ -276,7 +276,7 @@ fn missing_operator_uses_stale_value_and_current_error_skip() {
 
 #[test]
 fn coded_effect_precedes_scope_and_scripted_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let names = KeyNames {
         countries: [b"hidden_effect".to_vec()].into(),
@@ -296,7 +296,7 @@ fn coded_effect_precedes_scope_and_scripted_name() {
 
 #[test]
 fn deferred_readers_keep_by_key_bodies_and_count_named_gaps() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let read = read(b"body = { ai_message = { @seen = 1 unknown = @seen } ai_message = { unknown = 2 } every_active_scientist = { @flag = 2 invalid = { @hidden = 9 marker = 1 } } } final = @flag hidden = @hidden", &KeyNames::default());
     assert!(read.unsettled.is_none(), "{read:?}");
@@ -319,7 +319,7 @@ fn deferred_readers_keep_by_key_bodies_and_count_named_gaps() {
 
 #[test]
 fn description_projection_follows_own_readers_without_a_global_skip_list() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let document = crate::parser::parse(br#"
         if = { limit = { always = yes } array = yes original_tag = ABC prioritize = 1 }
@@ -366,7 +366,7 @@ fn description_projection_follows_own_readers_without_a_global_skip_list() {
 
 #[test]
 fn random_list_and_member_projection_share_the_own_key_metadata() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let document = crate::parser::parse(br#"
         random_list = {
@@ -390,7 +390,7 @@ fn random_list_and_member_projection_share_the_own_key_metadata() {
 
 #[test]
 fn event_random_blocks_project_as_children_but_delay_and_tooltip_stay_own() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     for key in [
         "country_event",
@@ -411,7 +411,7 @@ fn event_random_blocks_project_as_children_but_delay_and_tooltip_stay_own() {
 
 #[test]
 fn focus_projection_keeps_the_originator_and_invalid_tooltip_boundary() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let document = crate::parser::parse(
         br#"
@@ -449,7 +449,7 @@ fn focus_projection_keeps_the_originator_and_invalid_tooltip_boundary() {
 
 #[test]
 fn active_scientist_projection_reuses_its_character_reader() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let names = KeyNames::default();
     for key in ["every_scientist", "every_active_scientist"] {
@@ -477,7 +477,7 @@ fn active_scientist_projection_reuses_its_character_reader() {
 
 #[test]
 fn technology_scalar_effects_keep_their_operand_and_no_child_array() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
     let names = KeyNames::default();
     let items = read_body(

@@ -1004,7 +1004,7 @@ Effect = Below
     /// match without case differences, and sampler slots fill by index.
     #[test]
     fn an_effect_keeps_its_full_facts() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let read = files(&[
             ("gfx/FX/fixture.shader", DECLARATIONS),
@@ -1062,7 +1062,7 @@ Effect = Below
     /// same index.
     #[test]
     fn includes_and_stages_order_the_rows() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let read = files(&[
             (
@@ -1098,7 +1098,7 @@ Effect = Below
     /// or at a 0xFF, ends that declaration.
     #[test]
     fn members_end_at_the_end_of_the_text() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         for tail in [&b""[..], b"\xff"] {
             let text = [b"VertexStruct VS { float2 a : TEXCOORD0 ".as_slice(), tail].concat();
@@ -1121,7 +1121,7 @@ Effect = Below
     /// remain distinct even when they start from the same authored text.
     #[test]
     fn declaration_names_keep_their_line_feeds() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         let text = "PixelShader = { Samplers = { \"Map\nTexture\" = { Index = 1 } } }\n\
                     BlendState \"multi\nline\" { BlendEnable = yes }\n\

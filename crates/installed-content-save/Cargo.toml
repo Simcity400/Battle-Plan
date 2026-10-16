@@ -16,4 +16,4 @@ replay.workspace = true
 [dev-dependencies]
 installed-content = { workspace = true, features = ["test-support"] }
 # Shared executable metadata for the installed state-history regression.
-engine.workspace = true
+engine-executable.workspace = true

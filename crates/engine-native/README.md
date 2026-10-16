@@ -4,4 +4,4 @@ Native layouts, guarded memory operations, shared containers, authentication and
 
 The public capture API is available through [engine](../engine/README.md). Shared rules live in [AGENTS.md](../../AGENTS.md); field contracts, arithmetic, native gates and failure order stay beside each reader.
 
-The module list is in [lib.rs](src/lib.rs). Production dependencies are [engine-executable](../engine-executable/README.md). Tests keep their synthetic fixtures and existing ignored scale gates.
+The module list is in [lib.rs](src/lib.rs). Production dependencies are [engine-executable](../engine-executable/README.md) and [engine-allocation](../engine-allocation/README.md), re-exported here as `allocation`. Tests keep their synthetic fixtures and existing ignored scale gates.

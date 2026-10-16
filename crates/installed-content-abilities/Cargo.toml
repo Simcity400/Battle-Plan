@@ -14,7 +14,7 @@ installed-content-core.workspace = true
 
 [dev-dependencies]
 installed-content-core = { workspace = true, features = ["layer-fixtures"] }
-engine.workspace = true
+engine-executable.workspace = true
 
 [features]
 test-support = ["installed-content-core/test-support"]

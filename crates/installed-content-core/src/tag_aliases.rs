@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn every_top_level_key_is_an_alias() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let aliases = parse(
             &[(
@@ -394,7 +394,7 @@ mod tests {
     /// key a trigger. A first definition stays, found by its token, without case.
     #[test]
     fn the_key_reader_keeps_each_member() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let aliases = parse(&[
             (
@@ -436,7 +436,7 @@ mod tests {
     /// and the score still decides.
     #[test]
     fn repeated_scores_join_one_mean_time() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let aliases = parse(&[(
             "a.txt",
@@ -452,7 +452,7 @@ mod tests {
     /// bodies stand.
     #[test]
     fn an_unsettled_body_refuses_it_and_the_later_ones() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let aliases = parse(&[(
             "a.txt",
@@ -471,7 +471,7 @@ mod tests {
     /// gave is skipped too.
     #[test]
     fn a_duplicate_body_is_skipped_unread() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let aliases = parse(
             &[
@@ -495,7 +495,7 @@ mod tests {
     /// An alias name that is not UTF-8 is a named gap, never dropped.
     #[test]
     fn an_alias_name_that_is_not_text_is_a_gap() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let aliases = parse(
             &[("a.txt", b"SPA = { } \"\xfeA\" = { }")],

@@ -5,7 +5,7 @@ use crate::{
 
 #[test]
 fn scalar_forms_read_one_and_keep_native_fallbacks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let rows = [
         ("add_faction_goal_slot", "value"),
@@ -55,7 +55,7 @@ fn scalar_forms_read_one_and_keep_native_fallbacks() {
 
 #[test]
 fn no_skip_unknown_forms_consume_only_the_opening() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for effect in [
         "add_relation_rule_override",
@@ -92,7 +92,7 @@ fn no_skip_unknown_forms_consume_only_the_opening() {
 
 #[test]
 fn iterators_keep_gated_limits_and_localization() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for effect in [
         "every_country_with_original_tag",
@@ -123,7 +123,7 @@ fn iterators_keep_gated_limits_and_localization() {
 
 #[test]
 fn effect_key_force_mapmode_limits_are_unconditional_trigger_reads() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(b"body = { force_update_map_mode = { limit = { always = yes } limit = { @seen = 3 always = yes } mapmode = custom } } final = @seen", &KeyNames::default());
     assert_eq!(scalar(&result.items, "final"), b"3");
@@ -135,7 +135,7 @@ fn effect_key_force_mapmode_limits_are_unconditional_trigger_reads() {
 
 #[test]
 fn effect_key_breakthrough_specialization_rejects_an_opening_value() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(b"body = { add_breakthrough_points = { specialization = { @hidden = 9 } @seen = 3 value = @seen } } final = @seen hidden = @hidden", &KeyNames::default());
     assert_eq!(scalar(&result.items, "final"), b"3");
@@ -148,7 +148,7 @@ fn effect_key_breakthrough_specialization_rejects_an_opening_value() {
 
 #[test]
 fn specialization_stale_block_needs_a_registry_and_counts_a_refusal() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { add_breakthrough_points = { value = custom specialization { target = unknown } } }",
@@ -173,7 +173,7 @@ fn specialization_stale_block_needs_a_registry_and_counts_a_refusal() {
 
 #[test]
 fn effect_key_static_province_uses_its_own_province_keys() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(b"body = { remove_province_modifier = { province = { level = { @hidden = 9 } first = { @hidden_first = 8 } limit_to_supply_node = { @bad_supply = 6 } limit_to_victory_point = { @bad_vp = 7 } @seen = 3 id = @seen } static_modifiers = { arbitrary_modifier } } } final = @seen hidden = @hidden first = @hidden_first supply = @bad_supply vp = @bad_vp", &KeyNames::default());
     assert_eq!(scalar(&result.items, "final"), b"3");
@@ -189,7 +189,7 @@ fn effect_key_static_province_uses_its_own_province_keys() {
 
 #[test]
 fn effect_key_static_province_accepts_all_provinces_as_one_value() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(b"body = { remove_province_modifier = { province = { all_provinces = { @seen = 3 marker = 1 } } } final = @seen", &KeyNames::default());
     assert_eq!(scalar(&result.items, "final"), b"3");
@@ -201,7 +201,7 @@ fn effect_key_static_province_accepts_all_provinces_as_one_value() {
 
 #[test]
 fn effect_key_static_modifiers_read_the_list_after_a_scalar_value() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(b"body = { remove_province_modifier = { static_modifiers = arbitrary_modifier @hidden = 9 } @seen = 3 marker = 1 } final = @seen hidden = @hidden", &KeyNames::default());
 
@@ -216,7 +216,7 @@ fn effect_key_static_modifiers_read_the_list_after_a_scalar_value() {
 
 #[test]
 fn effect_key_create_entity_position_keys_are_scalar() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for key in ["x", "y", "z", "state", "province"] {
         let text = format!(

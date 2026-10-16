@@ -591,7 +591,7 @@ mod tests {
 
     #[test]
     fn operation_map_icon_is_separate_and_keeps_first_definition() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (definitions, _) = parse_operations(
             b"op = { name = NAME icon = CARD map_icon = MAP } OP = { name = WRONG map_icon = WRONG } other = { name = OTHER }",
@@ -608,7 +608,7 @@ mod tests {
 
     #[test]
     fn intelligence_operation_token_name_text_icon_and_duplicate_skip() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (definitions, warnings) = parse_operation_tokens(
             br#"
@@ -661,7 +661,7 @@ mod tests {
 
     #[test]
     fn intelligence_agency_upgrade_readers_and_identifier_name() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (branches, warnings) = parse_agency_upgrades(
             br#"
@@ -703,7 +703,7 @@ mod tests {
 
     #[test]
     fn intelligence_token_upgrade_layers_first_global_pointer_and_replace_path() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "hoi4_intelligence_domains_{}_{}_{}",
@@ -803,7 +803,7 @@ mod tests {
 
     #[test]
     fn intelligence_operation_names_art_variables_and_duplicate_skip() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (operations, warnings) = parse_operations(
             br#"
@@ -851,7 +851,7 @@ mod tests {
 
     #[test]
     fn intelligence_operation_named_unreached_array_refusal() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let why = parse_operations(
             b"custom={operation_target={target_array=a}}",
@@ -865,7 +865,7 @@ mod tests {
 
     #[test]
     fn intelligence_operation_notes_keep_deferred_kind_and_public_parser_output() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let input = b"custom = { on_start = { free_operative = { operative = custom_name } } }";
         let mut notes = Vec::new();

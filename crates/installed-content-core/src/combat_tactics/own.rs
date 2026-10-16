@@ -53,7 +53,7 @@ mod tests {
     /// the province-building reader requires a provincial building.
     #[test]
     fn non_damaged_building_level_rejects_provincial_buildings() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut names = KeyNames::default();
         for (name, provincial) in [(b"factory".as_slice(), false), (b"port".as_slice(), true)] {
@@ -89,7 +89,7 @@ mod tests {
     /// Assignment reads a body through its key reader.
     #[test]
     fn completed_mio_trait_count_reads_its_assignment_body() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let result = crate::triggers::read(
             b"has_mio_number_of_completed_traits = { @kept = 2 value > 3 } always = @kept",
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn own_key_loops_skip_unknown_blocks_without_registering_definitions() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         // One fixture for every reached skip-dispatch family; a generic
         // by-key reader defines @lost inside the unknown field instead.
@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn own_one_value_keys_leave_blocks_in_the_enclosing_loop() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         for class in [
             "has_country_flag",
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn owns_any_state_of_is_a_raw_list_even_with_a_definition() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let result = read(b"body = { owns_any_state_of = { 1 @lost = 2 } } lost = @lost");
         assert!(result.unsettled.is_none());
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn custom_override_tooltip_uses_bound_localisation_and_trigger_dispatch() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let result = read(b"body = { custom_override_tooltip = { tooltip = { arg = { @kept = 4 localization_key = x } } invalid = { @lost = 2 } always = yes } } kept = @kept lost = @lost");
         assert!(result.unsettled.is_none());
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn math_errors_skip_the_tail_without_registering_definitions() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let result = read(b"body = { check_expr = { value = { value = 1 @kept = 4 add = @kept } invalid = 0 ignored = { @lost = 2 } @tail = 8 add = 1 } } kept = @kept lost = @lost tail = @tail");
         assert!(result.unsettled.is_none());
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn math_fixed_argument_and_conditional_loops_share_the_reader() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let result = read(b"body = { check_expr = { value = 1 clamp = { min = { value = 0 @a = 2 add = @a } max = 10 } if = { limit = 1 @b = 3 add = @b } else_if = { limit = 0 add = 4 } else = { @c = 5 add = @c } add = 6 } } a = @a b = @b c = @c");
         assert!(result.unsettled.is_none());

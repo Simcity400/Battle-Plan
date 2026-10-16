@@ -1,4 +1,5 @@
 //! Current presentation metadata, keyed by accepted recording/content stamps.
+use replay::identity::IdentityCodec;
 use super::*;
 use serde::{Deserialize, Serialize};
 

@@ -496,10 +496,15 @@ pub fn plan(
     cancel: &AtomicBool,
 ) -> io::Result<Plan> {
     let mut plan = Plan::default();
-    plan.order = ordered(discover(options, cancel)?, selected, recorded, &mut plan.warnings)
-        .iter()
-        .map(choice)
-        .collect();
+    plan.order = ordered(
+        discover(options, cancel)?,
+        selected,
+        recorded,
+        &mut plan.warnings,
+    )
+    .iter()
+    .map(choice)
+    .collect();
     Ok(plan)
 }
 
@@ -520,7 +525,12 @@ pub fn apply(
         return Ok(plan);
     }
     let mut overlays = Vec::new();
-    for candidate in ordered(discover(options, cancel)?, selected, recorded, &mut plan.warnings) {
+    for candidate in ordered(
+        discover(options, cancel)?,
+        selected,
+        recorded,
+        &mut plan.warnings,
+    ) {
         cancelled(cancel)?;
         let Some(source) = candidate.source.clone() else {
             continue;
@@ -573,7 +583,10 @@ pub fn apply(
     }
     let (presentation, refused) = layers.with_overlays(overlays);
     for (layer, error) in refused {
-        let name = layer.overlay.map(|overlay| overlay.name).unwrap_or_default();
+        let name = layer
+            .overlay
+            .map(|overlay| overlay.name)
+            .unwrap_or_default();
         plan.order.retain(|choice| choice.name != name);
         plan.warnings.push(format!(
             "Visual mod {name} is not shown: it cannot be mounted with the others ({error})."

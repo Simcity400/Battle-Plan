@@ -5,7 +5,7 @@ use crate::{
 
 #[test]
 fn create_unit_officer_and_portrait_readers_skip_rejected_blocks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { create_unit = { officer = { invalid = { @hidden = 9 } name = officer seed = 5 male = yes portraits = { army = { large = picture invalid = { @portrait = 7 } } invalid = { @role = 6 } } } @seen = 3 owner = ABC invalid = { @outer = 8 } } } final = @seen hidden = @hidden portrait = @portrait role = @role outer = @outer",
@@ -25,7 +25,7 @@ fn create_unit_officer_and_portrait_readers_skip_rejected_blocks() {
 
 #[test]
 fn create_unit_country_score_uses_mtth_and_trigger_modifier_readers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { create_unit = { country_score = { modifier = { invalid = { @hidden = 9 } @seen = 3 always = yes } unknown = { @open = 4 factor = 2 } } } final = @seen open = @open hidden = @hidden",
@@ -40,7 +40,7 @@ fn create_unit_country_score_uses_mtth_and_trigger_modifier_readers() {
 
 #[test]
 fn set_politics_parties_use_political_party_script_grammar() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { set_politics = { parties = { arbitrary_ideology = { invalid = { @hidden = 9 } @seen = 3 popularity = 40 } } last_election = 1936.1.1 invalid = { @outer = 8 } } } final = @seen hidden = @hidden outer = @outer",
@@ -57,7 +57,7 @@ fn set_politics_parties_use_political_party_script_grammar() {
 
 #[test]
 fn create_equipment_variant_delegates_to_spec_and_skips_rejected_blocks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { create_equipment_variant = { type = equipment visible = yes design_team = team name = variant icon = GFX_picture invalid = { @hidden = 9 } @seen = 3 version = 1 } } final = @seen hidden = @hidden",
@@ -71,7 +71,7 @@ fn create_equipment_variant_delegates_to_spec_and_skips_rejected_blocks() {
 
 #[test]
 fn create_equipment_variant_upgrades_use_recorded_names() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let mut names = KeyNames::default();
     names
@@ -93,7 +93,7 @@ fn create_equipment_variant_upgrades_use_recorded_names() {
 
 #[test]
 fn create_equipment_variant_optional_assets_are_raw_object_entries() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { create_equipment_variant = { optional_assets = { { model = first invalid = { @hidden = 9 } } { icon = GFX_second @seen = 3 model = second } } name = variant } } final = @seen hidden = @hidden",
@@ -107,7 +107,7 @@ fn create_equipment_variant_optional_assets_are_raw_object_entries() {
 
 #[test]
 fn create_equipment_variant_cid_unknown_key_reads_one_value() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { create_equipment_variant = { industrial_organisation = { unknown = { @seen = 3 id = 7 } name = variant } } final = @seen",
@@ -126,7 +126,7 @@ fn create_equipment_variant_cid_unknown_key_reads_one_value() {
 
 #[test]
 fn create_equipment_variant_modules_read_one_value_for_every_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { create_equipment_variant = { modules = { slot = { @seen = 3 another_slot = none } name = variant } } final = @seen",

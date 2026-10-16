@@ -1,5 +1,6 @@
 //! Uncompressed, independently recoverable spool segments.
 
+use crate::identity::IdentityCodec;
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},

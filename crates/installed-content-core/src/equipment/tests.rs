@@ -2,9 +2,12 @@ use super::*;
 
 #[test]
 fn category_names_invert_the_table_and_refuse_unknown_bits() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("equipment category checks require BATTLE_PLAN_GAME_DIR");
-    for &(name, bit) in &engine::executable_tables::get().auxiliary.category_names {
+    for &(name, bit) in &engine_executable::executable_tables::get()
+        .auxiliary
+        .category_names
+    {
         assert_eq!(category_mask(name), Some(bit));
         if bit != 0 {
             assert_eq!(category_names(bit).unwrap(), [name]);
@@ -43,7 +46,7 @@ fn module_country_conditions_keep_final_limit_and_reset_on_redefinition() {
 /// `(path, text)` files read in order through the file loop, then
 /// finalized.
 fn read(files: &[(&str, &str)]) -> Database {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("equipment reader checks require BATTLE_PLAN_GAME_DIR");
     let mut database = Database::default();
     for (path, text) in files {
@@ -73,7 +76,7 @@ fn supply_trucks_follow_boolean_redefinition_and_copy_rules() {
 }
 
 fn stat(name: &str) -> usize {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("equipment stat checks require BATTLE_PLAN_GAME_DIR");
     stat_index(name.as_bytes()).unwrap()
 }
@@ -112,7 +115,7 @@ fn every_top_level_reader_consumes_its_own_block() {
 #[cfg(feature = "test-support")]
 #[test]
 fn the_loader_reads_its_three_directories_in_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
     use std::fs;
     let root = std::env::temp_dir().join(format!(
@@ -907,7 +910,7 @@ fn keywords_fold_and_names_keep_their_case() {
 
 #[test]
 fn stat_metadata_covers_the_index_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("equipment metadata checks require BATTLE_PLAN_GAME_DIR");
     assert_eq!(stat_metadata().len(), STAT_COUNT);
     for (index, &(keyword, label, _)) in stat_metadata().iter().enumerate() {

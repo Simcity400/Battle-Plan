@@ -18,7 +18,7 @@ fn catalog(input: &[u8]) -> Catalog {
 
 #[test]
 fn mio_trait_names_follow_includes_overrides_and_first_match() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let db = catalog(
         br#"
@@ -58,7 +58,7 @@ fn mio_trait_names_follow_includes_overrides_and_first_match() {
 
 #[test]
 fn mio_trait_include_pass_is_once_in_first_creation_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let db = catalog(
         br#"
@@ -89,7 +89,7 @@ fn mio_trait_include_pass_is_once_in_first_creation_order() {
 
 #[test]
 fn mio_trait_name_candidates_preserve_recorded_case_and_country_fallback() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let db = catalog(b"custom={trait={token=first} trait={token=second name=explicit_name}}");
     let first = db.trait_definition("custom", "first").unwrap().unwrap();
@@ -113,7 +113,7 @@ fn mio_trait_name_candidates_preserve_recorded_case_and_country_fallback() {
 
 #[test]
 fn mio_trait_readers_consume_names_modifiers_raw_lists_and_integer_points() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let db = catalog(
         br#"
@@ -181,7 +181,7 @@ fn mio_trait_readers_consume_names_modifiers_raw_lists_and_integer_points() {
 
 #[test]
 fn mio_trait_bonuses_follow_duplicate_category_and_include_rules() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let db = catalog(br#"
         base={trait={token=one equipment_bonus={soft_attack=0.1 supply_consumption=-0.2}

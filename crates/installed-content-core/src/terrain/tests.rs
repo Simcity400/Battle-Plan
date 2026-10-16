@@ -15,7 +15,7 @@ fn category(definitions: &TerrainDefinitions, index: u8) -> Option<&[u8]> {
 
 #[test]
 fn naval_terrain_keeps_common_and_ordered_class_modifier_operands() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let definitions = database(&[
         "categories={ ocean={ minimum_seazone_dominance=250 units={ attack=-0.1 } naval_range=1.25 custom_hull={ naval_range=0.5 units={ movement=-0.2 } } custom_hull={ naval_range=-0.2 units={ defence=0.3 } } } }",
@@ -43,7 +43,7 @@ fn naval_terrain_keeps_common_and_ordered_class_modifier_operands() {
 
 #[test]
 fn a_redeclared_category_appends_and_a_lookup_takes_the_first() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let definitions = database(&[
         "categories = { plains = { movement_cost = 1 } Plains = { movement_cost = 2 } }",
@@ -63,7 +63,7 @@ fn a_redeclared_category_appends_and_a_lookup_takes_the_first() {
 
 #[test]
 fn a_type_sees_only_the_categories_read_before_it() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let definitions = database(&[
         "terrain = { early = { type = hills color = { 1 } } } \
@@ -85,7 +85,7 @@ fn a_type_sees_only_the_categories_read_before_it() {
 
 #[test]
 fn entries_keep_their_fields_and_the_last_palette_writer_wins() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let definitions = database(&[
         "@snow = yes categories = { plains = { } desert = { } } \
@@ -116,7 +116,7 @@ fn entries_keep_their_fields_and_the_last_palette_writer_wins() {
 /// document order at every depth.
 #[test]
 fn combat_widths_keep_their_value_past_a_failed_conversion() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let definitions = database(&[
         "@w = 42 categories={urban={combat_width=96 combat_support_width=32 combat_width=@w} \
@@ -154,7 +154,7 @@ fn combat_widths_keep_their_value_past_a_failed_conversion() {
 
 #[test]
 fn authored_cost_keeps_radix_prefixes_fraction_and_clamp() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let definitions = database(&[
         "categories={octal={movement_cost=010} hex={movement_cost=0x10} suffix={movement_cost=1junk.25} signed={movement_cost=1.-2} clamped={movement_cost=08} invalid={movement_cost=bad} omitted={}}",
@@ -180,7 +180,7 @@ fn authored_cost_keeps_radix_prefixes_fraction_and_clamp() {
 
 #[test]
 fn a_malformed_entry_is_skipped_and_named_and_unsupported_forms_are_refused() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // A category reads fields whatever its value. A key without a value
     // consumes the next token as its operator; a scalar entry reads tokens
@@ -299,7 +299,7 @@ fn a_malformed_entry_is_skipped_and_named_and_unsupported_forms_are_refused() {
 
 #[test]
 fn default_map_names_its_bitmaps_and_tree_indices() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let map = parse_default_map(
         br#"definitions = "definition.csv"
@@ -329,7 +329,7 @@ fn default_map_names_its_bitmaps_and_tree_indices() {
 
 #[test]
 fn a_default_map_without_a_required_name_is_refused() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let complete = br#"definitions = "d" provinces = "p" terrain = "t" rivers = "r"
          heightmap = "h" tree_definition = "td""#;
@@ -361,7 +361,7 @@ fn a_default_map_without_a_required_name_is_refused() {
 /// category's own fields. The end of the text closes every loop.
 #[test]
 fn the_replay_classes_hold_for_terrain() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let definitions = database(&[
         "@w = 30 categories = { a = { \"combat_width\" = 10 COMBAT_WIDTH = @w } \
@@ -434,7 +434,7 @@ fn bitmap(width: i32, rows: &[&[u8]], dib: u32) -> Vec<u8> {
 
 #[test]
 fn the_world_normal_keeps_the_clients_texture_padding() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let bytes = bitmap(
         2,
@@ -468,7 +468,7 @@ fn the_world_normal_keeps_the_clients_texture_padding() {
 
 #[test]
 fn the_world_normal_loads_as_the_game_decodes_a_texture() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let shipped = bitmap(
         2,

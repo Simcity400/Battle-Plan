@@ -16,7 +16,10 @@ test-support = []
 
 [dependencies]
 engine.workspace = true
+replay-identity.workspace = true
 
 [dev-dependencies]
+# The identity fixture its wire-form tests encode.
+replay-identity = { workspace = true, features = ["test-support"] }
 # Compression-size assertions for synthetic row encodings.
 zstd = "0.13"

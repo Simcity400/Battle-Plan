@@ -165,7 +165,7 @@ mod tests {
     use super::*;
     #[test]
     fn sprite_pair_and_last_definition() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let laws = parse(br#"@frame=4 custom={icon="mod_sprite:3" icon=@frame icon=other visible={always=yes} ai_will_do={base=1 modifier={factor=2 always=yes}} state_modifier={compliance_gain=0.1}} custom={icon="new:2"}"#, &KeyNames::default()).unwrap();
         assert_eq!((laws[0].sprite.as_str(), laws[0].frame), ("other", 4));
@@ -182,7 +182,7 @@ mod tests {
     }
     #[test]
     fn eligibility_trigger_bodies_are_preserved() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let laws = parse(
             b"custom={visible={always=yes} visible={has_dlc=Example} available={FROM={tag=MOD}}}",
@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn unsettled_modifier_is_named_not_assumed() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let error = parse(
             b"extra={state_modifier={modded={a=1}}}",
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     #[ignore = "requires the installed vanilla and Workshop corpus"]
     fn installed_corpus() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let game =
             std::path::PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("BATTLE_PLAN_GAME_DIR"));

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 pub(crate) fn initialize_runtime_tables() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
 }
 

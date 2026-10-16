@@ -3,7 +3,9 @@
 The recorded data contract: engine-native rows, typed tables, cadence, exact
 values, content identity and their bounded codecs. Frame, spool and container
 implementations consume these definitions; this crate depends only on `engine`
-for native value types and checked allocation.
+for native value types and checked allocation, and on
+[replay-identity](../replay-identity/README.md) for the content identity types
+its `identity` module writes and reads.
 
 | Source | Responsibility |
 |---|---|
@@ -12,7 +14,7 @@ for native value types and checked allocation.
 | [extended_rows/](src/extended_rows/), domain row modules | Recorded operands, ordering, observation boundaries, completeness and named refusals. |
 | [cadence.rs](src/cadence.rs), [sliced.rs](src/sliced.rs), [cadence-audit.md](cadence-audit.md) | Read scheduling, owner slices, carry rules and supplying hours; the native writers that keep each hourly table hourly. |
 | [codec.rs](src/codec.rs), [value.rs](src/value.rs), [fixed_point.rs](src/fixed_point.rs), [display.rs](src/display.rs) | Bounded decoding, exact value encoding and arithmetic, and game display steps. |
-| [identity.rs](src/identity.rs) | Ordered recorded content layers and campaign/session identity. |
+| [identity.rs](src/identity.rs) | The recorded form of the content and session identity (`IdentityCodec`); the types and their validation are in [replay-identity](../replay-identity/README.md). |
 | [checkpoint/](src/checkpoint/), [rows/checkpoint.rs](src/rows/checkpoint.rs) | Prepared row and value codecs, independent of frame snapshot framing. |
 | [country_flags.rs](src/country_flags.rs), [day_night.rs](src/day_night.rs), [naval_trees.rs](src/naval_trees.rs), [temperature.rs](src/temperature.rs) | Shared recorded operands and exact calculations, including the operands that pick a country's flag. |
 

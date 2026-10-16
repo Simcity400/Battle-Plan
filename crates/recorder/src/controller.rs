@@ -1,5 +1,6 @@
 //! The in-process recording API the tray recorder drives. The command line
 //! runs the same capture through [`crate::recording`].
+use replay::identity::IdentityCodec;
 use crate::{
     recording::{self, COLLECTOR_LOADED, CaptureOptions, TWO_GAMES, UNSUPPORTED_BUILD},
     windows::{self, Process, ProcessMemory},

@@ -1,5 +1,6 @@
 //! Loader worker, spool thread, and restore/drain/self-unload lifecycle.
 
+use replay::identity::IdentityCodec;
 use crate::{
     acquisition_jobs as acquisition, decode,
     history::PreparedCampaigns,

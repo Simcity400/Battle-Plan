@@ -2,23 +2,29 @@
 //! are considered. Names retain exact byte identity, without operand suffixes.
 //! Purchase contracts and factions have no built-in variable table.
 
-use engine::executable_tables::RuntimeTable;
+use engine_executable::executable_tables::RuntimeTable;
 
 /// Built-ins of the global variable store.
 pub static GLOBAL: RuntimeTable<&'static [&'static str]> =
-    RuntimeTable::new(|| &engine::executable_tables::get().variables.global);
+    RuntimeTable::new(|| &engine_executable::executable_tables::get().variables.global);
 
 /// Built-ins of a country's variable store.
-pub static COUNTRY: RuntimeTable<&'static [&'static str]> =
-    RuntimeTable::new(|| &engine::executable_tables::get().variables.country);
+pub static COUNTRY: RuntimeTable<&'static [&'static str]> = RuntimeTable::new(|| {
+    &engine_executable::executable_tables::get()
+        .variables
+        .country
+});
 
 /// Built-ins of a state's variable store.
 pub static STATE: RuntimeTable<&'static [&'static str]> =
-    RuntimeTable::new(|| &engine::executable_tables::get().variables.state);
+    RuntimeTable::new(|| &engine_executable::executable_tables::get().variables.state);
 
 /// Built-ins of a character's variable store, documented as `unit_leader`.
-pub static CHARACTER: RuntimeTable<&'static [&'static str]> =
-    RuntimeTable::new(|| &engine::executable_tables::get().variables.unit_leader);
+pub static CHARACTER: RuntimeTable<&'static [&'static str]> = RuntimeTable::new(|| {
+    &engine_executable::executable_tables::get()
+        .variables
+        .unit_leader
+});
 
 /// Whether `name` is a built-in of `table` (sorted by bytes).
 pub fn contains(table: &[&str], name: &[u8]) -> bool {
@@ -43,7 +49,7 @@ mod tests {
     #[test]
     #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
     fn installed_tables_are_sorted_and_unique() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         for table in [&GLOBAL[..], &COUNTRY[..], &STATE[..], &CHARACTER[..]] {
             assert!(
                 table

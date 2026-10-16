@@ -3,7 +3,7 @@
 //! keys do not enter keyword lookup. Immutable registries come from the verified
 //! executable, while authored names come from the resolved content stack.
 
-use engine::executable_tables::RuntimeTable;
+use engine_executable::executable_tables::RuntimeTable;
 use std::collections::BTreeSet;
 
 use crate::{
@@ -15,10 +15,17 @@ use crate::{
     scripted_triggers::{Lookup, ScriptedTriggers, Template},
 };
 pub static REGISTERED_TRIGGERS: RuntimeTable<&'static [(u32, &'static str)]> =
-    RuntimeTable::new(|| &engine::executable_tables::get().registries.triggers);
-pub use engine::executable_tables::TriggerReader as Reader;
-pub static TRIGGER_CLASSES: RuntimeTable<&'static [(u32, u32, Reader)]> =
-    RuntimeTable::new(|| &engine::executable_tables::get().registries.trigger_classes);
+    RuntimeTable::new(|| {
+        &engine_executable::executable_tables::get()
+            .registries
+            .triggers
+    });
+pub use engine_executable::executable_tables::TriggerReader as Reader;
+pub static TRIGGER_CLASSES: RuntimeTable<&'static [(u32, u32, Reader)]> = RuntimeTable::new(|| {
+    &engine_executable::executable_tables::get()
+        .registries
+        .trigger_classes
+});
 pub fn trigger_class(token: u32) -> Option<(u32, Reader)> {
     TRIGGER_CLASSES
         .binary_search_by_key(&token, |(id, _, _)| *id)
@@ -52,7 +59,7 @@ pub fn key_reader(token: u32) -> KeyReader {
     let Some((_, reader)) = trigger_class(token) else {
         return KeyReader::ThenLoadKey(&[]);
     };
-    let registry = &engine::executable_tables::get()
+    let registry = &engine_executable::executable_tables::get()
         .registries
         .trigger_key_readers;
     let key = registry
@@ -442,7 +449,7 @@ pub fn registered_trigger(text: &[u8]) -> Option<u32> {
 }
 pub static EQUIPMENT_CATEGORIES: RuntimeTable<&'static [(u32, u64, &'static str)]> =
     RuntimeTable::new(|| {
-        &engine::executable_tables::get()
+        &engine_executable::executable_tables::get()
             .auxiliary
             .equipment_categories
     });
@@ -667,7 +674,7 @@ mod tests {
 
     #[test]
     fn registry_and_categories_are_sorted_and_unique() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
         assert!(
             REGISTERED_TRIGGERS
@@ -720,7 +727,7 @@ mod tests {
     }
     #[test]
     fn every_load_body_thunk_has_a_key_reader() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
         for &(token, _, reader) in TRIGGER_CLASSES.iter() {
             if matches!(
@@ -746,7 +753,7 @@ mod tests {
 
     #[test]
     fn count_trigger_names_fold_the_loaded_databases() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
         let mut buildings = Buildings::default();
         buildings.types.insert(

@@ -33,7 +33,7 @@ installed-content-wargoals.workspace = true
 installed-content-weather.workspace = true
 
 [dev-dependencies]
-engine.workspace = true
+engine-executable.workspace = true
 installed-content-division-names = { workspace = true, features = ["layer-fixtures"] }
 installed-content-core = { workspace = true, features = ["layer-fixtures"] }
 

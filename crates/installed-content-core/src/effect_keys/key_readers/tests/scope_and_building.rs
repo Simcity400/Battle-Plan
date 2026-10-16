@@ -16,7 +16,7 @@ fn no_deferred(result: &Read) {
 
 #[test]
 fn targeted_resistance_reads_own_fields_and_effect_children() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for effect in ["force_disable_resistance", "force_enable_resistance"] {
         let result = read(
@@ -37,7 +37,7 @@ fn targeted_resistance_reads_own_fields_and_effect_children() {
 
 #[test]
 fn resistance_target_reads_amount_and_country_operands_before_children() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body={add_resistance_target={id=3 tooltip=SYN_TIP amount=var:syn days=7 occupied=AAA occupier=BBB add_political_power=2}}",
@@ -60,7 +60,7 @@ fn resistance_target_reads_amount_and_country_operands_before_children() {
 
 #[test]
 fn reached_effect_readers_remove_the_named_deferrals() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for effect in [
         "for_loop_effect",
@@ -103,7 +103,7 @@ fn reached_effect_readers_remove_the_named_deferrals() {
 
 #[test]
 fn for_compare_rejects_an_opening_value() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { for_loop_effect = { compare = { @hidden = 9 marker = 1 } @seen = 3 add_stability = 0 } } final = @seen hidden = @hidden",
@@ -116,7 +116,7 @@ fn for_compare_rejects_an_opening_value() {
 
 #[test]
 fn while_limit_skips_only_after_a_trigger_child() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { while_loop_effect = { limit = { invalid = { @hidden = 9 } } limit = { @seen = 3 always = yes } limit = { @duplicate = 4 always = yes } add_stability = 0 } } final = @seen hidden = @hidden duplicate = @duplicate",
@@ -130,7 +130,7 @@ fn while_limit_skips_only_after_a_trigger_child() {
 
 #[test]
 fn hash_readers_keep_the_current_lexer_text() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"@given = 3 body = { set_power_balance_gfx = { id = @given side = @given gfx = @given } }",
@@ -145,7 +145,7 @@ fn hash_readers_keep_the_current_lexer_text() {
 
 #[test]
 fn repeated_teleport_and_damage_limits_are_both_read() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     for effect in ["teleport_armies", "damage_units"] {
         let text = format!(
@@ -160,7 +160,7 @@ fn repeated_teleport_and_damage_limits_are_both_read() {
 
 #[test]
 fn advisor_embeds_the_existing_role_dispatch() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { add_advisor_role = { advisor = { allowed = { invalid_trigger = { @hidden = 9 } always = yes } invalid = { @unknown = 8 marker = 1 } traits = { @trait = 7 } @seen = 3 slot = political_advisor } } } final = @seen hidden = @hidden unknown = @unknown trait = @trait",
@@ -175,7 +175,7 @@ fn advisor_embeds_the_existing_role_dispatch() {
 
 #[test]
 fn border_side_ignores_unknown_keys_without_skipping() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { start_border_war = { attacker = { unknown = { @seen = 3 state = 1 } marker = 1 } } final = @seen",
@@ -192,7 +192,7 @@ fn border_side_ignores_unknown_keys_without_skipping() {
 
 #[test]
 fn border_side_leader_score_reads_mtth_triggers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { start_border_war = { attacker = { leader_score = { modifier = { invalid = { @hidden = 9 } @seen = 3 factor = 2 } } } } } final = @seen hidden = @hidden",
@@ -205,7 +205,7 @@ fn border_side_leader_score_reads_mtth_triggers() {
 
 #[test]
 fn modify_building_resources_rejects_unresolved_value_tokens() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let mut names = KeyNames::default();
     names.counts.buildings.insert(b"native_building".to_vec());
@@ -220,7 +220,7 @@ fn modify_building_resources_rejects_unresolved_value_tokens() {
 
 #[test]
 fn collection_operators_define_only_inside_limit() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { every_collection_element = { input = { input = scope:root operators = { country_and_all_subjects @lost = 2 limit = { invalid = { @hidden = 3 } @kept = 4 always = yes } } } } } lost = @lost hidden = @hidden kept = @kept",
@@ -234,7 +234,7 @@ fn collection_operators_define_only_inside_limit() {
 
 #[test]
 fn dynamic_building_key_consumes_one_value() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
     let result = read(
         b"body = { construct_building_in_random_province = { dynamic_building = { @seen = 3 value = 1 } final = @seen",

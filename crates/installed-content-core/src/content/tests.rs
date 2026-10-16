@@ -2485,7 +2485,7 @@ fn windows_folder_aliases_verify_the_opened_file_including_memoized_hits() {
 /// template and its sprite show; the text listing leaves it out.
 #[test]
 fn gui_and_gfx_files_are_enumerated_by_their_bytes() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4_installed_content_raw_gui_{}_{:?}",
@@ -2732,7 +2732,7 @@ fn mod_forms_the_engine_cannot_order_are_named() {
 /// pair across a folder and an archive is refused when the stack resolves.)
 #[test]
 fn bootstrap_files_open_by_their_literal_paths() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4_installed_content_bootstrap_case_{}_{:?}",

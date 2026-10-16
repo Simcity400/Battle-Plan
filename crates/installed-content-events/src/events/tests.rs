@@ -70,7 +70,7 @@ fn sole_event_title_preserves_c_string_last_field_and_trigger_bypass() {
 }
 #[test]
 fn border_events_keep_immediate_and_option_order_through_effect_reader() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let input = b"add_namespace=synthetic country_event={id=synthetic.1 title=TITLE immediate={custom_effect_tooltip=FIRST} option={name=A custom_effect_tooltip=SECOND} option={name=B hidden_effect={custom_effect_tooltip=HIDDEN}}}";
     let events = parse(input, "events/synthetic.txt", &KeyNames::default());
@@ -86,7 +86,7 @@ fn border_events_keep_immediate_and_option_order_through_effect_reader() {
 
 #[test]
 fn border_event_identifiers_reduce_suffix_and_refuse_namespace_slot_aliases() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(
         identifier_key(b"Synthetic.00001\0tail").unwrap(),
@@ -125,7 +125,7 @@ fn border_event_identifiers_reduce_suffix_and_refuse_namespace_slot_aliases() {
 
 #[test]
 fn border_event_loader_skips_bom_before_namespace_and_title_reads_last_text() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let events = parse(
         b"\xef\xbb\xbfadd_namespace=s country_event={id=s.1 title={text=FIRST key=LAST}}",
@@ -148,7 +148,7 @@ fn border_event_loader_skips_bom_before_namespace_and_title_reads_last_text() {
 
 #[test]
 fn operative_event_uses_common_reader_and_preserves_titles_and_effect_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let events = parse(
         b"add_namespace=s operative_leader_event={id=s.5 title=FIRST title={text=LAST trigger={always=no}} desc=DESCRIPTION is_triggered_only=yes major=no immediate={custom_effect_tooltip=ONE custom_effect_tooltip=TWO} option={name=A custom_effect_tooltip=THREE custom_effect_tooltip=FOUR} option={name=B hidden_effect={custom_effect_tooltip=FIVE}}}",
@@ -206,7 +206,7 @@ fn operative_event_uses_common_reader_and_preserves_titles_and_effect_order() {
 
 #[test]
 fn operative_event_immediate_and_after_forward_character_parse_scope() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for block in ["immediate", "after"] {
         let input = format!(
@@ -228,7 +228,7 @@ fn operative_event_immediate_and_after_forward_character_parse_scope() {
 
 #[test]
 fn operative_option_direct_role_uses_character_scope_and_skips_rejected_block() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let events = parse(
         b"add_namespace=s operative_leader_event={id=s.5 option={name=A remove_unit_leader_role={character=fixture @ignored=LEAKED}} title=@ignored}",
@@ -245,7 +245,7 @@ fn operative_option_direct_role_uses_character_scope_and_skips_rejected_block() 
 
 #[test]
 fn operative_option_refuses_only_nested_readers_missing_inherited_scope() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for effect in [
         "promote_character={character={@ignored=LEAKED} ideology=fixture}",
@@ -279,7 +279,7 @@ fn operative_option_refuses_only_nested_readers_missing_inherited_scope() {
 
 #[test]
 fn lazy_events_read_nothing_until_demand_and_cache_only_requested_identifiers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!("hoi4-lazy-events-{}", std::process::id()));
     std::fs::create_dir_all(root.join("events")).unwrap();
@@ -318,7 +318,7 @@ fn lazy_events_read_nothing_until_demand_and_cache_only_requested_identifiers() 
 }
 
 fn option_index_fixture(files: &[(&str, &[u8])]) -> (LazyEvents, std::path::PathBuf) {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4-option-index-{}-{}-{}",
@@ -433,7 +433,7 @@ fn lazy_option_index_shares_requested_trees_and_keeps_other_files_header_only() 
 
 #[test]
 fn lazy_option_index_skips_unrelated_unsettled_bodies_in_the_same_static_file() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let bytes = b"add_namespace=s country_event={id=s.0 option={name=Other promote_character={character={ignored}}}} country_event={id=s.1 option={name=Chosen custom_effect_tooltip=ONE}} country_event={id=s.2 option={name=Chosen custom_effect_tooltip=TWO}} country_event={id=s.3 option={name=Later custom_effect_tooltip=THREE}}";
     let (events, root) = option_index_fixture(&[("a.txt", bytes)]);
@@ -509,7 +509,7 @@ fn lazy_events_share_exact_content_and_viewer_layer_owners_and_memos() {
 
 #[test]
 fn event_lookup_diagnostics_name_the_shared_event_database() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(
         identifier_key(b"42").unwrap_err(),

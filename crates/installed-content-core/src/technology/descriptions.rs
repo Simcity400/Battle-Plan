@@ -231,7 +231,7 @@ mod tests {
     use super::*;
     #[test]
     fn layered_repeated_technology_declarations_keep_every_index_and_first_name_lookup() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let stack = crate::test_support::Stack::new("technology_occurrences");
         stack.write(
@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn technology_description_names_use_parent_and_layout_flag() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (read, _, _) = read_templates(b"@title=mod_parent technology_categories={mod_category} technologies={mod_tech={parent=@title force_use_small_tech_layout=yes enable_equipments={mod_equipment}}}", &units::Registry::default(), &KeyNames::default());
         assert!(read.unsettled.is_none(), "{read:?}");
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn technology_effect_projection_retains_read_order_and_shared_completion_limit() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let registry = units::Registry {
             units: BTreeSet::from([b"mod_unit".to_vec()]),
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn technology_completion_projection_keeps_limit_when_body_guard_rejects_tail() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         // The inline trigger loads before the effect body is read. Its
         // last scalar leaves `yes`, so no effect body loads.

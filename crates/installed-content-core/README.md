@@ -2,6 +2,8 @@
 
 Verified content stacks, shared text readers, script dispatch, authored catalogues and map/asset foundations for Battle Plan. The [installed-content guide](../installed-content/README.md) describes content identity, native reader and refusal contracts. Public reader paths are also exported through `installed-content`. This crate reads installations and synthetic fixtures; it does not read live memory or alter installed content.
 
+It builds on [engine-executable](../engine-executable/README.md) (the executable tables) and [replay-identity](../replay-identity/README.md) (the recorded content identity) only, so it compiles alongside the native readers and the replay chain rather than after them, and edits there do not rebuild it.
+
 ## Layout
 
 - `content`: recorded identities, hashes, ordered folder/archive mounts, lookup and shared derived caches.

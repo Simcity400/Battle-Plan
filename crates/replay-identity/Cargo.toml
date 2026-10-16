@@ -1,0 +1,17 @@
+[package]
+name = "replay-identity"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+# A valid identity (`test_fixtures::identity`), for other crates' tests.
+test-support = []
+
+[dependencies]
+engine-allocation.workspace = true

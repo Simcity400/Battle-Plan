@@ -11,7 +11,7 @@ doctest = false
 
 [dependencies]
 installed-content-core.workspace = true
-engine.workspace = true
+engine-executable.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 

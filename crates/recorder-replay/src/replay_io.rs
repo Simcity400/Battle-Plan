@@ -1,5 +1,6 @@
 //! Passive finalization and inspection use the same codecs as the collector.
 
+use replay::identity::IdentityCodec;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,

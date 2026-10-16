@@ -12,6 +12,7 @@ Each component's README describes its layout, concepts and local rules.
 |---|---|
 | [engine](crates/engine/README.md) | Supported executable, native layouts, guarded memory readers and hook site descriptors. |
 | [engine-executable](crates/engine-executable/README.md) | Verified executable identity, file-backed image reads and immutable decoded executable metadata. |
+| [engine-allocation](crates/engine-allocation/README.md) | Checked heap growth, capture growth hooks and the test allocator that denies allocations. |
 | [engine-native](crates/engine-native/README.md) | Native layouts, guarded memory operations, shared containers, authentication and coupled native readers. |
 | [engine-governance-tests](crates/engine-governance-tests/README.md) | Synthetic governance worlds and guarded-call traces shared by research and focus tests. |
 | [engine-air-history](crates/engine-air-history/README.md) | Native air history readers and their operands, layouts and synthetic tests. |

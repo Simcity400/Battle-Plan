@@ -10,13 +10,13 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-engine.workspace = true
+engine-executable.workspace = true
 installed-content-image.workspace = true
 # PUC Lua 5.1, the runtime the game links, for common/defines.
 mlua = { version = "0.12", default-features = false, features = ["lua51", "vendored", "send"] }
 # Archive layers inflate their records as raw deflate (content::physfs_zip).
 miniz_oxide = "0.8"
-replay.workspace = true
+replay-identity.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true

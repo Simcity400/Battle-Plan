@@ -2,6 +2,12 @@
 
 use engine_executable::modifier_keys;
 
+// Every test runs under the allocator that lets a test deny its own allocations.
+#[cfg(test)]
+#[global_allocator]
+static ALLOCATOR: allocation::test_support::DeniedAllocator =
+    allocation::test_support::DeniedAllocator;
+
 pub mod acclimatization_category;
 pub mod acclimatization_data;
 pub mod acclimatization_entry;
@@ -10,7 +16,7 @@ pub mod agency_upgrade_branch_database;
 pub mod agency_upgrade_levels;
 pub mod air_fuel_defines;
 pub mod air_mission;
-pub mod allocation;
+pub use engine_allocation as allocation;
 pub mod allocation_equipment_row;
 pub mod autonomy_state_definition;
 pub mod batch_fallback;

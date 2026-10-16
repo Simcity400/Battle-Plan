@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn policy_projection_keeps_first_groups_stats_and_definition() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut catalog = Catalog::default();
         catalog.read_file(

@@ -1305,7 +1305,7 @@ mod tests {
 
     #[test]
     fn idea_case_aliases_select_the_first_token_and_keep_authored_spelling() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let ideas = vec![
             Idea {
                 token: "mod_Spirit".into(),
@@ -1341,7 +1341,7 @@ mod tests {
 
     #[test]
     fn idea_case_aliases_share_in_place_redefinition_coverage() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let mut coverage = Coverage::default();
         coverage.replace("0");
         coverage.next_file();
@@ -1370,7 +1370,7 @@ mod tests {
 
     #[test]
     fn unknown_modifier_key_is_reported_before_numeric_conversion() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let mut scan = modifiers::ScanFailures::default();
         let mut values = Modifiers::default();
         values.read_all(&[Item {
@@ -1389,7 +1389,7 @@ mod tests {
 
     #[test]
     fn undecided_modifier_key_keeps_the_numeric_note() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let mut scan = modifiers::ScanFailures::default();
         let mut values = Modifiers::default();
         values.read_all(&[Item {
@@ -1432,7 +1432,7 @@ mod tests {
 
     #[test]
     fn categories_keep_slots_seats_and_the_politics_tab_flag() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let categories = parse_tags(
             b"idea_categories = { government = { slot = economy slot = trade_laws character_slot = political_advisor \
               character_slot = political_advisor ledger = civilian cost = 150 removal_cost = 0 } \
@@ -1476,7 +1476,7 @@ mod tests {
     /// which the scan reaches after the first.
     #[test]
     fn categories_resolve_in_array_order_and_repeat_as_new_objects() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let categories = parse_tags(
             b"idea_categories = { first = { slot = X } X = { } first = { slot = Y } x = { slot = Z } }", &KeyNames::default(),
         );
@@ -1494,7 +1494,7 @@ mod tests {
 
     #[test]
     fn ideas_carry_their_group_law_flag_picture_and_effects() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let ideas = parse_ideas(
             b"@bonus = 0.15 ideas = { economy = { law = yes use_list_view = yes \
                 civilian_economy = { default = yes allowed = { always = yes } modifier = { consumer_goods_factor = 0.35 } } } \
@@ -1546,7 +1546,7 @@ mod tests {
 
     #[test]
     fn idea_rules_keep_defaults_repeated_values_and_description_overrides() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let file = parse_ideas(
             b"ideas={country={a={rule={can_create_factions=yes desc=FIRST override={013=DECIMAL 7=VOLUNTEERS}} rule={desc=LAST can_join_factions=maybe can_create_factions=no can_send_volunteers=yes}} b={}}}",
             &[], &KeyNames::default(),
@@ -1572,7 +1572,7 @@ mod tests {
 
     #[test]
     fn idea_rule_override_outside_rule_storage_is_refused() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         for index in [-1, i32::MAX] {
             let input = format!("ideas={{country={{a={{rule={{override={{{index}=TIP}}}}}}}}}}");
             let file = parse_ideas(input.as_bytes(), &[], &KeyNames::default());
@@ -1593,7 +1593,7 @@ mod tests {
     /// Every idea then takes its place in the group as its index.
     #[test]
     fn a_group_read_again_keeps_its_flags_and_its_ideas() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let (_, ideas) = database(&[
             (
                 Loader::Ideas,
@@ -1631,7 +1631,7 @@ mod tests {
     /// same way.
     #[test]
     fn a_new_group_of_a_held_name_merges_its_ideas() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let (_, ideas) = database(&[
             (Loader::Tags, b"ideas = { economy = { law = yes a = { } } }"),
             (Loader::Tags, b"ideas = { ECONOMY = { law = no a = { } } }"),
@@ -1652,7 +1652,7 @@ mod tests {
     /// join the database like any other.
     #[test]
     fn both_directories_declare_categories_and_ideas() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let (tags, ideas) = database(&[
             (
                 Loader::Tags,
@@ -1674,7 +1674,7 @@ mod tests {
     /// idea's fields.
     #[test]
     fn a_ledger_is_read_as_its_reader_reads_it() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let file = parse_ideas(
             b"ideas = { country = { a = { name = OLD ledger = { name = NEW } ledger = Army ledger = navy } \
               b = { ledger = all ledger = hidden } c = { ledger = military ledger = \"air\" ledger = 5 } \
@@ -1694,7 +1694,7 @@ mod tests {
     /// reference before its definition keeps its text.
     #[test]
     fn ideas_follow_the_file_reader_table_in_document_order() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let file = parse_ideas(
             b"IDEAS = { country = { first = { modifier = { a = @late b = \"@top\" } } \
               second = { @cost = 25 cost = @cost picture = @pic allowed = { @pic = second_pic always = yes } \
@@ -1758,7 +1758,7 @@ mod tests {
     /// anywhere in it.
     #[test]
     fn unsettled_blocks_refuse_their_group_and_the_rest_of_the_file() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let file = parse_ideas(
             b"@x = 1 ideas = { country = { kept = { modifier = { a = @x } } } \
               economy = { law = yes early = { cost = 1 } broken = { allowed = { @x = 2 always = yes } } late = { } } }",
@@ -1805,7 +1805,7 @@ mod tests {
     /// conversion leaves the field as it was.
     #[test]
     fn keywords_fold_quoted_keys_are_names_and_failed_values_keep_the_field() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let file = parse_ideas(
             b"Ideas = { economy = { LAW = yes USE_LIST_VIEW = yes \"law\" = no \"designer\" = { COST = 5 cost = bad \
               \"cost\" = 9 Picture = pic DEFAULT = yes default = maybe designer = yes } } } \
@@ -1847,7 +1847,7 @@ mod tests {
     /// again makes no officer test: its entries are ideas.
     #[test]
     fn officer_corps_groups_are_character_advisor_templates() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let officers = ["theorist".to_owned(), "army_chief".to_owned()];
         let source = b"ideas = { theorist = { GER_x = { picture = p cost = 150 cost = wide traits = { t } \
                        targeted_modifier = { tag = SOV a = 1 } modifier = { b = 2 } TRAITS = { u } idea_token = other \
@@ -1910,7 +1910,7 @@ mod tests {
     /// refused like an idea.
     #[test]
     fn a_refused_officer_corps_entry_is_no_advisor() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let officers = ["theorist".to_owned()];
         let file = parse_ideas(
             b"ideas = { theorist = { GER_a = { } GER_b = { modifier = { odd = { } } } GER_c = { } } }",
@@ -1930,7 +1930,7 @@ mod tests {
     #[cfg(feature = "test-support")]
     #[test]
     fn a_file_that_stops_short_refuses_what_it_could_define() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let root = std::env::temp_dir().join(format!("installed-content-ideas-gap-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let write = |path: &str, text: &str| {
@@ -1987,7 +1987,7 @@ mod tests {
     /// whether it is read again or as new, so the file stops there, by name.
     #[test]
     fn a_group_an_earlier_gap_may_hold_is_refused() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let mut database = Database {
             unknown: Some("b.txt: line 1: x".into()),
             ..Database::default()
@@ -2022,7 +2022,7 @@ mod tests {
     /// the end of text closes every loop.
     #[test]
     fn the_replay_classes_hold_for_ideas() {
-        engine::executable_tables::initialize_for_tests().unwrap();
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let file = parse_ideas(
             b"@v = 3 ideas = { country = { a = { cost = { picture = inner } removal_cost = @v } } }",
             &[], &KeyNames::default(),

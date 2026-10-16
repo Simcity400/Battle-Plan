@@ -56,7 +56,7 @@ pub fn files(layers: &ResolvedLayers) -> Vec<String> {
 /// Finds an executable category keyword with ASCII case folding.
 pub fn category_mask(name: impl AsRef<[u8]>) -> Option<u64> {
     let name = name.as_ref();
-    engine::executable_tables::get()
+    engine_executable::executable_tables::get()
         .auxiliary
         .category_names
         .iter()
@@ -68,7 +68,10 @@ pub fn category_mask(name: impl AsRef<[u8]>) -> Option<u64> {
 pub fn category_names(mask: u64) -> Result<Vec<&'static str>, u64> {
     let mut unknown = mask;
     let mut names = Vec::new();
-    for &(name, bit) in &engine::executable_tables::get().auxiliary.category_names {
+    for &(name, bit) in &engine_executable::executable_tables::get()
+        .auxiliary
+        .category_names
+    {
         if bit != 0 && mask & bit != 0 {
             names.push(name);
             unknown &= !bit;
@@ -151,7 +154,9 @@ pub const STAT_COUNT: usize = 78;
 
 /// Script keyword, localisation label and positive polarity by stat index.
 pub fn stat_metadata() -> &'static [(&'static str, &'static str, bool)] {
-    &engine::executable_tables::get().auxiliary.stat_metadata
+    &engine_executable::executable_tables::get()
+        .auxiliary
+        .stat_metadata
 }
 
 /// A stat keyword's index in the equipment stat block.
@@ -1719,7 +1724,7 @@ pub mod fixture {
     /// the game does through [`crate::ResolvedLayers::from_folders`], and
     /// removes the folder. Runtime metadata is initialized from `BATTLE_PLAN_GAME_DIR` first.
     pub fn load(files: &[(&str, &str)]) -> (Database, Groups) {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let root = std::env::temp_dir().join(format!(

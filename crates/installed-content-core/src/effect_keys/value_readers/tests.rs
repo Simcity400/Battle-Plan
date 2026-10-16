@@ -8,7 +8,7 @@ use crate::{
 };
 
 fn initialize_tables() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("effect value grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
 }
 

@@ -2764,6 +2764,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-allocation"
+version = "0.1.0"
+
+[[package]]
 name = "engine-characters"
 version = "0.1.0"
 dependencies = [
@@ -2894,6 +2898,7 @@ name = "engine-native"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "engine-allocation",
  "engine-executable",
 ]
 
@@ -3280,7 +3285,7 @@ dependencies = [
 name = "installed-content"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-executable",
  "installed-content-abilities",
  "installed-content-core",
  "installed-content-country-names",
@@ -3308,7 +3313,7 @@ dependencies = [
 name = "installed-content-abilities"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-executable",
  "installed-content-core",
 ]
 
@@ -3316,11 +3321,11 @@ dependencies = [
 name = "installed-content-core"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-executable",
  "installed-content-image",
  "miniz_oxide 0.8.9",
  "mlua",
- "replay",
+ "replay-identity",
  "serde",
  "serde_json",
  "sha2",
@@ -3340,7 +3345,7 @@ dependencies = [
 name = "installed-content-division-names"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-executable",
  "installed-content-core",
 ]
 
@@ -3348,7 +3353,7 @@ dependencies = [
 name = "installed-content-equipment-graphics"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-executable",
  "installed-content-core",
  "installed-content-states",
  "replay",
@@ -3358,7 +3363,7 @@ dependencies = [
 name = "installed-content-events"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-executable",
  "installed-content-core",
 ]
 
@@ -3366,7 +3371,7 @@ dependencies = [
 name = "installed-content-focus"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-executable",
  "installed-content-core",
 ]
 
@@ -3374,7 +3379,7 @@ dependencies = [
 name = "installed-content-gfx"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-executable",
  "installed-content-core",
 ]
 
@@ -3412,7 +3417,7 @@ dependencies = [
 name = "installed-content-province-area"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-executable",
  "installed-content-core",
 ]
 
@@ -3420,7 +3425,7 @@ dependencies = [
 name = "installed-content-raids"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-executable",
  "installed-content-core",
  "installed-content-country-names",
  "installed-content-division-names",
@@ -3439,7 +3444,7 @@ dependencies = [
 name = "installed-content-save"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-executable",
  "installed-content",
  "replay",
 ]
@@ -3448,7 +3453,7 @@ dependencies = [
 name = "installed-content-scripted-localisation"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-executable",
  "installed-content-core",
 ]
 
@@ -3456,7 +3461,7 @@ dependencies = [
 name = "installed-content-settings"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-executable",
  "installed-content-core",
  "serde",
  "serde_json",
@@ -3467,7 +3472,7 @@ dependencies = [
 name = "installed-content-state-categories"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-executable",
  "installed-content-core",
 ]
 
@@ -3475,7 +3480,7 @@ dependencies = [
 name = "installed-content-states"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-executable",
  "installed-content-core",
 ]
 
@@ -3490,7 +3495,7 @@ dependencies = [
 name = "installed-content-wargoals"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-executable",
  "installed-content-core",
 ]
 
@@ -3498,7 +3503,7 @@ dependencies = [
 name = "installed-content-weather"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "engine-executable",
  "installed-content-core",
  "installed-content-regions",
  "replay",
@@ -6688,6 +6693,7 @@ name = "replay-data"
 version = "0.1.0"
 dependencies = [
  "engine",
+ "replay-identity",
  "zstd",
 ]
 
@@ -6707,6 +6713,13 @@ dependencies = [
  "tauri-build",
  "tokio",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "replay-identity"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
 ]
 
 [[package]]
@@ -7121,7 +7134,7 @@ name = "shader-pipeline"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "engine",
+ "engine-executable",
  "installed-content",
  "naga",
  "pollster 0.4.0",

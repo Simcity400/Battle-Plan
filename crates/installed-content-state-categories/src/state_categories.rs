@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn state_category_names_and_consumption() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         for (input, expected) in [
             (b"state_categories={Syn={local_building_slots=3 color={1 2 3}} SYN={local_supplies=0.1} other={buildings_max_level={mod_building=4}}}".as_slice(), vec![b"Syn".as_slice(), b"other"]),
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn state_category_stack_order_and_replacement() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!("state-category-{}", std::process::id()));
         let _folder = Folder(root.clone());
@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn uncertain_state_category_modifier_names_are_named() {
-        engine::executable_tables::initialize_for_tests()
+        engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut names = KeyNames::default();
         names.effects.modifiers_gap = Some("synthetic missing registry".into());

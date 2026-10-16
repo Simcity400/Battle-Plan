@@ -15,7 +15,7 @@ use crate::{
 use std::collections::BTreeSet;
 
 fn builtin_registered(key: &[u8]) -> bool {
-    engine::modifier_keys::names()
+    engine_executable::modifier_keys::names()
         .iter()
         .any(|name| name.as_bytes().eq_ignore_ascii_case(key))
 }

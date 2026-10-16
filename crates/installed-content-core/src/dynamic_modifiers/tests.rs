@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn constant_and_scoped_values_keep_line_order() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let definitions = parse(
         br#"@base=0.2 SYN={icon=other enable={always=yes} remove_trigger={always=no}
@@ -46,7 +46,7 @@ fn constant_and_scoped_values_keep_line_order() {
 
 #[test]
 fn unknown_scoped_keys_skip_their_blocks_and_do_not_define_variables() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let definitions = parse(
         b"SYN={unregistered={@hidden=9} political_power_gain=@hidden}",

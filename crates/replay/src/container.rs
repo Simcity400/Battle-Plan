@@ -1,5 +1,6 @@
 //! Independently compressed blocks, an indexed trailer, and atomic publication.
 
+use crate::identity::IdentityCodec;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap, HashSet},

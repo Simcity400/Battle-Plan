@@ -44,7 +44,7 @@ fn description_fields_keep_fixed5_range_bounds_and_template_defaults() {
 }
 
 fn read_file(input: &[u8], registry: modifiers::Registry<'_>) -> Result<native::Read, String> {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("balance reader checks require BATTLE_PLAN_GAME_DIR");
     super::read_file(input, registry, &KeyNames::default())
 }
@@ -118,7 +118,7 @@ fn unsettled_modifier_and_effect_misreads_are_named() {
 
 #[test]
 fn ranges_keep_full_effect_scopes_and_operands() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("balance scope checks require BATTLE_PLAN_GAME_DIR");
     let mut names = KeyNames::default();
     names.countries.insert(b"SYN".to_vec());
@@ -155,7 +155,7 @@ fn ranges_keep_full_effect_scopes_and_operands() {
 
 #[test]
 fn layered_templates_replace_and_root_ranges_precede_sides() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("layered balance checks require BATTLE_PLAN_GAME_DIR");
     let root = std::env::temp_dir().join(format!(
         "bop-{}-{}-{}",

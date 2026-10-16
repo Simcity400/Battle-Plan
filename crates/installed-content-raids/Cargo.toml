@@ -17,7 +17,7 @@ replay.workspace = true
 
 [dev-dependencies]
 installed-content-core = { workspace = true, features = ["layer-fixtures"] }
-engine.workspace = true
+engine-executable.workspace = true
 installed-content-division-names = { workspace = true, features = ["layer-fixtures"] }
 
 [features]

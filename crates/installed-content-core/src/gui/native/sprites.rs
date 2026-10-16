@@ -1472,17 +1472,19 @@ impl Reader<'_> {
                             }
                         }
                     }
-                    let failure =
-                        failure.or_else(|| {
-                            components.iter().find(|(index, _)| *index >= 4).map(|(index, _)| {
-                            format!(
-                                "position component {} writes past the 0xF0-byte \
+                    let failure = failure.or_else(|| {
+                        components
+                            .iter()
+                            .find(|(index, _)| *index >= 4)
+                            .map(|(index, _)| {
+                                format!(
+                                    "position component {} writes past the 0xF0-byte \
                                  animated map text object allocated by the graphics file reader \
                                  through the axis component reader",
-                                index + 1
-                            )
-                        })
-                        });
+                                    index + 1
+                                )
+                            })
+                    });
                     if let Some(reason) = failure {
                         self.poison(&mut object.refusals, FILE, key, &reason);
                     }

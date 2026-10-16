@@ -32,7 +32,7 @@ harbor_store_spawn = { max = 2 type = province show_on_map_meshes = 4 }
 
 #[test]
 fn icon_frames_are_scanned_and_a_differing_repeat_is_a_repeated_type() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         b"@f=4 buildings={ a={icon_frame=3} b={} c={icon_frame=@f} d={icon_frame=bad} e={icon_frame=2} e={icon_frame=5} }",
@@ -50,7 +50,7 @@ fn icon_frames_are_scanned_and_a_differing_repeat_is_a_repeated_type() {
 
 #[test]
 fn keywords_scans_and_resource_registry_control_recovery() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         br#"@cap=010 BUILDINGS={a={
@@ -79,7 +79,7 @@ fn keywords_scans_and_resource_registry_control_recovery() {
 
 #[test]
 fn building_popup_exemption_is_authored_and_defaults_false() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings =
         parse(b"buildings={ a={disable_grow_animation=yes} b={} c={disable_grow_animation=no} }")
@@ -91,7 +91,7 @@ fn building_popup_exemption_is_authored_and_defaults_false() {
 
 #[test]
 fn type_tokens_fold_ascii_and_refuse_differing_declarations() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         "buildings={CUSTOM_FACTORY={icon_frame=3} custom_factory={icon_frame=3} Ä={icon_frame=1} ä={icon_frame=2}}"
@@ -127,7 +127,7 @@ fn type_tokens_fold_ascii_and_refuse_differing_declarations() {
 
 #[test]
 fn slot_lookup_folds_ascii_without_changing_authored_names() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings =
         parse(b"buildings={Port={is_port=yes spawn_point=Harbour}} spawn_points={Harbour={}}")
@@ -146,7 +146,7 @@ fn slot_lookup_folds_ascii_without_changing_authored_names() {
 
 #[test]
 fn folded_slot_names_take_the_first_bucket_and_refuse_only_differing_repeats() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     // Lookup returns the first entry equal under the ASCII fold. Generated
     // buckets precede explicit buckets, and an explicit bucket sharing a
@@ -188,7 +188,7 @@ fn folded_slot_names_take_the_first_bucket_and_refuse_only_differing_repeats() {
 
 #[test]
 fn reads_the_map_keys_and_the_redirected_port_bucket() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(SAMPLE).unwrap();
     let naval = &buildings.types["harbor_store"];
@@ -221,7 +221,7 @@ fn reads_the_map_keys_and_the_redirected_port_bucket() {
 
 #[test]
 fn generated_and_explicit_buckets_have_independent_defaults() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         br#"
@@ -279,7 +279,7 @@ fn generated_and_explicit_buckets_have_independent_defaults() {
 
 #[test]
 fn local_resources_keep_first_order_and_sum_repeats() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         b"buildings={refinery={local_resources_mineral_y=1 local_resources_mineral_x=-0.5 local_resources_mineral_y=0.25}}",
@@ -296,7 +296,7 @@ fn local_resources_keep_first_order_and_sum_repeats() {
 
 #[test]
 fn failed_bool_scan_retains_the_constructor_value() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         b"buildings={bunker={show_on_map=2 air_base=maybe tags={a}} fort={show_on_map=1 local_resources_mineral_x=010}}",
@@ -316,7 +316,7 @@ fn failed_bool_scan_retains_the_constructor_value() {
 
 #[test]
 fn shared_buckets_keep_database_order_and_repeats_are_ambiguous() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         b"buildings={z={spawn_point=shared show_on_map=1} a={spawn_point=shared show_on_map=1}} spawn_points={shared={}}",
@@ -343,7 +343,7 @@ fn shared_buckets_keep_database_order_and_repeats_are_ambiguous() {
 
 #[test]
 fn factory_flags_are_signed_integers_and_differing_repeats_are_ambiguous() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         b"buildings={arms={military_production=1 naval_production=0} mod_works={general_production=2 military_production=-1 military_production=3 rocket_production=-1 rocket_production=2} depot={rocket_launch_capacity=3} yard={naval_production=1} yard={naval_production=1} odd={general_production=1} odd={general_production=0} repeat={rocket_production=0} repeat={rocket_production=1} retired={rocket_production=-2}}",
@@ -382,7 +382,7 @@ fn factory_flags_are_signed_integers_and_differing_repeats_are_ambiguous() {
 #[cfg(feature = "test-support")]
 #[test]
 fn factory_flags_merge_across_building_files() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4_installed_content_building_flags_{}_{:?}",
@@ -422,7 +422,7 @@ fn only_direct_building_files_load() {
 
 #[test]
 fn entity_names_and_variants_use_the_content_level_denominator() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(SAMPLE).unwrap();
     let naval = &buildings.types["harbor_store"];
@@ -453,7 +453,7 @@ fn entity_names_and_variants_use_the_content_level_denominator() {
 /// slot lookups all match under the ASCII case fold, and store the declared spelling.
 #[test]
 fn bucket_references_match_under_the_lexers_fold() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         b"buildings={
@@ -498,7 +498,7 @@ fn bucket_references_match_under_the_lexers_fold() {
 /// even when the last declaration drops the classification the first had.
 #[test]
 fn a_differing_repeat_keeps_every_declaration() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let repeated = parse(
         b"buildings={hq={naval_headquarter=yes} dock={} hq={show_on_map=1} hq={show_on_map=1}}",
@@ -518,7 +518,7 @@ fn a_differing_repeat_keeps_every_declaration() {
 
 #[test]
 fn empty_replacement_files_contribute_no_buildings() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for input in [
         b"".as_slice(),
@@ -536,7 +536,7 @@ fn empty_replacement_files_contribute_no_buildings() {
 
 #[test]
 fn base_maximum_prefers_positive_caps_without_reading_the_default() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         b"buildings={
@@ -559,7 +559,7 @@ fn base_maximum_prefers_positive_caps_without_reading_the_default() {
 
 #[test]
 fn level_caps_normalize_negative_values_and_province_above_positive_state() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         b"buildings={
@@ -589,7 +589,7 @@ fn level_caps_normalize_negative_values_and_province_above_positive_state() {
 
 #[test]
 fn repeated_level_cap_blocks_validate_before_later_assignments() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         b"buildings={
@@ -616,7 +616,7 @@ fn repeated_level_cap_blocks_validate_before_later_assignments() {
 
 #[test]
 fn failed_cap_scans_retain_the_previous_normalized_values() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings = parse(
         b"buildings={
@@ -649,7 +649,7 @@ fn failed_cap_scans_retain_the_previous_normalized_values() {
 
 #[test]
 fn differing_state_caps_refuse_repeated_type_tokens() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for source in [
         b"buildings={Depot={level_cap={state_max=3}} depot={level_cap={state_max=4}}}".as_slice(),
@@ -672,7 +672,7 @@ fn differing_state_caps_refuse_repeated_type_tokens() {
 
 #[test]
 fn nonpositive_caps_use_the_exact_signed_default() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let buildings =
         parse(b"buildings={absent={} zero={level_cap={state_max=0 province_max=0}}}").unwrap();

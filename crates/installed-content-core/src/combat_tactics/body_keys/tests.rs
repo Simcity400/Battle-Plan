@@ -21,7 +21,7 @@ fn read(text: &str, names: &KeyNames) -> native::Read {
 
 #[test]
 fn jump_table_key_readers_skip_unknown_blocks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for class in [
         "has_railway_level",
@@ -64,7 +64,7 @@ fn jump_table_key_readers_skip_unknown_blocks() {
 
 #[test]
 fn scoped_variable_keys_consume_one_value_instead_of_a_body() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for class in [
         "check_variable",
@@ -97,7 +97,7 @@ fn scoped_variable_keys_consume_one_value_instead_of_a_body() {
 
 #[test]
 fn province_filter_and_building_lookup_use_their_own_readers() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let names = KeyNames {
         province_buildings: [(b"native_building".to_vec(), Some(true))].into(),
@@ -114,7 +114,7 @@ fn province_filter_and_building_lookup_use_their_own_readers() {
 
 #[test]
 fn variable_blocks_use_the_expression_reader() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for class in [
         "set_temp_variable",
@@ -145,7 +145,7 @@ fn variable_blocks_use_the_expression_reader() {
 
 #[test]
 fn collection_statements_define_only_inside_the_limit_trigger() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let result = read(
         "body = { collection_size = { input = { input = scope:root operators = { country_and_all_subjects @lost = 2 limit = { invalid = { @hidden = 3 } @kept = 4 always = yes } } } value > 0 } } lost = @lost hidden = @hidden kept = @kept",
@@ -159,7 +159,7 @@ fn collection_statements_define_only_inside_the_limit_trigger() {
 
 #[test]
 fn railway_and_country_lists_do_not_register_definitions() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (class, key) in [
         ("can_build_railway", "path"),
@@ -186,7 +186,7 @@ fn railway_and_country_lists_do_not_register_definitions() {
 
 #[test]
 fn license_equipment_reference_skips_invalid_child_blocks() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let result = read(
         "body = { has_license = { equipment = { type = native_type invalid = { @lost = 2 } @kept = 3 version_name = @kept } } } lost = @lost kept = @kept",
@@ -199,7 +199,7 @@ fn license_equipment_reference_skips_invalid_child_blocks() {
 
 #[test]
 fn validated_lists_skip_invalid_opening_entries_without_defining() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for (class, key) in [
         ("amount_taken_ideas", "categories"),
@@ -228,7 +228,7 @@ fn validated_lists_skip_invalid_opening_entries_without_defining() {
 
 #[test]
 fn unreached_key_readers_refuse_by_parent_class_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for class in [
         "career_profile_check_points",
@@ -246,7 +246,7 @@ fn unreached_key_readers_refuse_by_parent_class_name() {
 
 #[test]
 fn invalid_meta_parameters_use_record_errors_skip_after_the_raw_read() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let result = read(
         // Error recovery consumes one closing delimiter; each enclosing loop
@@ -285,7 +285,7 @@ fn invalid_meta_parameters_use_record_errors_skip_after_the_raw_read() {
 
 #[test]
 fn embedded_nul_in_meta_text_is_refused_by_name() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let text = String::from_utf8(
         b"body = { meta_trigger = { text = { "
@@ -308,7 +308,7 @@ fn embedded_nul_in_meta_text_is_refused_by_name() {
 
 #[test]
 fn meta_text_counts_braces_in_comments_as_raw_characters() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let result = read(
         "body = { meta_trigger = { text = { # }\n @kept = 7 debug = yes } } kept = @kept",
@@ -320,7 +320,7 @@ fn meta_text_counts_braces_in_comments_as_raw_characters() {
 
 #[test]
 fn any_state_of_reads_target_arrays_without_defining_their_tokens() {
-    engine::executable_tables::initialize_for_tests()
+    engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     for operator in ["=", ""] {
         let text = format!(

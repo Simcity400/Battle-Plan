@@ -149,7 +149,7 @@ impl<'n> Shaper<'n> {
         }
         match field.keyword().as_deref() {
             Some(b"type") => {
-                if let Some((_, kind)) = engine::executable_tables::get()
+                if let Some((_, kind)) = engine_executable::executable_tables::get()
                     .auxiliary
                     .ai_strategy_types
                     .iter()
@@ -169,7 +169,9 @@ impl<'n> Shaper<'n> {
             Some(b"id") => {
                 if token_is_one_of(
                     field.value,
-                    &engine::executable_tables::get().auxiliary.selectors,
+                    &engine_executable::executable_tables::get()
+                        .auxiliary
+                        .selectors,
                 ) || field.value.c_str().starts_with(b"event_target:")
                 {
                     return Shape::One;
@@ -177,7 +179,9 @@ impl<'n> Shaper<'n> {
                 if self.kind == MISSION_STRATEGY {
                     return accepted(token_is_one_of(
                         field.value,
-                        &engine::executable_tables::get().auxiliary.missions,
+                        &engine_executable::executable_tables::get()
+                            .auxiliary
+                            .missions,
                     ));
                 }
                 if self.kind == NAVAL_DOMINANCE_STRATEGY && field.value.is_number() {
@@ -248,11 +252,15 @@ impl<'n> Shaper<'n> {
             ValueReader::Trigger => Shape::Body(Node::Trigger(combat_tactics::Node::Trigger)),
             ValueReader::OrderType => accepted(token_is_one_of(
                 field.value,
-                &engine::executable_tables::get().auxiliary.order_types,
+                &engine_executable::executable_tables::get()
+                    .auxiliary
+                    .order_types,
             )),
             ValueReader::ExecutionType => accepted(token_is_one_of(
                 field.value,
-                &engine::executable_tables::get().auxiliary.execution_types,
+                &engine_executable::executable_tables::get()
+                    .auxiliary
+                    .execution_types,
             )),
             ValueReader::Tag => self.tag(field),
             ValueReader::State => self.index(field, false),
