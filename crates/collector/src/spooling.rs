@@ -3800,6 +3800,7 @@ pub(crate) fn allocation_failure_frame(hour: i32) -> Captured {
     clock.campaign_id.bytes[..uuid.len()].copy_from_slice(uuid);
     engine::allocation::resize_default(&mut frame.map.land_combats.rows, 1).unwrap();
     engine::allocation::resize_default(&mut frame.map.land_participants, 2).unwrap();
+    engine::allocation::resize_default(&mut frame.map.land_classes, 2).unwrap();
     frame.map.land_combats.rows[0] = engine::cland_combat::Row {
         id: 1,
         attacker_start: 0,

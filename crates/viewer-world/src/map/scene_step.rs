@@ -8,7 +8,7 @@
 use super::{BUILDING_TILE, BuildingHistory, ModelPass, UnitGates, hidden_map_frame_actors};
 use crate::map::border_pass::wrap_offsets;
 use crate::map::terrain::MARGIN;
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 use viewer_foundation::map::camera::Camera;
 
 /// Every part of a scene that a frame advances, borrowed for one step.
@@ -46,13 +46,14 @@ impl Presentation<'_> {
     /// Advances everything to `animation_time` for `camera`. `rails_shown` is the camera's
     /// railway fade, below which trains run; display switches decide nothing here but which
     /// placed actors draw.
+    /// Returns the players of shown strike impacts, whose sounds are combat sounds.
     pub(super) fn step(
         self,
         camera: Camera,
         size: [u32; 2],
         animation_time: f32,
         rails_shown: bool,
-    ) {
+    ) -> BTreeSet<(usize, u32, u32)> {
         let Self {
             graphics,
             mut aircraft,
@@ -155,6 +156,7 @@ impl Presentation<'_> {
             strikes.receive_explosions(&explosions, animation_time);
         }
         *missile_clock = Some(animation_time);
+        let mut struck = BTreeSet::new();
         if let (Some(pass), Some(ambient)) = (map_frame, ambient) {
             let mut placed = ambient.update(camera, size, animation_time);
             // Retirement reads the players the previous frame animated.
@@ -177,9 +179,11 @@ impl Presentation<'_> {
             ));
             placed.extend(impacts);
             pass.update_placed(placed, 256.);
+            struck.extend(clocks.keys().copied());
             pass.set_clocks(clocks);
             pass.animate(animation_time, None, &[0.]);
         }
+        struck
     }
 }
 

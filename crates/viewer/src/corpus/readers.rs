@@ -164,6 +164,21 @@ fn gui_refusal(log: &mut Log, reader: &str, file: &str, refusal: &Refusal) {
     ));
 }
 
+/// Only the defines and the map audio's readers ([`sounds`]).
+pub fn run_sounds(
+    content: installed_content::GatheredContent,
+    values: Option<super::values::Writer>,
+) -> (Vec<ReaderRun>, Vec<Diagnostic>, super::report::StateHistory) {
+    let mut log = Log {
+        values,
+        ..Log::default()
+    };
+    let layers = &content.layers;
+    let defines = log.read("defines", || installed_content::defines::read(layers));
+    sounds(&mut log, layers, defines.as_ref());
+    (log.runs, log.diagnostics, log.state_history)
+}
+
 /// Every reader over `content`; `decode` is the reading client's texture
 /// decode state, which the font pages and map texture files load under.
 pub fn run(
@@ -221,6 +236,7 @@ pub fn run(
         interface.as_ref().map(|interface| &interface.registry),
     );
     triggers(&mut log, layers, defines.as_ref());
+    sounds(&mut log, layers, defines.as_ref());
     let counts = match (&map.buildings, &map.ideologies, &map.resources) {
         (Some(buildings), Some((ideologies, _)), Some((resources, _))) => {
             let names =
@@ -1047,6 +1063,202 @@ fn model_labels(
     }
 }
 
+/// Map audio as the viewer resolves it: the sound definitions and `NSound`
+/// defines, every entity event's sound effect, and every sample an effect can
+/// choose. Samples a DLC or mod layer supplies are decoded; the base game's
+/// are only looked up.
+fn sounds(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
+    let Some(catalog) = log.read("viewer.sounds", || {
+        installed_content_sound::sound::Catalog::read(layers)
+    }) else {
+        return;
+    };
+    for (message, count) in catalog.notes.entries() {
+        for _ in 0..*count {
+            log.note("viewer.sounds", Kind::Refused, message.clone());
+        }
+    }
+    match defines {
+        Some(defines) => {
+            if let Err(error) = installed_content_sound::sound::Defines::load(defines) {
+                log.note(
+                    "viewer.sounds",
+                    Kind::Refused,
+                    format!("NSound defines: {error}"),
+                );
+            }
+            // The battle ambience: its defines and distant effect.
+            match installed_content_sound::combat_sounds::BattleDefines::load(defines) {
+                Ok(battle) if catalog.effect(&battle.effect).is_none() => log.about(
+                    "viewer.sounds",
+                    Kind::Refused,
+                    &battle.effect,
+                    "NSound.BATTLE_SOUND_NAME names a sound effect no sound asset declares",
+                ),
+                Ok(_) => {}
+                Err(error) => log.note(
+                    "viewer.sounds",
+                    Kind::Refused,
+                    format!("NSound battle defines: {error}"),
+                ),
+            }
+        }
+        None => log.not_run(&["viewer.sounds.defines"], "defines"),
+    }
+    // The battle ambience layers of sound/combat_sounds.
+    if let Some(combat_sounds) = log.read("viewer.battle_sounds", || {
+        installed_content_sound::combat_sounds::Layers::read(layers)
+    }) {
+        for (message, count) in combat_sounds.notes.entries() {
+            for _ in 0..*count {
+                log.note("viewer.battle_sounds", Kind::Refused, message.clone());
+            }
+        }
+        for sound in &combat_sounds.sounds {
+            if catalog.effect(&sound.effect).is_none() {
+                log.about(
+                    "viewer.battle_sounds",
+                    Kind::Refused,
+                    &sound.source,
+                    &format!(
+                        "battle sound {} names sound effect {}, which no sound asset declares",
+                        sound.name, sound.effect
+                    ),
+                );
+            }
+        }
+    }
+    if let Ok(roster) = layers.descriptor_roster() {
+        let named: BTreeSet<&str> = roster
+            .descriptors
+            .entities
+            .values()
+            .flat_map(|entity| &entity.states)
+            .flat_map(|state| &state.events)
+            .filter_map(|event| event.sound.as_deref())
+            .collect();
+        for effect in named {
+            if catalog.effect(effect).is_none() {
+                log.about(
+                    "viewer.sounds",
+                    Kind::Refused,
+                    effect,
+                    "entity events name this sound effect, which no sound asset declares",
+                );
+            }
+        }
+    }
+    let chosen: BTreeSet<usize> = catalog
+        .effects
+        .iter()
+        .flat_map(|effect| &effect.choices)
+        .map(|choice| choice.sound)
+        .collect();
+    let (mut found, mut decoded) = (0usize, 0usize);
+    for sound in chosen {
+        let sound = &catalog.sounds[sound];
+        match layers.has_file(&sound.path) {
+            Ok(true) => found += 1,
+            Ok(false) => {
+                log.about(
+                    "viewer.sounds",
+                    Kind::Refused,
+                    &sound.path,
+                    &format!("sound {} names a missing sample file", sound.name),
+                );
+                continue;
+            }
+            Err(error) => {
+                log.note(
+                    "viewer.sounds",
+                    Kind::ReaderError,
+                    format!("{}: {error}", sound.path),
+                );
+                continue;
+            }
+        }
+        if layers.uncovered_from_base(&sound.path).unwrap_or(false) {
+            continue;
+        }
+        match layers.read_uncovered(&sound.path) {
+            Ok(bytes) => match installed_content_sound::wav::decode(&bytes) {
+                Ok(_) => decoded += 1,
+                Err(why) => log.about(
+                    "viewer.sounds",
+                    Kind::Unsupported,
+                    &sound.path,
+                    &why.to_string(),
+                ),
+            },
+            Err(error) => log.note(
+                "viewer.sounds",
+                Kind::ReaderError,
+                format!("{}: {error}", sound.path),
+            ),
+        }
+    }
+    // Music: every song's track is found, and a DLC or mod track opens and decodes.
+    if let Some(music) = log.read("viewer.music", || {
+        installed_content_sound::music::Music::read(layers)
+    }) {
+        for (message, count) in music.notes.entries() {
+            for _ in 0..*count {
+                log.note("viewer.music", Kind::Refused, message.clone());
+            }
+        }
+        let tracks: BTreeSet<usize> = music.songs.iter().map(|song| song.track).collect();
+        for track in tracks {
+            let track = &music.tracks[track];
+            match layers.has_file(&track.path) {
+                Ok(true) => {}
+                Ok(false) => {
+                    log.about(
+                        "viewer.music",
+                        Kind::Refused,
+                        &track.path,
+                        &format!("music {} names a missing track file", track.name),
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    log.note(
+                        "viewer.music",
+                        Kind::ReaderError,
+                        format!("{}: {error}", track.path),
+                    );
+                    continue;
+                }
+            }
+            if layers.uncovered_from_base(&track.path).unwrap_or(false) {
+                continue;
+            }
+            match layers.read_uncovered(&track.path) {
+                Ok(bytes) => {
+                    if let Err(why) = installed_content_sound::ogg::probe(bytes) {
+                        log.about("viewer.music", Kind::Unsupported, &track.path, &why);
+                    }
+                }
+                Err(error) => log.note(
+                    "viewer.music",
+                    Kind::ReaderError,
+                    format!("{}: {error}", track.path),
+                ),
+            }
+        }
+        log.value("viewer.music", &(music.tracks.len(), music.songs.len()));
+    }
+    log.value(
+        "viewer.sounds",
+        &(
+            catalog.files.len(),
+            catalog.sounds.len(),
+            catalog.effects.len(),
+            found,
+            decoded,
+        ),
+    );
+}
+
 /// The trigger readers, scripted localisation, combat tactics and raids.
 fn triggers(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     if let Some(scripted) = log.read("scripted_triggers", || {
@@ -1469,7 +1681,7 @@ mod tests {
             Kind::Warning,
             &[
                 "entity E is not registered".to_owned(),
-                "sound events refused".to_owned(),
+                "geometry-less entities".to_owned(),
             ],
         );
         assert!(

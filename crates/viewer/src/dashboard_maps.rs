@@ -239,6 +239,11 @@ pub struct DashboardMaps {
     waiting_source: Option<PathBuf>,
     /// The host's diagnostics choice, passed on to every map.
     diagnostics: bool,
+    /// The host's mute choice, passed on to every map.
+    muted: bool,
+    /// The map that sounds: the last one the user pressed, dragged or
+    /// scrolled, else the first visible map in layout order.
+    audio_owner: Option<String>,
 }
 
 struct MapLimits {
@@ -328,10 +333,28 @@ impl DashboardMaps {
             budget,
             waiting_source: None,
             diagnostics: false,
+            muted: false,
+            audio_owner: None,
         })
     }
 
     /// Shows or hides every map's stats and data limitations.
+    pub fn set_muted(&mut self, muted: bool) {
+        self.muted = muted;
+        // Applied at once: the sounding map may not draw again soon.
+        for view in self.views.values_mut() {
+            view.viewer.muted = muted;
+            view.viewer.apply_audio_mix();
+        }
+    }
+
+    /// Silences every map, as when the dashboard is hidden.
+    pub fn release_audio(&mut self) {
+        for view in self.views.values_mut() {
+            view.viewer.release_audio();
+        }
+    }
+
     pub fn set_diagnostics(&mut self, enabled: bool) {
         self.diagnostics = enabled;
         for view in self.views.values_mut() {
@@ -989,20 +1012,38 @@ impl DashboardMaps {
     pub fn ui(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame) {
         self.poll(ui.ctx());
         let scale = ui.ctx().pixels_per_point();
+        // The maps drawn this frame: shown, loaded and not scrolled out.
+        let drawn: std::collections::BTreeSet<&String> = self
+            .order
+            .iter()
+            .filter(|id| {
+                self.views.get(*id).is_some_and(|view| {
+                    view.viewer.has_map()
+                        && view.admission_error.is_none()
+                        && view.error.is_none()
+                        && drawn_clip(&view.target, scale, ui.clip_rect()).is_some()
+                })
+            })
+            .collect();
+        // The one map that may sound; see [`DashboardMaps::audio_owner`].
+        let audio_view = audio_view(self.audio_owner.as_ref(), &self.order, |id| {
+            drawn.contains(id)
+        });
+        // Every other map, drawn or not, stops sounding.
+        for (id, view) in &mut self.views {
+            if audio_view.as_ref() != Some(id) {
+                view.viewer.release_audio();
+            }
+        }
+        let mut interacted = None;
         for id in &self.order {
             let Some(view) = self.views.get_mut(id) else {
                 continue;
             };
-            if !view.target.visible {
-                continue;
-            }
             let body = physical_rect(view.target.bounds, scale);
-            let clip = physical_rect(view.target.clip, scale)
-                .intersect(body)
-                .intersect(ui.clip_rect());
-            if !clip.is_positive() {
+            let Some(clip) = drawn_clip(&view.target, scale, ui.clip_rect()) else {
                 continue;
-            }
+            };
             let mut map_ui = ui.new_child(
                 egui::UiBuilder::new()
                     .id_salt(id)
@@ -1023,7 +1064,12 @@ impl DashboardMaps {
                     view.viewer.follow_map_settings(&self.service, scope);
                 }
                 view.viewer.ui_scale = self.ui_scale;
+                view.viewer.muted = self.muted;
+                view.viewer.audio_focus = audio_view.as_ref() == Some(id);
                 view.viewer.map_ui(&mut map_ui, frame, &view.target);
+                if view.viewer.interacted {
+                    interacted = Some(id.clone());
+                }
             } else {
                 map_ui.centered_and_justified(|ui| {
                     ui.spinner();
@@ -1068,7 +1114,36 @@ impl DashboardMaps {
                 });
             }
         }
+        if interacted.is_some() {
+            self.audio_owner = interacted;
+        }
     }
+}
+
+/// The last interacted map while it is shown, else the first shown map in
+/// layout order.
+fn audio_view(
+    owner: Option<&String>,
+    order: &[String],
+    shown: impl Fn(&String) -> bool,
+) -> Option<String> {
+    owner
+        .filter(|id| shown(id))
+        .or_else(|| order.iter().find(|id| shown(id)))
+        .cloned()
+}
+
+/// Where a map draws this frame: its clip within its body and the panel,
+/// or `None` when it is hidden or scrolled out.
+fn drawn_clip(target: &DashboardMapView, scale: f32, panel: egui::Rect) -> Option<egui::Rect> {
+    if !target.visible {
+        return None;
+    }
+    let body = physical_rect(target.bounds, scale);
+    let clip = physical_rect(target.clip, scale)
+        .intersect(body)
+        .intersect(panel);
+    clip.is_positive().then_some(clip)
 }
 
 fn physical_rect(bounds: ViewBounds, scale: f32) -> egui::Rect {
@@ -1134,6 +1209,75 @@ mod tests {
         drop(source);
         drop(service);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn one_map_sounds_the_last_interacted_or_the_first_shown() {
+        let order: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
+        let shown =
+            |hidden: &'static [&'static str]| move |id: &String| !hidden.contains(&id.as_str());
+        assert_eq!(
+            super::audio_view(None, &order, shown(&[])),
+            Some("a".into())
+        );
+        assert_eq!(
+            super::audio_view(None, &order, shown(&["a"])),
+            Some("b".into())
+        );
+        let c = "c".to_owned();
+        assert_eq!(
+            super::audio_view(Some(&c), &order, shown(&[])),
+            Some(c.clone())
+        );
+        // A hidden owner gives way to the first shown map.
+        assert_eq!(
+            super::audio_view(Some(&c), &order, shown(&["c"])),
+            Some("a".into())
+        );
+        assert_eq!(
+            super::audio_view(Some(&c), &order, shown(&["a", "b", "c"])),
+            None
+        );
+    }
+
+    /// A map scrolled out of the panel or hidden is not drawn, so it cannot
+    /// be the map that sounds.
+    #[test]
+    fn a_scrolled_out_or_hidden_map_is_not_drawn() {
+        let bounds = |y: i32| ViewBounds {
+            x: 0,
+            y,
+            width: 100,
+            height: 100,
+        };
+        let mut target = DashboardMapView {
+            options: Default::default(),
+            id: "w".into(),
+            source_id: "s".into(),
+            path: String::new(),
+            revision: String::new(),
+            branch_id: "1".into(),
+            playing: false,
+            hour: 0,
+            fraction: 0.0,
+            sequence: 0,
+            seek_sequence: None,
+            bounds: bounds(0),
+            clip: bounds(0),
+            visible: true,
+        };
+        let panel = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(200.0, 200.0));
+        assert!(super::drawn_clip(&target, 1.0, panel).is_some());
+        target.bounds = bounds(500);
+        target.clip = bounds(500);
+        assert!(
+            super::drawn_clip(&target, 1.0, panel).is_none(),
+            "scrolled out"
+        );
+        target.bounds = bounds(0);
+        target.clip = bounds(0);
+        target.visible = false;
+        assert!(super::drawn_clip(&target, 1.0, panel).is_none(), "hidden");
     }
 
     #[test]

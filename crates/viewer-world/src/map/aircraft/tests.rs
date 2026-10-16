@@ -278,7 +278,7 @@ fn meshless_aircraft_use_the_shared_actor_player() {
 }
 
 #[test]
-fn lazy_explicit_aircraft_keep_named_counted_attachment_and_audio_diagnostics() {
+fn lazy_explicit_aircraft_keep_named_counted_attachment_diagnostics_without_audio_refusals() {
     let layers = ResolvedLayers::default();
     let map = MapData {
         width: 1,
@@ -337,21 +337,15 @@ fn lazy_explicit_aircraft_keep_named_counted_attachment_and_audio_diagnostics() 
             && line.contains("AbsentFlap")
             && line.contains("(2)")
     }));
-    assert!(typed.iter().any(|(kind, line)| {
-        *kind == installed_content::DiagnosticKind::Warning
-            && line.contains("OddAircraft (2 sound events refused)")
-    }));
+    // Its sound events play; they are no longer refused.
+    assert!(typed.iter().all(|(_, line)| !line.contains("sound")));
     let report = AircraftPlan::default().report(&assets);
     assert!(
         report
             .iter()
             .any(|line| line.contains("AbsentFlap") && line.contains("(2)"))
     );
-    assert!(
-        report
-            .iter()
-            .any(|line| line.contains("OddAircraft (2 sound events refused)"))
-    );
+    assert!(report.iter().all(|line| !line.contains("sound")));
     assert_eq!(assets.resolve(&selected), Ok(slot));
     assert_eq!(assets.refusals(), diagnostics);
     assert_eq!(assets.lazy_diagnostics(), typed);

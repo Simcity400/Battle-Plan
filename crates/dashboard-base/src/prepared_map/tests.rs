@@ -201,6 +201,7 @@ fn map_selection_keeps_every_authored_trigger_operand_and_omits_product_only_inp
         );
     }
     for table in [
+        TableId::BattleSounds,
         TableId::Clock,
         TableId::DivisionMovement,
         TableId::MapEvents,

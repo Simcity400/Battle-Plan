@@ -205,6 +205,11 @@ pub struct Scene {
     // colour
     pub post: PostPass,
     pub last_animation_time: Option<f32>,
+    /// The last rendered frame's entity events that name a sound effect.
+    pub sound_events: Vec<crate::map::sound_events::SoundEvent>,
+    /// This frame's sounds refused by name, with the actors refused.
+    pub sound_refusals: BTreeMap<String, usize>,
+    sound_names: crate::map::sound_events::Names,
     /// The railway manager's camera fade, stepped on the animation clock.
     rail_fade: RailFade,
     /// Milliseconds the last [`Scene::render`] spent animating, uploading the
@@ -679,6 +684,9 @@ impl Scene {
             sky: None,
             arena: shader_pipeline::gpu::Arena::new(device),
             last_animation_time: None,
+            sound_events: Vec::new(),
+            sound_refusals: BTreeMap::new(),
+            sound_names: Default::default(),
             rail_fade: RailFade::default(),
             render_laps: [0.0; 4],
             pass_timer: PassTimer::new(device, queue),
@@ -831,6 +839,12 @@ impl Scene {
         Ok(())
     }
 
+    /// The content's unit camera cutoffs the scene admits unit models by;
+    /// `None` before the unit pass exists.
+    pub fn unit_gates(&self) -> Option<UnitGates> {
+        self.unit_gates
+    }
+
     /// See [`Scene::warm_trains`].
     pub fn warm_unit_models(
         &mut self,
@@ -845,6 +859,9 @@ impl Scene {
             drop(library);
             self.unit_models = Some(pass);
         }
+        // The content's camera cutoffs come with the pass, however it was
+        // created: a window warms it at load, before any hour's field.
+        self.unit_gates = Some(assets.gates);
         Ok(())
     }
 
@@ -1002,8 +1019,8 @@ impl Scene {
     ) -> io::Result<()> {
         if self.unit_models.is_none() {
             self.unit_models = Some(ModelPass::new(&assets.library(), "unit models"));
-            self.unit_gates = Some(assets.gates);
         }
+        self.unit_gates = Some(assets.gates);
         self.unit_history
             .set(field.targets, assets.bounds.clone(), steady);
         self.unit_history.set_naval(field.naval);
@@ -1723,7 +1740,7 @@ impl Scene {
         self.detail_laps.lap("targets_shadow_resize");
         // Everything the frame advances, whatever the display hides
         // ([`step::Presentation::step`]).
-        step::Presentation {
+        let struck = step::Presentation {
             graphics: &self.graphics,
             aircraft: self.aircraft.as_mut(),
             trains: self.trains.as_mut(),
@@ -1777,6 +1794,58 @@ impl Scene {
             animation_time,
             rails_shown,
         );
+        // Map-frame events lead; the rest are actors' own.
+        let frame_events = if animation_time > 0.0 {
+            self.native_map_frame
+                .as_ref()
+                .map_or(0, |pass| pass.events.len())
+        } else {
+            0
+        };
+        self.sound_events.clear();
+        crate::map::sound_events::collect(
+            &events[..frame_events],
+            &mut self.sound_names,
+            &mut self.sound_events,
+            |event| struck.contains(&event.key.player()),
+        );
+        crate::map::sound_events::collect(
+            &events[frame_events..],
+            &mut self.sound_names,
+            &mut self.sound_events,
+            crate::map::entity_animation::Event::in_combat,
+        );
+        self.sound_refusals.clear();
+        if let Some(pass) = &self.native_map_frame {
+            self.sound_refusals.extend(
+                pass.default_state_refusals
+                    .iter()
+                    .map(|(why, count)| (why.clone(), *count)),
+            );
+        }
+        if self.graphics.weather
+            && let Some(weather) = &mut self.weather_effects
+        {
+            weather.sound_events(
+                camera,
+                size,
+                animation_time,
+                &mut self.sound_names,
+                &mut self.sound_events,
+            );
+        }
+        static PROFILE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *PROFILE.get_or_init(|| std::env::var_os("BATTLE_PLAN_ANIMATION_PROFILE").or_else(|| std::env::var_os("HOI4_ANIMATION_PROFILE")).is_some()) {
+            let mut effects = BTreeMap::<&str, usize>::new();
+            for event in &self.sound_events {
+                *effects.entry(&event.effect).or_default() += 1;
+            }
+            eprintln!(
+                "Sound events: entity events={} sounding={} {effects:?}",
+                events.len(),
+                self.sound_events.len()
+            );
+        }
         self.detail_laps.lap("events");
         let lights = self
             .weather_effects

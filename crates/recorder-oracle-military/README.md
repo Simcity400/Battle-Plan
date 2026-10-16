@@ -1,6 +1,6 @@
 # recorder-oracle-military
 
-Division status/movement, army orders, force rosters and combat membership. Owns [military.rs](src/military.rs) and its child tests. The [oracle command](../recorder-oracle/README.md) composes comparisons; this crate calls its specific dependent comparisons directly.
+Division status/movement, army orders, force rosters, combat membership and the battle-sound list's self-check. Owns [military.rs](src/military.rs) and its child tests. The [oracle command](../recorder-oracle/README.md) composes comparisons; this crate calls its specific dependent comparisons directly.
 
 Table completeness, exact joins, differences and named limitations use [shared oracle support](../recorder-oracle-support/README.md). Content-dependent facts resolve through the recorded content stack. Synthetic fixtures are dev-only through the support crate's `test-support` feature.
 

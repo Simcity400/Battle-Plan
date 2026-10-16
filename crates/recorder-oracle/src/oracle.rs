@@ -88,9 +88,10 @@ use self::relations::{
 };
 
 use self::military::{
-    compare_air_wings, compare_army_orders, compare_division_movement, compare_division_status,
-    compare_division_template_icons, compare_division_templates, compare_divisions,
-    compare_land_combats, compare_naval_combat_sources, compare_naval_combats, compare_naval_units,
+    compare_air_wings, compare_army_orders, compare_battle_sounds, compare_division_movement,
+    compare_division_status, compare_division_template_icons, compare_division_templates,
+    compare_divisions, compare_land_combats, compare_naval_combat_sources, compare_naval_combats,
+    compare_naval_units,
 };
 
 use self::core::{
@@ -574,6 +575,13 @@ fn compare_core(
         compare_land_combats(
             frame,
             save,
+            required_context("known map membership", &membership)?,
+            report,
+        )
+    });
+    report.attempt_table(TableId::BattleSounds, |report| {
+        compare_battle_sounds(
+            frame,
             required_context("known map membership", &membership)?,
             report,
         )

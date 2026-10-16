@@ -145,6 +145,31 @@ baseDaysRaw: string | null, progressRaw: string, };
 export type ResearchHistory = { coverage: Array<ResearchCoverage>, slots: Array<ResearchSlotHistory>, };
 export type ResearchFolder = { key: string, name: string | null, };
 export type ResearchTechnologyFolder = { token: string, folder: string | null, };
+export type MapAudio = {
+/**
+ * `master_volume`.
+ */
+master: number,
+/**
+ * `ambient_volume`; a fresh install stores 50.
+ */
+ambient: number,
+/**
+ * Unit, vehicle, train and aircraft sounds; `sound_fx_volume`.
+ */
+units: number,
+/**
+ * Combat and strike sounds; `sound_fx_volume`.
+ */
+combat: number,
+/**
+ * `voice_volume`.
+ */
+voice: number,
+/**
+ * The music player; `music_volume`.
+ */
+music: number, };
 export type MapGraphics = { samples: number, textureQuality: number,
 /**
  * The world target size; `draw_map_full_res`.
@@ -279,28 +304,7 @@ tooltips: boolean,
  */
 natoCounters: boolean | null, };
 export type MapGraphicsOverrides = { samples: number | null, textureQuality: number | null, fullResolution: boolean | null, highGfxShaders: boolean | null, waterReflections: boolean | null, shadows: boolean | null, dayNight: boolean | null, water: boolean | null, borders: boolean | null, landBorders: boolean | null, seaBorders: boolean | null, demilitarizedZones: boolean | null, straitCrossings: boolean | null, rivers: boolean | null, trees: boolean | null, railways: boolean | null, rails: boolean | null, railwayBridges: boolean | null, supplyTrains: boolean | null, citySprawl: boolean | null, buildings: boolean | null, mapTable: boolean | null, nuclearStrikes: boolean | null, bombardmentExplosions: boolean | null, missileExplosions: boolean | null, mapText: boolean | null, textFakeDivisions: boolean | null, textRailwayGuns: boolean | null, textBombardments: boolean | null, textGenerals: boolean | null, textParadrops: boolean | null, textResistance: boolean | null, textBuildings: boolean | null, weather: boolean | null, sky: boolean | null, countryNames: boolean | null, units: boolean | null, unitFigures: boolean | null, aircraft: boolean | null, airPatrols: boolean | null, airReconnaissance: boolean | null, airSupport: boolean | null, airBombing: boolean | null, airCombat: boolean | null, airKamikaze: boolean | null, airSupply: boolean | null, airMissiles: boolean | null, battlePlans: boolean | null, frontLines: boolean | null, offensiveLines: boolean | null, plannedMovement: boolean | null, navalInvasions: boolean | null, paradrops: boolean | null, raidPaths: boolean | null, planLabels: boolean | null, showAlliedPlans: boolean | null, movementArrows: boolean | null, counters: boolean | null, landCounters: boolean | null, railwayGunCounters: boolean | null, navalCounters: boolean | null, portCounters: boolean | null, baseIcons: boolean | null, theatrePins: boolean | null, landCombatMarkers: boolean | null, navalMarkers: boolean | null, raidIcons: boolean | null, cityNames: boolean | null, tooltips: boolean | null, natoCounters: boolean | null, };
-export type MapAudio = {
-/**
- * `master_volume`.
- */
-master: number,
-/**
- * `ambient_volume`; a fresh install stores 50.
- */
-ambient: number,
-/**
- * Unit, vehicle, train and aircraft sounds; `sound_fx_volume`.
- */
-units: number,
-/**
- * Combat and strike sounds; `sound_fx_volume`.
- */
-combat: number,
-/**
- * `voice_volume`.
- */
-voice: number, };
-export type MapAudioOverrides = { master: number | null, ambient: number | null, units: number | null, combat: number | null, voice: number | null, };
+export type MapAudioOverrides = { master: number | null, ambient: number | null, units: number | null, combat: number | null, voice: number | null, music: number | null, };
 export type CounterFilter = { "kind": "all" } | { "kind": "players" } | { "kind": "countries", tags: Array<string>, };
 export type CameraMode = "map" | "fly" | "walk";
 export type CampaignMapSettings = { graphics: MapGraphicsOverrides, audio: MapAudioOverrides,

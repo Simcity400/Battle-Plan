@@ -20,6 +20,7 @@ pub use engine_allocation as allocation;
 pub mod allocation_equipment_row;
 pub mod autonomy_state_definition;
 pub mod batch_fallback;
+pub mod battle_sounds;
 pub mod cace;
 pub mod cadvisor;
 pub mod cagency_upgrade;

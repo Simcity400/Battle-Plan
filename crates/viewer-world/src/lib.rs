@@ -51,6 +51,7 @@ pub mod map {
     pub mod shadow;
     pub mod shadow_blur;
     pub mod sky_shader;
+    pub mod sound_events;
     pub mod sprawl;
     pub mod strait_shader;
     pub mod strike_effects;

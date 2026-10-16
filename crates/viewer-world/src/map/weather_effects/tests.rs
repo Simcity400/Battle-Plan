@@ -46,6 +46,7 @@ fn descriptor_selection_preserves_small_fallback_and_native_draw_count() {
     let empty_pair = || WeatherPair {
         members: [Vec::new(), Vec::new()],
         radii: [None; 2],
+        sounds: [Vec::new(), Vec::new()],
     };
     let systems = BTreeMap::from([
         ((0, false), vec![empty_pair(), empty_pair(), empty_pair()]),
@@ -73,6 +74,82 @@ fn descriptor_selection_preserves_small_fallback_and_native_draw_count() {
     assert_eq!(seed, before, "an absent bank consumes no random draw");
     let only_small = BTreeMap::from([((0, true), vec![empty_pair()])]);
     assert!(select_pair(&only_small, 0, false, &mut seed).is_none());
+}
+
+#[test]
+fn shown_weather_entities_present_their_sound_events_while_their_region_keeps_its_weather() {
+    let sound = |effect: &str, time: f32| installed_content::weather::WeatherSound {
+        effect: effect.into(),
+        time,
+    };
+    let pair = WeatherPair {
+        members: [Vec::new(), Vec::new()],
+        radii: [Some(1.0), Some(1.0)],
+        sounds: [
+            vec![sound("rain_loop", 0.0), sound("thunder", 5.0)],
+            vec![sound("far_wind", 0.0)],
+        ],
+    };
+    let systems = BTreeMap::from([((0, false), vec![pair])]);
+    let anchors = [Anchor {
+        region: 7,
+        position: [10.0, 5.0, 20.0],
+        small: false,
+    }];
+    let field = Field {
+        branch: 1,
+        hour: 20,
+        kinds: BTreeMap::from([(7, 0)]),
+    };
+    let mut presentation = Presentation::default();
+    presentation.transition(&Field::default(), &field, Continuity::Continue);
+    let graphics = reference_defines();
+    let accepting = [([0.0; 3], [viewer_foundation::map::province_admission::OPEN; 6])];
+    let mut starts = SoundStarts::new();
+    let mut collect = |height: f32, time: f32, field: &Field, presentation: &Presentation| {
+        let mut names = super::super::sound_events::Names::default();
+        let mut out = Vec::new();
+        sound_events(
+            SoundInputs {
+                anchors: &anchors,
+                systems: &systems,
+                graphics: &graphics,
+                field,
+                presentation,
+                starts: &mut starts,
+                time,
+            },
+            height,
+            &accepting,
+            &mut names,
+            &mut out,
+        );
+        out
+    };
+    // Mid zoom shows only the entity; its timed event waits for its time.
+    let near = collect(800.0, 10.0, &field, &presentation);
+    assert_eq!(near.len(), 1);
+    assert_eq!(&*near[0].effect, "rain_loop");
+    assert_eq!(near[0].position, [10.0, 5.0, 20.0]);
+    assert_eq!(near[0].age, 0.0);
+    // The far band also shows the fading entity, which appears now.
+    let far = collect(1300.0, 16.0, &field, &presentation);
+    assert_eq!(
+        far.iter()
+            .map(|event| (&*event.effect, event.age))
+            .collect::<Vec<_>>(),
+        [("rain_loop", 6.0), ("thunder", 1.0), ("far_wind", 0.0)]
+    );
+    assert_eq!(far[0].key, near[0].key, "the region kept its weather");
+    // Zoomed in below the cutoff the entity is not drawn, so it does not sound.
+    assert!(collect(300.0, 17.0, &field, &presentation).is_empty());
+    // A region without weather presents nothing.
+    let clear = Field {
+        hour: 21,
+        kinds: BTreeMap::new(),
+        ..field
+    };
+    assert!(collect(800.0, 18.0, &clear, &presentation).is_empty());
 }
 
 #[test]

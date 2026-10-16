@@ -4,8 +4,8 @@
 
 use crate::{
     Memory, carmy, cgame_state, cland_border_war_combat, cland_border_war_combatant,
-    cland_combatant, cnaval_combat, cpdx_array::Array, cprovince, cunit, memory::Raw, read,
-    walk::Outcome,
+    cland_combatant, cnaval_combat, cpdx_array::Array, cprovince, crailway_gun, ctask_force, cunit,
+    memory::Raw, read, walk::Outcome,
 };
 
 mod country_sets;
@@ -59,6 +59,12 @@ pub const DEFENDER_BONUS: usize = 0xb0;
 pub const WIDTH_FACTOR: usize = 0xa0;
 /// Signed tactic-phase dictionary index.
 pub const PHASE: usize = 0xd0;
+/// Unit class of a division (`cunit::CLASS`).
+pub const DIVISION_CLASS: u32 = 0;
+/// Unit class of a naval task force.
+pub const TASK_FORCE_CLASS: u32 = 1;
+/// Unit class of a railway gun.
+pub const RAILWAY_GUN_CLASS: u32 = 13;
 /// CLandCombat progress getter vtable slot.
 pub const PROGRESS_VTABLE_SLOT: usize = 0xc8;
 /// Combat progress getter uses both side organisation sums.
@@ -334,14 +340,19 @@ pub fn visit_sides(
 /// No allocation, engine calls, retries or presentation reads occur here.
 /// Duplicate combat handles and duplicate members must be rejected when converting
 /// these rows off the game thread, as with the other native roster walkers.
+///
+/// `classes` runs beside `participants`: each participant's unit class. The
+/// game's save loader appends a combatant's saved unit references without a
+/// class check, so a side may hold any unit kind; each is kept with its class.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     output: &mut [Row],
     participants: &mut [u64],
+    classes: &mut [u32],
 ) -> Walk {
-    walk_with(memory, base, game_state, output, participants, |_| {})
+    walk_with(memory, base, game_state, output, participants, classes, |_| {})
 }
 
 /// Visits only complete authenticated rows. A visitor owns its independent
@@ -352,15 +363,17 @@ pub fn walk_with(
     game_state: usize,
     output: &mut [Row],
     participants: &mut [u64],
+    classes: &mut [u32],
     mut visit: impl FnMut(Source),
 ) -> Walk {
-    walk_members(
+    walk_members_buffer(
         memory,
         base,
         game_state,
-        output,
-        participants,
-        &mut [],
+        crate::walk::Buffer::Fixed(output),
+        crate::walk::Buffer::Fixed(participants),
+        crate::walk::Buffer::Fixed(&mut []),
+        Some(crate::walk::Buffer::Fixed(classes)),
         |source, _| visit(source),
     )
 }
@@ -373,6 +386,7 @@ pub fn walk_with_growing(
     game_state: usize,
     output: &mut Vec<Row>,
     participants: &mut Vec<u64>,
+    classes: &mut Vec<u32>,
     mut visit: impl FnMut(Source),
 ) -> Walk {
     walk_members_buffer(
@@ -382,6 +396,7 @@ pub fn walk_with_growing(
         crate::walk::Buffer::Growing(output),
         crate::walk::Buffer::Growing(participants),
         crate::walk::Buffer::Fixed(&mut []),
+        Some(crate::walk::Buffer::Growing(classes)),
         |source, _| visit(source),
     )
 }
@@ -430,6 +445,8 @@ pub fn core_demand(
 /// [`walk_with`], also keeping each participant's pointer beside its handle
 /// (`pointers` as long as `participants`) and lending the visitor the combat's
 /// authenticated [`Members`]. Shorter pointer storage lends [`Members::none`].
+/// The detail readers read division fields of every participant, so this walk
+/// admits only divisions.
 pub fn walk_members(
     memory: &impl Memory,
     base: usize,
@@ -446,6 +463,7 @@ pub fn walk_members(
         crate::walk::Buffer::Fixed(output),
         crate::walk::Buffer::Fixed(participants),
         crate::walk::Buffer::Fixed(pointers),
+        None,
         visit,
     )
 }
@@ -468,6 +486,7 @@ pub fn walk_members_growing(
         crate::walk::Buffer::Growing(output),
         crate::walk::Buffer::Growing(participants),
         crate::walk::Buffer::Growing(pointers),
+        None,
         visit,
     )
 }
@@ -479,6 +498,8 @@ fn walk_members_buffer(
     mut output: crate::walk::Buffer<'_, Row>,
     mut participants: crate::walk::Buffer<'_, u64>,
     mut pointers: crate::walk::Buffer<'_, usize>,
+    // Each participant's class; `None` admits only divisions.
+    mut classes: Option<crate::walk::Buffer<'_, u32>>,
     mut visit: impl FnMut(Source, Members<'_>),
 ) -> Walk {
     let keep = pointers.is_growing()
@@ -520,7 +541,14 @@ fn walk_members_buffer(
             if keep {
                 pointers.ensure(required_participants)?;
             }
-            if len == output.len() || count > participants.len() - participants_len {
+            let room = match &mut classes {
+                Some(classes) => {
+                    classes.ensure(required_participants)?;
+                    participants.len().min(classes.len())
+                }
+                None => participants.len(),
+            };
+            if len == output.len() || count > room - participants_len {
                 unread_rows = unread_rows
                     .checked_add(1)
                     .ok_or("land combat unread row count overflow")?;
@@ -537,7 +565,14 @@ fn walk_members_buffer(
             ] {
                 for member in 0..source.count {
                     let unit = reader.element(source, member)?;
-                    participants[start + member as usize] = reader.unit(unit)?;
+                    participants[start + member as usize] = match &mut classes {
+                        Some(classes) => {
+                            let (handle, class) = reader.unit(unit)?;
+                            classes[start + member as usize] = class;
+                            handle
+                        }
+                        None => reader.division(unit)?,
+                    };
                     if keep {
                         pointers[start + member as usize] = unit;
                     }
@@ -604,7 +639,7 @@ impl<M: Memory> Reader<'_, M> {
             return Ok(found);
         }
         let unit = self.element(units, index)?;
-        Ok((unit, self.unit(unit)?))
+        Ok((unit, self.division(unit)?))
     }
 
     /// `unit(pointer)` for a division of `side`: the census's handle when it
@@ -618,7 +653,7 @@ impl<M: Memory> Reader<'_, M> {
     ) -> Result<u64, &'static str> {
         match members.handle(side, pointer, hint) {
             Some(handle) => Ok(handle),
-            None => self.unit(pointer),
+            None => self.division(pointer),
         }
     }
 
@@ -779,38 +814,55 @@ impl<M: Memory> Reader<'_, M> {
             .ok_or("land combat participant vector unreadable or invalid")
     }
 
-    fn unit(&self, pointer: usize) -> Result<u64, &'static str> {
-        let mut primary = [0; 8];
+    /// A participant's handle and unit class, authenticated by that class's
+    /// own vtables. The class shares the primary vtable's 12-byte read.
+    fn unit(&self, pointer: usize) -> Result<(u64, u32), &'static str> {
+        let mut primary = [0; 12];
         // Secondary vptr and handle occupy the exact contiguous 16 bytes.
         let mut secondary_and_handle = [0; 16];
+        // Every unit kind keeps its secondary base where a division does.
+        debug_assert_eq!(carmy::SECONDARY_BASE, ctask_force::SECONDARY_BASE);
         let secondary = pointer
             .checked_add(carmy::SECONDARY_BASE)
-            .ok_or("land combat division address overflow")?;
+            .ok_or("land combat participant address overflow")?;
         if self.memory.copy_scattered(
             [pointer, secondary],
             &mut [&mut primary, &mut secondary_and_handle],
         ) != 2
         {
-            return Err("land combat division identity unreadable");
+            return Err("land combat participant identity unreadable");
         }
-        let primary = u64::from_le_bytes(primary);
+        // cunit::CLASS follows the primary vtable.
+        debug_assert_eq!(cunit::CLASS, 8);
+        let class = u32::from_le_bytes(primary[8..].try_into().unwrap());
+        let (primary_rva, secondary_rva) = match class {
+            DIVISION_CLASS => (carmy::VTABLE_RVA, carmy::SECONDARY_VTABLE_RVA),
+            TASK_FORCE_CLASS => (ctask_force::VTABLE_RVA, ctask_force::SECONDARY_VTABLE_RVA),
+            RAILWAY_GUN_CLASS => (crailway_gun::VTABLE_RVA, crailway_gun::SECONDARY_VTABLE_RVA),
+            _ => return Err("land combat participant has an unknown unit class"),
+        };
+        let primary = u64::from_le_bytes(primary[..8].try_into().unwrap());
         let secondary = u64::from_le_bytes(secondary_and_handle[..8].try_into().unwrap());
-        if self.base.checked_add(carmy::VTABLE_RVA).map(|p| p as u64) != Some(primary)
-            || self
-                .base
-                .checked_add(carmy::SECONDARY_VTABLE_RVA)
-                .map(|p| p as u64)
-                != Some(secondary)
+        if self.base.checked_add(primary_rva).map(|p| p as u64) != Some(primary)
+            || self.base.checked_add(secondary_rva).map(|p| p as u64) != Some(secondary)
         {
-            return Err("land combat division vtable mismatch");
+            return Err("land combat participant vtable mismatch");
         }
         let id = u64::from_le_bytes(secondary_and_handle[8..].try_into().unwrap());
         if id == 0 {
-            Err("land combat division has null handle")
+            Err("land combat participant has null handle")
         } else {
             // cunit::HANDLE follows the secondary base's vtable; both words remain native.
             debug_assert_eq!(cunit::HANDLE, carmy::SECONDARY_BASE + 8);
-            Ok(id)
+            Ok((id, class))
+        }
+    }
+
+    /// A participant the detail readers read as a division.
+    fn division(&self, pointer: usize) -> Result<u64, &'static str> {
+        match self.unit(pointer)? {
+            (handle, DIVISION_CLASS) => Ok(handle),
+            _ => Err("land combat participant is not a division"),
         }
     }
 }

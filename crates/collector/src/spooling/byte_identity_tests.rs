@@ -6,7 +6,8 @@
 //! derives them from, such as Provinces' `fort_bunker`; the hover-only and
 //! oracle-only tables refused as retired; with the naval hover source trees,
 //! the region air combat records, the controller areas, the combat sides'
-//! inputs, ship experience and the nuclear strike table), and the
+//! inputs, ship experience, the nuclear strike table, the battle sound list,
+//! template grids and land combat participant classes), and the
 //! comparison stage, conversion helpers and thread
 //! restructuring (phase accounting, event-driven wake-ups, the persistent
 //! durability worker) reproduce it. The campaign runs with
@@ -28,7 +29,7 @@ use replay::{
 const FIRST_HOUR: i32 = 100;
 const HOURS: i32 = 30;
 /// FNV-1a 64 over every spool segment's bytes in segment order.
-const EXPECTED_DIGEST: u64 = 0xf437_af3f_39ad_9963;
+const EXPECTED_DIGEST: u64 = 0x8137_4c53_5bd6_7d37;
 
 fn text<const N: usize>(value: &[u8]) -> Text<N> {
     let mut result = Text {

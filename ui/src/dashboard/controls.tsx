@@ -12,6 +12,7 @@ import { validatePreparationReply, preparationActive } from '../shell/preparatio
 import type { PreparedCoverage } from '../shell/preparation/contract';
 import { timelineGaps, timelinePrepared } from './timelineGaps';
 import CountryPicker from '../components/CountryPicker';
+import { useMapMuted } from '../shell/muteSetting';
 
 /** The header's country picker, showing the flag the game drew at the playback hour.
  * Only this component follows the clock; while playing it asks at most every 250 ms,
@@ -33,6 +34,15 @@ export function PlaybackCountryPicker({ clock, track, ...picker }: { clock: Play
   const flagAt = useMemo(() => track && raw != null && raw >= track.branch.firstHour && raw <= track.branch.lastHour
     ? { branchId: track.branch.id, hour: raw } : null, [track?.branch.id, track?.branch.firstHour, track?.branch.lastHour, raw]);
   return <CountryPicker {...picker} flagAt={flagAt} />;
+}
+
+/** Mutes or restores the native maps' audio; only the focused map sounds. */
+function MapMuteButton() {
+  const { muted, error, set } = useMapMuted();
+  if (muted == null && !error) return null;
+  const label = muted ? 'Unmute map audio' : 'Mute map audio';
+  return <button type="button" className="icon-button" aria-pressed={!!muted} onClick={() => set(!muted)}
+    aria-label={label} data-tooltip={error ?? label}><Icon name={muted ? 'volume-off' : 'volume'} /></button>;
 }
 
 export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId, client }: {
@@ -99,6 +109,7 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId, client 
         <button type="button" className="icon-button" disabled={!bounds || snapshot.hour >= bounds.lastHour} onClick={() => { setDraft(null); clock.step(1); }} aria-label="Next hour" data-tooltip="Next hour"><Icon name="chevrons-right" /></button>
       </div>
       <PlaybackSpeed value={snapshot.hoursPerSecond} onChange={(speed) => clock.setSpeed(speed)} />
+      <MapMuteButton />
     </section>
     <div className="header-timeline-wrap" data-empty={!bounds || span <= 0 || undefined}>
       <div className="timeline-track">

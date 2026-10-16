@@ -1,5 +1,6 @@
 use super::{
-    Captured, Divisions, MISSING, active_abilities, air, army_icon_inputs, character_inputs,
+    Captured, Divisions, MISSING, active_abilities, air, army_icon_inputs, battle_sounds,
+    character_inputs,
     characters, combat_details, combat_log, construction, country_appearance, country_counters,
     country_factories, country_stability, country_tactic_unlocks, economy, faction_theatres, fog,
     game_score, group_counters, hired_advisors, industrial_organisations, leader_paths,
@@ -349,6 +350,7 @@ impl Captured {
         self.game_score.fail(reason);
         self.group_counters.reset();
         self.saved_event_targets.reset();
+        self.battle_sounds.reset();
     }
 
     /// Loan the slow packs with their advisor and local sub-unit stores.
@@ -1156,6 +1158,7 @@ pub(super) const ORDINARY_TABLES: &[&[TableId]] = &[
     &game_score::COUNTRY_TABLES,
     &group_counters::TABLES,
     &saved_event_targets::TABLES,
+    &battle_sounds::TABLES,
 ];
 
 /// The Ordinary family's counter part: the country counter pass with the
@@ -1267,7 +1270,8 @@ pub(crate) enum OrdinaryPart {
     /// Naval combat details, results and province combats.
     Naval(Box<OrdinaryNavalPacks>),
     /// Naval bases, facilities, railway guns, abilities, the country half of
-    /// the score inputs, group counters and saved event targets.
+    /// the score inputs, group counters, saved event targets and the
+    /// battle-sound list.
     Map(Box<OrdinaryMapPacks>),
     /// Task force and fleet counter inputs.
     TaskForces(Box<OrdinaryTaskForcePacks>),
@@ -1297,6 +1301,7 @@ pub(crate) struct OrdinaryMapPacks {
     pub(crate) game_score: game_score::Captured,
     pub(crate) group_counters: group_counters::Captured,
     pub(crate) saved_event_targets: saved_event_targets::Captured,
+    pub(crate) battle_sounds: battle_sounds::Captured,
     ticks: [u64; TABLE_COUNT],
     failure: Option<&'static str>,
 }
@@ -1347,6 +1352,7 @@ impl OrdinaryPart {
                 game_score: game_score::Captured::vacant(),
                 group_counters: group_counters::Captured::vacant(),
                 saved_event_targets: saved_event_targets::Captured::vacant(),
+                battle_sounds: battle_sounds::Captured::vacant(),
                 ticks: [0; TABLE_COUNT],
                 failure: None,
             }))),
@@ -1396,6 +1402,7 @@ impl OrdinaryPart {
                     + packs.game_score.allocated_bytes()
                     + packs.group_counters.allocated_bytes()
                     + packs.saved_event_targets.allocated_bytes()
+                    + packs.battle_sounds.allocated_bytes()
             }
             Self::TaskForces(packs) => {
                 size_of::<OrdinaryTaskForcePacks>() + packs.naval_counters.allocated_bytes()
@@ -1442,6 +1449,7 @@ impl OrdinaryPart {
                     &mut captured.saved_event_targets,
                     &mut packs.saved_event_targets,
                 );
+                std::mem::swap(&mut captured.battle_sounds, &mut packs.battle_sounds);
             }
             Self::TaskForces(packs) => {
                 std::mem::swap(&mut captured.naval_counters, &mut packs.naval_counters);
@@ -1543,7 +1551,13 @@ impl OrdinaryPart {
                         .capture_with_hour(memory, base, game_state, hour),
                     &mut ticks,
                 );
-                pack!(packs: active_abilities, game_score, group_counters, saved_event_targets);
+                pack!(
+                    packs: active_abilities,
+                    game_score,
+                    group_counters,
+                    saved_event_targets,
+                    battle_sounds
+                );
             }
             Self::TaskForces(packs) => {
                 scatter(

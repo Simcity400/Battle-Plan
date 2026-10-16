@@ -64,6 +64,7 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::ArmyGroupMembers,
             TableId::ArmyIconInputs,
             TableId::AvailableEquipmentVariants,
+            TableId::BattleSounds,
             TableId::BorderConflicts,
             TableId::Campaign,
             TableId::CharacterPortraits,

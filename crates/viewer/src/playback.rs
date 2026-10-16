@@ -600,6 +600,8 @@ pub(crate) mod tests {
                         day: -1,
                         attackers: vec![(1_u64 << 32) | 4713],
                         defenders: vec![(2_u64 << 32) | 4713],
+                        attacker_classes: vec![0],
+                        defender_classes: vec![0],
                     }])),
                     TableView::Complete(TableRows::Fleets(vec![FleetRow {
                         id: (1_u64 << 32) | 61,

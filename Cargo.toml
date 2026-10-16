@@ -190,6 +190,7 @@ engine-executable = { path = "crates/engine-executable" }
 installed-content = { path = "crates/installed-content" }
 installed-content-raids = { path = "crates/installed-content-raids" }
 installed-content-weather = { path = "crates/installed-content-weather" }
+installed-content-sound = { path = "crates/installed-content-sound" }
 installed-content-equipment-graphics = { path = "crates/installed-content-equipment-graphics" }
 installed-content-country-names = { path = "crates/installed-content-country-names" }
 installed-content-wargoals = { path = "crates/installed-content-wargoals" }

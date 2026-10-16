@@ -693,6 +693,22 @@ pub struct Viewer {
     pub(crate) diagnostics: bool,
     /// Whether an embedded map's diagnostics box lists its data limitations.
     diagnostics_open: bool,
+    /// This view's handle on the process's map audio, made by its first
+    /// interactive frame; captures and dumps never make one.
+    audio: Option<viewer_audio::Owner>,
+    /// Whether this view may sound: the window's own map always, a dashboard
+    /// map while it is the focused one.
+    pub(crate) audio_focus: bool,
+    /// The host's mute choice.
+    pub(crate) muted: bool,
+    /// A presentation discontinuity the next audio frame reports.
+    pub(crate) audio_reset: bool,
+    /// The presented hour's song chances for the viewing country.
+    pub(crate) music: Option<Arc<viewer_audio::Chances>>,
+    /// The presented hour's battles, for the battle ambience.
+    pub(crate) battles: Option<Arc<viewer_audio::Battles>>,
+    /// The map body took a press, drag or scroll this frame.
+    pub(crate) interacted: bool,
     /// egui points per interface pixel at the last map frame, which lays out
     /// the diagnostics box over an embedded map ([`map_overlay`]).
     pub(crate) interface_points: f32,
@@ -759,7 +775,7 @@ pub struct Viewer {
     /// Whose counters this view draws.
     pub(crate) counter_filter: dashboard::protocol::CounterFilter,
     /// This view's sound volumes. Only the focused map plays sound.
-    pub(crate) audio: dashboard::protocol::MapAudio,
+    pub(crate) volumes: dashboard::protocol::MapAudio,
     /// The overlay parts the last overlay draw used, with the counter filter resolved.
     overlay_layers: crate::document::OverlayLayers,
     /// The counter filter's countries at the shown hour.
@@ -922,6 +938,9 @@ pub(crate) fn load_scene(
         &document.tree_field,
     )?;
     scene.set_sprawl(device, queue, &document.sprawl)?;
+    // The map's ambient objects and the nuclear impact entities share this pass,
+    // as in a dump: their sounds and impacts need it in every window.
+    scene.set_map_frame(device, queue, &document.frame_assets)?;
     scene.warm_trains(device, queue, &document.trains)?;
     scene.warm_aircraft(device, queue, &document.aircraft)?;
     scene.warm_unit_models(device, queue, &document.unit_models)?;
@@ -1104,6 +1123,13 @@ impl Viewer {
             map_warnings: Vec::new(),
             diagnostics: options.diagnostics,
             diagnostics_open: false,
+            audio: None,
+            audio_focus: true,
+            muted: false,
+            audio_reset: false,
+            music: None,
+            battles: None,
+            interacted: false,
             interface_points: 1.0,
             embedded,
             embedded_open: None,
@@ -1146,7 +1172,7 @@ impl Viewer {
                 ..Default::default()
             },
             counter_filter: Default::default(),
-            audio: Default::default(),
+            volumes: Default::default(),
             overlay_layers: Default::default(),
             counter_owners: Default::default(),
             resolved_settings: Default::default(),
@@ -1234,6 +1260,8 @@ impl Viewer {
         viewer.dashboard_map = true;
         // The dashboard passes on the host's choice.
         viewer.diagnostics = false;
+        // The dashboard gives one map at a time the audio.
+        viewer.audio_focus = false;
         viewer.dropper = Some(Arc::clone(&resources.dropper));
         viewer.shared_resources = Some(resources);
         viewer
@@ -1253,6 +1281,22 @@ impl Viewer {
 
     pub(crate) fn has_map(&self) -> bool {
         self.document.is_some() && self.scene.is_some()
+    }
+
+    /// Gives up the process audio if this view holds it; everything it
+    /// played, music included, stops.
+    pub(crate) fn release_audio(&mut self) {
+        if let Some(audio) = &mut self.audio {
+            audio.release();
+        }
+    }
+
+    /// Sends this view's volumes and mute to the audio now, so a change
+    /// applies even while the map does not draw.
+    pub(crate) fn apply_audio_mix(&self) {
+        if let (Some(audio), Some(document)) = (&self.audio, &self.document) {
+            audio.set_mix(audio_mix(document, self.volumes, self.muted));
+        }
     }
 
     /// Follow the host's settings for `scope`, resolving them only when they may have changed.
@@ -1280,7 +1324,10 @@ impl Viewer {
         if self.counter_filter != settings.counters {
             self.counter_filter = settings.counters.clone();
         }
-        self.audio = settings.audio;
+        if self.volumes != settings.audio {
+            self.volumes = settings.audio;
+            self.apply_audio_mix();
+        }
         if let Some(document) = &self.document {
             self.counter_view.settings.nato = graphics
                 .nato_counters
@@ -1878,6 +1925,7 @@ impl Viewer {
                     CounterView::new(self.options.counter_settings(document.game_counters));
                 if self.embedded.is_none() {
                     self.graphics.full_resolution = document.game_full_resolution;
+                    self.volumes = document.game_audio;
                 }
                 self.document = Some(document);
                 // The loader built the whole hour-independent scene; the
@@ -2834,6 +2882,8 @@ impl Viewer {
         } else {
             Vec::new()
         };
+        // The map pressed, dragged or wheeled is the one that sounds.
+        self.interacted = response.clicked() || response.dragged() || !notches.is_empty();
         let pointer = response.hover_pos().map(frame_point);
         let ground = match pointer {
             Some(point) if !notches.is_empty() => {
@@ -3506,6 +3556,32 @@ impl Viewer {
                 },
             )
             .map_err(|e| e.to_string())?;
+        // A window capture stays silent; with `BATTLE_PLAN_VIEWER_AUDIO_LOG` it traces
+        // the voices it would start without opening a device.
+        let trace = self.capture.is_some() && std::env::var_os("BATTLE_PLAN_VIEWER_AUDIO_LOG").or_else(|| std::env::var_os("HOI4_VIEWER_AUDIO_LOG")).is_some();
+        if trace {
+            viewer_audio::System::silent();
+        }
+        if (self.capture.is_none() || trace) && self.audio_focus {
+            present_audio(
+                &mut self.audio,
+                document,
+                scene,
+                &camera,
+                AudioInputs {
+                    volumes: self.volumes,
+                    muted: self.muted,
+                    reset: std::mem::take(&mut self.audio_reset),
+                    music: self.music.clone(),
+                    battles: self.battles.clone(),
+                },
+            );
+        } else if !self.audio_focus
+            && let Some(audio) = &mut self.audio
+        {
+            // Another map sounds now: what this one played stops.
+            audio.release();
+        }
         let [animate, overlay_upload, encode, submit] = scene.render_laps();
         if self.generation != scene.generation() {
             let view = scene.view().ok_or("Map target was not created")?;
@@ -3576,6 +3652,48 @@ impl Viewer {
             }
         }
         self.save_capture(state, document, camera, pixels, &warnings, ui.ctx());
+        let mut warnings = warnings;
+        if let Some(audio) = self.audio.as_ref().filter(|audio| audio.owns()) {
+            let status = audio.status();
+            if let Some(Err(error)) = &status.device {
+                warnings.push(format!("Map audio is silent: {error}."));
+            }
+            warnings.extend(
+                status
+                    .notes
+                    .iter()
+                    .map(|note| format!("Map audio: {note}.")),
+            );
+            if let Some(scene) = &self.scene {
+                warnings.extend(
+                    scene.sound_refusals.iter().map(|(refusal, actors)| {
+                        format!("Map audio: {refusal} (actors: {actors}).")
+                    }),
+                );
+            }
+            // The shown document: its owner holds it apart from `self` while it draws.
+            if let Some(source) = &document.audio
+                && let Some(why) = viewer_audio::battle::silence(&source.content)
+            {
+                warnings.push(format!("Map battle ambience: {why}."));
+            }
+            if let Some(battles) = &self.battles
+                && !battles.refusals.is_empty()
+            {
+                warnings.push(format!(
+                    "Map battle ambience: {}.",
+                    battles.refusals.join("; ")
+                ));
+            }
+            if let Some(music) = &self.music
+                && !music.refusals.is_empty()
+            {
+                warnings.push(format!(
+                    "Map music keeps the base chance of songs whose conditions the recording cannot answer: {}.",
+                    music.refusals.join("; ")
+                ));
+            }
+        }
         self.map_warnings = warnings;
         self.profile_frame += 1;
         ui.painter().image(
@@ -3669,6 +3787,109 @@ impl Viewer {
     }
 }
 
+/// A view's audio choices and state for one presented frame.
+struct AudioInputs {
+    volumes: dashboard::protocol::MapAudio,
+    muted: bool,
+    /// A presentation discontinuity since the last audio frame.
+    reset: bool,
+    music: Option<Arc<viewer_audio::Chances>>,
+    battles: Option<Arc<viewer_audio::Battles>>,
+}
+
+/// Sends the rendered frame's sound events to the process audio. Callers
+/// skip window captures and maps that may not sound.
+/// The volumes and mute the audio mixes with: the map's inherited volumes
+/// and the game's own `dev_master_volume`.
+fn audio_mix(
+    document: &Document,
+    volumes: dashboard::protocol::MapAudio,
+    muted: bool,
+) -> viewer_audio::Mix {
+    let percent = |value: f32| value / 100.0;
+    viewer_audio::Mix {
+        master: percent(volumes.master),
+        dev_master: document.game_dev_master,
+        ambient: percent(volumes.ambient),
+        units: percent(volumes.units),
+        combat: percent(volumes.combat),
+        voice: percent(volumes.voice),
+        music: percent(volumes.music),
+        muted,
+    }
+}
+
+fn present_audio(
+    audio: &mut Option<viewer_audio::Owner>,
+    document: &Document,
+    scene: &Scene,
+    camera: &Camera,
+    inputs: AudioInputs,
+) {
+    let AudioInputs {
+        volumes,
+        muted,
+        reset,
+        music,
+        battles,
+    } = inputs;
+    let Some(source) = &document.audio else {
+        // A document without audio definitions plays nothing: what a
+        // previous document played stops.
+        if let Some(owner) = audio {
+            owner.release();
+        }
+        return;
+    };
+    let owner = audio.get_or_insert_with(|| viewer_audio::System::shared().owner());
+    owner.claim();
+    let mut emitters = scene
+        .sound_events
+        .iter()
+        .map(|event| viewer_audio::Emitter {
+            key: event.key,
+            effect: Arc::clone(&event.effect),
+            position: event.position,
+            age: event.age,
+            group: if event.combat {
+                viewer_audio::Group::Combat
+            } else {
+                viewer_audio::Group::Units
+            },
+            restart: false,
+        })
+        .collect::<Vec<_>>();
+    // The hour's battles within hearing of the camera play their ambience.
+    if let Some(battles) = &battles {
+        viewer_audio::battle::emitters(battles, &source.content, camera.eye(), &mut emitters);
+    }
+    let forward = camera.look_direction();
+    // The camera's right axis: up crossed with forward, normalised.
+    let right = [forward[2], 0.0, -forward[0]];
+    let length = (right[0] * right[0] + right[2] * right[2]).sqrt();
+    let right = if length > 0.0 {
+        [right[0] / length, 0.0, right[2] / length]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    owner.frame(
+        source,
+        viewer_audio::Frame {
+            listener: viewer_audio::Listener {
+                position: camera.eye(),
+                right,
+                altitude: camera.height,
+            },
+            emitters,
+            mix: audio_mix(document, volumes, muted),
+            reset,
+            elapsed: 0.0,
+            hour: Some(document.playback.hour()),
+            music,
+        },
+    );
+}
+
 impl eframe::App for Viewer {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.embedded_logic(ctx, frame);
@@ -3682,10 +3903,23 @@ impl eframe::App for Viewer {
             .as_ref()
             .is_some_and(|embedded| !embedded.visible())
         {
+            // A hidden map stops sounding.
+            self.release_audio();
+            if let Some(dashboard) = &mut self.dashboard {
+                dashboard.release_audio();
+            }
             return;
         }
         if ui.input(|input| input.events.iter().any(is_diagnostics_shortcut)) {
             self.toggle_diagnostics();
+        }
+        if self.dashboard_active {
+            // The Campaign map is not drawn while dashboard maps show, even
+            // while they load or failed to: it stops sounding.
+            self.release_audio();
+        } else if let Some(dashboard) = &mut self.dashboard {
+            // Nor are dashboard maps while the Campaign map shows, loaded or not.
+            dashboard.release_audio();
         }
         if self.dashboard_active
             && let Some(dashboard) = &mut self.dashboard
@@ -3812,6 +4046,9 @@ impl eframe::App for Viewer {
             });
             self.document = Some(document);
         } else {
+            // No map is shown, while a replacement loads or after it failed:
+            // what the previous one played stops.
+            self.release_audio();
             // The host shows its own status and errors; the map only says it is loading.
             central_panel.show(ui, |ui| {
                 if self.loading.is_some() {

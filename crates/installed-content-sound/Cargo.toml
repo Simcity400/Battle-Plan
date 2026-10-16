@@ -1,0 +1,18 @@
+[package]
+name = "installed-content-sound"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+installed-content-core.workspace = true
+symphonia = { version = "0.6.1", default-features = false, features = ["ogg", "vorbis", "wav", "adpcm"] }
+
+[dev-dependencies]
+engine.workspace = true
+installed-content-core = { workspace = true, features = ["layer-fixtures"] }
+
+[features]
+test-support = ["installed-content-core/test-support"]

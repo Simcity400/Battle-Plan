@@ -46,6 +46,7 @@ pub use engine_native::allocation;
 pub use engine_native::allocation_equipment_row;
 pub use engine_native::autonomy_state_definition;
 pub use engine_native::batch_fallback;
+pub use engine_native::battle_sounds;
 pub use engine_native::cace;
 pub use engine_native::cadvisor;
 pub use engine_native::cagency_upgrade;

@@ -44,6 +44,8 @@ impl Viewer {
                 match created {
                     Ok(mut dashboard) => {
                         dashboard.set_diagnostics(self.diagnostics);
+                        // New maps start with the current mute choice.
+                        dashboard.set_muted(self.muted);
                         self.embedded_open = None;
                         self.embedded_seek = None;
                         self.dashboard = Some(Box::new(dashboard));
@@ -273,6 +275,13 @@ impl Viewer {
                 self.diagnostics = enabled;
                 if let Some(dashboard) = &mut self.dashboard {
                     dashboard.set_diagnostics(enabled);
+                }
+            }
+            MapAction::Mute { muted } => {
+                self.muted = muted;
+                self.apply_audio_mix();
+                if let Some(dashboard) = &mut self.dashboard {
+                    dashboard.set_muted(muted);
                 }
             }
             MapAction::Configure { options } => {

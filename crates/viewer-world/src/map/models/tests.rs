@@ -502,12 +502,7 @@ fn aircraft_callbacks_with_geometry(meshed: bool) {
     std::fs::remove_dir_all(&root).unwrap();
     let slot = library.slot("plane").unwrap();
     assert_eq!(library.meshes[slot].native.is_empty(), !meshed);
-    assert!(
-        warnings
-            .iter()
-            .any(|(kind, line)| *kind == installed_content::DiagnosticKind::Warning
-                && line.contains("plane (1 sound events refused)"))
-    );
+    assert!(warnings.iter().all(|(_, line)| !line.contains("sound")));
     if !meshed {
         assert!(
             warnings
@@ -672,9 +667,10 @@ fn meshless_buildings_use_shared_states_events_and_attachments() {
             .1
             .contains("entity emitter references pdxmesh lost")
     );
-    assert_eq!(
-        warnings[1].1,
-        "Entity audio playback is unavailable: emitter (1 sound events refused)."
+    // Sound events are presented for audio, not refused.
+    assert!(
+        warnings.iter().all(|(_, line)| !line.contains("sound")),
+        "{warnings:?}"
     );
     let mut pass = ModelPass::new(&library, "buildings");
     let placed = ModelInstance {
@@ -696,8 +692,34 @@ fn meshless_buildings_use_shared_states_events_and_attachments() {
     assert_eq!(pass.events[2].definition.particle.as_deref(), Some("glow"));
     assert_eq!(pass.events[2].transform.translation, [9., 4., 5.]);
     assert_eq!(pass.events[3].transform.translation, placed.position);
+    let mut names = crate::map::sound_events::Names::default();
+    let mut sounds = Vec::new();
+    crate::map::sound_events::collect(
+        &pass.events,
+        &mut names,
+        &mut sounds,
+        crate::map::entity_animation::Event::in_combat,
+    );
+    assert_eq!(sounds.len(), 1);
+    assert_eq!(&*sounds[0].effect, "hum");
+    assert_eq!(sounds[0].position, placed.position);
+    assert_eq!(sounds[0].age, 0.);
+    assert!(!sounds[0].combat);
+    let key = sounds[0].key;
     pass.animate(20.5, None, &[0.]);
     assert_eq!(pass.events[0].age, 0.5);
+    sounds.clear();
+    crate::map::sound_events::collect(
+        &pass.events,
+        &mut names,
+        &mut sounds,
+        crate::map::entity_animation::Event::in_combat,
+    );
+    assert_eq!(
+        (sounds[0].key, sounds[0].age),
+        (key, 0.5),
+        "a present event keeps its key"
+    );
     pass.update_placed(
         vec![(
             slot,
@@ -1032,4 +1054,53 @@ fn an_entity_s_bound_encloses_every_point_around_its_origin() {
     assert!((reach.bound - 100.0 * 2f32.sqrt()).abs() < 1e-3, "{}", reach.bound);
     reach.widen_point([0.0, -150.0, 0.0], true);
     assert_eq!(reach.bound, 150.0);
+}
+
+/// A state with several variants is found on any node, and through
+/// `next_state`, not only on the root's default state.
+#[test]
+fn drawn_variants_are_found_on_attached_entities_and_later_states() {
+    let clip = |name: &str, next: Option<&str>| entity_animation::Clip {
+        state: mesh::EntityState {
+            name: name.into(),
+            chance: 1.0,
+            next_state: next.map(Into::into),
+            ..Default::default()
+        },
+        animation: None,
+    };
+    let node = |clips: Vec<entity_animation::Clip>| entity_animation::Node {
+        native: None,
+        mesh: Arc::new(mesh::Mesh::default()),
+        clips,
+        default: "idle".into(),
+        follows_parent: false,
+        parent: None,
+        scale: 1.0,
+        mesh_scale: 1.0,
+        skin_base: None,
+        rigid: 0,
+        locators: BTreeMap::new(),
+    };
+    let rig = |nodes| Rig {
+        start: 0,
+        end: 1,
+        nodes,
+    };
+    let single = rig(vec![node(vec![clip("idle", None)])]);
+    assert_eq!(super::drawn_variants(&single), None);
+    let attached = rig(vec![
+        node(vec![clip("idle", None)]),
+        node(vec![clip("idle", None), clip("idle", None)]),
+    ]);
+    assert_eq!(
+        super::drawn_variants(&attached),
+        Some((1, "idle".into(), 2))
+    );
+    let later = rig(vec![node(vec![
+        clip("idle", Some("burn")),
+        clip("burn", None),
+        clip("burn", None),
+    ])]);
+    assert_eq!(super::drawn_variants(&later), Some((0, "burn".into(), 2)));
 }

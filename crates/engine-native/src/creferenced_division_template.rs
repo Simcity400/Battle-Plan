@@ -30,6 +30,10 @@ pub const SUPPORT_COUNT: usize = 0x94;
 pub const REGIMENTAL_SUPPORT_DATA: usize = 0xa8;
 /// CReferencedDivisionTemplate regimental-support u32 count.
 pub const REGIMENTAL_SUPPORT_COUNT: usize = 0xb4;
+/// The three composition grids' pointer-vector headers, in the order
+/// [`IconRow::grids`] keeps them: regiments, support, regimental support. A
+/// cell holds a definition pointer; a null pointer is an empty cell.
+pub const GRIDS: [usize; 3] = [REGIMENT_DATA, SUPPORT_DATA, REGIMENTAL_SUPPORT_DATA];
 /// Excluded equipment-variant pointer-array data.
 pub const EXCLUDED_VARIANT_DATA: usize = 0x140;
 /// Excluded variant-array capacity, u32.
@@ -139,6 +143,10 @@ pub struct IconRow {
     pub representative: SubunitCount,
     /// The stored grouped entries, in native order.
     pub counts: Span,
+    /// Each of [`GRIDS`]' entries in `counts`: the definitions its non-null
+    /// cells hold, grouped by token and clone flag in the order each first
+    /// occurs, each counted once per cell. A null-object cell is token zero.
+    pub grids: [Span; 3],
     /// The composition's `country`, the clone scope of local definitions and the model fallback
     /// country; raw signed reference.
     pub country: i32,
@@ -151,9 +159,9 @@ pub struct IconRow {
     /// Saved excluded equipment variants, full handles in native order.
     pub excluded_variants: Span,
     /// Why this template's model inputs could not be read this hour. The
-    /// representative, grouped entries, model entity and excluded variants are
-    /// then empty; the counter's fields, the country operands and the model
-    /// category, all from the authenticated record, stand.
+    /// representative, grouped entries, grids, model entity and excluded
+    /// variants are then empty; the counter's fields, the country operands and
+    /// the model category, all from the authenticated record, stand.
     pub model_failure: Option<&'static str>,
 }
 
@@ -761,13 +769,19 @@ const DAILY_FIELDS: [RecordField; 3] = [
 const DAILY_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&DAILY_FIELDS, RECORD).expect("valid template layout");
 /// The hourly row's fixed fields: identity, then one contiguous span from the
-/// grouped entries' header through the unit-type override, which holds every
-/// header, the representative, the icon fields, the country operands, the
-/// model category, the model entity string and the dictionary's unit-type
-/// operands.
-const ICON_SPAN: usize = SUBUNIT_COUNTS;
+/// regiment grid's header through the unit-type override, which holds the
+/// three grids' and the grouped entries' headers, the representative, the
+/// icon fields, the country operands, the model category, the model entity
+/// string and the dictionary's unit-type operands.
+const ICON_SPAN: usize = REGIMENT_DATA;
 const ICON_SPAN_END: usize = UNIT_TYPE_OVERRIDE + 4;
 const _: () = assert!(MODEL_ENTITY + msvc_string::STRIDE == UNIT_TYPE_OVERRIDE);
+const _: () = assert!(
+    NAME + msvc_string::STRIDE <= ICON_SPAN
+        && REGIMENT_DATA < SUPPORT_DATA
+        && SUPPORT_DATA < REGIMENTAL_SUPPORT_DATA
+        && REGIMENTAL_SUPPORT_DATA + 16 <= SUBUNIT_COUNTS
+);
 const ICON_RECORD: usize = 16 + ICON_SPAN_END - ICON_SPAN;
 const ICON_FIELDS: [RecordField; 2] = [
     record_field(0, 0, 16),
@@ -1083,15 +1097,18 @@ pub fn copy_names_growing(
 /// Every country template's hourly inputs ([`IconRow`]), roster by roster in
 /// the order [`walk`] visits them: what the counter draws and the stored
 /// results the 3D model selectors read (the representative, the grouped
-/// (definition, count) entries and the saved model choices). A player's edit
-/// reaches both within the hour. Capacity omits a WHOLE row, as in [`walk`].
-/// A fault in a template's model inputs (its grouped entries, exclusions, model
-/// string or a definition's clone flag) fails only that row's model fields, so
-/// every counter keeps its icon; a sub-unit database too large for its slots
-/// is read live and the slots grow.
+/// (definition, count) entries and the saved model choices), and each of the
+/// three grids' (definition, cell count) entries. A player's edit reaches all
+/// of them within the hour. Capacity omits a WHOLE row, as in [`walk`]; a
+/// row's grid entries are budgeted at one per cell. A fault in a template's
+/// model inputs (its grouped entries, grids, exclusions, model string or a
+/// definition's clone flag) fails only that row's model fields, so every
+/// counter keeps its icon; a sub-unit database too large for its slots is
+/// read live and the slots grow.
 /// Each roster batch is gathered in two spans a template (identity and one
-/// contiguous span through the model entity), the grouped entries in one more,
-/// and definitions resolve through `Definitions`.
+/// contiguous span from the grid headers through the model entity), the
+/// grouped entries and each grid's cells in one more each, and definitions
+/// resolve through `Definitions`.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_icons(
     memory: &impl Memory,
@@ -1291,6 +1308,16 @@ impl SubunitNames {
     }
 }
 
+/// A template's model-input headers, decoded from its gathered record.
+struct Headers {
+    grouped: Array,
+    grids: [Array; 3],
+    /// The grids' cells together, the most entries they can need.
+    cells: usize,
+    exclusions: Array,
+    model_entity: Descriptor,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn walk_icons_inner(
     memory: &impl Memory,
@@ -1319,6 +1346,7 @@ fn walk_icons_inner(
     let (mut len, mut missing) = (0, 0_u32);
     let mut owner = None;
     let mut grouped_scratch = [0_u8; BATCH * SUBUNIT_COUNT_STRIDE];
+    let mut cell_scratch = [0_u8; BATCH * 8];
     let mut excluded_scratch = [0_usize; BATCH];
     let mut memo = Definitions::load(memory, base, slots, &mut result.required_database);
     let mut subunit_names = SubunitNames::new();
@@ -1327,6 +1355,9 @@ fn walk_icons_inner(
             for (header, stride) in [
                 (icon(SUBUNIT_COUNTS), SUBUNIT_COUNT_STRIDE),
                 (icon(EXCLUDED_VARIANT_DATA), 8),
+                (icon(GRIDS[0]), 8),
+                (icon(GRIDS[1]), 8),
+                (icon(GRIDS[2]), 8),
             ] {
                 let count =
                     u32::from_le_bytes(record[header + 12..header + 16].try_into().unwrap());
@@ -1373,11 +1404,21 @@ fn walk_icons_inner(
             };
             // The model inputs' headers, read with the record. Their demand is
             // counted before any capacity check, so every arena grows at once.
-            let headers = (|| -> Result<(Array, Array, Descriptor), &'static str> {
+            let headers = (|| -> Result<Headers, &'static str> {
                 let header = |at: usize| -> [u8; 16] { record[at..at + 16].try_into().unwrap() };
                 let grouped =
                     Array::from_header(header(icon(SUBUNIT_COUNTS)), SUBUNIT_COUNT_STRIDE)
                         .ok_or("template grouped subunits invalid")?;
+                // A grid's entries are at most its cells.
+                let mut grids = [Array::default(); 3];
+                let mut cells = 0_usize;
+                for (grid, offset) in grids.iter_mut().zip(GRIDS) {
+                    *grid = Array::from_header(header(icon(offset)), 8)
+                        .ok_or("template grid invalid")?;
+                    cells = cells
+                        .checked_add(grid.count as usize)
+                        .ok_or("template grouped arena overflow")?;
+                }
                 let exclusions = Array::from_header(header(icon(EXCLUDED_VARIANT_DATA)), 8)
                     .ok_or("template variant exclusions invalid")?;
                 let entity = icon(MODEL_ENTITY);
@@ -1396,12 +1437,19 @@ fn walk_icons_inner(
                 result.required_counts = result
                     .required_counts
                     .checked_add(grouped.count as usize)
+                    .and_then(|required| required.checked_add(cells))
                     .ok_or("template grouped arena overflow")?;
                 result.required_variants = result
                     .required_variants
                     .checked_add(exclusions.count as usize)
                     .ok_or("template variant arena overflow")?;
-                Ok((grouped, exclusions, model_entity))
+                Ok(Headers {
+                    grouped,
+                    grids,
+                    cells,
+                    exclusions,
+                    model_entity,
+                })
             })();
             let name_len = selected_name.as_ref().map_or(0, |name| name.len);
             result.required_bytes = result
@@ -1451,7 +1499,13 @@ fn walk_icons_inner(
             // fields; the counter keeps its icon. `Ok(false)` is a row that does
             // not fit, omitted whole.
             let model = (|| -> Result<bool, &'static str> {
-                let (grouped, exclusions, model_entity) = headers?;
+                let Headers {
+                    grouped,
+                    grids,
+                    cells,
+                    exclusions,
+                    model_entity,
+                } = headers?;
                 let bytes_end = result
                     .bytes_len
                     .checked_add(model_entity.len)
@@ -1459,6 +1513,7 @@ fn walk_icons_inner(
                 let counts_end = result
                     .counts_len
                     .checked_add(grouped.count as usize)
+                    .and_then(|end| end.checked_add(cells))
                     .ok_or("template grouped arena overflow")?;
                 let variants_end = result
                     .variants_len
@@ -1504,6 +1559,48 @@ fn walk_icons_inner(
                         };
                         result.counts_len += 1;
                     }
+                }
+                // Each grid's definitions, counted once per occupied cell.
+                let cell_bytes = &mut cell_scratch;
+                for (span, grid) in row.grids.iter_mut().zip(grids) {
+                    let start = result.counts_len;
+                    for first in (0..grid.count).step_by(BATCH) {
+                        let len = ((grid.count - first) as usize).min(BATCH) * 8;
+                        let at = grid
+                            .element(first, 8)
+                            .ok_or("template grid cell index invalid")?;
+                        if !read_slice(memory, at, &mut cell_bytes[..len]) {
+                            return Err("template grid cells unreadable");
+                        }
+                        for cell in cell_bytes[..len].chunks_exact(8) {
+                            let cell =
+                                usize::try_from(u64::from_le_bytes(cell.try_into().unwrap()))
+                                    .map_err(|_| "template grid cell pointer invalid")?;
+                            if cell == 0 {
+                                continue;
+                            }
+                            let unit = memo.identify(memory, base, cell)?;
+                            let end = result.counts_len;
+                            match counts[start..end].iter_mut().find(|entry| {
+                                (entry.token, entry.local) == (unit.token, unit.local)
+                            }) {
+                                Some(entry) => {
+                                    entry.count = entry
+                                        .count
+                                        .checked_add(1)
+                                        .ok_or("template grid count overflow")?;
+                                }
+                                None => {
+                                    counts[end] = SubunitCount { count: 1, ..unit };
+                                    result.counts_len = end + 1;
+                                }
+                            }
+                        }
+                    }
+                    *span = Span {
+                        start,
+                        len: result.counts_len - start,
+                    };
                 }
                 row.excluded_variants = Span {
                     start: result.variants_len,
@@ -1558,6 +1655,10 @@ fn walk_icons_inner(
                             start: row_start.1,
                             len: 0,
                         },
+                        grids: [Span {
+                            start: row_start.1,
+                            len: 0,
+                        }; 3],
                         excluded_variants: Span {
                             start: row_start.2,
                             len: 0,

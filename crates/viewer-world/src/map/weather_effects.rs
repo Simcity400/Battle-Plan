@@ -374,6 +374,8 @@ type LocalEmitters = (Vec<Emitter>, Vec<(String, dds::Texture)>);
 struct WeatherPair {
     members: [Vec<Emitter>; 2],
     radii: [Option<f32>; 2],
+    /// Each member entity's sound events.
+    sounds: [Vec<installed_content::weather::WeatherSound>; 2],
 }
 type LocalSystem = ((usize, bool), WeatherPair, Vec<(String, dds::Texture)>);
 
@@ -547,6 +549,12 @@ impl Assets {
                                     .parents
                                     .each_ref()
                                     .map(|parent| parent.as_ref().map(|p| p.radius)),
+                                sounds: pair.parents.each_ref().map(|parent| {
+                                    parent
+                                        .as_ref()
+                                        .map(|p| p.sounds.clone())
+                                        .unwrap_or_default()
+                                }),
                             },
                             files.into_iter().zip(textures).collect(),
                         ))
@@ -564,6 +572,7 @@ impl Assets {
                 WeatherPair {
                     members: [mut entity, fading],
                     radii,
+                    sounds,
                 },
                 local,
             ) = system?;
@@ -574,6 +583,7 @@ impl Assets {
             out.systems.entry(key).or_default().push(WeatherPair {
                 members: [entity, fading],
                 radii,
+                sounds,
             });
         }
         // Every declared pdxparticle object, grouped by its particle file so
@@ -1238,6 +1248,100 @@ fn visible_emitters<'a>(
     out
 }
 
+/// The sound events of the weather entities the map shows: each admitted
+/// anchor's selected entity and, in the far band, its fading entity, as
+/// [`visible_emitters`] admits them. A region keeps its keys while it keeps
+/// its weather.
+struct SoundInputs<'a> {
+    anchors: &'a [Anchor],
+    systems: &'a BTreeMap<(usize, bool), Vec<WeatherPair>>,
+    graphics: &'a CameraDefines,
+    field: &'a Field,
+    presentation: &'a Presentation,
+    /// When each shown member entity first appeared on the presentation
+    /// clock, by anchor, member, region and the hour its weather began.
+    starts: &'a mut SoundStarts,
+    /// The presentation clock.
+    time: f32,
+}
+
+/// See [`SoundInputs::starts`].
+type SoundStarts = BTreeMap<(usize, usize, u32, i32), f32>;
+
+fn sound_events(
+    inputs: SoundInputs<'_>,
+    height: f32,
+    views: &[ParentView],
+    names: &mut super::sound_events::Names,
+    out: &mut Vec<super::sound_events::SoundEvent>,
+) {
+    let SoundInputs {
+        anchors,
+        systems,
+        graphics,
+        field,
+        presentation,
+        starts,
+        time,
+    } = inputs;
+    let (entity_alpha, fading_alpha, _) = gates(height, graphics);
+    let mut selectors = BTreeMap::new();
+    for (index, a) in anchors.iter().enumerate() {
+        let Some(&kind) = field.kinds.get(&a.region) else {
+            continue;
+        };
+        let Some(state) = presentation.0.get(&a.region) else {
+            continue;
+        };
+        let selector = selectors.entry(a.region).or_insert_with(|| {
+            (state.seed_hour as u64).wrapping_mul(0x100000001b3) ^ ((a.region as u64) << 32)
+        });
+        let Some(pair) = select_pair(systems, kind, a.small, selector) else {
+            continue;
+        };
+        for (member, alpha) in [entity_alpha, fading_alpha].into_iter().enumerate() {
+            let Some(radius) = pair.radii[member] else {
+                continue;
+            };
+            if alpha == 0.0
+                || pair.sounds[member].is_empty()
+                || matches!(
+                    parent_admission(a.position, radius, views),
+                    native::ViewMask::Some(mask) if !mask.contains(&true)
+                )
+            {
+                continue;
+            }
+            // The entity enters its state when it first appears; each sound
+            // event fires at its `time` after that.
+            let start = starts
+                .entry((index, member, a.region, state.seed_hour))
+                .or_insert(time);
+            *start = start.min(time);
+            for (event, sound) in pair.sounds[member].iter().enumerate() {
+                let age = time - *start - sound.time;
+                if age < 0.0 {
+                    continue;
+                }
+                out.push(super::sound_events::weather(
+                    (index, member, event, a.region, state.seed_hour),
+                    names,
+                    &sound.effect,
+                    a.position,
+                    age,
+                ));
+            }
+        }
+    }
+    // An entity lasts while its region keeps its weather.
+    starts.retain(|&(_, _, region, seed_hour), _| {
+        presentation
+            .0
+            .get(&region)
+            .is_some_and(|state| state.seed_hour == seed_hour)
+    });
+}
+
 /// New, empty weather emitters prepared off the frame path for this hour.
 pub struct Prepared {
     field: Field,
@@ -1403,6 +1507,8 @@ pub struct Pass {
     clock: Clock,
     simulations: Simulations,
     entity_simulations: native::EntitySimulations,
+    /// See [`SoundInputs::starts`].
+    sound_starts: SoundStarts,
     events: Vec<super::entity_animation::Event>,
 }
 impl Pass {
@@ -1431,6 +1537,7 @@ impl Pass {
             clock: Clock::default(),
             simulations: Simulations::new(),
             entity_simulations: native::EntitySimulations::default(),
+            sound_starts: SoundStarts::new(),
             events: Vec::new(),
             #[cfg(any(test, feature = "test-support"))]
             offline_packets: Default::default(),
@@ -1493,6 +1600,34 @@ impl Pass {
     pub fn set_prepared(&mut self, prepared: Prepared, continuity: Continuity) -> Retired {
         Retired(self.adopt_field(prepared.field, prepared.simulations, continuity))
     }
+    /// Appends the shown weather entities' sound events at presentation
+    /// time `time` (see [`sound_events`]).
+    pub fn sound_events(
+        &mut self,
+        camera: Camera,
+        size: [u32; 2],
+        time: f32,
+        names: &mut super::sound_events::Names,
+        out: &mut Vec<super::sound_events::SoundEvent>,
+    ) {
+        let views = parent_views(&[camera], size);
+        sound_events(
+            SoundInputs {
+                anchors: &self.assets.anchors,
+                systems: &self.assets.systems,
+                graphics: &self.assets.graphics,
+                field: &self.field,
+                presentation: &self.presentation,
+                starts: &mut self.sound_starts,
+                time,
+            },
+            camera.height,
+            &views,
+            names,
+            out,
+        );
+    }
+
     /// Advance presentation and births once, before submitting any seam view.
     pub fn prepare_frame(
         &mut self,

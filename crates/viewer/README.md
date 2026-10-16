@@ -204,7 +204,7 @@ Map/GUI effects compile recorded content through [shader-pipeline](../shader-pip
 
 Bind native slots/nulls, stage buffers/physical allocations, byte offsets, layouts/topologies and authored/forced states even when mod declarations change. Retain bindings across refused/missing-technique draws. Unknown in-allocation bytes refuse; reads beyond allocations are zero. Never invent padding.
 
-Decode/globals share client `force_pow2_textures`. File textures retain padding/block extent/mips; generated textures retain size. Font UVs use loaded page extent. Preserve native precision/[colour spaces](../installed-content/README.md#asset-contracts). Adapters own arrow modes/labels, regular-before-alternate queues, tree visibility/ties and particle rings/order. Meshless actors still run state/attachment/particle/light events; retain producer-selected states/clocks and count unsupported events/audio.
+Decode/globals share client `force_pow2_textures`. File textures retain padding/block extent/mips; generated textures retain size. Font UVs use loaded page extent. Preserve native precision/[colour spaces](../installed-content/README.md#asset-contracts). Adapters own arrow modes/labels, regular-before-alternate queues, tree visibility/ties and particle rings/order. Meshless actors still run state/attachment/particle/light/sound events; retain producer-selected states/clocks and count unsupported events.
 
 Counter type atlases pack complete loaded strips. Each plain sprite retains its horizontal or vertical frame grid, loaded dimensions, native block rounding and fractional UV boundaries; drawable and hover geometry use that sprite's operands. Other sprite kinds are withheld with named, counted geometry refusals.
 
@@ -263,7 +263,11 @@ Show/hide switches gate drawing only: simulation, hover and picking, selection, 
 
 Widgets keep independent perspective/fog and export by view ID; missing/loading views refuse. Simple draw switches retain assets; artwork changes reload affected maps.
 
-Sound volumes (master, ambient, units, combat, voice) resolve with the other choices and start from the game's `master_volume`, `ambient_volume`, `sound_fx_volume` (units and combat) and `voice_volume`, kept exactly as the game stores them (49.6 stays 49.6; only a value outside 0-100 is brought into range). Each view holds its resolved `MapAudio`. The viewer plays no map sound yet: the volumes are stored and resolved for the map audio, which is to play a category at `MapAudio::gain` on the focused map only.
+## Map audio
+
+Interactive maps play the game's sound effects for the entity events they present and the game's music, through [viewer-audio](../viewer-audio/README.md). The scene lists each frame's events that name a sound effect ([sound_events.rs](../viewer-world/src/map/sound_events.rs)) after the model passes animate, weather entities and the default-state sounds of still ambient objects included, and each hour's recorded battle list (`BattleSounds`, the recording client's, with the divisions of each battle's member provinces' land combats) for the battle ambience (`Hour::battle_sounds`; without the table no battle plays); windows load the map-frame pass (ambient objects and nuclear impact entities) as dumps do; the content's sound and music definitions load with the content ([document.rs](src/document.rs)), and samples decode on the audio threads. The camera eye is the listener. Each hour build evaluates the enabled songs' chances for the viewing country (`Hour::song_chances`).
+
+One map sounds at a time: the map last pressed, dragged or scrolled, else the first visible one. A map that is not drawn (hidden, scrolled out, or the Campaign map while dashboard maps show) releases the audio, and a document without sound definitions silences what the previous one played. Mute and volume changes apply at once, and new dashboard maps start with the current mute. Presentation resets and recreated units silence the sound effects and do not replay events already present; music plays on. Dumps and exports stay silent; a window capture traces audio without a device only when `BATTLE_PLAN_VIEWER_AUDIO_LOG` is set. Volumes are the resolved settings' `MapAudio` (`master`, `ambient`, `units`, `combat`, `voice`, `music`, 0-100), inherited HOI4 -> global -> campaign -> widget with the other choices from the game's `master_volume`, `ambient_volume`, `sound_fx_volume` (both groups), `voice_volume` and `music_volume`, kept exactly as the game stores them (49.6 stays 49.6; only a value outside 0-100 is brought into range); `dev_master_volume` is always the game's. The desktop's playback strip mute button is saved by the host and sent as `MapAction::Mute`. Audio refusals, unanswerable song conditions and a missing output device appear in the diagnostics.
 
 ## Fly aircraft
 
@@ -298,7 +302,7 @@ Choose matched game/viewer baselines from your own recording and installation. [
 ## Mod corpus check
 
 ```powershell
-.\.cargo-target\release\viewer.exe --mod-corpus --out <run> --workshop <steamapps/workshop/content/394360> [--game-dir <game>] [--user-dir <user>] [--cache <cache>] [--only vanilla,<stack>,...] [--jobs <n>] [--values[=text]]
+.\.cargo-target\release\viewer.exe --mod-corpus --out <run> --workshop <steamapps/workshop/content/394360> [--game-dir <game>] [--user-dir <user>] [--cache <cache>] [--only vanilla,<stack>,...] [--jobs <n>] [--values[=text]] [--sounds-only]
 .\.cargo-target\release\viewer.exe --mod-corpus-diff <base-run> <head-run> [--out <diff.md>]
 ```
 
@@ -306,4 +310,4 @@ Choose matched game/viewer baselines from your own recording and installation. [
 
 Driver findings never pollute live catalogues. Typed channels decide kinds; `content` reports content interpretation, while `offline` reports missing recorded context. Preserve those distinctions, actionable refusals/fallbacks, occurrence counts/examples and shared notes once. Diff diagnostic multisets from manifests only.
 
-`--values` hashes normalized values; `--values=text --only <stack>` writes the same stream. Preserve list order; normalize hash containers/exclude timing/caches. This checks interpretation, not pixels/shaders/recorded evaluation. Runs stay under external captures.
+`--sounds-only` runs only the defines and the map audio's readers: `viewer.sounds` (every sound effect entity events name, the sound definitions, the battle defines and every sample an effect can choose, decoding those a DLC or mod supplies), `viewer.battle_sounds` (the `sound/combat_sounds` layers and the effects they name) and `viewer.music`. `--values` hashes normalized values; `--values=text --only <stack>` writes the same stream. Preserve list order; normalize hash containers/exclude timing/caches. This checks interpretation, not pixels/shaders/recorded evaluation. Runs stay under external captures.

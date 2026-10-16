@@ -326,6 +326,7 @@ const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len() - RETIRE
     TableId::MapEvents,
     TableId::OwnerTransportSpeeds,
     TableId::ReserveModifierTrees,
+    TableId::BattleSounds,
     TableId::NavalCombatDetails,
     TableId::NavalCombatShips,
     TableId::NavalModifierTrees,
@@ -513,6 +514,12 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
             2 => vec![DIVISION_A, 0, u64::MAX],
             _ => vec![u64::MAX, u64::MAX],
         };
+        let classes = |offset: usize| match (tick + offset) % 4 {
+            0 => Vec::new(),
+            1 => vec![0, 13, u32::MAX],
+            2 => vec![1, 0, 0],
+            _ => vec![0, 0],
+        };
         let geometry = |offset: usize| match (tick + offset) % 4 {
             0 => Vec::new(),
             1 => vec![0, u32::MAX, 7],
@@ -550,6 +557,8 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
                 day: [i32::MIN, -1, i32::MAX][(tick + 1) % 3],
                 attackers: handles(0),
                 defenders: handles(1),
+                attacker_classes: classes(0),
+                defender_classes: classes(1),
             },
         );
         push_map::<tables::Fleets>(

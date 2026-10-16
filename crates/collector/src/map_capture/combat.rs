@@ -15,6 +15,7 @@ pub(crate) struct CombatRequest {
     state: usize,
     land: CaptureRows<cland_combat::Row>,
     land_participants: Vec<u64>,
+    land_classes: Vec<u32>,
     land_participants_len: usize,
     land_participants_required: usize,
     naval: CaptureRows<cnaval_combat::Row>,
@@ -30,6 +31,7 @@ impl CombatRequest {
     pub(crate) fn allocated_bytes(&self) -> u64 {
         self.land.allocated_bytes() as u64
             + crate::raw_memory::vector_bytes(&self.land_participants)
+            + crate::raw_memory::vector_bytes(&self.land_classes)
             + self.naval.allocated_bytes() as u64
             + self.naval_participants.allocated_bytes() as u64
             + crate::raw_memory::vector_bytes(&self.naval_groups)
@@ -49,6 +51,7 @@ impl CombatRequest {
             self.state,
             &mut self.land.rows,
             &mut self.land_participants,
+            &mut self.land_classes,
             |source| {
                 let begin = qpc();
                 self.progress.visit(memory, self.base, source);
@@ -114,6 +117,7 @@ impl MapCaptured {
             state,
             land: std::mem::replace(&mut self.land_combats, CaptureRows::new(0)),
             land_participants: std::mem::take(&mut self.land_participants),
+            land_classes: std::mem::take(&mut self.land_classes),
             land_participants_len: 0,
             land_participants_required: 0,
             naval: std::mem::replace(&mut self.naval_combats, CaptureRows::new(0)),
@@ -141,6 +145,7 @@ impl MapCaptured {
         }
         self.land_combats = request.land;
         self.land_participants = request.land_participants;
+        self.land_classes = request.land_classes;
         self.land_participants_len = request.land_participants_len;
         self.land_participants_required = request.land_participants_required;
         self.naval_combats = request.naval;

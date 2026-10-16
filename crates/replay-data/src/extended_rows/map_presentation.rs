@@ -1058,7 +1058,7 @@ pub struct DivisionTemplateIconRow {
     /// Nonzero when the representative is a country-local clone.
     pub representative_local: u8,
     /// The composition's (definition, count) entries grouped from its three
-    /// grids, in stored order.
+    /// grids, in stored order. [`Self::grids`] keeps each grid apart.
     pub subunits: Vec<TemplateSubunit>,
     /// The composition's country, raw: the clone scope of local sub-units and the model fallback
     /// country.
@@ -1072,8 +1072,8 @@ pub struct DivisionTemplateIconRow {
     /// Saved excluded equipment variants, full handles in native order.
     pub excluded_variants: Vec<u64>,
     /// Nonzero when this template's model inputs could not be read this hour.
-    /// `representative`, `representative_local`, `subunits`, `model_entity` and
-    /// `excluded_variants` are then empty; the counter's fields, `country`,
+    /// `representative`, `representative_local`, `subunits`, `grids`,
+    /// `model_entity` and `excluded_variants` are then empty; the counter's fields, `country`,
     /// `foreign_country` and `model_category` stand.
     pub model_unreadable: u8,
     /// Stored signed composition count used to count formation divisions.
@@ -1081,10 +1081,13 @@ pub struct DivisionTemplateIconRow {
     pub formation_division_count: Recorded<Option<i32>>,
     /// Fresh display-name operands; SameAs refers to this frame's dictionary.
     pub display_name: Recorded<Option<TemplateDisplayName>>,
+    /// Each composition grid's (definition, cell count) entries, from the
+    /// same read as `subunits`.
+    pub grids: Recorded<TemplateGrids>,
 }
 typed_codec!(DivisionTemplateIconRow, 64, |row| row.template as u128,
  |key| Self { template: key as u64, ..Default::default() },
- { 0 => (priority_unit): U32, 1 => (priority_unit_name): Bytes, 2 => (custom_icon): I32, 3 => (custom_icon_nato): U8, 4 => (representative): U32, 5 => (representative_local): U8, 6 => (subunits): Opaque, 7 => (country): I32, 8 => (foreign_country): I32, 9 => (model_category): OptionalU64, 10 => (model_entity): Bytes, 11 => (excluded_variants): U64List, 12 => (model_unreadable): U8, 13 => (formation_division_count): OptionalI32, 14 => (display_name): Opaque }, |_row| Ok(()));
+ { 0 => (priority_unit): U32, 1 => (priority_unit_name): Bytes, 2 => (custom_icon): I32, 3 => (custom_icon_nato): U8, 4 => (representative): U32, 5 => (representative_local): U8, 6 => (subunits): Opaque, 7 => (country): I32, 8 => (foreign_country): I32, 9 => (model_category): OptionalU64, 10 => (model_entity): Bytes, 11 => (excluded_variants): U64List, 12 => (model_unreadable): U8, 13 => (formation_division_count): OptionalI32, 14 => (display_name): Opaque, 15 => (grids): Opaque }, |_row| Ok(()));
 
 /// Sparse native province overrides. Absence from a complete current table means no
 /// override; bytes can be a localization key, not rendered text.
@@ -1122,6 +1125,35 @@ pub struct NavalBaseRow {
 }
 typed_codec!(NavalBaseRow, 32, |row| row.province as u128, |key| Self { province: key as u32, ..Default::default() },
  { 0 => (country): U32, 1 => (level): I32, 2 => (healthy_level): I32, 3 => (countries): U32List, 4 => (countries_unreadable): Bool, 5 => (country_tags): Opaque }, |_row| Ok(()));
+
+/// BattleSounds: key ordinal (32 bits), 5 payload mask bits.
+///
+/// The battle ambience's battle list as the game holds it at the hourly
+/// boundary, in the order its per-frame pass visits the battles: its spatial
+/// tree's nodes in pre-order, each node's battles in array order. The game
+/// keeps no battle id; `ordinal` is the battle's place in that list. Battles
+/// change only where the game adds and removes combats, so the next hour's
+/// frames sound this list. A merge keeps the battle sounding for the
+/// recording client, so the list is that client's.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct BattleSoundRow {
+    pub ordinal: u32,
+    /// Exact f32 bits of the battle's map x.
+    pub center_x: u32,
+    /// Exact f32 bits of the battle's map z (the map's y).
+    pub center_z: u32,
+    /// Exact f32 bits of the battle's radius.
+    pub radius: u32,
+    /// Member province ids in the battle's member-array order, repeats kept.
+    pub provinces: Vec<u32>,
+    /// The battle's main sound instance was live for the recording client.
+    pub sounding: bool,
+    /// The battle object's native address: the game keeps a battle's sounds
+    /// on its object, through merges it survives and regroupings it keeps.
+    pub object: u64,
+}
+typed_codec!(BattleSoundRow, 32, |row| row.ordinal as u128, |key| Self { ordinal: key as u32, ..Default::default() },
+ { 0 => (center_x): U32, 1 => (center_z): U32, 2 => (radius): U32, 3 => (provinces): U32List, 4 => (sounding): Bool, 5 => (object): U64 }, |_row| Ok(()));
 
 /// Every country supply system's floating-harbour deployment records
 /// (stride 0x68), keyed by canonical country slot and array ordinal.

@@ -1018,6 +1018,14 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
             local: 1,
             count: 1,
         }],
+        grids: replay::rows::Recorded::Value(replay::rows::TemplateGrids {
+            regiments: vec![replay::rows::TemplateSubunit {
+                token: 7,
+                local: 1,
+                count: 1,
+            }],
+            ..Default::default()
+        }),
         ..Default::default()
     };
     let hourly = |frame: &mut DecodedFrame, rows| {
@@ -1067,6 +1075,43 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
         }],
     );
     assert_eq!(compare(&frame).differences.len(), 3);
+    // Each grid compares with its own saved grid: a regiment recorded in
+    // the support grid differs twice although the grouped entries agree.
+    let misfiled = replay::rows::TemplateGrids {
+        support: icons.grids.require("grids").unwrap().regiments.clone(),
+        ..Default::default()
+    };
+    hourly(
+        &mut frame,
+        vec![replay::rows::DivisionTemplateIconRow {
+            grids: replay::rows::Recorded::Value(misfiled),
+            ..icons.clone()
+        }],
+    );
+    let report = compare(&frame);
+    assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+    for field in [".regiments", ".support"] {
+        assert!(
+            report.differences.iter().any(|line| line.contains(field)),
+            "{:?}",
+            report.differences
+        );
+    }
+    // Unrecorded grids are a limitation; the grouped entries still compare.
+    hourly(
+        &mut frame,
+        vec![replay::rows::DivisionTemplateIconRow {
+            grids: replay::rows::Recorded::NotRecorded,
+            ..icons.clone()
+        }],
+    );
+    let report = compare(&frame);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        report
+            .limitations
+            .contains_key("DivisionTemplateIcons.grids not recorded")
+    );
     // Unreadable model inputs are that row's limitation, not a difference.
     hourly(
         &mut frame,
@@ -2853,6 +2898,8 @@ fn map_combat_and_order_oracle_preserves_type_words_order_and_raw_fields() {
             duration: 2,
             attackers: vec![unit, unit + 1],
             defenders: vec![],
+            attacker_classes: vec![0, 0],
+            defender_classes: vec![],
         }]));
     let group = (u64::from(u32::MAX) << 32) | 53;
     saved.army_orders.insert(

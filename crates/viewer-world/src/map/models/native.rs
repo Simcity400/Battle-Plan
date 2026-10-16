@@ -737,7 +737,12 @@ impl ModelPass {
                         mesh_pose::actors(
                             rig,
                             player,
-                            instance.animation != entity_animation::STOPPED,
+                            // A refused default-state actor stays as still as a
+                            // stopped one; a played one has its player.
+                            !matches!(
+                                instance.animation,
+                                entity_animation::STOPPED | entity_animation::DEFAULT_STATE
+                            ),
                         )
                     });
                     for descriptor in &mesh.native {

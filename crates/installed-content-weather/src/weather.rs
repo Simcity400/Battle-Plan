@@ -35,6 +35,16 @@ pub struct EffectParent {
     pub name: String,
     /// Authored cull radius times the parent's maximum basis length.
     pub radius: f32,
+    /// The default state's sound events, in event order.
+    pub sounds: Vec<WeatherSound>,
+}
+
+/// A weather entity's sound event: the effect it names and its `time`, the
+/// seconds after the entity enters its state at which it fires.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WeatherSound {
+    pub effect: String,
+    pub time: f32,
 }
 
 /// Effect pairs by (kind index, `small`), in authored order: the producer
@@ -418,6 +428,16 @@ fn entity_particles(
         EffectParent {
             name: name.to_owned(),
             radius,
+            sounds: state
+                .events
+                .iter()
+                .filter_map(|event| {
+                    Some(WeatherSound {
+                        effect: event.sound.clone()?,
+                        time: event.time,
+                    })
+                })
+                .collect(),
         },
     ))
 }

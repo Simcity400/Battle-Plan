@@ -419,6 +419,11 @@ impl Viewer {
             &document.playback.replay().gaps,
         );
         let unit_restart = presentation_unit_restart(previous, next, self.animation_seek);
+        // Audio follows the same continuity: a reset, or recreated units,
+        // ends what sounds and does not count present events as fired.
+        if continuity == Continuity::Reset || unit_restart != UnitRestart::Keep {
+            self.audio_reset = true;
+        }
         let hours::Layers {
             political,
             borders,
@@ -432,6 +437,8 @@ impl Viewer {
             effects,
             impacts,
             map_text,
+            music,
+            battles,
             intel,
             snow_mud,
             limitations,
@@ -440,6 +447,8 @@ impl Viewer {
             overlay,
             overlay_tables,
         } = layers;
+        self.music = music;
+        self.battles = battles;
         let scene = self
             .scene
             .as_mut()

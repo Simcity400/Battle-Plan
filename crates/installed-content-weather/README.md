@@ -2,7 +2,7 @@
 
 Authored weather entities, thermal intervals and hourly temperature content. The implementation and its tests live in [`weather`](src/weather.rs); the same public paths are exported through `installed_content::weather`. Shared parsing, identity and authored foundations come from [installed-content-core](../installed-content-core/README.md).
 
-This reader also consumes [installed-content-regions](../installed-content-regions/README.md).
+This reader also consumes [installed-content-regions](../installed-content-regions/README.md). Each weather entity keeps its default state's sound events for the map audio.
 
 Resolve every authored input through the recorded `ResolvedLayers` content stack, including folders, archives, DLC, mods and replace_path. Preserve native order, lookup identity, duplicate handling, recovery and named/counted diagnostics. Keep evaluation and rendering in consumers.
 

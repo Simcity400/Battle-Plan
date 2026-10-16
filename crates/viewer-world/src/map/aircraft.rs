@@ -1425,7 +1425,7 @@ impl AircraftAssets {
             [&name],
             &mut warnings,
         );
-        // Usable actors can still omit attachments or audio.
+        // Usable actors can still omit attachments.
         // Keep the loader's diagnostic kinds, names and occurrence counts.
         self.lazy_diagnostics
             .lock()

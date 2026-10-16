@@ -67,6 +67,7 @@ pub fn typescript_contract() -> String {
         ResearchHistory::decl(),
         ResearchFolder::decl(),
         ResearchTechnologyFolder::decl(),
+        protocol::MapAudio::decl(),
         protocol::MapGraphics::decl(),
         protocol::MapGraphicsOverrides::decl(),
         protocol::MapAudio::decl(),

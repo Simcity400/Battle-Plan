@@ -71,6 +71,23 @@ pub fn compare_land_combats(
                 report.difference(format!("{label}.{side}"), actual, expected);
             }
         }
+        // Each saved participant's class follows the roster that holds its
+        // handle: the save loader appends any saved unit reference. A handle
+        // no saved roster holds states no class; the handles compare above.
+        for (side, classes, members) in [
+            ("attacker_classes", &actual.attacker_classes, &expected.attackers),
+            ("defender_classes", &actual.defender_classes, &expected.defenders),
+        ] {
+            let expected: Vec<_> = members.iter().map(|&unit| unit_class(save, unit)).collect();
+            let matches = classes.len() == expected.len()
+                && classes
+                    .iter()
+                    .zip(&expected)
+                    .all(|(&class, expected)| expected.is_none_or(|expected| expected == class));
+            if !matches {
+                report.difference(format!("{label}.{side}"), classes, expected);
+            }
+        }
     }
     for &id in combats.keys() {
         report.difference(
@@ -79,7 +96,53 @@ pub fn compare_land_combats(
             "absent",
         );
     }
-    report.limitation("land combat comparison covers recorded locations, native day/duration and ordered side participants; reduced saved combat details cannot certify intervening combat events", "LandCombats");
+    report.limitation("land combat comparison covers recorded locations, native day/duration, ordered side participants and their unit classes; reduced saved combat details cannot certify intervening combat events", "LandCombats");
+    Ok(())
+}
+
+/// The unit class of the saved unit `handle` names, from the roster that
+/// holds it; `None` when no roster does.
+fn unit_class(save: &Save, handle: u64) -> Option<u32> {
+    if save.divisions.contains_key(&handle) {
+        Some(0)
+    } else if save.task_forces.contains_key(&handle) {
+        Some(1)
+    } else if save.railway_guns.contains_key(&handle) {
+        Some(13)
+    } else {
+        None
+    }
+}
+
+/// Saves hold no battle-sound list: it is the recording client's runtime
+/// ambience state. The rows must hold the list's places in order and name
+/// provinces of the verified map.
+pub fn compare_battle_sounds(
+    frame: &DecodedFrame,
+    membership: &installed_content_save::PartialMapMembership,
+    report: &mut Report,
+) -> io::Result<()> {
+    let rows = frame.complete::<tables::BattleSounds>()?;
+    for (place, row) in rows.iter().enumerate() {
+        let label = format!("battle sound {}", row.ordinal);
+        if row.ordinal as usize != place {
+            report.difference(&label, row.ordinal, format!("list place {place}"));
+        }
+        for &province in &row.provinces {
+            if !membership.contains_province(province) {
+                report.difference(
+                    format!("{label}.provinces"),
+                    province,
+                    "a province of the verified map",
+                );
+            }
+        }
+    }
+    report.compared("BattleSounds", rows.len());
+    report.limitation(
+        "Saves hold no battle-sound list: the battle ambience's battles, their circles, members and sounding flags are the recording client's runtime sound state (a merge keeps the battle sounding for that client); compare them against paused memory at the sampled hour",
+        "BattleSounds",
+    );
     Ok(())
 }
 
@@ -939,32 +1002,52 @@ pub fn compare_division_template_icons(
             );
             continue;
         }
-        // The recorded entries group the three grids by definition, a local
-        // clone apart from its global definition; the save names each occupied
-        // cell. Both reduce to a count per sub-unit name.
-        let mut composition: BTreeMap<Vec<u8>, i64> = BTreeMap::new();
-        let mut unresolved = false;
-        for unit in row.subunits.iter().filter(|unit| unit.token != 0) {
-            let Some(name) = tokens.get(&unit.token) else {
-                unresolved = true;
-                continue;
-            };
-            *composition.entry(name.to_vec()).or_default() += i64::from(unit.count);
+        // The recorded grouped entries group the three grids by definition, a
+        // local clone apart from its global definition; each recorded grid
+        // groups its own cells the same way; the save names each occupied
+        // cell under its grid (kinds 0, 1 and 2: regiments, support and
+        // regimental support, the recorded grids' order). Each reduces to a
+        // count per sub-unit name: the grouped entries against every saved
+        // cell, each grid against its own.
+        let grids = report.recorded(
+            &row.grids,
+            "DivisionTemplateIcons.grids",
+            format!("template {}.grids", row.template),
+        );
+        let mut compositions = vec![("composition", &row.subunits[..], None)];
+        if let Some(grids) = grids {
+            compositions.extend([
+                ("regiments", &grids.regiments[..], Some(0_u8)),
+                ("support", &grids.support[..], Some(1)),
+                ("regimental_support", &grids.regimental_support[..], Some(2)),
+            ]);
         }
-        let mut expected: BTreeMap<Vec<u8>, i64> = BTreeMap::new();
-        for name in saved.composition.values() {
-            *expected.entry(name.clone()).or_default() += 1;
-        }
-        if unresolved {
-            report.limitation("template sub-units include tokens absent from the captured lexical dictionary; composition was not compared", format!("DivisionTemplates {}", row.template));
-        } else {
-            report.scalar_checks += 1;
-            if composition != expected {
-                report.difference(
-                    format!("template {}.composition", row.template),
-                    composition,
-                    &expected,
-                );
+        for (field, entries, grid) in compositions {
+            let label = format!("template {}.{field}", row.template);
+            let mut composition: BTreeMap<Vec<u8>, i64> = BTreeMap::new();
+            let mut unresolved = false;
+            for unit in entries.iter().filter(|unit| unit.token != 0) {
+                let Some(name) = tokens.get(&unit.token) else {
+                    unresolved = true;
+                    continue;
+                };
+                *composition.entry(name.to_vec()).or_default() += i64::from(unit.count);
+            }
+            let mut expected: BTreeMap<Vec<u8>, i64> = BTreeMap::new();
+            for (_, name) in saved
+                .composition
+                .iter()
+                .filter(|((kind, _, _), _)| grid.is_none_or(|grid| *kind == grid))
+            {
+                *expected.entry(name.clone()).or_default() += 1;
+            }
+            if unresolved {
+                report.limitation("template sub-units include tokens absent from the captured lexical dictionary; composition was not compared", label);
+            } else {
+                report.scalar_checks += 1;
+                if composition != expected {
+                    report.difference(label, composition, &expected);
+                }
             }
         }
     }
@@ -989,7 +1072,7 @@ pub fn compare_division_template_icons(
     }
     report.compared("DivisionTemplateIcons", rows.len());
     report.limitation("priority_unit and priority_unit_name are the sub-unit the game selects, a derived engine cache absent from text saves", "DivisionTemplateIcons");
-    report.limitation("composition compares per-name counts: the grouped entries do not keep grid kind or cell, and a local clone and its global definition count under one name; a real subunit with token0 is explicitly unsupported and makes the capture unavailable", "DivisionTemplateIcons composition representation");
+    report.limitation("composition compares per-name counts, the grouped entries against every saved cell and each recorded grid against its saved grid: no recorded entry keeps a cell's position, and a local clone and its global definition count under one name; a real subunit with token0 is explicitly unsupported and makes the capture unavailable", "DivisionTemplateIcons composition representation");
     report.limitation("the representative and local-clone flags are derived engine caches absent from text saves; saved model choices and excluded variants are not parsed from the save", "DivisionTemplateIcons model inputs");
     report.limitation("the division template save writer omits the composition's signed division-count word consumed by formation counting. Saved grids and formation membership cannot certify this exact runtime count or the ability late-join arithmetic; a matched-hour native comparison remains necessary",
         "DivisionTemplateIcons.formation_division_count");

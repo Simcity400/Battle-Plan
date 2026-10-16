@@ -92,6 +92,80 @@ fn arm(viewer: &mut Viewer, path: PathBuf, camera: Camera) {
     });
 }
 
+/// A shown document whose content names an undeclared distant battle effect
+/// silences every battle, and the drawn map's warnings name why. The map
+/// draws its document while the viewer holds it apart, so the warning must
+/// come from the drawn document.
+#[test]
+#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+fn a_drawn_map_names_an_undeclared_distant_battle_effect() -> std::io::Result<()> {
+    // No device opens; the owner still claims the audio.
+    viewer_audio::System::silent();
+    let mut fixture = Fixture::load("viewer-battle-silence")?;
+    let content = viewer_audio::Content::new(Default::default(), None).with_battles(
+        Some(installed_content_sound::combat_sounds::BattleDefines {
+            effect: "undeclared_battle_effect".into(),
+            falloff_default: 50.0,
+            min_unit_count: 1,
+        }),
+        Default::default(),
+    );
+    std::sync::Arc::get_mut(&mut fixture.document.content)
+        .expect("the fixture's freshly loaded content has no other holder")
+        .audio = Some(Arc::new(viewer_audio::Source {
+        content: Arc::new(content),
+        layers: Default::default(),
+    }));
+    let request = fixture.request([256, 144]);
+    let document = Document::from_shared_content(
+        fixture.document.content.clone(),
+        fixture.document.playback.replay_handle(),
+        &InitialHour {
+            branch: Some(fixture.input.branch),
+            hour: Some(fixture.input.hour),
+            hour_fraction: 0.,
+        },
+    )?;
+    let mut viewer = Viewer::create(
+        Config::default(),
+        Options::default(),
+        None,
+        Arc::new(Mutex::new(None)),
+        None,
+        Some((fixture.state.device.clone(), fixture.state.queue.clone())),
+    );
+    viewer.dashboard_map = true;
+    viewer.diagnostics = false;
+    viewer.graphics.samples = 1;
+    viewer.camera_manual = true;
+    viewer.camera = Some(Placement {
+        center: request.camera.center,
+        height: request.camera.height,
+        pose: viewer_foundation::map::camera::Pose::Map,
+    });
+    viewer.install_map(document, fixture.scene()?, "fixture".into());
+    let ctx = egui::Context::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    frame.wgpu_render_state = Some(fixture.state.clone());
+    let target = target(&fixture);
+    until(&mut viewer, &ctx, &frame, &target, |v| {
+        v.rendered.is_some() || v.error.is_some() || v.map_error.is_some()
+    });
+    assert!(
+        viewer.error.is_none() && viewer.map_error.is_none(),
+        "{:?}",
+        viewer.map_state(&target)
+    );
+    assert!(
+        viewer.map_warnings.iter().any(|warning| warning.starts_with(
+            "Map battle ambience: the battle sound effect undeclared_battle_effect is not declared"
+        )),
+        "{:?}",
+        viewer.map_warnings
+    );
+    Ok(())
+}
+
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
 fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> std::io::Result<()> {

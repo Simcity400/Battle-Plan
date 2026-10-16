@@ -55,7 +55,7 @@ const GROUPS: { title: string; items: Item[] }[] = [
 /** Aircraft by mission, under the 3D units and aircraft switches. */
 const AIR_MISSIONS: [Switch, string][] = [['airPatrols', 'Patrol flights'], ['airReconnaissance', 'Reconnaissance flights'], ['airSupport', 'Close air support flights'],
   ['airBombing', 'Bombing flights'], ['airCombat', 'Air combat'], ['airKamikaze', 'Kamikaze strikes'], ['airSupply', 'Air supply flights'], ['airMissiles', 'Missiles']];
-const AUDIO: [keyof MapAudio, string][] = [['master', 'Master volume'], ['ambient', 'Ambient volume'], ['units', 'Unit volume'], ['combat', 'Combat volume'], ['voice', 'Voice volume']];
+const AUDIO: [keyof MapAudio, string][] = [['master', 'Master volume'], ['ambient', 'Ambient volume'], ['units', 'Unit volume'], ['combat', 'Combat volume'], ['voice', 'Voice volume'], ['music', 'Music volume']];
 /** Every option row's label, in order; settings search reveals rows by these. */
 export const MAP_OPTION_LABELS = [ANTI_ALIASING, TEXTURE_QUALITY, ...QUALITY.map(([, label]) => label),
   ...GROUPS.flatMap(group => group.items.flatMap(item => [item.label, ...(item.parts ?? []).map(([, label]) => label)])), ...AIR_MISSIONS.map(([, label]) => label),
@@ -200,7 +200,7 @@ export default function MapAppearance({ source, client, global = false, viewId, 
         </div>
       </details>
       <div className="map-graphics-group">
-        <small className="map-graphics-group-title">Sound <span className="folder-info" tabIndex={0} role="img" aria-label="About map sound" data-tooltip="Map sound is not played yet. These volumes are saved for it, and only the map you are using will play it."><Icon name="info" /></span></small>
+        <small className="map-graphics-group-title">Sound <span className="folder-info" tabIndex={0} role="img" aria-label="About map sound" data-tooltip="Only the map you are using plays sound and music, at these volumes."><Icon name="info" /></span></small>
         {AUDIO.map(([key, label]) => {
           const own = draft?.audio[key];
           const value = isSet(own) ? own as number : inherited?.audio[key];

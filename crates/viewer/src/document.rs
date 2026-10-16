@@ -169,12 +169,19 @@ pub struct Content {
     pub game_counters: counters::CounterSettings,
     /// The configured user folder's local world target size; no recorder UI state.
     pub game_full_resolution: bool,
+    /// The user's `settings.txt` sound volumes.
+    pub game_audio: dashboard::protocol::MapAudio,
+    /// The game's second master factor (`dev_master_volume`), a fraction.
+    pub game_dev_master: f32,
     /// The game images and textures the map passes draw from.
     pub assets: MapAssets,
     /// Persistent recording compatibility, content verification and presentation limitations.
     pub warnings: Vec<String>,
     /// Shared lazy content reads, reported afresh for map diagnostics and dumps.
     pub uncovered_reads: installed_content::content::UncoveredReads,
+    /// The content's sound definitions and the layers their samples are read
+    /// from; `None` when they are unreadable, which leaves the maps silent.
+    pub audio: Option<Arc<viewer_audio::Source>>,
     pub source_path: PathBuf,
     // borders
     /// `map/terrain/border_*_0.dds` and `strait.dds`.
@@ -1065,6 +1072,7 @@ impl Document {
             ));
         }
         let defines = installed_content::defines::read(&content.layers)?;
+        let audio = audio_source(&content.layers, &defines, &options.user_dir, &mut warnings);
         // Every key as the game reads it (`installed_content::settings::SettingsKeys`).
         let settings = installed_content::settings::read_keys(&options.user_dir)?;
         let camera_tilt = viewer_foundation::map::camera::stored_tilt(
@@ -1077,6 +1085,8 @@ impl Document {
         let game_full_resolution = settings
             .bool_at(&["maprenderingoptions", "draw_map_full_res"])
             .unwrap_or(true);
+        let game_audio = dashboard::map_settings::game_audio(&settings);
+        let game_dev_master = dashboard::map_settings::game_dev_master(&settings);
         let map_defines = MapDefines::load(&defines, camera_tilt)?;
         let camera_law = CameraLaw::load(&defines, &settings)?;
         // The map is drawn as this client's game would draw it: its own `force_pow2_textures`
@@ -1863,9 +1873,12 @@ impl Document {
             game_display,
             game_counters,
             game_full_resolution,
+            game_audio,
+            game_dev_master,
             assets,
             warnings,
             uncovered_reads,
+            audio,
             source_path: path.to_path_buf(),
             // borders
             border_assets,
@@ -2182,6 +2195,113 @@ impl<'a> Hour<'a> {
             trigger_world: OnceCell::new(),
             pool_limits: Default::default(),
         }
+    }
+
+    /// Each enabled song's chance for `country` at this hour: its `chance`
+    /// body evaluated as a mean-time weight in the country's scope. A body
+    /// whose conditions the recording cannot answer keeps its base chance
+    /// and is named in the refusals. `None` without songs.
+    pub fn music_chances(&self, country: u32) -> Option<viewer_audio::Chances> {
+        let audio = self.content.audio.as_ref()?;
+        let content = &audio.content;
+        if content.music.songs.is_empty() {
+            return None;
+        }
+        let evaluator = dashboard::triggers::Evaluator::new(self.trigger_world(), None);
+        let scopes = dashboard::triggers::Scopes::of(dashboard::triggers::Scope::Country(country));
+        Some(song_chances(content, |body| {
+            evaluator.mean_time_to_happen("music chance", body, scopes)
+        }))
+    }
+
+    /// The hour's battles for the battle ambience: the game's recorded
+    /// battle list (`BattleSounds`), in recorded order, each with the
+    /// divisions of its member provinces' land combats. Tables the recording
+    /// lacks are named in the refusals; without `BattleSounds` no battle
+    /// plays, and without sub-unit compositions the battles still sound
+    /// their distant ambience, but no layer. `None` without battle defines.
+    pub fn battle_sounds(&self) -> Option<viewer_audio::Battles> {
+        use replay::rows::tables;
+        use viewer_foundation::table_access::{Available, rows};
+        let audio = self.content.audio.as_ref()?;
+        audio.content.battle.as_ref()?;
+        let mut refusals = Vec::new();
+        let mut note = |table: &str, available: Result<bool, String>| match available {
+            Ok(true) => {}
+            Ok(false) => refusals.push(format!("the recorded {table} table is incomplete")),
+            Err(why) => refusals.push(format!("the recorded {table} table is unavailable ({why})")),
+        };
+        fn state<T: replay::rows::TableSchema>(
+            available: &std::io::Result<Available<'_, T>>,
+        ) -> Result<bool, String> {
+            match available {
+                Ok(Available::Complete(_)) => Ok(true),
+                Ok(Available::Truncated { .. }) => Ok(false),
+                Ok(Available::Unavailable { reason }) => Err(reason.to_string()),
+                Err(error) => Err(error.to_string()),
+            }
+        }
+        let recorded = rows::<tables::BattleSounds>(self.frame);
+        note("BattleSounds", state(&recorded));
+        let combats = rows::<tables::LandCombats>(self.frame);
+        note("LandCombats", state(&combats));
+        let divisions = rows::<tables::Divisions>(self.frame);
+        let templates = rows::<tables::DivisionTemplateIcons>(self.frame);
+        let tokens = rows::<tables::LexicalTokens>(self.frame);
+        let layers = !audio.content.layers.sounds.is_empty();
+        if layers {
+            note("Divisions", state(&divisions));
+            note("DivisionTemplateIcons", state(&templates));
+            note("LexicalTokens", state(&tokens));
+        }
+        let recorded = recorded.as_ref().map_or(&[][..], Available::rows);
+        let combats = combats.as_ref().map_or(&[][..], Available::rows);
+        let divisions: BTreeMap<u64, u64> = divisions
+            .as_ref()
+            .map_or(&[][..], Available::rows)
+            .iter()
+            .map(|division| (division.id, division.template))
+            .collect();
+        // A template whose composition was unreadable or unrecorded is unknown.
+        let templates: BTreeMap<u64, &replay::rows::TemplateGrids> = templates
+            .as_ref()
+            .map_or(&[][..], Available::rows)
+            .iter()
+            .filter(|template| template.model_unreadable == 0)
+            .filter_map(|template| match &template.grids {
+                replay::rows::Recorded::Value(grids) => Some((template.template, grids)),
+                replay::rows::Recorded::NotRecorded => None,
+            })
+            .collect();
+        let tokens = tokens.as_ref().map_or(&[][..], Available::rows);
+        let name = |token: u32| -> Option<String> {
+            let found = tokens.binary_search_by_key(&token, |row| row.token).ok()?;
+            Some(String::from_utf8_lossy(&tokens[found].literal).into_owned())
+        };
+        let (battles, unknown) = recorded_battles(recorded, combats, layers, |division| {
+            let template = *divisions.get(&division)?;
+            // A division without a template has no slots to count.
+            if template == 0 {
+                return Some(Vec::new());
+            }
+            let grids = templates.get(&template)?;
+            grids
+                .ambience_slots()
+                .filter(|subunit| subunit.token != 0)
+                .map(|subunit| {
+                    Some((
+                        name(subunit.token)?,
+                        usize::try_from(subunit.count).unwrap_or(0),
+                    ))
+                })
+                .collect()
+        });
+        if unknown > 0 {
+            refusals.push(format!(
+                "{unknown} combat divisions have no recorded template composition or sub-unit name, so their sub-units do not count toward battle layers"
+            ));
+        }
+        Some(viewer_audio::Battles { battles, refusals })
     }
 
     pub fn trigger_world(&self) -> &dashboard::triggers::World<'a> {
@@ -3080,10 +3200,327 @@ const _: fn() = || {
     shared::<replay::frame::DecodedFrame>();
 };
 
+/// The recorded battles in recorded order, each with the units of its member
+/// provinces' land combats, attackers and defenders, summed over each member
+/// as the game sums them, and, when `layers`, the sub-units by type of those
+/// that are divisions, from `composition` (each template slot one sub-unit):
+/// the game counts every unit but the slots of divisions only. Also counts the
+/// member combats' divisions without a recorded composition or name. A
+/// battle's sounds keep its object as their identity from hour to hour, so a
+/// battle that moves in the list plays on.
+fn recorded_battles(
+    recorded: &[replay::rows::BattleSoundRow],
+    combats: &[replay::rows::LandCombatRow],
+    layers: bool,
+    composition: impl Fn(u64) -> Option<Vec<(String, usize)>>,
+) -> (Vec<viewer_audio::battle::Battle>, usize) {
+    #[derive(Default)]
+    struct Front {
+        divisions: usize,
+        sub_units: BTreeMap<String, usize>,
+        unknown: usize,
+    }
+    let mut fronts: BTreeMap<u32, Front> = BTreeMap::new();
+    for combat in combats {
+        let front = fronts.entry(combat.province).or_default();
+        front.divisions += combat.attackers.len() + combat.defenders.len();
+        if !layers {
+            continue;
+        }
+        let members = combat
+            .attackers
+            .iter()
+            .zip(&combat.attacker_classes)
+            .chain(combat.defenders.iter().zip(&combat.defender_classes));
+        for (&division, _) in members.filter(|(_, class)| **class == DIVISION_CLASS) {
+            match composition(division) {
+                Some(units) => {
+                    for (unit, count) in units {
+                        *front.sub_units.entry(unit).or_default() += count;
+                    }
+                }
+                None => front.unknown += 1,
+            }
+        }
+    }
+    let mut unknown = 0;
+    let battles = recorded
+        .iter()
+        .map(|row| {
+            let mut battle = viewer_audio::battle::Battle {
+                // The game keeps a battle's sounds on its object.
+                key: row.object,
+                provinces: row.provinces.clone(),
+                center: [f32::from_bits(row.center_x), f32::from_bits(row.center_z)],
+                radius: f32::from_bits(row.radius),
+                divisions: 0,
+                sub_units: BTreeMap::new(),
+            };
+            for province in &row.provinces {
+                let Some(front) = fronts.get(province) else {
+                    continue;
+                };
+                battle.divisions += front.divisions;
+                unknown += front.unknown;
+                for (unit, count) in &front.sub_units {
+                    *battle.sub_units.entry(unit.clone()).or_default() += count;
+                }
+            }
+            battle
+        })
+        .collect();
+    (battles, unknown)
+}
+
+/// The unit class of a division; a land combat's other units have no template.
+const DIVISION_CLASS: u32 = 0;
+
+/// A mean-time value of one: the evaluator's fixed five-decimal scale.
+const MUSIC_CHANCE_ONE: f64 = 100_000.0;
+
+/// Each song's chance from `evaluate`, which reads a mean-time body as fixed
+/// five-decimal value: `None` for songs of disabled stations; a body
+/// `evaluate` refuses is named and keeps its base chance (the body without
+/// its modifiers).
+fn song_chances(
+    content: &viewer_audio::Content,
+    mut evaluate: impl FnMut(&[installed_content::parser::Item]) -> Result<i64, String>,
+) -> viewer_audio::Chances {
+    let mut refusals = Vec::new();
+    let weights = content
+        .music
+        .songs
+        .iter()
+        .enumerate()
+        .map(|(index, song)| {
+            if !content.enabled(index) {
+                return None;
+            }
+            let name = &content.music.tracks[song.track].name;
+            let value = evaluate(&song.chance)
+                .or_else(|why| {
+                    refusals.push(format!("song {name}: {why}"));
+                    let base: Vec<_> = song
+                        .chance
+                        .iter()
+                        .filter(|item| !item.keyword_is("modifier"))
+                        .cloned()
+                        .collect();
+                    evaluate(&base)
+                })
+                .ok()?;
+            Some(value as f64 / MUSIC_CHANCE_ONE)
+        })
+        .collect();
+    viewer_audio::Chances { weights, refusals }
+}
+
+/// The content's sound definitions. Unreadable definitions leave the maps
+/// silent with a warning; unreadable `NSound` defines leave the height and
+/// voice categories at full volume, named in the warnings.
+fn audio_source(
+    layers: &installed_content::ResolvedLayers,
+    defines: &installed_content::defines::Defines,
+    user: &std::path::Path,
+    warnings: &mut Vec<String>,
+) -> Option<Arc<viewer_audio::Source>> {
+    let catalog = match installed_content_sound::sound::Catalog::read(layers) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            warnings.push(format!(
+                "Map audio is unavailable: the sound definitions are unreadable ({error})."
+            ));
+            return None;
+        }
+    };
+    if !catalog.notes.is_empty() {
+        warnings.push(format!(
+            "Sound definitions the game refuses or reads past: {}.",
+            catalog.notes.lines().join("; ")
+        ));
+    }
+    let recently_played = defines
+        .int32("NGame", "MUSIC_PLAYER_RECENTLY_PLAYED_SIZE")
+        .map_err(|error| warnings.push(format!("Map music repeats songs freely: {error}.")))
+        .map_or(0, |size| usize::try_from(size).unwrap_or(0));
+    let battle = installed_content_sound::combat_sounds::BattleDefines::load(defines)
+        .map_err(|error| warnings.push(format!("Map battles are silent: {error}.")))
+        .ok();
+    let combat_sounds = match installed_content_sound::combat_sounds::Layers::read(layers) {
+        Ok(combat_sounds) => {
+            if !combat_sounds.notes.is_empty() {
+                warnings.push(format!(
+                    "Battle sound definitions the game refuses or reads past: {}.",
+                    combat_sounds.notes.lines().join("; ")
+                ));
+            }
+            combat_sounds
+        }
+        Err(error) => {
+            warnings.push(format!("Map battles play no layers: {error}."));
+            Default::default()
+        }
+    };
+    let defines = installed_content_sound::sound::Defines::load(defines)
+        .map_err(|error| {
+            warnings.push(format!(
+                "Map audio plays its height and voice categories without their volumes: {error}."
+            ))
+        })
+        .ok();
+    let music = match installed_content_sound::music::Music::read(layers) {
+        Ok(music) => {
+            if !music.notes.is_empty() {
+                warnings.push(format!(
+                    "Music definitions the game refuses or reads past: {}.",
+                    music.notes.lines().join("; ")
+                ));
+            }
+            music
+        }
+        Err(error) => {
+            warnings.push(format!("Map music is unavailable: {error}."));
+            Default::default()
+        }
+    };
+    // The user's enabled stations; without the playlist file every station plays.
+    let stations = installed_content_sound::music::enabled_stations(user)
+        .map_err(|error| {
+            warnings.push(format!(
+                "Map music plays every station: the playlist settings are unreadable ({error})."
+            ))
+        })
+        .ok()
+        .flatten();
+    Some(Arc::new(viewer_audio::Source {
+        content: Arc::new(
+            viewer_audio::Content::new(catalog, defines)
+                .with_music(music, stations, recently_played)
+                .with_battles(battle, combat_sounds),
+        ),
+        layers: layers.clone(),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use replay::identity::Roster;
+
+    /// The recorded battles keep their recorded order, centres and radii
+    /// (not the provinces' combat order or a grouping of their own), and
+    /// each sums the divisions and template slots of every member province's
+    /// combats, counting what it cannot name.
+    #[test]
+    fn recorded_battles_keep_their_order_and_sum_their_members_combats() {
+        // Unit 99 is a railway gun: it counts toward the battle's units but
+        // has no template slots and is not an unknown division.
+        let unit_class = |unit: u64| if unit == 99 { 13 } else { DIVISION_CLASS };
+        let combat = |id: u64, province: u32, attackers: Vec<u64>, defenders: Vec<u64>| {
+            replay::rows::LandCombatRow {
+                id,
+                province,
+                attacker_classes: attackers.iter().map(|&unit| unit_class(unit)).collect(),
+                defender_classes: defenders.iter().map(|&unit| unit_class(unit)).collect(),
+                attackers,
+                defenders,
+                ..Default::default()
+            }
+        };
+        let combats = [
+            combat(30, 5, vec![1, 99], vec![2, 3]),
+            combat(10, 7, vec![4], vec![1]),
+            combat(20, 5, vec![2], vec![]),
+            combat(40, 9, vec![4], vec![]),
+        ];
+        let composition = |division: u64| match division {
+            1 | 2 => Some(vec![
+                ("infantry".to_owned(), 7),
+                ("artillery".to_owned(), 1),
+            ]),
+            4 => Some(vec![("infantry".to_owned(), 2)]),
+            _ => None,
+        };
+        let row =
+            |ordinal: u32, x: f32, radius: f32, provinces: Vec<u32>| replay::rows::BattleSoundRow {
+                ordinal,
+                center_x: x.to_bits(),
+                center_z: (-x).to_bits(),
+                radius: radius.to_bits(),
+                provinces,
+                sounding: false,
+                object: 0x1000 + u64::from(ordinal),
+            };
+        // The game's list: province 9's battle first, then one covering
+        // provinces 5 and 7, then a battle whose combats have ended.
+        let recorded = [
+            row(0, 90.0, 9.0, vec![9]),
+            row(1, 60.0, 31.5, vec![5, 7]),
+            row(2, 11.0, 9.0, vec![]),
+        ];
+        let (battles, unknown) = recorded_battles(&recorded, &combats, true, composition);
+        let keys: Vec<_> = battles.iter().map(|battle| battle.key).collect();
+        // Each battle keeps its recorded object as its identity.
+        assert_eq!(keys, [0x1000, 0x1001, 0x1002]);
+        assert_eq!(battles[1].center, [60.0, -60.0]);
+        assert_eq!(battles[1].radius, 31.5);
+        assert_eq!(battles[1].provinces, [5, 7]);
+        assert_eq!(battles[0].divisions, 1);
+        assert_eq!(battles[1].divisions, 7);
+        assert_eq!(battles[1].sub_units["infantry"], 7 + 7 + 7 + 2 + 7);
+        assert_eq!(battles[1].sub_units["artillery"], 4);
+        assert_eq!(battles[2].divisions, 0);
+        // Division 3 of province 5's combat has no composition.
+        assert_eq!(unknown, 1);
+        let (silent, unknown) = recorded_battles(&recorded, &combats, false, composition);
+        assert!(silent.iter().all(|battle| battle.sub_units.is_empty()));
+        assert_eq!(silent[1].divisions, 7);
+        assert_eq!(unknown, 0);
+    }
+
+    /// Song chances: a disabled station's song is not drawable, an
+    /// unanswerable body keeps its base chance and is named, and the
+    /// evaluator's five-decimal value scales to a weight.
+    #[test]
+    fn song_chances_keep_base_chances_and_skip_disabled_stations() {
+        use installed_content_sound::music::{Music, Song, Track};
+        let mut music = Music::default();
+        for (index, (station, chance)) in [
+            ("a", &b"factor = 2 modifier = { factor = 3 }"[..]),
+            ("b", b"factor = 1"),
+            ("a", b"factor = 1 add = 2"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            music.tracks.push(Track {
+                name: format!("t{index}"),
+                path: format!("music/t{index}.ogg"),
+                volume: 1.0,
+                source: String::new(),
+            });
+            music.songs.push(Song {
+                track: index,
+                station: station.into(),
+                chance: installed_content::parser::parse(chance).unwrap().items,
+                source: String::new(),
+            });
+        }
+        let content = viewer_audio::Content::new(Default::default(), None).with_music(
+            music,
+            Some(vec!["a".into()]),
+            0,
+        );
+        let chances = song_chances(&content, |body| {
+            if body.iter().any(|item| item.keyword_is("modifier")) {
+                Err("unanswered".into())
+            } else {
+                Ok(body.len() as i64 * 150_000)
+            }
+        });
+        assert_eq!(chances.weights, [Some(1.5), None, Some(3.0)]);
+        assert_eq!(chances.refusals, ["song t0: unanswered"]);
+    }
 
     /// Raid icons replaced in place in a drawn overlay equal the overlay
     /// drawn again with them, bit for bit, whatever the parts' sizes and

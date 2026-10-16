@@ -690,6 +690,7 @@ pub mod land_events;
 pub use collector_leaders::leader_paths;
 pub use collector_leaders::leader_portraits;
 pub use collector_lexical::lexical;
+pub use collector_map_tables::battle_sounds;
 pub use collector_map_tables::map_facilities;
 pub use collector_map_tables::naval_bases;
 pub use collector_model_inputs::model_inputs;
@@ -743,6 +744,7 @@ packs!(
     game_score,
     group_counters,
     saved_event_targets,
+    battle_sounds,
     equipment_destruction,
     naval_result_sources,
     experience_gains,

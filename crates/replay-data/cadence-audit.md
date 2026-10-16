@@ -6,12 +6,12 @@ Every recorded table on the Hourly cadence in [cadence.rs](src/cadence.rs) (a re
 
 | Class | Meaning | Tables |
 |---|---|---|
-| hourly tick | At least one writer runs on the hourly tick (game-state updates, the pre-hourly stage, AI, unit, combat, supply and movement updates), so the value can change in any hour. | 116 |
+| hourly tick | At least one writer runs on the hourly tick (game-state updates, the pre-hourly stage, AI, unit, combat, supply and movement updates), so the value can change in any hour. | 117 |
 | any hour | No hourly-tick writer, but effects, commands, actions or the console write it, so it can change in any hour; daily writers may also exist. | 67 |
 | hook log | A collector hook log drained at the hourly boundary; each hour holds that interval's native events. | 17 |
 | load | Written only while a game state is loaded or reset; read as part of an hourly walk another hourly table needs. | 2 |
 | recorder | Recorder bookkeeping written with each hour's reads. | 1 |
-| total | | 203 |
+| total | | 204 |
 
 No hourly table is written only by the daily tick or slower: each has an hourly-tick writer, an any-hour writer, or is a hook log. The daily-only tables (`CountryIntel` and `LogisticsEquipment`, written inside the daily game-state update) already read on daily slot 0.
 
@@ -56,6 +56,7 @@ Several tables share one native walk; moving one of them saves none of that walk
 | ArmyOrderPlans | hourly tick | The per-order hourly update, from the orders-group hourly pass in pre-hourly country tasks, stores route_is_ok and preparation every hour. The first path province's controller-area count follows controller changes on the hourly occupation path. Every other plan field changes only through commands (the AI posts them through its command dispatcher) and the theatre rebuild. |
 | ArmyOrders | hourly tick | Paths are rewritten for orders through a changed province by the occupation bundle's conquest dispatch when the pre-hourly update closes it. Order commands, including those posted by the AI update, create, link, route, activate and delete orders at any hour. No hourly pass rewrites an unchanged order and neither order nor group keeps a revision of these fields. |
 | Autonomy | any hour | Autonomy reduction; changes in 288 of 763 late-war hours. |
+| BattleSounds | hourly tick | Battles are added, merged and removed only where the game adds and removes combats: the hourly update's combat processing and save loading. Their per-frame update recomputes only each battle's division count and layer sounds, which are not recorded. |
 | BorderConflicts | hourly tick | Border-war combat. |
 | BuildingBombingDamage | hook log | Building damage application hook. |
 | Campaign | load | UUID initialization from construction, runtime reset and session setup; the clock read copies it every hour to detect a new campaign, so its read costs nothing. |

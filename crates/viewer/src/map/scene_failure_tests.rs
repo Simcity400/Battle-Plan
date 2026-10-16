@@ -224,6 +224,26 @@ const ISOLATED: [passes::Pass; 11] = [
     passes::Pass::Sky,
 ];
 
+/// A window's scene warms the unit pass at load, before any hour's field
+/// arrives, and still admits unit models by the content's camera cutoffs:
+/// without them no unit model was ever drawn in a window.
+#[test]
+#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+fn a_window_scene_admits_unit_models_by_the_content_cutoffs() -> io::Result<()> {
+    let fixture = Fixture::load("window_unit_cutoffs")?;
+    let scene = crate::app::load_scene(
+        &fixture.state.device,
+        &fixture.state.queue,
+        &fixture.document,
+        dashboard::protocol::MapGraphics {
+            samples: 1,
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(scene.unit_gates(), Some(fixture.document.unit_models.gates));
+    Ok(())
+}
+
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
 fn production_scene_preflight_matrix() -> io::Result<()> {

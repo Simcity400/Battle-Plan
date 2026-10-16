@@ -230,6 +230,10 @@ pub struct Layers {
     /// ([`viewer_counter_products::map::orders::TABLES`]), so the window uploads it once.
     pub orders: Arc<OrderField>,
     pub effects: weather_effects::Prepared,
+    /// The songs' chances for the viewing country at this hour.
+    pub music: Option<Arc<viewer_audio::Chances>>,
+    /// The hour's battles, for the battle ambience.
+    pub battles: Option<Arc<viewer_audio::Battles>>,
     /// This hour's nuclear impacts, which start their province effects when presented.
     pub impacts: Arc<viewer_world::map::strike_effects::Impacts>,
     /// This hour's map events for the viewing country, presented once each.
@@ -281,6 +285,9 @@ struct FogPart {
     limitations: Limitations,
     header: Arc<Header>,
     map_text: Arc<viewer_world::map::animated_map_text::events::Prepared>,
+    /// The viewing country's song chances.
+    music: Option<Arc<viewer_audio::Chances>>,
+    battles: Option<Arc<viewer_audio::Battles>>,
 }
 
 struct Movers {
@@ -659,6 +666,8 @@ impl Pending {
             limitations,
             header,
             map_text,
+            music,
+            battles,
         } = self.fog.ok_or_else(missing)?;
         let (overlay, overlay_tables) = self.overlay.ok_or_else(missing)?;
         let (buildings, building_warnings) = self.buildings.ok_or_else(missing)?;
@@ -675,6 +684,8 @@ impl Pending {
             effects: movers.effects,
             impacts: movers.impacts,
             map_text,
+            music,
+            battles,
             intel,
             snow_mud: self.snow.ok_or_else(missing)?,
             limitations,
@@ -1511,6 +1522,8 @@ impl Coordinator {
                         textures::intel_map(&view.map, fog).map(Arc::new)
                     })?;
                     let limitations = view.limitations_with(&fog_perspective, Some(&intel))?;
+                    let music = view.music_chances(vision.ours()).map(Arc::new);
+                    let battles = view.battle_sounds().map(Arc::new);
                     Ok(Box::new(FogPart {
                         intel,
                         limitations,
@@ -1521,6 +1534,8 @@ impl Coordinator {
                                 .ok(),
                         }),
                         map_text: Arc::new(view.map_text(&vision)),
+                        music,
+                        battles,
                     }))
                 })())
             }),

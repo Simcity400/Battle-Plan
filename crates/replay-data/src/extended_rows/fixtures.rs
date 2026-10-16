@@ -1398,6 +1398,7 @@ fixture!(RaidCountryRow, |key| {canonical_slot: key as u32}, {country: i32, elig
 fixture!(RaidRow, |key| {id: (key >> 32) as u32, reference_type: key as u32}, {parent_slot: u32, ordinal: u32, phase: i32, outcome: i32, source: RaidSource, show_for: Vec<u32>, unit: u64, air_wing: u64, travelled: Option<i64>, preparation_hours: i32});
 fixture!(RaidTargetRow, |key| {id: (key >> 32) as u32, reference_type: key as u32}, {scope: RaidScope, raid_type: u32, detected: u8});
 fixture!(NavalBaseRow, |key| {province: key as u32}, {country: u32, level: i32, healthy_level: i32, countries: Vec<u32>, countries_unreadable: bool, country_tags: Recorded<Option<Vec<Vec<u8>>>>});
+fixture!(BattleSoundRow, |key| {ordinal: key as u32}, {center_x: u32, center_z: u32, radius: u32, provinces: Vec<u32>, sounding: bool, object: u64});
 fixture!(PeaceConferenceRow, |key| {id: key as u64}, {ordinal: u32, current_turn: i32, finalized: u8});
 fixture!(WeatherRegionRow, |key| {id: key as u32}, {max_snow: i64, light_rain: u8, heavy_rain: u8, snow: u8, blizzard: u8, sandstorm: u8, arctic_water: u8, attack: Recorded<Witnessed<WeatherRegionAttackInputs>>, combat: Recorded<Option<RegionCombatWeather>>});
 /// Slot 0 is never updated, so its fixtures always hold their clock.
@@ -2443,8 +2444,13 @@ sample_struct!(TemplateSubunit {
     local: u8,
     count: i32
 });
+sample_struct!(TemplateGrids {
+    regiments: Vec<TemplateSubunit>,
+    support: Vec<TemplateSubunit>,
+    regimental_support: Vec<TemplateSubunit>
+});
 fixture!(DivisionTemplateRow, |key| {template: key as u64}, {owner: u32, name: Vec<u8>, unit_type: i32, name_key: Recorded<Vec<u8>>});
-fixture!(DivisionTemplateIconRow, |key| {template: key as u64}, {priority_unit: u32, priority_unit_name: Vec<u8>, custom_icon: i32, custom_icon_nato: u8, representative: u32, representative_local: u8, subunits: Vec<TemplateSubunit>, country: i32, foreign_country: i32, model_category: Option<u64>, model_entity: Vec<u8>, excluded_variants: Vec<u64>, model_unreadable: u8, formation_division_count: Recorded<Option<i32>>, display_name: Recorded<Option<TemplateDisplayName>>});
+fixture!(DivisionTemplateIconRow, |key| {template: key as u64}, {priority_unit: u32, priority_unit_name: Vec<u8>, custom_icon: i32, custom_icon_nato: u8, representative: u32, representative_local: u8, subunits: Vec<TemplateSubunit>, country: i32, foreign_country: i32, model_category: Option<u64>, model_entity: Vec<u8>, excluded_variants: Vec<u64>, model_unreadable: u8, formation_division_count: Recorded<Option<i32>>, display_name: Recorded<Option<TemplateDisplayName>>, grids: Recorded<TemplateGrids>});
 fixture!(LandCombatProgressRow, |key| {combat: key as u64}, {attacker_progress: RetiredI64, defender_progress: RetiredI64, direction_attacker: RetiredU64, direction_province: RetiredU32, attacker_manpower_loss:Recorded<i32>, defender_manpower_loss:Recorded<i32>, attacker_equipment_losses:Recorded<Vec<LandEquipmentLoss>>, defender_equipment_losses:Recorded<Vec<LandEquipmentLoss>>});
 fixture!(ThreatSourceRow, |key| {ordinal: key as u32}, {country: u32, second_country: u32, current_raw: i64, final_raw: i64, daily_raw: i64, date: i32, reason: Vec<u8>});
 fixture!(ThreatCountryAggregateRow, |key| {country_slot: key as u32}, {total_raw: i64});
@@ -2815,6 +2821,7 @@ pub fn sample_extended_table(table: TableId, tick: usize) -> Option<TableRows> {
             TableRows::ResearchAppliedBonuses(rows::<ResearchAppliedBonusRow>(tick))
         }
         TableId::NavalBases => TableRows::NavalBases(rows::<NavalBaseRow>(tick)),
+        TableId::BattleSounds => TableRows::BattleSounds(rows::<BattleSoundRow>(tick)),
         TableId::PeaceConferences => TableRows::PeaceConferences(rows::<PeaceConferenceRow>(tick)),
         TableId::WeatherRegions => TableRows::WeatherRegions(rows::<WeatherRegionRow>(tick)),
         TableId::WeatherProvinces => TableRows::WeatherProvinces(rows::<WeatherProvinceRow>(tick)),
@@ -4886,6 +4893,7 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<ResearchInputRow>(TableId::ResearchInputs);
     check_table::<ResearchAppliedBonusRow>(TableId::ResearchAppliedBonuses);
     check_table::<NavalBaseRow>(TableId::NavalBases);
+    check_table::<BattleSoundRow>(TableId::BattleSounds);
     check_table::<PeaceConferenceRow>(TableId::PeaceConferences);
     check_table::<PeaceSettlementRow>(TableId::PeaceSettlements);
     check_table::<NuclearStrikeRow>(TableId::NuclearStrikes);
@@ -5129,6 +5137,28 @@ fn political_runtime_fixture_suffix_deltas_leave_prefixes_unchanged() {
         .unwrap()
         .value = TemplateNameValue::SameAsDivisionTemplates;
     selected_route_suffix(TableId::DivisionTemplateIcons, 14, &old, &next);
+    // Each grid keeps its own entries: moving one entry between grids is a
+    // change of the grids field alone.
+    let mut next = old.clone();
+    let grids = next
+        .grids
+        .require_mut("DivisionTemplateIcons.grids")
+        .unwrap();
+    let moved = TemplateSubunit {
+        token: u32::MAX,
+        local: 1,
+        count: i32::MAX,
+    };
+    grids.support.push(moved.clone());
+    let mut other = next.clone();
+    let other_grids = other
+        .grids
+        .require_mut("DivisionTemplateIcons.grids")
+        .unwrap();
+    other_grids.support.pop();
+    other_grids.regimental_support.push(moved);
+    selected_route_suffix(TableId::DivisionTemplateIcons, 15, &old, &next);
+    selected_route_suffix(TableId::DivisionTemplateIcons, 15, &next, &other);
 
     let old = SimulationFeatureRow::fixture(0, 0);
     let mut next = old.clone();

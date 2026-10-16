@@ -193,7 +193,7 @@ fn scalar_details(
                 side.reserve_len = count;
             }
             for member in 0..vector.count {
-                let handle = reader.unit(reader.element(vector, member)?)?;
+                let handle = reader.division(reader.element(vector, member)?)?;
                 push(
                     &mut arenas.participants,
                     &mut arenas.used.participants,
@@ -520,6 +520,7 @@ fn growing_map_census_starts_without_optional_pointers_and_keeps_later_demand() 
     let mut fixture = Fixture::new();
     let mut rows = Vec::new();
     let mut participants = Vec::new();
+    let mut classes = Vec::new();
     for count in [5000, 12_000] {
         let registry = 0x20000;
         let units = registry + count * 8;
@@ -544,11 +545,13 @@ fn growing_map_census_starts_without_optional_pointers_and_keeps_later_demand() 
             STATE,
             &mut rows,
             &mut participants,
+            &mut classes,
             |_| visited += 1,
         );
         assert_eq!(capture.outcome, Outcome::Rows { len: 1 });
         assert_eq!((capture.participants_len, visited), (count, 1));
         assert!(participants[..count].iter().all(|id| *id == 1));
+        assert!(classes[..count].iter().all(|class| *class == DIVISION_CLASS));
         fixture.array(STATE + cgame_state::COMBATS + 8, registry, count as u32);
         fixture.array(ATTACK + cland_combatant::UNITS, 0, 0);
         let capture = walk_with_growing(
@@ -557,6 +560,7 @@ fn growing_map_census_starts_without_optional_pointers_and_keeps_later_demand() 
             STATE,
             &mut rows,
             &mut participants,
+            &mut classes,
             |_| {},
         );
         assert_eq!(capture.outcome, Outcome::Rows { len: count });
@@ -576,12 +580,14 @@ fn growing_map_census_preserves_sufficient_fixed_reads_and_every_original_fault(
     let fixed = Observed::new(&source, &[]);
     let mut fixed_rows = [Row::default(); 2];
     let mut fixed_participants = [0; 8];
+    let mut fixed_classes = [0; 8];
     let expected = walk_with(
         &fixed,
         BASE,
         STATE,
         &mut fixed_rows,
         &mut fixed_participants,
+        &mut fixed_classes,
         |_| {},
     );
     let trace = fixed.reads.borrow().clone();
@@ -598,6 +604,7 @@ fn growing_map_census_preserves_sufficient_fixed_reads_and_every_original_fault(
                 STATE,
                 &mut fixed_rows,
                 &mut fixed_participants,
+                &mut fixed_classes,
                 |_| {},
             )
         };
@@ -605,7 +612,16 @@ fn growing_map_census_preserves_sufficient_fixed_reads_and_every_original_fault(
         growing.fault = fault;
         let mut rows = Vec::new();
         let mut participants = Vec::new();
-        let actual = walk_with_growing(&growing, BASE, STATE, &mut rows, &mut participants, |_| {});
+        let mut classes = Vec::new();
+        let actual = walk_with_growing(
+            &growing,
+            BASE,
+            STATE,
+            &mut rows,
+            &mut participants,
+            &mut classes,
+            |_| {},
+        );
         assert_eq!(actual, expected, "fault {fault:?}");
         let expected_trace = if fault.is_none() {
             trace.clone()
@@ -689,10 +705,23 @@ impl Fixture {
     }
 
     fn capture(&self) -> (Walk, [Row; 2], [u64; 8]) {
+        let (captured, rows, participants, _) = self.capture_classes();
+        (captured, rows, participants)
+    }
+
+    fn capture_classes(&self) -> (Walk, [Row; 2], [u64; 8], [u32; 8]) {
         let mut rows = [Row::default(); 2];
         let mut participants = [0; 8];
-        let captured = walk(&self.memory(), BASE, STATE, &mut rows, &mut participants);
-        (captured, rows, participants)
+        let mut classes = [u32::MAX; 8];
+        let captured = walk(
+            &self.memory(),
+            BASE,
+            STATE,
+            &mut rows,
+            &mut participants,
+            &mut classes,
+        );
+        (captured, rows, participants, classes)
     }
 }
 
@@ -717,6 +746,65 @@ fn mixed_registry_preserves_full_native_handles_and_participant_order() {
         }
     );
     assert_eq!(&participants[..3], &[u64::MAX - 4, 1, 62]);
+}
+
+/// The game's save loader appends a combatant's saved unit references with no
+/// class check, so a side can hold a railway gun or a task force. Each is kept
+/// with its class; the division-only detail census still refuses them.
+#[test]
+fn a_non_division_participant_is_kept_with_its_class() {
+    let mut fixture = Fixture::new();
+    fixture.u64(UNIT_A, (BASE + crate::crailway_gun::VTABLE_RVA) as u64);
+    fixture.u32(UNIT_A + cunit::CLASS, RAILWAY_GUN_CLASS);
+    fixture.u64(
+        UNIT_A + carmy::SECONDARY_BASE,
+        (BASE + crate::crailway_gun::SECONDARY_VTABLE_RVA) as u64,
+    );
+    fixture.u64(UNIT_C, (BASE + crate::ctask_force::VTABLE_RVA) as u64);
+    fixture.u32(UNIT_C + cunit::CLASS, TASK_FORCE_CLASS);
+    fixture.u64(
+        UNIT_C + carmy::SECONDARY_BASE,
+        (BASE + crate::ctask_force::SECONDARY_VTABLE_RVA) as u64,
+    );
+    let (captured, _, participants, classes) = fixture.capture_classes();
+    assert_eq!(captured.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(&participants[..3], &[u64::MAX - 4, 1, 62]);
+    assert_eq!(
+        &classes[..3],
+        &[DIVISION_CLASS, RAILWAY_GUN_CLASS, TASK_FORCE_CLASS]
+    );
+    let mut pointers = [0; 8];
+    let members = walk_members(
+        &fixture.memory(),
+        BASE,
+        STATE,
+        &mut [Row::default(); 2],
+        &mut [0; 8],
+        &mut pointers,
+        |_, _| {},
+    );
+    assert_eq!(
+        members.outcome,
+        Outcome::Unavailable {
+            reason: "land combat participant is not a division"
+        }
+    );
+
+    // A class keeps its own vtables, and an unknown class is refused by name.
+    fixture.u32(UNIT_A + cunit::CLASS, DIVISION_CLASS);
+    assert_eq!(
+        fixture.capture().0.outcome,
+        Outcome::Unavailable {
+            reason: "land combat participant vtable mismatch"
+        }
+    );
+    fixture.u32(UNIT_A + cunit::CLASS, 2);
+    assert_eq!(
+        fixture.capture().0.outcome,
+        Outcome::Unavailable {
+            reason: "land combat participant has an unknown unit class"
+        }
+    );
 }
 
 struct DetailMemory<'a> {
@@ -1775,6 +1863,7 @@ fn country_sets(
         STATE,
         &mut [Row::default(); 2],
         &mut [0; 8],
+        &mut [0; 8],
         |source| {
             result = Some(read_country_sets(
                 &fixture.memory(),
@@ -1856,6 +1945,7 @@ fn country_sets_capture_cost_at_1500_and_5000() {
             BASE,
             STATE,
             &mut [Row::default(); 2],
+            &mut [0; 8],
             &mut [0; 8],
             |source| found = Some(source),
         );
@@ -2009,7 +2099,14 @@ fn row_and_arena_capacities_omit_whole_combats_and_report_growth() {
     fixture.u64(COMBAT + PROVINCE, 1);
     let mut rows = [Row::default(); 1];
     let mut participants = [0; 2];
-    let captured = walk(&fixture.memory(), BASE, STATE, &mut rows, &mut participants);
+    let captured = walk(
+        &fixture.memory(),
+        BASE,
+        STATE,
+        &mut rows,
+        &mut participants,
+        &mut [0; 2],
+    );
     assert_eq!(
         captured,
         Walk {
@@ -2022,7 +2119,7 @@ fn row_and_arena_capacities_omit_whole_combats_and_report_growth() {
         }
     );
     assert_eq!(
-        walk(&fixture.memory(), BASE, STATE, &mut [], &mut [0; 8]),
+        walk(&fixture.memory(), BASE, STATE, &mut [], &mut [0; 8], &mut [0; 8]),
         captured
     );
     assert_eq!(participants, [0; 2]);
@@ -2076,7 +2173,7 @@ fn bad_objects_fail_the_table_instead_of_producing_a_partial_census() {
     }
     let fixture = Fixture::new();
     assert!(matches!(
-        walk(&fixture.memory(), BASE, usize::MAX, &mut [], &mut []).outcome,
+        walk(&fixture.memory(), BASE, usize::MAX, &mut [], &mut [], &mut []).outcome,
         Outcome::Unavailable { .. }
     ));
 }

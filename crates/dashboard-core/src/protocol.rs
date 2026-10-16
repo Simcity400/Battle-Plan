@@ -147,6 +147,10 @@ pub enum MapAction {
     Diagnostics {
         enabled: bool,
     },
+    /// Silences or restores every map's audio; the host saves the choice.
+    Mute {
+        muted: bool,
+    },
     Configure {
         options: MapOptions,
     },
@@ -380,7 +384,8 @@ impl MapAction {
             | Self::MapSettingsSaved
             | Self::Vsync { .. }
             | Self::Diagnostics { .. }
-            | Self::CameraMode { .. } => {}
+            | Self::CameraMode { .. }
+            | Self::Mute { .. } => {}
         }
         Ok(())
     }

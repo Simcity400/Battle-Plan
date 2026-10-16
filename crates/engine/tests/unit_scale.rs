@@ -145,9 +145,16 @@ fn unit_scale_combat() {
         let count = shape.divisions / 20;
         let mut rows = vec![cland_combat::Row::default(); count];
         let mut members = vec![0; count * 2];
+        let mut classes = vec![0; count * 2];
         let mut work = || {
-            let walk =
-                cland_combat::walk(&memory, world.base, world.state, &mut rows, &mut members);
+            let walk = cland_combat::walk(
+                &memory,
+                world.base,
+                world.state,
+                &mut rows,
+                &mut members,
+                &mut classes,
+            );
             assert_eq!(walk.outcome, Outcome::Rows { len: count });
             assert_eq!(walk.participants_len, count * 2);
         };

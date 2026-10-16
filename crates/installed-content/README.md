@@ -20,6 +20,8 @@ Read the [project rules](../../AGENTS.md) before changing a reader. Consumers sh
 
 Dashboard, viewer and shader-pipeline use `installed_content::image`, a re-export of `installed_content_image`. Recorder-app imports `installed_content_image` directly.
 
+[installed-content-sound](../installed-content-sound/README.md) (sound and music definitions, `NSound` defines, WAVE and Ogg Vorbis samples) is not re-exported: only the viewer and [viewer-audio](../viewer-audio/README.md) depend on it, so its audio decoder stays out of the recorder's builds.
+
 A catalogue retains definitions, source identity and diagnostics. Duplicate handling, case sensitivity, defaults and enumeration order follow its native database, not a universal merge rule. Reuse catalogues and stack-scoped caches. Presentation and its shared [catalogue](../dashboard-text/src/catalogue.rs) belong to [dashboard](../dashboard/README.md).
 
 Idea lookup shares the lexer's ASCII case identity and selects the first matching database entry; rereading a held group replaces that entry in place. Advisor lookup, ambiguity and coverage share its native folded string identity. Retain authored spellings for names and assets; localisation and sprite names keep their own case rules. Equipment graphics contexts retain a null archetype separately from a real empty equipment name: the null object's sentinel hash cannot match an authored empty pool key, while a real empty name can.

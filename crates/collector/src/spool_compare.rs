@@ -256,6 +256,7 @@ compared_tables!(
     RaidIntelInputs,
     FloatingHarborDeployments,
     FacilityMapFlags,
+    BattleSounds,
     CountryRetiredCharacters,
     NavalProvinceCombats,
     NavalCombatTransfers,

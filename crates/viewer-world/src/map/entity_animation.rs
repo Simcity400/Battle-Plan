@@ -27,6 +27,11 @@ pub const BUILDING_DAMAGED: u32 = 9;
 /// The game sends idle only for use_animation=yes; no unit phase spread.
 pub const AMBIENT_IDLE: u32 = 10;
 pub const STOPPED: u32 = 11;
+/// An actor that requests no state: the game creates it in its entity's
+/// `default_state` and plays that state on from there (ambient objects with
+/// `use_animation = no`). [`super::models::ModelPass::animate`] turns it
+/// into that state's request on a clock from when the actor appeared.
+pub const DEFAULT_STATE: u32 = 12;
 /// The first code of a content-named stage ([`named_stage`]).
 pub const NAMED: u32 = 0x4000_0000;
 // A callback requests once; unlike a raid stage it does not request again
@@ -233,6 +238,9 @@ pub struct Player {
     direct_state: Option<u32>,
     kept: Vec<Kept>,
     event_refusals: BTreeMap<String, usize>,
+    /// States are chosen by the game's own rule, which takes a state's only
+    /// variant whatever its chance ([`Player::native_choice`]).
+    native_choice: bool,
 }
 
 struct Kept {
@@ -253,7 +261,7 @@ struct NativeSample {
 }
 
 /// Exact presentation identity; RNG seeds need not be unique across actors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EventKey {
     pub pass: u64,
     pub model: usize,
@@ -288,6 +296,23 @@ pub struct Event {
     /// Whether the display hides the event's actor or layer. Every simulation still advances
     /// on it; only its particles and light go unsubmitted.
     pub hidden: bool,
+    /// The producer's requested state for the actor ([`IDLE`], [`ATTACK`], ...).
+    pub state: u32,
+}
+
+impl Event {
+    /// Whether the producer presents the actor in combat.
+    pub fn in_combat(&self) -> bool {
+        matches!(self.state & !DIRECT, ATTACK | DEFEND)
+    }
+}
+
+impl EventKey {
+    /// The player the event's actor animates under: its model and animation key,
+    /// as producer clocks are keyed.
+    pub fn player(&self) -> (usize, u32, u32) {
+        (self.model, self.actor.0, self.actor.1)
+    }
 }
 
 fn event_key(
@@ -490,6 +515,17 @@ impl Player {
             direct_state: None,
             kept: Vec::new(),
             event_refusals: BTreeMap::new(),
+            native_choice: false,
+        }
+    }
+
+    /// A player that chooses states by the game's rule: a state with one
+    /// variant is entered whatever its chance, as the game's state setter
+    /// draws only among several variants.
+    pub fn native_choice(rig: &Rig) -> Self {
+        Self {
+            native_choice: true,
+            ..Self::new(rig)
         }
     }
 
@@ -937,83 +973,88 @@ impl Player {
                         .as_ref()
                         .map(|p| (p.clip, time - p.start + p.phase_offset))
                 };
-                self.nodes[index] =
-                    pick(node, &chosen, &mut random, self.phase.is_some()).map(|clip| {
-                        // Idle has no random start: the request keeps its default
-                        // zero range, so initialization falls back to the
-                        // authored `animation_random_start_time`, which no shipped
-                        // entity sets. The game still shows neighbouring figures in
-                        // different poses, so the spread is their unrecorded
-                        // state-entry times. This five-second range is that
-                        // stand-in, not a native constant.
-                        let random_range = if index == 0
-                            && instance.native_flags & 8 != 0
-                            && instance.animation_phase > 0.0
-                        {
-                            instance.animation_phase
-                        } else if index == 0 && matches!(instance.animation, IDLE | DEFEND) {
-                            5.0
-                        } else {
-                            node.clips[clip].state.random_start
-                        };
-                        let random_range = if self.phase.is_some() {
-                            if random_range > 0.0 {
-                                random_range
-                            } else {
-                                0.0
-                            }
-                        } else {
+                self.nodes[index] = pick(
+                    node,
+                    &chosen,
+                    &mut random,
+                    self.phase.is_some() || self.native_choice,
+                )
+                .map(|clip| {
+                    // Idle has no random start: the request keeps its default
+                    // zero range, so initialization falls back to the
+                    // authored `animation_random_start_time`, which no shipped
+                    // entity sets. The game still shows neighbouring figures in
+                    // different poses, so the spread is their unrecorded
+                    // state-entry times. This five-second range is that
+                    // stand-in, not a native constant.
+                    let random_range = if index == 0
+                        && instance.native_flags & 8 != 0
+                        && instance.animation_phase > 0.0
+                    {
+                        instance.animation_phase
+                    } else if index == 0 && matches!(instance.animation, IDLE | DEFEND) {
+                        5.0
+                    } else {
+                        node.clips[clip].state.random_start
+                    };
+                    let random_range = if self.phase.is_some() {
+                        if random_range > 0.0 {
                             random_range
-                        };
-                        // Unknown combat entry time: deterministic distribution over its clip.
-                        let phase = if self.phase.is_some() && random_range == 0.0 {
+                        } else {
                             0.0
-                        } else if previous.is_none()
-                            && index == 0
-                            && matches!(instance.animation, ATTACK | SUPPORT)
-                        {
-                            random.fraction() * duration(&node.clips[clip])
-                        } else {
-                            random.fraction() * random_range
-                        };
-                        let start = if self.phase.is_some() {
-                            time
-                        } else if previous.is_none()
-                            && instance.animation_epoch == 0
-                            && !matches!(
-                                instance.animation,
-                                BUILDING_IDLE | BUILDING_DAMAGED | AMBIENT_IDLE
-                            )
-                            && instance.animation < NAMED
-                        {
-                            -phase
-                        } else {
-                            time - if instance.animation & DIRECT != 0 {
-                                phase / node.clips[clip].state.speed
-                            } else {
-                                phase
-                            }
-                        };
-                        Playing {
-                            requested: chosen,
-                            clip,
-                            // A building or a named stage enters its state on
-                            // the viewer's wall clock, advancing by each frame's delta.
-                            start,
-                            event_time: self.phase.map_or(start, |(_, phase)| phase),
-                            previous,
-                            admitted_kept: BTreeMap::new(),
-                            propagate: self.phase.is_some(),
-                            phase_offset: if self.phase.is_some() {
-                                phase / node.clips[clip].state.speed
-                            } else {
-                                0.0
-                            },
-                            random,
-                            cycle: 0,
-                            completed: false,
                         }
-                    });
+                    } else {
+                        random_range
+                    };
+                    // Unknown combat entry time: deterministic distribution over its clip.
+                    let phase = if self.phase.is_some() && random_range == 0.0 {
+                        0.0
+                    } else if previous.is_none()
+                        && index == 0
+                        && matches!(instance.animation, ATTACK | SUPPORT)
+                    {
+                        random.fraction() * duration(&node.clips[clip])
+                    } else {
+                        random.fraction() * random_range
+                    };
+                    let start = if self.phase.is_some() {
+                        time
+                    } else if previous.is_none()
+                        && instance.animation_epoch == 0
+                        && !matches!(
+                            instance.animation,
+                            BUILDING_IDLE | BUILDING_DAMAGED | AMBIENT_IDLE
+                        )
+                        && instance.animation < NAMED
+                    {
+                        -phase
+                    } else {
+                        time - if instance.animation & DIRECT != 0 {
+                            phase / node.clips[clip].state.speed
+                        } else {
+                            phase
+                        }
+                    };
+                    Playing {
+                        requested: chosen,
+                        clip,
+                        // A building or a named stage enters its state on
+                        // the viewer's wall clock, advancing by each frame's delta.
+                        start,
+                        event_time: self.phase.map_or(start, |(_, phase)| phase),
+                        previous,
+                        admitted_kept: BTreeMap::new(),
+                        propagate: self.phase.is_some(),
+                        phase_offset: if self.phase.is_some() {
+                            phase / node.clips[clip].state.speed
+                        } else {
+                            0.0
+                        },
+                        random,
+                        cycle: 0,
+                        completed: false,
+                    }
+                });
             }
             let mut state_info = None;
             let mut pose = Vec::new();
@@ -1055,7 +1096,9 @@ impl Player {
                             .next_state
                             .as_deref()
                             .unwrap_or(&playing.requested);
-                        let Some(next_clip) = pick(node, next, &mut playing.random, false) else {
+                        let Some(next_clip) =
+                            pick(node, next, &mut playing.random, self.native_choice)
+                        else {
                             break;
                         };
                         if instance.animation & DIRECT != 0 {
@@ -1332,6 +1375,7 @@ impl Player {
                         }),
                         emission_end,
                         hidden: false,
+                        state: instance.animation,
                     });
                 }
             }

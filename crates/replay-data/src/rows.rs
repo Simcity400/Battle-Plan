@@ -304,9 +304,14 @@ pub struct LandCombatRow {
     pub province: u32,
     pub duration: i32,
     pub day: i32,
-    /// Ordered native division handles, including the complete type word.
+    /// Ordered native unit handles, including the complete type word.
     pub attackers: Vec<u64>,
     pub defenders: Vec<u64>,
+    /// Each attacker's native unit class, in `attackers` order: 0 is a
+    /// division, 1 a task force, 13 a railway gun.
+    pub attacker_classes: Vec<u32>,
+    /// Each defender's native unit class, in `defenders` order.
+    pub defender_classes: Vec<u32>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -1093,6 +1098,7 @@ FuelDemandParts = 324 => FuelDemandPart(FuelDemandPartRow),
 MapEvents = 325 => MapEvents(MapEventsRow),
 OwnerTransportSpeeds = 326 => OwnerTransportSpeed(OwnerTransportSpeedRow),
 ReserveModifierTrees = 327 => ReserveModifierTree(ReserveModifierTreeRow),
+BattleSounds = 328 => BattleSound(BattleSoundRow),
 }
 impl TableId {
     /// Discard only proven field framing. No old row is decoded, validated as
@@ -2363,7 +2369,7 @@ row_codec!(FactionRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 =>
 row_codec!(FactionMemberRow, 32, |row| row.country as u128, |key| { country: key as u32 }, {0 => faction: U64, 1 => ordinal: U32}, |_row| Ok(()));
 row_codec!(PlayerRow, 32, |row| row.id as u32 as u128, |key| { id: key as u32 as i32 }, {0 => country: U32, 1 => flags: U8, 2 => user: Bytes, 3 => name: Bytes}, |_row| Ok(()));
 row_codec!(HumanControllerRow, 32, |row| row.country as u128, |key| { country: key as u32 }, {0 => count: I8}, |_row| Ok(()));
-row_codec!(LandCombatRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => province: U32, 1 => duration: I32, 2 => day: I32, 3 => attackers: U64List, 4 => defenders: U64List}, |_row| Ok(()));
+row_codec!(LandCombatRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => province: U32, 1 => duration: I32, 2 => day: I32, 3 => attackers: U64List, 4 => defenders: U64List, 5 => attacker_classes: U32List, 6 => defender_classes: U32List}, |_row| Ok(()));
 row_codec!(FleetRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => owner: U32, 1 => home_base: U32, 2 => name: Opaque, 3 => leader: OptionalU64}, |_row| Ok(()));
 row_codec!(TaskForceRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => fleet: U64, 1 => roster_owner: U32, 2 => logical_owner: U32, 3 => expeditionary_owner: U32, 4 => province: U32, 5 => mission: U32, 6 => route_count: I32, 7 => combat_references: I32}, |_row| Ok(()));
 row_codec!(ShipRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => task_force: U64, 1 => strength: I64, 2 => organisation: I64, 3 => experience: I64 @ Self::EXPERIENCE_STEP, 4 => category: U32, 5 => sunk_convoys: I32, 6 => class_id: I32}, |_row| Ok(()));
@@ -3137,6 +3143,34 @@ mod tests {
         pair(TableId::PeaceSettlements, success, failure);
     }
 
+    /// A battle keeps its coordinates' exact bits (negative zero and a NaN
+    /// payload included), its members in order with repeats, and its
+    /// sounding flag; a moved battle stores only its changed fields.
+    #[test]
+    fn battle_sounds_round_trip_exact_bits_and_member_order() {
+        let row = BattleSoundRow {
+            ordinal: u32::MAX,
+            center_x: (-0.0_f32).to_bits(),
+            center_z: 0x7fc0_1234,
+            radius: f32::MAX.to_bits(),
+            provinces: vec![13_000, 7, 13_000, u32::MAX],
+            sounding: true,
+            object: 0x0000_7ff6_1234_5678,
+        };
+        round_trip(TableId::BattleSounds, row.clone());
+        round_trip(TableId::BattleSounds, BattleSoundRow::default());
+        let moved = BattleSoundRow {
+            center_x: 1.5_f32.to_bits(),
+            ..row.clone()
+        };
+        pair(TableId::BattleSounds, row.clone(), moved.clone());
+        let delta = moved.delta(Some(&row)).unwrap().unwrap();
+        assert_eq!(delta.mask, 1);
+        assert_eq!(delta.apply(Some(row.clone())).unwrap(), moved);
+        assert_eq!(BattleSoundRow::default().key(), 0);
+        assert_eq!(row.key(), u32::MAX as u128);
+    }
+
     #[test]
     fn nuclear_strike_outcomes_and_refusals_round_trip_and_validate() {
         let row = NuclearStrikeRow {
@@ -3698,6 +3732,8 @@ mod tests {
                 day: i32::MAX,
                 attackers: vec![u64::MAX, 0, 1_u64 << 63],
                 defenders: vec![1, u64::MAX],
+                attacker_classes: vec![0, 13, u32::MAX],
+                defender_classes: vec![1, 0],
             },
         );
         round_trip(

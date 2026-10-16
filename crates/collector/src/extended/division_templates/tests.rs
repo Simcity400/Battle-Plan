@@ -184,6 +184,22 @@ fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
     source.bytes
         [0x5000 + native::FORMATION_DIVISION_COUNT..0x5000 + native::FORMATION_DIVISION_COUNT + 4]
         .copy_from_slice(&(-17_i32).to_le_bytes());
+    // Two regiment cells and an empty one, no support, one regimental
+    // support cell, all holding the same definition.
+    let mut word = |at: usize, value: u64| {
+        source.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    };
+    for (grid, data, cells) in [
+        (native::REGIMENT_DATA, 0x6100, &[0x7000, 0, 0x7000][..]),
+        (native::REGIMENTAL_SUPPORT_DATA, 0x6200, &[0x7000][..]),
+    ] {
+        word(0x5000 + grid, data);
+        let count = cells.len() as u64;
+        word(0x5000 + grid + 8, count | (count << 32));
+        for (index, &cell) in cells.iter().enumerate() {
+            word(data as usize + index * 8, cell);
+        }
+    }
     capture.capture(&source, 0, 0x1000, 3, true);
     let [
         TableView::Complete(replay::rows::TableRows::DivisionTemplates(rows)),
@@ -207,6 +223,19 @@ fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
             local: 0,
             count: 3
         }]
+    );
+    let entry = |count| TemplateSubunit {
+        token: 777,
+        local: 0,
+        count,
+    };
+    assert_eq!(
+        icons[0].grids,
+        Recorded::Value(TemplateGrids {
+            regiments: vec![entry(2)],
+            support: Vec::new(),
+            regimental_support: vec![entry(1)],
+        })
     );
     assert_eq!(icons[0].template, 0xffff_ffff_0000_0034);
     assert_eq!(icons[0].priority_unit, 777);
@@ -257,13 +286,14 @@ fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
         assert!(matches!(capture.tables()[0], TableView::Unavailable { .. }));
     }
     let original = capture.icon_rows.rows[0];
-    for which in 0..4 {
+    for which in 0..7 {
         capture.icon_rows.rows[0] = original;
         let row = &mut capture.icon_rows.rows[0];
         let span = match which {
             0 => &mut row.priority_unit_name,
             1 => &mut row.model_entity,
             2 => &mut row.counts,
+            3..=5 => &mut row.grids[which - 3],
             _ => &mut row.excluded_variants,
         };
         *span = native::Span {

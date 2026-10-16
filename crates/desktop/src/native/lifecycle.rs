@@ -63,11 +63,14 @@ impl NativeHost {
             .map(|(config, _)| config);
         let saved_diagnostics =
             crate::video::current_map_diagnostics(&window.state::<crate::video::VideoState>());
+        let saved_muted =
+            crate::video::current_map_muted(&window.state::<crate::video::VideoState>());
         let mut inner = self.shared.0.lock().map_err(|e| e.to_string())?;
         // A change saved after the reads above has already reached
         // `set_diagnostics` or `set_folders`, which keep it under this lock.
         let diagnostics = inner.diagnostics.unwrap_or(saved_diagnostics);
         let folders = launch_folders(inner.folders.as_ref(), saved_folders.as_ref());
+        let muted = inner.muted.unwrap_or(saved_muted);
         if inner.process.is_some() {
             return Ok(());
         }
@@ -158,6 +161,10 @@ impl NativeHost {
             .push_back(dashboard::protocol::MapAction::Diagnostics {
                 enabled: diagnostics,
             });
+        inner
+            .pending
+            .actions
+            .push_back(dashboard::protocol::MapAction::Mute { muted });
         inner.process = Some(Process { child, _job: job });
         drop(inner);
 

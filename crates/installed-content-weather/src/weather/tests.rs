@@ -118,7 +118,12 @@ fn entities_resolve_through_clones_and_refuse_unsupported_forms() {
             }],
             EffectParent {
                 name: "custom".into(),
-                radius: 6.
+                radius: 6.,
+                // The clone keeps its parent's sound event for the map audio.
+                sounds: vec![WeatherSound {
+                    effect: "rain".into(),
+                    time: 0.0,
+                }],
             }
         )
     );

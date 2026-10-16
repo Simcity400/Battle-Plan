@@ -331,6 +331,14 @@ pub const OWNER_TRANSPORT_SPEEDS_FORMAT: u16 = FORMAT_VERSION;
 /// so their blocks read as malformed; no published build wrote them.
 pub const RESERVE_MODIFIER_TREES_FORMAT: u16 = FORMAT_VERSION;
 
+/// Provisional main+1: BattleSounds holds the battle ambience's battle list as
+/// the game holds it at each hourly boundary ([`crate::rows::BattleSoundRow`]).
+/// Older recordings refuse only that table, by name, and play no battle
+/// ambience. Format-102 captures written before this change share the version
+/// number but not the table set, so their blocks read as malformed; no
+/// published build wrote them.
+pub const BATTLE_SOUNDS_FORMAT: u16 = FORMAT_VERSION;
+
 /// A row field whose capture ended at `retired`. A whole field keeps its
 /// Opaque framing as a [`super::Retired`] tombstone; a nested name
 /// (`field.part`) left its parent's nested layout, which still decodes older
@@ -517,6 +525,13 @@ pub const EVENT_LOSS_FORMAT: u16 = FORMAT_VERSION;
 /// game holds rather than the template a save rebinds on load. Older
 /// recordings have no field.
 pub const NAME_TEMPLATE_FORMAT: u16 = FORMAT_VERSION;
+
+/// Provisional main+1: DivisionTemplateIcons holds each composition grid's
+/// (definition, cell count) entries (15, `grids`,
+/// [`TemplateGrids`](crate::rows::TemplateGrids)), so battle ambience counts
+/// the regiment and support grids' slots without the regimental-support
+/// grid's. Older recordings have no field.
+pub const TEMPLATE_GRIDS_FORMAT: u16 = FORMAT_VERSION;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordKind {
@@ -1592,8 +1607,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     );
     history[TableId::DivisionTemplateIcons.index()] = appended_at(
         TableId::DivisionTemplateIcons,
-        POLITICAL_FORMAT,
-        "pending political runtime inputs",
+        TEMPLATE_GRIDS_FORMAT,
+        "pending political runtime inputs, pol/finish-audio template grids",
         &[
             AppendedField {
                 index: 13,
@@ -1604,6 +1619,11 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 index: 14,
                 name: "display_name",
                 introduced: POLITICAL_FORMAT,
+            },
+            AppendedField {
+                index: 15,
+                name: "grids",
+                introduced: TEMPLATE_GRIDS_FORMAT,
             },
         ],
     );
@@ -2125,6 +2145,14 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             TableId::ReserveModifierTrees,
             RESERVE_MODIFIER_TREES_FORMAT,
             "pol/finish-smallcap",
+        )
+    };
+    history[TableId::BattleSounds.index()] = LastChange {
+        introduced: BATTLE_SOUNDS_FORMAT,
+        ..table(
+            TableId::BattleSounds,
+            BATTLE_SOUNDS_FORMAT,
+            "pol/finish-audio",
         )
     };
     history[TableId::VariantDefinitions.index()] = appended(

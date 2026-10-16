@@ -655,6 +655,116 @@ fn land_combats_compare_locations_and_missing_rows_despite_membership_exclusions
 }
 
 #[test]
+fn land_combat_classes_follow_the_saved_roster_of_each_participant() {
+    let membership = membership();
+    let (frame, mut saved, _, _) = super::super::fixtures::fixture();
+    let owner = saved.countries.keys().next().unwrap().clone();
+    let (division, gun, task_force, stray) = (21_u64 << 32 | 4713, 22_u64 << 32 | 4713, 23_u64 << 32 | 61, 24_u64 << 32 | 4713);
+    saved.divisions.insert(
+        division,
+        installed_content_save::Division {
+            id: division,
+            roster_owner: owner.clone(),
+            logical_owner: owner.clone(),
+            expeditionary_owner: None,
+            province: Some(1),
+            template: None,
+            alternate_template: None,
+            separate_counter: false,
+            hit_points: zero(),
+            organisation: zero(),
+            country_intel: Vec::new(),
+            presentation: Default::default(),
+        },
+    );
+    saved.railway_guns.insert(
+        gun,
+        installed_content_save::RailwayGun {
+            id: gun,
+            name: None,
+            roster_owner: owner.clone(),
+            logical_owner: owner.clone(),
+            expeditionary_owner: None,
+            province: Some(1),
+            path: Vec::new(),
+            support_attack: None,
+            full_path: Vec::new(),
+            strategic_redeployment: false,
+            exile: false,
+            withdrawal: false,
+            strength: zero(),
+            combats: Vec::new(),
+            country_intel: Vec::new(),
+        },
+    );
+    saved.task_forces.insert(
+        task_force,
+        installed_content_save::TaskForce {
+            id: task_force,
+            name: None,
+            fleet: 11,
+            roster_owner: owner.clone(),
+            logical_owner: owner.clone(),
+            expeditionary_owner: None,
+            province: Some(1),
+            mission: 0,
+            country_intel: Vec::new(),
+            path: Vec::new(),
+            target: None,
+            alternate_path: Vec::new(),
+            movement_progress: None,
+            retreat: false,
+            withdrawal: false,
+            exile: false,
+        },
+    );
+    let attackers = vec![division, gun];
+    let combat = |defenders: Vec<u64>| installed_content_save::LandCombat {
+        id: 11,
+        province: 1,
+        day: 0,
+        duration: 0,
+        attackers: attackers.clone(),
+        defenders,
+        details: Default::default(),
+    };
+    let compare = |saved: &installed_content_save::Save, defenders: Vec<u64>, defender_classes: Vec<u32>| {
+        let mut frame = frame.clone();
+        set(
+            &mut frame,
+            TableId::LandCombats,
+            TableRows::LandCombats(vec![LandCombatRow {
+                id: 11,
+                province: 1,
+                attackers: attackers.clone(),
+                defenders,
+                attacker_classes: vec![0, 13],
+                defender_classes,
+                ..Default::default()
+            }]),
+        );
+        let mut report = Report::default();
+        compare_land_combats(&frame, saved, &membership, &mut report).unwrap();
+        report
+    };
+    // A division, a railway gun and a task force each keep their own class.
+    saved.land_combats.insert(11, combat(vec![task_force]));
+    assert_differences(&compare(&saved, vec![task_force], vec![1]), &[]);
+    // A division class recorded for the task force differs.
+    assert_differences(
+        &compare(&saved, vec![task_force], vec![0]),
+        &["type=11 id=0.defender_classes"],
+    );
+    // A handle no saved roster holds states no class; a missing class differs.
+    saved.land_combats.insert(11, combat(vec![stray]));
+    assert_differences(&compare(&saved, vec![stray], vec![13]), &[]);
+    assert_differences(
+        &compare(&saved, vec![stray], vec![]),
+        &["type=11 id=0.defender_classes"],
+    );
+}
+
+#[test]
 fn divisions_compare_locations_strength_and_missing_rows_despite_membership_exclusions() {
     engine::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

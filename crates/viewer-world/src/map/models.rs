@@ -439,22 +439,11 @@ impl ModelLibrary {
             ));
         }
         let mut meshless = Vec::new();
-        let mut sounds = Vec::new();
-        for (mesh, rig) in library.meshes.iter().zip(&library.rigs) {
+        for mesh in &library.meshes {
             if mesh.path.is_empty()
                 && let Some(entity) = descriptors.inherit(&mesh.name)
             {
                 meshless.push(missing_mesh(&entity, &mesh.name));
-            }
-            let count = rig
-                .nodes
-                .iter()
-                .flat_map(|node| &node.clips)
-                .flat_map(|clip| &clip.state.events)
-                .filter(|event| event.sound.is_some())
-                .count();
-            if count != 0 {
-                sounds.push(format!("{} ({count} sound events refused)", mesh.name));
             }
         }
         if !meshless.is_empty() {
@@ -464,15 +453,6 @@ impl ModelLibrary {
                     "{} geometry-less entities ({}); states and map events run without geometry.",
                     meshless.len(),
                     meshless.join("; ")
-                ),
-            ));
-        }
-        if !sounds.is_empty() {
-            warnings.push((
-                installed_content::DiagnosticKind::Warning,
-                format!(
-                    "Entity audio playback is unavailable: {}.",
-                    sounds.join("; ")
                 ),
             ));
         }
@@ -1221,6 +1201,9 @@ pub struct ModelField {
     /// (group, instance) in submission order, before the port's mesh/tile sort.
     pub native_order: Vec<(usize, usize)>,
     pub clocks: BTreeMap<(usize, u32, u32), entity_animation::Clock>,
+    /// This frame's default-state actors and the state request each plays
+    /// ([`ModelPass::prepare_default_states`]).
+    pub default_states: BTreeMap<(usize, u32, u32), u32>,
 }
 
 impl ModelField {
@@ -1394,6 +1377,11 @@ pub struct ModelPass {
     rigs: Vec<Arc<Rig>>,
     default_palette: Vec<PaletteJoint>,
     players: BTreeMap<(usize, u32, u32), entity_animation::Player>,
+    /// When each default-state actor appeared on the presentation clock
+    /// ([`ModelPass::prepare_default_states`]).
+    default_appeared: BTreeMap<(usize, u32, u32), f32>,
+    /// This frame's default-state actors refused, by why, with their count.
+    pub default_state_refusals: BTreeMap<String, usize>,
     pub events: Vec<entity_animation::Event>,
     event_namespace: u64,
     /// Placed actors, by animation key, that keep animating but draw and cast nothing.
@@ -1454,6 +1442,7 @@ impl ModelPass {
             }
             return;
         }
+        self.field.default_states = self.prepare_default_states(time);
         let palette = animate_players(
             &mut self.players,
             &self.rigs,
@@ -1482,11 +1471,89 @@ impl ModelPass {
         }
     }
 
+    /// Turns this frame's [`entity_animation::DEFAULT_STATE`] actors into
+    /// requests of their entity's `default_state` on a clock from when each
+    /// appeared: the game creates every entity instance in that state, and
+    /// `use_animation = no` only spares an ambient object the `idle` request
+    /// that would follow. A state with one variant is entered whatever its
+    /// chance, as the game's state setter draws only among several. An actor
+    /// that can reach a state with several variants, on its root or an
+    /// attached entity, stays still and is counted in
+    /// [`ModelPass::default_state_refusals`]: the game draws that variant from
+    /// a random counter that every earlier draw for the entity has advanced
+    /// since the session began, which no recording holds. Returns each
+    /// played actor's state request; it chooses states by the game's rule.
+    fn prepare_default_states(&mut self, time: f32) -> BTreeMap<(usize, u32, u32), u32> {
+        self.default_state_refusals.clear();
+        let mut native = BTreeMap::new();
+        for group in &self.field.groups {
+            let range = group.range.clone();
+            if !range.clone().any(|index| {
+                self.field.instances[index as usize].animation == entity_animation::DEFAULT_STATE
+            }) {
+                continue;
+            }
+            let state = self.rigs.get(group.mesh).and_then(|rig| {
+                let root = rig.nodes.first()?;
+                root.clips
+                    .iter()
+                    .any(|clip| clip.state.name == root.default)
+                    .then(|| (root.default.clone(), drawn_variants(rig)))
+            });
+            for index in range {
+                let instance = self.field.instances[index as usize];
+                if instance.animation != entity_animation::DEFAULT_STATE {
+                    continue;
+                }
+                let Some((default, drawn)) = &state else {
+                    continue;
+                };
+                if let Some((node, reached, variants)) = drawn {
+                    let entity = self.meshes.get(group.mesh).map_or("", |mesh| &mesh.name);
+                    let part = if *node == 0 {
+                        String::new()
+                    } else {
+                        format!(" (attached entity {node})")
+                    };
+                    *self
+                        .default_state_refusals
+                        .entry(format!(
+                            "entity {entity}{part} reaches state {reached} of {variants} variants, which the game draws from a per-entity random counter no recording holds; it stays still and silent"
+                        ))
+                        .or_default() += 1;
+                    continue;
+                }
+                let (seed, identity) = instance.animation_key();
+                let key = (group.mesh, seed, identity);
+                let appeared = self.default_appeared.entry(key).or_insert(time);
+                // A presentation clock that starts again starts the state with it.
+                *appeared = appeared.min(time);
+                self.field.clocks.insert(
+                    key,
+                    entity_animation::Clock {
+                        time: time - *appeared,
+                        phase: None,
+                        requests: Arc::new(vec![entity_animation::Request {
+                            time: 0.0,
+                            phase_time: None,
+                            state: default.clone(),
+                        }]),
+                    },
+                );
+                native.insert(key, entity_animation::named_request(default));
+            }
+        }
+        self.default_appeared
+            .retain(|key, _| native.contains_key(key));
+        native
+    }
+
     /// Moving layers retain mesh buffers and replace only their small instance stream.
     /// A seek or a branch change starts new entity histories.
     pub fn reset_animation(&mut self) {
         self.event_namespace = event_namespace();
         self.players.clear();
+        self.default_appeared.clear();
         self.events.clear();
     }
 
@@ -1551,6 +1618,8 @@ impl ModelPass {
             rigs: library.rigs.clone(),
             default_palette: library.palette.clone(),
             players: BTreeMap::new(),
+            default_appeared: BTreeMap::new(),
+            default_state_refusals: BTreeMap::new(),
             events: Vec::new(),
             event_namespace: event_namespace(),
             hidden: BTreeSet::new(),
@@ -1797,7 +1866,9 @@ fn appended_only(before: (&[PaletteJoint], usize), after: (&[PaletteJoint], usiz
 }
 
 /// The CPU half of [`ModelPass::animate`]: evaluates the players of the
-/// shown groups' animated instances into a palette (the default one
+/// shown groups' animated instances (a default-state actor in the field's
+/// `default_states` plays its request and chooses states by the game's
+/// rule, [`entity_animation::Player::native_choice`]) into a palette (the default one
 /// followed by one rig range per such instance, whose offset the instance
 /// takes) and retires every other player.
 ///
@@ -1848,18 +1919,32 @@ pub fn animate_players(
             {
                 continue;
             }
+            // A default-state actor plays its request; one refused, or whose
+            // entity has no default state, stays still.
+            let request = field.default_states.get(&key).copied();
+            if instance.animation == entity_animation::DEFAULT_STATE && request.is_none() {
+                continue;
+            }
             alive.insert(key);
-            let player = players
-                .entry(key)
-                .or_insert_with(|| entity_animation::Player::new(rig));
+            let player = players.entry(key).or_insert_with(|| {
+                if request.is_some() {
+                    entity_animation::Player::native_choice(rig)
+                } else {
+                    entity_animation::Player::new(rig)
+                }
+            });
             let start = palette.len();
             palette.extend_from_slice(&default_palette[rig.start..rig.end]);
             instance.palette_offset = (start - rig.start) as u32;
             let event_start = events.len();
+            let playing = ModelInstance {
+                animation: request.unwrap_or(instance.animation),
+                ..*instance
+            };
             if let Some(clock) = field.clocks.get(&key) {
-                player.evaluate_clock(rig, *instance, clock, &mut palette[start..], events);
+                player.evaluate_clock(rig, playing, clock, &mut palette[start..], events);
             } else {
-                player.evaluate(rig, *instance, time, &mut palette[start..], events);
+                player.evaluate(rig, playing, time, &mut palette[start..], events);
             }
             for event in &mut events[event_start..] {
                 event.key.model = group.mesh;
@@ -1893,6 +1978,35 @@ fn visible(group: &ModelGroup, offset: f32, rectangle: Option<[f32; 4]>) -> bool
     };
     let [gx0, gz0, gx1, gz1] = group.bounds;
     gx0 + offset <= x1 && gx1 + offset >= x0 && gz0 <= z1 && gz1 >= z0
+}
+
+/// The first state with several variants an actor of `rig` can reach from
+/// its nodes' default states through `next_state`: the node, the state and
+/// its variant count.
+fn drawn_variants(rig: &entity_animation::Rig) -> Option<(usize, String, usize)> {
+    for (index, node) in rig.nodes.iter().enumerate() {
+        let mut seen = BTreeSet::new();
+        let mut pending = vec![node.default.clone()];
+        while let Some(state) = pending.pop() {
+            if !seen.insert(state.clone()) {
+                continue;
+            }
+            let variants: Vec<_> = node
+                .clips
+                .iter()
+                .filter(|clip| clip.state.name == state)
+                .collect();
+            if variants.len() > 1 {
+                return Some((index, state, variants.len()));
+            }
+            pending.extend(
+                variants
+                    .iter()
+                    .filter_map(|clip| clip.state.next_state.clone()),
+            );
+        }
+    }
+    None
 }
 
 #[cfg(test)]

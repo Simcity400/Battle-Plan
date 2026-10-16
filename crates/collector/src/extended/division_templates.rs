@@ -14,7 +14,7 @@ use replay::{
     frame::{TableInput, TableView},
     rows::{
         DivisionTemplateIconRow, DivisionTemplateRow, Recorded, TableId, TemplateDisplayName,
-        TemplateNameValue, TemplateSubunit, tables,
+        TemplateGrids, TemplateNameValue, TemplateSubunit, tables,
     },
 };
 
@@ -335,9 +335,8 @@ impl Captured {
     ) -> [u64; N] {
         self.reset();
         self.sample_hour = Some(hour);
-        // The counter/model and demanded display-name inputs every hour.
-        // Grids beyond the regiment grid of a template without a stored
-        // priority unit are still not read.
+        // The counter/model inputs, each composition grid's entries and the
+        // demanded display-name inputs every hour.
         let icons = {
             let _reads = crate::read_accounting::table(TABLES[1]);
             let start = qpc();
@@ -478,11 +477,25 @@ impl Captured {
             span(bytes, r.priority_unit_name).is_none()
                 || span(bytes, r.model_entity).is_none()
                 || span(counts, r.counts).is_none()
+                || r.grids.iter().any(|grid| span(counts, *grid).is_none())
                 || span(variants, r.excluded_variants).is_none()
         }) {
             return unavailable("template icon row spans outside captured arenas");
         }
+        let entries = |range: native::Span| {
+            owned_vec(engine::allocation::collect_vec(
+                span(counts, range)
+                    .unwrap()
+                    .iter()
+                    .map(|unit| TemplateSubunit {
+                        token: unit.token,
+                        local: u8::from(unit.local),
+                        count: unit.count,
+                    }),
+            ))
+        };
         table::<tables::DivisionTemplateIcons, _>(outcome, &self.icon_rows.rows, |r| {
+            let [regiments, support, regimental_support] = r.grids;
             DivisionTemplateIconRow {
                 template: r.template,
                 priority_unit: r.priority_unit,
@@ -491,16 +504,7 @@ impl Captured {
                 custom_icon_nato: r.custom_icon_nato,
                 representative: r.representative.token,
                 representative_local: u8::from(r.representative.local),
-                subunits: owned_vec(engine::allocation::collect_vec(
-                    span(counts, r.counts)
-                        .unwrap()
-                        .iter()
-                        .map(|unit| TemplateSubunit {
-                            token: unit.token,
-                            local: u8::from(unit.local),
-                            count: unit.count,
-                        }),
-                )),
+                subunits: entries(r.counts),
                 country: r.country,
                 foreign_country: r.foreign_country,
                 model_category: r.model_category,
@@ -511,6 +515,11 @@ impl Captured {
                 model_unreadable: u8::from(r.model_failure.is_some()),
                 formation_division_count: replay::rows::Recorded::Value(r.formation_division_count),
                 display_name: name_inputs(r, names, dictionary, self.sample_hour),
+                grids: Recorded::Value(TemplateGrids {
+                    regiments: entries(regiments),
+                    support: entries(support),
+                    regimental_support: entries(regimental_support),
+                }),
             }
         })
     }

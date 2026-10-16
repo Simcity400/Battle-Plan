@@ -1,5 +1,5 @@
 //! Application UI scale, the native map's interface scale, presentation settings
-//! and the maps' diagnostics switch. Never changes the user's monitor mode or installed content.
+//! and the maps' diagnostics and mute switches. Never changes the user's monitor mode or installed content.
 use crate::native::NativeHost;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -28,6 +28,10 @@ pub struct VideoSettings {
     /// Apply form keep it, and only [`set_map_diagnostics`] changes it.
     #[serde(default)]
     pub map_diagnostics: bool,
+    /// Whether the maps' audio is muted. Off by default. Not a game setting
+    /// either: only [`set_map_muted`] changes it.
+    #[serde(default)]
+    pub map_muted: bool,
 }
 impl Default for VideoSettings {
     fn default() -> Self {
@@ -37,6 +41,7 @@ impl Default for VideoSettings {
             vsync: true,
             map_ui_scale: None,
             map_diagnostics: false,
+            map_muted: false,
         }
     }
 }
@@ -158,6 +163,7 @@ fn parse_game_display(keys: &installed_content::settings::SettingsKeys) -> Resul
         vsync,
         map_ui_scale: None,
         map_diagnostics: false,
+        map_muted: false,
     };
     settings.validate()?;
     Ok(settings)
@@ -280,6 +286,10 @@ pub fn set_video_settings(
         Ok(stored) => stored.map_diagnostics,
         Err(_) => load().is_ok_and(|saved| saved.map_diagnostics),
     };
+    settings.map_muted = match &*stored {
+        Ok(stored) => stored.map_muted,
+        Err(_) => load().is_ok_and(|saved| saved.map_muted),
+    };
     let result = (|| {
         if stored.is_err() || settings.ui_scale != previous.ui_scale {
             apply_scale(&window, &settings)?;
@@ -317,6 +327,7 @@ pub fn set_video_settings(
 fn inherit_game(current: &VideoSettings, game: VideoSettings) -> VideoSettings {
     VideoSettings {
         map_diagnostics: current.map_diagnostics,
+        map_muted: current.map_muted,
         ..game
     }
 }
@@ -372,6 +383,43 @@ pub fn change_map_diagnostics(app: &AppHandle, enabled: Option<bool>) -> Result<
     drop(stored);
     let _ = app.emit("map-diagnostics", enabled);
     Ok(enabled)
+}
+
+/// The saved mute choice; an unreadable file leaves the maps sounding.
+pub fn current_map_muted(state: &VideoState) -> bool {
+    state
+        .0
+        .lock()
+        .is_ok_and(|stored| stored.as_ref().is_ok_and(|settings| settings.map_muted))
+}
+
+/// Saves the maps' mute choice, sends it to the native viewer and tells the
+/// frontend. Returns the new choice.
+pub fn change_map_muted(app: &AppHandle, muted: bool) -> Result<bool, String> {
+    let state = app.state::<VideoState>();
+    let mut stored = state.0.lock().map_err(|e| e.to_string())?;
+    let mut next = match &*stored {
+        Ok(settings) => settings.clone(),
+        Err(_) => load()?,
+    };
+    next.map_muted = muted;
+    save(&next)?;
+    *stored = Ok(next);
+    // Sent before the lock is released, so changes arrive in saved order.
+    app.state::<NativeHost>().set_muted(muted);
+    drop(stored);
+    let _ = app.emit("map-muted", muted);
+    Ok(muted)
+}
+
+#[tauri::command]
+pub fn map_muted(state: State<'_, VideoState>) -> bool {
+    current_map_muted(&state)
+}
+
+#[tauri::command]
+pub fn set_map_muted(app: AppHandle, muted: bool) -> Result<bool, String> {
+    change_map_muted(&app, muted)
 }
 
 #[tauri::command]
@@ -440,6 +488,16 @@ mod tests {
                 .unwrap();
         assert!(!repaired.map_diagnostics && repaired.ui_scale == 90.0);
         assert!(with_map_diagnostics(&Err("x".into()), true, || Err("bad file".into())).is_err());
+    }
+
+    #[test]
+    fn the_mute_choice_is_off_by_default_and_survives_game_settings() {
+        assert!(!VideoSettings::default().map_muted);
+        let current = VideoSettings {
+            map_muted: true,
+            ..VideoSettings::default()
+        };
+        assert!(inherit_game(&current, game_like(125.0)).map_muted);
     }
 
     fn game_like(ui_scale: f64) -> VideoSettings {

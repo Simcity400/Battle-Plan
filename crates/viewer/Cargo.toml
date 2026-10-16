@@ -14,6 +14,7 @@ slow-tests = ["viewer-foundation/slow-tests", "viewer-combat/slow-tests", "viewe
 [dependencies]
 viewer-counter-products = { path = "../viewer-counter-products" }
 viewer-world = { path = "../viewer-world" }
+viewer-audio = { path = "../viewer-audio" }
 viewer-counters = { path = "../viewer-counters" }
 viewer-raids = { path = "../viewer-raids" }
 viewer-combat = { path = "../viewer-combat" }
@@ -22,6 +23,7 @@ replay.workspace = true
 store = { path = "../store" }
 engine.workspace = true
 installed-content.workspace = true
+installed-content-sound.workspace = true
 shader-pipeline = { path = "../shader-pipeline" }
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts"] }
 bytemuck = { workspace = true, features = ["derive"] }

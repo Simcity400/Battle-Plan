@@ -590,7 +590,7 @@ mod tests {
         engine::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let descriptors = installed_content::mesh::parse_descriptors(
-            br#"entity={name=nuke_entity state={name=attack event={time=0.5 particle=mist keep_particle=yes}}}"#,
+            br#"entity={name=nuke_entity state={name=attack event={time=0.5 particle=mist keep_particle=yes sound={soundeffect=blast}}}}"#,
             "gfx/synthetic.asset",
         )
         .unwrap();
@@ -625,8 +625,21 @@ mod tests {
         let mut pass = super::super::models::ModelPass::new(&library, "map frame");
         let (placed, clocks) = shown.advance(true, |_| true, |_| None, 1.0);
         pass.update_placed(placed.clone(), 256.0);
+        let struck: std::collections::BTreeSet<_> = clocks.keys().copied().collect();
         pass.set_clocks(clocks);
         pass.animate(1.0, None, &[0.0]);
+        // The impact's sound is a combat sound: its event is found under the
+        // effect's clock key.
+        let mut sounds = Vec::new();
+        crate::map::sound_events::collect(
+            &pass.events,
+            &mut Default::default(),
+            &mut sounds,
+            |event| struck.contains(&event.key.player()),
+        );
+        assert_eq!(sounds.len(), 1);
+        assert_eq!(&*sounds[0].effect, "blast");
+        assert!(sounds[0].combat);
         let (slot, instance) = placed[0];
         assert_eq!(instance.animation_epoch, 0);
         assert!(pass.player(slot, &instance).is_some());

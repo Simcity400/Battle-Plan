@@ -223,6 +223,9 @@ mod tests {
             if version < crate::rows::compatibility::RESERVE_MODIFIER_TREES_FORMAT {
                 expected.push(TableId::ReserveModifierTrees);
             }
+            if version < crate::rows::compatibility::BATTLE_SOUNDS_FORMAT {
+                expected.push(TableId::BattleSounds);
+            }
             if version < crate::rows::compatibility::RETREAT_BANS_FORMAT {
                 expected.push(TableId::DivisionRetreatBans);
             }

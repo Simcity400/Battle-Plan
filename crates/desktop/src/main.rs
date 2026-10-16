@@ -191,6 +191,8 @@ fn main() {
             video::set_video_settings,
             video::map_diagnostics,
             video::set_map_diagnostics,
+            video::map_muted,
+            video::set_map_muted,
             desktop_state,
             set_map_view,
             select_native_view,

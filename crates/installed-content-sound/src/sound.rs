@@ -1,0 +1,798 @@
+//! Sounds, sound effects, falloffs, categories and compressors from the
+//! recorded content stack.
+//!
+//! Every `.asset` file below `sound/` loads in the asset loader's recursive
+//! order: files before subdirectories, each level in byte order, a path
+//! repeated across layers read from the winning layer. Each file may hold
+//! `sound`, `soundeffect`, `falloff`, `category`, `master_compressor` and
+//! `music_compressor` blocks in any order.
+//!
+//! The first declaration of a sound, sound effect or falloff name is kept; a
+//! later one is refused by name, as the game refuses adding a name twice.
+//! References are resolved after every file is read: an effect's sounds and
+//! falloff by exact name, and each category's effect list in category order,
+//! where a later category takes an effect over from an earlier one. A missing
+//! name is a named, counted refusal that leaves the reference empty: an effect
+//! whose falloff is missing plays without distance attenuation, and an effect
+//! without a category plays outside every category.
+//!
+//! A sound's `file` is relative to the folder of the asset file declaring it.
+//! Sample files are outside the recording's hash coverage; reads go through
+//! [`ResolvedLayers::read_uncovered`] and are reported as uncovered.
+
+use crate::{ResolvedLayers, crt, defines, parser};
+use std::{collections::BTreeMap, io};
+
+/// One `sound` block: a named sample file and its volume.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sound {
+    pub name: String,
+    /// The layer path of the sample file.
+    pub path: String,
+    pub volume: f32,
+    /// The mixer ranks voices by this times their gain when more play than
+    /// it mixes.
+    pub priority: f32,
+    /// The declaring asset file, for diagnostics.
+    pub source: String,
+}
+
+/// One candidate of an effect's `sounds` list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Choice {
+    /// Index into [`Catalog::sounds`].
+    pub sound: usize,
+    /// `sound = x` weighs 1; `weighted_sound = { sound = x weight = n }` weighs n.
+    pub weight: u32,
+}
+
+/// What happens when an effect already has `max_audible` audible instances.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Overflow {
+    /// `fail`: a new instance does not start.
+    Fail,
+    /// `silent` (the default): the instance plays but is held silent while the
+    /// effect is at its limit.
+    Silent,
+}
+
+/// A falloff's attenuation curve over the normalised distance `t` between its
+/// minimum and maximum distance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Curve {
+    /// `1 - t`.
+    Linear,
+    /// `-log10(0.9 t + 0.1)`, the default.
+    Logarithmic,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Falloff {
+    pub name: String,
+    pub min_distance: f32,
+    pub max_distance: f32,
+    /// Scales the vertical offset between listener and emitter when positive.
+    pub height_scale: f32,
+    pub curve: Curve,
+}
+
+impl Default for Falloff {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            min_distance: 0.0,
+            max_distance: 100.0,
+            height_scale: 1.0,
+            curve: Curve::Logarithmic,
+        }
+    }
+}
+
+/// A random offset drawn between two authored values, in authored order.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Range {
+    pub first: f32,
+    pub second: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Effect {
+    pub name: String,
+    pub choices: Vec<Choice>,
+    pub volume: f32,
+    /// Index into [`Catalog::falloffs`]; `None` plays without attenuation.
+    pub falloff: Option<usize>,
+    pub looping: bool,
+    /// `is3d`: pans by the emitter's direction from the listener.
+    pub positional: bool,
+    /// Negative is unlimited.
+    pub max_audible: i32,
+    pub overflow: Overflow,
+    /// Seconds.
+    pub fade_in: f32,
+    /// Seconds.
+    pub fade_out: f32,
+    pub volume_offset: Range,
+    /// Seconds.
+    pub delay_offset: Range,
+    /// A rate factor; authored in percent.
+    pub playback_rate: f32,
+    /// A rate offset; authored in percent.
+    pub playback_rate_offset: Range,
+    pub looping_volume_offset: bool,
+    pub looping_delay_offset: bool,
+    pub looping_playback_rate_offset: bool,
+    pub random_sound_when_looping: bool,
+    pub prevent_random_repetition: bool,
+    pub polyphony: i32,
+    /// Index into [`Catalog::categories`].
+    pub category: Option<usize>,
+    pub source: String,
+}
+
+impl Effect {
+    pub fn new(name: String, source: String) -> Self {
+        Self {
+            name,
+            choices: Vec::new(),
+            volume: 1.0,
+            falloff: None,
+            looping: false,
+            positional: false,
+            max_audible: -1,
+            overflow: Overflow::Silent,
+            fade_in: 0.0,
+            fade_out: 0.0,
+            volume_offset: Range::default(),
+            delay_offset: Range::default(),
+            playback_rate: 1.0,
+            playback_rate_offset: Range::default(),
+            looping_volume_offset: false,
+            looping_delay_offset: false,
+            looping_playback_rate_offset: false,
+            random_sound_when_looping: true,
+            prevent_random_repetition: false,
+            polyphony: 1,
+            category: None,
+            source,
+        }
+    }
+}
+
+/// A dynamic range compressor. Gains are linear; the threshold is in decibels
+/// and times in seconds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Compressor {
+    pub enabled: bool,
+    pub pregain: f32,
+    pub postgain: f32,
+    pub ratio: f32,
+    pub threshold: f32,
+    pub attack: f32,
+    pub release: f32,
+}
+
+impl Default for Compressor {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            pregain: 1.0,
+            postgain: 1.0,
+            ratio: 1.0,
+            threshold: 0.0,
+            attack: 0.0,
+            release: 0.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Category {
+    pub name: String,
+    pub compressor: Option<Compressor>,
+}
+
+/// `NDefines.NSound`: the category whose volume follows camera altitude and
+/// the ambient slider, and the category the voice slider sets.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Defines {
+    pub height_category: String,
+    pub height_min_altitude: f32,
+    pub height_max_altitude: f32,
+    pub height_min_volume: f32,
+    pub height_max_volume: f32,
+    pub voice_category: String,
+}
+
+impl Defines {
+    pub fn load(defines: &defines::Defines) -> io::Result<Self> {
+        let number = |key: &str| -> io::Result<f32> {
+            let value = defines.number("NSound", key)? as f32;
+            if value.is_finite() {
+                Ok(value)
+            } else {
+                Err(invalid(format!("NDefines.NSound.{key} is outside f32")))
+            }
+        };
+        Ok(Self {
+            height_category: defines.text("NSound", "HEIGHT_SOUND_CATEGORY")?,
+            height_min_altitude: number("HEIGHT_SOUND_MIN_ALTITUDE")?,
+            height_max_altitude: number("HEIGHT_SOUND_MAX_ALTITUDE")?,
+            height_min_volume: number("HEIGHT_SOUND_MIN_VOLUME")?,
+            height_max_volume: number("HEIGHT_SOUND_MAX_VOLUME")?,
+            voice_category: defines.text("NSound", "VOICE_OVER_CATEGORY")?,
+        })
+    }
+
+    /// The height category's altitude factor at camera height `altitude`:
+    /// the altitude clamped to its range, mapped linearly onto the volumes.
+    pub fn height_volume(&self, altitude: f32) -> f32 {
+        let clamped = if altitude < self.height_min_altitude {
+            self.height_min_altitude
+        } else if altitude > self.height_max_altitude {
+            self.height_max_altitude
+        } else {
+            altitude
+        };
+        (clamped - self.height_min_altitude) / (self.height_max_altitude - self.height_min_altitude)
+            * (self.height_max_volume - self.height_min_volume)
+            + self.height_min_volume
+    }
+}
+
+/// Named, counted refusals in first-seen order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Notes(Vec<(String, usize)>);
+
+impl Notes {
+    pub fn note(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        match self.0.iter_mut().find(|(known, _)| *known == message) {
+            Some((_, count)) => *count += 1,
+            None => self.0.push((message, 1)),
+        }
+    }
+
+    pub fn entries(&self) -> &[(String, usize)] {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// One line per message, with its count when repeated.
+    pub fn lines(&self) -> Vec<String> {
+        self.0
+            .iter()
+            .map(|(message, count)| match count {
+                1 => message.clone(),
+                _ => format!("{message} (x{count})"),
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Catalog {
+    pub sounds: Vec<Sound>,
+    pub effects: Vec<Effect>,
+    pub falloffs: Vec<Falloff>,
+    pub categories: Vec<Category>,
+    pub master_compressor: Option<Compressor>,
+    pub music_compressor: Option<Compressor>,
+    /// Asset files read, in load order.
+    pub files: Vec<String>,
+    pub notes: Notes,
+    sound_names: BTreeMap<String, usize>,
+    effect_names: BTreeMap<String, usize>,
+    falloff_names: BTreeMap<String, usize>,
+    category_names: BTreeMap<String, usize>,
+}
+
+/// An effect's references before resolution.
+struct Pending {
+    effect: usize,
+    sounds: Vec<(String, u32)>,
+    falloff: Option<String>,
+}
+
+type Assignment = (usize, Vec<String>, String);
+
+impl Catalog {
+    pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
+        let listed = layers.descriptor_paths("sound", &[".asset"])?;
+        let paths = defines::load_order("sound/", ".asset", listed.iter().map(String::as_str));
+        let mut catalog = Self::default();
+        let mut pending = Vec::new();
+        let mut assignments = Vec::new();
+        for path in paths {
+            let bytes = layers.read_uncovered(&path)?;
+            let document = match parser::parse(&bytes) {
+                Ok(document) => document,
+                Err(error) => {
+                    catalog
+                        .notes
+                        .note(format!("{path}: unreadable sound asset ({error})"));
+                    continue;
+                }
+            };
+            catalog.files.push(path.clone());
+            let directory = path.rsplit_once('/').map_or("", |(head, _)| head);
+            for item in &document.items {
+                let Some(fields) = item.value.items() else {
+                    catalog.notes.note(format!(
+                        "{path}: refused top-level value {}",
+                        key_text(item)
+                    ));
+                    continue;
+                };
+                if item.keyword_is("sound") {
+                    catalog.declare_sound(fields, &path, directory);
+                } else if item.keyword_is("soundeffect") {
+                    if let Some(entry) = catalog.declare_effect(fields, &path) {
+                        pending.push(entry);
+                    }
+                } else if item.keyword_is("falloff") {
+                    catalog.declare_falloff(fields, &path);
+                } else if item.keyword_is("category") {
+                    if let Some(entry) = catalog.declare_category(fields, &path) {
+                        assignments.push(entry);
+                    }
+                } else if item.keyword_is("master_compressor") {
+                    catalog.master_compressor = Some(compressor(fields, &path, &mut catalog.notes));
+                } else if item.keyword_is("music_compressor") {
+                    catalog.music_compressor = Some(compressor(fields, &path, &mut catalog.notes));
+                } else {
+                    catalog.notes.note(format!(
+                        "{path}: refused top-level block {}",
+                        key_text(item)
+                    ));
+                }
+            }
+        }
+        catalog.resolve(pending, assignments);
+        Ok(catalog)
+    }
+
+    pub fn sound(&self, name: &str) -> Option<usize> {
+        self.sound_names.get(name).copied()
+    }
+
+    pub fn effect(&self, name: &str) -> Option<usize> {
+        self.effect_names.get(name).copied()
+    }
+
+    pub fn falloff(&self, name: &str) -> Option<usize> {
+        self.falloff_names.get(name).copied()
+    }
+
+    pub fn category(&self, name: &str) -> Option<usize> {
+        self.category_names.get(name).copied()
+    }
+
+    fn declare_sound(&mut self, fields: &[parser::Item], path: &str, directory: &str) {
+        let Some(name) = text(fields, "name") else {
+            self.notes
+                .note(format!("{path}: refused sound without a name"));
+            return;
+        };
+        let Some(file) = text(fields, "file") else {
+            self.notes
+                .note(format!("{path}: refused sound {name} without a file"));
+            return;
+        };
+        if self.sound_names.contains_key(&name) {
+            self.notes
+                .note(format!("{path}: refused repeated sound {name}"));
+            return;
+        }
+        let mut sound = Sound {
+            path: join(directory, &file),
+            name: name.clone(),
+            volume: 1.0,
+            priority: 1.0,
+            source: path.to_owned(),
+        };
+        for field in fields {
+            match key(field).as_str() {
+                "name" | "file" | "always_load" => {}
+                "volume" => number_into(field, &mut sound.volume, path, &mut self.notes),
+                "priority" => number_into(field, &mut sound.priority, path, &mut self.notes),
+                other => self
+                    .notes
+                    .note(format!("{path}: sound {name} refused field {other}")),
+            }
+        }
+        self.sound_names.insert(name, self.sounds.len());
+        self.sounds.push(sound);
+    }
+
+    fn declare_effect(&mut self, fields: &[parser::Item], path: &str) -> Option<Pending> {
+        let Some(name) = text(fields, "name") else {
+            self.notes
+                .note(format!("{path}: refused soundeffect without a name"));
+            return None;
+        };
+        if self.effect_names.contains_key(&name) {
+            self.notes
+                .note(format!("{path}: refused repeated soundeffect {name}"));
+            return None;
+        }
+        let mut effect = Effect::new(name.clone(), path.to_owned());
+        let mut sounds = Vec::new();
+        let mut falloff = None;
+        let notes = &mut self.notes;
+        for field in fields {
+            match key(field).as_str() {
+                "name" => {}
+                "sounds" => read_sounds(field, &name, path, &mut sounds, notes),
+                "volume" => number_into(field, &mut effect.volume, path, notes),
+                "falloff" => falloff = field.value.scalar_str().map(unquote),
+                "loop" => bool_into(field, &mut effect.looping, path, notes),
+                "is3d" => bool_into(field, &mut effect.positional, path, notes),
+                "max_audible" => {
+                    let mut value = effect.max_audible as f32;
+                    number_into(field, &mut value, path, notes);
+                    effect.max_audible = value as i32;
+                }
+                "max_audible_behaviour" => match field.value.scalar_str().map(unquote).as_deref() {
+                    Some("fail") => effect.overflow = Overflow::Fail,
+                    Some("silent") => effect.overflow = Overflow::Silent,
+                    other => notes.note(format!(
+                        "{path}: soundeffect {name} refused max_audible_behaviour {}",
+                        other.unwrap_or("block")
+                    )),
+                },
+                "fade_in" => number_into(field, &mut effect.fade_in, path, notes),
+                "fade_out" => number_into(field, &mut effect.fade_out, path, notes),
+                "volume_random_offset" => {
+                    range_into(field, &mut effect.volume_offset, 1.0, path, notes)
+                }
+                "delay_random_offset" => {
+                    range_into(field, &mut effect.delay_offset, 1.0, path, notes)
+                }
+                "playbackrate" => {
+                    let mut percent = 100.0;
+                    number_into(field, &mut percent, path, notes);
+                    effect.playback_rate = percent / 100.0;
+                }
+                "playbackrate_random_offset" => {
+                    range_into(field, &mut effect.playback_rate_offset, 100.0, path, notes)
+                }
+                "looping_volume_random_offset" => {
+                    bool_into(field, &mut effect.looping_volume_offset, path, notes)
+                }
+                "looping_delay_random_offset" => {
+                    bool_into(field, &mut effect.looping_delay_offset, path, notes)
+                }
+                "looping_playbackrate_random_offset" => {
+                    bool_into(field, &mut effect.looping_playback_rate_offset, path, notes)
+                }
+                "random_sound_when_looping" => {
+                    bool_into(field, &mut effect.random_sound_when_looping, path, notes)
+                }
+                "prevent_random_repetition" => {
+                    bool_into(field, &mut effect.prevent_random_repetition, path, notes)
+                }
+                "polyphony" => {
+                    let mut value = effect.polyphony as f32;
+                    number_into(field, &mut value, path, notes);
+                    effect.polyphony = value as i32;
+                }
+                other => notes.note(format!("{path}: soundeffect {name} refused field {other}")),
+            }
+        }
+        let index = self.effects.len();
+        self.effect_names.insert(name, index);
+        self.effects.push(effect);
+        Some(Pending {
+            effect: index,
+            sounds,
+            falloff,
+        })
+    }
+
+    fn declare_falloff(&mut self, fields: &[parser::Item], path: &str) {
+        let Some(name) = text(fields, "name") else {
+            self.notes
+                .note(format!("{path}: refused falloff without a name"));
+            return;
+        };
+        if self.falloff_names.contains_key(&name) {
+            self.notes
+                .note(format!("{path}: refused repeated falloff {name}"));
+            return;
+        }
+        let mut falloff = Falloff {
+            name: name.clone(),
+            ..Falloff::default()
+        };
+        let notes = &mut self.notes;
+        for field in fields {
+            match key(field).as_str() {
+                "name" => {}
+                "min_distance" => number_into(field, &mut falloff.min_distance, path, notes),
+                "max_distance" => number_into(field, &mut falloff.max_distance, path, notes),
+                "height_scale" => number_into(field, &mut falloff.height_scale, path, notes),
+                "type" => match field.value.scalar_str().map(unquote).as_deref() {
+                    Some("linear") => falloff.curve = Curve::Linear,
+                    Some("logarithmic") => falloff.curve = Curve::Logarithmic,
+                    other => notes.note(format!(
+                        "{path}: falloff {name} refused type {}",
+                        other.unwrap_or("block")
+                    )),
+                },
+                other => notes.note(format!("{path}: falloff {name} refused field {other}")),
+            }
+        }
+        self.falloff_names.insert(name, self.falloffs.len());
+        self.falloffs.push(falloff);
+    }
+
+    fn declare_category(&mut self, fields: &[parser::Item], path: &str) -> Option<Assignment> {
+        let Some(name) = text(fields, "name") else {
+            self.notes
+                .note(format!("{path}: refused category without a name"));
+            return None;
+        };
+        let mut members = Vec::new();
+        let mut compressor_block = None;
+        for field in fields {
+            match key(field).as_str() {
+                "name" => {}
+                "soundeffects" => match field.value.items() {
+                    Some(items) => members.extend(
+                        items
+                            .iter()
+                            .filter(|item| item.key.is_none())
+                            .filter_map(|item| item.value.scalar_str().map(unquote)),
+                    ),
+                    None => self.notes.note(format!(
+                        "{path}: category {name} refused scalar soundeffects"
+                    )),
+                },
+                "compressor" => match field.value.items() {
+                    Some(items) => {
+                        compressor_block = Some(compressor(items, path, &mut self.notes))
+                    }
+                    None => self
+                        .notes
+                        .note(format!("{path}: category {name} refused scalar compressor")),
+                },
+                other => self
+                    .notes
+                    .note(format!("{path}: category {name} refused field {other}")),
+            }
+        }
+        // A repeated name adds its effects to the same category; a later
+        // compressor block replaces the earlier one, as the game's category
+        // registry takes a repeated category's compressor when it has one.
+        let index = match self.category_names.get(&name) {
+            Some(&index) => {
+                if compressor_block.is_some() {
+                    self.categories[index].compressor = compressor_block;
+                }
+                index
+            }
+            None => {
+                let index = self.categories.len();
+                self.category_names.insert(name.clone(), index);
+                self.categories.push(Category {
+                    name: name.clone(),
+                    compressor: compressor_block,
+                });
+                index
+            }
+        };
+        Some((index, members, path.to_owned()))
+    }
+
+    fn resolve(&mut self, pending: Vec<Pending>, assignments: Vec<Assignment>) {
+        for entry in pending {
+            let effect_name = self.effects[entry.effect].name.clone();
+            let source = self.effects[entry.effect].source.clone();
+            for (sound, weight) in entry.sounds {
+                match self.sound_names.get(&sound) {
+                    Some(&index) => self.effects[entry.effect].choices.push(Choice {
+                        sound: index,
+                        weight,
+                    }),
+                    None => self.notes.note(format!(
+                        "{source}: soundeffect {effect_name} names missing sound {sound}"
+                    )),
+                }
+            }
+            if let Some(falloff) = entry.falloff {
+                match self.falloff_names.get(&falloff) {
+                    Some(&index) => self.effects[entry.effect].falloff = Some(index),
+                    None => self.notes.note(format!(
+                        "{source}: soundeffect {effect_name} names missing falloff {falloff}; it plays without attenuation"
+                    )),
+                }
+            }
+        }
+        for (category, members, source) in assignments {
+            for member in members {
+                match self.effect_names.get(&member) {
+                    Some(&effect) => {
+                        if let Some(previous) = self.effects[effect].category
+                            && previous != category
+                        {
+                            self.notes.note(format!(
+                                "{source}: soundeffect {member} moves from category {} to {}",
+                                self.categories[previous].name, self.categories[category].name
+                            ));
+                        }
+                        self.effects[effect].category = Some(category);
+                    }
+                    None => self.notes.note(format!(
+                        "{source}: category {} names missing soundeffect {member}",
+                        self.categories[category].name
+                    )),
+                }
+            }
+        }
+    }
+}
+
+fn read_sounds(
+    field: &parser::Item,
+    effect: &str,
+    path: &str,
+    out: &mut Vec<(String, u32)>,
+    notes: &mut Notes,
+) {
+    let Some(items) = field.value.items() else {
+        notes.note(format!(
+            "{path}: soundeffect {effect} refused scalar sounds"
+        ));
+        return;
+    };
+    for item in items {
+        if item.keyword_is("sound") {
+            match item.value.scalar_str() {
+                Some(name) => out.push((unquote(name), 1)),
+                None => notes.note(format!(
+                    "{path}: soundeffect {effect} refused a sound block"
+                )),
+            }
+        } else if item.keyword_is("weighted_sound") {
+            let Some(fields) = item.value.items() else {
+                notes.note(format!(
+                    "{path}: soundeffect {effect} refused a scalar weighted_sound"
+                ));
+                continue;
+            };
+            let Some(name) = text(fields, "sound") else {
+                notes.note(format!(
+                    "{path}: soundeffect {effect} refused weighted_sound without a sound"
+                ));
+                continue;
+            };
+            let mut weight = 1.0f32;
+            if let Some(value) = fields.iter().rev().find(|f| f.keyword_is("weight")) {
+                number_into(value, &mut weight, path, notes);
+            }
+            out.push((name, weight.max(0.0) as u32));
+        } else {
+            notes.note(format!(
+                "{path}: soundeffect {effect} refused sounds entry {}",
+                key_text(item)
+            ));
+        }
+    }
+}
+
+fn compressor(fields: &[parser::Item], path: &str, notes: &mut Notes) -> Compressor {
+    let mut out = Compressor::default();
+    for field in fields {
+        match key(field).as_str() {
+            "enabled" => bool_into(field, &mut out.enabled, path, notes),
+            "pregain" => out.pregain = decibels(field, path, notes),
+            "postgain" => out.postgain = decibels(field, path, notes),
+            "ratio" => {
+                number_into(field, &mut out.ratio, path, notes);
+                // A zero ratio is held as one: no compression.
+                if out.ratio == 0.0 {
+                    out.ratio = 1.0;
+                }
+            }
+            "threshold" => number_into(field, &mut out.threshold, path, notes),
+            "attacktime" => number_into(field, &mut out.attack, path, notes),
+            "releasetime" => number_into(field, &mut out.release, path, notes),
+            other => notes.note(format!("{path}: compressor refused field {other}")),
+        }
+    }
+    out
+}
+
+/// Gains are authored in decibels and held linear.
+fn decibels(field: &parser::Item, path: &str, notes: &mut Notes) -> f32 {
+    let mut value = 0.0;
+    number_into(field, &mut value, path, notes);
+    10f32.powf(value / 20.0)
+}
+
+fn number_into(field: &parser::Item, out: &mut f32, path: &str, notes: &mut Notes) {
+    match field.value.scalar().and_then(crt::scan_f32) {
+        Some(value) if value.is_finite() => *out = value,
+        _ => notes.note(format!("{path}: refused non-numeric {}", key_text(field))),
+    }
+}
+
+fn bool_into(field: &parser::Item, out: &mut bool, path: &str, notes: &mut Notes) {
+    match field.value.scalar().and_then(parser::read_bool) {
+        Some(value) => *out = value,
+        None => notes.note(format!("{path}: refused non-boolean {}", key_text(field))),
+    }
+}
+
+/// `{ first second }`, each divided by `scale` (percent ranges by 100).
+/// Anything else is refused by name and keeps the range.
+fn range_into(field: &parser::Item, out: &mut Range, scale: f32, path: &str, notes: &mut Notes) {
+    let values: Option<Vec<f32>> = field.value.items().and_then(|items| {
+        items
+            .iter()
+            .map(|item| {
+                item.key
+                    .is_none()
+                    .then(|| item.value.scalar().and_then(crt::scan_f32))
+                    .flatten()
+                    .filter(|value| value.is_finite())
+            })
+            .collect()
+    });
+    match values.as_deref() {
+        Some(&[first, second]) => {
+            out.first = first / scale;
+            out.second = second / scale;
+        }
+        _ => notes.note(format!("{path}: refused malformed {}", key_text(field))),
+    }
+}
+
+/// Keys fold as the lexer folds keywords.
+fn key(field: &parser::Item) -> String {
+    field
+        .key
+        .as_deref()
+        .map(|key| String::from_utf8_lossy(key).to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+fn text(fields: &[parser::Item], key: &str) -> Option<String> {
+    fields
+        .iter()
+        .rev()
+        .find(|field| field.keyword_is(key))
+        .and_then(|field| field.value.scalar_str())
+        .map(unquote)
+}
+
+fn unquote(text: &str) -> String {
+    text.trim_matches('"').to_owned()
+}
+
+fn key_text(item: &parser::Item) -> String {
+    item.key
+        .as_deref()
+        .map(|key| String::from_utf8_lossy(key).into_owned())
+        .unwrap_or_else(|| "(anonymous)".into())
+}
+
+fn join(directory: &str, file: &str) -> String {
+    let file = file.replace('\\', "/");
+    if directory.is_empty() {
+        file
+    } else {
+        format!("{directory}/{file}")
+    }
+}
+
+fn invalid(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+#[cfg(test)]
+mod tests;

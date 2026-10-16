@@ -1394,13 +1394,14 @@ typed_codec!(DivisionTemplateRow, 64, |row| row.template as u128,
  |key| Self { template: key as u64, ..Default::default() },
  { 0 => (owner): U32, 1 => (name): Bytes, 2 => (unit_type): I32, 3 => (name_key): Bytes }, |_row| Ok(()));
 
-/// One grouped template entry. Token zero is a null-object definition.
+/// One template (definition, count) entry. Token zero is a null-object
+/// definition.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TemplateSubunit {
     pub token: u32,
     /// Nonzero for a country-local clone of the token's definition.
     pub local: u8,
-    /// Native signed count.
+    /// Native signed count; in [`TemplateGrids`], the cells holding it.
     pub count: i32,
 }
 value_struct!(TemplateSubunit {
@@ -1408,6 +1409,58 @@ value_struct!(TemplateSubunit {
     local: u8,
     count: i32
 });
+
+/// A template's three composition grids. Each lists the definitions its
+/// non-null cells hold, grouped by token and clone flag in the order each
+/// first occurs in the grid, with the number of cells holding it. A
+/// null-object cell is token zero.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TemplateGrids {
+    pub regiments: Vec<TemplateSubunit>,
+    pub support: Vec<TemplateSubunit>,
+    pub regimental_support: Vec<TemplateSubunit>,
+}
+value_struct!(TemplateGrids {
+    regiments: Vec<TemplateSubunit>,
+    support: Vec<TemplateSubunit>,
+    regimental_support: Vec<TemplateSubunit>
+});
+
+impl TemplateGrids {
+    /// The entries battle ambience counts: the regiment and support grids'
+    /// slots of real definitions, not the regimental-support grid's, and not
+    /// null-object cells, which the game's count skips.
+    pub fn ambience_slots(&self) -> impl Iterator<Item = &TemplateSubunit> {
+        self.regiments
+            .iter()
+            .chain(&self.support)
+            .filter(|slot| slot.token != 0)
+    }
+}
+
+#[cfg(test)]
+mod template_grid_tests {
+    use super::*;
+
+    #[test]
+    fn ambience_slots_count_regiments_and_support_but_not_regimental_support() {
+        let entry = |token, count| TemplateSubunit {
+            token,
+            local: 0,
+            count,
+        };
+        let grids = TemplateGrids {
+            regiments: vec![entry(1, 4), entry(2, 1)],
+            support: vec![entry(3, 1), entry(0, 2), entry(1, 1)],
+            regimental_support: vec![entry(1, 2), entry(4, 1)],
+        };
+        let slots: Vec<_> = grids
+            .ambience_slots()
+            .map(|slot| (slot.token, slot.count))
+            .collect();
+        assert_eq!(slots, [(1, 4), (2, 1), (3, 1), (1, 1)]);
+    }
+}
 
 /// Hourly companion of LandCombats, keyed by its full native handle: each
 /// side's loss counters.
@@ -1758,3 +1811,4 @@ opaque_value!(Vec<TrainAllocation>);
 opaque_value!(SparseBytes);
 opaque_value!(Vec<DivisionAcclimatization>);
 opaque_value!(Vec<TemplateSubunit>);
+opaque_value!(TemplateGrids);

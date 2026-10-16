@@ -326,6 +326,8 @@ inheritable! {
         combat: f32 = 100.0,
         /// `voice_volume`.
         voice: f32 = 100.0,
+        /// The music player; `music_volume`.
+        music: f32 = 75.0,
     }
 }
 
@@ -416,6 +418,7 @@ impl CampaignMapSettings {
             audio.units,
             audio.combat,
             audio.voice,
+            audio.music,
         ]
         .into_iter()
         .flatten()

@@ -19,7 +19,7 @@ use std::{
 
 pub const USAGE: &str =
     "viewer --mod-corpus --out <directory> [--game-dir <directory>] [--user-dir <directory>]
-         [--workshop <directory>] [--cache <directory>] [--only <stack,...>] [--jobs <n>] [--values[=text]]
+         [--workshop <directory>] [--cache <directory>] [--only <stack,...>] [--jobs <n>] [--values[=text]] [--sounds-only]
 viewer --mod-corpus-diff <base run> <head run> [--out <file.md>] [--examples <n>]";
 
 /// The stack with no mod, which every other stack mounts beneath its mod.
@@ -48,6 +48,8 @@ struct Options {
     only: Option<Vec<String>>,
     jobs: usize,
     values: Option<values::Mode>,
+    /// Runs only the defines and the map audio's readers.
+    sounds_only: bool,
 }
 
 fn value(args: &mut std::slice::Iter<'_, OsString>, name: &str) -> io::Result<OsString> {
@@ -68,6 +70,7 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
         (None, None, None, None, None, None);
     let mut jobs = 4;
     let mut values = None;
+    let mut sounds_only = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.to_str() {
@@ -88,6 +91,7 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
             Some("--jobs") => jobs = number(value(&mut args, "--jobs")?, "--jobs")?,
             Some("--values") => values = Some(values::Mode::Digest),
             Some("--values=text") => values = Some(values::Mode::Text),
+            Some("--sounds-only") => sounds_only = true,
             _ => {
                 return Err(invalid(format!(
                     "unknown argument {}\n{USAGE}",
@@ -113,6 +117,7 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
         only,
         jobs,
         values,
+        sounds_only,
     })
 }
 
@@ -293,7 +298,11 @@ fn stack(
             options.values.unwrap(),
         )
     });
-    let (runs, diagnostics, state_history) = readers::run(content, decode, values.clone());
+    let (runs, diagnostics, state_history) = if options.sounds_only {
+        readers::run_sounds(content, values.clone())
+    } else {
+        readers::run(content, decode, values.clone())
+    };
     if let Some(values) = values {
         values.finish();
     }

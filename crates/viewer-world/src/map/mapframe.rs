@@ -185,7 +185,7 @@ impl FrameAssets {
             .iter()
             .any(|p| p.instance.animation != entity_animation::STOPPED)
         {
-            warnings.push("Ambient animation and particle clocks start at viewer observation; native historical populations, RNG and process-clock phase are not recorded. Ambient sound playback is unavailable.".into());
+            warnings.push("Ambient animation and particle clocks start at viewer observation; native historical populations, RNG and process-clock phase are not recorded.".into());
         }
         let field = ModelField::build(
             &library,
@@ -214,7 +214,7 @@ fn instance(kind: &ambient::AmbientObjectType, object: &ambient::AmbientObject) 
         animation: if kind.use_animation {
             entity_animation::AMBIENT_IDLE
         } else {
-            entity_animation::STOPPED
+            entity_animation::DEFAULT_STATE
         },
         ..Default::default()
     }
@@ -357,7 +357,7 @@ fn placement_preserves_authored_height_scale_and_only_y_rotation() {
     assert_eq!(value.scale, 2.);
     assert_eq!(value.rotation, f32::from_bits(0x3fc90fdb));
     assert_eq!((value.pitch, value.roll), (0., 0.));
-    assert_eq!(value.animation, entity_animation::STOPPED);
+    assert_eq!(value.animation, entity_animation::DEFAULT_STATE);
 }
 
 #[test]
@@ -513,4 +513,167 @@ fn event_only_ambient_uses_shared_player_scale_and_entry_clock() {
     );
     pass.animate(21., None, &[0.]);
     assert!(pass.events.is_empty());
+}
+
+#[test]
+fn a_still_ambient_object_plays_its_default_state_from_when_it_appears() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let descriptors = installed_content::mesh::parse_descriptors(
+        br#"entity={name=wind default_state=idle state={name=idle state_time=1 event={trigger_once=yes sound={soundeffect=amb_wind}}}}
+            entity={name=late default_state=idle state={name=idle looping=no event={time=5 sound={soundeffect=amb_late}}}}
+            entity={name=twin default_state=idle state={name=idle chance=1 event={sound={soundeffect=amb_a}}} state={name=idle chance=0 event={sound={soundeffect=amb_b}}}}
+            entity={name=zero default_state=idle state={name=idle chance=0 event={trigger_once=yes sound={soundeffect=amb_zero}}}}
+            entity={name=animated default_state=idle state={name=idle chance=1 state_time=1 looping=no event={time=0.25 sound={soundeffect=amb_idle_a}}} state={name=idle chance=2 state_time=1 looping=no event={time=0.25 sound={soundeffect=amb_idle_b}}}}"#,
+        "gfx/synthetic.asset",
+    )
+    .unwrap();
+    let library = ModelLibrary::load(
+        &ResolvedLayers::default(),
+        Decode::default(),
+        &descriptors,
+        &[
+            "wind".into(),
+            "late".into(),
+            "twin".into(),
+            "zero".into(),
+            "animated".into(),
+        ],
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let placed = |name: &str, identity: u32, animation: u32| {
+        (
+            library.slot(name).unwrap(),
+            ModelInstance {
+                position: [identity as f32, 0., 0.],
+                scale: 1.,
+                animation,
+                animation_identity: identity,
+                ..Default::default()
+            },
+        )
+    };
+    let still = entity_animation::DEFAULT_STATE;
+    // Animated neighbours, each drawing its variant from its own stream.
+    let neighbours: Vec<_> = (9..17)
+        .map(|identity| {
+            let mut neighbour = placed("animated", identity, entity_animation::AMBIENT_IDLE);
+            neighbour.1.animation_seed = identity.wrapping_mul(0x9e37_79b9);
+            neighbour
+        })
+        .collect();
+    let mut all = vec![
+        placed("wind", 1, still),
+        placed("late", 2, still),
+        placed("twin", 3, still),
+        placed("zero", 4, still),
+    ];
+    all.extend(neighbours.iter().copied());
+    // Each frame's sound events, from the pass's own event list.
+    let sounds_at = |pass: &mut super::models::ModelPass, time: f32| {
+        pass.animate(time, None, &[0.]);
+        let mut names = super::sound_events::Names::default();
+        let mut sounds = Vec::new();
+        super::sound_events::collect(&pass.events, &mut names, &mut sounds, |_| false);
+        sounds
+            .into_iter()
+            .map(|sound| {
+                (
+                    sound.effect.to_string(),
+                    sound.position,
+                    sound.age,
+                    sound.key,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut pass = super::models::ModelPass::new(&library, "map frame");
+    pass.update_placed(all.clone(), 256.);
+    // The same neighbours alone, stepped in lock-step with the full pass.
+    let mut alone = super::models::ModelPass::new(&library, "map frame");
+    alone.update_placed(neighbours.clone(), 256.);
+    let neighbour_keys: Vec<_> = neighbours
+        .iter()
+        .map(|(slot, instance)| {
+            let (seed, identity) = instance.animation_key();
+            (*slot, seed, identity)
+        })
+        .collect();
+    let mut drawn = std::collections::BTreeSet::new();
+    let mut compare = |pass: &mut super::models::ModelPass, time: f32| {
+        let sounds = sounds_at(pass, time);
+        let mut with = sounds
+            .iter()
+            .filter(|sound| sound.0.starts_with("amb_idle"))
+            .map(|sound| (sound.0.clone(), sound.1, sound.2))
+            .collect::<Vec<_>>();
+        let mut without = sounds_at(&mut alone, time)
+            .into_iter()
+            .map(|sound| (sound.0, sound.1, sound.2))
+            .collect::<Vec<_>>();
+        let order = |a: &(String, [f32; 3], f32), b: &(String, [f32; 3], f32)| {
+            a.1[0].total_cmp(&b.1[0]).then(a.0.cmp(&b.0))
+        };
+        with.sort_by(order);
+        without.sort_by(order);
+        // The other actors animate and draw their variants exactly as they
+        // would without the still ones: each player keeps its own stream.
+        assert_eq!(with, without, "at {time}");
+        drawn.extend(with.into_iter().map(|sound| sound.0));
+        for key in &neighbour_keys {
+            assert_eq!(
+                pass.root_play_position(*key),
+                alone.root_play_position(*key),
+                "at {time}"
+            );
+        }
+        sounds
+    };
+    compare(&mut pass, 20.);
+    // Each still actor has entered its default state on a player of its own,
+    // so its animation runs; the one refused does not.
+    for (slot, instance) in &all[..4] {
+        let refused = instance.animation_identity == 3;
+        assert_eq!(pass.player(*slot, instance).is_some(), !refused);
+    }
+    let sounds = compare(&mut pass, 20.5);
+    let effects: Vec<_> = sounds.iter().map(|sound| sound.0.as_str()).collect();
+    // A single variant is entered whatever its chance; a later event waits
+    // for its time.
+    assert_eq!(effects[..2], ["amb_wind", "amb_zero"]);
+    assert!(
+        effects[2..]
+            .iter()
+            .all(|effect| effect.starts_with("amb_idle")),
+        "{effects:?}"
+    );
+    assert_eq!(effects.len(), 2 + neighbours.len());
+    assert_eq!(sounds[0].1, [1., 0., 0.]);
+    assert!((sounds[0].2 - 0.5).abs() < 1e-3, "{}", sounds[0].2);
+    let wind = sounds[0].3;
+    // Several default-state variants are drawn by a stream the recording does
+    // not hold: refused by name and counted, never guessed.
+    assert_eq!(pass.default_state_refusals.len(), 1);
+    let (refusal, count) = pass.default_state_refusals.iter().next().unwrap();
+    assert!(
+        refusal.starts_with("entity twin reaches state idle of 2 variants"),
+        "{refusal}"
+    );
+    assert_eq!(*count, 1);
+    for step in 1..11 {
+        compare(&mut pass, 20.5 + step as f32 * 0.5);
+    }
+    let sounds = compare(&mut pass, 26.);
+    let late = sounds
+        .iter()
+        .find(|sound| sound.0 == "amb_late")
+        .expect("the timed event fires five seconds after the actor appeared");
+    assert!((late.2 - 1.0).abs() < 1e-3, "{}", late.2);
+    // A trigger-once loop stays presented under the same key, so its sound
+    // plays on rather than ending and starting again.
+    let still_wind = sounds.iter().find(|sound| sound.0 == "amb_wind").unwrap();
+    assert_eq!(still_wind.3, wind);
+    // The neighbours drew both variants between them.
+    assert_eq!(drawn.len(), 2, "{drawn:?}");
 }

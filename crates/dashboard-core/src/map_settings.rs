@@ -234,6 +234,35 @@ pub fn catalogue(
     installed_content_core::content::visual::installed(options, cancel)
 }
 
+/// The game's sound volumes from `settings.txt`'s keys. The game's volume sliders store 0-100 as
+/// decimals; the value is kept exactly, and only a value the slider cannot store is brought into
+/// its range. A missing or unreadable value keeps the game's default.
+pub fn game_audio(keys: &installed_content_settings::settings::SettingsKeys) -> MapAudio {
+    let volume = |key: &str, fallback: f32| {
+        keys.f32_at(&[key])
+            .filter(|value| value.is_finite())
+            .map_or(fallback, |value| value.clamp(0.0, 100.0))
+    };
+    let defaults = MapAudio::default();
+    MapAudio {
+        master: volume("master_volume", defaults.master),
+        ambient: volume("ambient_volume", defaults.ambient),
+        units: volume("sound_fx_volume", defaults.units),
+        combat: volume("sound_fx_volume", defaults.combat),
+        voice: volume("voice_volume", defaults.voice),
+        music: volume("music_volume", defaults.music),
+    }
+}
+
+/// The game's second master factor, `dev_master_volume`, as a fraction; the
+/// game multiplies it into its master volume. It is not a user choice, so it
+/// is read from `settings.txt` and never inherited.
+pub fn game_dev_master(keys: &installed_content_settings::settings::SettingsKeys) -> f32 {
+    keys.f32_at(&["dev_master_volume"])
+        .filter(|value| value.is_finite())
+        .map_or(0.5, |value| value.clamp(0.0, 100.0) / 100.0)
+}
+
 /// Read the user's existing game preferences; never writes to settings.txt.
 fn game_settings(user: &std::path::Path) -> io::Result<Game> {
     parse_game_keys(&installed_content_settings::settings::read_keys(user)?)
@@ -298,19 +327,7 @@ fn parse_game_keys(keys: &installed_content_settings::settings::SettingsKeys) ->
             .try_into()
             .map_err(|_| crate::invalid("Invalid game texture quality"))?;
     }
-    let mut audio = MapAudio::default();
-    // The game's volume sliders store 0-100 as decimals; the value is kept exactly, and only a
-    // value the slider cannot store is brought into its range.
-    let volume = |key: &str, fallback: f32| {
-        keys.f32_at(&[key])
-            .filter(|value| value.is_finite())
-            .map_or(fallback, |value| value.clamp(0.0, 100.0))
-    };
-    audio.master = volume("master_volume", audio.master);
-    audio.ambient = volume("ambient_volume", audio.ambient);
-    audio.units = volume("sound_fx_volume", audio.units);
-    audio.combat = volume("sound_fx_volume", audio.combat);
-    audio.voice = volume("voice_volume", audio.voice);
+    let audio = game_audio(keys);
     let game = Game {
         graphics: result,
         audio,
@@ -551,7 +568,7 @@ mod tests {
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let game = parse_game(
             b"hide_daynight_cycle=yes show_allied_plans=no master_volume=80.000000 \
-              ambient_volume=50.4 sound_fx_volume=25 voice_volume=0 \
+              ambient_volume=50.4 sound_fx_volume=25 voice_volume=0 music_volume=49.6 \
               graphics={} mapRenderingOptions={}",
         )
         .unwrap();
@@ -563,9 +580,17 @@ mod tests {
                 game.audio.ambient,
                 game.audio.units,
                 game.audio.combat,
-                game.audio.voice
+                game.audio.voice,
+                game.audio.music
             ],
-            [80.0, 50.4, 25.0, 25.0, 0.0]
+            [80.0, 50.4, 25.0, 25.0, 0.0, 49.6]
+        );
+        // The game's second master factor is read apart and never inherited.
+        let keys = installed_content_settings::settings::SettingsKeys::read(b"dev_master_volume=25.000000");
+        assert_eq!(game_dev_master(&keys), 0.25);
+        assert_eq!(
+            game_dev_master(&installed_content_settings::settings::SettingsKeys::read(b"")),
+            0.5
         );
         let shown = parse_game(
             b"hide_daynight_cycle=no show_allied_plans=yes graphics={} mapRenderingOptions={}",

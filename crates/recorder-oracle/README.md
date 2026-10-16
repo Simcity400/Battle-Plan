@@ -30,7 +30,7 @@ Composes exact-hour text-save comparisons in their native comparison order. [ora
 | [recorder-oracle-intel](../recorder-oracle-intel/README.md) | Intelligence agencies, operatives and operation save comparisons. |
 | [recorder-oracle-land](../recorder-oracle-land/README.md) | Division land-manager records and land-history save comparisons. |
 | [recorder-oracle-map-inputs](../recorder-oracle-map-inputs/README.md) | Country and map presentation operand comparisons. |
-| [recorder-oracle-military](../recorder-oracle-military/README.md) | Division status/movement, army orders, force rosters and combat membership. |
+| [recorder-oracle-military](../recorder-oracle-military/README.md) | Division status/movement, army orders, force rosters, combat membership and the battle-sound list's self-check. |
 | [recorder-oracle-modifier-breakdowns](../recorder-oracle-modifier-breakdowns/README.md) | Power-balance modifier description-tree comparisons. |
 | [recorder-oracle-modifiers](../recorder-oracle-modifiers/README.md) | Stored country modifier comparisons. |
 | [recorder-oracle-naval-history](../recorder-oracle-naval-history/README.md) | Naval history, bases, railways and theatre save comparisons. |

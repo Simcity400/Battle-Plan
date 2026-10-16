@@ -42,6 +42,8 @@ fn set_combats(frame: &mut DecodedFrame, count: u32, generation: u64) {
                 duration: 12,
                 attackers: vec![u64::from(id) << 32 | 99, u64::from(id) << 32 | 100],
                 defenders: vec![u64::from(id) << 32 | 101],
+                attacker_classes: vec![0, 0],
+                defender_classes: vec![0],
             })
             .collect(),
     ));

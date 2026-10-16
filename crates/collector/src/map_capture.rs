@@ -690,6 +690,8 @@ pub struct MapCaptured {
     pub player_names_len: usize,
     player_names_required: usize,
     pub land_participants: Vec<u64>,
+    /// Each participant's unit class, beside `land_participants`.
+    pub land_classes: Vec<u32>,
     pub land_participants_len: usize,
     land_participants_required: usize,
     naval_groups: Vec<usize>,
@@ -795,6 +797,9 @@ impl MapCaptured {
             land_participants: engine::allocation::owned_vec(engine::allocation::default_vec(
                 capacity.land_participants,
             )),
+            land_classes: engine::allocation::owned_vec(engine::allocation::default_vec(
+                capacity.land_participants,
+            )),
             land_participants_len: 0,
             land_participants_required: 0,
             naval_groups: engine::allocation::owned_vec(engine::allocation::default_vec(
@@ -820,6 +825,7 @@ impl MapCaptured {
             + self.orders.allocated_bytes()
             + self.player_names.capacity()
             + self.land_participants.capacity() * size_of::<u64>()
+            + self.land_classes.capacity() * size_of::<u32>()
             + self.naval_groups.capacity() * size_of::<usize>()
     }
 
@@ -903,6 +909,7 @@ impl MapCaptured {
         grow_capacity(&mut capacities.naval_groups, self.naval_groups_required);
         grow_vec(&mut self.player_names, capacities.player_names);
         grow_vec(&mut self.land_participants, capacities.land_participants);
+        grow_vec(&mut self.land_classes, capacities.land_participants);
         grow_vec(&mut self.naval_groups, capacities.naval_groups);
     }
 
@@ -960,6 +967,7 @@ impl MapCaptured {
                 state,
                 &mut self.land_combats.rows,
                 &mut self.land_participants,
+                &mut self.land_classes,
                 |source| nested = nested.saturating_add(sources.land(source)),
             );
             nested = nested.saturating_add(sources.finish_land(land.outcome));
@@ -1791,6 +1799,7 @@ mod tests {
         assert_eq!(captured.naval.ships.rows.len(), capacity.rows[5]);
         assert_eq!(captured.player_names.len(), capacity.player_names);
         assert_eq!(captured.land_participants.len(), capacity.land_participants);
+        assert_eq!(captured.land_classes.len(), capacity.land_participants);
         assert_eq!(captured.orders.geometry.len(), capacity.order_geometry);
     }
 
@@ -1851,6 +1860,7 @@ mod tests {
 
         assert_eq!(captured.naval.ships.rows[0].id, u64::MAX);
         assert_eq!(captured.land_participants.len(), 16384);
+        assert_eq!(captured.land_classes.len(), 16384);
 
         assert_eq!(captured.player_names.len(), 8192);
 

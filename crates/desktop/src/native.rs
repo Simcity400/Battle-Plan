@@ -62,6 +62,8 @@ struct Inner {
     display: Vec<dashboard::protocol::MapAction>,
     /// A pop-out window's own viewer: parented to that window, and reporting as the pop-out.
     popout: Option<PopOutWindow>,
+    /// The last mute choice sent with [`NativeHost::set_muted`].
+    muted: Option<bool>,
 }
 
 /// Tells the pop-out's owner that its viewer's status changed.
@@ -341,6 +343,24 @@ impl NativeHost {
         {
             inner.pending.actions.push_back(MapAction::MapSettingsSaved);
         }
+        drop(inner);
+        self.shared.1.notify_all();
+    }
+
+    /// Sends the mute choice to a running viewer and keeps it for a viewer
+    /// started later, as [`NativeHost::set_diagnostics`] does.
+    pub fn set_muted(&self, muted: bool) {
+        use dashboard::protocol::MapAction;
+        let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        inner.muted = Some(muted);
+        if inner.process.is_none() || inner.shutting_down {
+            return;
+        }
+        inner
+            .pending
+            .actions
+            .retain(|action| !matches!(action, MapAction::Mute { .. }));
+        inner.pending.actions.push_back(MapAction::Mute { muted });
         drop(inner);
         self.shared.1.notify_all();
     }

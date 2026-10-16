@@ -67,7 +67,7 @@ Each component's README describes its layout, concepts and local rules.
 | [collector-lexical](crates/collector-lexical/README.md) | The game's interned token dictionary, its owned raw copy and conversion. |
 | [collector-lifetime](crates/collector-lifetime/README.md) | Native world-reset observation and occurrence admission shared by between-tick captures. |
 | [collector-logistics](crates/collector-logistics/README.md) | Concurrent observation of native logistics balance writes and their available-stock operands. |
-| [collector-map-tables](crates/collector-map-tables/README.md) | The ordinary map part's map facilities, naval bases and saved event targets. |
+| [collector-map-tables](crates/collector-map-tables/README.md) | The ordinary map part's battle-sound list, map facilities, naval bases and saved event targets. |
 | [collector-memory](crates/collector-memory/README.md) | Terminal witness storage, scoped allocation context, checked raw-reserve diagnostics, native read accounting and optional fault injection. |
 | [collector-metadata](crates/collector-metadata/README.md) | Prepared native content rosters, recorded identity verification and executable layout reports for capture. |
 | [collector-model-inputs](crates/collector-model-inputs/README.md) | Local sub-unit clones and requirements with their writer observer. |
@@ -172,6 +172,7 @@ Each component's README describes its layout, concepts and local rules.
 | [installed-content-states](crates/installed-content-states/README.md) | Authored state history and membership. |
 | [installed-content-equipment-graphics](crates/installed-content-equipment-graphics/README.md) | Graphics pools, equipment contexts and map/state joins. |
 | [installed-content-settings](crates/installed-content-settings/README.md) | Read-only local game/display settings. |
+| [installed-content-sound](crates/installed-content-sound/README.md) | Sound, sound effect, falloff, category and compressor definitions and WAVE samples. |
 | [installed-content-regions](crates/installed-content-regions/README.md) | Strategic regions and ordered weather periods. |
 | [installed-content-division-names](crates/installed-content-division-names/README.md) | Division and raid name groups. |
 | [installed-content-events](crates/installed-content-events/README.md) | Event declarations and ordered options/effects. |
@@ -191,6 +192,7 @@ Each component's README describes its layout, concepts and local rules.
 | [viewer-counters](crates/viewer-counters/README.md) | Counter grids, GUI lifecycle, grouping and mutable unit selection. |
 | [viewer-counter-products](crates/viewer-counter-products/README.md) | Counter/province hovers, route queries, selected movement and battle-plan products. |
 | [viewer-world](crates/viewer-world/README.md) | GPU scene, world labels, passes, figures, buildings, political fill and weather. |
+| [viewer-audio](crates/viewer-audio/README.md) | Map sound-effect instances, mixing, compressors and the process audio device. |
 | [viewer](crates/viewer/README.md) | Documents, ordered loading, playback, app/corpus composition and image export. |
 | [dashboard-core](crates/dashboard-core/README.md) | Dashboard protocol, transport, recording metadata replies, settings, content findings and block scans. |
 | [dashboard-text](crates/dashboard-text/README.md) | Trigger and scripted-text interpreter, effect descriptions, name rules, content catalogue and recording metadata helpers. |

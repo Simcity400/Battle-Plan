@@ -37,6 +37,7 @@ pub(crate) fn table_inputs(
         land_combats(
             &captured.land_combats,
             &captured.land_participants,
+            &captured.land_classes,
             captured.land_participants_len,
             projection.as_deref_mut(),
         ),
@@ -146,6 +147,7 @@ fn controllers(
 fn land_combats(
     captured: &CaptureRows<cland_combat::Row>,
     participants: &[u64],
+    classes: &[u32],
     participants_len: usize,
     projection: Option<&mut Projection<'_>>,
 ) -> TableInput {
@@ -154,7 +156,10 @@ fn land_combats(
         Ok(rows) => rows,
         Err(failure) => return failure,
     };
-    let Some(participants) = participants.get(..participants_len) else {
+    let (Some(participants), Some(classes)) = (
+        participants.get(..participants_len),
+        classes.get(..participants_len),
+    ) else {
         return unavailable("land combat members lie outside the captured reference arena").into();
     };
     let mut scratch = Vec::new();
@@ -199,6 +204,10 @@ fn land_combats(
                     == previous.attackers
                 && participants[row.defender_start..row.defender_start + row.defender_len]
                     == previous.defenders
+                && classes[row.attacker_start..row.attacker_start + row.attacker_len]
+                    == previous.attacker_classes
+                && classes[row.defender_start..row.defender_start + row.defender_len]
+                    == previous.defender_classes
         },
         |row| LandCombatRow {
             id: row.id,
@@ -210,6 +219,12 @@ fn land_combats(
             )),
             defenders: engine::allocation::owned_vec(engine::allocation::copy_vec(
                 &participants[row.defender_start..row.defender_start + row.defender_len],
+            )),
+            attacker_classes: engine::allocation::owned_vec(engine::allocation::copy_vec(
+                &classes[row.attacker_start..row.attacker_start + row.attacker_len],
+            )),
+            defender_classes: engine::allocation::owned_vec(engine::allocation::copy_vec(
+                &classes[row.defender_start..row.defender_start + row.defender_len],
             )),
         },
     )
@@ -645,6 +660,7 @@ mod tests {
             }],
         );
         captured.land_participants = vec![u64::MAX, 0x100000002, u64::MAX];
+        captured.land_classes = vec![0, 13, 1];
         captured.land_participants_len = 3;
         captured.naval.fleet_names = b"Fleet".to_vec();
         set(
@@ -779,6 +795,8 @@ mod tests {
                 day: -1,
                 attackers: vec![u64::MAX, 0x100000002],
                 defenders: vec![u64::MAX],
+                attacker_classes: vec![0, 13],
+                defender_classes: vec![1],
             }]),
             TableRows::Fleets(vec![FleetRow {
                 id: u64::MAX,
@@ -898,16 +916,30 @@ mod tests {
             sampled(land_combats(
                 &captured.land_combats,
                 &captured.land_participants,
+                &captured.land_classes,
                 3,
                 None
             )),
             TableView::Unavailable { .. }
         ));
         captured.land_combats.rows[0].defender_start = 2;
+        captured.land_classes.pop();
         assert!(matches!(
             sampled(land_combats(
                 &captured.land_combats,
                 &captured.land_participants,
+                &captured.land_classes,
+                3,
+                None
+            )),
+            TableView::Unavailable { .. }
+        ));
+        captured.land_classes.push(0);
+        assert!(matches!(
+            sampled(land_combats(
+                &captured.land_combats,
+                &captured.land_participants,
+                &captured.land_classes,
                 2,
                 None
             )),
@@ -917,6 +949,7 @@ mod tests {
             sampled(land_combats(
                 &captured.land_combats,
                 &captured.land_participants,
+                &captured.land_classes,
                 4,
                 None
             )),
@@ -1014,6 +1047,7 @@ mod tests {
             sampled(land_combats(
                 &captured.land_combats,
                 &captured.land_participants,
+                &captured.land_classes,
                 3,
                 None
             )),
@@ -1024,6 +1058,7 @@ mod tests {
             sampled(land_combats(
                 &captured.land_combats,
                 &captured.land_participants,
+                &captured.land_classes,
                 3,
                 None
             )),
@@ -1036,6 +1071,7 @@ mod tests {
             sampled(land_combats(
                 &captured.land_combats,
                 &captured.land_participants,
+                &captured.land_classes,
                 3,
                 None
             )),
