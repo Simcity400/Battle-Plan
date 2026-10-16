@@ -1,14 +1,14 @@
 //! Prepared ledger observations use the production accounting and shared series.
 use super::*;
-use crate::prepared::frame_changes::FrameChanges;
-use crate::prepared::series::{self, Accumulator, Reader, Run};
+use dashboard_base::prepared::frame_changes::FrameChanges;
+use dashboard_base::prepared::series::{self, Accumulator, Reader, Run};
 use replay::rows::RowCodec;
 
 pub(crate) type PreparedContent = Result<Option<Arc<PoliticsContent>>, String>;
 
 pub fn prepared_content(
     source: &Source,
-    options: Option<&crate::products::ContentOptions>,
+    options: Option<&dashboard_core::config::ContentOptions>,
 ) -> PreparedContent {
     let content = options
         .map(|options| politics_content(source, options))
@@ -52,7 +52,7 @@ pub struct Prepared {
     day_tags: BTreeMap<i32, BTreeSet<String>>,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
-    work: crate::prepared::observer_tests::Work,
+    work: dashboard_base::prepared::observer_tests::Work,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -197,23 +197,23 @@ impl Totals {
         self.known = self
             .known
             .checked_add(amount(Some(&payment.known_raw))?.unwrap())
-            .ok_or_else(|| crate::invalid("Politics subtotal overflow"))?;
+            .ok_or_else(|| dashboard_core::invalid("Politics subtotal overflow"))?;
         self.count = self
             .count
             .checked_add(u64::from(payment.spend.occurrences))
-            .ok_or_else(|| crate::invalid("Politics payment count overflow"))?;
+            .ok_or_else(|| dashboard_core::invalid("Politics payment count overflow"))?;
         self.rows = self
             .rows
             .checked_add(u64::from(payment.count))
-            .ok_or_else(|| crate::invalid("Politics row count overflow"))?;
+            .ok_or_else(|| dashboard_core::invalid("Politics row count overflow"))?;
         self.unknown = self
             .unknown
             .checked_add(u64::from(payment.spend.occurrences - payment.known_count))
-            .ok_or_else(|| crate::invalid("Politics payment count overflow"))?;
+            .ok_or_else(|| dashboard_core::invalid("Politics payment count overflow"))?;
         self.uncovered = self
             .uncovered
             .checked_add(u64::from(!payment.spend.covered))
-            .ok_or_else(|| crate::invalid("Politics payment count overflow"))?;
+            .ok_or_else(|| dashboard_core::invalid("Politics payment count overflow"))?;
         let later = self.latest.as_ref().is_none_or(|old| {
             (
                 old.spend.hour,
@@ -245,7 +245,7 @@ fn payment(reply: &PoliticsLedgerReply, spend: &LedgerSpend) -> io::Result<Payme
         .iter()
         .find(|item| item.id == spend.item_id)
         .cloned()
-        .ok_or_else(|| crate::invalid("Missing prepared spending item"))?;
+        .ok_or_else(|| dashboard_core::invalid("Missing prepared spending item"))?;
     let ideas = reply
         .idea_tooltips
         .as_ref()
@@ -308,7 +308,7 @@ fn payment(reply: &PoliticsLedgerReply, spend: &LedgerSpend) -> io::Result<Payme
                 })
                 .map(|row| (row.country, row.instance, row.epoch.clone()))
         })
-        .ok_or_else(|| crate::invalid("Missing prepared payment identity"))?;
+        .ok_or_else(|| dashboard_core::invalid("Missing prepared payment identity"))?;
     Ok(Payment {
         spend: spend.clone(),
         item,
@@ -317,7 +317,7 @@ fn payment(reply: &PoliticsLedgerReply, spend: &LedgerSpend) -> io::Result<Payme
             .iter()
             .find(|category| category.id == spend.category)
             .cloned()
-            .ok_or_else(|| crate::invalid("Missing prepared spending category"))?,
+            .ok_or_else(|| dashboard_core::invalid("Missing prepared spending category"))?,
         ideas,
         count: 1,
         known_raw: spend.charge_raw.clone().unwrap_or_else(|| "0".into()),
@@ -374,13 +374,13 @@ fn amount(value: Option<&str>) -> io::Result<Option<i128>> {
     value
         .map(str::parse)
         .transpose()
-        .map_err(|error: std::num::ParseIntError| crate::invalid(error.to_string()))
+        .map_err(|error: std::num::ParseIntError| dashboard_core::invalid(error.to_string()))
 }
 fn add_raw(left: &mut Option<String>, right: Option<&str>) -> io::Result<()> {
     *left = match (amount(left.as_deref())?, amount(right)?) {
         (Some(left), Some(right)) => Some(
             left.checked_add(right)
-                .ok_or_else(|| crate::invalid("Politics subtotal overflow"))?
+                .ok_or_else(|| dashboard_core::invalid("Politics subtotal overflow"))?
                 .to_string(),
         ),
         _ => None,
@@ -400,22 +400,22 @@ fn merge_payment(left: &mut Payment, right: Payment) -> io::Result<()> {
         .spend
         .occurrences
         .checked_add(right.spend.occurrences)
-        .ok_or_else(|| crate::invalid("Politics payment count overflow"))?;
+        .ok_or_else(|| dashboard_core::invalid("Politics payment count overflow"))?;
     left.spend.covered &= right.spend.covered;
     if left.spend.category != "upkeep" {
         left.count = left
             .count
             .checked_add(right.count)
-            .ok_or_else(|| crate::invalid("Politics payment count overflow"))?;
+            .ok_or_else(|| dashboard_core::invalid("Politics payment count overflow"))?;
     }
     left.known_count = left
         .known_count
         .checked_add(right.known_count)
-        .ok_or_else(|| crate::invalid("Politics payment count overflow"))?;
+        .ok_or_else(|| dashboard_core::invalid("Politics payment count overflow"))?;
     left.known_raw = amount(Some(&left.known_raw))?
         .unwrap()
         .checked_add(amount(Some(&right.known_raw))?.unwrap())
-        .ok_or_else(|| crate::invalid("Politics subtotal overflow"))?
+        .ok_or_else(|| dashboard_core::invalid("Politics subtotal overflow"))?
         .to_string();
     left.spend.read_hour = left.spend.read_hour.max(right.spend.read_hour);
     if right.spend.hour < left.spend.hour {
@@ -429,7 +429,7 @@ fn merge_payment(left: &mut Payment, right: Payment) -> io::Result<()> {
 
 impl Prepared {
     #[cfg(test)]
-    fn measured_work(&self) -> crate::prepared::observer_tests::Work {
+    fn measured_work(&self) -> dashboard_base::prepared::observer_tests::Work {
         let mut work = self.work;
         work.row_visits = self.scan.inputs.row_visits;
         work
@@ -465,7 +465,7 @@ impl Prepared {
     }
     fn key(&mut self, tag: &str, field: &str) -> io::Result<u64> {
         let next = u64::try_from(self.keys.len())
-            .map_err(|_| crate::invalid("Politics series key count overflow"))?;
+            .map_err(|_| dashboard_core::invalid("Politics series key count overflow"))?;
         Ok(*self
             .keys
             .entry(series::field_key(tag, field))
@@ -879,7 +879,7 @@ impl Prepared {
                 continue;
             }
             let Some(identity) = identities.get(&spend.id) else {
-                return Err(crate::invalid("Missing prepared payment identity"));
+                return Err(dashboard_core::invalid("Missing prepared payment identity"));
             };
             let open = self
                 .parts
@@ -1846,7 +1846,7 @@ impl Prepared {
         }
         for tag in self.scan.countries.keys() {
             let next = u64::try_from(self.metadata.tail_ranges.len())
-                .map_err(|_| crate::invalid("Politics tail range count overflow"))?;
+                .map_err(|_| dashboard_core::invalid("Politics tail range count overflow"))?;
             self.metadata.tail_ranges.entry(tag.clone()).or_insert(next);
         }
         // Tail file ordinals belong to their own section, not the scalar key
@@ -1873,7 +1873,7 @@ impl Prepared {
     }
     pub fn saved_bytes(&mut self) -> io::Result<Vec<u8>> {
         self.scan.materialize_clock()?;
-        crate::prepared::series::compress(serde_json::to_vec(self)?.as_slice(), 1)
+        dashboard_base::prepared::series::compress(serde_json::to_vec(self)?.as_slice(), 1)
     }
     pub fn read(reader: impl io::Read) -> io::Result<Self> {
         Ok(serde_json::from_reader(zstd::stream::read::Decoder::new(
@@ -2125,7 +2125,7 @@ impl Continuation {
             for (key, read_hour, pp_read_hour, cp_read_hour) in country.daily {
                 let row = (*days
                     .get(&key)
-                    .ok_or_else(|| crate::invalid("Missing open politics day"))?)
+                    .ok_or_else(|| dashboard_core::invalid("Missing open politics day"))?)
                 .clone();
                 scan.daily.insert(
                     (row.country, row.instance, row.epoch, row.day_hour),
@@ -2141,7 +2141,7 @@ impl Continuation {
             for (key, read_hour, covered, facts) in country.costs {
                 let row = (*costs
                     .get(&key)
-                    .ok_or_else(|| crate::invalid("Missing unresolved politics cost"))?)
+                    .ok_or_else(|| dashboard_core::invalid("Missing unresolved politics cost"))?)
                 .clone();
                 open.daily_costs.push(DailyCost {
                     row,
@@ -2157,9 +2157,9 @@ impl Continuation {
             .map(|rows| {
                 rows.into_iter()
                     .map(|(name, key)| {
-                        let row = (*definitions
-                            .get(&key)
-                            .ok_or_else(|| crate::invalid("Missing open politics modifier"))?)
+                        let row = (*definitions.get(&key).ok_or_else(|| {
+                            dashboard_core::invalid("Missing open politics modifier")
+                        })?)
                         .clone();
                         Ok((name, row))
                     })

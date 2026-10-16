@@ -1818,18 +1818,29 @@ dependencies = [
  "dashboard-base",
  "dashboard-construction",
  "dashboard-core",
+ "dashboard-country-fuel",
+ "dashboard-country-nukes",
  "dashboard-equipment-losses",
  "dashboard-equipment-stockpile",
  "dashboard-forces",
+ "dashboard-game-score",
  "dashboard-intelligence",
  "dashboard-land-battles",
  "dashboard-military-air-ledger",
  "dashboard-naval",
+ "dashboard-occupation",
+ "dashboard-party-history",
+ "dashboard-peace-deals",
  "dashboard-politics-ledger",
  "dashboard-raids",
  "dashboard-resource-balance",
+ "dashboard-special-projects",
+ "dashboard-stability",
+ "dashboard-subjects",
  "dashboard-text",
  "dashboard-unit-leaders",
+ "dashboard-wars",
+ "dashboard-world-tension",
  "engine",
  "installed-content",
  "mimalloc",
@@ -1934,6 +1945,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashboard-country-fuel"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "dashboard-country-nukes"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+]
+
+[[package]]
 name = "dashboard-equipment-losses"
 version = "0.1.0"
 dependencies = [
@@ -1981,6 +2025,22 @@ dependencies = [
  "store",
  "ts-rs",
  "uuid",
+]
+
+[[package]]
+name = "dashboard-game-score"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "dashboard-wars",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
 ]
 
 [[package]]
@@ -2053,6 +2113,59 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashboard-occupation"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "zstd",
+]
+
+[[package]]
+name = "dashboard-party-history"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
+name = "dashboard-peace-deals"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
 name = "dashboard-politics-ledger"
 version = "0.1.0"
 dependencies = [
@@ -2106,6 +2219,59 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashboard-special-projects"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "png 0.18.1",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+]
+
+[[package]]
+name = "dashboard-stability"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "zstd",
+]
+
+[[package]]
+name = "dashboard-subjects"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
 name = "dashboard-text"
 version = "0.1.0"
 dependencies = [
@@ -2141,6 +2307,36 @@ dependencies = [
  "store",
  "ts-rs",
  "zstd",
+]
+
+[[package]]
+name = "dashboard-wars"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "installed-content",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+]
+
+[[package]]
+name = "dashboard-world-tension"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine",
+ "replay",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
 ]
 
 [[package]]

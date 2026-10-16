@@ -9,6 +9,7 @@ pub mod group_sum;
 pub mod observer_tests;
 pub mod series;
 mod store;
+pub mod timing;
 
 pub use store::{files, recording_store};
 

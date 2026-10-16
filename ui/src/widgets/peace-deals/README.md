@@ -2,7 +2,7 @@
 
 **What it shows:** Newest-first conference cards with recorded winners, losers and actions, plus explicitly dated derived or unattributed outcomes.
 
-**Product(s) it reads:** The prepared peace-deals query gathers branch events and uses the existing product reply builder.  [`peace-deals`](../../../../crates/dashboard/src/products/peace_deals.rs) and its [exact finalizer layer](../../../../crates/dashboard/src/products/peace_deals/exact.rs); [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) supplies dated state labels.
+**Product(s) it reads:** The prepared peace-deals query gathers branch events and uses the existing product reply builder.  [`peace-deals`](../../../../crates/dashboard-peace-deals/src/products/peace_deals.rs) and its [exact finalizer layer](../../../../crates/dashboard-peace-deals/src/products/peace_deals/exact.rs); [`place-names`](../../../../crates/dashboard-base/src/products/place_names.rs) supplies dated state labels.
 
 **Settings:** Whole world with no country picker; content-defined action filter and shared log density/animation/month/chip controls; Campaign, Follow, Pin and Range.
 

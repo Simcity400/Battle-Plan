@@ -2,7 +2,7 @@
 
 **What it shows:** The native war overview from one viewpoint, as expandable war lanes or country lanes with participation, capitulations and exact casualty counters.
 
-**Prepared data it reads:** [`wars`](../../../../crates/dashboard/src/products/wars.rs) supplies viewpoint-dependent groups from one branch-global prepared change stream; independent reached-hour reads supply exact casualties; its [product guide](../../../../crates/dashboard/src/products/wars/README.md) explains native grouping/app continuity. [`country-groups`](../../../../crates/dashboard-base/src/products/country_groups.rs) supplies faction and country history.
+**Prepared data it reads:** [`wars`](../../../../crates/dashboard-wars/src/products/wars.rs) supplies viewpoint-dependent groups from one branch-global prepared change stream; independent reached-hour reads supply exact casualties; its [product guide](../../../../crates/dashboard-wars/src/products/wars/README.md) explains native grouping/app continuity. [`country-groups`](../../../../crates/dashboard-base/src/products/country_groups.rs) supplies faction and country history.
 
 **Settings:** The widget's country is the viewpoint: the dashboard's country unless one is picked; Timeline/Country by country, country-view colours by war/side and Grow with playback; Campaign, Follow, Pin and Range.
 

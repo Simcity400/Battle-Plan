@@ -2,7 +2,7 @@
 
 **What it shows:** Mean resistance/compliance across each occupier's readable held states, as country lines, a race or one country's measure lines.
 
-**Product(s) it reads:** [`occupation-trend`](../../../../crates/dashboard/src/products/occupation_trend.rs) reuses the [`occupied-states`](../../../../crates/dashboard/src/products/occupied_states.rs) preparation observer; optional collaboration uses its recorded country context.
+**Product(s) it reads:** [`occupation-trend`](../../../../crates/dashboard-occupation/src/products/occupation_trend.rs) reuses the [`occupied-states`](../../../../crates/dashboard-occupation/src/products/occupied_states.rs) preparation observer; optional collaboration uses its recorded country context.
 
 **Settings:** All occupiers, Lines and Resistance by default; manual countries/smart groups/top N, Compliance/Both and ranking measure, optional collaboration, label decimals and shared race/line controls; Campaign, Follow, Pin and Range.
 

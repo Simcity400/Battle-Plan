@@ -206,7 +206,7 @@ The selected transport preview is not recorded; railway guns' sea legs read Owne
 ## Capture exceptions and limitations
 
 - `RaidSpeedInputs` reads transport speed separately from daily variant stats because flying raids reach it hourly: the exception to one reader per stored value. See [raid rows](../replay-data/src/extended_rows/raids_projects.rs).
-- Native war groups have no native group ID or participant join/leave dates. Derived continuity must preserve unobserved stretches; see [war rows](../replay-data/src/extended_rows/war_overview.rs) and [the wars product](../dashboard/src/products/wars/README.md).
+- Native war groups have no native group ID or participant join/leave dates. Derived continuity must preserve unobserved stretches; see [war rows](../replay-data/src/extended_rows/war_overview.rs) and [the wars product](../dashboard-wars/src/products/wars/README.md).
 - Cumulative output starts with branch observation, not line creation. Respect observation start, exactness and coverage; a linked partner's unknown share is never zero. See [economy rows](../replay-data/src/extended_rows/economy_construction.rs).
 - Event application time can differ from frame time. Complete empty batches certify only their capture scope; missing batches/partial intervals/lost drains never prove zero. Domain rows own these contracts.
 - [fixed_layout.rs](src/fixed_layout.rs) owns fixed-key/token families and named refusals. Verify complete recorded dictionaries and registered spelling/layout; dynamic keys remain content-driven.

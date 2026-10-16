@@ -1,0 +1,33 @@
+[package]
+name = "dashboard-game-score"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+# Tests that take more than about two seconds; see AGENTS.md.
+slow-tests = []
+# The product's test oracles, for the dashboard's pipeline and query tests.
+test-support = ["dashboard-base/test-support", "dashboard-wars/test-support"]
+
+[dependencies]
+dashboard-base.workspace = true
+dashboard-core.workspace = true
+dashboard-text.workspace = true
+dashboard-wars.workspace = true
+installed-content.workspace = true
+replay.workspace = true
+serde = { workspace = true, features = ["derive", "rc"] }
+serde_json.workspace = true
+store = { path = "../store" }
+ts-rs = "11.1"
+
+[dev-dependencies]
+dashboard-base = { workspace = true, features = ["test-support"] }
+# Prepared files publish without disk flushes, which no test can observe.
+store = { path = "../store", features = ["test-support"] }

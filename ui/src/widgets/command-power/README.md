@@ -6,7 +6,7 @@ Country command-power balances over time, with markers for one-off payments, an 
 
 ## Products it reads
 
-[`country-measure`](../../../../crates/dashboard-base/src/products/country_measure.rs) (`commandPower`) supplies balances; [`politics-ledger`](../../../../crates/dashboard-politics-ledger/src/products/politics_ledger.rs) supplies income, payments and reservations. [`country-stability`](../../../../crates/dashboard/src/products/country_stability.rs) supplies the native maximum. Shared country looks and groups follow the [widget contract](../README.md#contract).
+[`country-measure`](../../../../crates/dashboard-base/src/products/country_measure.rs) (`commandPower`) supplies balances; [`politics-ledger`](../../../../crates/dashboard-politics-ledger/src/products/politics_ledger.rs) supplies income, payments and reservations. [`country-stability`](../../../../crates/dashboard-stability/src/products/country_stability.rs) supplies the native maximum. Shared country looks and groups follow the [widget contract](../README.md#contract).
 
 ## Settings
 

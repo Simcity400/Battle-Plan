@@ -3,7 +3,7 @@
 The [overview reader](overview.rs) records ordered bilateral relation occurrences,
 country comparison inputs and goal references. The [goal reader](../cwar_goal.rs)
 and [relation-goal reader](../cwar_goal/relation.rs) retain the goal operands used
-for naming. The [wars product](../../../dashboard/src/products/wars/README.md)
+for naming. The [wars product](../../../dashboard-wars/src/products/wars/README.md)
 consumes recorded operands and content resolved from the recording's content stack.
 This engine reader does not construct the temporary overview groups.
 

@@ -2,7 +2,7 @@
 
 **What it shows:** A table of recorded occupied states, legal owners, occupiers, resistance, compliance, garrison requirement/strength and effective occupation laws.
 
-**Product(s) it reads:** [`occupied-states-manifest` and `occupied-states`](../../../../crates/dashboard/src/products/occupied_states.rs) share one preparation observer. The manifest supplies the branch's replay-block windows, content-derived law facts and warnings; each `occupied-states` reply is one window, so no reply grows with the campaign. Its scan/strength modules own native membership, formatting and law evaluation.
+**Product(s) it reads:** [`occupied-states-manifest` and `occupied-states`](../../../../crates/dashboard-occupation/src/products/occupied_states.rs) share one preparation observer. The manifest supplies the branch's replay-block windows, content-derived law facts and warnings; each `occupied-states` reply is one window, so no reply grows with the campaign. Its scan/strength modules own native membership, formatting and law evaluation.
 
 **Settings:** Countries match occupiers by default or original occupied countries; manual/smart-group choices, exact sort (resistance descending initially) and shared table density/bars/ranks; Campaign, Follow or Pin.
 

@@ -215,6 +215,39 @@ opt-level = 2
 [profile.dev.package.dashboard-military-air-ledger]
 opt-level = 2
 
+[profile.dev.package.dashboard-stability]
+opt-level = 2
+
+[profile.dev.package.dashboard-world-tension]
+opt-level = 2
+
+[profile.dev.package.dashboard-country-nukes]
+opt-level = 2
+
+[profile.dev.package.dashboard-subjects]
+opt-level = 2
+
+[profile.dev.package.dashboard-party-history]
+opt-level = 2
+
+[profile.dev.package.dashboard-occupation]
+opt-level = 2
+
+[profile.dev.package.dashboard-peace-deals]
+opt-level = 2
+
+[profile.dev.package.dashboard-game-score]
+opt-level = 2
+
+[profile.dev.package.dashboard-wars]
+opt-level = 2
+
+[profile.dev.package.dashboard-country-fuel]
+opt-level = 2
+
+[profile.dev.package.dashboard-special-projects]
+opt-level = 2
+
 [profile.dev.package.dashboard-politics-ledger]
 opt-level = 2
 
@@ -451,6 +484,39 @@ opt-level = 0
 [profile.test.package.dashboard-military-air-ledger]
 opt-level = 0
 
+[profile.test.package.dashboard-stability]
+opt-level = 0
+
+[profile.test.package.dashboard-world-tension]
+opt-level = 0
+
+[profile.test.package.dashboard-country-nukes]
+opt-level = 0
+
+[profile.test.package.dashboard-subjects]
+opt-level = 0
+
+[profile.test.package.dashboard-party-history]
+opt-level = 0
+
+[profile.test.package.dashboard-occupation]
+opt-level = 0
+
+[profile.test.package.dashboard-peace-deals]
+opt-level = 0
+
+[profile.test.package.dashboard-game-score]
+opt-level = 0
+
+[profile.test.package.dashboard-wars]
+opt-level = 0
+
+[profile.test.package.dashboard-country-fuel]
+opt-level = 0
+
+[profile.test.package.dashboard-special-projects]
+opt-level = 0
+
 [profile.test.package.dashboard-politics-ledger]
 opt-level = 0
 
@@ -677,6 +743,39 @@ opt-level = 2
 opt-level = 2
 
 [profile.full.package.dashboard-military-air-ledger]
+opt-level = 2
+
+[profile.full.package.dashboard-stability]
+opt-level = 2
+
+[profile.full.package.dashboard-world-tension]
+opt-level = 2
+
+[profile.full.package.dashboard-country-nukes]
+opt-level = 2
+
+[profile.full.package.dashboard-subjects]
+opt-level = 2
+
+[profile.full.package.dashboard-party-history]
+opt-level = 2
+
+[profile.full.package.dashboard-occupation]
+opt-level = 2
+
+[profile.full.package.dashboard-peace-deals]
+opt-level = 2
+
+[profile.full.package.dashboard-game-score]
+opt-level = 2
+
+[profile.full.package.dashboard-wars]
+opt-level = 2
+
+[profile.full.package.dashboard-country-fuel]
+opt-level = 2
+
+[profile.full.package.dashboard-special-projects]
 opt-level = 2
 
 [profile.full.package.dashboard-politics-ledger]

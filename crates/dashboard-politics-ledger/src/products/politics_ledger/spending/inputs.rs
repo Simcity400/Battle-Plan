@@ -1,6 +1,6 @@
 //! Current resolved native joins; never part of the saved accounting history.
 use super::*;
-use crate::prepared::frame_changes::FrameChanges;
+use dashboard_base::prepared::frame_changes::FrameChanges;
 
 #[derive(Clone, Default)]
 pub(super) struct Inputs {
@@ -45,7 +45,7 @@ pub(super) struct Inputs {
     character_slots: BTreeSet<u32>,
     pub command: BTreeMap<u32, i64>,
     complete: [bool; 4],
-    keys: Option<crate::metadata::CountryKeys>,
+    keys: Option<dashboard_text::metadata::CountryKeys>,
     #[cfg(any(test, feature = "test-support"))]
     pub row_visits: usize,
 }
@@ -118,7 +118,7 @@ impl Inputs {
                 self.keys = rows
                     .as_ref()
                     .ok()
-                    .map(|rows| crate::metadata::CountryKeys::read(rows));
+                    .map(|rows| dashboard_text::metadata::CountryKeys::read(rows));
                 self.census = rows
                     .unwrap_or_default()
                     .iter()

@@ -2,22 +2,18 @@
 //! clamped; CP subtracts its operand. Upkeep commits on each paid activation
 //! anniversary. Reconciliation, grants and refunds are never payments.
 use super::*;
-#[cfg(test)]
-use crate::catalogue::Catalogue;
-use crate::products::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
-use crate::products::{
+use dashboard_base::products::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
+use dashboard_base::products::politics_content::{PoliticsContent, politics_content};
+use dashboard_base::products::{
     idea_format::{self, LocalisedText, ModifierFormat},
     idea_history::{self, IdeaInfo},
     validate_tag,
 };
-use crate::{
-    catalogue::{View, plain_text},
-    transport::json_len,
-};
-use crate::{
-    identity::{Look, NamingCountry, character_script_token},
-    products::politics_content::{PoliticsContent, politics_content},
-};
+use dashboard_core::transport::json_len;
+#[cfg(test)]
+use dashboard_text::catalogue::Catalogue;
+use dashboard_text::catalogue::{View, plain_text};
+use dashboard_text::identity::{Look, NamingCountry, character_script_token};
 use installed_content::country_names::CountryNames;
 use std::sync::Arc;
 mod facts;
@@ -32,7 +28,7 @@ pub use holds::{LedgerCommandHold, LedgerCommandHolder};
 #[serde(rename_all = "camelCase")]
 pub struct LedgerIdeaTooltips {
     pub ideas: Vec<IdeaInfo>,
-    pub artwork: Vec<crate::Artwork>,
+    pub artwork: Vec<dashboard_core::dto::Artwork>,
     pub modifiers: Vec<ModifierFormat>,
     pub texts: Vec<LocalisedText>,
 }
@@ -512,7 +508,7 @@ impl Scanned {
                 let slot = if current {
                     self.inputs.links.get(raw).copied()
                 } else {
-                    links.and_then(|links| crate::metadata::link_slot(links, *raw))
+                    links.and_then(|links| dashboard_text::metadata::link_slot(links, *raw))
                 }?;
                 let country = if current {
                     let id = self.inputs.naming_ids.get(&slot)?;
@@ -1418,9 +1414,10 @@ fn daily_mutation(cost: &LedgerDailyCost) -> LedgerMutation {
 /// and scopes from the frame).
 #[derive(Default)]
 struct FrameTexts<'a> {
-    world: std::sync::OnceLock<Result<crate::triggers::World<'a>, String>>,
-    scripted:
-        std::cell::RefCell<BTreeMap<u32, std::rc::Rc<crate::scripted_text::ScriptedText<'a>>>>,
+    world: std::sync::OnceLock<Result<dashboard_text::triggers::World<'a>, String>>,
+    scripted: std::cell::RefCell<
+        BTreeMap<u32, std::rc::Rc<dashboard_text::scripted_text::ScriptedText<'a>>>,
+    >,
 }
 
 impl<'a> FrameTexts<'a> {
@@ -1430,11 +1427,11 @@ impl<'a> FrameTexts<'a> {
         content: &'a PoliticsContent,
         frame: &'a DecodedFrame,
         root: u32,
-    ) -> Result<std::rc::Rc<crate::scripted_text::ScriptedText<'a>>, String> {
+    ) -> Result<std::rc::Rc<dashboard_text::scripted_text::ScriptedText<'a>>, String> {
         if let Some(scripted) = self.scripted.borrow().get(&root) {
             return Ok(std::rc::Rc::clone(scripted));
         }
-        let scripted = std::rc::Rc::new(crate::scripted_text::ScriptedText::new(
+        let scripted = std::rc::Rc::new(dashboard_text::scripted_text::ScriptedText::new(
             frame,
             &content.catalogue.localisation,
             content.catalogue.scripted_content()?,
@@ -1487,7 +1484,7 @@ fn localise_at<'a>(
             .ok_or_else(|| format!("localisation {key}: its event-hour frame is unavailable"))?;
         let scripted = texts.scripted(content, frame, slot)?;
         if let Some((decision, selects_state)) = decision {
-            use crate::scripted_text::{EventObject, EventScope, EventScopes, Link};
+            use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes, Link};
             // The recorded identity supplies the country target, but not
             // the name seed or conditional state-target selector.
             let mut root = EventScope::of(EventObject::Country(slot));
@@ -1559,7 +1556,7 @@ fn localise_at<'a>(
                 .map(Some);
         }
         if unknown_seed {
-            use crate::scripted_text::{EventObject, EventScope, EventScopes};
+            use dashboard_text::scripted_text::{EventObject, EventScope, EventScopes};
             let mut scope = EventScope::of(EventObject::Country(slot));
             scope.random_seed_refusal = Some("focus caller random seed is not recorded");
             let scopes = EventScopes::new(vec![scope]);
@@ -1576,7 +1573,7 @@ fn localise_at<'a>(
 fn event_world<'a>(
     content: &'a PoliticsContent,
     frame: &'a DecodedFrame,
-) -> Result<crate::triggers::World<'a>, String> {
+) -> Result<dashboard_text::triggers::World<'a>, String> {
     let full = content
         .catalogue
         .scripted_content()
@@ -1585,9 +1582,9 @@ fn event_world<'a>(
         Ok(world) => Ok(world),
         Err(_) => {
             let power = content.power_content()?;
-            Ok(crate::triggers::World::read(
+            Ok(dashboard_text::triggers::World::read(
                 frame,
-                crate::triggers::ContentFacts::content_only(
+                dashboard_text::triggers::ContentFacts::content_only(
                     &power.dlcs,
                     &power.triggers,
                     &power.aliases,
@@ -1729,8 +1726,8 @@ fn event_text<'a>(
                     .get_or_init(|| event_world(content, frame))
                     .as_ref()
                     .map_err(Clone::clone)?;
-                let owner = crate::triggers::Scope::Country(own.naming.slot);
-                let mut scopes = crate::triggers::Scopes::of(owner);
+                let owner = dashboard_text::triggers::Scope::Country(own.naming.slot);
+                let mut scopes = dashboard_text::triggers::Scopes::of(owner);
                 // Preserve the fresh self links.
                 scopes.from = Some(owner);
                 scopes.prev = Some(owner);
@@ -1742,8 +1739,10 @@ fn event_text<'a>(
                     || row.item.target_state.is_some()
                 {
                     scopes.from = match (row.item.target_country, row.item.target_state) {
-                        (Some(raw), _) => world.slot(raw).map(crate::triggers::Scope::Country),
-                        (None, Some(state)) => Some(crate::triggers::Scope::State(state)),
+                        (Some(raw), _) => world
+                            .slot(raw)
+                            .map(dashboard_text::triggers::Scope::Country),
+                        (None, Some(state)) => Some(dashboard_text::triggers::Scope::State(state)),
                         _ => None,
                     };
                     scopes.unknown.from = scopes.from.is_none();
@@ -1830,8 +1829,8 @@ fn event_text<'a>(
                             .get_or_init(|| event_world(content, frame))
                             .as_ref()
                             .map_err(Clone::clone)?;
-                        let owner = crate::triggers::Scope::Country(own.naming.slot);
-                        let mut scopes = crate::triggers::Scopes::of(owner);
+                        let owner = dashboard_text::triggers::Scope::Country(own.naming.slot);
+                        let mut scopes = dashboard_text::triggers::Scopes::of(owner);
                         scopes.from = Some(owner);
                         scopes.prev = Some(owner);
                         world.evaluate(body, scopes).decided()
@@ -1859,13 +1858,15 @@ fn event_text<'a>(
         let slot = Some(own.naming.slot);
         if row.cause == "Idea" {
             match content.idea_name(token, own.naming.for_tag(&own.tag)) {
-                Ok(crate::idea_names::IdeaName::Key(key)) => {
+                Ok(dashboard_text::idea_names::IdeaName::Key(key)) => {
                     match localise_at(content, &key, frame, texts, slot, None, false) {
                         Ok(name) => found.name = name,
                         Err(reason) => found.unknown = Some(reason),
                     }
                 }
-                Ok(crate::idea_names::IdeaName::Generated(name)) => found.name = Some(name),
+                Ok(dashboard_text::idea_names::IdeaName::Generated(name)) => {
+                    found.name = Some(name)
+                }
                 Err(reason) => found.unknown = Some(reason),
             }
         }
@@ -1897,7 +1898,7 @@ fn character_art(
     recorded: &facts::CharacterFact,
 ) -> (Option<String>, Option<String>, Option<String>) {
     let name = facts::character_name(recorded, content);
-    match crate::products::character_portraits::portrait_png(content, &recorded.portrait) {
+    match dashboard_base::products::character_portraits::portrait_png(content, &recorded.portrait) {
         Ok(icon) => (name, Some(icon), None),
         Err(reason) => (
             name,
@@ -2184,7 +2185,7 @@ fn resolve_item(
                                 [("ARG", installed_content::localisation::Argument::Text(argument))];
                             let arguments: &[_] =
                                 if argument.is_empty() { &[] } else { &arguments };
-                            match crate::catalogue::localised_with(
+                            match dashboard_text::catalogue::localised_with(
                                 &content.catalogue.localisation,
                                 key,
                                 arguments,
@@ -2211,19 +2212,20 @@ fn resolve_item(
                     // The scoped name is frozen by event_text at this read. Only artwork
                     // is loaded at presentation. Reuse the production kit's recorded
                     // owner/key precedence and icon fallback.
-                    let sprite = crate::products::production_lines::organisation_icon_with_token(
-                        organisation,
-                        facts.organisation_token_known,
-                        |sprite| {
-                            content
-                                .catalogue
-                                .sprites
-                                .find(sprite)
-                                .ok()
-                                .flatten()
-                                .is_some()
-                        },
-                    );
+                    let sprite =
+                        dashboard_base::products::production_lines::organisation_icon_with_token(
+                            organisation,
+                            facts.organisation_token_known,
+                            |sprite| {
+                                content
+                                    .catalogue
+                                    .sprites
+                                    .find(sprite)
+                                    .ok()
+                                    .flatten()
+                                    .is_some()
+                            },
+                        );
                     match sprite {
                         Ok(Some(sprite)) => match sprite_png(content, pngs, &sprite) {
                             Ok(icon) => item.icon = icon,
@@ -2583,7 +2585,7 @@ fn present_fields(
         if let Some(info) = info
             && info_ids.insert(info.token.clone())
         {
-            let artwork = crate::Artwork {
+            let artwork = dashboard_core::dto::Artwork {
                 token: info.token.clone(),
                 name: item.name.clone(),
                 description: stored
@@ -2785,7 +2787,7 @@ fn present_fields(
         if let Some(info) = info
             && info_ids.insert(info.token.clone())
         {
-            let artwork = crate::Artwork {
+            let artwork = dashboard_core::dto::Artwork {
                 token: info.token.clone(),
                 name: item.name.clone(),
                 description: stored

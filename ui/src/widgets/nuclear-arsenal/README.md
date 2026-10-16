@@ -6,7 +6,7 @@ The game’s whole nuclear stockpile counter as a race, total lines or one-count
 
 ## Products it reads
 
-[`country-nukes`](../../../../crates/dashboard/src/products/country_nukes.rs) supplies counters, type runs and independent read/identity histories; shared country facts supply dated looks.
+[`country-nukes`](../../../../crates/dashboard-country-nukes/src/products/country_nukes.rs) supplies counters, type runs and independent read/identity histories; shared country facts supply dated looks.
 
 ## Settings
 

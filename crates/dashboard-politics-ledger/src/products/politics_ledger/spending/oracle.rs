@@ -1,7 +1,8 @@
 //! Recording-scan parity oracle; compiled only by family tests.
 use super::*;
-use crate::products::politics_content::politics_content;
-use crate::{blocks::PerBlock, catalogue::Catalogue, metadata::validate_campaign};
+use dashboard_base::products::politics_content::politics_content;
+use dashboard_core::blocks::PerBlock;
+use dashboard_text::{catalogue::Catalogue, metadata::validate_campaign};
 use replay::{container::Replay, frame::FrameDecoder};
 
 #[derive(Default)]
@@ -56,7 +57,7 @@ fn event_hours(
     let mut hours = BTreeSet::new();
     let mut dated = BTreeSet::new();
     let mut previous = None;
-    crate::blocks::scan_blocks(
+    dashboard_core::blocks::scan_blocks(
         replay,
         replay.index.iter().filter(|block| block.branch == branch),
         &selected,
@@ -156,7 +157,7 @@ fn scan_branch(
     selected.sort_unstable();
     selected.dedup();
     let mut with_world = selected.clone();
-    with_world.extend_from_slice(crate::triggers::RECORDED_TABLES);
+    with_world.extend_from_slice(dashboard_text::triggers::RECORDED_TABLES);
     with_world.sort_unstable();
     with_world.dedup();
     let mut scan = Scanned {
@@ -188,7 +189,7 @@ fn scan_branch(
         }
     };
     let blocks = replay.index.iter().filter(|block| block.branch == branch);
-    crate::blocks::scan_blocks(
+    dashboard_core::blocks::scan_blocks(
         replay,
         blocks,
         &PerBlock::new(tables_of),

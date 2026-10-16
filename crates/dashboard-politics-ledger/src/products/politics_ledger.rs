@@ -2,10 +2,10 @@
 //! never reconstructed content prices or balance falls. Spending presentation
 //! shares the prepared native accounting with the raw ledger.
 mod spending;
+use dashboard_base::products::{CountryParams, Product};
+use dashboard_base::source::Source;
 #[cfg(any(test, feature = "test-support"))]
-use super::LoadContext;
-use super::{CountryParams, Product};
-use crate::Source;
+use dashboard_core::config::LoadContext;
 use replay::{frame::DecodedFrame, rows::*};
 use serde::{Deserialize, Serialize};
 pub use spending::prepared;
@@ -246,7 +246,7 @@ pub struct PoliticsLedgerReply {
     pub part_summaries: Vec<LedgerPartSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub government_marks: Option<crate::prepared_chart::MarkSummary>,
+    pub government_marks: Option<dashboard_base::prepared_chart::MarkSummary>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
@@ -254,7 +254,7 @@ pub struct PoliticsLedgerReply {
 pub struct LedgerPartSummary {
     pub id: String,
     pub label: String,
-    pub summary: crate::prepared_chart::ChartSummary,
+    pub summary: dashboard_base::prepared_chart::ChartSummary,
 }
 
 /// A prepared recurring subtotal for one item within a game month or a

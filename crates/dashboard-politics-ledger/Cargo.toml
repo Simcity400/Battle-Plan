@@ -30,7 +30,6 @@ zstd = "0.13"
 
 [dev-dependencies]
 dashboard-base = { workspace = true, features = ["test-support"] }
-dashboard-core = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }
 # Folder layers, so tests load localisation files as the game content does.
 installed-content = { workspace = true, features = ["test-support"] }

@@ -8,9 +8,10 @@ guides ([political power spending](../../ui/src/widgets/political-power-spending
 [command power spending](../../ui/src/widgets/command-power-spending/README.md)).
 
 This is a product crate above [dashboard-base](../dashboard-base/README.md). The
-module keeps its dashboard path, `products::politics_ledger`; the crate root
-re-exports dashboard-base, so the code names the shared layer through the same
-`crate::` paths it used in the dashboard. The [dashboard](../dashboard/README.md)
+module keeps its dashboard path, `products::politics_ledger`, and names what it
+uses at the crates that own it: [dashboard-base](../dashboard-base/README.md),
+[dashboard-text](../dashboard-text/README.md) and
+[dashboard-core](../dashboard-core/README.md). The [dashboard](../dashboard/README.md)
 re-exports the module at `dashboard::products::politics_ledger`, registers it,
 and prepares and queries it in its pipeline. The crate implements `ReplyWarnings`
 for its own reply.

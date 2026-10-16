@@ -1,5 +1,5 @@
 use super::*;
-use crate::products::country_groups::HourSpan;
+use dashboard_base::products::country_groups::HourSpan;
 use serde_json::Value;
 
 #[derive(Deserialize)]
@@ -56,11 +56,11 @@ pub fn query(
     cancelled: &AtomicBool,
 ) -> io::Result<Value> {
     let params: Params = serde_json::from_value(params.clone())?;
-    validate_tag(&params.tag).map_err(crate::invalid)?;
+    validate_tag(&params.tag).map_err(dashboard_core::invalid)?;
     let branch = params
         .branch_id
         .parse()
-        .map_err(|_| crate::invalid("Invalid politics ledger branch"))?;
+        .map_err(|_| dashboard_core::invalid("Invalid politics ledger branch"))?;
     let Some((keys, catalogue)) =
         series::read_catalogue::<Catalogue>(store, source, "politics-ledger", branch)?
     else {
@@ -141,7 +141,7 @@ pub fn query(
         if !matches!(view.currency.as_str(), "Political" | "Command")
             || !matches!(view.mode.as_str(), "income" | "spending")
         {
-            return Err(crate::invalid("Invalid power parts selection"));
+            return Err(dashboard_core::invalid("Invalid power parts selection"));
         }
         let first = catalogue.first.unwrap_or(0);
         let last = catalogue.last.unwrap_or(first);
@@ -201,7 +201,7 @@ pub fn query(
             });
             let mut spans = Vec::new();
             for (tag, within) in &bindings {
-                validate_tag(tag).map_err(crate::invalid)?;
+                validate_tag(tag).map_err(dashboard_core::invalid)?;
                 let actual = key(&keys, tag, &field);
                 let zero = (view.mode == "spending" && id != "spending-total")
                     .then(|| key(&keys, tag, &format!("parts:{}:zero", view.currency)))
@@ -256,7 +256,7 @@ pub fn query(
     let last = params.hour.or(catalogue.last).unwrap_or(first);
     let from = params.from.unwrap_or(first);
     if from > last {
-        return Err(crate::invalid("Politics ledger range is reversed"));
+        return Err(dashboard_core::invalid("Politics ledger range is reversed"));
     }
     let within = params.within.clone().unwrap_or_else(|| {
         vec![HourSpan {
@@ -362,7 +362,7 @@ pub fn query(
     }
     if let Some(page) = &params.page {
         if params.view != LedgerView::Governments {
-            return Err(crate::invalid(
+            return Err(dashboard_core::invalid(
                 "Government event page requires governments view",
             ));
         }
@@ -381,7 +381,7 @@ pub fn query(
             .into_iter()
             .filter_map(|event| match serde_json::from_value::<Event>(event.row) {
                 Ok(Event::Government { row }) if row.read_hour <= last => {
-                    Some(Ok(crate::prepared_measure::query::MeasureEvent {
+                    Some(Ok(dashboard_base::prepared_measure::query::MeasureEvent {
                         tag: params.tag.clone(),
                         hour: row.hour,
                         ordinal: event.ordinal.to_string(),
@@ -393,7 +393,7 @@ pub fn query(
             })
             .collect::<Result<Vec<_>, _>>()?;
         return Ok(serde_json::to_value(
-            crate::prepared_measure::query::MeasureDropReply {
+            dashboard_base::prepared_measure::query::MeasureDropReply {
                 coverage: None,
                 first_ordinal: page.first.to_string(),
                 total: page.total.to_string(),
@@ -405,7 +405,9 @@ pub fn query(
     }
     if let Some(view) = &params.marks {
         if params.view != LedgerView::Governments {
-            return Err(crate::invalid("Government marks require governments view"));
+            return Err(dashboard_core::invalid(
+                "Government marks require governments view",
+            ));
         }
         series::viewport(Some(view.from), Some(view.to), Some(view.width))?;
         let summary = match key(&keys, &params.tag, "governments") {
@@ -417,7 +419,7 @@ pub fn query(
                 last,
                 catalogue.government_lag,
             )?,
-            None => crate::prepared_chart::MarkSummary {
+            None => dashboard_base::prepared_chart::MarkSummary {
                 from: view.from,
                 to: view.to,
                 width: view.width,
@@ -487,7 +489,7 @@ pub fn query(
             .sort_by_key(|row| (row.read_hour, row.country, row.sequence.parse::<u64>().ok()));
     }
     if json_len(&reply, MAX_REPLY_BYTES).is_none() {
-        return Err(crate::invalid(
+        return Err(dashboard_core::invalid(
             "Prepared politics ledger exceeds the complete-response budget; no rows were truncated",
         ));
     }
@@ -501,7 +503,7 @@ fn government_marks(
     view: &MarkView,
     through: i32,
     lag: i32,
-) -> io::Result<crate::prepared_chart::MarkSummary> {
+) -> io::Result<dashboard_base::prepared_chart::MarkSummary> {
     let mut summary = reader.event_clusters(key, view.from, view.to, view.width)?;
     let edge = through.saturating_sub(lag.max(0));
     let mut clusters = Vec::new();
@@ -554,12 +556,12 @@ fn government_marks(
                     old.count = old
                         .count
                         .parse::<u64>()
-                        .map_err(|_| crate::invalid("Government count overflow"))?
+                        .map_err(|_| dashboard_core::invalid("Government count overflow"))?
                         .checked_add(1)
-                        .ok_or_else(|| crate::invalid("Government count overflow"))?
+                        .ok_or_else(|| dashboard_core::invalid("Government count overflow"))?
                         .to_string();
                 } else {
-                    visible = Some(crate::prepared_chart::MarkCluster {
+                    visible = Some(dashboard_base::prepared_chart::MarkCluster {
                         first_hour: row.hour,
                         last_hour: row.hour,
                         first_ordinal: event.ordinal.to_string(),
@@ -659,14 +661,16 @@ fn total(
             .try_fold(0u128, |value, bucket| {
                 value
                     .checked_add(bucket.absolute_total)
-                    .ok_or_else(|| crate::invalid("Politics summary total overflow"))
+                    .ok_or_else(|| dashboard_core::invalid("Politics summary total overflow"))
             })?;
         if raw % 24 != 0 {
-            return Err(crate::invalid("Incomplete politics native-day cell"));
+            return Err(dashboard_core::invalid(
+                "Incomplete politics native-day cell",
+            ));
         }
         result = result
             .checked_add(raw / 24)
-            .ok_or_else(|| crate::invalid("Politics summary total overflow"))?;
+            .ok_or_else(|| dashboard_core::invalid("Politics summary total overflow"))?;
     }
     Ok(result)
 }
@@ -729,7 +733,7 @@ fn visible(
             let end = last_day(span.last_hour.min(run.last_hour)).min(
                 i64::from(to)
                     - i64::try_from(run.value)
-                        .map_err(|_| crate::invalid("Politics supplying lag overflow"))?,
+                        .map_err(|_| dashboard_core::invalid("Politics supplying lag overflow"))?,
             );
             let end = end.div_euclid(24) * 24;
             if first <= end {
@@ -810,7 +814,7 @@ fn canonicalize(
                 .filter_map(|item| item.first[1].as_ref())
                 .min()
         })
-        .ok_or_else(|| crate::invalid("Missing politics item origin"))?;
+        .ok_or_else(|| dashboard_core::invalid("Missing politics item origin"))?;
     payment.item.id = first.2.clone();
     payment.spend.item_id = first.2.clone();
     if let Some(identity) = payment.item.tooltip_token.as_ref()
@@ -978,7 +982,7 @@ fn clip_command_payment(
         .try_fold(0u32, |total, change| {
             total
                 .checked_add(change.occurrences)
-                .ok_or_else(|| crate::invalid("Politics payment count overflow"))
+                .ok_or_else(|| dashboard_core::invalid("Politics payment count overflow"))
         })?;
     payment.known_count = payment
         .spend
@@ -988,7 +992,7 @@ fn clip_command_payment(
         .try_fold(0u32, |total, change| {
             total
                 .checked_add(change.occurrences)
-                .ok_or_else(|| crate::invalid("Politics payment count overflow"))
+                .ok_or_else(|| dashboard_core::invalid("Politics payment count overflow"))
         })?;
     payment.known_raw = payment
         .spend
@@ -998,7 +1002,7 @@ fn clip_command_payment(
         .try_fold(0i128, |total, raw| {
             total
                 .checked_add(amount(Some(raw))?.unwrap())
-                .ok_or_else(|| crate::invalid("Politics subtotal overflow"))
+                .ok_or_else(|| dashboard_core::invalid("Politics subtotal overflow"))
         })?
         .to_string();
     payment.spend.covered = payment.spend.changes.iter().all(|change| change.covered);
@@ -1477,7 +1481,7 @@ fn build_reply(
                     continue;
                 };
                 let Event::Totals { totals: end, .. } = serde_json::from_value(value)? else {
-                    return Err(crate::invalid("Invalid politics endpoint"));
+                    return Err(dashboard_core::invalid("Invalid politics endpoint"));
                 };
                 let start = if span.first_hour == i32::MIN {
                     Totals::default()
@@ -1485,7 +1489,7 @@ fn build_reply(
                     match primary.latest_event(key, span.first_hour - 1)? {
                         Some((_, value)) => match serde_json::from_value(value)? {
                             Event::Totals { totals, .. } => totals,
-                            _ => return Err(crate::invalid("Invalid politics endpoint")),
+                            _ => return Err(dashboard_core::invalid("Invalid politics endpoint")),
                         },
                         None => Totals::default(),
                     }
@@ -1497,7 +1501,7 @@ fn build_reply(
                     .rows
                 {
                     let Event::Totals { payment, .. } = serde_json::from_value(event.row)? else {
-                        return Err(crate::invalid("Invalid politics endpoint"));
+                        return Err(dashboard_core::invalid("Invalid politics endpoint"));
                     };
                     if payment.spend.hour < span.first_hour {
                         let mut excluded = Totals::default();
@@ -1508,23 +1512,23 @@ fn build_reply(
                 selected_totals.known = selected_totals
                     .known
                     .checked_add(range.known)
-                    .ok_or_else(|| crate::invalid("Politics subtotal overflow"))?;
+                    .ok_or_else(|| dashboard_core::invalid("Politics subtotal overflow"))?;
                 selected_totals.count = selected_totals
                     .count
                     .checked_add(range.count)
-                    .ok_or_else(|| crate::invalid("Politics aggregate count overflow"))?;
+                    .ok_or_else(|| dashboard_core::invalid("Politics aggregate count overflow"))?;
                 selected_totals.rows = selected_totals
                     .rows
                     .checked_add(range.rows)
-                    .ok_or_else(|| crate::invalid("Politics aggregate count overflow"))?;
+                    .ok_or_else(|| dashboard_core::invalid("Politics aggregate count overflow"))?;
                 selected_totals.unknown = selected_totals
                     .unknown
                     .checked_add(range.unknown)
-                    .ok_or_else(|| crate::invalid("Politics aggregate count overflow"))?;
+                    .ok_or_else(|| dashboard_core::invalid("Politics aggregate count overflow"))?;
                 selected_totals.uncovered = selected_totals
                     .uncovered
                     .checked_add(range.uncovered)
-                    .ok_or_else(|| crate::invalid("Politics aggregate count overflow"))?;
+                    .ok_or_else(|| dashboard_core::invalid("Politics aggregate count overflow"))?;
                 if range.rows != 0
                     && let Some(latest) = end.latest
                     && selected_totals
@@ -1540,19 +1544,19 @@ fn build_reply(
             }
             let mut payment = selected_totals
                 .latest
-                .ok_or_else(|| crate::invalid("Missing politics latest payment"))?;
+                .ok_or_else(|| dashboard_core::invalid("Missing politics latest payment"))?;
             payment.spend.id = format!("total:{tag}:{field}");
             payment.spend.charge_raw =
                 (selected_totals.unknown == 0).then(|| selected_totals.known.to_string());
             payment.spend.realized_delta_raw = None;
             payment.spend.occurrences = u32::try_from(selected_totals.count)
-                .map_err(|_| crate::invalid("Politics payment count overflow"))?;
+                .map_err(|_| dashboard_core::invalid("Politics payment count overflow"))?;
             payment.spend.covered = selected_totals.uncovered == 0;
             payment.known_raw = selected_totals.known.to_string();
             payment.known_count = u32::try_from(selected_totals.count - selected_totals.unknown)
-                .map_err(|_| crate::invalid("Politics payment count overflow"))?;
+                .map_err(|_| dashboard_core::invalid("Politics payment count overflow"))?;
             payment.count = u32::try_from(selected_totals.rows)
-                .map_err(|_| crate::invalid("Politics row count overflow"))?;
+                .map_err(|_| dashboard_core::invalid("Politics row count overflow"))?;
             payment.spend.changes = vec![LedgerSpendChange {
                 hour: Some(payment.spend.hour),
                 read_hour: payment.spend.read_hour,
@@ -1602,12 +1606,12 @@ fn build_reply(
             let unknown = total(native, keys, tag, &format!("{field}:unknown"), &spans)?;
             let uncovered = total(native, keys, tag, &format!("{field}:uncovered"), &spans)?;
             let native_hour = latest_day(native, keys, tag, &format!("{field}:presence"), &spans)?
-                .ok_or_else(|| crate::invalid("Missing politics payment date"))?;
+                .ok_or_else(|| dashboard_core::invalid("Missing politics payment date"))?;
             let read_hour = native_hour.saturating_add(
                 i32::try_from(
                     state(native, keys, tag, &format!("{field}:lag"), native_hour)?.unwrap_or(0),
                 )
-                .map_err(|_| crate::invalid("Politics supplying lag overflow"))?,
+                .map_err(|_| dashboard_core::invalid("Politics supplying lag overflow"))?,
             );
             let facts_key = key(keys, tag, &format!("{field}:facts"));
             let mut payment = match facts_key
@@ -1617,7 +1621,7 @@ fn build_reply(
             {
                 Some((_, value)) => match serde_json::from_value(value)? {
                     Event::Item { payment } => payment,
-                    _ => return Err(crate::invalid("Invalid politics item facts")),
+                    _ => return Err(dashboard_core::invalid("Invalid politics item facts")),
                 },
                 None => item.facts.clone(),
             };
@@ -1626,7 +1630,7 @@ fn build_reply(
                 i32::try_from(
                     state(native, keys, tag, &format!("{field}:hour"), native_hour)?.unwrap_or(0),
                 )
-                .map_err(|_| crate::invalid("Politics native payment hour overflow"))?,
+                .map_err(|_| dashboard_core::invalid("Politics native payment hour overflow"))?,
             );
             payment.spend.read_hour = read_hour;
             payment.spend.sequence =
@@ -1636,11 +1640,11 @@ fn build_reply(
             payment.spend.ordinal = u32::try_from(
                 state(native, keys, tag, &format!("{field}:ordinal"), native_hour)?.unwrap_or(0),
             )
-            .map_err(|_| crate::invalid("Politics cost ordinal overflow"))?;
+            .map_err(|_| dashboard_core::invalid("Politics cost ordinal overflow"))?;
             payment.spend.charge_raw = (unknown == 0).then(|| charge.to_string());
             payment.known_raw = charge.to_string();
             payment.known_count = u32::try_from(count - unknown)
-                .map_err(|_| crate::invalid("Politics payment count overflow"))?;
+                .map_err(|_| dashboard_core::invalid("Politics payment count overflow"))?;
             payment.spend.realized_delta_raw = None;
             if matches!(view, LedgerView::Raw | LedgerView::Balance) || month.is_none() {
                 let unknown = total(
@@ -1658,7 +1662,7 @@ fn build_reply(
                         &format!("{field}:realized-positive"),
                         &spans,
                     )?)
-                    .map_err(|_| crate::invalid("Politics realized total overflow"))?;
+                    .map_err(|_| dashboard_core::invalid("Politics realized total overflow"))?;
                     let negative = i128::try_from(total(
                         native,
                         keys,
@@ -1666,17 +1670,19 @@ fn build_reply(
                         &format!("{field}:realized-negative"),
                         &spans,
                     )?)
-                    .map_err(|_| crate::invalid("Politics realized total overflow"))?;
+                    .map_err(|_| dashboard_core::invalid("Politics realized total overflow"))?;
                     payment.spend.realized_delta_raw = Some(
                         positive
                             .checked_sub(negative)
-                            .ok_or_else(|| crate::invalid("Politics realized total overflow"))?
+                            .ok_or_else(|| {
+                                dashboard_core::invalid("Politics realized total overflow")
+                            })?
                             .to_string(),
                     );
                 }
             }
             payment.spend.occurrences = u32::try_from(count)
-                .map_err(|_| crate::invalid("Politics payment count overflow"))?;
+                .map_err(|_| dashboard_core::invalid("Politics payment count overflow"))?;
             payment.spend.covered = uncovered == 0;
             payment.spend.changes = vec![LedgerSpendChange {
                 hour: Some(payment.spend.hour),
@@ -1688,7 +1694,7 @@ fn build_reply(
             }];
             payment.count =
                 u32::try_from(total(native, keys, tag, &format!("{field}:rows"), &spans)?)
-                    .map_err(|_| crate::invalid("Politics row count overflow"))?;
+                    .map_err(|_| dashboard_core::invalid("Politics row count overflow"))?;
             append_payment(
                 &mut reply,
                 payment,
@@ -1698,7 +1704,7 @@ fn build_reply(
                     spans[0].first_hour,
                     native_hour,
                     u32::try_from(days)
-                        .map_err(|_| crate::invalid("Politics day count overflow"))?,
+                        .map_err(|_| dashboard_core::invalid("Politics day count overflow"))?,
                 )),
             )?;
         }
@@ -1884,7 +1890,7 @@ fn build_reply(
                 months.insert(
                     month,
                     u32::try_from(count)
-                        .map_err(|_| crate::invalid("Politics day count overflow"))?,
+                        .map_err(|_| dashboard_core::invalid("Politics day count overflow"))?,
                 );
             }
         }
@@ -1907,7 +1913,7 @@ fn build_reply(
                 let count = months.entry(month(day).0).or_default();
                 *count = count
                     .checked_add(1)
-                    .ok_or_else(|| crate::invalid("Politics day count overflow"))?;
+                    .ok_or_else(|| dashboard_core::invalid("Politics day count overflow"))?;
             }
         }
         reply
@@ -1958,10 +1964,10 @@ fn build_reply(
             gained = gained
                 .checked_add(
                     i128::try_from(positive)
-                        .map_err(|_| crate::invalid("Politics gain overflow"))?,
+                        .map_err(|_| dashboard_core::invalid("Politics gain overflow"))?,
                 )
                 .and_then(|value| value.checked_sub(i128::try_from(negative).ok()?))
-                .ok_or_else(|| crate::invalid("Politics gain overflow"))?;
+                .ok_or_else(|| dashboard_core::invalid("Politics gain overflow"))?;
             lost = lost
                 .checked_add(total(
                     native,
@@ -1970,7 +1976,7 @@ fn build_reply(
                     &format!("{prefix}:{currency}:lost"),
                     &visible,
                 )?)
-                .ok_or_else(|| crate::invalid("Politics cap total overflow"))?;
+                .ok_or_else(|| dashboard_core::invalid("Politics cap total overflow"))?;
             incomplete = incomplete
                 .checked_add(total(
                     native,
@@ -1979,7 +1985,7 @@ fn build_reply(
                     &format!("{prefix}:{currency}:incomplete"),
                     &visible,
                 )?)
-                .ok_or_else(|| crate::invalid("Politics incomplete-day count overflow"))?;
+                .ok_or_else(|| dashboard_core::invalid("Politics incomplete-day count overflow"))?;
             any |= total(
                 native,
                 keys,
@@ -2003,7 +2009,9 @@ fn build_reply(
                             )?
                             .unwrap_or(0) as u128,
                         )
-                        .ok_or_else(|| crate::invalid("Politics incomplete-day count underflow"))?;
+                        .ok_or_else(|| {
+                            dashboard_core::invalid("Politics incomplete-day count underflow")
+                        })?;
                     let positive = state(
                         native,
                         keys,
@@ -2023,7 +2031,7 @@ fn build_reply(
                     gained = gained
                         .checked_sub(positive)
                         .and_then(|value| value.checked_sub(negative))
-                        .ok_or_else(|| crate::invalid("Politics gain overflow"))?;
+                        .ok_or_else(|| dashboard_core::invalid("Politics gain overflow"))?;
                     lost = lost
                         .checked_sub(
                             state(
@@ -2035,7 +2043,7 @@ fn build_reply(
                             )?
                             .unwrap_or(0) as u128,
                         )
-                        .ok_or_else(|| crate::invalid("Politics cap total underflow"))?;
+                        .ok_or_else(|| dashboard_core::invalid("Politics cap total underflow"))?;
                 }
                 let (gain, net, applied, read) = if currency == "Political" {
                     (
@@ -2063,11 +2071,11 @@ fn build_reply(
                         } else {
                             gain
                         })
-                        .ok_or_else(|| crate::invalid("Politics gain overflow"))?;
+                        .ok_or_else(|| dashboard_core::invalid("Politics gain overflow"))?;
                 } else {
-                    incomplete = incomplete
-                        .checked_add(1)
-                        .ok_or_else(|| crate::invalid("Politics incomplete-day count overflow"))?;
+                    incomplete = incomplete.checked_add(1).ok_or_else(|| {
+                        dashboard_core::invalid("Politics incomplete-day count overflow")
+                    })?;
                 }
                 if read.is_some()
                     && let Some((net, applied)) = net
@@ -2076,7 +2084,7 @@ fn build_reply(
                 {
                     lost = lost
                         .checked_add((net - applied.max(0)) as u128)
-                        .ok_or_else(|| crate::invalid("Politics cap total overflow"))?;
+                        .ok_or_else(|| dashboard_core::invalid("Politics cap total overflow"))?;
                 }
             }
         }
@@ -2130,7 +2138,7 @@ fn build_reply(
                                 state(native, keys, tag, &format!("{field}:lag"), day as i32)?
                                     .unwrap_or(0),
                             )
-                            .map_err(|_| crate::invalid("Politics cost lag overflow"))?,
+                            .map_err(|_| dashboard_core::invalid("Politics cost lag overflow"))?,
                         );
                         row.covered =
                             state(native, keys, tag, &format!("{field}:covered"), day as i32)?
@@ -2201,18 +2209,19 @@ fn read_daily(
         values[field]
             .map(|lag| {
                 i32::try_from(i128::from(day) + lag)
-                    .map_err(|_| crate::invalid("Politics daily lag overflow"))
+                    .map_err(|_| dashboard_core::invalid("Politics daily lag overflow"))
             })
             .transpose()
     };
     Ok(Some(LedgerDaily {
-        country: u32::try_from(country).map_err(|_| crate::invalid("Politics country overflow"))?,
+        country: u32::try_from(country)
+            .map_err(|_| dashboard_core::invalid("Politics country overflow"))?,
         instance: u32::try_from(values["instance"].unwrap_or(0))
-            .map_err(|_| crate::invalid("Politics instance overflow"))?,
+            .map_err(|_| dashboard_core::invalid("Politics instance overflow"))?,
         epoch: raw("epoch").unwrap_or_else(|| "0".into()),
         day_hour: day,
         read_hour: i32::try_from(values["read"].unwrap_or(i128::from(day)))
-            .map_err(|_| crate::invalid("Politics read hour overflow"))?,
+            .map_err(|_| dashboard_core::invalid("Politics read hour overflow"))?,
         pp_read_hour: read("Political:lag")?,
         cp_read_hour: read("Command:lag")?,
         pp_gross_raw: raw("Political:gross"),
@@ -2262,23 +2271,23 @@ fn subtract_totals(end: &Totals, start: &Totals) -> io::Result<Totals> {
         known: end
             .known
             .checked_sub(start.known)
-            .ok_or_else(|| crate::invalid("Politics subtotal overflow"))?,
+            .ok_or_else(|| dashboard_core::invalid("Politics subtotal overflow"))?,
         count: end
             .count
             .checked_sub(start.count)
-            .ok_or_else(|| crate::invalid("Politics payment count underflow"))?,
+            .ok_or_else(|| dashboard_core::invalid("Politics payment count underflow"))?,
         rows: end
             .rows
             .checked_sub(start.rows)
-            .ok_or_else(|| crate::invalid("Politics row count underflow"))?,
+            .ok_or_else(|| dashboard_core::invalid("Politics row count underflow"))?,
         unknown: end
             .unknown
             .checked_sub(start.unknown)
-            .ok_or_else(|| crate::invalid("Politics payment count underflow"))?,
+            .ok_or_else(|| dashboard_core::invalid("Politics payment count underflow"))?,
         uncovered: end
             .uncovered
             .checked_sub(start.uncovered)
-            .ok_or_else(|| crate::invalid("Politics payment count underflow"))?,
+            .ok_or_else(|| dashboard_core::invalid("Politics payment count underflow"))?,
         latest: end.latest.clone(),
     })
 }

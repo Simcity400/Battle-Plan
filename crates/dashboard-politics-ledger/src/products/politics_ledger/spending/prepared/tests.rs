@@ -1,6 +1,6 @@
 use super::super::tests::{event, frame, put};
 use super::*;
-use crate::prepared::series::tests::Fixture;
+use dashboard_base::prepared::series::tests::Fixture;
 use serde_json::json;
 
 fn publish(prepared: &mut Prepared, fixture: &Fixture) {
@@ -81,7 +81,7 @@ fn daily(day: i32, read: i32, pp: bool) -> DecodedFrame {
 
 #[test]
 fn prepared_content_success_and_failure_do_not_load_after_configuration() {
-    use crate::prepared::observer_tests::{self, Work};
+    use dashboard_base::prepared::observer_tests::{self, Work};
     use replay::format::FormatVersion;
 
     engine::executable_tables::initialize_for_tests()
@@ -89,7 +89,7 @@ fn prepared_content_success_and_failure_do_not_load_after_configuration() {
     for complete in [true, false] {
         // The store owns only prepared files; its cleanup deletes file entries.
         // Synthetic game directories have their own lifetime outside that store.
-        let folder = crate::catalogue::tests::Folder(
+        let folder = dashboard_text::catalogue::tests::Folder(
             std::env::temp_dir().join(format!("ledger-content-{}", uuid::Uuid::new_v4())),
         );
         let game = &folder.0;
@@ -101,32 +101,32 @@ fn prepared_content_success_and_failure_do_not_load_after_configuration() {
         }).unwrap();
         let first = frame(24, 1);
         let (source, context) =
-            crate::test_fixtures::source_with_content(vec![first.clone()], game);
+            dashboard_base::test_fixtures::source_with_content(vec![first.clone()], game);
         let options = context.content.as_ref();
         let binding = prepared_content(&source, options);
         assert_eq!(binding.is_ok(), complete);
         let refusal = binding.as_ref().err().cloned();
         assert_eq!(
-            crate::products::politics_content::content_loads(&source),
+            dashboard_base::products::politics_content::content_loads(&source),
             1 + usize::from(complete)
         );
         let repeated = prepared_content(&source, options);
         assert_eq!(repeated.as_ref().err(), refusal.as_ref());
         assert_eq!(
-            crate::products::politics_content::content_loads(&source),
+            dashboard_base::products::politics_content::content_loads(&source),
             1 + usize::from(complete)
         );
         observer_tests::scaled_work(10, |hours| {
             let mut prepared = Prepared::default();
             prepared.configure(&binding);
-            let mut tracker = crate::prepared::frame_changes::FrameChangeTracker::new();
+            let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
             prepared.observe(
                 &first,
                 &tracker.observe(&first, FormatVersion::CURRENT),
                 &AtomicBool::new(false),
             )?;
             let configured = Work {
-                content_loads: crate::products::politics_content::content_loads(&source),
+                content_loads: dashboard_base::products::politics_content::content_loads(&source),
                 ..Default::default()
             };
             let work = observer_tests::unchanged_frames(
@@ -137,7 +137,9 @@ fn prepared_content_success_and_failure_do_not_load_after_configuration() {
                 |frame, changes| {
                     prepared.observe(frame, changes, &AtomicBool::new(false))?;
                     Ok(Work {
-                        content_loads: crate::products::politics_content::content_loads(&source),
+                        content_loads: dashboard_base::products::politics_content::content_loads(
+                            &source,
+                        ),
                         ..Default::default()
                     })
                 },
@@ -158,7 +160,7 @@ fn prepared_content_success_and_failure_do_not_load_after_configuration() {
 
 #[test]
 fn prepared_shared_driver_unchanged_frames_and_closed_history_keep_work_flat() {
-    use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
+    use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
     use replay::format::FormatVersion;
     let flag = AtomicBool::new(false);
     let unchanged = observer_tests::scaled_work(10, |hours| {
@@ -224,7 +226,7 @@ fn prepared_shared_driver_unchanged_frames_and_closed_history_keep_work_flat() {
 #[test]
 #[cfg(feature = "slow-tests")]
 fn prepared_one_changed_row_and_unrelated_country_balances_bound_native_and_projection_work() {
-    use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
+    use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
     use replay::format::FormatVersion;
     let flag = AtomicBool::new(false);
     let mut first = frame(24, 5000);
@@ -343,7 +345,7 @@ fn prepared_one_changed_row_and_unrelated_country_balances_bound_native_and_proj
 
 #[test]
 fn prepared_bulk_refusal_rates_keep_every_native_alias_and_the_first_naming_read() {
-    use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
+    use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
     use replay::format::FormatVersion;
     let fixture = Fixture::new();
     let flag = AtomicBool::new(false);
@@ -413,7 +415,7 @@ fn prepared_bulk_refusal_rates_keep_every_native_alias_and_the_first_naming_read
 #[test]
 fn prepared_bulk_clock_matches_oracle_refusals_coverage_and_holds_across_publication_resume_append_and_gaps()
  {
-    use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
+    use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
     use replay::format::FormatVersion;
     let flag = AtomicBool::new(false);
     let mut fixture = Fixture::new();
@@ -491,7 +493,7 @@ fn prepared_bulk_clock_matches_oracle_refusals_coverage_and_holds_across_publica
 
 #[test]
 fn prepared_absent_spending_coverage_ends_when_the_census_is_lost_on_the_read_after_resume() {
-    use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
+    use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
     use replay::format::FormatVersion;
     let flag = AtomicBool::new(false);
     let mut fixture = Fixture::new();
@@ -567,7 +569,7 @@ fn prepared_absent_spending_coverage_ends_when_the_census_is_lost_on_the_read_af
 
 #[test]
 fn prepared_hold_snapshots_stop_after_census_loss_across_commits_resume_and_append() {
-    use crate::prepared::frame_changes::FrameChangeTracker;
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
     use replay::format::FormatVersion;
     let flag = AtomicBool::new(false);
     let mut fixture = Fixture::new();

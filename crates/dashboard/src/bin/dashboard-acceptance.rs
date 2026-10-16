@@ -1958,7 +1958,7 @@ fn run(options: Options) -> io::Result<bool> {
         timings.wall += preflight;
         timings.families.as_mut().expect("measured table").insert(
             "measurement.preflight",
-            prepared::pipeline::FamilyTimings {
+            dashboard_base::prepared::timing::FamilyTimings {
                 observe: preflight,
                 flush: Duration::ZERO,
                 calls: 1,

@@ -1286,7 +1286,10 @@ fn spending_view_omits_raw_tables_and_uses_the_shared_response_budget() {
         assert!(json.get(field).is_none(), "{field}");
     }
     assert_eq!(json["spending"].as_array().unwrap().len(), 1);
-    assert_eq!(MAX_REPLY_BYTES, crate::products::MAX_PRODUCT_REPLY_BYTES);
+    assert_eq!(
+        MAX_REPLY_BYTES,
+        dashboard_base::products::MAX_PRODUCT_REPLY_BYTES
+    );
     let raw = present_fixture(&scan);
     assert_eq!(raw.mutations.len(), 1);
 }

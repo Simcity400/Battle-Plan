@@ -201,7 +201,7 @@ fn component_snapshots_use_recorded_modifier_and_organisation_identity() {
 
 #[test]
 fn recorded_trigger_tables_cover_world_and_scope_reader_dependencies() {
-    let selected: BTreeSet<_> = crate::triggers::RECORDED_TABLES
+    let selected: BTreeSet<_> = dashboard_text::triggers::RECORDED_TABLES
         .iter()
         .map(|table| format!("{table:?}"))
         .collect();

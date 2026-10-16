@@ -5,8 +5,8 @@ The dashboard's shared product layer, below every product crate and the
 the catalogue loader, the prepared store's shared pages, the product contract and
 the shared products other products build on. Nothing here names the product
 registry, the preparation pipeline or the service; the dashboard re-exports every
-module at its old `dashboard::` path, and product crates re-export this crate at
-their root so moved product code keeps its `crate::` paths.
+module at its old `dashboard::` path, and product crates name what they use
+here as `dashboard_base::…`.
 
 | Module | What it does |
 |---|---|

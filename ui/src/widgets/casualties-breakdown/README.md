@@ -2,7 +2,7 @@
 
 **What it shows:** One country's known losses grouped by native war episode then enemy, with a sunburst and exact signed recorded-loss details.
 
-**Product(s) it reads:** Prepared [`casualty-breakdown`](../../../../crates/dashboard/src/products/war_casualties/breakdown/prepared.rs) joins the shared unfiltered casualty block records with [`wars::prepared::projection`](../../../../crates/dashboard/src/products/wars/prepared.rs). The existing breakdown projection and reply builder select native holders and attribute losses; the existing Wars walk supplies viewpoint grouping and dated names. No widget request scans replay history.
+**Product(s) it reads:** Prepared [`casualty-breakdown`](../../../../crates/dashboard-wars/src/products/war_casualties/breakdown/prepared.rs) joins the shared unfiltered casualty block records with [`wars::prepared::projection`](../../../../crates/dashboard-wars/src/products/wars/prepared.rs). The existing breakdown projection and reply builder select native holders and attribute losses; the existing Wars walk supplies viewpoint grouping and dated names. No widget request scans replay history.
 
 **Settings:** One country; war/enemy levels, shared sunburst Share/Fill and presentation, Sunburst/Recorded losses and inline/pop-out drill; Campaign, Follow or Pin.
 

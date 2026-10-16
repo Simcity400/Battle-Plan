@@ -2,7 +2,7 @@
 
 **What it shows:** An overlord/subject tree on a lane timeline, with relation spans, subject levels and overlord bands sized by subject count.
 
-**Prepared data it reads:** [`subjects`](../../../../crates/dashboard/src/products/subjects.rs) supplies relation/level runs and coverage; [`country-groups`](../../../../crates/dashboard-base/src/products/country_groups.rs) supplies native endpoint identities and selection histories.
+**Prepared data it reads:** [`subjects`](../../../../crates/dashboard-subjects/src/products/subjects.rs) supplies relation/level runs and coverage; [`country-groups`](../../../../crates/dashboard-base/src/products/country_groups.rs) supplies native endpoint identities and selection histories.
 
 **Settings:** All countries by default, or chosen native countries' relevant trees through manual/smart groups; overlord/subject ordering, former subjects, level names/legend and Grow with playback; Campaign, Follow, Pin and Range.
 

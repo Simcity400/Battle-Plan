@@ -6,7 +6,7 @@ Party-popularity history with the current leader/party header and optional gover
 
 ## Products it reads
 
-Prepared [`party-history`](../../../../crates/dashboard/src/products/party_history.rs) supplies viewport popularity summaries, reached leader/name/share values and paged change events. Narrow windows draw through the legacy stack path; dense windows share the chart summary sampler. Prepared [`politics-ledger`](../../../../crates/dashboard-politics-ledger/src/products/politics_ledger.rs) (`governments`) supplies native cause clusters, supplemental open-day/late causes, reached details and event pages. Government causes read the prepared ledger; recording scans are test-only parity oracles. Shared dated country facts supply labels/flags.
+Prepared [`party-history`](../../../../crates/dashboard-party-history/src/products/party_history.rs) supplies viewport popularity summaries, reached leader/name/share values and paged change events. Narrow windows draw through the legacy stack path; dense windows share the chart summary sampler. Prepared [`politics-ledger`](../../../../crates/dashboard-politics-ledger/src/products/politics_ledger.rs) (`governments`) supplies native cause clusters, supplemental open-day/late causes, reached details and event pages. Government causes read the prepared ledger; recording scans are test-only parity oracles. Shared dated country facts supply labels/flags.
 
 Popularity draws before preparation reaches the viewport: broad tails use
 keyframe estimates, and zooms covering at most thirteen recording blocks use exact

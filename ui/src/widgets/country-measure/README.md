@@ -6,7 +6,7 @@ Shared Political power/Command power balances and income/spending drills; this f
 
 ## Products it reads
 
-[`country-measure`](../../../../crates/dashboard-base/src/products/country_measure.rs) supplies balances; [`politics-ledger`](../../../../crates/dashboard-politics-ledger/src/products/politics_ledger.rs) supplies accounting/payments; [`country-stability`](../../../../crates/dashboard/src/products/country_stability.rs) supplies CP maximum. Looks/groups use the [shared kit](../README.md#reuse-first).
+[`country-measure`](../../../../crates/dashboard-base/src/products/country_measure.rs) supplies balances; [`politics-ledger`](../../../../crates/dashboard-politics-ledger/src/products/politics_ledger.rs) supplies accounting/payments; [`country-stability`](../../../../crates/dashboard-stability/src/products/country_stability.rs) supplies CP maximum. Looks/groups use the [shared kit](../README.md#reuse-first).
 
 ## Settings
 

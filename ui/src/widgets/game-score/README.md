@@ -6,7 +6,7 @@ The game’s current country score getters as a table or Total-score race.
 
 ## Products it reads
 
-[The game-score prepared adapter](../../../../crates/dashboard/src/products/game_score/prepared.rs) supplies one hour of scores, identity and factions through shared prepared-series queries. Beyond accepted coverage it reconstructs that hour's replay block directly. [`game_score`](../../../../crates/dashboard/src/products/game_score.rs) supplies the whole-branch reference history. [`country-flags`](../../../../crates/dashboard/src/products/country_flags.rs) supplies flags at the exact row hour.
+[The game-score prepared adapter](../../../../crates/dashboard-game-score/src/products/game_score/prepared.rs) supplies one hour of scores, identity and factions through shared prepared-series queries. Beyond accepted coverage it reconstructs that hour's replay block directly. [`game_score`](../../../../crates/dashboard-game-score/src/products/game_score.rs) supplies the whole-branch reference history. [`country-flags`](../../../../crates/dashboard/src/products/country_flags.rs) supplies flags at the exact row hour.
 
 ## Settings
 

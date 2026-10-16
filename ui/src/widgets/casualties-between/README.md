@@ -2,7 +2,7 @@
 
 **What it shows:** Directed known casualty flows between countries on a chord, with a single signed pair table, total and histories. All pairs and Corrections open the corresponding rows.
 
-**Product(s) it reads:** Prepared [`casualty-pairs`](../../../../crates/dashboard/src/products/war_casualties/pairs.rs) windows share the [`casualty observer`](../../../../crates/dashboard/src/products/war_casualties.rs) with [Casualties](../casualties/README.md). Each stored window contains all countries; the shared window builder applies native-holder and `between` selection. A null window reads availability and the block manifest without decoding the recording.
+**Product(s) it reads:** Prepared [`casualty-pairs`](../../../../crates/dashboard-wars/src/products/war_casualties/pairs.rs) windows share the [`casualty observer`](../../../../crates/dashboard-wars/src/products/war_casualties.rs) with [Casualties](../casualties/README.md). Each stored window contains all countries; the shared window builder applies native-holder and `between` selection. A null window reads availability and the block manifest without decoding the recording.
 
 **Settings:** All countries by default; chosen countries' casualties with anyone or only between them; countries around the chord, Chord/Casualty pairs and inline/pop-out drill; Campaign, Follow, Pin and Range.
 

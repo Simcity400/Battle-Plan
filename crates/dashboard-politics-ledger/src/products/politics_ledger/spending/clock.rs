@@ -1,6 +1,6 @@
 //! Deferred endpoints and exact per-read diagnostic counts for the accounting.
 use super::*;
-use crate::prepared::frame_changes::FrameChanges;
+use dashboard_base::prepared::frame_changes::FrameChanges;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(super) struct Clock {
@@ -76,8 +76,9 @@ impl Scanned {
                 count_reason(
                     target,
                     reason.clone(),
-                    rate.checked_mul(count)
-                        .ok_or_else(|| crate::invalid("Politics warning count overflow"))?,
+                    rate.checked_mul(count).ok_or_else(|| {
+                        dashboard_core::invalid("Politics warning count overflow")
+                    })?,
                 )?;
             }
         }
@@ -115,9 +116,9 @@ impl Scanned {
                 .checked_add(
                     count
                         .checked_mul(*rate)
-                        .ok_or_else(|| crate::invalid("Refused country count overflow"))?,
+                        .ok_or_else(|| dashboard_core::invalid("Refused country count overflow"))?,
                 )
-                .ok_or_else(|| crate::invalid("Refused country count overflow"))?;
+                .ok_or_else(|| dashboard_core::invalid("Refused country count overflow"))?;
             *applied = (*applied).max(through);
         }
         Ok(())

@@ -2,7 +2,7 @@
 
 **What it shows:** World tension with country contribution layers and dated threat-source events, plus a full contributor breakdown.
 
-**Prepared data it reads:** Generic series queries for [`world-tension`](../../../../crates/dashboard/src/products/world_tension.rs) supply exact reached reads, uncapped contributions, source dates/text, prepared identity spans and width summaries. Native scales, cap and scan refusals are owned there. Overview and breakdown wait for accepted coverage. Remembered country names and links, historical contributor zeroes and unnamed attribution require preceding frames, so an unprepared tail stays pending.
+**Prepared data it reads:** Generic series queries for [`world-tension`](../../../../crates/dashboard-world-tension/src/products/world_tension.rs) supply exact reached reads, uncapped contributions, source dates/text, prepared identity spans and width summaries. Native scales, cap and scan refusals are owned there. Overview and breakdown wait for accepted coverage. Remembered country names and links, historical contributor zeroes and unnamed attribution require preceding frames, so an unprepared tail stays pending.
 
 **Settings:** All countries or manual/smart groups; top-five/eight + Other, share/recorded contributions, markers, values list, Show Breakdown and inline/pop-out drill; Campaign, Follow, Pin and Range plus playback/window/Show after the playhead controls.
 

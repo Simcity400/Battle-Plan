@@ -1,6 +1,7 @@
 //! Measurement-only, durable block evidence. No prepared store writes.
 use super::*;
-use dashboard::prepared::pipeline::{FamilyTimings, MeasuredBlock};
+use dashboard::prepared::pipeline::MeasuredBlock;
+use dashboard_base::prepared::timing::FamilyTimings;
 use std::io::{BufRead, BufReader, Read};
 
 pub(super) fn family_rows(families: &BTreeMap<&str, FamilyTimings>, wall: Duration) -> Vec<Value> {

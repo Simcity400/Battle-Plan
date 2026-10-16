@@ -5,7 +5,6 @@
 
 use crate::{
     catalogue::{self, Catalogue},
-    idea_names::{CountryLook, IdeaCountry},
     products::{
         country_flags::{FlagSearch, ShieldStyle, find_flag},
         idea_history::{Joined, categories},
@@ -15,6 +14,7 @@ use crate::{
         validate_tag,
     },
 };
+use dashboard_text::idea_names::{CountryLook, IdeaCountry};
 use installed_content::{ResolvedLayers, image::Rgba8Image};
 use std::{
     collections::BTreeMap,

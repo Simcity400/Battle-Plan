@@ -446,13 +446,13 @@ impl Native {
     }
 }
 impl Scan {
-    #[cfg(all(test, feature = "slow-tests"))]
-    pub(crate) fn work(&self) -> crate::prepared::observer_tests::Work {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn work(&self) -> crate::prepared::observer_tests::Work {
         self.native.work
     }
 
-    #[cfg(all(test, feature = "slow-tests"))]
-    pub(crate) fn clock_ticks(&self) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn clock_ticks(&self) -> usize {
         self.native.clock_ticks
     }
 

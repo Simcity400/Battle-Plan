@@ -2843,7 +2843,7 @@ fn prepared_tension_matches_oracle_after_commits_cancel_resume_append_and_5000_c
 fn prepared_wars_match_oracle_after_commits_cancel_resume_append_and_5000_countries() {
     use crate::products::{
         LoadContext, Product,
-        wars::{Wars, WarsParams, tests::scaled_recorded},
+        wars::{Wars, WarsParams, test_fixtures::scaled_recorded},
     };
     let flag = AtomicBool::new(false);
     let old = Replay::from_records(
@@ -3930,7 +3930,7 @@ fn unprepared_research_span_returns_pending_through_the_real_query_path() {
 
 #[test]
 fn unprepared_peace_deals_span_returns_pending_through_the_real_query_path() {
-    use crate::products::peace_deals::{prepared, tests};
+    use crate::products::peace_deals::{prepared, test_fixtures as tests};
 
     let frames = vec![
         tests::frame(100, 3, false, &[9]),

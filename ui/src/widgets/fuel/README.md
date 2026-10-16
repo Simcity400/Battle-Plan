@@ -6,7 +6,7 @@ Fuel level/capacity per country, with separate drills for current required consu
 
 ## Products it reads
 
-Prepared series queries for the [`country-fuel` family](../../../../crates/dashboard/src/products/country_fuel/prepared.rs), plus bounded [award detail/history](../../../../crates/dashboard/src/products/country_fuel/detail.rs) and [demand detail/history](../../../../crates/dashboard/src/products/country_fuel/demand.rs) products.
+Prepared series queries for the [`country-fuel` family](../../../../crates/dashboard-country-fuel/src/products/country_fuel/prepared.rs), plus bounded [award detail/history](../../../../crates/dashboard-country-fuel/src/products/country_fuel/detail.rs) and [demand detail/history](../../../../crates/dashboard-country-fuel/src/products/country_fuel/demand.rs) products.
 
 ## Settings
 

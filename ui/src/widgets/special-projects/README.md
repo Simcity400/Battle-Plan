@@ -6,7 +6,7 @@ Current lists a country's projects at the shown hour: projects in progress with 
 
 ## Products it reads
 
-[`special-projects`](../../../../crates/dashboard/src/products/special_projects.rs) reads prepared project observations, completion history, content labels and recorded portraits. Preparation observes all countries once and evaluates scoped names in that same pass. The selected-country reply keeps its complete Current and History arrays; native selection roots filter observations before the shared episode builder assigns IDs. Numeric progress uses shared runs, dated changes use events, and supplying-read hours come from one branch marker intersected with country availability. The parity model is **Special project values**.
+[`special-projects`](../../../../crates/dashboard-special-projects/src/products/special_projects.rs) reads prepared project observations, completion history, content labels and recorded portraits. Preparation observes all countries once and evaluates scoped names in that same pass. The selected-country reply keeps its complete Current and History arrays; native selection roots filter observations before the shared episode builder assigns IDs. Numeric progress uses shared runs, dated changes use events, and supplying-read hours come from one branch marker intersected with country availability. The parity model is **Special project values**.
 
 ## Settings
 

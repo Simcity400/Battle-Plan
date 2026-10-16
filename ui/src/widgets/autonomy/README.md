@@ -2,7 +2,7 @@
 
 **What it shows:** Each subject's autonomy level, score and move-up/down thresholds on a lane timeline.
 
-**Prepared data it reads:** Generic series queries for [`autonomy`](../../../../crates/dashboard/src/products/autonomy.rs) supply level/overlord changes, exact reached scores and thresholds, and summaries for visible lanes; [`country-groups`](../../../../crates/dashboard-base/src/products/country_groups.rs) supplies native holder and smart-group histories. The shared progressive reader samples unprepared chart tails and decodes reached hours and zooms of at most thirteen blocks exactly. Native identity spans accompany these reads; smart groups wait for their own membership facts.
+**Prepared data it reads:** Generic series queries for [`autonomy`](../../../../crates/dashboard-subjects/src/products/autonomy.rs) supply level/overlord changes, exact reached scores and thresholds, and summaries for visible lanes; [`country-groups`](../../../../crates/dashboard-base/src/products/country_groups.rs) supplies native holder and smart-group histories. The shared progressive reader samples unprepared chart tails and decodes reached hours and zooms of at most thirteen blocks exactly. Native identity spans accompany these reads; smart groups wait for their own membership facts.
 
 **Settings:** Chosen countries are overlords by default, or subjects; manual countries and smart groups; Grow with playback; Campaign, Follow, Pin and Range.
 

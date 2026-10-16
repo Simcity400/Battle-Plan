@@ -5,29 +5,14 @@
 //! service, transport, host and frontend never name a product; they route by
 //! its key.
 
-pub mod autonomy;
 pub mod country_flags;
-pub mod country_fuel;
-pub mod country_nukes;
-pub mod country_stability;
 pub mod event_feed;
 pub mod focus_artwork;
-pub mod game_score;
 pub use identity::civil_war;
 pub mod land_owners;
 pub mod national_focus;
-pub mod occupation_trend;
-pub mod occupied_states;
-pub mod party_history;
-pub mod peace_deals;
 pub mod scoreboard;
-pub mod special_projects;
-pub mod stability_parts;
-pub mod subjects;
 pub mod technology_artwork;
-pub mod war_casualties;
-pub mod wars;
-pub mod world_tension;
 
 // The product contract and the shared products, at their old paths.
 pub use dashboard_air_aces::products::air_aces;
@@ -35,6 +20,8 @@ pub use dashboard_air_superiority::products::air_superiority;
 pub use dashboard_base::products::*;
 pub use dashboard_construction::products::construction_log;
 pub use dashboard_construction::products::construction_spending;
+pub use dashboard_country_fuel::products::country_fuel;
+pub use dashboard_country_nukes::products::country_nukes;
 pub use dashboard_equipment_losses::products::equipment_losses;
 pub use dashboard_equipment_stockpile::products::equipment_stockpile;
 pub use dashboard_forces::products::air_force;
@@ -53,16 +40,25 @@ pub use dashboard_intelligence::products::operative_placements;
 pub use dashboard_intelligence::products::operatives_roster;
 pub use dashboard_land_battles::products::division_log;
 pub use dashboard_land_battles::products::land_battles;
+pub use dashboard_game_score::products::game_score;
 pub use dashboard_military_air_ledger::products::military_air_ledger;
 pub use dashboard_naval::products::naval_battles;
 pub use dashboard_naval::products::naval_losses;
 pub use dashboard_naval::products::ships_sunk;
 pub use dashboard_naval::products::sinkings;
+pub use dashboard_occupation::products::{occupation_trend, occupied_states};
+pub use dashboard_party_history::products::party_history;
+pub use dashboard_peace_deals::products::peace_deals;
 pub use dashboard_politics_ledger::products::politics_ledger;
 pub use dashboard_raids::products::raids;
 pub use dashboard_resource_balance::products::resource_balance;
 pub use dashboard_resource_balance::products::trade_flows;
+pub use dashboard_special_projects::products::special_projects;
+pub use dashboard_stability::products::{country_stability, stability_parts};
+pub use dashboard_subjects::products::{autonomy, subjects};
 pub use dashboard_unit_leaders::products::unit_leaders;
+pub use dashboard_wars::products::{war_casualties, wars};
+pub use dashboard_world_tension::products::world_tension;
 
 use std::sync::atomic::AtomicBool;
 
@@ -74,37 +70,13 @@ use crate::{
 };
 
 dashboard_base::reply_warnings!(
-    autonomy::AutonomyReply,
     country_flags::CountryFlagReply,
-    country_fuel::FuelReply,
-    country_fuel::FuelAwardsReply,
-    country_fuel::FuelAwardHistoryReply,
-    country_fuel::FuelConsumptionReply,
-    country_fuel::FuelDemandReply,
-    country_fuel::FuelDemandHistoryReply,
-    country_fuel::FuelDemandStackReply,
-    country_nukes::CountryNukesReply,
-    country_stability::CountryStabilityReply,
-    game_score::GameScoreReply,
     event_feed::EventFeedReply,
     focus_artwork::FocusArtworkReply,
     crate::LandOwners,
     national_focus::FocusReply,
-    occupation_trend::OccupationTrendReply,
-    occupied_states::OccupiedStatesReply,
-    occupied_states::OccupiedStatesManifestReply,
-    party_history::PartyHistoryReply,
-    peace_deals::PeaceDealsReply,
     technology_artwork::TechnologyArtworkReply,
     scoreboard::ScoreboardReply,
-    special_projects::SpecialProjectsReply,
-    stability_parts::StabilityPartsReply,
-    subjects::SubjectReply,
-    war_casualties::CasualtyReply,
-    wars::WarsReply,
-    war_casualties::pairs::CasualtyPairsReply,
-    war_casualties::breakdown::CasualtyBreakdownReply,
-    world_tension::TensionReply,
 );
 
 /// A product erased to its key and JSON entry points.
@@ -329,7 +301,11 @@ pub(crate) fn oracle_route(key: &str) -> Option<&'static Registered> {
 mod recording_tests;
 
 #[cfg(test)]
+mod casualty_route_tests;
+#[cfg(test)]
 mod source_warning_tests;
+#[cfg(test)]
+mod tension_query_tests;
 
 #[cfg(test)]
 mod supply_health_registry_tests;
@@ -441,6 +417,15 @@ mod tests {
         assert_eq!(
             find("faction-totals").unwrap().key,
             faction_totals::FactionTotals::KEY
+        );
+    }
+
+    #[test]
+    fn peace_action_labels_participate_in_the_content_cache_contract() {
+        assert!(
+            find(peace_deals::PeaceDeals::KEY)
+                .unwrap()
+                .content_dependent
         );
     }
 

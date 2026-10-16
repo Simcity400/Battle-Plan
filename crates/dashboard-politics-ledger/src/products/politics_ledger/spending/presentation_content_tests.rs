@@ -36,7 +36,7 @@ impl Stack {
         for layer in [stack.base(), stack.addon()] {
             std::fs::create_dir_all(layer).unwrap();
         }
-        crate::catalogue::texture_tests::write_sprite_program(&stack.base());
+        dashboard_text::catalogue::texture_tests::write_sprite_program(&stack.base());
         stack
     }
     fn base(&self) -> PathBuf {
@@ -166,7 +166,7 @@ fn item_icon<'a>(reply: &'a PoliticsLedgerReply, item: &'a LedgerSpendItem) -> O
 }
 
 fn expected_png(pixel: [u8; 4]) -> String {
-    crate::catalogue::png_data_url(&installed_content::image::Rgba8Image {
+    dashboard_text::catalogue::png_data_url(&installed_content::image::Rgba8Image {
         width: 1,
         height: 1,
         pixels: pixel.to_vec(),

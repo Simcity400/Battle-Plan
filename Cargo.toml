@@ -134,6 +134,17 @@ dashboard-construction = { path = "crates/dashboard-construction" }
 dashboard-equipment-losses = { path = "crates/dashboard-equipment-losses" }
 dashboard-equipment-stockpile = { path = "crates/dashboard-equipment-stockpile" }
 dashboard-military-air-ledger = { path = "crates/dashboard-military-air-ledger" }
+dashboard-stability = { path = "crates/dashboard-stability" }
+dashboard-world-tension = { path = "crates/dashboard-world-tension" }
+dashboard-country-nukes = { path = "crates/dashboard-country-nukes" }
+dashboard-subjects = { path = "crates/dashboard-subjects" }
+dashboard-party-history = { path = "crates/dashboard-party-history" }
+dashboard-occupation = { path = "crates/dashboard-occupation" }
+dashboard-peace-deals = { path = "crates/dashboard-peace-deals" }
+dashboard-game-score = { path = "crates/dashboard-game-score" }
+dashboard-wars = { path = "crates/dashboard-wars" }
+dashboard-country-fuel = { path = "crates/dashboard-country-fuel" }
+dashboard-special-projects = { path = "crates/dashboard-special-projects" }
 dashboard-politics-ledger = { path = "crates/dashboard-politics-ledger" }
 dashboard-raids = { path = "crates/dashboard-raids" }
 dashboard-resource-balance = { path = "crates/dashboard-resource-balance" }

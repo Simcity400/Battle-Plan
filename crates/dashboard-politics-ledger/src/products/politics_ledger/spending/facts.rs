@@ -1,7 +1,7 @@
 //! Event-dated operands retained after observing the exact frame. A changing
 //! UnitLeaders experience row never retains its table or changes these facts.
 use super::*;
-use crate::products::{
+use dashboard_base::products::{
     character_portraits::{RecordedPortrait, recorded_portrait},
     production_lines::RawOrganisation,
 };
@@ -75,7 +75,7 @@ mod recorded_modifier {
                 let rows = frame.complete::<tables::ModifierDefinitions>()?;
                 match rows {
                     [row] => Ok(Arc::new(row.clone())),
-                    _ => Err(crate::invalid("Invalid open politics modifier")),
+                    _ => Err(dashboard_core::invalid("Invalid open politics modifier")),
                 }
             })
             .transpose()
@@ -255,7 +255,7 @@ pub(super) fn character_fact(
         id,
         script_token: recorded.script_token.map(str::to_owned),
         saved_name: recorded.saved_name.to_owned(),
-        template: crate::identity::built_template(
+        template: dashboard_text::identity::built_template(
             recorded.row,
             frame.complete::<tables::LexicalTokens>().ok(),
         ),
@@ -333,7 +333,7 @@ pub(super) fn event_facts(
         let links = frame.complete::<tables::CountryLinks>().ok();
         let countries = frame.complete::<tables::Countries>().ok();
         let owner_tag = links
-            .and_then(|links| crate::metadata::link_slot(links, organisation.owner))
+            .and_then(|links| dashboard_text::metadata::link_slot(links, organisation.owner))
             .and_then(|slot| {
                 countries?
                     .iter()

@@ -5,7 +5,7 @@
 pub mod content_check;
 pub mod prepared;
 pub mod prepared_focus;
-pub mod prepared_stability;
+pub use dashboard_stability::prepared_stability;
 pub mod products;
 pub mod reply_cache;
 mod reply_dto;
@@ -17,11 +17,11 @@ pub use dashboard_base::{
 };
 pub(crate) use dashboard_core::invalid;
 pub use dashboard_core::{blocks, config, dto::*, map_display, map_settings, protocol, transport};
+pub(crate) use dashboard_text::party_names;
 pub use dashboard_text::{
     character_scope, cryptology, effect_description, flag_choices, identity, metadata,
     modifier_text, naval_battle_name, scope, scripted_text, state_resources, triggers, unit_names,
 };
-pub(crate) use dashboard_text::{faction_names, idea_names, party_names};
 
 pub use config::Config;
 #[cfg(test)]
