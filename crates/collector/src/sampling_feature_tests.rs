@@ -6,7 +6,7 @@
 /// kind of `*_verify` default.
 #[test]
 fn default_features_sample_instead_of_verifying_everything() {
-    const BURNED_IN: [&str; 45] = [
+    const BURNED_IN: [&str; 46] = [
         "relation",
         "opinion",
         "history",
@@ -52,8 +52,9 @@ fn default_features_sample_instead_of_verifying_everything() {
         "province",
         "army_stat",
         "province_unit",
+        "weather",
     ];
-    const IN_BURN_IN: [&str; 3] = ["weather", "visibility", "raid_intel"];
+    const IN_BURN_IN: [&str; 2] = ["visibility", "raid_intel"];
     let manifest = include_str!("../Cargo.toml");
     let default = manifest
         .lines()

@@ -137,19 +137,9 @@ mod tests {
 
     fn inputs() -> [TableInput; TABLE_COUNT] {
         TableId::ALL.map(|table| {
-            if matches!(
-                table,
-                TableId::Clock
-                    | TableId::Campaign
-                    | TableId::SunkShips
-                    | TableId::WorldTension
-                    | TableId::SimulationFeatures
-                    | TableId::CombatLogState
-                    | TableId::AirSortieModifierMetadata
-                    | TableId::LocalPlayer
-                    | TableId::GameScoreMultipliers
-                    | TableId::EventFeedHistory
-            ) {
+            // Every singleton but the reserved naming the fixture fills is
+            // outside it, taken from the registry so new singletons stay out too.
+            if table.key_bits() == 0 && table != TableId::ReservedCountryNaming {
                 TableInput::Sampled(TableView::Unavailable {
                     reason: "outside fixed-layout fixture".into(),
                 })
@@ -231,6 +221,24 @@ mod tests {
         assert!(untouched(&input, TableId::DivisionMovement));
         assert!(untouched(&input, TableId::Divisions));
         assert!(replay::fixed_layout::STRATEGIC_ACTION.tables.is_empty());
+    }
+
+    /// Every singleton table in the registry is outside the fixture or filled
+    /// with its one row, so a newly registered singleton cannot reach the encoder
+    /// as an empty complete table.
+    #[test]
+    fn fixed_layout_inputs_cover_every_singleton_table() {
+        let input = inputs();
+        for table in TableId::ALL
+            .into_iter()
+            .filter(|table| table.key_bits() == 0)
+        {
+            match &input[table.index()] {
+                TableInput::Sampled(TableView::Unavailable { .. }) => {}
+                TableInput::SharedComplete(rows) => assert_eq!(rows.len(), 1, "{table:?}"),
+                _ => panic!("{table:?} is neither refused nor one row"),
+            }
+        }
     }
 
     #[test]

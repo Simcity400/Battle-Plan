@@ -4001,7 +4001,7 @@ mod tests {
         use replay::{
             branches::{BranchReason, BranchStart},
             frame::Metrics,
-            rows::{CampaignRow, ClockRow, SunkShipsRow, WorldTensionRow},
+            rows::{CampaignRow, ClockRow},
         };
         let id = b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6".to_vec();
         let session = Record::SessionStart(SessionStart {
@@ -4039,6 +4039,15 @@ mod tests {
                 keyframe: true,
                 metrics: Metrics::default(),
                 tables: std::array::from_fn(|index| match TableId::ALL[index] {
+                    // Each hour's map-event interval runs from the previous hour
+                    // to this frame's hour, so consecutive frames continue it.
+                    TableId::MapEvents => TableUpdate::Snapshot(TableRows::MapEvents(vec![
+                        replay::rows::MapEventsRow {
+                            from_hour: hour - 1,
+                            to_hour: hour,
+                            ..Default::default()
+                        },
+                    ])),
                     TableId::Clock => TableUpdate::Snapshot(TableRows::Clock(vec![ClockRow {
                         hour,
                         seed,
@@ -4048,33 +4057,6 @@ mod tests {
                         TableUpdate::Snapshot(TableRows::Campaign(vec![CampaignRow {
                             id: id.clone(),
                         }]))
-                    }
-                    TableId::SunkShips => {
-                        TableUpdate::Snapshot(TableRows::SunkShips(vec![SunkShipsRow::default()]))
-                    }
-                    TableId::WorldTension => TableUpdate::Snapshot(TableRows::WorldTension(vec![
-                        WorldTensionRow::default(),
-                    ])),
-                    TableId::LocalPlayer => {
-                        TableUpdate::Snapshot(TableRows::LocalPlayer(vec![Default::default()]))
-                    }
-                    TableId::SimulationFeatures => {
-                        TableUpdate::Snapshot(TableRows::SimulationFeatures(vec![
-                            Default::default(),
-                        ]))
-                    }
-                    TableId::CombatLogState => {
-                        TableUpdate::Snapshot(TableRows::CombatLogState(vec![Default::default()]))
-                    }
-                    TableId::AirSortieModifierMetadata => {
-                        TableUpdate::Snapshot(TableRows::AirSortieModifierMetadata(vec![
-                            Default::default(),
-                        ]))
-                    }
-                    TableId::ReservedCountryNaming => {
-                        TableUpdate::Snapshot(TableRows::ReservedCountryNaming(vec![
-                            Default::default(),
-                        ]))
                     }
                     TableId::GameScoreMultipliers => TableUpdate::Unavailable {
                         reason: "score multipliers outside finalization fixture".into(),
@@ -4090,8 +4072,12 @@ mod tests {
                         ]))
                     }
                     // A current spool holds no retired table; decoding names it.
+                    // Every other singleton takes one default row from the registry.
                     table => match FormatVersion::CURRENT.table_refusal(table) {
                         Some(reason) => TableUpdate::Unavailable { reason },
+                        None if table.key_bits() == 0 => {
+                            TableUpdate::Snapshot(TableRows::one_default(table))
+                        }
                         None => TableUpdate::Snapshot(TableRows::empty(table)),
                     },
                 }),

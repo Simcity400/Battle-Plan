@@ -19,3 +19,5 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage
 
 [dev-dependencies]
 recorder-test-support.workspace = true
+# TableRows::one_default, which completes the finalization fixture's singleton tables.
+replay-data = { workspace = true, features = ["test-support"] }

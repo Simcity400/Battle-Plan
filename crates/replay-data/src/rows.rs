@@ -626,6 +626,13 @@ macro_rules! define_tables {
             pub fn empty(table: TableId) -> Self {
                 match table { $(TableId::$table => Self::$table(Vec::new())),+ }
             }
+            /// One default row of `table`: the shape a complete singleton table
+            /// (`key_bits() == 0`) must have, for fixtures that complete every
+            /// singleton from the registry rather than by name.
+            #[cfg(any(test, feature = "test-support"))]
+            pub fn one_default(table: TableId) -> Self {
+                match table { $(TableId::$table => Self::$table(vec![Default::default()])),+ }
+            }
             pub const fn table(&self) -> TableId {
                 match self { $(Self::$table(_) => TableId::$table),+ }
             }

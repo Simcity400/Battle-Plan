@@ -154,6 +154,7 @@ impl World {
                     invalid_orders: Some(0),
                     strength_factor: Some(95_000),
                     exiled: Some(0),
+                    noncore_supply_bypass: Some(0),
                     model_number: Some(index as i32 % 8),
                     acclimatization: Some(object),
                     ..DivisionSeed::default()

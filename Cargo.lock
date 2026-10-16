@@ -6550,6 +6550,7 @@ dependencies = [
  "recorder-platform",
  "recorder-test-support",
  "replay",
+ "replay-data",
  "serde_json",
  "windows-sys 0.61.2",
 ]
@@ -6569,6 +6570,7 @@ name = "recorder-test-support"
 version = "0.1.0"
 dependencies = [
  "replay",
+ "replay-data",
 ]
 
 [[package]]

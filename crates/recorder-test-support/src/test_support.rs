@@ -93,19 +93,6 @@ pub fn allocation_frame(branch: u64, hour: i32, load_signal: i64) -> replay::fra
                 TableId::Campaign => TableRows::Campaign(vec![CampaignRow {
                     id: ALLOCATION_CAMPAIGN.to_vec(),
                 }]),
-                TableId::SunkShips => TableRows::SunkShips(vec![Default::default()]),
-                TableId::WorldTension => TableRows::WorldTension(vec![Default::default()]),
-                TableId::LocalPlayer => TableRows::LocalPlayer(vec![Default::default()]),
-                TableId::SimulationFeatures => {
-                    TableRows::SimulationFeatures(vec![Default::default()])
-                }
-                TableId::CombatLogState => TableRows::CombatLogState(vec![Default::default()]),
-                TableId::AirSortieModifierMetadata => {
-                    TableRows::AirSortieModifierMetadata(vec![Default::default()])
-                }
-                TableId::ReservedCountryNaming => {
-                    TableRows::ReservedCountryNaming(vec![Default::default()])
-                }
                 TableId::GameScoreMultipliers => {
                     TableRows::GameScoreMultipliers(vec![replay::rows::GameScoreMultiplierRow {
                         total_raw: Some(0),
@@ -125,6 +112,16 @@ pub fn allocation_frame(branch: u64, hour: i32, load_signal: i64) -> replay::fra
                         ..Default::default()
                     }])
                 }
+                // Each hour's map-event interval runs from the previous hour to
+                // this frame's hour, so consecutive frames continue it.
+                TableId::MapEvents => TableRows::MapEvents(vec![replay::rows::MapEventsRow {
+                    from_hour: hour - 1,
+                    to_hour: hour,
+                    ..Default::default()
+                }]),
+                // Every other singleton takes one default row, so a newly
+                // registered singleton table keeps the frame complete.
+                table if table.key_bits() == 0 => TableRows::one_default(table),
                 table => TableRows::empty(table),
             };
             // A current spool holds no retired table; decoding names it.
@@ -242,4 +239,31 @@ pub fn replay(records: Vec<replay::spool::Record>) -> replay::container::Replay 
     let encoded =
         replay::container::Replay::from_records(ALLOCATION_CAMPAIGN.to_vec(), &[records]).unwrap();
     replay::container::Replay::open(encoded.bytes().to_vec()).unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use replay::frame::TableUpdate;
+
+    /// Every singleton table in the registry is complete with one row (or names
+    /// its retirement), so a newly registered singleton cannot leave the shared
+    /// fixture's frames unencodable.
+    #[test]
+    fn allocation_frames_complete_every_singleton_table() {
+        let frame = allocation_frame(9, 2, FIRST_LOAD);
+        for table in TableId::ALL
+            .into_iter()
+            .filter(|table| table.key_bits() == 0)
+        {
+            match &frame.tables[table.index()] {
+                TableUpdate::Snapshot(rows) => assert_eq!(rows.len(), 1, "{table:?}"),
+                TableUpdate::Unavailable { .. } => {}
+                other => panic!("{table:?} is {other:?}"),
+            }
+        }
+        for record in allocation_records() {
+            replay::spool::encode_record(&record).unwrap();
+        }
+    }
 }

@@ -242,6 +242,7 @@ fn seed() -> engine::carmy::DivisionSeed {
         invalid_orders: Some(0),
         strength_factor: Some(0),
         exiled: Some(0),
+        noncore_supply_bypass: Some(0),
         model_number: Some(0),
         ..Default::default()
     }
