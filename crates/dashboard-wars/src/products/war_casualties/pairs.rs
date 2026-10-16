@@ -683,6 +683,7 @@ impl PairHistory {
             .map(|runs| runs.len() * std::mem::size_of::<PairRead>())
             .sum()
     }
+    #[cfg(test)]
     pub(super) fn publish_window(
         &mut self,
         writer: &mut store::Writer,
@@ -691,6 +692,21 @@ impl PairHistory {
         span: HourSpan,
         observed: &[HourSpan],
     ) -> io::Result<u64> {
+        let window = self.window(span, observed);
+        let count = window.records.len() as u64;
+        dashboard_base::prepared::series::write_reply(
+            writer,
+            &format!("casualty-pairs-{branch}"),
+            ordinal,
+            &window,
+        )?;
+        Ok(count)
+    }
+    /// The block window `span` publishes: every lifetime's runs within it
+    /// and the observed reads it covers. Only each lifetime's open run, whose
+    /// original boundary supplies breakdown dates before the next window,
+    /// survives it.
+    pub(super) fn window(&mut self, span: HourSpan, observed: &[HourSpan]) -> Window {
         self.seal();
         let records: Vec<_> = self
             .runs()
@@ -707,7 +723,6 @@ impl PairHistory {
                 (!runs.is_empty()).then(|| (key.clone(), runs))
             })
             .collect();
-        let count = records.len() as u64;
         let window = Window {
             records,
             observed: observed
@@ -722,12 +737,6 @@ impl PairHistory {
                 })
                 .collect(),
         };
-        dashboard_base::prepared::series::write_reply(
-            writer,
-            &format!("casualty-pairs-{branch}"),
-            ordinal,
-            &window,
-        )?;
         // The open run's original boundary supplies breakdown dates before
         // the next window. Closed history does not survive publication.
         for runs in &mut self.reads {
@@ -735,7 +744,206 @@ impl PairHistory {
                 runs.drain(..runs.len() - 1);
             }
         }
-        Ok(count)
+        window
+    }
+    /// Whether hours from `first` continue the hour this history observed
+    /// last, as a supplying hourly read with every join in place: then
+    /// observing a later hour that changes no relation, endpoint or read
+    /// mode only moves its frontier ([`Self::advance_quiet`]).
+    pub(super) fn quiet_continues(&self, first: i32) -> bool {
+        self.joined
+            && self.supplying
+            && self
+                .frontier
+                .is_some_and(|frontier| frontier.checked_add(1) == Some(first))
+    }
+    /// Hours through `last` that [`Self::quiet_continues`] allows, each an
+    /// hourly supplying read changing nothing: in constant time.
+    pub(super) fn advance_quiet(&mut self, last: i32) {
+        self.frontier = Some(last);
+        self.supplying = true;
+        self.supplying_hour = Some(last);
+    }
+    /// Whether this history, having observed a block's first hour `first` on
+    /// the carried scan, can take `block`'s, observed from `first` on a scan of
+    /// the block alone ([`Self::carry`]): it observed `first` as an hourly
+    /// supplying read with every join in place, each lifetime and holder pair
+    /// `block` met at `first` has its last run here ending there, and each
+    /// lifetime `block` met later is new here.
+    pub(super) fn follows(&self, block: &PairHistory, first: i32) -> bool {
+        self.joined
+            && self.supplying
+            && self.frontier == Some(first)
+            && block.keys.iter().all(|(key, &index)| {
+                let Some(run) = block.reads.get(index).and_then(|runs| runs.first()) else {
+                    return false;
+                };
+                match self.keys.get(key) {
+                    Some(&own) => {
+                        run.first_hour == first
+                            && self
+                                .reads
+                                .get(own)
+                                .and_then(|runs| runs.last())
+                                .is_some_and(|last| last.last_hour == first)
+                    }
+                    None => run.first_hour > first,
+                }
+            })
+            && block.coverage.iter().all(|(pair, runs)| {
+                runs.first().is_some_and(|run| {
+                    run.first_hour > first
+                        || (run.first_hour == first
+                            && self
+                                .coverage
+                                .get(pair)
+                                .and_then(|runs| runs.last())
+                                .is_some_and(|last| last.last_hour == first))
+                })
+            })
+    }
+    /// Take `block`'s history after the block's first hour `first`, which
+    /// [`Self::follows`] allows. Each lifetime's and holder pair's runs after
+    /// the one they had at `first` continue this history's; a holder pair
+    /// `block` met first later continues its last run here as observing it
+    /// then does (the run reaches the hour before, and goes on when it
+    /// agrees). Every run is marked incomplete as `scan` (the carried scan)
+    /// marks its endpoints, which the block's own scan cannot know and which
+    /// no hour after `first` changes. Lifetimes new here are numbered as this
+    /// history meets them: by hour, then in `scan`'s relation key order.
+    /// `ordinals` holds each of `block`'s relation ordinals with `scan`'s,
+    /// and its key there.
+    pub(super) fn carry(
+        &mut self,
+        block: PairHistory,
+        first: i32,
+        scan: &Scan,
+        ordinals: &[(usize, usize, PairKey)],
+    ) -> io::Result<()> {
+        let PairHistory {
+            coverage,
+            keys,
+            mut reads,
+            current,
+            frontier,
+            supplying,
+            supplying_hour,
+            ..
+        } = block;
+        let incomplete = |identity: &Identity| {
+            scan.indices
+                .get(identity)
+                .is_some_and(|&index| scan.countries[index].at_least)
+        };
+        for (pair, mut runs) in coverage {
+            let flag = incomplete(&pair.0) || incomplete(&pair.1);
+            for run in &mut runs {
+                run.incomplete = flag;
+            }
+            let own = self.coverage.entry(pair).or_default();
+            let mut runs = runs.into_iter();
+            if let Some(run) = runs.next() {
+                match own.last_mut() {
+                    Some(last) if run.first_hour == first => last.last_hour = run.last_hour,
+                    Some(last) => {
+                        last.last_hour = run.first_hour - 1;
+                        if last.live == run.live && last.incomplete == run.incomplete {
+                            last.last_hour = run.last_hour;
+                        } else {
+                            own.push(run);
+                        }
+                    }
+                    None => own.push(run),
+                }
+            }
+            own.extend(runs);
+        }
+        // Each of the block's lifetimes by its index there, and this scan's
+        // relation key of each one current there.
+        let mut named: Vec<Option<Key>> = vec![None; reads.len()];
+        for (key, &index) in &keys {
+            if let Some(slot) = named.get_mut(index) {
+                *slot = Some(key.clone());
+            }
+        }
+        let mut relations: BTreeMap<usize, PairKey> = BTreeMap::new();
+        for &(ordinal, _, key) in ordinals {
+            if let Some(Some((_, _, index))) = current.get(ordinal) {
+                relations.insert(*index, key);
+            }
+        }
+        let mut new = Vec::new();
+        for (key, index) in keys {
+            let mut runs = std::mem::take(&mut reads[index]);
+            let flag = incomplete(&key.2) || incomplete(&key.3);
+            for run in &mut runs {
+                run.incomplete = flag;
+            }
+            match self.keys.get(&key) {
+                Some(&own) => {
+                    let own = &mut self.reads[own];
+                    let mut runs = runs.into_iter();
+                    if let Some(run) = runs.next() {
+                        match own.last_mut() {
+                            Some(last) => last.last_hour = run.last_hour,
+                            None => own.push(run),
+                        }
+                    }
+                    own.extend(runs);
+                }
+                None => {
+                    let relation = relations.get(&index).copied().ok_or_else(|| {
+                        dashboard_core::invalid("A casualty block's lifetime has no relation")
+                    })?;
+                    let met = runs.first().map_or(first, |run| run.first_hour);
+                    new.push((met, relation, key, runs));
+                }
+            }
+        }
+        new.sort_unstable_by_key(|(met, relation, _, _)| (*met, *relation));
+        for (_, _, key, runs) in new {
+            self.keys.insert(key, self.reads.len());
+            self.reads.push(runs);
+        }
+        // The relations' current lifetimes, and the joins of those first
+        // held in the block, as observing each hour leaves them.
+        let before = self.current.len();
+        self.current.resize(scan.pairs.len(), None);
+        self.adjacent.resize_with(scan.identities.len(), Vec::new);
+        let tag = |identity: Identity, held: &Arc<str>| -> Arc<str> {
+            scan.indices
+                .get(&identity)
+                .and_then(|&index| self.last_tags.get(index))
+                .and_then(Option::as_ref)
+                .filter(|(tag, _)| **tag == **held)
+                .map_or_else(|| held.clone(), |(tag, _)| tag.clone())
+        };
+        let mut joined = Vec::new();
+        for &(ordinal, own, key) in ordinals {
+            let Some(Some((_, _, index))) = current.get(ordinal) else {
+                continue;
+            };
+            let Some(Some(name)) = named.get(*index) else {
+                continue;
+            };
+            let Some(&carried) = self.keys.get(name) else {
+                continue;
+            };
+            joined.push((own, (tag(name.2, &name.0), tag(name.3, &name.1), carried)));
+            if own >= before {
+                self.adjacent[key.0].push(key);
+                self.adjacent[key.1].push(key);
+            }
+        }
+        for (own, current) in joined {
+            if let Some(slot) = self.current.get_mut(own) {
+                *slot = Some(current);
+            }
+        }
+        self.frontier = frontier;
+        self.supplying = supplying;
+        self.supplying_hour = supplying_hour;
+        Ok(())
     }
 }
 
@@ -769,8 +977,14 @@ pub fn prepared_query(
     let available = catalogue.pair_available;
     if !available
         && params.window.is_none()
-        && dashboard_base::prepared::coverage::coverage(source, content, branch, cancelled)?
-            .is_none_or(|coverage| !coverage.complete)
+        && dashboard_base::prepared::coverage::product_coverage(
+            source,
+            content,
+            branch,
+            "casualty-pairs",
+            cancelled,
+        )?
+        .is_none_or(|coverage| !coverage.complete)
     {
         return Ok(serde_json::Value::Null);
     }

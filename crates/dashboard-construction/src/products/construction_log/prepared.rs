@@ -5,6 +5,7 @@ use crate::products::construction_spending::{
     SpentStep,
 };
 use dashboard_base::prepared::series::{self, Accumulator, Reader};
+use dashboard_base::products::country_groups::HourSpan;
 
 #[derive(Clone, Serialize, Deserialize)]
 enum Fact {
@@ -65,6 +66,19 @@ impl Prepared {
         }
     }
 
+    /// The last hour the scan observed.
+    pub fn last_hour(&self) -> Option<i32> {
+        self.scan.last_hour()
+    }
+
+    /// The last observed hour (`frame`) read again from its block's keyframe,
+    /// before observation goes on from that read ([`Scan::rebase_dictionary`]).
+    pub fn rebase(&mut self, frame: &DecodedFrame) {
+        if self.scan.last_hour() == Some(frame.hour) {
+            self.scan.rebase_dictionary(frame);
+        }
+    }
+
     #[cfg(test)]
     pub fn observe(
         &mut self,
@@ -90,6 +104,18 @@ impl Prepared {
         source: &Source,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
+        self.observe_changed_in(frame, format, source.block_windows(frame.branch), changes)
+    }
+
+    /// [`Self::observe_changed`] with the branch's replay blocks (`windows`,
+    /// as [`Source::block_windows`] lists them) instead of the source.
+    pub fn observe_changed_in(
+        &mut self,
+        frame: &DecodedFrame,
+        format: replay::format::FormatVersion,
+        windows: &[HourSpan],
+        changes: &dashboard_base::prepared::frame_changes::FrameChanges,
+    ) -> io::Result<()> {
         let consecutive = self.scan.last.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
         self.facts.advance(frame.hour)?;
         self.queues.advance(frame.hour)?;
@@ -109,10 +135,39 @@ impl Prepared {
         {
             self.scan.sync_reads();
         }
-        self.project_facts(frame.hour, frame.branch, source)
+        self.project_facts(frame.hour, windows)
     }
 
-    fn project_facts(&mut self, hour: i32, branch: u64, source: &Source) -> io::Result<()> {
+    /// Hours `first..=last` that follow the last observed (`frame`), at which
+    /// no field the scan reads changed and no queue or output read is dated:
+    /// each advances the series' accepted hours and the scan's last hour, as
+    /// observing it does, in constant time. False when the last hour left
+    /// something to project, which only observation does.
+    pub fn advance_quiet(
+        &mut self,
+        first: i32,
+        last: i32,
+        frame: &DecodedFrame,
+    ) -> io::Result<bool> {
+        if self.scan.last_hour().and_then(|hour| hour.checked_add(1)) != Some(first)
+            || !self.scan.settled()
+        {
+            return Ok(false);
+        }
+        for series in [
+            &mut self.facts,
+            &mut self.queues,
+            &mut self.members,
+            &mut self.reads,
+            &mut self.spending,
+        ] {
+            series.advance_span(first, last)?;
+        }
+        self.scan.advance_quiet(last, frame);
+        Ok(true)
+    }
+
+    fn project_facts(&mut self, hour: i32, windows: &[HourSpan]) -> io::Result<()> {
         let dirty = std::mem::take(&mut self.scan.dirty);
         if dirty.is_empty() && self.scan.log.output_reads.is_empty() {
             return Ok(());
@@ -232,7 +287,6 @@ impl Prepared {
                 }
             }
         }
-        let windows = source.block_windows(branch);
         let window_of = |hour| {
             windows
                 .partition_point(|window| window.first_hour <= hour)
@@ -368,11 +422,15 @@ impl Prepared {
         last_hour: i32,
         source: &Source,
     ) -> io::Result<()> {
+        self.end_block_in(last_hour, source.block_windows(frame_branch))
+    }
+
+    /// [`Self::end_block`] with the branch's replay blocks instead of the source.
+    pub fn end_block_in(&mut self, last_hour: i32, windows: &[HourSpan]) -> io::Result<()> {
         self.scan.seal();
         if let Some(hour) = self.scan.last {
-            self.project_facts(hour, frame_branch, source)?;
+            self.project_facts(hour, windows)?;
         }
-        let windows = source.block_windows(frame_branch);
         let window = windows
             .partition_point(|window| window.first_hour <= last_hour)
             .saturating_sub(1) as u64;
@@ -407,9 +465,30 @@ impl Prepared {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        self.flush_in(
+            writer,
+            source.replay_ref(),
+            source.block_windows(branch),
+            &NameSource::of(source, context),
+            branch,
+            cancelled,
+        )
+    }
+
+    /// [`Self::flush`] with the recording, the branch's replay blocks and the
+    /// source's naming handles instead of the source.
+    pub fn flush_in(
+        &mut self,
+        writer: &mut store::Writer,
+        replay: &Replay,
+        block_windows: &[HourSpan],
+        names: &NameSource,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
         self.scan.seal();
         if let Some(hour) = self.scan.last {
-            self.project_facts(hour, branch, source)?;
+            self.project_facts(hour, block_windows)?;
         }
         // That projection repeats the hour the block's end already published:
         // its touched keys belong to that block's window, not the next one.
@@ -445,18 +524,11 @@ impl Prepared {
             cancelled,
         )?;
         let mut warnings = Vec::new();
-        let names = content_names(
-            source,
-            context,
-            branch,
-            &self.scan.log,
-            cancelled,
-            &mut warnings,
-        )?;
+        let names = names.names(branch, &self.scan.log, cancelled, &mut warnings)?;
         scan_warnings(&self.scan.log, &mut warnings);
         let manifest = ConstructionLogManifestReply {
             cost_scale: COST_SCALE,
-            windows: windows(source.replay_ref(), branch),
+            windows: windows(replay, branch),
             recorded: !(self.scan.log.reads.is_empty() && self.scan.log.railway_reads.is_empty()),
             types: names.types.clone(),
             repair_icon: names.repair_icon.clone(),
@@ -762,8 +834,10 @@ pub fn query(
         .parse()
         .map_err(|_| dashboard_core::invalid("Invalid construction branch"))?;
     let (store, key) = dashboard_base::prepared::files(source, content)?;
-    let Some(coverage) =
-        dashboard_base::prepared::coverage::coverage(source, content, branch, cancelled)?
+    // Construction prepared on its own answers from its own coverage.
+    let Some(coverage) = dashboard_base::prepared::coverage::product_coverage(
+        source, content, branch, product, cancelled,
+    )?
     else {
         return Ok(None);
     };

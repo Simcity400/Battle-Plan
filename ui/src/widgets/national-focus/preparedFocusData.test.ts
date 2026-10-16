@@ -1,83 +1,100 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { lastPage, loadPreparedFocusPage, preparedArtKey, validatePreparedHour, validatePreparedOrder, validatePreparedArt, waitForFocusPreparation, canCarryPreparedFocus, loadPreparedFocusDetail, validateUnavailableFocus, loadPreparedFocusHour } from './preparedFocusData.ts';
+import { lastPage, loadPreparedFocusPage, preparedArtKey, validatePreparedHour, validatePreparedOrder, validatePreparedArt, waitForFocusPreparation, canCarryPreparedFocus, loadPreparedFocusDetail, validateUnavailableFocus, loadPreparedFocusHour, focusTokenOrder, loadFocusArt } from './preparedFocusData.ts';
 import type { FocusPreparedClient, PreparedFocusHour } from './preparedFocusData.ts';
 import type { DashboardSource } from '../../dashboard/client';
-const row: PreparedFocusHour = { schema: 5, slot: 7, countryId: 9001, hour: 100, lastHour: 123, orderFirstHour: 100, current: 'current', continuous: null, paused: false,
-  progressRaw: '-9223372036854775808', dailyGainRaw: '18446744073709551615',
-  completed: { first: '9007199254740993', count: '3', rows: '300' },
-  presentation: { first: '9007199254740994', count: '3', rows: '301' }, details: null, warnings: [] };
+const row: PreparedFocusHour = { schema: 6, slot: 7, countryId: 9001, hour: 100, lastHour: 123, orderFirstHour: 100, current: 'current', continuous: null, paused: false,
+  completed: { first: '9007199254740993', count: '3', rows: '300' }, at: 101,
+  progressRaw: '-9223372036854775808', dailyGainRaw: '18446744073709551615' };
 const source = { id: 'source', revision: 'v1' } as DashboardSource;
 const art = (token: string) => ({ artwork: { token, name: token, description: null, baseDurationDays: 70, icon: null }, reason: null });
+/** A client answering `focus-art` through `product`, each token's art from `named`. */
+const artClient = (requests: { product: string; params: any }[], named: (token: string, params: any) => object = token => art(token),
+  reply: (params: any) => object | null = () => null) => ({
+  product: async (request: any) => {
+    requests.push({ product: request.product, params: request.params });
+    return { sourceId: request.sourceId, revision: request.revision, product: request.product,
+      data: reply(request.params) ?? { art: request.params.tokens.map((token: string) => named(token, request.params)), warnings: ['Standing content notice'], failures: [] } };
+  },
+});
 test('prepared focus validates exact integers, intervals and uncapped opaque values', () => {
   assert.equal(validatePreparedHour(row, 101), row);
   assert.equal(validatePreparedHour(null, 101), null);
-  for (const value of [{ ...row, schema: 1 }, { ...row, schema: 3 }, { ...row, hour: 102 }, { ...row, lastHour: 100 }, { ...row, progressRaw: '1.5' },
-    { ...row, completed: { ...row.completed, count: '2' } }]) assert.throws(() => validatePreparedHour(value, 101));
+  for (const value of [{ ...row, schema: 1 }, { ...row, schema: 5 }, { ...row, hour: 102 }, { ...row, lastHour: 100 }, { ...row, progressRaw: '1.5' },
+    { ...row, at: 100 }, { ...row, completed: { ...row.completed, count: '2' } }]) assert.throws(() => validatePreparedHour(value, 101));
   const long = 'mod/'.repeat(1000);
   assert.equal(validatePreparedOrder([{ ordinal: 0, token: long, completedByHour: null }], { first: '0', count: '1', rows: '1' }, 0n)[0].token, long);
   assert.equal(validatePreparedArt([art(long)])[0].artwork.token, long);
   assert.throws(() => validatePreparedOrder([], row.completed, 0n));
-  assert.throws(() => validatePreparedArt([], row.presentation, 0n));
+  assert.throws(() => validatePreparedArt([{ artwork: null, reason: null }]));
   const hugeRows = 9007199254740993n * 128n;
   assert.equal(lastPage({ first: '0', count: '9007199254740993', rows: String(hugeRows) }), 9007199254740992n);
+  // Tokens are asked in the service's order: by Unicode scalar value.
+  assert.deepEqual(['b', '\u{1F600}', '～', 'a'].sort(focusTokenOrder), ['a', 'b', '～', '\u{1F600}']);
 });
-test('visible completion page and active tail read bounded artwork and independent static text', async () => {
+test('visible completion page and active tail read art at their own hours and independent static text', async () => {
   const requests: { product: string; params: any }[] = [];
-  const client = { preparedQuery: async (_source: DashboardSource, product: string, params: any) => {
+  const client = { ...artClient(requests), preparedQuery: async (_source: DashboardSource, product: string, params: any) => {
     requests.push({ product, params });
     if (product === 'focus-order-page') return Array.from({ length: 128 }, (_, ordinal) => ({ ordinal, token: 'focus_' + ordinal, completedByHour: 100 }));
     if (product === 'focus-static-text') return params.tokens.map((token: string) => ({ ...art(token).artwork, description: 'Static ' + token }));
-    const page = BigInt(params.page);
-    return page === 0n ? Array.from({ length: 128 }, (_, index) => art('focus_' + index))
-      : [...Array.from({ length: 44 }, (_, index) => art('focus_' + (256 + index))), art('current')];
+    throw new Error(product);
   } } as unknown as FocusPreparedClient;
   const result = await loadPreparedFocusPage(client, source, '1', 'opaque/mod/tag', 101, row, 0n, new AbortController().signal);
   assert.equal(result.order.length, 128);
   assert.equal(result.art.get(preparedArtKey(101, 'current'))?.artwork.name, 'current');
-  assert.equal(requests.length, 5, '129 unique tokens use two static-text pages');
+  assert.equal(requests.filter(item => item.product === 'focus-static-text').length, 2, '129 unique tokens use two static-text pages');
   assert.equal(result.art.get(preparedArtKey(100, 'focus_0'))?.artwork.description, 'Static focus_0');
   assert.equal(result.art.get(preparedArtKey(101, 'current'))?.artwork.description, 'Static current');
   assert.equal(result.staticText.length, 129);
-  assert.deepEqual(requests.filter(item => item.product === 'focus-presentation-page').map(item => item.params.page), ['0', '2']);
+  const arts = requests.filter(item => item.product === 'focus-art');
+  assert.deepEqual(arts.map(item => [item.params.hour, item.params.tokens.length, item.params.mode]), [[100, 128, 'display'], [101, 1, 'display']]);
+  assert.deepEqual(arts[0].params.tokens, [...arts[0].params.tokens].sort(focusTokenOrder));
+  assert.deepEqual(result.warnings, ['Standing content notice']);
   assert.equal(requests[0].params.pages.first, '9007199254740993');
 });
 test('cancelled pages and omitted artwork never publish successful empty data', async () => {
   const controller = new AbortController();
-  const client = { preparedQuery: async (_source: DashboardSource, product: string) => {
+  const client = { ...artClient([]), preparedQuery: async (_source: DashboardSource, product: string) => {
     controller.abort();
-    return product === 'focus-order-page' ? [{ ordinal: 0, token: 'current', completedByHour: null }] : [art('current')];
+    return product === 'focus-order-page' ? [{ ordinal: 0, token: 'current', completedByHour: null }] : [art('current').artwork];
   } } as unknown as FocusPreparedClient;
-  const one = { ...row, completed: { first: '0', count: '1', rows: '1' }, presentation: { first: '0', count: '1', rows: '1' } };
+  const one = { ...row, completed: { first: '0', count: '1', rows: '1' } };
   await assert.rejects(loadPreparedFocusPage(client, source, '1', 'tag', 101, one, 0n, controller.signal), /cancelled/);
+  const omitting = artClient([], token => art(token), () => ({ art: [], warnings: [], failures: [] }));
+  await assert.rejects(loadFocusArt(omitting as unknown as FocusPreparedClient, source, '1', 'tag', 101, ['a'], 'display', new AbortController().signal), /omitted/);
 });
 
 test('completion and active instances of one token use their own recorded hours', async () => {
-  const requested = { ...row, hour: 120, lastHour: 120, completed: { first: '0', count: '1', rows: '1' }, presentation: { first: '0', count: '1', rows: '2' } };
+  const requested = { ...row, hour: 120, lastHour: 120, at: 120, completed: { first: '0', count: '1', rows: '1' } };
   const dates: number[] = [];
-  const client = { preparedQuery: async (_source: DashboardSource, product: string, params: any) => {
-    if (product === 'focus-order-page') return [{ ordinal: 0, token: 'current', completedByHour: 100 }];
-    if (product === 'focus-hour') return { ...requested, hour: 100, lastHour: 100, presentation: { ...requested.presentation, first: '1' } };
-    if (product === 'focus-static-text') return params.tokens.map((token: string) => art(token).artwork);
-    dates.push(params.hour);
-    return [0, 1].map(() => ({ ...art('current'), artwork: { ...art('current').artwork, name: 'At ' + params.hour } }));
-  } } as unknown as FocusPreparedClient;
+  const client = { ...artClient([], (token, params) => { dates.push(params.hour); return { ...art(token), artwork: { ...art(token).artwork, name: 'At ' + params.hour } }; }),
+    preparedQuery: async (_source: DashboardSource, product: string, params: any) => {
+      if (product === 'focus-order-page') return [{ ordinal: 0, token: 'current', completedByHour: 100 }];
+      if (product === 'focus-static-text') return params.tokens.map((token: string) => art(token).artwork);
+      throw new Error(product);
+    } } as unknown as FocusPreparedClient;
   const result = await loadPreparedFocusPage(client, source, '1', 'tag', 120, requested, 0n, new AbortController().signal);
   assert.equal(result.art.get(preparedArtKey(100, 'current'))?.artwork.name, 'At 100');
   assert.equal(result.art.get(preparedArtKey(120, 'current'))?.artwork.name, 'At 120');
   assert.deepEqual(dates.sort(), [100, 120]);
 });
 
-test('a refused dated artwork page retains independent recorded order', async () => {
-  const one = { ...row, current: null, completed: { first: '0', count: '1', rows: '1' }, presentation: { first: '0', count: '1', rows: '1' } };
-  const client = { preparedQuery: async (_source: DashboardSource, product: string) => {
+test('a refused or failed dated art request retains independent recorded order and names its reason', async () => {
+  const one = { ...row, current: null, completed: { first: '0', count: '1', rows: '1' } };
+  const query = { preparedQuery: async (_source: DashboardSource, product: string, params: any) => {
     if (product === 'focus-order-page') return [{ ordinal: 0, token: 'mod', completedByHour: 100 }];
-    throw new Error('named content refusal');
-  } } as unknown as FocusPreparedClient;
-  const result = await loadPreparedFocusPage(client, source, '1', 'tag', 101, one, 0n, new AbortController().signal);
+    if (product === 'focus-static-text') return params.tokens.map((token: string) => art(token).artwork);
+    throw new Error(product);
+  } };
+  const refused = { ...query, product: async () => { throw new Error('named content refusal'); } } as unknown as FocusPreparedClient;
+  const result = await loadPreparedFocusPage(refused, source, '1', 'tag', 101, one, 0n, new AbortController().signal);
   assert.equal(result.order[0].token, 'mod');
   assert.equal(result.art.get(preparedArtKey(100, 'mod'))?.artwork.name, null);
   assert.equal(result.art.get(preparedArtKey(100, 'mod'))?.reason, 'named content refusal');
+  const failed = { ...query, ...artClient([], token => art(token), () => ({ art: [], warnings: [], failures: [{ reason: 'Content stack refused', tokens: 1 }] })) } as unknown as FocusPreparedClient;
+  const named = await loadPreparedFocusPage(failed, source, '1', 'tag', 101, one, 0n, new AbortController().signal);
+  assert.equal(named.art.get(preparedArtKey(100, 'mod'))?.reason, 'Content stack refused');
 });
 
 test('explicit retry starts idle once and polls only queued/preparing states', async () => {
@@ -127,30 +144,25 @@ test('pending carry requires known native holder rather than reused tag', () => 
   assert.equal(canCarryPreparedFocus(row, { ...row, countryId: 9002 }), false);
   assert.equal(canCarryPreparedFocus(row, { ...row, slot: 8 }), false);
 });
-test('prepared descriptions use the confirming hour and one exact ordinal page', async () => {
+test('prepared descriptions are text art at the confirming hour', async () => {
   const requests: { product: string; params: any }[] = [];
-  const displayed = { ...row, hour: 120, lastHour: 120, details: { first: '9007199254740993', count: '1', rows: '2' } };
-  const client = { preparedQuery: async (_source: DashboardSource, product: string, params: any) => {
-    requests.push({ product, params });
-    if (product === 'focus-hour') return { ...displayed, hour: 100, lastHour: 100 };
-    return [0, 1].map(() => ({ ...art('current'), artwork: { ...art('current').artwork, description: 'Description at ' + params.hour } }));
-  } } as unknown as FocusPreparedClient;
+  const displayed = { ...row, hour: 120, lastHour: 120, at: 120 };
+  const client = { ...artClient(requests, (token, params) => ({ ...art(token), artwork: { ...art(token).artwork, description: 'Description at ' + params.hour } })),
+    preparedQuery: async (_source: DashboardSource, product: string) => { throw new Error(product); } } as unknown as FocusPreparedClient;
   const value = await loadPreparedFocusDetail(client, source, '1', 'opaque/tag', displayed, { ordinal: 0, token: 'current', completedByHour: 100 }, new AbortController().signal);
   assert.equal(value?.artwork.description, 'Description at 100');
-  assert.deepEqual(requests.map(item => item.product), ['focus-hour', 'focus-details-page']);
-  assert.equal(requests[1].params.pages.first, '9007199254740993');
-  assert.equal(requests[1].params.page, '0');
+  assert.deepEqual(requests.map(item => [item.product, item.params.hour, item.params.mode, item.params.tokens]), [['focus-art', 100, 'text', ['current']]]);
 });
 test('unavailable focus diagnostics preserve producer reasons and exact missing counts', () => {
-  const value = { schema: 5, firstHour: 100, lastHour: 102, reasons: [
+  const value = { schema: 6, firstHour: 100, lastHour: 102, reasons: [
     { table: 'Focus', reason: 'mod reader refused form: exact reason', missingRows: null },
     { table: 'CompletedFocuses', reason: null, missingRows: '9007199254740993' },
   ] };
   assert.deepEqual(validateUnavailableFocus(value, 101), ['Focus: mod reader refused form: exact reason', 'CompletedFocuses: 9007199254740993 missing rows']);
   assert.throws(() => validateUnavailableFocus(value, 103));
+  assert.throws(() => validateUnavailableFocus({ ...value, schema: 5 }, 101));
   assert.throws(() => validateUnavailableFocus({ ...value, reasons: [{ table: 'Focus', reason: null, missingRows: null }] }, 101));
 });
-
 test('null before accepted coverage remains pending until the requested extent grows', async () => {
   let queries = 0, waits = 0;
   const client = { preparationStatus: async (request: any) => ({ ...request, state: 'preparing', sections: [

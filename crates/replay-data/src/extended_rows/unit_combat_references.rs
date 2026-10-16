@@ -21,6 +21,9 @@ impl UnitCombatReference {
 }
 
 impl Value for UnitCombatReference {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     const MINIMUM_ENCODED_BYTES: usize = 9;
     #[cfg(test)]
     const STRUCT_FIELDS: usize = 2;

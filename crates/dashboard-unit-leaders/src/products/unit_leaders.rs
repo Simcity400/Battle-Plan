@@ -696,7 +696,7 @@ struct Evaluation {
     hour: i32,
 }
 
-use dashboard_text::triggers::inputs::{ReuseCounts, check_reuse};
+use dashboard_text::triggers::inputs::{ReuseCounts, Since, check_reuse};
 
 /// The hour's rereads of recorded inputs, each key read once however many
 /// leaders' evaluations read it.
@@ -719,7 +719,7 @@ fn reread(
         Key::World(query) => Some(world.reread(query)),
         Key::Scopes(query) => Some(world.recorded().reread(query)),
         Key::ClockSeed => Some(digest(&dashboard_text::scripted_text::clock_seed(frame))),
-        Key::Table(_) | Key::Names(_) | Key::Text(_) | Key::FocusTag(_) => None,
+        Key::Table(_) | Key::Fields(..) | Key::Names(_) | Key::Text(_) | Key::FocusTag(_) => None,
     };
     rereads.insert(key.clone(), read);
     read
@@ -731,38 +731,46 @@ struct Reuse<'r> {
     evaluation: &'r mut Option<Evaluation>,
     rereads: &'r mut Rereads,
     counts: &'r mut ReuseCounts,
+    /// What changed since the hour before, when it is known.
+    since: Option<&'r Since<'r>>,
 }
 
 impl Reuse<'_> {
     /// `visibility` decided in the owner's scope: the last evaluation's
     /// verdict while every input it read reads the same, else evaluated.
+    /// The hour's World is built only to read an input again or evaluate:
+    /// an input whose declared dependence did not change since the hour
+    /// before reads the same without it.
     fn decide(
         self,
-        world: &World<'_>,
-        frame: &DecodedFrame,
+        hour: &HourWorld<'_>,
         row: &UnitLeaderRow,
         visibility: &LeaderVisibility,
-    ) -> Eval {
+    ) -> Result<Eval, String> {
         let Self {
             evaluation,
             rereads,
             counts,
+            since,
         } = self;
-        let confirmed = evaluation.as_ref().is_some_and(|last| {
+        let frame = hour.frame;
+        let confirmed = evaluation.as_mut().is_some_and(|last| {
             last.owner == row.owner
                 && last.visibility == *visibility
-                && last
-                    .inputs
-                    .confirm(frame, |key| reread(rereads, world, frame, key))
+                && last.inputs.confirm_since(frame, since, |key| {
+                    let world = hour.get().ok()?;
+                    reread(rereads, world, frame, key)
+                })
         });
         if confirmed {
             counts.reused += 1;
             if !check_reuse() {
                 let last = evaluation.as_mut().expect("confirmed evaluation");
                 last.hour = frame.hour;
-                return last.value.clone();
+                return Ok(last.value.clone());
             }
         }
+        let world = hour.get()?;
         let (value, inputs) = dashboard_text::triggers::inputs::capture(frame, || {
             Evaluator::new(world, None).decide_leader_visibility(row, visibility.clone(), true)
         });
@@ -787,7 +795,7 @@ impl Reuse<'_> {
             inputs,
             hour: frame.hour,
         });
-        value
+        Ok(value)
     }
 }
 
@@ -853,17 +861,14 @@ fn visible_reusing(
         // A fresh evaluation enters no frame before the owner's scope, where
         // the empty conjunction holds.
         LeaderVisibility::Unconditioned if linked => Eval::True,
-        visibility => {
-            let world = hour.get()?;
-            match reuse {
-                Some(reuse) => reuse.decide(world, hour.frame, row, visibility),
-                None => Evaluator::new(world, None).decide_leader_visibility(
-                    row,
-                    visibility.clone(),
-                    true,
-                ),
-            }
-        }
+        visibility => match reuse {
+            Some(reuse) => reuse.decide(hour, row, visibility)?,
+            None => Evaluator::new(hour.get()?, None).decide_leader_visibility(
+                row,
+                visibility.clone(),
+                true,
+            ),
+        },
     };
     value.decided().map_err(Some)
 }
@@ -1620,7 +1625,7 @@ impl Scan {
                 .any(|table| changes.rows_changed[table.index()]);
         if carried
             && (!self.scoped_visibility
-                || content.is_none_or(|content| self.visibility_carries(decoded, content)))
+                || content.is_none_or(|content| self.visibility_carries(decoded, content, changes)))
         {
             self.advance(decoded.hour);
             return Ok(());
@@ -1635,7 +1640,12 @@ impl Scan {
     /// Whether every visibility verdict of the last read holds this hour,
     /// whose leader inputs are unchanged: the core tables refuse as they did,
     /// and every evaluation that gave a verdict reads the same inputs.
-    fn visibility_carries(&mut self, decoded: &DecodedFrame, content: &Content) -> bool {
+    fn visibility_carries(
+        &mut self,
+        decoded: &DecodedFrame,
+        content: &Content,
+        changes: &FrameChanges,
+    ) -> bool {
         if !self.reuse_evaluations {
             return false;
         }
@@ -1658,19 +1668,25 @@ impl Scan {
             world: OnceCell::new(),
             gap: OnceCell::new(),
         };
-        let Ok(world) = hour.get() else {
+        if hour.gap().is_err() {
             return false;
-        };
+        }
+        // Inputs whose declared dependence did not change since the hour
+        // before read the same without the hour's World.
+        let since = Since::hour_before(decoded, changes);
         let mut rereads = Rereads::new();
-        let leaders = &self.leaders;
+        let leaders = &mut self.leaders;
         let carried = self.evaluated.iter().all(|&index| {
             leaders[index]
                 .evaluation
-                .as_ref()
+                .as_mut()
                 .is_some_and(|evaluation| {
                     evaluation
                         .inputs
-                        .confirm(decoded, |key| reread(&mut rereads, world, decoded, key))
+                        .confirm_since(decoded, since.as_ref(), |key| {
+                            let world = hour.get().ok()?;
+                            reread(&mut rereads, world, decoded, key)
+                        })
                 })
         });
         if carried {
@@ -1881,6 +1897,9 @@ impl Scan {
             .and_then(IdentityChanges::read);
         // The hour's rereads of recorded inputs, shared by every evaluation.
         let mut rereads = Rereads::new();
+        // What changed since the hour before, which confirms an input
+        // without reading it again.
+        let since = changes.and_then(|changes| Since::hour_before(decoded, changes));
         let land = decoded
             .complete::<tables::LandCombatDetails>()
             .ok()
@@ -2097,6 +2116,7 @@ impl Scan {
                         evaluation: &mut state.evaluation,
                         rereads: &mut rereads,
                         counts: &mut *reuse_counts,
+                        since: since.as_ref(),
                     })
                 } else {
                     None

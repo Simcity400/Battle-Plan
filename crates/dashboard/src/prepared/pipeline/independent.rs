@@ -22,18 +22,22 @@
 //! The hourly walk skips a family prepared on its own ([`hourly`]), unless
 //! another family reads its state in the same hour: then it keeps its own
 //! read of it, the same observation saved under the reader's names
-//! ([`kept_as`]) and never published as the family's. Country groups is such
-//! a family: air superiority reads the groups' state of the same hour. Both
-//! reads make the same calls on the same frames, so the groups' refusals
-//! reach air superiority at the hours hourly preparation records.
+//! ([`kept_as`]) and never published as the family's. Both reads make the
+//! same calls on the same frames, so the family's refusals reach its reader
+//! at the hours hourly preparation records. A reader prepared on its own
+//! keeps a private read of the family instead, as air superiority does of
+//! the country groups.
 //!
-//! A family commits by the hourly batch rules (at each branch's end, every
-//! block in measured runs, and at the time and byte budgets), so its pages
-//! are those hourly preparation publishes.
+//! A family commits by the hourly batch rules (at each branch's end, after
+//! every block budget of its branch ([`super::Batches`]), every block in
+//! measured runs, and at the byte budget of what it holds), so its pages are
+//! those hourly preparation publishes. Where its batches end follows from the
+//! recording and its own bytes alone, never from wall time or from what other
+//! families committed meanwhile.
 
 use super::super::Section;
 use super::{
-    Accepted, BATCH_BYTES, BATCH_TIME, Checkpoint, Coverage, CoveragePage, FAMILIES, FamilyTimings,
+    Accepted, BATCH_BYTES, Batches, Checkpoint, Coverage, CoveragePage, FAMILIES, FamilyTimings,
     Refused, SCHEMA, lanes,
 };
 use crate::{
@@ -43,6 +47,7 @@ use crate::{
     products::{
         LoadContext,
         country_groups::{self, Scan, changes::Prepared as Changes},
+        country_history::HistoryScan,
     },
 };
 use replay::container::{BlockIndex, Replay};
@@ -53,7 +58,6 @@ use std::{
     io,
     panic::resume_unwind,
     sync::{Mutex, PoisonError, atomic::AtomicBool},
-    time::Instant,
 };
 
 type Timings = Option<BTreeMap<&'static str, FamilyTimings>>;
@@ -73,6 +77,16 @@ pub(super) trait Own: Sync {
     /// under). While any is declared, the hourly walk still observes the
     /// family, for those readers alone; otherwise it skips it.
     fn kept(&self) -> &'static [(&'static str, &'static str)] {
+        &[]
+    }
+    /// The families that read this family's state in the same hour, for
+    /// which the hourly walk keeps it ([`Self::kept`]). Once every one is
+    /// prepared on its own too, the walk skips this family: a reader prepared
+    /// on its own makes its own read of this family's state, on the frames
+    /// its own extract reads, under its own sections (as the walk's kept read
+    /// does now). None named keeps the family in the walk whatever the
+    /// registry holds.
+    fn read_by(&self) -> &'static [&'static str] {
         &[]
     }
     /// One branch's state as `load` last committed it, or new without a
@@ -136,10 +150,36 @@ pub(super) trait Branch {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>>;
-    /// After each block it went on through.
+    /// After each block it went on through. Pages hourly preparation writes
+    /// at a block's end are held here and written by [`Self::publish`].
     fn end_block(&mut self, replay: &Replay, branch: u64);
+    /// Write the pages it holds from the blocks it went through since its
+    /// last commit, which hourly preparation writes at each such block's end
+    /// (air aces' windows, espionage day pages, production pages). Called at
+    /// every commit before [`Self::flush`], also when it refused the branch
+    /// later in the batch: hourly preparation had written those blocks' pages
+    /// before the refusing one. Its error refuses the branch at the batch's
+    /// hour.
+    fn publish(
+        &mut self,
+        writer: &mut store::Writer,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        let _ = (writer, branch, cancelled);
+        Ok(())
+    }
     /// Bytes held for its next flush, against the batch budget.
     fn pending(&self) -> usize;
+    /// Measure the parts of its folds from now on, for a measured run's
+    /// timings ([`Self::parts`]).
+    fn measure(&mut self) {}
+    /// The time each part of its folds took since last asked, by timing
+    /// name, with the times it took it; none unless measured. A measured
+    /// run counts them as their own timings, within the family's.
+    fn parts(&mut self) -> Vec<(&'static str, std::time::Duration, u64)> {
+        Vec::new()
+    }
     /// Its flush at a batch's end, where hourly preparation flushes it; an
     /// error refuses the branch when hourly preparation's would.
     fn flush(
@@ -156,14 +196,59 @@ pub(super) trait Branch {
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()>;
 }
 
-/// Country groups. Air superiority reads them, so the hourly walk keeps its
-/// own read under air superiority's names.
+/// Country groups. Air superiority reads them in the same hour: while it is
+/// in the hourly walk, the walk keeps its own read under air superiority's
+/// names; prepared on its own, air superiority makes that read itself.
 struct Groups;
 
 static GROUPS: Groups = Groups;
 
 /// Every family prepared on its own, in registry order.
-static REGISTRY: [&dyn Own; 1] = [&GROUPS];
+static REGISTRY: [&dyn Own; 19] = [
+    &GROUPS,
+    &IDENTITIES,
+    &WARS,
+    &CASUALTIES,
+    &quiet_politics::SUBJECTS,
+    &quiet_politics::PEACE,
+    &quiet_politics::IDEAS,
+    &air::AIR_LEDGER,
+    &air::RAIDS,
+    &air::ACES,
+    &economy::CONSTRUCTION,
+    &economy::STOCKPILE,
+    &economy::PRODUCTION,
+    &economy::EXPERIENCE,
+    &intelligence::INTELLIGENCE,
+    &ledger::LEDGER,
+    &focus::FOCUS,
+    &air_superiority::AIR_SUPERIORITY,
+    &world_tension::TENSION,
+];
+
+/// Subjects, peace outcomes and idea history.
+pub(super) mod quiet_politics;
+
+/// The military air ledger, raids and air aces.
+pub(super) mod air;
+
+/// Construction, equipment stockpiles, production and country experience.
+pub(super) mod economy;
+
+/// Decryption, operative placements, agencies, the roster and espionage.
+pub(super) mod intelligence;
+
+/// The politics ledger.
+pub(super) mod ledger;
+
+/// The national focus order.
+pub(super) mod focus;
+
+/// Air superiority, with its own read of the country groups.
+pub(super) mod air_superiority;
+
+/// World tension.
+pub(super) mod world_tension;
 
 impl Own for Groups {
     fn family(&self) -> &'static prepass::Family {
@@ -183,6 +268,10 @@ impl Own for Groups {
             ("country-groups", "air-superiority-groups"),
             ("country-group-changes", "air-superiority-group-changes"),
         ]
+    }
+
+    fn read_by(&self) -> &'static [&'static str] {
+        &["air_superiority"]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
@@ -292,6 +381,314 @@ impl Branch for GroupsBranch {
     }
 }
 
+/// The country identity history. Territory's owned-state observation drives
+/// it and the event feed reads it in the same hour, so the hourly walk keeps
+/// its own read under territory's name.
+pub(super) struct Identities;
+
+pub(super) static IDENTITIES: Identities = Identities;
+
+/// The identity history's published page of one branch, which is also its
+/// continuation.
+fn identities_section(branch: u64) -> String {
+    format!("country-identities-{branch}")
+}
+
+impl Own for Identities {
+    fn family(&self) -> &'static prepass::Family {
+        &crate::products::country_history::prepared::FAMILY
+    }
+
+    fn timing(&self) -> &'static str {
+        "independent.identities"
+    }
+
+    fn gates(&self) -> &'static [&'static str] {
+        &[crate::products::country_history::IDENTITIES_PRODUCT]
+    }
+
+    fn kept(&self) -> &'static [(&'static str, &'static str)] {
+        &[("country-identities", "territory-identities")]
+    }
+
+    fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
+        let scan = match load.read(&identities_section(branch))? {
+            Some(file) => serde_json::from_reader(io::BufReader::new(file))?,
+            None => HistoryScan::new(false, &[]),
+        };
+        Ok(Box::new(IdentitiesBranch {
+            scan: Box::new(scan),
+        }))
+    }
+}
+
+/// One branch's identity history.
+struct IdentitiesBranch {
+    scan: Box<HistoryScan>,
+}
+
+impl Branch for IdentitiesBranch {
+    fn begin_block(&mut self) {}
+
+    fn fold(
+        &mut self,
+        facts: Box<dyn Any + Send>,
+        block: &Block<'_>,
+        observed: &mut Observed<'_>,
+        check: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<(Folded, Option<i32>)> {
+        crate::products::country_history::prepared::fold(
+            &mut self.scan,
+            facts,
+            block.replay,
+            block.index,
+            observed,
+            check,
+        )
+    }
+
+    fn observe_block(
+        &mut self,
+        block: &Block<'_>,
+        observed: &mut Observed<'_>,
+        check: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<Option<i32>> {
+        crate::products::country_history::prepared::observe_block(
+            &mut self.scan,
+            block.replay,
+            block.index,
+            None,
+            observed,
+            check,
+        )
+    }
+
+    fn end_block(&mut self, _: &Replay, _: u64) {}
+
+    fn pending(&self) -> usize {
+        0
+    }
+
+    /// Sealed and written whole at each commit, as hourly preparation's
+    /// flush writes it.
+    fn flush(
+        &mut self,
+        writer: &mut store::Writer,
+        _: &Replay,
+        branch: u64,
+        _: &AtomicBool,
+    ) -> io::Result<()> {
+        self.scan.seal();
+        writer.write_at(
+            &identities_section(branch),
+            0,
+            serde_json::to_vec(&*self.scan)?.as_slice(),
+        )
+    }
+
+    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
+        Ok(Ok(()))
+    }
+
+    fn save_state(&self, _: &mut store::Writer, _: u64) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The wars' change inputs and relation counters. Their continuation is
+/// their published catalogue.
+pub(super) struct Wars;
+
+pub(super) static WARS: Wars = Wars;
+
+impl Own for Wars {
+    fn family(&self) -> &'static prepass::Family {
+        &crate::products::wars::block::FAMILY
+    }
+
+    fn timing(&self) -> &'static str {
+        "independent.wars"
+    }
+
+    fn gates(&self) -> &'static [&'static str] {
+        &["wars"]
+    }
+
+    fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
+        Ok(Box::new(crate::products::wars::block::OwnBranch::load(
+            load.store, load.key, load.saved, branch,
+        )?))
+    }
+}
+
+impl Branch for crate::products::wars::block::OwnBranch {
+    fn begin_block(&mut self) {}
+
+    fn fold(
+        &mut self,
+        facts: Box<dyn Any + Send>,
+        block: &Block<'_>,
+        observed: &mut Observed<'_>,
+        check: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<(Folded, Option<i32>)> {
+        self.fold_facts(
+            facts,
+            block.replay,
+            block.index,
+            block.source,
+            block.context,
+            observed,
+            check,
+        )
+    }
+
+    fn observe_block(
+        &mut self,
+        block: &Block<'_>,
+        observed: &mut Observed<'_>,
+        check: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<Option<i32>> {
+        self.observe_hours(
+            block.replay,
+            block.index,
+            block.source,
+            block.context,
+            observed,
+            check,
+        )
+    }
+
+    fn end_block(&mut self, _: &Replay, _: u64) {}
+
+    fn pending(&self) -> usize {
+        self.pending_bytes()
+    }
+
+    fn flush(
+        &mut self,
+        writer: &mut store::Writer,
+        _: &Replay,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.flush_batch(writer, branch, cancelled)
+    }
+
+    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
+        Ok(Ok(()))
+    }
+
+    fn save_state(&self, _: &mut store::Writer, _: u64) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// War casualties: country values, pair windows and breakdown inputs. Their
+/// series queries route by the family kind `war-casualties`.
+pub(super) struct Casualties;
+
+pub(super) static CASUALTIES: Casualties = Casualties;
+
+impl Own for Casualties {
+    fn family(&self) -> &'static prepass::Family {
+        &crate::products::war_casualties::prepared::block::FAMILY
+    }
+
+    fn timing(&self) -> &'static str {
+        "independent.casualties"
+    }
+
+    fn gates(&self) -> &'static [&'static str] {
+        &["war-casualties", "casualty-pairs", "casualty-breakdown"]
+    }
+
+    fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
+        use crate::products::war_casualties::prepared::block;
+        let saved = load.read(&block::state_section(branch))?;
+        Ok(Box::new(block::OwnBranch::load(
+            saved,
+            load.replay,
+            branch,
+        )?))
+    }
+}
+
+impl Branch for crate::products::war_casualties::prepared::block::OwnBranch {
+    fn begin_block(&mut self) {}
+
+    fn fold(
+        &mut self,
+        facts: Box<dyn Any + Send>,
+        block: &Block<'_>,
+        observed: &mut Observed<'_>,
+        check: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<(Folded, Option<i32>)> {
+        self.fold_facts(
+            facts,
+            block.replay,
+            block.index,
+            block.source,
+            block.context,
+            observed,
+            check,
+        )
+    }
+
+    fn observe_block(
+        &mut self,
+        block: &Block<'_>,
+        observed: &mut Observed<'_>,
+        check: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<Option<i32>> {
+        self.observe_hours(
+            block.replay,
+            block.index,
+            block.source,
+            block.context,
+            observed,
+            check,
+        )
+    }
+
+    fn end_block(&mut self, _: &Replay, _: u64) {
+        self.finish_block();
+    }
+
+    /// The pair windows of the blocks gone through, which hourly preparation
+    /// writes at each block's end, also when a later block of the batch
+    /// refused the branch.
+    fn publish(
+        &mut self,
+        writer: &mut store::Writer,
+        branch: u64,
+        _: &AtomicBool,
+    ) -> io::Result<()> {
+        self.publish_windows(writer, branch)
+    }
+
+    fn pending(&self) -> usize {
+        self.pending_bytes()
+    }
+
+    fn flush(
+        &mut self,
+        writer: &mut store::Writer,
+        _: &Replay,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.flush_batch(writer, branch, cancelled)
+    }
+
+    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
+        Ok(Ok(()))
+    }
+
+    fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
+        self.write_state(writer, branch)
+    }
+}
+
 /// The registered families, or none while tests prepare every family hour
 /// by hour.
 fn registry() -> &'static [&'static dyn Own] {
@@ -319,9 +716,19 @@ pub(super) fn names() -> Vec<&'static str> {
 /// reads in the same hour, which the walk keeps under that reader's names
 /// ([`kept_as`]).
 pub(super) fn hourly(family: &str) -> bool {
-    !registry()
+    registry()
         .iter()
-        .any(|own| own.kept().is_empty() && own.family().name == family)
+        .filter(|own| own.family().name == family)
+        .all(|own| {
+            !own.kept().is_empty()
+                && (own.read_by().is_empty()
+                    || own.read_by().iter().any(|reader| !registered(reader)))
+        })
+}
+
+/// Whether `family` is prepared on its own.
+pub(super) fn registered(family: &str) -> bool {
+    registry().iter().any(|own| own.family().name == family)
 }
 
 /// The name the hourly walk keeps `section` under: a reader's own, while the
@@ -366,6 +773,8 @@ pub(super) struct Phase<'a> {
     pub context: &'a LoadContext,
     pub map: &'a dashboard_base::prepared_map::Builder,
     pub last_blocks: &'a BTreeMap<u64, usize>,
+    /// Where batches end by the recording, as the hourly walk's do.
+    pub batches: &'a Batches,
     pub measured: bool,
     pub cancelled: &'a AtomicBool,
 }
@@ -435,6 +844,9 @@ pub(super) fn prepare(
     if runs.is_empty() {
         return Ok((writer, false));
     }
+    // The phase's wall time is the walk's; each family's own rows are worker
+    // time, as lane jobs' are, since the families prepare at once.
+    let phase_started = super::start_timing(timings);
     #[allow(unused_mut)]
     let mut knobs = prepass::Knobs::current();
     #[cfg(test)]
@@ -542,7 +954,7 @@ pub(super) fn prepare(
     for ran in ran {
         match ran {
             Ok((result, own_timings, own_workers, counts)) => {
-                lanes::merge(timings, own_timings);
+                lanes::merge(workers, own_timings);
                 lanes::merge(workers, own_workers);
                 counts.add();
                 if let Err(error) = result {
@@ -554,6 +966,7 @@ pub(super) fn prepare(
             }
         }
     }
+    super::finish_timing(timings, phase_started, "independent", false);
     if let Some(payload) = panic {
         resume_unwind(payload);
     }
@@ -603,7 +1016,6 @@ fn prepare_family(
     let started = super::start_timing(timings);
     let mut held: Option<(u64, Box<dyn Branch>)> = None;
     let mut touched = BTreeSet::new();
-    let mut batch = Instant::now();
     for block in progress.next_block..replay.index.len() {
         check_cancel(phase.cancelled)?;
         let index = &replay.index[block];
@@ -617,7 +1029,11 @@ fn prepare_family(
                 saved: saved.as_ref().filter(|_| refused.open(name)),
                 replay,
             };
-            held = Some((branch, own.load(&load, branch)?));
+            let mut state = own.load(&load, branch)?;
+            if timings.is_some() {
+                state.measure();
+            }
+            held = Some((branch, state));
         }
         let (_, state) = held.as_mut().expect("held family state");
         let (outcome, took) = pool.take(lane, block, phase.cancelled)?;
@@ -657,20 +1073,25 @@ fn prepare_family(
             if refused.open(name) {
                 state.end_block(replay, branch);
             }
+            if let Some(families) = timings.as_mut() {
+                for (part, took, times) in state.parts() {
+                    let entry = families.entry(part).or_default();
+                    entry.observe += took;
+                    entry.calls += times;
+                }
+            }
         }
         touched.insert(branch);
         let continues = replay
             .index
             .get(block + 1)
             .is_some_and(|next| next.branch == branch);
-        let written = lock(commits)
-            .writer
-            .as_ref()
-            .map_or(0, store::Writer::bytes_written);
+        // The batch ends where the hourly walk's does by the recording, or
+        // at the byte budget of what this family holds: never by wall time,
+        // nor by the shared writer, which other families' commits fill.
         if continues
             && !phase.measured
-            && batch.elapsed() < BATCH_TIME
-            && written < BATCH_BYTES as u64
+            && !phase.batches.full(block)
             && state.pending() < BATCH_BYTES
         {
             continue;
@@ -686,6 +1107,9 @@ fn prepare_family(
             &mut progress,
             |writer, progress| {
                 let refused = progress.refused.entry(branch).or_default();
+                // The pages of the blocks it went through, refused since or not.
+                let result = state.publish(writer, branch, phase.cancelled);
+                refused.check(name, hour, result)?;
                 if refused.open(name) {
                     let result = state.flush(writer, replay, branch, phase.cancelled);
                     refused.check(name, hour, result)?;
@@ -708,7 +1132,6 @@ fn prepare_family(
         touched.clear();
         super::finish_timing(timings, commit_started, "independent.commit", true);
         accepted(next);
-        batch = Instant::now();
         if !continues || super::reload_flushed() {
             held = None;
         }
@@ -844,6 +1267,8 @@ struct Counts {
     notes: BTreeMap<&'static str, usize>,
     #[cfg(test)]
     groups: (usize, usize),
+    #[cfg(test)]
+    air_ledger: (usize, usize),
 }
 
 impl Counts {
@@ -854,6 +1279,8 @@ impl Counts {
             notes: prepass::notes(),
             #[cfg(test)]
             groups: country_groups::prepared::counts(),
+            #[cfg(test)]
+            air_ledger: crate::products::military_air_ledger::prepared::counts(),
         }
     }
 
@@ -863,6 +1290,7 @@ impl Counts {
         {
             prepass::add_notes(&self.notes);
             country_groups::prepared::add_counts(self.groups);
+            crate::products::military_air_ledger::prepared::add_counts(self.air_ledger);
         }
     }
 }
@@ -873,8 +1301,35 @@ impl Counts {
 struct TestContext {
     refusals: Vec<(&'static str, i32)>,
     reload: bool,
+    registry: TestRegistry,
+}
+
+/// The test's registry settings: which families are prepared on their own,
+/// for threads the walk or a family starts (a parallel flush's helpers, lane
+/// workers), whose `Refused::live` and `kept_as` must agree with the caller's.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(super) struct TestRegistry {
     families: Option<&'static [&'static dyn Own]>,
     hourly: bool,
+}
+
+/// This thread's registry settings, to install on another thread.
+#[cfg(test)]
+pub(super) fn test_registry() -> TestRegistry {
+    TestRegistry {
+        families: TEST_FAMILIES.with(std::cell::Cell::get),
+        hourly: TEST_HOURLY.with(std::cell::Cell::get),
+    }
+}
+
+#[cfg(test)]
+impl TestRegistry {
+    /// Use these settings on this thread.
+    pub(super) fn install(self) {
+        TEST_FAMILIES.with(|families| families.set(self.families));
+        TEST_HOURLY.with(|hourly| hourly.set(self.hourly));
+    }
 }
 
 #[cfg(test)]
@@ -883,8 +1338,7 @@ impl TestContext {
         Self {
             refusals: lanes::test_refusals(),
             reload: super::RELOAD_FLUSHED.with(std::cell::Cell::get),
-            families: TEST_FAMILIES.with(std::cell::Cell::get),
-            hourly: TEST_HOURLY.with(std::cell::Cell::get),
+            registry: test_registry(),
         }
     }
 
@@ -898,8 +1352,7 @@ impl TestContext {
         }
         lanes::set_test_refusals(self.refusals);
         super::RELOAD_FLUSHED.with(|flag| flag.set(self.reload));
-        TEST_FAMILIES.with(|families| families.set(self.families));
-        TEST_HOURLY.with(|hourly| hourly.set(self.hourly));
+        self.registry.install();
         Installed
     }
 }
@@ -935,6 +1388,21 @@ pub(super) fn with_test_hourly<T>(run: impl FnOnce() -> T) -> T {
     }
     let _reset = Reset(TEST_HOURLY.with(|value| value.replace(true)));
     run()
+}
+
+/// Run `run` with only the registered families named `names` prepared on
+/// their own and every other family in the hourly walk: a family's parity
+/// tests compare its own preparation with hourly preparation without other
+/// families' own sections, pages and refusals in one mode only.
+#[cfg(test)]
+pub(super) fn with_test_only<T>(names: &[&str], run: impl FnOnce() -> T) -> T {
+    let families: Vec<&'static dyn Own> = REGISTRY
+        .iter()
+        .copied()
+        .filter(|own| names.contains(&own.family().name))
+        .collect();
+    assert_eq!(families.len(), names.len(), "registered families {names:?}");
+    with_test_families(&families, run)
 }
 
 /// Run `run` with `families` as the families prepared on their own.

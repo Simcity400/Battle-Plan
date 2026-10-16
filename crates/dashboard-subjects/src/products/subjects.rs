@@ -231,6 +231,17 @@ pub fn active(row: &SubjectRow, hour: i32) -> bool {
     row.cancel == 0 && (row.end_hour <= row.start_hour || hour < row.end_hour)
 }
 
+/// `value` after `hours` additions of `rate`, each made as `+=` makes it: a
+/// sum that cannot overflow at once, otherwise one addition at a time, so an
+/// overflow behaves exactly as it does hour by hour.
+fn repeated(value: u32, rate: u32, hours: u64) -> u32 {
+    u32::try_from(hours)
+        .ok()
+        .and_then(|hours| rate.checked_mul(hours))
+        .and_then(|added| value.checked_add(added))
+        .unwrap_or_else(|| (0..hours).fold(value, |value, _| value + rate))
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn scanned_branch(
     source: &Source,
@@ -391,17 +402,7 @@ impl Scan {
             || self.next_expiry.is_some_and(|hour| hour <= frame.hour)
             || self.previous_hour.and_then(|hour| hour.checked_add(1)) != Some(frame.hour);
         if !changed {
-            self.incomplete += self.diagnostic_rate.0;
-            self.unleveled += self.diagnostic_rate.1;
-            self.unreadable += self.diagnostic_rate.2;
-            if self.unobserved_here {
-                mark_unobserved(&mut self.unobserved, frame.hour, frame.hour);
-            }
-            self.previous_hour = Some(frame.hour);
-            if self.previous_complete.is_some() {
-                self.previous_complete = Some(frame.hour);
-            }
-            events.through(frame.hour);
+            self.advance_unchanged(frame.hour, frame.hour, events);
             return Ok(());
         }
         let identities_changed = countries_changed
@@ -457,6 +458,53 @@ impl Scan {
             });
         }
         Ok(())
+    }
+    /// The step of an hour whose relations, levels, holders and continuity
+    /// are the hour before's and at which no relation ends, taken for every
+    /// hour `first..=last` at once: each hour adds the diagnostic rates of the
+    /// last observed hour (as that many `+=` would, overflow included), an
+    /// unobserved hour stays unobserved, and the frontier advances. Open runs
+    /// are sealed later, at a change, a gap, publication or a read.
+    fn advance_unchanged(
+        &mut self,
+        first: i32,
+        last: i32,
+        events: &mut dashboard_base::prepared::series::Accumulator,
+    ) {
+        let hours = u64::try_from(i64::from(last) - i64::from(first) + 1).unwrap_or(0);
+        self.incomplete = repeated(self.incomplete, self.diagnostic_rate.0, hours);
+        self.unleveled = repeated(self.unleveled, self.diagnostic_rate.1, hours);
+        self.unreadable = repeated(self.unreadable, self.diagnostic_rate.2, hours);
+        if self.unobserved_here {
+            mark_unobserved(&mut self.unobserved, first, last);
+        }
+        self.previous_hour = Some(last);
+        if self.previous_complete.is_some() {
+            self.previous_complete = Some(last);
+        }
+        events.through(first);
+        events.through(last);
+    }
+    /// Hours `first..=last` of a block read by its changes, at which none of
+    /// the fields this scan reads (relation keys, starts, ends and cancel
+    /// bytes, autonomy states, country keys and links) changed: the unchanged
+    /// step for each, at once, when they continue the last observed hour and
+    /// no relation ends among them. False, with nothing changed, otherwise:
+    /// the caller then observes them on their frames.
+    pub fn advance_quiet(
+        &mut self,
+        first: i32,
+        last: i32,
+        events: &mut dashboard_base::prepared::series::Accumulator,
+    ) -> bool {
+        if last < first
+            || self.previous_hour.and_then(|hour| hour.checked_add(1)) != Some(first)
+            || self.next_expiry.is_some_and(|hour| hour <= last)
+        {
+            return false;
+        }
+        self.advance_unchanged(first, last, events);
+        true
     }
     pub fn seal(&mut self) {
         if !self.carried {
@@ -1037,6 +1085,8 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
     )?;
     Ok(scan.finish(replay, branch))
 }
+
+pub mod prepared;
 
 #[cfg(test)]
 mod tests;

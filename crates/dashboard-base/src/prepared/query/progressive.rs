@@ -7,10 +7,15 @@ use crate::{
 };
 use replay::{
     container::SeekResult,
-    frame::{DecodedFrame, FrameDecoder},
+    frame::{DecodedFrame, Frame, FrameDecoder, TableUpdate},
     rows::TableId,
 };
-use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
+use std::{
+    cell::Cell,
+    collections::BTreeMap,
+    io,
+    sync::{Arc, atomic::AtomicBool},
+};
 
 /// One frame's values: `(tag, field)` -> (native holder identity, raw value).
 pub type Samples = BTreeMap<(String, String), (Option<(u32, u32)>, Option<i128>)>;
@@ -20,6 +25,31 @@ pub type Samples = BTreeMap<(String, String), (Option<(u32, u32)>, Option<i128>)
 /// family whose extraction needs recorded content captures it in the closure.
 pub type Sample<'a> = &'a dyn Fn(&DecodedFrame, Option<&[(String, String)]>) -> io::Result<Samples>;
 
+/// A [`Sample`] also given the hour's recorded updates where the read decoded
+/// the hour from them ([`tail_recorded`]); none at a frame read alone (a
+/// keyframe, the hour before an exact window).
+pub type SampleRecorded<'a> = &'a dyn Fn(
+    &DecodedFrame,
+    Option<&Recorded<'_>>,
+    Option<&[(String, String)]>,
+) -> io::Result<Samples>;
+
+/// One hour's recorded updates, as the exact read decoded the hour from them:
+/// each read of the block, with the requested tables it selected, at the hour.
+pub struct Recorded<'a> {
+    reads: Vec<(&'a [TableId], &'a Frame)>,
+}
+
+impl Recorded<'_> {
+    /// `table`'s recorded update this hour; none when no read selected it.
+    pub fn update(&self, table: TableId) -> Option<&TableUpdate> {
+        self.reads
+            .iter()
+            .find(|(tables, _)| tables.contains(&table))
+            .map(|(_, frame)| &frame.tables[table.index()])
+    }
+}
+
 /// Adapter inputs are transient samples plus the branch's real bounds.
 pub type AdapterTail<'a> = (
     (i32, i32),
@@ -28,6 +58,45 @@ pub type AdapterTail<'a> = (
     &'a BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>>,
     bool,
 );
+
+thread_local! {
+    /// While set, sampled reads refuse to decode recorded blocks.
+    static WITHOUT_DECODES: Cell<bool> = const { Cell::new(false) };
+    /// Whether a sampled read refused to while [`WITHOUT_DECODES`] was set.
+    static DECODE_REFUSED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Runs `query` without decoding recorded blocks: a sampled read that would
+/// ([`tail`] or [`state_tail`] with blocks to read, [`frame_at`] at an hour the
+/// source's [frame cache](super::frames) does not hold) fails instead, and the
+/// flag returned says one did. The data service answers a prepared query this
+/// way first, so an answer from prepared pages alone never waits behind sampled
+/// reads; a query whose flag is set answers nothing and runs again where block
+/// decodes are allowed.
+pub fn without_block_decodes<T>(query: impl FnOnce() -> T) -> (T, bool) {
+    struct Restore(bool, bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            WITHOUT_DECODES.set(self.0);
+            DECODE_REFUSED.set(self.1 || DECODE_REFUSED.get());
+        }
+    }
+    let _restore = Restore(WITHOUT_DECODES.replace(true), DECODE_REFUSED.replace(false));
+    let answer = query();
+    (answer, DECODE_REFUSED.get())
+}
+
+/// Refuses a block decode inside [`without_block_decodes`].
+pub(crate) fn decodes_allowed() -> io::Result<()> {
+    if WITHOUT_DECODES.get() {
+        DECODE_REFUSED.set(true);
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "This sampled read runs on a sampled-read loader",
+        ));
+    }
+    Ok(())
+}
 
 /// Join accepted identity history and transient native-holder spans without a recording walk.
 /// Exact state evidence replaces sampled evidence at its supplying hours, including aliases.
@@ -47,12 +116,16 @@ pub fn histories(
     use std::{collections::BTreeSet, sync::Arc};
 
     check_cancel(cancelled)?;
-    let mut history = if coverage.is_some() {
+    // The identities may be prepared on their own beyond this coverage; the
+    // accepted prefix is their history through its last hour.
+    let mut history = if let Some(coverage) = coverage {
         store
             .read(key, &format!("country-identities-{branch}"), 0)?
             .map(|file| serde_json::from_reader::<_, HistoryScan>(io::BufReader::new(file)))
             .transpose()?
-            .map_or_else(RecordedHistories::default, HistoryScan::finish)
+            .map_or_else(RecordedHistories::default, |scan| {
+                scan.finish_through(coverage.last_hour)
+            })
     } else {
         RecordedHistories::default()
     };
@@ -385,8 +458,9 @@ pub fn navigate(
     }))
 }
 
-/// One reached hour's selected tables, decoded directly from its block for a
-/// whole-frame state answer; none at an unrecorded hour or inside a recorded gap.
+/// One reached hour's selected tables, decoded from its block (or held by the
+/// source's [frame cache](super::frames)) for a whole-frame state answer; none at
+/// an unrecorded hour or inside a recorded gap.
 pub fn frame_at(
     source: &Source,
     branch: u64,
@@ -403,11 +477,10 @@ pub fn frame_at(
     {
         return Ok(None);
     }
-    let frame =
-        match replay.seek_selected_with(branch, hour, Some(tables), || check_cancel(cancelled))? {
-            SeekResult::Frame(frame) => Some(frame),
-            SeekResult::Gap { .. } => None,
-        };
+    let frame = match super::frames::seek(source, branch, hour, tables, cancelled)? {
+        SeekResult::Frame(frame) => Some(frame),
+        SeekResult::Gap { .. } => None,
+    };
     check_cancel(cancelled)?;
     Ok(frame)
 }
@@ -448,6 +521,53 @@ pub fn tail(
         })
         .collect();
     sample_blocks(
+        source,
+        branch,
+        tables,
+        requested,
+        (first, window.1),
+        blocks,
+        sample,
+        None,
+        cancelled,
+    )
+}
+
+/// [`tail`] with each exactly read hour's recorded updates handed to `sample`
+/// beside its frame, so a sampler can carry its own state from hour to hour.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn tail_recorded(
+    source: &Source,
+    branch: u64,
+    coverage: Option<&Coverage>,
+    tables: &[TableId],
+    requested: &[(String, String)],
+    window: (i32, i32),
+    sample: SampleRecorded<'_>,
+    cancelled: &AtomicBool,
+) -> io::Result<(
+    BTreeMap<(String, String), Vec<Run>>,
+    Vec<HourSpan>,
+    BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>>,
+)> {
+    check_cancel(cancelled)?;
+    if coverage.is_some_and(|coverage| coverage.complete) || window.0 > window.1 {
+        return Ok((BTreeMap::new(), Vec::new(), BTreeMap::new()));
+    }
+    let replay = source.replay_ref();
+    let first = coverage.map_or(i64::from(window.0), |coverage| {
+        i64::from(window.0).max(i64::from(coverage.last_hour) + 1)
+    });
+    let blocks: Vec<_> = replay
+        .index
+        .iter()
+        .filter(|block| {
+            block.branch == branch
+                && i64::from(block.last_hour) >= first
+                && block.first_hour <= window.1
+        })
+        .collect();
+    sample_blocks_recorded(
         source,
         branch,
         tables,
@@ -512,8 +632,331 @@ pub fn state_tail(
     )
 }
 
+/// About three blocks of a window are read at once per query: ahead of the
+/// decode, without holding many blocks' frames in memory.
+const EXACT_READ_AHEAD: usize = 2;
+
+/// [`sample_blocks_recorded`] with a sampler of frames alone.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn sample_blocks(
+    source: &Source,
+    branch: u64,
+    tables: &[TableId],
+    requested: &[(String, String)],
+    window: (i64, i32),
+    blocks: Vec<&replay::container::BlockIndex>,
+    sample: Sample<'_>,
+    state_hours: Option<&[i32]>,
+    cancelled: &AtomicBool,
+) -> io::Result<(
+    BTreeMap<(String, String), Vec<Run>>,
+    Vec<HourSpan>,
+    BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>>,
+)> {
+    sample_blocks_recorded(
+        source,
+        branch,
+        tables,
+        requested,
+        window,
+        blocks,
+        &|frame, _, requested| sample(frame, requested),
+        state_hours,
+        cancelled,
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn sample_blocks_recorded(
+    source: &Source,
+    branch: u64,
+    tables: &[TableId],
+    requested: &[(String, String)],
+    window: (i64, i32),
+    blocks: Vec<&replay::container::BlockIndex>,
+    sample: SampleRecorded<'_>,
+    state_hours: Option<&[i32]>,
+    cancelled: &AtomicBool,
+) -> io::Result<(
+    BTreeMap<(String, String), Vec<Run>>,
+    Vec<HourSpan>,
+    BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>>,
+)> {
+    if !blocks.is_empty() {
+        decodes_allowed()?;
+    }
+    let mut runs: BTreeMap<(String, String), Vec<Run>> = BTreeMap::new();
+    let mut approximate = Vec::new();
+    let mut identities: BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>> = BTreeMap::new();
+    let replay = source.replay_ref();
+    let state_hours = state_hours.map(|hours| {
+        hours
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+    });
+    let first = window.0;
+    let exact = blocks.len() <= EXACT_ZOOM_BLOCKS;
+    let mut previous: BTreeMap<(String, String), (i32, Option<(u32, u32)>, Option<i128>)> =
+        BTreeMap::new();
+    // Read the preceding observation at an exact left edge, so a preparation
+    // boundary cannot invent an identity or value break. The baseline is transient.
+    if exact && let Some(block) = blocks.first() {
+        let start = i64::from(block.first_hour).max(first) as i32;
+        if start == block.first_hour
+            && let Some(before) = start.checked_sub(1)
+            && replay.index.iter().any(|index| {
+                index.branch == branch && index.first_hour <= before && index.last_hour >= before
+            })
+            && !replay.gaps.iter().any(|gap| {
+                gap.branch == branch && gap.first_hour <= before && gap.last_hour >= before
+            })
+            && let SeekResult::Frame(frame) =
+                super::frames::seek(source, branch, before, tables, cancelled)?
+        {
+            for (key, (identity, value)) in sample(&frame, None, Some(requested))? {
+                previous.insert(key, (frame.hour, identity, value));
+            }
+        }
+    }
+    if exact {
+        // Blocks are read ahead on spare cores (or found in the source's frame
+        // cache) while their hours are decoded and sampled here, in block order.
+        let read =
+            |block: &replay::container::BlockIndex| -> io::Result<Vec<super::frames::BlockRead>> {
+                Ok(
+                    match super::frames::block(source, block, tables, cancelled)? {
+                        Some(reads) => reads,
+                        None => {
+                            let mut selected = tables.to_vec();
+                            selected.sort_unstable();
+                            selected.dedup();
+                            vec![super::frames::BlockRead {
+                                tables: selected,
+                                frames: Arc::new(replay.read_block_selected(block, tables)?),
+                            }]
+                        }
+                    },
+                )
+            };
+        dashboard_core::blocks::scan_blocks_by(
+            blocks,
+            EXACT_READ_AHEAD,
+            cancelled,
+            &read,
+            |reads| {
+                for (block, read) in reads {
+                    check_cancel(cancelled)?;
+                    let start = i64::from(block.first_hour).max(first) as i32;
+                    let end = block.last_hour.min(window.1);
+                    let reads = read?;
+                    let mut decoders = reads
+                        .iter()
+                        .map(|read| {
+                            let selected = tables
+                                .iter()
+                                .copied()
+                                .filter(|table| read.tables.binary_search(table).is_ok())
+                                .collect::<Vec<_>>();
+                            (
+                                FrameDecoder::for_tables(&selected),
+                                selected,
+                                read.frames.as_slice(),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let hours = decoders.first().map_or(0, |(_, _, frames)| frames.len());
+                    for position in 0..hours {
+                        check_cancel(cancelled)?;
+                        let decoded = &advance(&mut decoders, position)?;
+                        if decoded.hour > end {
+                            break;
+                        }
+                        if replay.gaps.iter().any(|gap| {
+                            gap.branch == branch
+                                && gap.first_hour <= decoded.hour
+                                && gap.last_hour >= decoded.hour
+                        }) {
+                            previous.clear();
+                            continue;
+                        }
+                        let recorded = Recorded {
+                            reads: decoders
+                                .iter()
+                                .map(|(_, selected, frames)| {
+                                    (selected.as_slice(), &frames[position])
+                                })
+                                .collect(),
+                        };
+                        let observed = sample(decoded, Some(&recorded), Some(requested))?;
+                        if decoded.hour < start
+                            || state_hours
+                                .as_ref()
+                                .is_some_and(|hours| !hours.contains(&decoded.hour))
+                        {
+                            for (key, (identity, value)) in observed {
+                                previous.insert(key, (decoded.hour, identity, value));
+                            }
+                            continue;
+                        }
+                        for (key, (identity, value)) in observed {
+                            if let Some((slot, country_id)) = identity {
+                                let rows = identities.entry(key.clone()).or_default();
+                                if let Some(last) = rows.last_mut().filter(|last| {
+                                    last.1.checked_add(1) == Some(decoded.hour)
+                                        && (last.2, last.3) == (slot, country_id)
+                                }) {
+                                    last.1 = decoded.hour;
+                                } else {
+                                    rows.push((decoded.hour, decoded.hour, slot, country_id));
+                                }
+                            }
+                            if let Some(value) = value {
+                                let contiguous = previous.get(&key).is_some_and(
+                                    |&(hour, before, previous_value)| {
+                                        hour.checked_add(1) == Some(decoded.hour)
+                                            && before == identity
+                                            && previous_value.is_some()
+                                    },
+                                );
+                                let rows = runs.entry(key.clone()).or_default();
+                                if let Some(last) = rows.last_mut().filter(|run| {
+                                    contiguous
+                                        && run.value == value
+                                        && run.last_hour.checked_add(1) == Some(decoded.hour)
+                                }) {
+                                    last.last_hour = decoded.hour;
+                                } else {
+                                    rows.push(Run::new(
+                                        decoded.hour,
+                                        decoded.hour,
+                                        value,
+                                        !contiguous,
+                                    ));
+                                }
+                            }
+                            previous.insert(key, (decoded.hour, identity, value));
+                        }
+                    }
+                }
+                Ok(())
+            },
+        )?;
+        return Ok((runs, approximate, identities));
+    }
+    for block in blocks {
+        check_cancel(cancelled)?;
+        let start = i64::from(block.first_hour).max(first) as i32;
+        let end = block.last_hour.min(window.1);
+        // Only the block's keyframe sections are read: no decode through the block.
+        let keyframe = replay.read_keyframe_selected(block, tables)?;
+        let mut decoder = FrameDecoder::for_tables(tables);
+        let frame = decoder.advance(&keyframe)?;
+        let mut spans = vec![HourSpan {
+            first_hour: start,
+            last_hour: end,
+        }];
+        for gap in replay.gaps.iter().filter(|gap| gap.branch == branch) {
+            spans = spans
+                .into_iter()
+                .flat_map(|span| {
+                    if gap.last_hour < span.first_hour || gap.first_hour > span.last_hour {
+                        return vec![span];
+                    }
+                    let mut parts = Vec::new();
+                    if gap.first_hour > span.first_hour {
+                        parts.push(HourSpan {
+                            first_hour: span.first_hour,
+                            last_hour: gap.first_hour - 1,
+                        });
+                    }
+                    if gap.last_hour < span.last_hour {
+                        parts.push(HourSpan {
+                            first_hour: gap.last_hour + 1,
+                            last_hour: span.last_hour,
+                        });
+                    }
+                    parts
+                })
+                .collect();
+        }
+        if replay.gaps.iter().any(|gap| {
+            gap.branch == branch && gap.first_hour <= frame.hour && gap.last_hour >= frame.hour
+        }) {
+            continue;
+        }
+        for (key, (identity, value)) in sample(frame, None, Some(requested))? {
+            if let Some((slot, country_id)) = identity {
+                let rows = identities.entry(key.clone()).or_default();
+                for span in &spans {
+                    // An unchanged holder across adjacent blocks stays one span,
+                    // so the output grows with identity changes, not blocks.
+                    if let Some(last) = rows.last_mut().filter(|last| {
+                        last.1.checked_add(1) == Some(span.first_hour)
+                            && (last.2, last.3) == (slot, country_id)
+                    }) {
+                        last.1 = span.last_hour;
+                    } else {
+                        rows.push((span.first_hour, span.last_hour, slot, country_id));
+                    }
+                }
+            }
+            if let Some(value) = value {
+                for span in &spans {
+                    runs.entry(key.clone()).or_default().push(Run::new(
+                        span.first_hour,
+                        span.last_hour,
+                        value,
+                        true,
+                    ));
+                }
+            }
+        }
+        for span in spans {
+            if let Some(last) = approximate.last_mut().filter(|last: &&mut HourSpan| {
+                last.last_hour.checked_add(1) == Some(span.first_hour)
+            }) {
+                last.last_hour = span.last_hour;
+            } else {
+                approximate.push(span);
+            }
+        }
+    }
+    Ok((runs, approximate, identities))
+}
+
+/// The hour at `position` of a block held as several reads (each with its
+/// decoder and the request's tables it holds), decoded by each read's decoder
+/// and joined: each table from the read holding it, every other table
+/// unselected as a decoder of the request's tables alone leaves it. Each
+/// table's view depends only on its own updates, so the joined frame is that
+/// one decoder's frame. The caller drops it before the next hour, so decoders
+/// keep applying their deltas in place.
+fn advance(
+    decoders: &mut [(FrameDecoder, Vec<TableId>, &[Frame])],
+    position: usize,
+) -> io::Result<DecodedFrame> {
+    let mut joined: Option<DecodedFrame> = None;
+    for (decoder, selected, frames) in decoders.iter_mut() {
+        let decoded = decoder.advance(&frames[position])?;
+        match &mut joined {
+            None => joined = Some(decoded.clone()),
+            Some(joined) => {
+                for table in selected.iter() {
+                    joined.tables[table.index()] = decoded.tables[table.index()].clone();
+                }
+            }
+        }
+    }
+    joined.ok_or_else(|| crate::invalid("A block read holds no frames"))
+}
+
+/// The exact and rough reads as they were before shared block reads and
+/// read-ahead: every block read here, one at a time. Parity tests compare
+/// [`sample_blocks`] with it.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn sample_blocks_serial(
     source: &Source,
     branch: u64,
     tables: &[TableId],
@@ -1617,5 +2060,567 @@ mod tests {
             read(&source, (4, 29), None).1.is_empty(),
             "only the thirteen branch-one blocks make the exact-zoom bound"
         );
+    }
+
+    /// `tail` and `state_tail` as they read before shared block reads and
+    /// read-ahead: the same blocks, read and decoded one at a time.
+    #[allow(clippy::type_complexity)]
+    fn serial(
+        source: &Source,
+        tables: &[TableId],
+        requested: &[(String, String)],
+        window: Option<(i32, i32)>,
+        hours: &[i32],
+    ) -> (
+        BTreeMap<(String, String), Vec<Run>>,
+        Vec<HourSpan>,
+        BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>>,
+    ) {
+        let replay = source.replay_ref();
+        let wanted = hours
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let (window, blocks) = match window {
+            Some((first, last)) => (
+                (i64::from(first), last),
+                replay
+                    .index
+                    .iter()
+                    .filter(|block| {
+                        block.branch == 1 && block.last_hour >= first && block.first_hour <= last
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            None => (
+                (i64::from(i32::MIN), i32::MAX),
+                replay
+                    .index
+                    .iter()
+                    .filter(|block| {
+                        block.branch == 1
+                            && wanted
+                                .range(block.first_hour..=block.last_hour)
+                                .next()
+                                .is_some()
+                    })
+                    .collect(),
+            ),
+        };
+        sample_blocks_serial(
+            source,
+            1,
+            tables,
+            requested,
+            window,
+            blocks,
+            &crate::prepared_measure::sample,
+            window.1.eq(&i32::MAX).then_some(hours),
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    }
+
+    /// Five blocks of GER's political power: runs crossing blocks, a missing
+    /// value, a replaced native holder inside a block, and a recorded gap.
+    fn varied_source() -> Source {
+        let holder = |frame: &mut DecodedFrame| {
+            if let replay::frame::TableView::Complete(replay::rows::TableRows::Countries(rows)) =
+                &mut *frame.tables[TableId::Countries.index()]
+            {
+                rows[0].id = 9002;
+            }
+            if let replay::frame::TableView::Complete(replay::rows::TableRows::CountryLinks(rows)) =
+                &mut *frame.tables[TableId::CountryLinks.index()]
+            {
+                rows.push(replay::rows::CountryLinkRow {
+                    canonical_slot: 7,
+                    id: 9002,
+                });
+            }
+        };
+        let values = [
+            Some(5),
+            Some(5),
+            None,
+            Some(5),
+            Some(5),
+            Some(5),
+            Some(6),
+            Some(6),
+            Some(6),
+            Some(6),
+            Some(6),
+            Some(7),
+            Some(7),
+            Some(7),
+            Some(7),
+            Some(7),
+            Some(7),
+            Some(8),
+            Some(8),
+            Some(8),
+        ];
+        let block = |first: usize| {
+            (first..first + 4)
+                .map(|hour| {
+                    let mut decoded = frame(1, hour as i32, values[hour]);
+                    if hour >= 6 {
+                        holder(&mut decoded);
+                    }
+                    decoded
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut replay = Replay::from_records(CAMPAIGN.into(), &[records(1, block(0))]).unwrap();
+        for first in [4, 8, 12, 16] {
+            replay = replay
+                .append(&[continuation_records(&replay, 1, block(first))])
+                .unwrap();
+        }
+        assert_eq!(replay.index.len(), 5);
+        replay.gaps.push(replay::branches::Gap {
+            branch: 1,
+            first_hour: 13,
+            last_hour: 13,
+            reason: "synthetic gap".into(),
+        });
+        Source::from_replay(
+            crate::SourceKey {
+                source_id: "varied".into(),
+                revision: "1".into(),
+            },
+            "memory.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn shared_read_ahead_exact_reads_equal_the_serial_reads_and_read_each_block_once() {
+        let source = varied_source();
+        let key: (String, String) = ("GER".into(), "politicalPower".into());
+        let requested = std::slice::from_ref(&key);
+        let flag = AtomicBool::new(false);
+        let measure = crate::prepared_measure::TABLES;
+        // A narrower request first, so the measure's reads join a held read of
+        // the same block with the tables it lacks.
+        let narrow = [TableId::Campaign, TableId::Countries];
+        for window in [(0, 19), (2, 9)] {
+            assert_eq!(
+                tail(
+                    &source,
+                    1,
+                    None,
+                    &narrow,
+                    requested,
+                    window,
+                    &crate::prepared_measure::sample,
+                    &flag,
+                )
+                .unwrap(),
+                serial(&source, &narrow, requested, Some(window), &[]),
+                "{window:?}"
+            );
+        }
+        assert_eq!(super::super::frames::reads(&source).0, 5);
+        for round in 0..2 {
+            for window in [(0, 19), (2, 9), (6, 6), (4, 4), (13, 13), (12, 15), (3, 17)] {
+                let shared = tail(
+                    &source,
+                    1,
+                    None,
+                    measure,
+                    requested,
+                    window,
+                    &crate::prepared_measure::sample,
+                    &flag,
+                )
+                .unwrap();
+                assert_eq!(
+                    shared,
+                    serial(&source, measure, requested, Some(window), &[]),
+                    "round {round}, {window:?}"
+                );
+            }
+            for hours in [&[3, 6, 13, 19][..], &[8], &[4, 5, 6, 7]] {
+                assert_eq!(
+                    state_tail(
+                        &source,
+                        1,
+                        None,
+                        measure,
+                        requested,
+                        hours,
+                        &crate::prepared_measure::sample,
+                        &flag,
+                    )
+                    .unwrap(),
+                    serial(&source, measure, requested, None, hours),
+                    "round {round}, {hours:?}"
+                );
+            }
+        }
+        // The fixture exercises what the reads must keep exact.
+        let (runs, _, identities) = serial(&source, measure, requested, Some((0, 19)), &[]);
+        assert!(
+            runs[&key]
+                .iter()
+                .any(|run| run.break_before && run.first_hour > 0)
+        );
+        assert!(
+            runs[&key]
+                .iter()
+                .any(|run| run.first_hour < 4 && run.last_hour >= 4)
+        );
+        assert_eq!(identities[&key].len(), 3, "a holder change and a gap");
+        // Each block was read once for the narrow tables and once for the
+        // country links it lacked; the second round read nothing.
+        assert_eq!(super::super::frames::reads(&source).0, 10);
+    }
+
+    #[test]
+    fn concurrent_same_hour_reads_decode_each_hour_and_block_once() {
+        let source = varied_source();
+        let key: (String, String) = ("GER".into(), "politicalPower".into());
+        let measure = crate::prepared_measure::TABLES;
+        let expected = match source
+            .replay_ref()
+            .seek_selected(1, 19, Some(measure))
+            .unwrap()
+        {
+            SeekResult::Frame(frame) => frame,
+            SeekResult::Gap { .. } => unreachable!(),
+        };
+        let states = serial(&source, measure, std::slice::from_ref(&key), None, &[19]);
+        std::thread::scope(|scope| {
+            let readers = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let flag = AtomicBool::new(false);
+                        let frame = frame_at(&source, 1, 19, measure, &flag).unwrap().unwrap();
+                        let state = state_tail(
+                            &source,
+                            1,
+                            None,
+                            measure,
+                            std::slice::from_ref(&key),
+                            &[19],
+                            &crate::prepared_measure::sample,
+                            &flag,
+                        )
+                        .unwrap();
+                        (frame, state)
+                    })
+                })
+                .collect::<Vec<_>>();
+            for reader in readers {
+                let (frame, state) = reader.join().unwrap();
+                assert_eq!(frame, expected);
+                assert!(
+                    frame
+                        .tables
+                        .iter()
+                        .zip(&expected.tables)
+                        .all(|(read, seek)| read.sampled_at() == seek.sampled_at())
+                );
+                assert_eq!(state, states);
+            }
+        });
+        // The state reads' left edge is the hour before the block, seeked once.
+        assert_eq!(
+            super::super::frames::reads(&source),
+            (1, 2),
+            "eight requests: one block read, and one seek of each hour"
+        );
+        // A narrower request is answered from the held hour, its other tables
+        // unselected exactly as its own seek leaves them.
+        let narrow = [TableId::Countries];
+        let direct = source
+            .replay_ref()
+            .seek_selected(1, 19, Some(&narrow))
+            .unwrap();
+        let SeekResult::Frame(direct) = direct else {
+            unreachable!()
+        };
+        let held = frame_at(&source, 1, 19, &narrow, &AtomicBool::new(false))
+            .unwrap()
+            .unwrap();
+        assert_eq!(held, direct);
+        assert!(
+            held.complete::<replay::rows::tables::CountryLinks>()
+                .is_err()
+        );
+        assert_eq!(super::super::frames::reads(&source), (1, 2));
+    }
+
+    #[test]
+    fn the_frame_cache_keeps_its_byte_budget_and_evicts_the_least_recently_used() {
+        let source = varied_source();
+        let measure = crate::prepared_measure::TABLES;
+        let flag = AtomicBool::new(false);
+        frame_at(&source, 1, 1, measure, &flag).unwrap().unwrap();
+        let one = super::super::frames::held_bytes(&source);
+        assert!(one > 0);
+        super::super::frames::set_budget(&source, one * 3 / 2);
+        frame_at(&source, 1, 2, measure, &flag).unwrap().unwrap();
+        assert!(super::super::frames::held_bytes(&source) <= one * 3 / 2);
+        assert_eq!(super::super::frames::reads(&source).1, 2);
+        // Hour 2 is held; hour 1, used least recently, was evicted.
+        frame_at(&source, 1, 2, measure, &flag).unwrap().unwrap();
+        assert_eq!(super::super::frames::reads(&source).1, 2);
+        frame_at(&source, 1, 1, measure, &flag).unwrap().unwrap();
+        assert_eq!(super::super::frames::reads(&source).1, 3);
+        // An hour outside the recording is a gap, never kept.
+        assert!(frame_at(&source, 1, 99, measure, &flag).unwrap().is_none());
+        assert!(frame_at(&source, 1, 13, measure, &flag).unwrap().is_none());
+        assert!(super::super::frames::held_bytes(&source) <= one * 3 / 2);
+    }
+
+    #[test]
+    fn reads_without_block_decodes_refuse_only_what_needs_a_decode() {
+        let source = varied_source();
+        let measure = crate::prepared_measure::TABLES;
+        let key: (String, String) = ("GER".into(), "politicalPower".into());
+        let flag = AtomicBool::new(false);
+        let (read, refused) = without_block_decodes(|| frame_at(&source, 1, 5, measure, &flag));
+        assert!(refused);
+        assert_eq!(read.unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        let (read, refused) = without_block_decodes(|| {
+            tail(
+                &source,
+                1,
+                None,
+                measure,
+                std::slice::from_ref(&key),
+                (0, 3),
+                &crate::prepared_measure::sample,
+                &flag,
+            )
+        });
+        assert!(refused);
+        assert_eq!(read.unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(super::super::frames::reads(&source), (0, 0));
+        // A held hour and a covered tail answer without a decode.
+        let held = frame_at(&source, 1, 5, measure, &flag).unwrap();
+        let (read, refused) = without_block_decodes(|| frame_at(&source, 1, 5, measure, &flag));
+        assert!(!refused);
+        assert_eq!(read.unwrap(), held);
+        let complete = Coverage {
+            schema: 0,
+            first_hour: 0,
+            last_hour: 19,
+            complete: true,
+        };
+        let (read, refused) = without_block_decodes(|| {
+            tail(
+                &source,
+                1,
+                Some(&complete),
+                measure,
+                std::slice::from_ref(&key),
+                (0, 19),
+                &crate::prepared_measure::sample,
+                &flag,
+            )
+        });
+        assert!(!refused);
+        assert!(read.unwrap().0.is_empty());
+        // Outside it, decodes are allowed again.
+        assert!(frame_at(&source, 1, 6, measure, &flag).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_read_is_accounted_before_it_is_released() {
+        use super::super::frames;
+        let source = Arc::new(varied_source());
+        let checks = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        {
+            let source = Arc::clone(&source);
+            let checks = std::rc::Rc::clone(&checks);
+            frames::ON_RELEASE.set(Some(Box::new(move || {
+                checks.borrow_mut().push(frames::accounted(&source));
+            })));
+        }
+        let key: (String, String) = ("GER".into(), "politicalPower".into());
+        let flag = AtomicBool::new(false);
+        // Narrower reads first, then wider ones joined to them, of an hour and a
+        // block; a one-block window is read on this thread.
+        frame_at(&source, 1, 5, &[TableId::Countries], &flag).unwrap();
+        frame_at(&source, 1, 5, crate::prepared_measure::TABLES, &flag).unwrap();
+        for tables in [
+            &[TableId::Campaign, TableId::Countries][..],
+            crate::prepared_measure::TABLES,
+        ] {
+            tail(
+                &source,
+                1,
+                None,
+                tables,
+                std::slice::from_ref(&key),
+                (0, 3),
+                &crate::prepared_measure::sample,
+                &flag,
+            )
+            .unwrap();
+        }
+        // A gap is released holding nothing.
+        frame_at(&source, 1, 99, crate::prepared_measure::TABLES, &flag).unwrap();
+        frames::ON_RELEASE.set(None);
+        let checks = checks.borrow();
+        assert_eq!(checks.len(), 5, "two hour reads, two block reads and a gap");
+        assert!(
+            checks.iter().all(|&accounted| accounted),
+            "every release found its read accounted: {checks:?}"
+        );
+        assert!(frames::accounted(&source));
+    }
+
+    #[test]
+    fn cached_reads_count_their_frames_whole_and_their_nested_rows() {
+        use super::super::frames;
+        let source = varied_source();
+        let key: (String, String) = ("GER".into(), "politicalPower".into());
+        let flag = AtomicBool::new(false);
+        // One four-hour block, read for one table: every frame is kept whole.
+        tail(
+            &source,
+            1,
+            None,
+            &[TableId::Countries],
+            std::slice::from_ref(&key),
+            (0, 3),
+            &crate::prepared_measure::sample,
+            &flag,
+        )
+        .unwrap();
+        assert!(
+            frames::held_bytes(&source) >= 4 * std::mem::size_of::<Frame>(),
+            "{} bytes for four whole frames",
+            frames::held_bytes(&source)
+        );
+        // A row's list is counted, not only the row.
+        let mut long = frame(1, 0, Some(1));
+        if let replay::frame::TableView::Complete(replay::rows::TableRows::Countries(rows)) =
+            &mut *long.tables[TableId::Countries.index()]
+        {
+            rows[0].tag = vec![b'x'; 256 << 10];
+        }
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![long])]).unwrap();
+        let source = Source::from_replay(
+            crate::SourceKey {
+                source_id: "long".into(),
+                revision: "1".into(),
+            },
+            "memory.battleplan".into(),
+            Arc::new(replay),
+            &flag,
+        )
+        .unwrap();
+        frame_at(&source, 1, 0, &[TableId::Countries], &flag)
+            .unwrap()
+            .unwrap();
+        assert!(
+            frames::held_bytes(&source) >= 256 << 10,
+            "{} bytes for a 256 KiB tag",
+            frames::held_bytes(&source)
+        );
+        assert!(frames::accounted(&source));
+    }
+
+    #[test]
+    fn requests_without_block_decodes_never_wait_on_another_read() {
+        use super::super::frames;
+        let source = varied_source();
+        let measure = crate::prepared_measure::TABLES;
+        let flag = AtomicBool::new(false);
+        let held = frame_at(&source, 1, 6, measure, &flag).unwrap();
+        // Another request is reading hours 5 and 6.
+        let _five = frames::hold_hour(&source, 1, 5);
+        let _six = frames::hold_hour(&source, 1, 6);
+        let cancelled = AtomicBool::new(false);
+        let (source, cancelled) = (&source, &cancelled);
+        std::thread::scope(|scope| {
+            let (sent, answers) = std::sync::mpsc::channel();
+            scope.spawn(move || {
+                let refused = without_block_decodes(|| frame_at(source, 1, 5, measure, cancelled));
+                let covered = without_block_decodes(|| frame_at(source, 1, 6, measure, cancelled));
+                sent.send((refused, covered)).unwrap();
+            });
+            // A wait would last until the other read ends; cancel it rather than hang.
+            let answer = answers.recv_timeout(std::time::Duration::from_secs(10));
+            cancelled.store(true, std::sync::atomic::Ordering::Release);
+            let ((refused, refused_flag), (covered, covered_flag)) =
+                answer.expect("an uncovered request waited on another request's read");
+            assert!(refused_flag);
+            assert_eq!(refused.unwrap_err().kind(), io::ErrorKind::WouldBlock);
+            assert!(!covered_flag, "a held hour answers without a decode");
+            assert_eq!(covered.unwrap(), held);
+        });
+    }
+
+    #[test]
+    fn requests_without_block_decodes_leave_no_entries_for_hours_they_miss() {
+        use super::super::frames;
+        let source = varied_source();
+        let measure = crate::prepared_measure::TABLES;
+        let flag = AtomicBool::new(false);
+        for hour in 0..20 {
+            let (read, refused) =
+                without_block_decodes(|| frame_at(&source, 1, hour, measure, &flag));
+            if hour != 13 {
+                assert!(refused, "hour {hour}");
+                assert_eq!(read.unwrap_err().kind(), io::ErrorKind::WouldBlock);
+            }
+        }
+        assert_eq!(frames::entries(&source), 0, "a refused miss keeps no entry");
+        // Nor does a read that found nothing to keep.
+        assert!(frame_at(&source, 1, 99, measure, &flag).unwrap().is_none());
+        assert_eq!(frames::entries(&source), 0);
+        assert_eq!(frames::held_bytes(&source), 0);
+    }
+
+    #[test]
+    fn held_rows_count_every_nested_allocation() {
+        use super::super::frames;
+        use replay::rows::{PowerBalanceModifierBreakdownRow, TableRows};
+        const SOURCES: usize = 10_000;
+        let mut decoded = frame(1, 0, Some(1));
+        *decoded.tables[TableId::PowerBalanceModifierBreakdowns.index()] =
+            replay::frame::TableView::Complete(TableRows::PowerBalanceModifierBreakdowns(vec![
+                PowerBalanceModifierBreakdownRow {
+                    record: 1,
+                    // Each empty source encodes in four bytes but holds a list.
+                    sources: vec![Vec::new(); SOURCES],
+                    ..Default::default()
+                },
+            ]));
+        let flag = AtomicBool::new(false);
+        let source = Source::from_replay(
+            crate::SourceKey {
+                source_id: "nested".into(),
+                revision: "1".into(),
+            },
+            "memory.battleplan".into(),
+            Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, vec![decoded])]).unwrap()),
+            &flag,
+        )
+        .unwrap();
+        frame_at(
+            &source,
+            1,
+            0,
+            &[TableId::PowerBalanceModifierBreakdowns],
+            &flag,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            frames::held_bytes(&source) >= SOURCES * std::mem::size_of::<Vec<u8>>(),
+            "{} bytes for {SOURCES} held lists",
+            frames::held_bytes(&source)
+        );
+        assert!(frames::accounted(&source));
     }
 }

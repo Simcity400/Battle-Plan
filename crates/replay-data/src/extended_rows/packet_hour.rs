@@ -74,6 +74,9 @@ impl std::fmt::Display for PacketHour {
 }
 
 impl Value for PacketHour {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     const MINIMUM_ENCODED_BYTES: usize = 0;
 
     fn encoded_bytes(&self) -> io::Result<usize> {

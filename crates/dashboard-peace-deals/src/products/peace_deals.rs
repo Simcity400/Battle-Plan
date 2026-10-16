@@ -1436,6 +1436,83 @@ impl Scan {
         }
         Ok(())
     }
+    /// Hours `first..=last` of a block read by its changes, which continue
+    /// the last observed hour (`frame`, whose rows they hold) and at which no
+    /// field this scan reads changed, with the conference roster's slot read
+    /// at `reads`: [`Self::observe_changed`]'s step for each, at once. Every
+    /// operand, holder, snapshot and comparison is the hour before's, so an
+    /// hour moves only the unobserved frontier (a roster read of a complete,
+    /// empty roster with no conference held marks the roster read), the
+    /// finalizer frontier and its missing hours, and the hour of the
+    /// snapshot it takes. False, with nothing changed, when an hour could do
+    /// more: a gap, a subject relation's end, a roster read while a
+    /// conference or comparison is held, or a comparison waiting for this
+    /// snapshot. The caller then observes the hours on their frames.
+    fn advance_quiet(
+        &mut self,
+        frame: &DecodedFrame,
+        first: i32,
+        last: i32,
+        reads: &[i32],
+    ) -> bool {
+        let Some((_, _, flags)) = self.unobserved_frontier else {
+            return false;
+        };
+        if last < first
+            || self.previous_hour.and_then(|hour| hour.checked_add(1)) != Some(first)
+            || !self.exact.continues(first)
+            || !self.snapshot_inputs.ready
+            || !self.country_tags.ready
+            || self
+                .snapshot_inputs
+                .subject_expiry
+                .is_some_and(|due| due <= last)
+        {
+            return false;
+        }
+        let roster = frame.complete::<tables::PeaceConferences>();
+        let roster_complete = roster.is_ok();
+        // The branch's first hour reads the roster too.
+        let branch_first = self.first;
+        let read = |hour: i32| hour == branch_first || reads.binary_search(&hour).is_ok();
+        let any_read = (first..=last).contains(&branch_first) || !reads.is_empty();
+        // Each hour takes the hour before's snapshot again, when it took one.
+        let current = self
+            .previous
+            .as_ref()
+            .filter(|previous| Some(previous.hour) == self.previous_hour)
+            .cloned();
+        if (current.is_some() && !self.pending.is_empty())
+            || (any_read
+                && roster_complete
+                && (roster.is_ok_and(|rows| !rows.is_empty())
+                    || !self.open.is_empty()
+                    || !self.pending.is_empty()))
+        {
+            return false;
+        }
+        let settlements = exact::missing_reason(&frame.tables[TableId::PeaceSettlements.index()]);
+        for hour in first..=last {
+            let roster_read = read(hour);
+            if roster_read && roster_complete {
+                // The empty roster leaves no conference active or ambiguous.
+                self.has_active = false;
+                self.has_ambiguous = false;
+            }
+            let mut flags = flags;
+            flags[0] = !(roster_read && roster_complete);
+            self.observe_unobserved(hour, flags);
+        }
+        self.exact.advance_quiet(first, last, settlements);
+        self.previous_hour = Some(last);
+        if let Some(current) = current {
+            self.previous = Some(Arc::new(Snapshot {
+                hour: last,
+                ..(*current).clone()
+            }));
+        }
+        true
+    }
     fn close_continuation(&mut self) {
         for (index, _) in self.pending.drain() {
             self.reply.deals[index].limitations.push(

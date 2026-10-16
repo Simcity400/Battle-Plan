@@ -97,6 +97,100 @@ fn point_scan(frame: &DecodedFrame) -> (Scan, ScanState) {
     (scan, state)
 }
 
+/// The tables the division inventory holds rows of.
+const INVENTORY_TABLES: [TableId; 3] = [
+    TableId::Divisions,
+    TableId::DivisionTemplateIcons,
+    TableId::DivisionLandInputs,
+];
+
+/// [`point_scan`] of consecutive exactly read hours, carrying the division
+/// inventory from hour to hour as preparation's observer does: each inventory
+/// table is applied unchanged when the decoder carried its rows, from the rows
+/// its recorded delta changed when it applied one, and whole otherwise; values
+/// are always the decoded table's. Everything else an hour's scan holds
+/// (identities, census, totals, metadata) is read afresh, as `point_scan` reads
+/// it. The first hour, any hour after a gap or a skipped hour, a frame read
+/// alone and an hour after a refused inventory table are scanned whole.
+#[derive(Default)]
+struct PointScans {
+    held: Option<HeldInventory>,
+    /// Hours scanned from the carried inventory.
+    #[cfg(test)]
+    carried: usize,
+}
+
+struct HeldInventory {
+    branch: u64,
+    hour: i32,
+    inventory: inventory::Inventory,
+    /// The inventory tables' decoded views at `hour`.
+    views: [replay::frame::ViewIdentity; 3],
+}
+
+impl PointScans {
+    fn scan(
+        &mut self,
+        frame: &DecodedFrame,
+        recorded: Option<&dashboard_base::prepared::query::progressive::Recorded<'_>>,
+    ) -> (Scan, ScanState) {
+        let held = self.held.take().filter(|held| {
+            held.branch == frame.branch
+                && held.hour.checked_add(1) == Some(frame.hour)
+                && held.inventory.errors().next().is_none()
+        });
+        let (Some(held), Some(recorded)) = (held, recorded) else {
+            return point_scan(frame);
+        };
+        let changes = std::array::from_fn(|index| {
+            let table = INVENTORY_TABLES[index];
+            let view = &frame.tables[table.index()];
+            if held.views[index].is(view) {
+                return None;
+            }
+            Some(match (recorded.update(table), &**view) {
+                (
+                    Some(TableUpdate::Delta {
+                        changed, deleted, ..
+                    }),
+                    replay::frame::TableView::Complete(_),
+                ) => Some((changed.as_slice(), deleted.as_slice())),
+                _ => None,
+            })
+        });
+        let updates = inventory::Updates::following(held.hour, changes);
+        #[cfg(test)]
+        {
+            self.carried += 1;
+        }
+        let mut state = scan_state();
+        state.inventory = Some(held.inventory);
+        state.apply_updates(updates, frame);
+        state.compose(frame);
+        let mut scan = Scan::default();
+        observe_updates(
+            &mut scan,
+            frame,
+            updates,
+            replay::format::FormatVersion::CURRENT,
+            false,
+            &mut state,
+            None,
+        );
+        (scan, state)
+    }
+
+    /// Hold `state`'s inventory, scanned at `frame`, for the next hour.
+    fn keep(&mut self, frame: &DecodedFrame, state: ScanState) {
+        self.held = state.inventory.map(|inventory| HeldInventory {
+            branch: frame.branch,
+            hour: frame.hour,
+            inventory,
+            views: INVENTORY_TABLES.map(|table| frame.tables[table.index()].identity()),
+        });
+    }
+}
+
 fn sample_rows(
     scan: &Scan,
     state: &ScanState,
@@ -662,9 +756,13 @@ fn sampled_window(
         .map(|tag| (tag.clone(), index.clone()))
         .collect::<Vec<_>>();
     let metadata = std::cell::RefCell::new(Scan::default());
-    let sampler = |frame: &DecodedFrame, requested: Option<&[(String, String)]>| {
-        let (scan, state) = point_scan(frame);
+    let points = std::cell::RefCell::new(PointScans::default());
+    let sampler = |frame: &DecodedFrame,
+                   recorded: Option<&progressive::Recorded<'_>>,
+                   requested: Option<&[(String, String)]>| {
+        let (scan, state) = points.borrow_mut().scan(frame, recorded);
         let mut values = sample_rows(&scan, &state, frame.hour, None)?;
+        points.borrow_mut().keep(frame, state);
         values.retain(|(_, field), _| field == &index);
         if let Some(requested) = requested {
             for key in requested {
@@ -699,7 +797,7 @@ fn sampled_window(
         }
         Ok(values)
     };
-    let tail = progressive::tail(
+    let tail = progressive::tail_recorded(
         source, branch, coverage, TABLES, &requested, range, &sampler, cancelled,
     )?;
     let history = progressive::histories(
@@ -1290,3 +1388,294 @@ pub fn next_change(
 
 #[cfg(test)]
 mod progressive_tests;
+
+/// Where an army window's sampled read spends its time on a real recording:
+/// its blocks' reads, their hours' decodes and the per-hour army scan.
+#[cfg(test)]
+mod window_profile {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    #[ignore = "requires BATTLE_PLAN_QUERY_PROFILE_RECORDING (a real recording, only read)"]
+    fn army_window_read_decode_and_scan_times() {
+        let path = std::path::PathBuf::from(
+            std::env::var_os("BATTLE_PLAN_QUERY_PROFILE_RECORDING").or_else(|| std::env::var_os("HOI4_QUERY_PROFILE_RECORDING"))
+                .expect("Set BATTLE_PLAN_QUERY_PROFILE_RECORDING"),
+        );
+        let cancelled = AtomicBool::new(false);
+        let source = Source::open(
+            dashboard_base::SourceKey {
+                source_id: "army-profile".into(),
+                revision: dashboard_core::protocol::replay_revision(&path).unwrap(),
+            },
+            path,
+            &cancelled,
+        )
+        .unwrap();
+        let replay = source.replay_ref();
+        let branch = replay.index.last().unwrap().branch;
+        let blocks: Vec<_> = replay
+            .index
+            .iter()
+            .filter(|block| block.branch == branch)
+            .collect();
+        // The army window of `$window:0:last`: the branch's last block.
+        let window = &blocks[blocks.len() - 1..];
+        let (mut read, mut decode, mut scan) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+        let mut hours = 0;
+        for block in window {
+            let started = Instant::now();
+            let frames = replay.read_block_selected(block, TABLES).unwrap();
+            read += started.elapsed();
+            let mut decoder = replay::frame::FrameDecoder::for_tables(TABLES);
+            for frame in &frames {
+                let started = Instant::now();
+                let decoded = decoder.advance(frame).unwrap();
+                decode += started.elapsed();
+                let started = Instant::now();
+                drop(std::hint::black_box(point_scan(decoded)));
+                scan += started.elapsed();
+                hours += 1;
+            }
+        }
+        eprintln!(
+            "army window: {} blocks, {hours} hours: read {:.0} ms, decode {:.0} ms, scan {:.0} ms",
+            window.len(),
+            read.as_secs_f64() * 1000.0,
+            decode.as_secs_f64() * 1000.0,
+            scan.as_secs_f64() * 1000.0,
+        );
+        // What one block's read holds in memory, as the frame cache counts it.
+        use dashboard_base::prepared::query::frames;
+        frames::set_budget(&source, usize::MAX);
+        for (name, tables) in [
+            ("army", TABLES),
+            ("measure", dashboard_base::prepared_measure::TABLES),
+            ("supply", crate::products::supply_health::prepared::TABLES),
+        ] {
+            let before = frames::held_bytes(&source);
+            let started = Instant::now();
+            let read = frames::block(&source, window[window.len() - 1], tables, &cancelled);
+            eprintln!(
+                "{name} tables, last block: {} in {:.0} ms, {} MiB",
+                if matches!(read, Ok(Some(_))) {
+                    "read"
+                } else {
+                    "not cached"
+                },
+                started.elapsed().as_secs_f64() * 1000.0,
+                (frames::held_bytes(&source) - before) >> 20
+            );
+        }
+        // The window's exact read as the query makes it, every country
+        // requested: scanned whole every hour, then from the carried inventory.
+        let block = window[0];
+        let range = (block.first_hour, block.last_hour);
+        let tags: Vec<_> = source
+            .metadata()
+            .countries
+            .iter()
+            .map(|country| country.tag.clone())
+            .collect();
+        let requested: Vec<_> = tags
+            .iter()
+            .map(|tag| (tag.clone(), "0".to_string()))
+            .collect();
+        let whole = |frame: &DecodedFrame, requested: Option<&[(String, String)]>| {
+            let (scan, state) = point_scan(frame);
+            sample_rows(&scan, &state, frame.hour, requested)
+        };
+        // The carried read goes first and pays the block's read; the point
+        // scans find it in the frame cache.
+        let points = std::cell::RefCell::new(PointScans::default());
+        let carried =
+            |frame: &DecodedFrame,
+             recorded: Option<&dashboard_base::prepared::query::progressive::Recorded<'_>>,
+             requested: Option<&[(String, String)]>| {
+                let (scan, state) = points.borrow_mut().scan(frame, recorded);
+                let samples = sample_rows(&scan, &state, frame.hour, requested);
+                points.borrow_mut().keep(frame, state);
+                samples
+            };
+        let started = Instant::now();
+        let after = dashboard_base::prepared::query::progressive::tail_recorded(
+            &source, branch, None, TABLES, &requested, range, &carried, &cancelled,
+        )
+        .unwrap();
+        let after_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let started = Instant::now();
+        let before = dashboard_base::prepared::query::progressive::tail(
+            &source, branch, None, TABLES, &requested, range, &whole, &cancelled,
+        )
+        .unwrap();
+        let before_ms = started.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(before, after);
+        eprintln!(
+            "army window exact read, {} countries: point scans {before_ms:.0} ms, carried {after_ms:.0} ms ({} of the hours carried)",
+            tags.len(),
+            points.borrow().carried,
+        );
+    }
+}
+
+/// The carried army scan equals [`point_scan`] at every hour of exact windows.
+#[cfg(test)]
+mod carried_tests {
+    use super::*;
+    use crate::products::parts_race_prepared::test_fixtures::frame;
+    use dashboard_base::test_fixtures::{CAMPAIGN, continuation_records, records};
+    use replay::frame::TableView;
+    use replay::rows::TableRows;
+
+    /// The army fixture's hour, with the last slot's holder replaced from hour 10, a
+    /// changed template from hour 15, a division deleted from hour 20 and one
+    /// added from hour 22.
+    fn hour(hour: i32, count: u32) -> DecodedFrame {
+        let mut decoded = frame(hour, count);
+        if hour >= 10 {
+            // A new native holder of the last slot, keyed after every other.
+            if let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *decoded.tables[TableId::Countries.index()]
+            {
+                rows.last_mut().unwrap().id = 300_000;
+            }
+            if let TableView::Complete(TableRows::CountryLinks(rows)) =
+                &mut *decoded.tables[TableId::CountryLinks.index()]
+            {
+                rows.last_mut().unwrap().id = 300_000;
+            }
+        }
+        if hour >= 15
+            && let TableView::Complete(TableRows::DivisionTemplateIcons(rows)) =
+                &mut *decoded.tables[TableId::DivisionTemplateIcons.index()]
+        {
+            rows[0].subunits[0].count = 4;
+        }
+        if let TableView::Complete(TableRows::Divisions(rows)) =
+            &mut *decoded.tables[TableId::Divisions.index()]
+        {
+            if hour >= 20 {
+                rows.retain(|row| row.id != 3);
+            }
+            if hour >= 22 {
+                let mut added = rows[0].clone();
+                added.id = u64::from(count) + 10;
+                rows.push(added);
+            }
+        }
+        decoded
+    }
+
+    /// Three blocks of twelve hours, with a recorded gap at hour 16.
+    fn source(count: u32) -> Source {
+        let block = |first: i32| (first..first + 12).map(|at| hour(at, count)).collect();
+        let mut replay = Replay::from_records(CAMPAIGN.into(), &[records(1, block(0))]).unwrap();
+        for first in [12, 24] {
+            replay = replay
+                .append(&[continuation_records(&replay, 1, block(first))])
+                .unwrap();
+        }
+        replay.gaps.push(replay::branches::Gap {
+            branch: 1,
+            first_hour: 16,
+            last_hour: 16,
+            reason: "synthetic gap".into(),
+        });
+        Source::from_replay(
+            dashboard_base::SourceKey {
+                source_id: "army-carried".into(),
+                revision: "1".into(),
+            },
+            "memory.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    }
+
+    fn carried_scans_equal_point_scans(count: u32) {
+        let source = source(count);
+        let points = std::cell::RefCell::new(PointScans::default());
+        let hours = std::cell::Cell::new(0);
+        let carried =
+            |frame: &DecodedFrame,
+             recorded: Option<&dashboard_base::prepared::query::progressive::Recorded<'_>>,
+             requested: Option<&[(String, String)]>| {
+                let (scan, state) = points.borrow_mut().scan(frame, recorded);
+                let (whole, whole_state) = point_scan(frame);
+                assert_eq!(
+                    serde_json::to_value(&scan).unwrap(),
+                    serde_json::to_value(&whole).unwrap(),
+                    "hour {}",
+                    frame.hour
+                );
+                assert_eq!(
+                    state.identities, whole_state.identities,
+                    "hour {}",
+                    frame.hour
+                );
+                let samples = sample_rows(&scan, &state, frame.hour, requested)?;
+                assert_eq!(
+                    samples,
+                    sample_rows(&whole, &whole_state, frame.hour, requested)?,
+                    "hour {}",
+                    frame.hour
+                );
+                points.borrow_mut().keep(frame, state);
+                hours.set(hours.get() + 1);
+                Ok(samples)
+            };
+        let whole = |frame: &DecodedFrame, requested: Option<&[(String, String)]>| {
+            let (scan, state) = point_scan(frame);
+            sample_rows(&scan, &state, frame.hour, requested)
+        };
+        let requested: Vec<_> = (0..count.min(3))
+            .flat_map(|index| (0..8).map(move |field| (tag(index), field.to_string())))
+            .collect();
+        let flag = AtomicBool::new(false);
+        for window in [(0, 35), (5, 20), (12, 12), (17, 30)] {
+            let read = dashboard_base::prepared::query::progressive::tail_recorded(
+                &source, 1, None, TABLES, &requested, window, &carried, &flag,
+            )
+            .unwrap();
+            assert_eq!(
+                read,
+                dashboard_base::prepared::query::progressive::tail(
+                    &source, 1, None, TABLES, &requested, window, &whole, &flag,
+                )
+                .unwrap(),
+                "{window:?}"
+            );
+        }
+        let points = points.into_inner();
+        assert!(
+            points.carried > hours.get() / 2,
+            "{} of {} hours carried",
+            points.carried,
+            hours.get()
+        );
+        assert!(
+            points.carried < hours.get(),
+            "block starts, gaps and left edges scan whole"
+        );
+    }
+
+    fn tag(index: u32) -> String {
+        crate::products::parts_race_prepared::test_fixtures::tag(index)
+    }
+
+    #[test]
+    fn carried_army_scans_equal_point_scans_at_every_hour() {
+        carried_scans_equal_point_scans(40);
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: runs in the full suite (--features slow-tests)"
+    )]
+    fn carried_army_scans_equal_point_scans_at_every_hour_at_5000_countries() {
+        carried_scans_equal_point_scans(5_000);
+    }
+}

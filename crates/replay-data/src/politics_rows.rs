@@ -9,6 +9,7 @@ macro_rules! politics_kind {
         #[repr($ty)]
         pub enum $name { #[default] $($variant = $value),+ }
         impl NativeValue for $name {
+            fn heap_bytes(&self) -> usize { 0 }
             fn try_clone(&self) -> io::Result<Self> { Ok(*self) }
             fn field(&self) -> Field<'_> { Field::$kind(*self as $ty) }
             fn from_field(field: Field<'_>) -> io::Result<Self> {
@@ -22,6 +23,7 @@ macro_rules! politics_kind {
             fn try_from(value: $ty) -> io::Result<Self> { Self::from_field(Field::$kind(value)) }
         }
         impl Value for $name {
+            fn heap_bytes(&self) -> usize { 0 }
             const MINIMUM_ENCODED_BYTES: usize = size_of::<$ty>();
             fn encoded_bytes(&self) -> io::Result<usize> { Ok(size_of::<$ty>()) }
             fn try_clone(&self) -> io::Result<Self> { Ok(*self) }

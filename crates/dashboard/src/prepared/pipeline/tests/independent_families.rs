@@ -125,6 +125,8 @@ struct Hours {
     key: &'static str,
     refuse: Option<i32>,
     fail: Option<i32>,
+    kept: &'static [(&'static str, &'static str)],
+    read_by: &'static [&'static str],
 }
 
 /// Each fold's family key, thread and observed hours.
@@ -154,6 +156,9 @@ struct HoursBranch {
     refuse: Option<i32>,
     fail: Option<i32>,
     saved: Saved,
+    /// The last hour of each block it went through since its last commit,
+    /// each a page of its own, as hourly preparation publishes per block.
+    ended: Vec<i32>,
 }
 
 impl HoursBranch {
@@ -231,7 +236,27 @@ impl Branch for HoursBranch {
         self.hours(hours, observed, check)
     }
 
-    fn end_block(&mut self, _: &Replay, _: u64) {}
+    fn end_block(&mut self, _: &Replay, _: u64) {
+        if let Some(&hour) = self.saved.hours.last() {
+            self.ended.push(hour);
+        }
+    }
+
+    fn publish(
+        &mut self,
+        writer: &mut store::Writer,
+        branch: u64,
+        _: &AtomicBool,
+    ) -> io::Result<()> {
+        for hour in std::mem::take(&mut self.ended) {
+            writer.write_at(
+                &format!("synthetic-{}-ended-{branch}-{hour}", self.name),
+                0,
+                b"ended".as_slice(),
+            )?;
+        }
+        Ok(())
+    }
 
     fn pending(&self) -> usize {
         0
@@ -285,6 +310,14 @@ impl Own for Hours {
         self.gates
     }
 
+    fn kept(&self) -> &'static [(&'static str, &'static str)] {
+        self.kept
+    }
+
+    fn read_by(&self) -> &'static [&'static str] {
+        self.read_by
+    }
+
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         let section = format!("synthetic-{}-state-{branch}", self.family.name);
         let saved = match load.read(&section)? {
@@ -297,6 +330,7 @@ impl Own for Hours {
             refuse: self.refuse,
             fail: self.fail,
             saved,
+            ended: Vec::new(),
         }))
     }
 }
@@ -314,8 +348,34 @@ const fn hours(
         key,
         refuse: None,
         fail: None,
+        kept: &[],
+        read_by: &[],
     }
 }
+
+/// Kept for a reader of its state in the same hour.
+static KEPT_ALPHA: Hours = Hours {
+    kept: &[("alpha-section", "reader-alpha-section")],
+    read_by: &["reader"],
+    ..hours(
+        &ALPHA,
+        "independent.alpha",
+        &["alpha-product"],
+        "kept-alpha",
+    )
+};
+
+/// The reader, once it is prepared on its own too.
+static READER: Family = Family {
+    name: "reader",
+    extract: "reader.extract",
+    sequential: "reader.sequential",
+    fallback: "reader.fallback",
+    tables: &[TableId::Countries],
+    fields: None,
+    start: whole,
+};
+static OWN_READER: Hours = hours(&READER, "independent.reader", &[], "own-reader");
 
 static PARITY_ALPHA: Hours = hours(
     &ALPHA,
@@ -349,6 +409,15 @@ static REFUSING_ALPHA: Hours = Hours {
     )
 };
 static OTHER_BETA: Hours = hours(&BETA, "independent.beta", &["beta-product"], "other-beta");
+static REFUSING_SUBJECTS: Hours = Hours {
+    refuse: Some(105),
+    ..hours(
+        &SUBJECTS,
+        "independent.subjects",
+        &["subjects"],
+        "refusing-subjects",
+    )
+};
 static OWN_SUBJECTS: Hours = hours(
     &SUBJECTS,
     "independent.subjects",
@@ -585,6 +654,25 @@ fn a_family_that_fails_or_refuses_leaves_the_others_coverage_and_pages_committed
                 assert_eq!(error.to_string(), "Injected refusal of alpha at hour 105");
                 refusal(&source, None, 2, "alpha-product", &flag).unwrap();
             });
+            // In one batch of the whole branch, the block it went through
+            // before refusing keeps its page, as hourly preparation wrote it
+            // at that block's end; the refusing block has none.
+            clear(source);
+            let source = fixture.source("family-failure");
+            independent::with_test_families(&registered(&[alpha, &OTHER_BETA]), || {
+                run(&source, None, &flag, |_| {}).unwrap();
+            });
+            let batched = payloads(&source, None);
+            let ended =
+                |hour: i32| batched.contains_key(&(format!("synthetic-alpha-ended-1-{hour}"), 0));
+            assert!(
+                ended(103),
+                "{label}: the block before the refusal published"
+            );
+            assert!(!ended(107) && !ended(113), "{label}");
+            assert!(batched.contains_key(&("synthetic-alpha-ended-2-23".to_owned(), 0)));
+            clear(source);
+            continue;
         }
         clear(source);
     }
@@ -592,11 +680,25 @@ fn a_family_that_fails_or_refuses_leaves_the_others_coverage_and_pages_committed
 
 #[test]
 fn the_registry_decides_what_the_hourly_walk_skips_keeps_and_gates() {
-    // The groups: prepared on their own, still observed hourly for air
-    // superiority under its names.
-    assert_eq!(independent::names(), ["groups"]);
-    assert!(independent::hourly("groups"));
-    assert!(Refused::default().live("groups"));
+    // The identities: prepared on their own, still observed hourly for
+    // territory under its names. The groups' reader, air superiority, is
+    // prepared on its own with its own read of them, and every other
+    // registered family is read by no other family in the same hour, so the
+    // walk skips it.
+    let kept = ["identities"];
+    let names = independent::names();
+    assert!(kept.iter().all(|name| names.contains(name)));
+    for &name in &names {
+        assert!(independent::registered(name));
+        assert_eq!(independent::hourly(name), kept.contains(&name), "{name}");
+        assert_eq!(
+            Refused::default().live(name),
+            kept.contains(&name),
+            "{name}"
+        );
+        assert!(Refused::default().open(name), "{name}");
+    }
+    assert!(!independent::registered("subjects-stub"));
     assert_eq!(
         independent::kept_as("country-groups"),
         "air-superiority-groups"
@@ -606,7 +708,6 @@ fn the_registry_decides_what_the_hourly_walk_skips_keeps_and_gates() {
         "air-superiority-group-changes"
     );
     assert_eq!(independent::gating("country-groups"), Some("groups"));
-    assert_eq!(independent::gating("subjects"), None);
     independent::with_test_families(&registered(&[&OWN_SUBJECTS, &PARITY_BETA]), || {
         assert_eq!(independent::names(), ["beta", "subjects"]);
         // Read by no other family: skipped, without having refused.
@@ -620,6 +721,19 @@ fn the_registry_decides_what_the_hourly_walk_skips_keeps_and_gates() {
         assert_eq!(independent::gating("beta-product"), Some("beta"));
         assert_eq!(independent::gating("country-groups"), None);
     });
+    // A family kept for a reader stays in the walk, under the reader's names,
+    // until the reader is prepared on its own too and makes its own read.
+    independent::with_test_families(&registered(&[&KEPT_ALPHA]), || {
+        assert!(independent::hourly("alpha"));
+        assert_eq!(
+            independent::kept_as("alpha-section"),
+            "reader-alpha-section"
+        );
+    });
+    independent::with_test_families(&registered(&[&KEPT_ALPHA, &OWN_READER]), || {
+        assert!(!independent::hourly("alpha"));
+        assert!(!independent::hourly("reader"));
+    });
     independent::with_test_hourly(|| {
         assert!(independent::names().is_empty());
         assert_eq!(independent::kept_as("country-groups"), "country-groups");
@@ -630,13 +744,13 @@ fn the_registry_decides_what_the_hourly_walk_skips_keeps_and_gates() {
     let replay = recording(2, true);
     let mut fixture = Fixture::new(&replay);
     let flag = AtomicBool::new(false);
-    let hourly = {
+    let hourly = independent::with_test_hourly(|| {
         let source = fixture.source("skipped");
         run(&source, None, &flag, |_| {}).unwrap();
         let payloads = payloads(&source, None);
         clear(source);
         payloads
-    };
+    });
     let subjects = |payloads: &Payloads| {
         payloads
             .keys()
@@ -648,7 +762,8 @@ fn the_registry_decides_what_the_hourly_walk_skips_keeps_and_gates() {
     assert!(subjects(&hourly) > 0);
     let source = fixture.source("skipped");
     independent::with_test_families(&registered(&[&OWN_SUBJECTS]), || {
-        run(&source, None, &flag, |_| {}).unwrap();
+        // On lanes, so the parallel flush's helpers skip it too.
+        lanes::with_test_lanes(4, None, || run(&source, None, &flag, |_| {})).unwrap();
         let own = payloads(&source, None);
         assert_eq!(subjects(&own), 0, "the hourly walk skipped the subjects");
         assert_eq!(
@@ -663,6 +778,20 @@ fn the_registry_decides_what_the_hourly_walk_skips_keeps_and_gates() {
             (coverage.first_hour, coverage.last_hour, coverage.complete),
             (own_page.first_hour, own_page.last_hour, true)
         );
+    });
+    clear(source);
+    // A query reading a family prepared on its own (the event feed reads the
+    // subjects) refuses with that family's refusal, kept only in its own page.
+    let source = fixture.source("skipped");
+    independent::with_test_families(&registered(&[&REFUSING_SUBJECTS]), || {
+        run(&source, None, &flag, |_| {}).unwrap();
+        let error = refusal(&source, None, 1, "event-feed", &flag).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "Injected refusal of subjects at hour 105"
+        );
+        refusal(&source, None, 2, "event-feed", &flag).unwrap();
     });
     clear(source);
 }

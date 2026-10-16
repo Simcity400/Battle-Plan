@@ -233,7 +233,17 @@ fn query_data(
                 true,
                 cancelled,
             )? {
-                return Ok(Value::Null);
+                // The manifest and the newest window answer from the newest
+                // window published before forward preparation.
+                return Ok(crate::products::land_battles::newest::query(
+                    source,
+                    product,
+                    branch,
+                    &request.params,
+                    &store,
+                    &key,
+                )?
+                .unwrap_or(Value::Null));
             }
             crate::products::land_battles::prepared::query(
                 source,
@@ -967,9 +977,9 @@ fn query_data(
             {
                 return Err(crate::invalid("Invalid focus static text token"));
             }
-            serde_json::to_value(crate::prepared_focus::static_text_page(
-                &store,
-                &key,
+            serde_json::to_value(crate::prepared_focus::art::static_text(
+                source,
+                content,
                 &params.tokens,
                 cancelled,
             )?)?
@@ -990,6 +1000,7 @@ fn query_data(
                 return Ok(Value::Null);
             }
             serde_json::to_value(crate::prepared_focus::query_hour(
+                source,
                 &store,
                 &key,
                 branch,
@@ -1020,7 +1031,7 @@ fn query_data(
                 cancelled,
             )?)?
         }
-        "focus-order-page" | "focus-presentation-page" | "focus-details-page" => {
+        "focus-order-page" => {
             let params: FocusPage = serde_json::from_value(request.params.clone())?;
             crate::products::validate_tag(&params.tag).map_err(crate::invalid)?;
             let branch = branch(source, &params.branch_id)?;
@@ -1039,7 +1050,7 @@ fn query_data(
                 .page
                 .parse::<u64>()
                 .map_err(|_| crate::invalid("Invalid focus page ordinal"))?;
-            crate::prepared_focus::query_page(
+            crate::prepared_focus::order_page(
                 &store,
                 &key,
                 branch,
@@ -1047,7 +1058,6 @@ fn query_data(
                 params.hour,
                 &params.pages,
                 page,
-                &request.product,
                 cancelled,
             )?
         }
@@ -1129,6 +1139,10 @@ fn query_data(
                 .get("family")
                 .and_then(|family| family.get("kind"))
                 .and_then(Value::as_str);
+            // A series request waits for its family kind's coverage, as its
+            // refusal answers by that kind: a family prepared on its own gates
+            // the kind (peace deals, territory transfers, research events).
+            let gate = family.unwrap_or(product);
             if family == Some("game-score") && product == "series-state" {
                 return crate::products::game_score::prepared::state(
                     source,
@@ -1176,16 +1190,11 @@ fn query_data(
                 _ => {}
             }
             let (hour, complete) = series_coverage(product, &request.params)?;
-            let accepted = match super::pipeline::product_coverage(
-                source,
-                content,
-                branch,
-                &request.product,
-                cancelled,
-            ) {
-                Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
-                other => other?,
-            };
+            let accepted =
+                match super::pipeline::product_coverage(source, content, branch, gate, cancelled) {
+                    Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
+                    other => other?,
+                };
             // Families whose requests name one measure per tag register here; others
             // expand their own request shape and call `progressive::tail` themselves.
             let sampler: Option<(&[replay::rows::TableId], progressive::Sample<'_>)> = match family
@@ -1216,15 +1225,7 @@ fn query_data(
                     family,
                     Some("army-size" | "supply-health" | "air-force-size" | "navy-size")
                 )
-                && !coverage(
-                    source,
-                    content,
-                    &request.product,
-                    branch,
-                    hour,
-                    complete,
-                    cancelled,
-                )?
+                && !coverage(source, content, gate, branch, hour, complete, cancelled)?
             {
                 return Ok(Value::Null);
             }
@@ -1463,15 +1464,7 @@ fn query_data(
                 Some("peace-deals") => {
                     // This adapter builds complete outcomes from earlier reads;
                     // a partial event prefix cannot answer an unprepared span.
-                    if !coverage(
-                        source,
-                        content,
-                        &request.product,
-                        branch,
-                        hour,
-                        complete,
-                        cancelled,
-                    )? {
+                    if !coverage(source, content, gate, branch, hour, complete, cancelled)? {
                         return Ok(Value::Null);
                     }
                     crate::products::peace_deals::prepared::query(
@@ -1488,15 +1481,7 @@ fn query_data(
                 Some("research") => {
                     // Complete assignment history and carried slot state need
                     // the scan, including when requested through events-page.
-                    if !coverage(
-                        source,
-                        content,
-                        &request.product,
-                        branch,
-                        hour,
-                        complete,
-                        cancelled,
-                    )? {
+                    if !coverage(source, content, gate, branch, hour, complete, cancelled)? {
                         return Ok(Value::Null);
                     }
                     crate::products::research::prepared::query(
@@ -1701,6 +1686,7 @@ pub fn query(
     content: Option<&ContentOptions>,
     cancelled: &AtomicBool,
 ) -> io::Result<String> {
+    super::pipeline::install_gates();
     check_cancel(cancelled)?;
     if source.key().revision != request.revision {
         return Err(crate::invalid("Prepared query recording revision changed"));

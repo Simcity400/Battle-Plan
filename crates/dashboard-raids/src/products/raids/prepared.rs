@@ -3,6 +3,11 @@ use super::*;
 use dashboard_base::prepared::series::{self, Accumulator, Reader};
 use dashboard_text::metadata::check_cancel;
 
+mod block;
+#[cfg(any(test, feature = "test-support"))]
+pub use block::kept_hours;
+pub use block::{FAMILY, fold, observe_block};
+
 #[derive(Serialize, Deserialize)]
 struct EpisodeChunk {
     ordinal: u64,
@@ -385,10 +390,11 @@ pub fn query(
     {
         return Err(dashboard_core::invalid("Branch is not in this recording"));
     }
-    let Some(coverage) = dashboard_base::prepared::coverage::coverage(
+    let Some(coverage) = dashboard_base::prepared::coverage::product_coverage(
         source,
         context.content.as_ref(),
         branch,
+        Raids::KEY,
         cancelled,
     )?
     else {

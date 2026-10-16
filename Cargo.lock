@@ -1929,6 +1929,7 @@ version = "0.1.0"
 dependencies = [
  "dashboard-base",
  "dashboard-core",
+ "dashboard-raids",
  "dashboard-text",
  "engine",
  "installed-content",
@@ -2389,6 +2390,7 @@ dependencies = [
  "serde_json",
  "store",
  "ts-rs",
+ "zstd",
 ]
 
 [[package]]

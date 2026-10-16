@@ -50,6 +50,18 @@ pub struct Params {
     pub include_departed: bool,
 }
 
+/// Tables whose change makes the next membership read join the census afresh.
+const MEMBERSHIP_INPUTS: [TableId; 5] = [
+    TableId::OperativeMemberships,
+    TableId::SimulationFeatures,
+    TableId::CharacterOperatives,
+    TableId::CharacterPortraits,
+    TableId::LexicalTokens,
+];
+
+/// Tables whose change makes the next operations read name operations afresh.
+const OPERATION_INPUTS: [TableId; 2] = [TableId::Operations, TableId::LexicalTokens];
+
 fn key(keys: &mut BTreeMap<String, u64>, name: String) -> io::Result<u64> {
     let next = u64::try_from(keys.len())
         .ok()
@@ -79,6 +91,23 @@ impl Prepared {
         result
     }
 
+    /// The marks an hour's observation sets from the tables its update
+    /// rebuilt (`rebuilt`), for an hour observed as one at which nothing the
+    /// roster reads changed: the next membership or operations read then
+    /// joins afresh, as it does after any rebuild of its inputs. The
+    /// intelligence family prepared on its own tells the roster of an hour's
+    /// rebuilds this way where the hour's change facts leave them out
+    /// (`intelligence_prepared::Observer::observe_quiet`).
+    pub(crate) fn note_rebuilt(&mut self, rebuilt: &dyn Fn(TableId) -> bool) {
+        if rebuilt(TableId::CharacterOperatives)
+            && let Some(scan) = &mut self.scan
+        {
+            scan.characters = None;
+        }
+        self.membership_dirty |= MEMBERSHIP_INPUTS.iter().any(|&table| rebuilt(table));
+        self.operations_dirty |= OPERATION_INPUTS.iter().any(|&table| rebuilt(table));
+    }
+
     pub fn observe_bound(
         &mut self,
         frame: &replay::frame::DecodedFrame,
@@ -106,17 +135,11 @@ impl Prepared {
         let identity_changed = countries.changed
             || previous.is_none_or(|last| last.checked_add(1) != Some(frame.hour))
             || changes.rows_changed[TableId::SimulationFeatures.index()];
-        self.membership_dirty |= [
-            TableId::OperativeMemberships,
-            TableId::SimulationFeatures,
-            TableId::CharacterOperatives,
-            TableId::CharacterPortraits,
-            TableId::LexicalTokens,
-        ]
-        .iter()
-        .any(|table| changes.rows_changed[table.index()]);
+        self.membership_dirty |= MEMBERSHIP_INPUTS
+            .iter()
+            .any(|table| changes.rows_changed[table.index()]);
         self.membership_dirty |= countries.changed;
-        self.operations_dirty |= [TableId::Operations, TableId::LexicalTokens]
+        self.operations_dirty |= OPERATION_INPUTS
             .iter()
             .any(|table| changes.rows_changed[table.index()]);
         if identity_changed {

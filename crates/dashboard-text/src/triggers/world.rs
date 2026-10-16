@@ -127,6 +127,57 @@ fn linked<T>(found: Option<T>, unresolved: &Option<String>) -> Result<Option<T>,
         (None, None) => Ok(None),
     }
 }
+/// A table's rows keyed by raw country first, by country: each country's
+/// rows are one range when the rows ascend by country, as a decoded table's
+/// keys do. A query of one country then reads that country's rows, and
+/// whether any row's country does not resolve, instead of every row.
+struct CountryRows {
+    /// Each country's first row and the row past its last, by country.
+    runs: Vec<(u32, usize, usize)>,
+    /// The least and the greatest country with no `CountryLinks` row: the
+    /// first and the last row in table order whose country does not resolve.
+    unlinked: Option<(u32, u32)>,
+}
+
+impl CountryRows {
+    /// `rows` by `country`; None when the countries do not ascend.
+    fn new<R>(
+        rows: &[R],
+        country: impl Fn(&R) -> u32,
+        linked: impl Fn(u32) -> bool,
+    ) -> Option<Self> {
+        let mut runs: Vec<(u32, usize, usize)> = Vec::new();
+        for (at, row) in rows.iter().enumerate() {
+            let country = country(row);
+            match runs.last_mut() {
+                Some(run) if run.0 == country => run.2 = at + 1,
+                Some(run) if run.0 > country => return None,
+                _ => runs.push((country, at, at + 1)),
+            }
+        }
+        let mut unlinked = runs
+            .iter()
+            .map(|run| run.0)
+            .filter(|&country| !linked(country));
+        let first = unlinked.next();
+        let unlinked = first.map(|first| (first, unlinked.last().unwrap_or(first)));
+        Some(Self { runs, unlinked })
+    }
+
+    /// The rows of `country`.
+    fn of(&self, country: u32) -> std::ops::Range<usize> {
+        self.runs
+            .binary_search_by_key(&country, |run| run.0)
+            .map_or(0..0, |at| self.runs[at].1..self.runs[at].2)
+    }
+
+    /// The first row whose country does not resolve, and its country.
+    fn first_unlinked(&self) -> Option<(usize, u32)> {
+        let (country, _) = self.unlinked?;
+        Some((self.of(country).start, country))
+    }
+}
+
 /// Each (owner, native definition name)'s entries in container order:
 /// their raw scope-country references and state IDs.
 type Modifiers<'a> = BTreeMap<(u32, &'a [u8]), Vec<(u32, i32)>>;
@@ -290,6 +341,14 @@ pub struct World<'a> {
     wars: Index<Linked<BTreeSet<(u32, u32)>>>,
     overlords: Index<Linked<BTreeMap<u32, u32>>>,
     focuses: Index<Linked<CountryNames<'a>>>,
+    /// Each canonical slot's raw country references, ascending.
+    slot_links: OnceLock<BTreeMap<u32, Vec<u32>>>,
+    /// The country-keyed tables' rows by country, where they ascend.
+    focus_rows: OnceLock<Option<CountryRows>>,
+    party_rows: OnceLock<Option<CountryRows>>,
+    party_leader_rows: OnceLock<Option<CountryRows>>,
+    character_rows: OnceLock<Option<CountryRows>>,
+    idea_rows: OnceLock<Option<CountryRows>>,
     techs: Index<Techs>,
     projects: Index<Linked<BTreeSet<(u32, u32)>>>,
     political_parties: Index<PoliticalParties<'a>>,
@@ -931,18 +990,11 @@ impl<'a> World<'a> {
         &self.state_provinces
     }
 
-    /// The hour's character tables, read whole: an evaluation depends on all
-    /// six ([`super::inputs::table`]).
+    /// The hour's character tables, read whole: an evaluation depends on
+    /// the fields of all six that they read ([`character_scope::FIELDS`]).
     pub(super) fn character_tables(&self) -> &character_scope::Tables<'a> {
-        for table in [
-            replay::rows::TableId::Characters,
-            replay::rows::TableId::UnitLeaders,
-            replay::rows::TableId::UnitLeaderTraits,
-            replay::rows::TableId::CharacterRoleTraits,
-            replay::rows::TableId::CharacterOperatives,
-            replay::rows::TableId::CountryRetiredCharacters,
-        ] {
-            super::inputs::table(self.frame, table);
+        for (table, fields) in character_scope::FIELDS {
+            super::inputs::fields(self.frame, table, fields);
         }
         self.character_tables
             .get_or_init(|| super::inputs::unrecorded(|| character_scope::Tables::read(self.frame)))
@@ -1071,6 +1123,12 @@ impl<'a> World<'a> {
             wars: OnceLock::new(),
             overlords: OnceLock::new(),
             focuses: OnceLock::new(),
+            slot_links: OnceLock::new(),
+            focus_rows: OnceLock::new(),
+            party_rows: OnceLock::new(),
+            party_leader_rows: OnceLock::new(),
+            character_rows: OnceLock::new(),
+            idea_rows: OnceLock::new(),
             techs: OnceLock::new(),
             projects: OnceLock::new(),
             political_parties: OnceLock::new(),
@@ -1564,6 +1622,23 @@ impl<'a> World<'a> {
     }
 
     fn has_focus_unrecorded(&self, slot: u32, name: &[u8]) -> Result<bool, String> {
+        let rows = table::<tables::CompletedFocuses>(self.frame)?;
+        let Some(countries) = self.country_rows(&self.focus_rows, rows, |row| row.country) else {
+            return self.has_focus_indexed(slot, name);
+        };
+        let found = self
+            .slot_links(slot)
+            .iter()
+            .any(|&raw| rows[countries.of(raw)].iter().any(|row| row.token == name));
+        let unresolved = countries
+            .unlinked
+            .map(|(_, last)| self.unlinked("CompletedFocuses", last));
+        Ok(linked(found.then_some(()), &unresolved)?.is_some())
+    }
+
+    /// [`Self::has_focus_unrecorded`] over an index of every row, for rows
+    /// that do not ascend by country.
+    fn has_focus_indexed(&self, slot: u32, name: &[u8]) -> Result<bool, String> {
         let (focuses, unresolved) = get(&self.focuses, || {
             let mut out = BTreeSet::new();
             let mut unresolved = None;
@@ -1671,6 +1746,33 @@ impl<'a> World<'a> {
             Ok((out, unresolved))
         })?;
         Ok(linked(projects.contains(&(slot, token)).then_some(()), unresolved)?.is_some())
+    }
+
+    /// `slot`'s raw country references, ascending: the rows of a
+    /// country-keyed table whose country resolves to it.
+    fn slot_links(&self, slot: u32) -> &[u32] {
+        self.slot_links
+            .get_or_init(|| {
+                let mut out: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+                for (&raw, &slot) in &self.links {
+                    out.entry(slot).or_default().push(raw);
+                }
+                out
+            })
+            .get(&slot)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// `rows` by their raw `country`, built on first use; None when they
+    /// do not ascend by country.
+    fn country_rows<'s, R>(
+        &'s self,
+        cell: &'s OnceLock<Option<CountryRows>>,
+        rows: &[R],
+        country: impl Fn(&R) -> u32,
+    ) -> Option<&'s CountryRows> {
+        cell.get_or_init(|| CountryRows::new(rows, country, |raw| self.links.contains_key(&raw)))
+            .as_ref()
     }
 
     fn political_parties(&self) -> Result<&PoliticalParties<'a>, String> {
@@ -2706,6 +2808,69 @@ impl<'a> World<'a> {
     }
 
     fn party_leaders_unrecorded(&self, slot: u32) -> Result<Vec<PartyLeaders>, String> {
+        let party_rows = table::<tables::PoliticalParties>(self.frame)?;
+        let Some(by_party) = self.country_rows(&self.party_rows, party_rows, |row| row.country)
+        else {
+            return self.party_leaders_scanned(slot);
+        };
+        if let Some((_, raw)) = by_party.first_unlinked() {
+            return Err(self.unlinked("PoliticalParties", raw));
+        }
+        let raws = self.slot_links(slot);
+        let mut parties = BTreeMap::new();
+        for &raw in raws {
+            for row in &party_rows[by_party.of(raw)] {
+                parties.insert(
+                    row.id,
+                    PartyLeaders {
+                        ruling: row.is_ruling != 0,
+                        leaders: Vec::new(),
+                    },
+                );
+            }
+        }
+        let leader_rows = table::<tables::PartyLeaders>(self.frame)?;
+        let Some(by_leader) =
+            self.country_rows(&self.party_leader_rows, leader_rows, |row| row.country)
+        else {
+            return self.party_leaders_scanned(slot);
+        };
+        // The first row in table order that fails decides, as a scan finds it.
+        let unlinked = by_leader.first_unlinked();
+        for &raw in raws {
+            let range = by_leader.of(raw);
+            for (at, row) in range.clone().zip(&leader_rows[range]) {
+                if let Some((first, raw)) = unlinked
+                    && first < at
+                {
+                    return Err(self.unlinked("PartyLeaders", raw));
+                }
+                parties
+                    .get_mut(&row.party)
+                    .ok_or_else(|| {
+                        format!(
+                            "PartyLeaders party {} has no PoliticalParties row",
+                            row.party
+                        )
+                    })?
+                    .leaders
+                    .push(PartyLeader {
+                        character: row.character,
+                        ordinal: row.ordinal,
+                        role: row.role,
+                        id: row.leader_id,
+                    });
+            }
+        }
+        if let Some((_, raw)) = unlinked {
+            return Err(self.unlinked("PartyLeaders", raw));
+        }
+        Ok(parties.into_values().collect())
+    }
+
+    /// [`Self::party_leaders_unrecorded`] scanning every row, for rows that
+    /// do not ascend by country.
+    fn party_leaders_scanned(&self, slot: u32) -> Result<Vec<PartyLeaders>, String> {
         let mut parties = BTreeMap::new();
         for row in table::<tables::PoliticalParties>(self.frame)? {
             match self.slot(row.country) {
@@ -2758,6 +2923,24 @@ impl<'a> World<'a> {
     }
 
     fn country_characters_unrecorded(&self, slot: u32) -> Result<Vec<Option<u32>>, String> {
+        let rows = table::<tables::CountryCharacters>(self.frame)?;
+        let Some(countries) = self.country_rows(&self.character_rows, rows, |row| row.country)
+        else {
+            return self.country_characters_scanned(slot);
+        };
+        if let Some((_, raw)) = countries.first_unlinked() {
+            return Err(self.unlinked("CountryCharacters", raw));
+        }
+        Ok(self
+            .slot_links(slot)
+            .iter()
+            .flat_map(|&raw| rows[countries.of(raw)].iter().map(|row| row.character))
+            .collect())
+    }
+
+    /// [`Self::country_characters_unrecorded`] scanning every row, for rows
+    /// that do not ascend by country.
+    fn country_characters_scanned(&self, slot: u32) -> Result<Vec<Option<u32>>, String> {
         let mut out = Vec::new();
         for row in table::<tables::CountryCharacters>(self.frame)? {
             match self.slot(row.country) {
@@ -2988,6 +3171,40 @@ impl<'a> World<'a> {
                     .any(|idea| idea == name)),
             };
         }
+        self.active_idea(slot, name)
+    }
+
+    /// Whether the country's active ideas hold `name`: the first of its
+    /// matching rows and the rows whose country does not resolve, in table
+    /// order, decides.
+    fn active_idea(&self, slot: u32, name: &[u8]) -> Result<bool, String> {
+        let rows = table::<tables::ActiveIdeas>(self.frame)?;
+        let Some(countries) = self.country_rows(&self.idea_rows, rows, |row| row.country) else {
+            return self.active_idea_scanned(slot, name);
+        };
+        let found = self
+            .slot_links(slot)
+            .iter()
+            .filter_map(|&raw| {
+                let range = countries.of(raw);
+                let start = range.start;
+                rows[range]
+                    .iter()
+                    .position(|row| row.token == name)
+                    .map(|at| start + at)
+            })
+            .min();
+        match (found, countries.first_unlinked()) {
+            (Some(at), Some((first, raw))) if first < at => Err(self.unlinked("ActiveIdeas", raw)),
+            (Some(_), _) => Ok(true),
+            (None, Some((_, raw))) => Err(self.unlinked("ActiveIdeas", raw)),
+            (None, None) => Ok(false),
+        }
+    }
+
+    /// [`Self::active_idea`] scanning every row, for rows that do not
+    /// ascend by country.
+    fn active_idea_scanned(&self, slot: u32, name: &[u8]) -> Result<bool, String> {
         for row in table::<tables::ActiveIdeas>(self.frame)? {
             match self.slot(row.country) {
                 Some(country) if country == slot && row.token == name => return Ok(true),
@@ -3438,6 +3655,13 @@ impl Links for World<'_> {
 fn get<T>(cell: &Index<T>, build: impl FnOnce() -> Result<T, String>) -> Result<&T, String> {
     cell.get_or_init(build).as_ref().map_err(Clone::clone)
 }
+
+#[path = "world/dependence.rs"]
+mod dependence;
+
+#[cfg(test)]
+#[path = "world/lookup_tests.rs"]
+mod lookup_tests;
 
 #[cfg(test)]
 #[path = "world/zero_countries_tests.rs"]

@@ -13,7 +13,7 @@ use std::sync::Mutex;
 /// Branch 1's resource scenario (runs, deals and memberships across block
 /// boundaries, a gap, a holder change, growing and unread tables) in the
 /// first `blocks` of its five blocks, then branch 2 when `second`.
-fn resources(blocks: usize, second: bool) -> Replay {
+pub(super) fn resources(blocks: usize, second: bool) -> Replay {
     let hours: [&[i32]; 5] = [
         &[100, 101, 102, 103],
         &[104, 105, 106, 107],

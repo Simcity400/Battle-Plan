@@ -33,6 +33,7 @@ use std::{
 };
 
 mod assignment;
+pub mod block;
 mod model;
 pub mod prepared;
 mod scan;

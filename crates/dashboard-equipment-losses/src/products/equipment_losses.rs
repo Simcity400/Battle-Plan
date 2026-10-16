@@ -498,7 +498,7 @@ pub struct EndedExchange {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Scanned {
     /// The recording's format, which dates its daily tables
-    /// ([`crate::metadata::slot_read`]).
+    /// ([`dashboard_text::metadata::slot_read`]).
     #[serde(skip)]
     pub(crate) format: replay::format::FormatVersion,
     /// (source, variant) to (hour, delta) events, in scan order.

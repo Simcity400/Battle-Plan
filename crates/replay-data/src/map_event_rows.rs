@@ -152,6 +152,9 @@ impl MapEventFaults {
 }
 
 impl Value for MapEventFaults {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     const MINIMUM_ENCODED_BYTES: usize = 2;
     fn encoded_bytes(&self) -> io::Result<usize> {
         self.0.encoded_bytes()
@@ -190,6 +193,9 @@ impl MapEventFamilyHealth {
 }
 
 impl Value for MapEventFamilyHealth {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     const MINIMUM_ENCODED_BYTES: usize = 13;
     fn encoded_bytes(&self) -> io::Result<usize> {
         Ok(Self::MINIMUM_ENCODED_BYTES)
@@ -333,6 +339,9 @@ impl MapEventBuildingReason {
 }
 
 impl Value for MapEventBuildingReason {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     const MINIMUM_ENCODED_BYTES: usize = 1;
     fn encoded_bytes(&self) -> io::Result<usize> {
         Ok(1)
@@ -399,6 +408,18 @@ impl MapEventPayload {
 }
 
 impl Value for MapEventPayload {
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Self::FakeDivisionRevealed(value) | Self::RailwayGunOverrun(value) => {
+                Value::heap_bytes(value)
+            }
+            Self::CriticalShoreBombardment(value) => Value::heap_bytes(value),
+            Self::GeneralCaptured(value) => Value::heap_bytes(value),
+            Self::ParadropLanding(value) => Value::heap_bytes(value),
+            Self::ResistanceActivity(value) => Value::heap_bytes(value),
+            Self::BuildingDamage(value) => Value::heap_bytes(value),
+        }
+    }
     const MINIMUM_ENCODED_BYTES: usize = 5;
     fn encoded_bytes(&self) -> io::Result<usize> {
         let bytes = match self {

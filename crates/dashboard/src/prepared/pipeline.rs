@@ -1,6 +1,5 @@
 //! One accepted selected-frame walk, with domain state and cursor published together.
 
-use replay::identity::IdentityCodec;
 use super::frame_changes::{FrameChangeTracker, FrameChanges};
 use super::prepass::{self, Folded, Outcome, PrePass};
 use super::{Section, State};
@@ -14,6 +13,7 @@ use crate::{
 };
 use dashboard_base::prepared::timing::{FamilyTimings, family_time, finish_timing, start_timing};
 use replay::frame::DecodedFrame;
+use replay::identity::IdentityCodec;
 use replay::{
     container::{BlockIndex, Replay, ReplayCursor, ReplayStream},
     rows::TableId,
@@ -37,7 +37,78 @@ pub(crate) use super::coverage::{SCHEMA, coverage_section};
 pub const MAP_PROGRESS: &str = "preparation-map-progress-v1";
 // Commit budgets, never limits on actors, hours or complete replies.
 const BATCH_BYTES: usize = 64 * 1024 * 1024;
-const BATCH_TIME: Duration = Duration::from_secs(10);
+/// Blocks of one branch a publication batch goes through at most: a family
+/// prepared on its own commits about 21 times over a 50-year branch (663
+/// blocks).
+const BATCH_BLOCKS: usize = 32;
+
+/// Where publication batches end, from the recording alone, so the hourly
+/// walk and every family prepared on its own publish the same ranges however
+/// fast the machine runs: after a branch's last block before another
+/// branch's (or the recording's end), and after every [`BATCH_BLOCKS`]th
+/// block of a branch, counted from the branch's first block wherever
+/// preparation started, resumed or grew. The byte budget and measured runs
+/// end batches earlier; wall time never does.
+pub(super) struct Batches {
+    /// Each block's position within its own branch.
+    pub ordinals: Vec<usize>,
+    blocks: usize,
+}
+
+impl Batches {
+    pub(super) fn new(replay: &Replay) -> Self {
+        let mut seen = BTreeMap::new();
+        let ordinals = replay
+            .index
+            .iter()
+            .map(|index| {
+                let next = seen.entry(index.branch).or_insert(0usize);
+                *next += 1;
+                *next - 1
+            })
+            .collect();
+        Self {
+            ordinals,
+            blocks: batch_blocks(),
+        }
+    }
+
+    /// Whether a batch that went through `block` reached its block budget.
+    pub(super) fn full(&self, block: usize) -> bool {
+        self.ordinals
+            .get(block)
+            .is_some_and(|&ordinal| (ordinal + 1) % self.blocks == 0)
+    }
+}
+
+/// The block budget; tests set a smaller one to commit inside small fixtures.
+fn batch_blocks() -> usize {
+    #[cfg(test)]
+    if let Some(blocks) = TEST_BATCH_BLOCKS.with(std::cell::Cell::get) {
+        return blocks;
+    }
+    BATCH_BLOCKS
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_BATCH_BLOCKS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run `run` with batches of at most `blocks` blocks of a branch, for the
+/// preparations it starts on this thread.
+#[cfg(test)]
+pub(super) fn with_test_batch_blocks<T>(blocks: usize, run: impl FnOnce() -> T) -> T {
+    struct Reset(Option<usize>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_BATCH_BLOCKS.with(|value| value.set(self.0));
+        }
+    }
+    assert!(blocks > 0, "a batch goes through at least one block");
+    let _reset = Reset(TEST_BATCH_BLOCKS.with(|value| value.replace(Some(blocks))));
+    run()
+}
 
 #[derive(Clone, Debug)]
 pub struct Accepted {
@@ -135,8 +206,6 @@ const FAMILIES: &[Family] = &[
             "focus-hour",
             "focus-unavailable",
             "focus-order-page",
-            "focus-presentation-page",
-            "focus-details-page",
             "event-feed",
         ],
     },
@@ -360,14 +429,15 @@ const FAMILIES: &[Family] = &[
     },
     Family {
         name: "stability",
-        sections: &["country-stability", "country-experience"],
+        sections: &["country-stability"],
         dependents: &[],
-        queries: &[
-            "country-stability",
-            "country-experience",
-            "stability-parts",
-            "scoreboard",
-        ],
+        queries: &["country-stability", "stability-parts", "scoreboard"],
+    },
+    Family {
+        name: "experience",
+        sections: &["country-experience"],
+        dependents: &[],
+        queries: &["country-experience"],
     },
     Family {
         name: "politics_ledger",
@@ -500,7 +570,9 @@ impl Refused {
         let result = lanes::inject(family, hour, result);
         match result {
             Err(error) if refuses(&error) => {
-                self.refuse(family, hour, error.to_string(), None);
+                // A refusal of a family's own read of another names that one.
+                let from = crate::products::air_superiority::block::refused_from(&error);
+                self.refuse(family, hour, error.to_string(), from);
                 Ok(T::default())
             }
             other => other,
@@ -604,11 +676,74 @@ struct Checkpoint {
     /// Active payload bytes excluding this checkpoint's own file.
     bytes: u64,
 }
+/// The saved branch state leaves out the state of each family prepared on
+/// its own that the walk does not run ([`independent::hourly`]): read back,
+/// that state is new, as the walk never observes it.
+macro_rules! unsaved_while_own {
+    ($($check:ident => $family:literal),* $(,)?) => {
+        $(
+            fn $check<T>(_: &T) -> bool {
+                !independent::hourly($family)
+            }
+        )*
+    };
+}
+unsaved_while_own!(
+    own_production => "production",
+    own_construction => "construction",
+    own_stockpile => "stockpile",
+    own_subjects => "subjects",
+    own_ideas => "ideas",
+    own_experience => "experience",
+    own_peace => "peace",
+    own_casualties => "casualties",
+);
+
+/// The state of a family whose new state needs the recording, absent when
+/// the saved branch state left it out: [`load_branch`] makes it new then.
+#[derive(Serialize, Deserialize)]
+#[serde(transparent)]
+struct Unsaved<T>(Option<Box<T>>);
+
+impl<T> Default for Unsaved<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<T> Unsaved<T> {
+    fn new(state: T) -> Self {
+        Self(Some(Box::new(state)))
+    }
+
+    fn missing(&self) -> bool {
+        self.0.is_none()
+    }
+}
+
+impl<T> std::ops::Deref for Unsaved<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.0
+            .as_deref()
+            .expect("a branch state read back is made whole by load_branch")
+    }
+}
+
+impl<T> std::ops::DerefMut for Unsaved<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.0
+            .as_deref_mut()
+            .expect("a branch state read back is made whole by load_branch")
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct BranchState {
     schema: u32,
     focus: Box<FocusAccumulator>,
     index: Box<FocusIndex>,
+    #[serde(default, skip_serializing_if = "own_production")]
     production: Box<ProductionAccumulator>,
     measure: Box<MeasureAccumulator>,
     land: Box<crate::products::land_battles::Census>,
@@ -622,9 +757,11 @@ struct BranchState {
     nukes: Box<crate::products::country_nukes::prepared::Prepared>,
     factories: Box<crate::products::country_factories::prepared::Prepared>,
     supply: Box<crate::products::supply_health::prepared::Prepared>,
+    #[serde(default, skip_serializing_if = "own_construction")]
     construction: Box<crate::products::construction_log::prepared::Prepared>,
     resources: Box<crate::products::resource_balance::prepared::Prepared>,
     trade: Box<crate::products::trade_flows::prepared::Prepared>,
+    #[serde(default, skip_serializing_if = "own_stockpile")]
     stockpile: Box<crate::products::equipment_stockpile::prepared::Prepared>,
     #[serde(skip)]
     groups: Box<crate::products::country_groups::Scan>,
@@ -639,7 +776,9 @@ struct BranchState {
     air_superiority: Box<crate::products::air_superiority::prepared::Prepared>,
     #[serde(skip)]
     subjects: Box<crate::products::subjects::Scan>,
+    #[serde(default, skip_serializing_if = "own_subjects")]
     subject_changes: Box<super::series::Accumulator>,
+    #[serde(default, skip_serializing_if = "own_subjects")]
     subject_late: super::series::LateIndex,
     #[serde(skip)]
     autonomy: Box<crate::products::autonomy::ScannedAutonomy>,
@@ -649,6 +788,7 @@ struct BranchState {
     wars: Box<crate::products::wars::prepared::Observer>,
     #[serde(skip)]
     ideas: Box<crate::products::idea_history::Scan>,
+    #[serde(default, skip_serializing_if = "own_ideas")]
     idea_changes: Box<crate::products::idea_history::PreparedChanges>,
     feed: Box<crate::products::event_feed::prepared::Observer>,
     #[serde(skip)]
@@ -656,6 +796,8 @@ struct BranchState {
     #[serde(skip)]
     intelligence: Box<crate::products::intelligence_prepared::Observer>,
     stability: Box<crate::prepared_stability::StabilityAccumulator>,
+    #[serde(default, skip_serializing_if = "own_experience")]
+    experience: Box<crate::prepared_stability::ExperienceAccumulator>,
     #[serde(skip)]
     ledger: Box<crate::products::politics_ledger::prepared::Prepared>,
     fuel: Box<crate::products::country_fuel::prepared::Prepared>,
@@ -666,9 +808,11 @@ struct BranchState {
     #[serde(skip)]
     leaders: Box<crate::products::unit_leaders::prepared::Prepared>,
     research: Box<crate::products::research::prepared::Prepared>,
-    peace: Box<crate::products::peace_deals::prepared::Prepared>,
+    #[serde(default, skip_serializing_if = "own_peace")]
+    peace: Unsaved<crate::products::peace_deals::prepared::Prepared>,
     projects: Box<crate::products::special_projects::prepared::Prepared>,
-    casualties: Box<crate::products::war_casualties::prepared::Prepared>,
+    #[serde(default, skip_serializing_if = "own_casualties")]
+    casualties: Unsaved<crate::products::war_casualties::prepared::Prepared>,
     equipment_losses: Box<crate::products::equipment_losses::prepared::Prepared>,
 }
 impl BranchState {
@@ -735,6 +879,7 @@ impl BranchState {
             air_superiority: Default::default(),
             intelligence: Default::default(),
             stability: Default::default(),
+            experience: Default::default(),
             ledger: Default::default(),
             fuel: Default::default(),
             territory: Default::default(),
@@ -744,13 +889,13 @@ impl BranchState {
                 replay, branch,
             )),
             research: Default::default(),
-            peace: Box::new(crate::products::peace_deals::prepared::Prepared::new(
+            peace: Unsaved::new(crate::products::peace_deals::prepared::Prepared::new(
                 replay, branch,
             )),
             projects: Box::new(crate::products::special_projects::prepared::Prepared::new(
                 replay, branch,
             )),
-            casualties: Box::new(crate::products::war_casualties::prepared::Prepared::new(
+            casualties: Unsaved::new(crate::products::war_casualties::prepared::Prepared::new(
                 replay, branch,
             )),
             equipment_losses: Box::new(crate::products::equipment_losses::prepared::Prepared::new(
@@ -914,11 +1059,46 @@ pub(crate) fn product_coverage(
     let (store, key) = super::files(source, content)?;
     Ok(family_page(&store, &key, branch, product)?.map(|(_, page)| page.coverage))
 }
+/// The gates readers below the dashboard ask ([`super::coverage::Gates`]):
+/// [`product_coverage`] and [`refusal`].
+struct Gates;
+
+impl super::coverage::Gates for Gates {
+    fn product_coverage(
+        &self,
+        source: &Source,
+        content: Option<&ContentOptions>,
+        branch: u64,
+        product: &str,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Option<Coverage>> {
+        product_coverage(source, content, branch, product, cancelled)
+    }
+
+    fn refusal(
+        &self,
+        source: &Source,
+        content: Option<&ContentOptions>,
+        branch: u64,
+        query: &str,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        refusal(source, content, branch, query, cancelled)
+    }
+}
+
+/// Installs the pipeline's [`Gates`] for readers below the dashboard; the
+/// pipeline, the query route and the service install them before reading.
+pub fn install_gates() {
+    static GATES: Gates = Gates;
+    super::coverage::install_gates(&GATES);
+}
 /// Every prepared query of a refused family on this branch, and every query
 /// reading one, answers with that family's refusal exactly as its product
 /// route refused, rather than with the family's earlier prepared data. A
-/// family prepared on its own refuses its queries from its own page, which
-/// it publishes before the hourly walk reaches the refusing hour.
+/// family prepared on its own keeps its refusals in its own page, which it
+/// publishes before the hourly walk reaches the refusing hour: its gated
+/// queries, and every query `FAMILIES` lists as reading it, refuse from there.
 pub(crate) fn refusal(
     source: &Source,
     content: Option<&ContentOptions>,
@@ -926,34 +1106,49 @@ pub(crate) fn refusal(
     query: &str,
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
-    let mut families = FAMILIES
+    let families: Vec<&Family> = FAMILIES
         .iter()
         .filter(|family| family.queries.contains(&query))
-        .peekable();
-    if families.peek().is_none() && independent::gating(query).is_none() {
+        .collect();
+    if families.is_empty() && independent::gating(query).is_none() {
         return Ok(());
     }
     check_cancel(cancelled)?;
     let (store, key) = super::files(source, content)?;
+    let refused = |refusal: &Refusal| -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            refusal.error.clone(),
+        ))
+    };
     if let Some((family, page)) = family_page(&store, &key, branch, query)?
         && let Some(refusal) = page.refused.0.get(family)
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            refusal.error.clone(),
-        ));
+        return refused(refusal);
     }
-    let Some(file) = store.read(&key, &coverage_section(branch), 0)? else {
-        return Ok(());
+    let page = |section: &str| -> io::Result<Option<CoveragePage>> {
+        let Some(file) = store.read(&key, section, 0)? else {
+            return Ok(None);
+        };
+        Ok(Some(serde_json::from_reader(io::BufReader::new(file))?))
     };
-    let page: CoveragePage = serde_json::from_reader(io::BufReader::new(file))?;
-    match families.find_map(|family| page.refused.0.get(family.name)) {
-        Some(refusal) => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            refusal.error.clone(),
-        )),
-        None => Ok(()),
+    let walked = page(&coverage_section(branch))?;
+    // In `FAMILIES` order, as the hourly walk's page alone answers.
+    for family in families {
+        let own = if independent::registered(family.name) {
+            page(&independent::coverage_section(family.name, branch))?
+        } else {
+            None
+        };
+        if let Some(refusal) = [own.as_ref(), walked.as_ref()]
+            .into_iter()
+            .flatten()
+            .find_map(|page| page.refused.0.get(family.name))
+        {
+            return refused(refusal);
+        }
     }
+    Ok(())
 }
 fn save_coverage(
     writer: &mut store::Writer,
@@ -1144,14 +1339,26 @@ fn load_branch(
     if state.schema != SCHEMA {
         return Err(invalid("Unsupported prepared branch schema"));
     }
-    if state.production.schema != 1 {
+    if independent::hourly("production") && state.production.schema != 1 {
         return Err(invalid("Unsupported prepared production state schema"));
+    }
+    // Left out while prepared on their own: new, as the walk never runs them.
+    if state.peace.missing() {
+        state.peace = Unsaved::new(crate::products::peace_deals::prepared::Prepared::new(
+            replay, branch,
+        ));
+    }
+    if state.casualties.missing() {
+        state.casualties = Unsaved::new(crate::products::war_casualties::prepared::Prepared::new(
+            replay, branch,
+        ));
     }
     if refused.live("measure") {
         state.measure.validate_checkpoint()?;
     }
     if refused.live("identities") {
-        let section = format!("country-identities-{branch}");
+        // Kept under territory's name while the identities are prepared on their own.
+        let section = format!("{}-{branch}", independent::kept_as("country-identities"));
         let file = match saved {
             Some(previous) if previous != key => store.read_prefix(previous, key, &section, 0)?,
             _ => store.read(key, &section, 0)?,
@@ -1454,6 +1661,7 @@ macro_rules! time_family {
 mod flush;
 mod independent;
 mod lanes;
+mod newest;
 
 /// One completed manifest commit, emitted before any next block is admitted.
 pub struct MeasuredBlock {
@@ -1604,6 +1812,7 @@ fn run_inner(
         measurement.is_some().then(BTreeMap::new);
     let mut lane_timings = measurement.is_some().then(BTreeMap::new);
     let mut frame_changes = FrameChangeTracker::new();
+    install_gates();
     let setup_started = start_timing(&family_timings);
     check_cancel(cancelled)?;
     let (store, key) = time_family!(
@@ -1992,18 +2201,11 @@ fn run_inner(
         observe,
         last_blocks(replay)
     );
-    // Window replies are named by each block's position within its own branch.
+    // Window replies are named by each block's position within its own
+    // branch, and batches end by it.
     let ordinals_started = start_timing(&family_timings);
-    let mut seen = BTreeMap::new();
-    let ordinals: Vec<usize> = replay
-        .index
-        .iter()
-        .map(|index| {
-            let next = seen.entry(index.branch).or_insert(0usize);
-            *next += 1;
-            *next - 1
-        })
-        .collect();
+    let batches = Batches::new(replay);
+    let ordinals = &batches.ordinals;
     finish_timing(
         &mut family_timings,
         ordinals_started,
@@ -2123,6 +2325,28 @@ fn run_inner(
             store.extend(&key)
         )?;
     }
+    // Each branch's newest block window answers before forward preparation
+    // reaches it.
+    let (opened, committed) = newest::prepare(
+        &newest::Phase {
+            source,
+            replay,
+            store: &store,
+            key: &key,
+            context: &context,
+            map: &map,
+            last_blocks: &last_blocks,
+            cancelled,
+        },
+        writer,
+        &mut state,
+        &mut saved,
+        &mut bytes,
+        &mut family_timings,
+        &mut accepted,
+    )?;
+    writer = opened;
+    metadata_dirty &= !committed;
     // Families prepared on their own accept every block before the hourly
     // walk starts, so their queries do not wait for it.
     let (opened, committed) = independent::prepare(
@@ -2134,6 +2358,7 @@ fn run_inner(
             context: &context,
             map: &map,
             last_blocks: &last_blocks,
+            batches: &batches,
             measured: measurement.is_some(),
             cancelled,
         },
@@ -2181,7 +2406,6 @@ fn run_inner(
         );
         frame_changes.invalidate();
     }
-    let mut started = Instant::now();
     finish_timing(&mut family_timings, setup_started, "setup.overhead", false);
     // The last flushed branch and its state, which the flush saved: the next
     // block of that branch continues it rather than reading it back.
@@ -2399,6 +2623,7 @@ fn run_inner(
                     parties,
                     intelligence,
                     stability,
+                    experience,
                     ledger,
                     fuel,
                     territory,
@@ -2867,11 +3092,18 @@ fn run_inner(
                                 observe,
                                 stability.observe_timed(frame, changes, family_timings)
                             )?;
+                            Ok(())
+                        },
+                    ),
+                    lanes::Job::new(
+                        &[("experience", 41)],
+                        500,
+                        move |_family, frame, changes, mut family_timings| {
                             time_family!(
                                 family_timings,
-                                "stability",
+                                "experience",
                                 observe,
-                                stability.observe_experience_changes(frame, replay.format, changes)
+                                experience.observe_changes(frame, replay.format, changes)
                             )?;
                             Ok(())
                         },
@@ -3169,6 +3401,7 @@ fn run_inner(
                         lanes.serial("leaders", frame, changes, &mut family_timings)?;
                         lanes.serial("intelligence", frame, changes, &mut family_timings)?;
                         lanes.serial("stability", frame, changes, &mut family_timings)?;
+                        lanes.serial("experience", frame, changes, &mut family_timings)?;
                         lanes.serial("politics_ledger", frame, changes, &mut family_timings)?;
                         lanes.serial("fuel", frame, changes, &mut family_timings)?;
                         coordinator_order = 44;
@@ -3530,9 +3763,11 @@ fn run_inner(
                     .get(block)
                     .is_some_and(|index| next.branch == index.branch)
             });
+        // The batch goes on by the recording and the bytes it holds alone
+        // (`Batches`), so its ranges never depend on how fast it ran.
         if got
             && same_branch
-            && started.elapsed() < BATCH_TIME
+            && !batches.full(block)
             && measurement.is_none()
             && writer.bytes_written() < BATCH_BYTES as u64
             && branch.as_ref().is_none_or(|branch| {
@@ -3553,6 +3788,7 @@ fn run_inner(
                     + branch.supply.bytes()
                     + branch.stockpile.bytes()
                     + branch.stability.buffered_bytes()
+                    + branch.experience.buffered_bytes()
                     + branch.ledger.bytes()
                     + branch.fuel.buffered_bytes()
                     + branch.territory.bytes()
@@ -3631,6 +3867,7 @@ fn run_inner(
                     feed,
                     parties,
                     stability,
+                    experience,
                     ledger,
                     fuel,
                     territory,
@@ -3650,6 +3887,9 @@ fn run_inner(
                     independent::kept_as("country-groups"),
                     independent::kept_as("country-group-changes"),
                 );
+                // Likewise territory's and the event feed's own read of the
+                // identities while those are prepared on their own.
+                let identity_section = independent::kept_as("country-identities");
                 // Positions are the serial order. Identities' refusal reaches
                 // event_feed and territory (`FAMILIES` dependents), which flush
                 // after it, so they share its task; groups' dependent
@@ -3940,7 +4180,7 @@ fn run_inner(
                                 0 => time_family!(family_timings, "identities", flush, {
                                     identities.seal();
                                     writer.write_at(
-                                        &format!("country-identities-{branch}"),
+                                        &format!("{identity_section}-{branch}"),
                                         0,
                                         serde_json::to_vec(&*identities)?.as_slice(),
                                     )
@@ -4197,6 +4437,19 @@ fn run_inner(
                             )))
                         },
                     ),
+                    // Experience, split from stability, flushes after every
+                    // earlier position; it has no dependents.
+                    flush::Task::new(
+                        &[(48, "experience")],
+                        move |_, writer, mut family_timings| {
+                            Ok(Some(time_family!(
+                                family_timings,
+                                "experience",
+                                flush,
+                                experience.flush(writer, branch, cancelled)
+                            )))
+                        },
+                    ),
                 ];
                 flush::run(
                     tasks,
@@ -4435,7 +4688,6 @@ fn run_inner(
                 )
             );
         }
-        started = Instant::now();
         finish_timing(
             &mut family_timings,
             branch_started,

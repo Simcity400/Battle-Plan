@@ -36,6 +36,21 @@ pub(super) fn payloads(
     result
 }
 
+/// Every section of two stores, byte for byte.
+///
+/// A family prepared on its own is compared with hourly preparation like
+/// with like: its own runs register that family alone
+/// (`independent::with_test_only`, or `with_test_families` with its statics)
+/// so no other family's own sections, pages or refusals appear in one mode
+/// only, and the hourly reference runs under `independent::with_test_hourly`.
+/// What still differs by design is mode-specific and compared otherwise: the
+/// checkpoint (it holds the family's progress), its `preparation-family-*`
+/// pages, the sections it keeps for readers, the walk's branch state (field
+/// by field: the walk leaves out the state of families it skips) and the
+/// walk's branch coverage page, whose refusals of the family move to the
+/// family's own page. A store-level check (`unprepared_blocks`, `checkpoint`)
+/// runs under the registry the store was prepared with: another set of
+/// families prepared on their own restarts preparation.
 pub(super) fn assert_payloads_equal(
     actual: &BTreeMap<(String, u64), Vec<u8>>,
     expected: &BTreeMap<(String, u64), Vec<u8>>,
@@ -158,8 +173,10 @@ fn family_lanes_match_every_section_and_keep_the_time_budget() {
     compare_fixture(&Replay::from_records(CAMPAIGN.into(), &[records(1, vec![missing])]).unwrap());
 }
 
-/// Every lane job, in the coordinator's serial call order. Resources and army
-/// fold their block facts instead (`prepass.rs`).
+/// Every lane job, in the coordinator's serial call order, with every family
+/// prepared hour by hour (`independent::with_test_hourly`): a family prepared
+/// on its own is no lane job otherwise. Resources and army fold their block
+/// facts instead (`prepass.rs`).
 const LANE_FAMILIES: &[&str] = &[
     "nukes",
     "factories",
@@ -189,6 +206,7 @@ const LANE_FAMILIES: &[&str] = &[
     "leaders",
     "intelligence",
     "stability",
+    "experience",
     "politics_ledger",
     "fuel",
     "occupation",
@@ -229,8 +247,10 @@ fn family_lanes_observe_every_job_family_in_serial_order_and_on_lanes() {
         });
         let mut fixture = Fixture::new(&recording());
         let source = fixture.source("lane-jobs");
-        lanes::with_test_lanes(parallelism, Some(hook), || {
-            run(&source, None, &AtomicBool::new(false), |_| {})
+        independent::with_test_hourly(|| {
+            lanes::with_test_lanes(parallelism, Some(hook), || {
+                run(&source, None, &AtomicBool::new(false), |_| {})
+            })
         })
         .unwrap();
         let mut seen = seen.lock().unwrap().clone();
@@ -512,8 +532,12 @@ fn family_lanes_match_serial_for_every_moved_family_and_detect_a_diverging_lane(
         "every moved family has a covering recording"
     );
     let mut undetected = Vec::new();
+    // Every moved family is a lane job of the hourly walk only when no family
+    // is prepared on its own.
     for (replay, families) in &recordings {
-        assert_lane_parity_covers(replay, families, &mut undetected);
+        independent::with_test_hourly(|| {
+            assert_lane_parity_covers(replay, families, &mut undetected)
+        });
     }
     assert!(
         undetected.is_empty(),
@@ -648,8 +672,11 @@ fn frame_changes_are_computed_once_and_shared_by_coordinator_and_all_lanes() {
         let mut fixture = Fixture::new(&recording());
         let source = fixture.source("frame-fact-sharing");
         let before = observation_count();
-        lanes::with_test_lanes(parallelism, Some(hook), || {
-            run(&source, None, &AtomicBool::new(false), |_| {})
+        // Every family a lane job: none prepared on its own.
+        independent::with_test_hourly(|| {
+            lanes::with_test_lanes(parallelism, Some(hook), || {
+                run(&source, None, &AtomicBool::new(false), |_| {})
+            })
         })
         .unwrap();
         assert_eq!(
@@ -760,8 +787,12 @@ fn family_lanes_enter_together_and_never_advance_to_the_next_frame() {
     });
     let mut fixture = Fixture::new(&recording());
     let source = fixture.source("lane-barrier");
-    lanes::with_test_lanes(4, Some(hook), || {
-        run(&source, None, &AtomicBool::new(false), |_| {})
+    // The politics ledger is prepared on its own; the walk's lane job for it
+    // runs only while every family is prepared hour by hour.
+    independent::with_test_hourly(|| {
+        lanes::with_test_lanes(4, Some(hook), || {
+            run(&source, None, &AtomicBool::new(false), |_| {})
+        })
     })
     .unwrap();
     assert_eq!(entered.load(Ordering::SeqCst), 2);

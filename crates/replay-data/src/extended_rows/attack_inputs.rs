@@ -52,6 +52,9 @@ impl<T> Witnessed<T> {
 }
 
 impl<T: Value> Value for Witnessed<T> {
+    fn heap_bytes(&self) -> usize {
+        Value::heap_bytes(&self.0)
+    }
     const MINIMUM_ENCODED_BYTES: usize = 0;
     const HAS_STEPS: bool = T::HAS_STEPS;
     fn round_display(&mut self) {

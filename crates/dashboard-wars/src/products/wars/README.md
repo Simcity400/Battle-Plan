@@ -13,7 +13,9 @@ including retired occurrences and swap removals.
 |---|---|
 | [../wars.rs](../wars.rs) | Product metadata, dated projection, app continuity and casualty membership; the recording loader is a test oracle and the shared branch/viewpoint cache also serves casualty breakdowns. |
 | [prepared.rs](prepared.rs) | One branch-global change observer, shared relation casualty series and reached-hour reply assembly. |
-| [walks.rs](walks.rs) | Each requested viewpoint's walk over the change inputs, kept on the source with resume points; the change input row format. |
+| [block.rs](block.rs) | The wars prepared on their own: the fields read, the block extract and fold, and each branch's observer and published walk. |
+| [published.rs](published.rs) | The recorded viewpoint's walk published while preparing: closed wars, resume points and the tail. |
+| [walks.rs](walks.rs) | Each requested viewpoint's walk over the change inputs, kept on the source with resume points; the published walk's reads; the change input row format. |
 | [native.rs](native.rs) | Grouping, representative selection and indexed deduplication. |
 | [naming.rs](naming.rs) | Recorded native name operands and content-resolved war names. |
 | [labels.rs](labels.rs) | Historical country names for label measurement. |
@@ -61,12 +63,49 @@ The pipeline observes native inputs once for the branch. Shared events retain
 changed topology/naming tables and capitulation evidence. Each change input is
 a raw event row, not JSON: the number of changed tables and their numbers as
 little-endian u16s, then the changed tables in the prepared decoder checkpoint
-encoding, compressed.
+encoding, compressed. The inputs and the held tables leave out the clock,
+whose rows no reply reads; an input at a capitulation date with no table
+changed lists none.
 Semantic name operands ignore unrelated hourly balances; casualty-only hours add
 no input event. One small catalogue keeps relation-lifetime keys, their first
 supplying read and the latest inputs for resume. New keys are numbered in
 recorded WarRelations row order, so equal inputs publish equal catalogues. Four shared series hold exact
 counters in canonical endpoint order, with unknown spans preserved.
+
+The wars are prepared on their own ([block.rs](block.rs)), before the hourly
+walk, and their query waits only for their own coverage. A block is read at
+the hours a field the observer compares changes: every field of the war
+relations (whose counters are published), the overview, goal, name-rule,
+membership, player, dictionary and reserved-naming tables, the campaign and
+the country links; the countries' slots and tags; the factions' keys; the
+capitulation flags and dates; the naming operands `same_name_rows` compares;
+and the states' names. The next recorded capitulation date is the extract's
+deadline, observed on the last hour's rows. Casualty counters move every hour
+of a war, so the per-hour work runs in the extract, on the pre-pass workers:
+it runs the observer on the block alone from the block's first hour,
+observing each kept hour and advancing each span of hours between (each hour
+authenticated, the held inputs moved to its last; the fold authenticates the
+span in constant time), and records the calls it makes on its series after
+the first hour, the change
+inputs it publishes and the relation lifetimes it numbers. A block with a
+truncated input that is compared by some of its fields only, or whose quiet
+hours do not continue the hour observed before, is observed hour by hour.
+
+The family's own thread folds the blocks in order and observes no hour but
+each block's first on the carried observer. After that hour both observers
+hold inputs equal in every compared field, a join of the same relations and
+the same last value of each of their counters; they differ only in the
+numbering of relation lifetimes and the count of change inputs. The fold
+numbers the extract's lifetimes into the carried catalogue (a lifetime the
+extract met first takes the next number, with its first read, as continued
+observation numbers it), makes the recorded calls again under that
+numbering, observes each change-input ordinal on the carried count, takes
+each input view the extract replaced after the first hour, its join and its
+next capitulation date, and walks the published inputs with the recorded
+viewpoint's walk after the hour observed before each. When the carried
+observer does not hold that hour's inputs and a join as the extract's does,
+or the extract's observer had no join and took its relations from its open
+counters, the rest of the block is observed hour by hour.
 
 The shared frame fact guards native relation normalisation and semantic input
 comparisons. Unchanged hours advance the accumulator frontier; balance-only
@@ -81,9 +120,11 @@ time. The walk is whole-branch and depends on the viewpoint, the native-holder
 selection and the content catalogue, so the source keeps it per such key
 (`walks.rs`): the four most recently used walks, each with its state after
 every published input and resumable copies every interval of inputs from the
-branch start. A copy keeps the open wars, the last dated run of each kind, the
-held inputs and the decoded tables, which copies share; wars no longer open
-keep only their app ID. The interval starts at one input and doubles while a
+branch start. A copy keeps what continuing the walk reads: each open war's
+last observation and loss run and its open participant and relation runs,
+the last dated run of each kind, the held inputs and the decoded tables,
+which copies share; wars no longer open keep only their app ID. Its size
+follows the wars open at it, not how long they lasted. The interval starts at one input and doubles while a
 walk holds more than 1,024 copies or more than an estimated 64 MiB of them. The
 first query for a key walks every input once. A later one walks only inputs
 published since, extending the last input's coverage, which grows with
@@ -100,6 +141,28 @@ amount per counter. Other history uses the requested windows once per key,
 including when overlapping groups share that counter. Replies keep the ordinary
 shape. The widget requests its displayed and hovered hours
 independently of its structural timeline.
+
+The default query's walk (the recorded LocalPlayer viewpoint, no native-holder
+selection, the store's content catalogue) is published while preparing
+([published.rs](published.rs)): the wars' own thread walks each change input
+the fold publishes, in input order. A war that leaves the open groups no longer changes before the
+reply is finished, so it is published once, settled as finishing settles it but
+without capitulations, in the next flush's range of closed wars
+(`wars-walk-closed-{branch}`). Every 128 inputs a resumable copy and the decoded
+inputs are published as a point (`wars-walk-points-{branch}`); the copy holds
+only the wars open at it (each as a query's copy keeps it) and the number of
+wars, so its size follows the wars open at it, and the points waiting for the
+next flush count toward the batch's bytes. Each flush
+rewrites the tail (`wars-walk-{branch}`): the whole walk but its closed wars,
+which keep their place and app ID only, with the decoded inputs and the last
+hour observed, which the next input's coverage extends through. The held
+inputs are rebuilt from the decoded inputs, and label operands are read again
+by the next input. A default query reads the tail and puts the closed wars back
+in place, attaches capitulations as finishing does, and hydrates each requested
+hour from the nearest point, walking fewer than 128 inputs; the last input's
+hour walks none. A store whose tail does not reach its last input, or whose
+branch starts at another hour (prepared hour by hour, a restored observer
+without a walk), walks the inputs as other viewpoints do.
 
 `prepared::projection` returns the typed whole-branch `WarsReply`, including
 Rust relation memberships and native lifetime keys, dated names, app IDs,

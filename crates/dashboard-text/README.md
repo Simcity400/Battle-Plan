@@ -43,12 +43,37 @@ An evaluation run under `triggers::inputs::capture` returns the inputs it read:
 each recorded query on the hour's shared state (`World`, `RecordedScopes`,
 recorded country names, the scripted-text helpers, the Clock seed when randomness
 is drawn) with a digest of its answer, and each raw table it read whole, by view
-identity. Queries run their bodies unrecorded, and shared state built lazily
-inside an evaluation is built unrecorded, so an input is always the query's
-answer, never the reads behind it. `Inputs::confirm` rereads every input on a
-later hour; when all read the same, the evaluation's result is reused. Focus
-presentations and leader visibility reuse this way. Check mode (always in tests,
-`BATTLE_PLAN_REUSE_CHECK` in preparation) evaluates every reused result anyway and counts
-any difference.
+identity, or by the fields it reads of every row (`inputs::fields`; the
+character scope's tables, `character_scope::FIELDS`). Queries run their bodies
+unrecorded, and shared state built lazily inside an evaluation is built
+unrecorded, so an input is always the query's answer, never the reads behind
+it. `Inputs::confirm` rereads every input on a later hour; when all read the
+same, the evaluation's result is reused. Leader visibility reuses this way.
+
+Each input also declares what its value is a function of (`Key::dependence`):
+some fields of some rows (a key range) of some tables, their row keys and
+availability, and for an ongoing relation the hours its rows end. World queries
+declare theirs beside the queries (`triggers/world/dependence.rs`), scope
+queries in `scope.rs`; a query not declared there, and every names or text
+read, is undeclared. Given what changed since the hour the inputs last read
+their values (`inputs::Since`: a `FrameChanges`, a `BlockChange::Changed` hour
+or a quiet span of `Replay::read_block_changes` through `BlockTables` and
+`QuietTables`), `Inputs::confirm_since` takes an input none of whose declared
+reads changed as read again without reading it, and rereads only the others;
+`Inputs::unchanged` says whether no input needs reading, so a family can
+confirm an evaluation without building the hour's trigger world, and
+`Inputs::advance` carries one across a quiet span.
+
+Check mode (always in tests, `BATTLE_PLAN_REUSE_CHECK` in preparation) evaluates every
+reused result anyway and counts any difference, and rereads every input a
+declaration let through: a changed value is a declaration that misses a read,
+counted by `inputs::missed_dependences` and failing the test that finds it.
+Tests read each declared query on frames that differ only outside its
+declaration (`triggers/inputs_tests.rs`).
+
+A country's completed focuses, parties and party leaders, characters and
+active ideas are read from that country's rows of the hour's table (rows
+ascend by country in a decoded table), with the scan's verdicts and refusals,
+rather than from an index of every row.
 
 The `test-support` feature compiles the catalogue and scope fixtures (`catalogue::tests`, `catalogue::texture_tests`, `scope::tests`) and the test-only instrumentation, such as read counters and synthetic scripted environments, for the tests of crates above this one. Only dev-dependencies enable it.

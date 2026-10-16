@@ -1,10 +1,78 @@
 //! Each branch's published coverage page: the accepted extent every prepared
 //! query reads before its own pages. The pipeline writes the page, with the
 //! families' refusals beside the extent.
+//!
+//! A family prepared on its own publishes its own coverage and refusals,
+//! which only the pipeline's registry names. The dashboard installs its
+//! [`Gates`] once, and readers here ask them through [`product_coverage`] and
+//! [`refusal`]; with none installed every family is prepared hour by hour,
+//! so a product waits for the branch's coverage and no family refuses it.
 
 use crate::{Source, metadata::check_cancel, products::ContentOptions};
 use serde::{Deserialize, Serialize};
-use std::{io, sync::atomic::AtomicBool};
+use std::{
+    io,
+    sync::{OnceLock, atomic::AtomicBool},
+};
+
+/// What the pipeline answers for the families prepared on their own.
+pub trait Gates: Sync {
+    /// The coverage `product`'s queries wait for on `branch`: that of the
+    /// family prepared on its own gating the product, or the branch's.
+    fn product_coverage(
+        &self,
+        source: &Source,
+        content: Option<&ContentOptions>,
+        branch: u64,
+        product: &str,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Option<Coverage>>;
+    /// The refusal `query` answers with on `branch`, if a family it reads
+    /// refused the branch.
+    fn refusal(
+        &self,
+        source: &Source,
+        content: Option<&ContentOptions>,
+        branch: u64,
+        query: &str,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()>;
+}
+
+static GATES: OnceLock<&'static dyn Gates> = OnceLock::new();
+
+/// Installs the pipeline's gates; later installs keep the first.
+pub fn install_gates(gates: &'static dyn Gates) {
+    let _ = GATES.set(gates);
+}
+
+/// The coverage `product`'s queries wait for on `branch` ([`Gates`]).
+pub fn product_coverage(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    branch: u64,
+    product: &str,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Coverage>> {
+    match GATES.get() {
+        Some(gates) => gates.product_coverage(source, content, branch, product, cancelled),
+        None => coverage(source, content, branch, cancelled),
+    }
+}
+
+/// `query`'s refusal on `branch` ([`Gates`]).
+pub fn refusal(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    branch: u64,
+    query: &str,
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    match GATES.get() {
+        Some(gates) => gates.refusal(source, content, branch, query, cancelled),
+        None => check_cancel(cancelled),
+    }
+}
 
 /// The prepared files' layout version: a checkpoint of another version is
 /// prepared again, and coverage of another version is refused.

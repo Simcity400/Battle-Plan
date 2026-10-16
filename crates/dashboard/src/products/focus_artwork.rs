@@ -80,6 +80,26 @@ pub(crate) fn retain_basic(
         .retain_basic(decoded, cancelled)
 }
 
+/// One recorded hour's frame of the tables focus presentation reads (the
+/// focus tables, scripted-text inputs and Clock), from the frames this
+/// product keeps, so `focus-art` and the event feed share its reads.
+pub(crate) fn scoped_frame(
+    source: &Source,
+    branch: u64,
+    hour: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<DecodedFrame> {
+    check_cancel(cancelled)?;
+    let frames = Arc::clone(
+        &source
+            .state::<State>()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .frame,
+    );
+    frames.at(&source.replay(), branch, hour, true, cancelled)
+}
+
 /// Retained row allocations for recent focus presentation hours. Nested strings
 /// and lists owned by rows are outside this measure, as in the viewer frame cache.
 /// Frame/table ownership and unavailable reasons also count; shared allocations

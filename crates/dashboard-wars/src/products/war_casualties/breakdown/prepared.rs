@@ -30,6 +30,22 @@ pub fn query(
     else {
         return Ok(None);
     };
+    // The casualties' coverage gates the breakdown, which also reads the
+    // wars' change inputs: those are prepared on their own too and can
+    // trail, so on the store preparation publishes it waits for them.
+    if dashboard_base::prepared::files(source, context.content.as_ref())
+        .is_ok_and(|(_, prepared)| prepared == *key)
+        && !dashboard_base::prepared::coverage::product_coverage(
+            source,
+            context.content.as_ref(),
+            branch,
+            "wars",
+            cancelled,
+        )?
+        .is_some_and(|coverage| coverage.complete)
+    {
+        return Ok(None);
+    }
     let selected = catalogue
         .holders
         .get(&params.tag)

@@ -42,8 +42,112 @@ pub(super) struct History {
     hour: Option<i32>,
     #[serde(skip)]
     cached: Option<Cached>,
+    /// Whether the last hour observed held all three tables complete.
+    #[serde(skip)]
+    complete: bool,
+    /// Whether `cached` names the last hour observed's countries, links
+    /// allocation and gain keys, so an hour with those reading all three
+    /// tables is named without its rows ([`Self::advance_quiet`]).
+    #[serde(skip)]
+    current: bool,
 }
+
+/// Whether held gain keys are those of `gains`.
+fn same_instances(instances: &[(u32, u32)], gains: &[CountryExperienceGainRow]) -> bool {
+    instances.len() == gains.len()
+        && instances
+            .iter()
+            .zip(gains)
+            .all(|((country, instance), gain)| {
+                *country == gain.country && *instance == gain.instance
+            })
+}
+
 impl History {
+    /// What an unchanged hour's step depends on: the last hour observed,
+    /// whether its tables were complete and whether the held names are its.
+    pub(super) fn quiet_inputs(&self) -> (Option<i32>, bool, bool) {
+        (self.hour, self.complete, self.current)
+    }
+
+    /// Whether an hour reading all three tables would need its rows to be
+    /// named: complete tables whose held names are not the last hour's.
+    pub(super) fn stale(&self) -> bool {
+        self.complete && !self.current
+    }
+
+    /// Hours `first..=last`, following the last hour observed, at which the
+    /// countries' keys, the links' allocation, the gain keys and every
+    /// table's availability are that hour's, and all three tables were read
+    /// at every hour (`read`) or not all three at any. Each hour's
+    /// observation is made without its rows: a missing read seals and closes
+    /// the witnesses, as an hour observed does; a read extends them, or
+    /// opens them again from the held names after missing reads. False,
+    /// with nothing changed, when a read hour would need its rows because
+    /// the held names are not the last hour's.
+    pub(super) fn advance_quiet(&mut self, first: i32, last: i32, read: bool) -> bool {
+        if !self.complete {
+            // Each such hour seals and closes what the hour observed closed.
+            return true;
+        }
+        if !read {
+            self.seal();
+            self.open.clear();
+            self.hour = None;
+            return true;
+        }
+        if !self.current {
+            return false;
+        }
+        if self.hour.and_then(|hour| hour.checked_add(1)) != Some(first) {
+            // The first read after missing ones names the held witnesses again.
+            self.seal();
+            self.open.clear();
+            record_hour(&mut self.reads, first);
+            self.witness(first);
+        }
+        // Every later hour continues the one before with the same names.
+        record_hour(&mut self.reads, first);
+        if let Some(span) = self.reads.last_mut() {
+            span.last_hour = span.last_hour.max(last);
+        }
+        self.hour = Some(last);
+        true
+    }
+
+    /// Open every held name's witness at `hour`, extending a run that ended
+    /// the hour before with the same witness.
+    fn witness(&mut self, hour: i32) {
+        let names = &self.cached.as_ref().expect("observed native witnesses").3;
+        for (&reference, &slot) in &names.slots {
+            if reference == 0 {
+                continue;
+            }
+            let Some((id, instance, tag)) = names.tags.get(&slot) else {
+                continue;
+            };
+            self.open.insert(reference);
+            let runs = self.references.entry(reference).or_default();
+            if let Some(last) = runs.last_mut()
+                && last.last.checked_add(1) == Some(hour)
+                && (last.slot, last.id, last.instance, last.tag.as_str())
+                    == (slot, *id, *instance, tag.as_str())
+            {
+                last.last = hour;
+            } else {
+                runs.push(Witness {
+                    first: hour,
+                    last: hour,
+                    slot,
+                    id: *id,
+                    instance: *instance,
+                    tag: tag.clone(),
+                });
+            }
+        }
+        self.hour = Some(hour);
+    }
+
     pub(super) fn seal(&mut self) {
         if let Some(hour) = self.hour {
             for reference in &self.open {
@@ -71,8 +175,12 @@ impl History {
             self.seal();
             self.open.clear();
             self.hour = None;
+            self.complete = false;
+            self.current = false;
             return;
         };
+        self.complete = true;
+        let view = &frame.tables[TableId::CountryLinks.index()];
         if [
             TableId::Countries,
             TableId::CountryLinks,
@@ -84,6 +192,14 @@ impl History {
             self.seal();
             self.open.clear();
             self.hour = None;
+            // The held names stay this hour's only while its tables hold
+            // the keys and links they were named from.
+            self.current = self
+                .cached
+                .as_ref()
+                .is_some_and(|(keys, link_view, instances, _)| {
+                    keys.same(countries) && link_view.is(view) && same_instances(instances, gains)
+                });
             return;
         }
         let touched = |table: TableId| {
@@ -91,25 +207,20 @@ impl History {
                 changes.rows_changed[table.index()] || changes.table_read[table.index()]
             })
         };
-        let view = &frame.tables[TableId::CountryLinks.index()];
-        let unchanged =
-            self.cached
-                .as_ref()
-                .is_some_and(|(keys, link_view, instances, _)| {
-                    (!touched(TableId::Countries) || keys.same(countries))
-                        && link_view.is(view)
-                        && (!touched(TableId::CountryExperienceGains)
-                            || instances.len() == gains.len()
-                                && instances.iter().zip(gains).all(
-                                    |((country, instance), gain)| {
-                                        *country == gain.country && *instance == gain.instance
-                                    },
-                                ))
-                });
+        let unchanged = self
+            .cached
+            .as_ref()
+            .is_some_and(|(keys, link_view, instances, _)| {
+                (!touched(TableId::Countries) || keys.same(countries))
+                    && link_view.is(view)
+                    && (!touched(TableId::CountryExperienceGains)
+                        || same_instances(instances, gains))
+            });
         let contiguous = self.hour.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
         if changes.is_some() && unchanged && contiguous {
             record_hour(&mut self.reads, frame.hour);
             self.hour = Some(frame.hour);
+            self.current = true;
             return;
         }
         self.seal();
@@ -124,6 +235,7 @@ impl History {
                 ),
             };
             let Ok(names) = Names::from_slots(frame, slots) else {
+                self.current = false;
                 return;
             };
             self.cached = Some((
@@ -137,34 +249,8 @@ impl History {
             ));
         }
         record_hour(&mut self.reads, frame.hour);
-        let names = &self.cached.as_ref().expect("observed native witnesses").3;
-        for (&reference, &slot) in &names.slots {
-            if reference == 0 {
-                continue;
-            }
-            let Some((id, instance, tag)) = names.tags.get(&slot) else {
-                continue;
-            };
-            self.open.insert(reference);
-            let runs = self.references.entry(reference).or_default();
-            if let Some(last) = runs.last_mut()
-                && last.last.checked_add(1) == Some(frame.hour)
-                && (last.slot, last.id, last.instance, last.tag.as_str())
-                    == (slot, *id, *instance, tag.as_str())
-            {
-                last.last = frame.hour;
-            } else {
-                runs.push(Witness {
-                    first: frame.hour,
-                    last: frame.hour,
-                    slot,
-                    id: *id,
-                    instance: *instance,
-                    tag: tag.clone(),
-                });
-            }
-        }
-        self.hour = Some(frame.hour);
+        self.witness(frame.hour);
+        self.current = true;
     }
     pub fn tag(&self, hour: i32, country: EventFeedCountry) -> Option<String> {
         if country.reference == 0 {

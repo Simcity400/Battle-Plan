@@ -2045,6 +2045,48 @@ fn recorded_calls_made_again_on_a_carried_accumulator_equal_direct_calls() {
     assert_eq!(published(&mut carried), published(&mut direct));
 }
 
+/// A quiet span an extract advances in one call replays as every hour of it,
+/// not as its first hour followed by a gap.
+#[test]
+fn a_recorded_advance_span_replays_every_hour_of_it() {
+    struct Target<'a>(&'a mut Accumulator);
+    impl ReplayTarget for Target<'_> {
+        fn series(&mut self, _: u8) -> &mut Accumulator {
+            self.0
+        }
+        fn key(&self, _: u8, key: u64) -> u64 {
+            key
+        }
+        fn family(&mut self, _: usize) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let history = |accumulator: &mut Accumulator| {
+        accumulator.advance(0).unwrap();
+        accumulator.observe(1, 0, Some(5), true);
+    };
+    let mut direct = Accumulator::default();
+    history(&mut direct);
+    for hour in 1..=9 {
+        direct.advance(hour).unwrap();
+    }
+    direct.advance(10).unwrap();
+    direct.observe(1, 10, Some(6), false);
+    let mut extract = Accumulator::default();
+    extract.record_as(0);
+    let mut recording = Recording::default();
+    with_recording(&mut recording, || {
+        extract.advance(1).unwrap();
+        extract.advance_span(2, 9).unwrap();
+        extract.advance(10).unwrap();
+        extract.observe(1, 10, Some(6), false);
+    });
+    let mut carried = Accumulator::default();
+    history(&mut carried);
+    recording.replay(&mut Target(&mut carried)).unwrap();
+    assert_eq!(published(&mut carried), published(&mut direct));
+}
+
 #[test]
 fn first_seen_catalogues_number_carried_and_new_names_in_order() {
     let mut local = BTreeMap::new();

@@ -25,7 +25,7 @@ prepared files; existing open range readers retain their bytes.
 | [dashboard-base](../dashboard-base/README.md) | Sources, content, the catalogue loader, the prepared store's shared pages, series, charts, group sums and measures, ranking, the product contract and the shared products including country history, re-exported here at their old paths. |
 | [dashboard-core](../dashboard-core/README.md) | Host/viewer protocol, data transport, recording metadata, host configuration, map settings and whole-branch block scans, re-exported here at their old paths. |
 | Product crates | One crate per heavy product or product family, above dashboard-base, re-exported here at `products::<name>`: [dashboard-air-aces](../dashboard-air-aces/README.md), [dashboard-air-superiority](../dashboard-air-superiority/README.md), [dashboard-construction](../dashboard-construction/README.md), [dashboard-country-fuel](../dashboard-country-fuel/README.md), [dashboard-country-nukes](../dashboard-country-nukes/README.md), [dashboard-equipment-losses](../dashboard-equipment-losses/README.md), [dashboard-equipment-stockpile](../dashboard-equipment-stockpile/README.md), [dashboard-forces](../dashboard-forces/README.md), [dashboard-game-score](../dashboard-game-score/README.md), [dashboard-intelligence](../dashboard-intelligence/README.md), [dashboard-land-battles](../dashboard-land-battles/README.md), [dashboard-military-air-ledger](../dashboard-military-air-ledger/README.md), [dashboard-naval](../dashboard-naval/README.md), [dashboard-occupation](../dashboard-occupation/README.md), [dashboard-party-history](../dashboard-party-history/README.md), [dashboard-peace-deals](../dashboard-peace-deals/README.md), [dashboard-politics-ledger](../dashboard-politics-ledger/README.md), [dashboard-raids](../dashboard-raids/README.md), [dashboard-resource-balance](../dashboard-resource-balance/README.md), [dashboard-special-projects](../dashboard-special-projects/README.md), [dashboard-stability](../dashboard-stability/README.md), [dashboard-subjects](../dashboard-subjects/README.md), [dashboard-unit-leaders](../dashboard-unit-leaders/README.md), [dashboard-wars](../dashboard-wars/README.md), [dashboard-world-tension](../dashboard-world-tension/README.md). |
-| [prepared_focus.rs](src/prepared_focus.rs) | Sequential focus observations, production presentation and immutable requested-page reads. |
+| [prepared_focus.rs](src/prepared_focus.rs) | The focus order prepared on its own (block facts and their fold), focus queries and focus art evaluated at the hour asked (`prepared_focus/`). |
 | [products/](src/products/mod.rs) | Product registry and shared domain helpers; each product's behaviour lives beside its code or in its widget README. |
 | [content_check.rs](src/content_check.rs) | Offline preparation and diagnostics for every registered product. |
 | [service.rs](src/service.rs), [service/](src/service/) | Source leases, loader jobs, request admission and the bounded response pump. |
@@ -179,25 +179,29 @@ to the recording reader.
 Whole-product cache entries for held files use the canonical path and opened
 metadata revision.
 
-The pipeline reconstructs accepted selected frames once and feeds focus,
-production, country balances, country identities, groups, stability, experience,
-stability parts, army size, air force size, supply health, territory, regional territory, occupation, land owners, game score, leader careers, battle and division logs, sinking logs,
-naval losses and map checkpoints together. The naval observer owns one retained
+The pipeline reconstructs accepted selected frames once and feeds
+country balances, stability, stability parts, army size, air force size, supply
+health, territory, regional territory, occupation, land owners, game score, leader
+careers, battle and division logs, sinking logs, naval losses and map checkpoints
+together, with every other family that is not prepared on its own (see below):
+the walk skips those, and keeps its own read of the country identities, which
+territory and the event feed read in the same frame (air superiority, prepared
+on its own, makes its own read of the country groups). The naval observer owns
+one retained
 sinking scan shared by naval details, the sinking log, titles and loss tallies.
 One replay worker reconstructs a block sequentially through a channel retaining
 one queued frame. For each observed frame, scoped worker lanes borrow disjoint
 family accumulators while the coordinator runs the observations that write the
 store or need another family's output of the same frame, staging writes in their
-original order. Focus (display and completions), production and the map write
-through the store writer, so they stay on the coordinator with the land-owner
-catalogue, whose errors stop preparation. Territory's owned-state observation
+original order. The map writes
+through the store writer, so it stays on the coordinator with focus (when the
+walk prepares it) and the land-owner catalogue, whose errors stop preparation. Territory's owned-state observation
 drives the identity history that territory and the event feed read in the same
 frame, and air superiority reads the frame's country groups, so the identity
 history, territory, the event feed, country groups and air superiority stay there
-too. Every other family is a lane job, including leaders, the politics
-ledger, equipment stockpile, air force, navy, land and naval battles, special
-projects, construction, raids, intelligence, supply health, ideas, occupation
-and war casualties; subject changes stay with the subject scan on one lane. A job
+too. Every other family the walk runs is a lane job, including leaders, the
+politics ledger, air force, navy, land and naval battles, special projects,
+supply health and occupation. A job
 keeps its coordinator position as its order, so a frame reports the first failing
 call in serial order, and a job's refusal is recorded at the frame's hour, as on
 the coordinator. Every lane finishes before the next frame or any block finalization,
@@ -248,33 +252,49 @@ the extract recorded from the second hour again on the carried accumulators.
 When a check of the carried state fails it observes the rest of the block hour
 by hour with the block's own facts.
 
+Before anything else, each branch's newest land battle window is published from
+its last block and a look-back proven to hold every fact its page carries, so
+the land battle manifest and that window answer before forward preparation
+reaches them; the land battle logs below describe the proof.
+
 Families prepared on their own are prepared before the hourly walk
 (`prepared/pipeline/independent.rs`). Each is a registry entry (`Own`): its
 pre-pass family, the query products it gates, its branch state (`Branch`:
 loaded from its own saved sections or new, folding a block's facts or observing
-the block hour by hour, flushing, saving its pages and its continuation) and the
-sections the hourly walk keeps for families that read its state in the same
-hour. Every registered family starts at once on one pool of pre-pass workers
+the block hour by hour, publishing the pages it held from each block it went
+through, flushing, saving its pages and its continuation) and the sections the
+hourly walk keeps for families that read its state in the same hour, with those
+readers. Every registered family starts at once on one pool of pre-pass workers
 (`prepass::Pool`, sized as the hourly walk's pre-pass and serving every family's
 blocks, the family least far ahead first, within the same read-ahead window and
 byte budget) over the source's one opened recording, so each block's checksums
 are verified once. Each family folds its blocks in order on a thread of its own
-and commits by the hourly batch rules, with its pages, its own coverage page per
+and commits by the hourly batch rules (its byte budget counting what it holds
+alone), with its pages, its own coverage page per
 branch (`preparation-family-<name>-<branch>`, with its refusals) and its
 progress in the checkpoint. Commits take turns on one store writer; while other
 families run, a family's batch is written into a fork of the writer and adopted
 only once all of it succeeded, so a commit holds one family's whole batch or
-nothing of it. A family that refuses a branch goes on with its other branches;
+nothing of it. A commit first writes the pages the family held from the blocks
+it went through since its last commit (`Branch::publish`), also when it refused
+the branch later in the batch, as hourly preparation wrote them at those
+blocks. A family that refuses a branch goes on with its other branches;
 one that fails or panics leaves the others to finish and commit, and preparation
 then reports its error. A family's pages and saved state are those hourly
 preparation publishes. Its gated products wait only for its coverage and refuse
-from its page (`pipeline::product_coverage`, `pipeline::refusal`); status shows
-its own progress. The hourly walk asks the registry whether to observe, flush,
+from its page (`pipeline::product_coverage`; a series request by its family
+kind), and every query `FAMILIES` lists as reading it refuses from that page too
+(`pipeline::refusal`). Readers in
+[dashboard-base](../dashboard-base/README.md) ask both through the
+`coverage::Gates` the pipeline, the query route and the service install
+(`pipeline::install_gates`). Status shows its own progress. The hourly walk asks the registry whether to observe, flush,
 save and load each family (`Refused::live`), so it skips a family prepared on
-its own unless another family reads that family's state in the same hour; then
-it keeps its own read, the same observation saved under the reader's names
-(`independent::kept_as`) and never published as the family's. A checkpoint
-whose families of their own differ restarts preparation.
+its own unless another family reads that family's state in the same hour; then,
+until every such reader (`Own::read_by`) is prepared on its own too, it keeps
+its own read, the same observation saved under the reader's names
+(`independent::kept_as`) and never published as the family's. The walk's saved
+branch state leaves out the state of the families it skips. A checkpoint whose
+families of their own differ restarts preparation.
 
 A pre-pass family may declare the fields it reads (`Family::fields`, as
 `replay::TableFields`, a table optionally visited at every read). Its blocks
@@ -308,13 +328,73 @@ observation takes for one such hour; when the carried scan does not hold the
 inputs the block's scan held before a span, it observes the rest of the block
 hour by hour. Their change publisher's continuation is saved as
 `country-group-state-<branch>`. Air superiority reads the groups' state of the
-same hour, so the hourly walk keeps its own read of them, saved as
-`air-superiority-groups-<branch>` and `air-superiority-group-changes-<branch>`;
-both reads make the same calls on the same frames, so a groups refusal reaches
-air superiority at the hour hourly preparation records it.
+same hour. Prepared on its own, it makes its own read of them (`Own::read_by`),
+so the hourly walk no longer observes the groups; while air superiority is in
+the hourly walk instead, the walk keeps that read for it. Either read is saved
+under air superiority's names (`air-superiority-groups-<branch>`,
+`air-superiority-group-changes-<branch>` and, from its own read,
+`air-superiority-group-state-<branch>`), never published as the groups', and
+makes the groups' calls on the groups' frames at the groups' hours, so a groups
+refusal reaches air superiority at the hour hourly preparation records it.
 
-Focus display uses the production interpreter, evaluating the recorded player's initial country first
-within each frame. Content inputs come from the recorded stack's physical files,
+Air superiority is prepared on its own
+([products/air_superiority/block.rs](../dashboard-air-superiority/src/products/air_superiority/block.rs)).
+Its extract reads a block by the groups' fields and its own: the countries'
+keys, every link, every score field, each wing's mission region (not its plane
+count), the theatres' names, the theatre groups' theatres and the theatre
+rosters' keys. Its deadlines are each day's first hour, where the day's sides
+are chosen, and the next recorded war end, where the groups change with no
+field changing. It keeps the observed hours' frames (countries reduced to their
+keys, wings to their mission regions), each with the hour's score projection
+made on the worker through the score identity it read there, and for each hour
+between, the theatres' slot read and whether a table the day's choice reads was
+decoded again (war casualties move every hour of a war without changing the
+groups). The fold observes each kept hour on the carried state, the groups and
+then air superiority as hourly preparation does, taking the worker's projection
+once the worker's score identity is found equal to the carried one; each hour
+between takes the groups' and air superiority's unchanged-hour steps
+(`Prepared::quiet_hour`); and each block ends as hourly preparation ends it, the
+groups sealed and the day's choice held open. When the carried state does not
+continue into an hour between, the rest of the block is observed hour by hour.
+Scores move every hour of an air war, so those hours are observed on the
+family's own thread, their projections made on the workers. Each projection
+also carries how its pairs differ from the worker's previous one in the block;
+when the carried observer applied that previous projection the hour before, it
+observes only the changed and gone pairs (an unchanged pair would observe its
+held score, naming nothing), in the order the whole walk observes them, and
+otherwise walks every pair. A pair's keys are held while it is current and a
+region's are held once named, so a key is named (its field serialized) only
+when new. A measured run times the fold's parts (`air_superiority.fold.*`:
+pairs walked whole or by their diff, fold-made projections, regions, wings and
+theatres, day choices, the groups' steps and quiet hours). A groups refusal
+refuses air superiority at that hour with the groups' error, recorded as coming
+from the groups.
+
+World tension is prepared on its own
+([products/world_tension/block.rs](../dashboard-world-tension/src/products/world_tension/block.rs)). Its
+extract reads a block by the countries' keys, every link and every field of the
+tension, threat source and country aggregate tables, whose every row change the
+observer takes as a change of its inputs; the countries' balances are not read.
+It keeps the observed hours' frames (countries reduced to their keys) and, for
+each hour between, whether the tension tables were read there: a read with equal
+rows starts the held values again and counts the read's diagnostics. The fold
+observes each kept hour on the carried observer as hourly preparation does and
+takes the observer's unchanged-hour step for each hour between
+(`Scan::advance_quiet`). The observer's slot-to-tag and link-to-slot maps,
+threat sources' first and last reads, first contributions and warning counts
+are its carried state, saved in its catalogue, so each block continues the
+history of every earlier hour; a block that gives it no hour ends its segment,
+as hourly preparation ends it after a block it read no frame of.
+
+The country identity history is prepared on its own; its extract and fold are
+described in [dashboard-base](../dashboard-base/README.md#country-identity-history).
+Territory's owned-state observation drives the history and the event feed reads
+it in the same hour, so the hourly walk keeps its own read, saved as
+`territory-identities-<branch>`; an identity refusal reaches territory and the
+event feed there at the hour hourly preparation records it.
+
+Focus art uses the production interpreter at the hour a reply asks for
+([prepared focus pages](#prepared-focus-pages)). Content inputs come from the recorded stack's physical files,
 including installed mod archives and the selected language settings.
 Their size/mtime stamps are validated once when source/content options bind,
 then retained in source state. Prepared queries use this binding and the current
@@ -325,8 +405,12 @@ Series readers keep what they read for the query
 ([prepared series](../dashboard-base/README.md#prepared-series)). Publication validates all
 inputs before committing; the store keeps their stamp list in a separate immutable file.
 
-Publication batches end at a branch boundary, a 64 MiB byte budget, ten seconds
-of work or the recording end. Progress and cancellation are checked per block.
+Publication batches end at a branch boundary, after every 32nd block of a branch
+(counted from the branch's first block, wherever preparation started, resumed or
+grew), at a 64 MiB byte budget, after every block of a measured run, or at the
+recording end (`pipeline::Batches`). Wall time never ends a batch, so the ranges a
+recording publishes do not depend on how fast the machine prepares it. Progress
+and cancellation are checked per block.
 Domain data, branch accumulators, decoder resume state, accepted coverage and the
 common cursor share one manifest commit. Saved hash-backed continuation
 maps and sets serialize in key order, including tuple-key pair arrays and nested
@@ -386,19 +470,12 @@ The map and the land-owner catalogue are recording-wide, not branch families;
 any of their errors still stops preparation.
 
 Published coverage is branch-scoped (and, for a family prepared on its own,
-family-scoped) and distinct from recorded missing hours and an unprepared tail. Numeric focus can be ready while unavailable display fields
-retain named, counted reasons. Progress reports accepted block counts, committed coverage hours per branch and active
+family-scoped) and distinct from recorded missing hours and an unprepared tail. Progress reports accepted block counts, committed coverage hours per branch and active
 payload bytes, without inferred rates or timer progress. Clear cancels and waits
 for writers to close, removes names immediately, and lets held range readers keep
 their existing bytes. Stale or unsupported prepared schemas restart preparation from the recording;
 recording readers remain available.
 
-The shared country-history observer also retains native holders, aliases, identity
-segments and complete-read coverage. Each commit replaces one branch identity
-state page; cached table joins rebuild from the next accepted frame on resume.
-Prepared identity lookup returns the same identity-only histories as the shared
-recording walk once the branch is covered, and remains pending before then.
-Its retained histories grow with identity and coverage changes.
 Peace preparation refreshes current native ownership, war, subject, government
 and existence operands only with their supplying table changes. Country changes
 resolve those retained operands again; snapshot dates share immutable field maps.
@@ -505,7 +582,8 @@ and their observers' stateless samples. Factory totals retain the native count
 formula; factory and nuclear Top choices rank those transient values with the
 existing sweep. Territory shares its native holder join and land extraction with
 that transient path, resolves map-area inputs once from recorded content, and
-ranks sampled values without persisting tail ranks. Group sums reuse the one
+ranks sampled values without persisting tail ranks. Regional
+breakdown hours are sampled as [dashboard-base](../dashboard-base/README.md#territory-breakdown) describes. Group sums reuse the one
 member sum with transient numeric, presence and roster-proof runs. Other S
 families retain their prepared coverage gate until they provide a stateless
 sampler; fields requiring cross-frame state remain pending.
@@ -671,86 +749,84 @@ show the shared prepared-range note. Full parity history waits for complete cove
 
 ## Prepared idea history
 
-The production branch-wide idea observer receives each accepted decoded frame.
-One `idea-history-{branch}` range holds its zstd-compressed JSON state and is
-replaced with the common preparation commit. Resume reloads the same observer;
-append observes only the accepted tail. The shared frame fact updates changed
-holdings through the same native scan. Open endpoints materialize at a relevant
-change, publication or reply. Missing character-template refusals retain their
-hour-dependent text without rebuilding holdings. Stored spans, identity naming and refusal sets grow with recorded
-changes, rather than elapsed hours.
-Idea classification content is bound at configuration; the shared result cache
-retains successful and refused loads, and fixed token classifications use the
-shared keyed result cache. Only new additions contribute classification counts.
-
-Prepared `idea-history` requests use `{branchId, tag}` and the production topic
-reply builder. The observer retains both identity-start naming for topic replies
-and span-start naming for event-feed, plus country-scoped refusal counts.
-Queries wait for complete branch coverage. The shared idea-history UI hook uses
-the ordinary preparation status, cancellation and retry handling; idea timelines
-and national-spirit widgets retain their existing reply shapes and presentation.
-The legacy product and event-feed branch scan remain available as references.
-Idea holdings, acquisition/removal bounds, advisor seats and recorded renames
-depend on preceding observations; they have no stateless progressive sampler.
+Idea history is prepared on its own (registry entry in
+[prepared/pipeline/independent/quiet_politics.rs](src/prepared/pipeline/independent/quiet_politics.rs));
+[dashboard-base](../dashboard-base/README.md#idea-history) describes its extract,
+pages and queries.
 
 ## Prepared focus pages
 
-Focus preparation accepts verified decoded frames in order. Its resumable state
-keeps the latest ordered completion list and native identity per tag; progress
-is retained in full on disk. The production focus interpreter evaluates dated
-titles, icons and descriptions from the same accepted frame with the recorded
-content catalogue. Display and description projections occupy separate pages. Consecutive equal order, identity, progress
-and presentation results share an interval; missing reads and gaps leave no
-coverage. Hour metadata retains native slot/country identity and the known daily
-progress gain. Display and text-only description results use separate pages,
-preserving each production caller's projection and refusal semantics. Missing
-required tables retain their exact named supplying-read reasons or truncation
-counts in independent branch intervals, without refusing numeric recovery. Completed orders and presentation results use row pages, preserving
-all ordinals and repeated tokens. Nonempty UTF-8 country tags and focus tokens
-have no preparation length limit. Incompatible saved focus schemas refuse only
-these derived pages and accumulators; recording-only products remain available.
+The focus order is prepared on its own (registry entry in
+`prepared/pipeline/independent/focus.rs`, family `focus`; its extract, fold and
+queries are in `prepared_focus.rs` and `prepared_focus/`). Its blocks are read by
+the fields its observation reads: Countries' tag and canonical slot,
+CountryLinks' canonical slot, Focus's active and continuous focus, progress,
+pause and completed count (not the tree, which no reply reads), and
+CompletedFocuses' tokens. Country balances move every hour and are not read.
+Focus progress moves at each country's daily read, so about one hour in ten is
+read, and the block's first hour. A pre-pass worker builds each block's facts
+alone: each country's stretches of consecutive observation under one identity,
+its order at the stretch's first hour and at each change, and the last run of
+equal progress begun in the stretch. A country's completed focuses are its own
+tokens, shared while unchanged, and a change keeps only the tokens it adds, so a
+block's facts hold each completion once. The family's thread folds them in block
+order on the carried state in time proportional to the countries and order
+changes, not to the hours. The hourly walk builds the same facts from every hour
+and folds them at each block's last hour, so both publish the same pages.
 
-Focus uses the shared series/event batches with a small tag-to-key catalogue.
-One country event holds its changed order, display, descriptions and warnings;
-progress and daily gain use separate exact runs, so progress changes reuse the
-event. Table refusals use a branch key. Static text stays in one range per observed
-token; selected text ranges open together after one recording check and manifest read.
-Focus reader setup opens its country catalogue and first series range together,
-including the published series count. A page validates its supplying hour and
-descriptor in the same reader that returns its rows.
-The pipeline's shared frame fact invalidates changed focus inputs. Unchanged
-shared tables advance one authenticated series frontier without visiting countries,
-interpreting text or writing files. Publication seals the active run endpoints;
-progress-only changes reuse the order and presentation. Cached content refusals
-still count every affected country/hour. Static presentation is cached per
-content, token and mode, including
-country sprite overrides. A tree button's declared or refused ID sprite override
-stops conditional definition-icon evaluation and allows static reuse. Scripted
-text and reached trigger-selected icons retain hourly production evaluation.
-Current native joins refresh each changed source independently. Dynamic calls
-retain their token/row positions; unchanged results reuse the completed order
-and full presentation, while a changed result writes the same country event.
-All country/mode calls within an accepted frame lazily share immutable country
-names and trigger indexes. Each text expansion still gets fresh caller scopes,
-token/Clock random seeds, counters and effect sessions. The focus query adapter
-reads the latest event and dated runs, then returns the requested row page with
-the existing reply shapes.
-Publication flushes the shared batch before saving accumulators; resume reads
-only the appended tail and preserves interval boundaries.
-The focus-hour reply keeps its accepted-hour gate: completion confirming dates,
-order-segment starts and daily gain depend on preceding observations, and dated
-presentation comes from the production interpreter. Raw progress alone is native,
-but cannot supply that reply independently.
+A country is observed at an hour when all four tables are complete, its tag is
+nonempty UTF-8, its links agree on its slot, the slot has a focus row and the
+row's completed count matches whole, ordered completed rows. A tag several
+countries hold is the one with the highest country id. Its order is its
+completed focuses, active and continuous focus and pause, compared by their
+recorded bytes (kept shared while they repeat): two tokens that are not UTF-8
+are different focuses even where replies show them by the same replacement
+text. Each completed focus is dated by the
+first hour it was listed (an upper bound), when the country's earlier list under
+the same identity is a prefix of the new one; a shrink, a reordering or another
+identity starts an undated list. An order's run, its first hour
+(`orderFirstHour`), continues while the country is observed at consecutive
+recorded hours with the same identity and order.
 
-The ignored `real_recording_focus_frame_counts_timings_and_exact_output` test
-uses the production frame loop to compare full hourly state with per-call scoped
-inputs and the native tree-selection reuse rule. It records per-hour observation,
-order/progress, extension, dynamic/static token, refusal, interpreter and scoped
-input counts and timings. Dynamic token names and classifier reasons appear only
-in its JSON-lines report outside Git. Set `BATTLE_PLAN_GAME_DIR`, `BATTLE_PLAN_USER_DIR`,
-`BATTLE_PLAN_FOCUS_PROFILE_RECORDING` and an absolute `BATTLE_PLAN_FOCUS_PROFILE_DIR`; set
-`LOCALAPPDATA` and `APPDATA` to that private directory's `localappdata` and
-`appdata` children. The recording and installation remain read-only.
+Pages use the shared series/event batches with a tag-to-key catalogue. Key 0
+holds the tables' named refusals (exact supplying-read reasons and truncation
+counts) and their intervals. Each tag's key holds its observed runs and its
+order events (identity, `orderFirstHour`, active focus, pause and its completed
+focuses as a run of its completion chain); the next key holds the chain's rows,
+each completed focus with its date written once; the one after holds the
+progress the tag carries into each block it is observed in. Runs and events
+never break where a commit falls: open runs are carried in the saved state and
+read across batches, so every reply is the same however batches end.
+
+`focus-hour` answers from the family's own coverage: the order holding at the
+hour, bounded by its first and last hour (`hour`, `lastHour`), and the
+progress and daily gain at the hour asked (`at`). Progress is read back from
+that hour's block alone, from its first hour through the hour, on the progress
+the block starts from (one block read). The daily gain is the rise since the
+observation the hour before the progress run began, while the same focus stays
+active. `focus-order-page` reads a page of the order's completion chain, checking
+the page descriptor `focus-hour` gave; `focus-unavailable` names the tables'
+refusals at the hour.
+
+Titles, icons and descriptions are not prepared. `focus-art` evaluates a page of
+distinct tokens (in ascending order) for a country at one recorded hour, as the
+focus tree shows them (`display`: titles and icons, `text`: titles and
+descriptions), with the production interpreter over the recorded content stack.
+Results that read no recorded state (no scripted text, no trigger-chosen icon)
+are kept per content binding, within 64 MiB (icons included; the least recently
+used is evaluated again), and read no recording; a token that reads recorded
+state reads that hour's frame of the focus, scripted-text and Clock tables
+(shared with `focus-artwork`'s frames). Rows name their own refusals; a failed
+content binding or evaluation is the reply's named failure with the count of
+tokens it left without art. `focus-static-text` returns each token's static
+title and description from the content.
+
+The focus completions the event feed reads are the order's newly dated entries
+at hours the country was observed the hour before. Completions first seen after
+the country was not observed, resets and countries without an observation are
+counted by reason (country-hours for the latter) in the completions' catalogue.
+Incompatible saved focus schemas refuse only these derived pages and state;
+recording-only products remain available.
 
 ## Prepared country groups
 
@@ -793,6 +869,53 @@ hour in this prepared state and use the same cached portrait ladder as roster
 artwork. The UI loads prepared manifests, windows and portraits through the shared
 product and dated-fact queues.
 
+Aces are prepared on their own (`products/air_aces/prepared/block.rs`; registry
+entry in `prepared/pipeline/independent/air.rs`), gating `air-aces` and
+`air-ace-portraits`. Their blocks are read by the fields the roster and the
+variant catalogue read: every field of the roster and every roster read (daily);
+the countries' keys, slots and tags; every link; the wings' names (their planes,
+missions and eligibility move every hour and are not read); the wings'
+equipment variants (not amounts); the active raids' wing, phase and unit and
+their tooltip operands (legacy wing names); the original tags; the dictionary;
+and every field of the variant tables, with every variant read (daily). The
+extract keeps each read hour's frame reduced to what those reads use (countries
+to their keys, wings to id and name, equipment to its variants, raids to their
+wing, phase and unit, original tags alone), each reduced table shared by kept
+hours where it is equal ([`raids::kept`](../dashboard-raids/src/products/raids/kept.rs)). The
+fold observes each kept hour on the carried aces as hourly preparation does,
+and each quiet hour on the last kept frame with that hour's read evidence and
+the tables hourly preparation marks changed there: the roster is read again
+at a read only when one of its tables was decoded again, so an ace that
+entered between reads joins at the read hourly preparation reads it. A slot
+hour whose roster read was timed on another table is quiet and still read by
+its evidence. At a block's end the window is built as hourly preparation
+builds it and held; each commit writes the held windows first (`publish`),
+also when the aces refused the branch later in the batch, so every commit
+boundary publishes the window pages hourly preparation does.
+
+## Prepared raids
+
+Raid episodes, tallies, coverage and read dates use the product's frame
+observer and append through shared series events and runs
+(`products/raids/prepared.rs`); the continuation keeps open episodes and
+tracks. Raids are prepared on their own (`products/raids/prepared/block.rs`;
+registry entry in `prepared/pipeline/independent/air.rs`), gating `raids`; the
+tally view still waits for the identity history. Their blocks are read by the
+fields the raid scan reads: the countries' keys, slots and tags; every link; the
+raid countries' countries and eligible types (not their used types); each
+raid's parent, phase, outcome, flight distance and preparation hours (the last
+two move every hour a raid is live); every target field; the dictionary; the
+provinces' states and controllers; the states' owners, controllers and stored
+names; the original tags; and the reserved country's naming, which names a
+target state owned by country zero. Hours with no live raid that moves are
+quiet, however balances, used types or province gates move. The extract keeps
+each changed hour's frame reduced to what the scan reads (countries to their
+keys, raid countries to slot, country and eligible types, original tags alone,
+provinces and states to the rows the targets name), each shared by kept hours
+where it is equal. The fold observes each kept hour on the carried scan, with
+the raid content hourly preparation binds, and each quiet hour on the last kept
+frame with its read evidence and no table changed.
+
 ## Prepared military air ledger
 
 Aircraft loss bookkeeping and applied bombing damage use the product's existing
@@ -817,6 +940,26 @@ publication; balance-only country changes compare the shared country-key
 projection before rebuilding the join. Event ordinals and per-event refusals
 retain the same supplying-read checks.
 
+The ledger is prepared on its own (`products/military_air_ledger/prepared/block.rs`;
+registry entry in `prepared/pipeline/independent/air.rs`), gating
+`military-air-ledger`. Its blocks are read by the fields its scans read: the
+countries' keys, slots and tags (not balances), every link, every field of both
+event tables (an equal table decoded again is a repeated ordinal) and the
+dictionary. A pre-pass worker runs the ledger over the block from its first
+hour with no earlier state and records its series calls after that hour; each
+quiet span (event tables unchanged, so empty or a repeated ordinal) extends
+presence and coverage and counts the per-hour warnings at once, and while an
+identity read is refused every following hour is the extract's deadline, read
+again. The fold observes the block's first hour on the carried ledger, makes
+the recorded calls again under the carried keys and joins the block's spans
+and counts after that hour. After the first hour the carried ledger differs
+from the extract's only in the event ordinal and unread interval carried into
+the block: the extract follows their first use, so the fold checks the block's
+first read with events (a new epoch or its first ordinal) against the carried
+state. When the carried ordinal would refuse that read, or an ordinal is
+checked outside a read, the fold observes the rest of the block hour by hour.
+Wartime hours mostly carry events, so the per-event work runs on workers.
+
 ## Prepared construction
 
 Construction observes each accepted frame once for every country. Project starts,
@@ -833,6 +976,25 @@ Publication compacts closed native slots and their parallel continuation fields;
 the existing catalogue keeps their stable keys and output retains known closed
 handles for attribution. Projects awaiting final output remain open continuation.
 
+Construction is prepared on its own (`prepared/pipeline/independent/economy.rs`,
+with the stockpile, production and experience). Its blocks are read by the
+fields the scan reads: building levels, the countries' and provinces' keys (read
+at the queue reads alone), the links, every field of the daily queues and output
+and every rebuild of the dictionary; each queue read hour is visited, and the
+next one by the clock is the extract's deadline. The family's thread observes
+each kept hour as hourly preparation does and advances each quiet span in
+constant time (`Prepared::advance_quiet`: the series' accepted hours and the
+scan's last hour; an incomplete building table loses each such hour for the
+queues' stretches). A queue read dated off the clock (another table of its slot
+read at another hour) leaves the rest of the block to hourly observation. Its
+block end and flush take the branch's replay blocks and the source's naming
+handles (`NameSource`, held from its first block), so names come from the same
+cache at the same flush. A continuation loaded from a commit takes its building
+tables and dictionary from the last frame of the block before, read alone, as
+hourly preparation's stream supplies them. It saves its continuation as
+`construction-continuation-<branch>`; the log, its manifest and spending answer
+from its own coverage.
+
 Construction spending uses the same observer and leaf grouping. Exact signed
 leaf totals use shared series; project intervals, unknown stretches and content
 presentation stay in the leaf catalogue. Sunbursts read only their requested
@@ -840,13 +1002,19 @@ start, reached and final totals.
 Leaf continuation updates keyed project intervals and missing-output stretches
 in place. Their existing ordered reply vectors are built only at publication,
 through the same leaf grouping and reply builder as the recording product.
-Subjects use their product's relation/level observer and reply builder. One
-compressed state range per branch retains changes, coverage spans and continuation
-state. The shared frame fact refreshes only changed holder, relation and level
-operands. Equal hours advance a frontier and exact diagnostic rates; open relation
-and level endpoints are sealed at changes, native ends, gaps, publication and reads.
-Prepared queries resolve
-level names and order through the recorded content stack.
+Subjects use their product's relation/level observer and reply builder, prepared
+on their own (`products/subjects/prepared.rs`). Their blocks are read by the
+relations' keys, starts, ends and cancel bytes, the subjects' autonomy states and
+the country keys and links; a relation's recorded end is the extract's deadline,
+observed on the last hour's rows. One compressed state range per branch retains
+changes, coverage spans and continuation state, and `subject-state-{branch}` the
+change publisher's continuation. The frame fact refreshes only changed holder,
+relation and level operands. Equal hours, and each span of hours between those
+read, advance a frontier and exact diagnostic rates (as that many hourly
+additions would, an overflow included); open relation and level endpoints are
+sealed at changes, native ends, gaps, publication and reads. Prepared queries
+wait for the family's own coverage and resolve level names and order through the
+recorded content stack.
 
 Autonomy reuses its hourly subject observer and level-name reply builder. Exact
 scores, thresholds, ratios and plotting progress append to shared series batches;
@@ -924,6 +1092,16 @@ Project candidates validate together against their episode references at Live.
 Obsolete candidates still advance the raw cursor, so an empty page can lead to
 older live rows. Nuclear availability and recorded type tokens come from the
 increase stream's catalogue, including campaigns without increase rows.
+Focus completions are plain events (tag, focus and hour), dated only where the
+country was observed the hour before. The feed's Focus completions rows count,
+by reason, completions first seen after the country was not observed (after a
+gap, unread tables or absence), which have no event date; reset or reordered
+lists; recorded hours with a focus table incomplete; and, per country and hour,
+countries without an observation (unresolved identity, no focus row, a tag that
+is empty or not UTF-8, an incomplete completed order). The page's completions
+get their art at query time, each at its own hour, as an event shows a focus
+(the definition's icon and full text), reading a frame only for a focus whose
+art reads recorded state.
 
 ## Prepared sinkings
 
@@ -993,12 +1171,26 @@ ranges answer pending and the widget uses the shared loading state.
 
 ## Prepared peace outcomes
 
-Peace preparation uses the native conference and outcome frame observer.
+Peace preparation uses the native conference and outcome frame observer, prepared
+on its own (`products/peace_deals/prepared/family.rs`). Its blocks are read by
+the fields the observer reads: country tags and links, state owners, province
+states and victory points, war, subject, government and existence operands, the
+conference roster's keys, turns and finalization, every finalizer row and the
+dictionary. Kept frames hold countries, states, provinces and country counters
+reduced to those fields. Two hours change the observer with no field changing:
+a subject relation's recorded end, and the next scheduled roster read while the
+roster holds a conference; each is a deadline, observed on the last hour's rows.
+The hours between take the observer's step at once: its unobserved and
+finalizer frontiers and its snapshot's hour advance, and the slot reads of an
+unchanged empty roster mark the roster read. A held conference read at an
+unscheduled hour, a pending comparison or a relation ending inside such a span
+has the block observed hour by hour.
 Finished derived deals and projected finalizer observations append to shared
 series events under one branch key. Its checkpoint holds only open comparisons,
 unknown intervals, identity mappings and deduplication facts; finished outcomes
-leave the continuation. Open deal ordinals preserve the reference's ordering
-when finished events and retained deals are joined after resume or append.
+leave the continuation, which is saved as `peace-state-{branch}`. Open deal
+ordinals preserve the reference's ordering when finished events and retained
+deals are joined after resume or append.
 
 Queries gather the branch events and call the product's finalizer join, transfer
 graph builder, action naming and complete-reply budget check. Finalizer operands
@@ -1010,8 +1202,9 @@ values" and "Territory transfer values" parity models.
 Peace outcomes have no stateless progressive sampler. Conference closure,
 ownership transfers and war-end evidence compare native holders and facts across
 reads; delayed finalizers also join earlier observations. A single keyframe
-cannot supply those dated outcomes. Event lists retain the prepared-range status
-and their existing coverage gate.
+cannot supply those dated outcomes. Event lists retain the prepared-range status;
+they refuse from the family's own coverage page, and their coverage gate is the
+branch's.
 
 ## Prepared special projects
 
@@ -1132,6 +1325,34 @@ the shared identity join. Cumulative totals, averages, coverage counts and
 first/last dates require the complete prepared prefix; sparse samples never
 establish those quantities.
 
+## Prepared politics ledger
+
+The politics ledger ([dashboard-politics-ledger](../dashboard-politics-ledger/README.md))
+is prepared on its own (`prepared/pipeline/independent/ledger.rs`, registry name
+`politics_ledger`), and `politics-ledger` queries wait only for its coverage.
+Every captured country's interval extends to each hour, so no hour is quiet
+for its observer: an hour whose captures only extend and which selects no
+country takes the observer's advance path (dashboard-politics-ledger), every
+other hour its whole accounting. Its blocks are not read by their changes: only
+a capture's last hour tells an extended capture from a stopped one, and the
+advance path reads the hour's changed rows. What an hour adds depends on the state carried from the hour
+before (published event keys, the tag history, open days, coverage and hold
+intervals). Its own thread therefore observes each block hour by hour, as the
+hourly walk does, on the block read alone with the tables the observer reads
+(its native tables, the census and capture coverage, the naming tables, and the
+trigger kit `triggers::RECORDED_TABLES` an item's text evaluates at its event
+hour) and with the change facts of the block alone, which are the walk's at
+every hour. A pre-pass worker reads only each block's campaign identity for it.
+Like the walk, it binds the ledger content and the recording at every block,
+and where it loads a branch's saved state (at a run's start, and after a commit
+that reloads) it first resumes the ledger from the frame the walk's stream holds
+there: the last hour of the recording's block before, when that block is on the
+same branch. Its pages and its state (`politics-ledger-state-<branch>`, written
+after its pages at each commit) are hourly preparation's. It costs the
+observer's work at every recorded hour on one thread, the advance path's at
+most of them: off the hourly walk, but as long as observing the ledger over the
+whole recording.
+
 ## Prepared country balances
 
 Political and command power use shared series/event batches. Each branch/measure
@@ -1231,7 +1452,13 @@ of dense geometry; short views keep their existing drawing path.
 
 Army and supply queries join accepted values with the shared transient tail.
 Army block windows also carry native battalion compositions without preparing
-the tail. Supply resolves recorded Defines once when sampled land inputs need
+the tail. A window's exact read ([`progressive::tail_recorded`](../dashboard-base/src/prepared/query/progressive.rs))
+carries the division inventory from hour to hour as the observer does: each
+inventory table is applied unchanged when the decoder carried its rows, from the
+rows its recorded delta changed, or whole, always with the decoded table's values;
+identities, census, totals and metadata are read afresh each hour. The first hour,
+an hour after a gap or a skipped hour, a frame read alone and an hour after a
+refused inventory table are scanned whole. Supply resolves recorded Defines once when sampled land inputs need
 them, and retains complete-count amounts separately from approximate share
 geometry. Native identity selection follows tail-only aliases after the shared
 prefix/identity join. Prepared rank positions serve the accepted prefix; sampled
@@ -1340,6 +1567,19 @@ native segment ends where the observer's does. A transient read proves that a
 country was recorded but never that it was not. Experience keeps its coverage
 gate: its banked values, daily change and gain need the preceding day's reads
 and complete hourly gains within one native stretch.
+
+Experience is a family of its own (`experience`, `ExperienceAccumulator`, with
+its own status row, refusals and flush), prepared on its own; stability stays
+hourly. Its blocks are read by the countries' keys, slots and tags, the links
+and every field of banked experience and the hourly gains, whose rows the scan
+compares whole; each banked read hour is visited, and the next one by the clock
+is the extract's deadline. A quiet span is the scan's step with nothing changed
+(`Scan::advance_quiet`): each country whose last gain interval was complete
+gains it again every hour, keeping a day of gains, and one without banked
+experience or an open read leaves the output at the span's first hour, so the
+span ends in constant time per gaining country. It saves its continuation as
+`experience-continuation-<branch>`; its series route by the family kind
+`country-experience`.
 
 The stability-parts scan feeds per-part runs and observed supplying-read coverage
 through the same batches and query adapter. Its resumable state retains identities,
@@ -1470,7 +1710,9 @@ and open-state replies; no carry crosses missing hours. A leader's visibility
 evaluation in its owner's scope records the inputs it read
 (`triggers::inputs`) and is reused while each reads the same value; with scoped
 visibility an unchanged hour carries only when the core tables refuse as before
-and every such evaluation confirms. Check mode (always in tests,
+and every such evaluation confirms. An input whose declared dependence the
+hour's `FrameChanges` leave unchanged confirms without being read again, so an
+hour changing only fields and rows no evaluation reads builds no trigger World. Check mode (always in tests,
 `BATTLE_PLAN_REUSE_CHECK` in preparation) runs each reused evaluation anyway and counts
 any change. Pending byte totals update with new facts and are recounted only at
 restore and publication.
@@ -1522,6 +1764,34 @@ at relevant changes, publication and checkpoints; closed episode compaction runs
 at publication. Captured/cooldown roster status schedules its next native signed
 day boundary, cipher slopes validate their next daily phase, and espionage still
 builds each 24-hour reply. None of these clocks walks closed history per frame.
+
+The intelligence family is prepared on its own
+(`products/intelligence_prepared.rs`, registry entry
+`prepared/pipeline/independent/intelligence.rs`), gating the five products. Its
+extract reads a block by the fields its observers read: the countries' keys,
+slots and tags; the links, the cipher operands, memberships, character
+operatives and portraits, upgrade levels, the dictionary, operations, their
+assignments and completions whole; each target's cryptology strength; the
+agency feature bit; the agency scalars the comparison shows; and the country
+naming operands. Memberships and operations are also read at every hour they
+were read, which dates them even when equal. Unwatched fields (country
+balances, the feature row's runtime scalars, agency upgrade progress, raid
+defense) move freely. The extract keeps each changed hour's frame, its large
+partially watched tables reduced to the fields read and shared while equal,
+and for the hours between, which tables each rebuilt. The fold makes every
+hour's observation on the carried observer: a kept hour on its frame and
+change facts, an hour between on the last kept frame stamped with its hour and
+no read. Decryption's next daily phase, the roster's day rounding and
+espionage's daily pages therefore fire at the hours hourly preparation fires
+them. Between kept hours the change facts report only an agency rebuild (the
+agency scan prunes held rosters there, as hourly preparation does), and the
+roster is told of the other rebuilds for the read marks it keeps; every other
+observer treats a rebuild of fields it does not read as no change. A block's
+espionage day pages are staged when it finishes, read through to the committed
+store, and written at the family's next commit before its flush (also when it
+refuses the branch later in the batch);
+the espionage log reads its committed series through the same store, at the
+same commit boundaries as hourly preparation.
 
 ## Prepared operative placements
 
@@ -1621,6 +1891,54 @@ Casualty values, pairs and breakdown use prepared queries. Their product loaders
 and casualty-label cache are test-only parity oracles. The shared casualty
 branch scan also supplies scoreboard's recorded-product loss columns.
 
+Casualties are prepared on their own
+(`products/war_casualties/prepared/block.rs`), before the hourly walk. Their
+pairs and breakdown wait for their own coverage, and those and their values
+(family kind `war-casualties`) refuse from their own page. A block is read at the hours a field
+the scan reads changes: every field of the war relations and country links and
+the campaign, the countries' slots and tags, and the naming operands
+`same_name_rows` compares. Counters move every hour of a war, so wartime hours
+are kept and peacetime hours are quiet, and the per-hour work runs in the
+extract, on the pre-pass workers: it runs the casualty observer on the block
+alone from the block's first hour, observing each kept hour and advancing each
+span of quiet hours in constant time (every series authenticates the span, the
+scan's read sequence and relation frontier move to its last hour, and no
+country, pair or value is visited). For each later hour it records whether the
+relations were read again, the lifetimes first held, the naming snapshot when
+it named again, and each changed tag (an endpoint of the relations read) with
+its country's counters and unknown losses, counted both as its own scan counts
+them and as they move for a country seen before. A block with a truncated
+table read by some of its fields only, whose census, read or continuity
+changes after its first hour, or whose quiet hours do not continue a covered
+supplying read, is observed hour by hour.
+
+The family's own thread folds the blocks in order and observes no hour but
+each block's first on the carried observer. After that hour both scans hold
+the same census, relations and naming snapshot, and differ only by what
+earlier blocks left: each country's totals by its ended lifetimes' counters
+(a difference that holds through the block), unknown-loss totals, gap
+recovery flags, the read sequence and generations (an offset), country
+indices, tracks, keys and pair history. For each later hour the fold moves
+the carried read frontiers, holds the lifetimes first held there, samples each
+changed tag's track with the extract's values carried over (an unknown total
+counted on from the carried total for a country the carried scan saw, as the
+extract counts it otherwise), and publishes the tags' values and
+observations and labels new names with the code observing an hour runs. After
+the block it takes the relations' counters, reads and generations, the
+countries' totals, unknown losses and last reads, and the pair history's runs,
+numbered as the carried history would meet new lifetimes and marked
+incomplete as the carried scan marks their endpoints. When the carried scan
+does not continue the first hour as an hourly supplying read with nothing to
+join, name or recover, holds a lifetime the extract first held later, or its
+pair history does not end at that hour as the extract's begins, the rest of
+the block is observed hour by hour. Each block's pair window is rendered at
+its end and written at the family's next commit before its flush, also when a
+later block of that batch refused the branch, as hourly preparation wrote it
+at the block's end; the continuation hourly preparation keeps in its branch
+state is saved as `war-casualties-state-<branch>`. The breakdown also reads the wars' change
+inputs, which are prepared on their own too: it answers only once the wars'
+coverage is complete as well.
+
 Country totals retain ended relation lifetimes and unknown-loss recovery across
 reads. They keep their accepted-coverage gate: unprepared hours answer pending,
 and the widget shows the shared preparation note while holding earlier values
@@ -1710,6 +2028,19 @@ only changed variant IDs. Pending naming refreshes survive carried frames and
 restore until the next complete native supplying read rebuilds the projection.
 Numeric and group observation use current members and
 removed members once, while historical catalogues remain available to queries.
+
+The stockpile is prepared on its own. Its blocks are read by the countries'
+keys, slots and tags, the links and every field of its numeric and
+variant-catalogue tables; each stock, logistics and variant read hour is
+visited, and the next one by the clock is the extract's deadline. A quiet span
+advances the series and the catalogue's last hour in constant time
+(`Prepared::advance_quiet`); holders are stepped through it when next visited,
+as hourly. A kept hour carries no recorded rows, so it reads the whole tables,
+which the changed-row path equals; before a loaded branch's first whole-table
+hour has built the row index, the rest of the block is observed hour by hour.
+Its equipment content is bound before the first block it observes. It saves its
+continuation as `stockpile-continuation-<branch>` and answers from its own
+coverage.
 
 ## Prepared equipment losses
 
@@ -1811,6 +2142,21 @@ locate range extrema, whose raw values are read as exact integers; wide buckets
 resolve float ties through their exact runs. The sunburst reads only its reached,
 final and range-baseline dates and exposes Production spending values for parity.
 
+Production is prepared on its own. Its blocks are read by the countries' keys,
+slots and tags, the links and every field of every other table it reads, since
+it ingests again at any change of their allocations; each output and variant
+read hour is visited, and the next one by the clock is the extract's deadline. A
+quiet span extends the open endpoint page and advances the spent series in
+constant time (`ProductionAccumulator::advance_quiet`); without an open page,
+the rest of the block is observed hour by hour. A page a kept hour completes is
+published as on the coordinator, its endpoint and time writes held in order
+(`HeldPages`) and written at the family's next commit, before its flush, which
+publishes the open page and then writes the catalogue and spent series, as hourly
+preparation's flush steps do; the store holds what publishing each page at its
+frame writes. It
+saves its continuation as `production-continuation-<branch>`; selection and
+spending answer from its own coverage.
+
 ## Recorded histories
 
 Preserve exact recorded values and distinguish zero, absent rows, unavailable
@@ -1904,10 +2250,10 @@ logs, whose `warnings` are recorded battle warnings; both `contentWarnings` and
 the classes reply of the sinking manifest; the wrapped reply of sinking
 windows, game-score states and the scoreboard; and each country's reply in fuel
 series.
-Focus preparation binds its catalogue and
-definitions before observing frames; refused bindings still contribute each
-affected country/hour's existing refusal count. Scoped interpreter state and
-dynamic presentation remain at their recorded hour. Scripted dependencies stay
+Focus art binds its catalogue and
+definitions once per content binding; a refused binding is each reply's named,
+counted failure. Scoped interpreter state and dynamic presentation are
+evaluated at the requested hour. Scripted dependencies stay
 lazy until a recorded token requests them, retaining both successful and refused
 loads without exposing diagnostics from unused definitions.
 Focus/technology definitions and rendered sprite frames are shared within the
@@ -1929,8 +2275,10 @@ operands and unsupported reached forms retain named, counted refusals, without
 invented scopes, roster order or rebuilt native caches. Supported forms and
 refusal handling belong beside those helpers.
 
-Focus presentations and leader visibility reuse an evaluation while every input
-it recorded reads the same ([evaluation reuse](../dashboard-text/README.md#evaluation-reuse)).
+Leader visibility reuses an evaluation while every input
+it recorded reads the same ([evaluation reuse](../dashboard-text/README.md#evaluation-reuse)),
+confirming from the hour's `FrameChanges` the inputs whose declared dependence
+did not change.
 
 Scripted text and trigger worlds read province-neighbor graphs and movement maps
 only when a reached neighbor, coastal or terrain operand needs them. These reads
@@ -1981,18 +2329,34 @@ releasable leases; `open_map` uses the same sources. An outdated expected revisi
 is refused. A new revision uses a separate source and caches. Every product reply
 echoes the requesting lease, revision and key so it cannot answer another recording.
 
-Loader jobs run off rendering in two bounded lanes. Each lane uses the existing
-request admission budget for queued jobs. Cancellation releases the frontend
-request but its queued job keeps occupying channel capacity until a loader
-physically receives it. Full lanes refuse new work with the existing retryable
-capacity error; bodies and country selections are accepted whole or refused whole.
-Preparation refreshes share the history-lane bound and coalesce to at most one
-queued refresh per source, preserving a requested restart. A full lane refuses
-refresh admission without waiting or creating a separate retry queue.
+Loader jobs run off rendering in four bounded lanes, each with its own threads
+([service.rs](src/service.rs)):
 
-`Product::INTERACTIVE` reads (one hour
-or one block, for hovers and labels) have their own threads, so a whole-branch scan
-never delays them. Ordinary product caches serialize their own requests; scans with
+| Lane | Jobs | Threads |
+|---|---|---|
+| History | Whole-recording products, opening, map settings, preparation refreshes | A quarter of the machine's hardware threads, at least 3 |
+| Interactive | `Product::INTERACTIVE` reads (one hour or one block, for hovers and labels), the history cache's size, preparation actions | 2 |
+| Prepared | Every prepared query, first | 2 |
+| Sampled | Prepared queries that sample recorded blocks | Half of the hardware threads, at least 3 |
+
+A prepared query runs first on the prepared lane with block decodes refused
+(`progressive::without_block_decodes`): an answer from prepared pages alone, or
+from the source's frame cache, is given there at once, so it never waits behind
+sampled reads. A query whose answer needs a block decode stops at that decode,
+answers nothing, and runs again from the start on the sampled lane; nothing the
+first attempt read is kept. A sampled read holds one block's selected frames,
+the two read ahead of it and the source's frame cache (dashboard-base), so the
+sampled lane's memory grows with its thread count, not with the recording.
+
+Each lane uses the existing request admission budget for queued jobs.
+Cancellation releases the frontend request but its queued job keeps occupying
+channel capacity until a loader physically receives it. Full lanes refuse new
+work with the existing retryable capacity error; bodies and country selections
+are accepted whole or refused whole. A query moving to a full sampled lane is
+refused the same way. Preparation refreshes share the history-lane bound and
+coalesce to at most one queued refresh per source, preserving a requested
+restart. A full lane refuses refresh admission without waiting or creating a
+separate retry queue. Ordinary product caches serialize their own requests; scans with
 their own gates, and hour reads, do expensive work outside short cache locks.
 Open/append work stays outside the global sources lock. Check cancellation during
 reads, scans and serialization, and never publish a cancelled partial result.
@@ -2135,7 +2499,8 @@ state, preserving historical alliance keys without another recording pass.
 The open day remains replaceable when an append supplies a later read.
 Moment and timeline adapters read requested hours and share the registered
 snapshot, selection, ranking and reply builders. Regional comparisons wait for
-complete branch preparation, including zoomed windows: side assignment uses
+air superiority's own complete coverage of the branch, including zoomed
+windows, and read the country groups from its own read of them: side assignment uses
 dated country-group memberships, leaders, wars and native identities, while
 stable side keys use historical coalition anchors. A later alliance can relabel
 an earlier side, so one frame cannot supply a progressive regional comparison.
@@ -2159,6 +2524,56 @@ Ranking reads only records for battles in the selected windows and uses the same
 country filter, measure, tie order and reply builder as the recording product.
 Delayed finalizer facts repair their affected block pages. Manifests read prepared
 availability. The Land battles log and biggest list retain their parity row labels.
+
+Each branch's newest land battle window is prepared before forward preparation
+(`prepared/pipeline/newest.rs`, `products/land_battles/newest.rs`), for every
+branch whose last block forward preparation has neither accepted nor refused. A
+look-back observes the branch's blocks from one block through the last, each
+read alone, on a fresh census configured as forward preparation's and observing
+with no change facts, as the recording product does, and builds the last
+window's page as forward preparation's publication of the last block does. The
+page is forward preparation's when the look-back starts at the branch's first
+block (it is then forward preparation's walk), or when it observed every fact
+the page carries. After a recorded gap (the branch's previous block ends before
+the hour before the look-back's first), forward preparation closes every battle
+there, so its battles are the look-back's. Otherwise the look-back starts before
+the window and every battle on the page started after its first hour, so each
+battle's id, `Exact` or `By` start, counter base, runs, loss reads (the one
+carried into the window included) and prior peaks are whole. Every finalizer
+result read in the window covers no hour before the look-back's first, so the
+battle it closes is one the look-back saw. Outside a look-back after a gap,
+every loss read dated in the window names a variant whose naming the look-back
+read, or follows an hour whose variant table was not complete, where every name
+is forgotten. Only an available hour inside the look-back proves availability.
+The first look-back starts a block before the last (at the last block after a
+gap). A failed check names the hour the look-back must start by: a battle open
+at its first hour, before its native duration counter began; a result, its
+coverage start; an unproven variant, the hour before. The next look-back starts
+at the block holding that hour (the first block after it in a gap), and from its
+second retry also at least doubles its length. The window's reply carries the
+branch's content warnings as forward preparation publishes them after its last
+block. The configured and catalogue warnings are the look-back's. The variant
+naming refusals are those of every variant read on the branch: the look-back's
+reads, and the earlier blocks' read by `Replay::read_block_changes` over the
+variant catalogue's tables alone (the countries' keys and tags, every field of
+the rest), each daily read of the variant table observed only when one of them
+changed since the last read observed. With content, the census's own text
+refusals come from naming the variants its loss reads use, every one a variant
+read on the branch; naming every variant read must refuse no text and use no
+lazy reader, so forward preparation's naming refuses none either. A census
+refusal, a block that cannot be read, unproven availability or a variant naming
+that refuses text publishes nothing, leaving the window to forward preparation.
+The page is written as `land-battles-newest-<branch>`, with the bytes forward
+preparation writes to `land-battles-<branch>` for that window, beside
+`land-battle-newest-diagnostics-<branch>` (the window's position and hours, and
+the branch's content warnings), in one commit with the checkpoint, before the
+families prepared on their own. Until the branch's coverage is complete, the
+manifest (available, with the index's windows) and that window answer from these
+pages while they name the branch's current last block, the window's reply with
+the branch's content warnings; other windows, rankings and courses wait for
+coverage. Forward preparation later publishes the same page for the window. A
+refusal forward preparation records answers every query of the branch, as for
+every family. Growth prepares the new last block's window again.
 
 Naval logs, availability, rankings and drawn-row details read prepared pages.
 Preparation shares the native census and retained sinking multiset

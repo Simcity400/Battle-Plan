@@ -30,6 +30,7 @@ pub use dashboard_forces::products::army_size;
 pub use dashboard_forces::products::navy;
 pub use dashboard_forces::products::parts_race_prepared;
 pub use dashboard_forces::products::supply_health;
+pub use dashboard_game_score::products::game_score;
 pub use dashboard_intelligence::products::agency_comparison;
 pub use dashboard_intelligence::products::decryption;
 pub use dashboard_intelligence::products::espionage_log;
@@ -41,7 +42,6 @@ pub use dashboard_intelligence::products::operative_placements;
 pub use dashboard_intelligence::products::operatives_roster;
 pub use dashboard_land_battles::products::division_log;
 pub use dashboard_land_battles::products::land_battles;
-pub use dashboard_game_score::products::game_score;
 pub use dashboard_military_air_ledger::products::military_air_ledger;
 pub use dashboard_naval::products::naval_battles;
 pub use dashboard_naval::products::naval_losses;
@@ -189,6 +189,7 @@ fn types<P: Product>() -> Vec<String> {
 pub static PRODUCTS: &[Registered] = &[
     register::<national_focus::NationalFocus>(),
     register::<focus_artwork::FocusArtwork>(),
+    register::<crate::prepared_focus::FocusArt>(),
     register_prepared::<research::Research>(),
     register::<technology_artwork::TechnologyArtwork>(),
     register::<country_flags::CountryFlags>(),

@@ -1,20 +1,24 @@
 import type { PreparationRequest, PreparationReply } from '../../shell/preparation/contract';
+import { validateProductReply } from '../../dashboard/client.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import type { Artwork, FocusEntry } from '../../generated/dashboard';
 import { newId } from '../../shell/ids.ts';
 import { artworkEntry, drawableIcon } from '../../dashboard/artwork.ts';
 
 export interface FocusPages { first: string; count: string; rows: string }
+/** A country's prepared focus order from `hour` through `lastHour`, with its
+ * progress and daily gain at `at`, the hour asked. */
 export interface PreparedFocusHour {
   schema: number; slot: number; countryId: number; hour: number; lastHour: number; orderFirstHour: number;
   current: string | null; continuous: string | null; paused: boolean;
-  progressRaw: string; dailyGainRaw: string | null;
-  completed: FocusPages; presentation: FocusPages; details: FocusPages | null; warnings: string[];
+  completed: FocusPages; at: number; progressRaw: string; dailyGainRaw: string | null;
 }
 export interface PreparedFocusArt { artwork: Artwork; reason: string | null }
 export interface PreparedFocusSnapshot {
   hour: PreparedFocusHour; order: FocusEntry[]; art: Map<string, PreparedFocusArt>; page: bigint; displayHour: number;
   staticText: Artwork[];
+  /** The content's standing warnings and the art requests' named failures. */
+  warnings: string[];
   details?: Map<number, PreparedFocusArt>;
 }
 export interface FocusPreparedClient extends DashboardClient {
@@ -22,6 +26,8 @@ export interface FocusPreparedClient extends DashboardClient {
   prepareSource?(request: PreparationRequest, signal: AbortSignal): Promise<PreparationReply>;
   preparedQuery?<T>(source: DashboardSource, product: string, params: unknown, options: { signal: AbortSignal }): Promise<T>;
 }
+const PREPARED_FOCUS_SCHEMA = 6;
+const PAGE_ROWS = 128;
 const natural = (value: unknown): value is string => typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value);
 const integer = (value: unknown): value is string => typeof value === 'string' && /^-?\d+$/.test(value);
 const optionalText = (value: unknown) => value === null || typeof value === 'string';
@@ -30,12 +36,11 @@ const pagesValid = (value: FocusPages) => !!value && natural(value.first) && nat
 export function validatePreparedHour(value: unknown, hour: number): PreparedFocusHour | null {
   if (value === null) return null;
   const row = value as PreparedFocusHour;
-  if (!row || row.schema !== 5 || !Number.isInteger(row.slot) || row.slot < 0 || !Number.isInteger(row.countryId) || row.countryId < 0 || !Number.isInteger(row.hour) || !Number.isInteger(row.lastHour)
-    || row.hour > hour || row.lastHour < hour || !Number.isInteger(row.orderFirstHour) || row.orderFirstHour > row.hour || !optionalText(row.current) || !optionalText(row.continuous)
+  if (!row || row.schema !== PREPARED_FOCUS_SCHEMA || !Number.isInteger(row.slot) || row.slot < 0 || !Number.isInteger(row.countryId) || row.countryId < 0 || !Number.isInteger(row.hour) || !Number.isInteger(row.lastHour)
+    || row.hour > hour || row.lastHour < hour || row.at !== hour || !Number.isInteger(row.orderFirstHour) || row.orderFirstHour > row.hour || !optionalText(row.current) || !optionalText(row.continuous)
     || typeof row.paused !== 'boolean' || !integer(row.progressRaw)
     || !(row.dailyGainRaw === null || integer(row.dailyGainRaw) && BigInt(row.dailyGainRaw) > 0n)
-    || !pagesValid(row.completed) || !pagesValid(row.presentation) || !(row.details === null || pagesValid(row.details))
-    || !Array.isArray(row.warnings) || !row.warnings.every(warning => typeof warning === 'string')) throw new Error('Invalid prepared focus hour.');
+    || !pagesValid(row.completed)) throw new Error('Invalid prepared focus hour.');
   return row;
 }
 export const lastPage = (pages: FocusPages) => BigInt(pages.count) > 0n ? BigInt(pages.count) - 1n : 0n;
@@ -49,13 +54,55 @@ export function validatePreparedOrder(value: unknown, pages: FocusPages, page: b
     && (entry.completedByHour === null || Number.isInteger(entry.completedByHour)))) throw new Error('Invalid prepared focus order.');
   return value;
 }
-export function validatePreparedArt(value: unknown, pages?: FocusPages, page?: bigint): PreparedFocusArt[] {
+export function validatePreparedArt(value: unknown): PreparedFocusArt[] {
   if (!Array.isArray(value) || !value.every(item => item && artworkEntry(item.artwork) && optionalText(item.reason))) throw new Error('Invalid prepared focus artwork.');
-  if (pages && page !== undefined) {
-    const remaining = BigInt(pages.rows) - page * 128n;
-    if (remaining <= 0n || BigInt(value.length) !== (remaining < 128n ? remaining : 128n)) throw new Error('Prepared focus artwork omitted rows.');
-  }
   return value.map(item => ({ ...item, artwork: { ...item.artwork, icon: drawableIcon(item.artwork.icon) } }));
+}
+
+/** Tokens in the service's order: by Unicode scalar value, as UTF-8 bytes compare. */
+export function focusTokenOrder(a: string, b: string): number {
+  const left = [...a], right = [...b];
+  for (let index = 0; index < Math.min(left.length, right.length); index++) {
+    const difference = left[index].codePointAt(0)! - right[index].codePointAt(0)!;
+    if (difference) return difference;
+  }
+  return left.length - right.length;
+}
+
+export type FocusArtMode = 'display' | 'text';
+const placeholder = (token: string, reason: string): PreparedFocusArt =>
+  ({ artwork: { token, name: null, description: null, baseDurationDays: null, icon: null }, reason });
+
+/** `tokens`' focus art for `tag` at `hour`, evaluated when asked: one request
+ * per page of distinct tokens. A request's named failure marks each of its
+ * tokens; its warnings are returned once. */
+export async function loadFocusArt(client: DashboardClient, source: DashboardSource, branchId: string, tag: string,
+  hour: number, tokens: readonly string[], mode: FocusArtMode, signal: AbortSignal) {
+  const wanted = [...new Set(tokens)].sort(focusTokenOrder);
+  const art = new Map<string, PreparedFocusArt>();
+  const warnings = new Set<string>();
+  for (let first = 0; first < wanted.length; first += PAGE_ROWS) {
+    if (signal.aborted) throw new DOMException('Focus art cancelled', 'AbortError');
+    const page = wanted.slice(first, first + PAGE_ROWS);
+    const request = { sourceId: source.id, revision: source.revision, product: 'focus-art', params: { branchId, tag, hour, tokens: page, mode } };
+    const reply = validateProductReply(await client.product<unknown>(request, signal), request).data as
+      { art?: unknown; warnings?: unknown; failures?: unknown } | null;
+    if (signal.aborted) throw new DOMException('Focus art cancelled', 'AbortError');
+    if (!reply || !Array.isArray(reply.warnings) || !reply.warnings.every(item => typeof item === 'string') || !Array.isArray(reply.failures)
+      || !reply.failures.every((item: { reason?: unknown; tokens?: unknown }) => item && typeof item.reason === 'string' && Number.isInteger(item.tokens)))
+      throw new Error('Invalid focus art reply.');
+    for (const warning of reply.warnings as string[]) warnings.add(warning);
+    const failures = reply.failures as { reason: string; tokens: number }[];
+    const items = validatePreparedArt(reply.art);
+    if (failures.length) {
+      const reason = failures.map(failure => failure.reason).join('; ');
+      for (const token of page) art.set(token, placeholder(token, reason));
+      continue;
+    }
+    if (items.length !== page.length || items.some((item, index) => item.artwork.token !== page[index])) throw new Error('Focus art omitted requested tokens.');
+    for (const item of items) art.set(item.artwork.token, item);
+  }
+  return { art, warnings: [...warnings] };
 }
 
 const POLL_MS = 500;
@@ -144,27 +191,20 @@ export interface FocusUnavailableHour {
 export function validateUnavailableFocus(value: unknown, hour: number): string[] {
   if (value === null) return [];
   const row = value as FocusUnavailableHour;
-  if (!row || row.schema !== 5 || !Number.isInteger(row.firstHour) || !Number.isInteger(row.lastHour)
+  if (!row || row.schema !== PREPARED_FOCUS_SCHEMA || !Number.isInteger(row.firstHour) || !Number.isInteger(row.lastHour)
     || row.firstHour > hour || row.lastHour < hour || !Array.isArray(row.reasons)
     || !row.reasons.every(item => item && typeof item.table === 'string' && optionalText(item.reason)
       && (item.missingRows === null || natural(item.missingRows)) && (item.reason !== null || item.missingRows !== null))) throw new Error('Invalid prepared focus unavailable read.');
   return row.reasons.map(item => item.reason === null ? item.table + ': ' + item.missingRows + ' missing rows' : item.table + ': ' + item.reason);
 }
 
+/** A completed focus's description as evaluated at its confirming hour. */
 export async function loadPreparedFocusDetail(client: FocusPreparedClient, source: DashboardSource, branchId: string, tag: string,
   displayed: PreparedFocusHour, entry: FocusEntry, signal: AbortSignal): Promise<PreparedFocusArt | null> {
-  if (!client.preparedQuery) return null;
   const date = entry.completedByHour ?? displayed.orderFirstHour;
-  const row = date >= displayed.hour && date <= displayed.lastHour ? displayed : validatePreparedHour(await client.preparedQuery<unknown>(source,
-    'focus-hour', { branchId, tag, hour: date }, { signal }), date);
-  if (!row?.details) return null;
-  const page = BigInt(entry.ordinal) / 128n;
-  const items = validatePreparedArt(await client.preparedQuery<unknown>(source, 'focus-details-page',
-    { branchId, tag, hour: date, pages: row.details, page: String(page) }, { signal }), row.details, page);
+  const { art } = await loadFocusArt(client, source, branchId, tag, date, [entry.token], 'text', signal);
   if (signal.aborted) throw new DOMException('Focus details cancelled', 'AbortError');
-  const item = items[entry.ordinal % 128];
-  if (!item || item.artwork.token !== entry.token) throw new Error('Prepared focus details omitted requested token.');
-  return item;
+  return art.get(entry.token) ?? null;
 }
 
 export const preparedArtKey = (hour: number, token: string) => JSON.stringify([hour, token]);
@@ -180,6 +220,8 @@ export async function loadPreparedFocusStaticText(client: FocusPreparedClient, s
   }
   return text;
 }
+/** One page of completed focuses, each with its art as evaluated at the hour
+ * that confirmed it, and the active focus's art at `hour`. */
 export async function loadPreparedFocusPage(client: FocusPreparedClient, source: DashboardSource, branchId: string, tag: string,
   hour: number, row: PreparedFocusHour, page: bigint, signal: AbortSignal) {
   if (!client.preparedQuery) throw new Error('Prepared focus queries are unavailable.');
@@ -188,42 +230,27 @@ export async function loadPreparedFocusPage(client: FocusPreparedClient, source:
   const order = BigInt(row.completed.count) === 0n ? [] : validatePreparedOrder(await query<unknown>(source,
     'focus-order-page', { ...params, pages: row.completed }, { signal }), row.completed, page);
   if (signal.aborted) throw new DOMException('Focus query cancelled', 'AbortError');
-  const wanted = new Map<number, Set<bigint>>();
-  const want = (date: number, artPage: bigint) => { const pages = wanted.get(date) ?? new Set<bigint>(); pages.add(artPage); wanted.set(date, pages); };
-  for (const entry of order) want(entry.completedByHour ?? row.orderFirstHour, BigInt(entry.ordinal) / 128n);
+  const wanted = new Map<number, Set<string>>();
+  const want = (date: number, token: string) => { const tokens = wanted.get(date) ?? new Set<string>(); tokens.add(token); wanted.set(date, tokens); };
+  for (const entry of order) want(entry.completedByHour ?? row.orderFirstHour, entry.token);
   const active = row.current ?? row.continuous;
-  if (active) want(hour, BigInt(row.completed.rows) / 128n);
+  if (active) want(hour, active);
   const art = new Map<string, PreparedFocusArt>();
-  const presentationReads = new Map<string, Promise<PreparedFocusArt[]>>();
+  const warnings = new Set<string>();
   let staticReason: string | null = null;
   const [staticText] = await Promise.all([loadPreparedFocusStaticText(client, source,
     [...new Set([...order.map(entry => entry.token), ...(active ? [active] : [])])].sort(), signal).catch(error => {
       if (signal.aborted) throw error;
       staticReason = error instanceof Error ? error.message : String(error); return [];
-    }), Promise.all([...wanted].map(async ([date, pages]) => {
+    }), Promise.all([...wanted].map(async ([date, tokens]) => {
     try {
-    const dated = date >= row.hour && date <= row.lastHour ? row : validatePreparedHour(await query<unknown>(source,
-      'focus-hour', { branchId, tag, hour: date }, { signal }), date);
-    if (!dated) throw new Error('Prepared focus artwork hour is unavailable.');
-    if (dated.presentation.count === '0') throw new Error(dated.warnings.join('; ') || 'Prepared focus presentation is unavailable.');
-    await Promise.all([...pages].map(async artPage => {
-      const identity = JSON.stringify([dated.slot, dated.countryId, dated.presentation.first, dated.presentation.count, dated.presentation.rows, String(artPage)]);
-      let reading = presentationReads.get(identity);
-      if (!reading) {
-        reading = query<unknown>(source, 'focus-presentation-page',
-          { branchId, tag, hour: date, pages: dated.presentation, page: artPage.toString() }, { signal })
-          .then(value => validatePreparedArt(value, dated.presentation, artPage));
-        presentationReads.set(identity, reading);
-      }
-      const values = await reading;
-      for (const item of values) art.set(preparedArtKey(date, item.artwork.token), item);
-    }));
+      const dated = await loadFocusArt(client, source, branchId, tag, date, [...tokens], 'display', signal);
+      for (const warning of dated.warnings) warnings.add(warning);
+      for (const [token, item] of dated.art) art.set(preparedArtKey(date, token), item);
     } catch (error) {
       if (signal.aborted) throw error;
       const reason = error instanceof Error ? error.message : String(error);
-      const missing = order.filter(entry => (entry.completedByHour ?? row.orderFirstHour) === date).map(entry => entry.token);
-      if (active && date === hour) missing.push(active);
-      for (const token of missing) art.set(preparedArtKey(date, token), { artwork: { token, name: null, description: null, baseDurationDays: null, icon: null }, reason });
+      for (const token of tokens) art.set(preparedArtKey(date, token), placeholder(token, reason));
     }
   }))]);
   if (signal.aborted) throw new DOMException('Focus query cancelled', 'AbortError');
@@ -232,5 +259,5 @@ export async function loadPreparedFocusPage(client: FocusPreparedClient, source:
   const text = new Map(staticText.map(item => [item.token, item]));
   for (const [key, item] of art) art.set(key, { ...item, reason: item.reason ?? staticReason, artwork: { ...item.artwork,
     description: item.artwork.description ?? text.get(item.artwork.token)?.description ?? null } });
-  return { order, art, staticText, displayHour: hour };
+  return { order, art, staticText, displayHour: hour, warnings: [...warnings] };
 }

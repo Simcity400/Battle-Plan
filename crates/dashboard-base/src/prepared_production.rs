@@ -1193,6 +1193,25 @@ impl ProductionAccumulator {
             rocket_changed,
         )
     }
+    /// Hours `first..=last` that follow the last frame, at which no table
+    /// production reads changed (country keys and links included) and no
+    /// output or variant read is dated: ingesting each of them extends the
+    /// open endpoint page to it and advances the spent series, in constant
+    /// time. False without an open page, whose hours only ingestion opens.
+    pub fn advance_quiet(&mut self, first: i32, last: i32) -> io::Result<bool> {
+        if self.schema != 1
+            || self.pending.is_none()
+            || self.last_frame.and_then(|hour| hour.checked_add(1)) != Some(first)
+        {
+            return Ok(false);
+        }
+        self.spent.advance_span(first, last)?;
+        if let Some(pending) = &mut self.pending {
+            pending.last_hour = last;
+        }
+        self.last_frame = Some(last);
+        Ok(true)
+    }
     fn seal_holders(&mut self) {
         let Some(hour) = self.last_frame else {
             return;
@@ -2387,8 +2406,96 @@ impl ProductionAccumulator {
     }
 }
 
+/// Where endpoint pages are written: the store writer, or [`HeldPages`].
+pub trait PageWrites {
+    /// Write `bytes` as range `ordinal` of `section`.
+    fn write_range(&mut self, section: &str, ordinal: u64, bytes: Vec<u8>) -> io::Result<()>;
+    /// Append `bytes` to `section`, whose next range is `next`; the range written.
+    fn append(&mut self, section: &str, next: u64, bytes: Vec<u8>) -> io::Result<u64>;
+}
+
+impl PageWrites for store::Writer {
+    fn write_range(&mut self, section: &str, ordinal: u64, bytes: Vec<u8>) -> io::Result<()> {
+        self.write_at(section, ordinal, bytes.as_slice())
+    }
+
+    fn append(&mut self, section: &str, _next: u64, bytes: Vec<u8>) -> io::Result<u64> {
+        self.write(section, bytes.as_slice())
+    }
+}
+
+/// One held write: a range at its ordinal, or an append expected at its range.
+enum HeldWrite {
+    Range(u64),
+    Append(u64),
+}
+
+/// Endpoint pages published while production is prepared on its own, whose
+/// folds have no writer: each page's writes are held in publication order and
+/// written by its next flush, before the flush's own, so the store holds what
+/// publishing each page at its frame writes. Only endpoint publication
+/// appends to the time pages, so an append's range is the accumulator's page
+/// count when it was published.
+#[derive(Default)]
+pub struct HeldPages {
+    writes: Vec<(String, HeldWrite, Vec<u8>)>,
+    bytes: usize,
+}
+
+impl HeldPages {
+    /// Bytes held for the next flush.
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Write every held page, in order, through `writer`.
+    pub fn write(&mut self, writer: &mut store::Writer) -> io::Result<()> {
+        for (section, write, bytes) in std::mem::take(&mut self.writes) {
+            match write {
+                HeldWrite::Range(ordinal) => {
+                    writer.write_at(&section, ordinal, bytes.as_slice())?
+                }
+                HeldWrite::Append(expected) => {
+                    if writer.write(&section, bytes.as_slice())? != expected {
+                        return Err(io::Error::other(
+                            "Held production pages were appended out of their order",
+                        ));
+                    }
+                }
+            }
+        }
+        self.bytes = 0;
+        Ok(())
+    }
+}
+
+impl PageWrites for HeldPages {
+    fn write_range(&mut self, section: &str, ordinal: u64, bytes: Vec<u8>) -> io::Result<()> {
+        self.bytes += bytes.len();
+        self.writes
+            .push((section.to_owned(), HeldWrite::Range(ordinal), bytes));
+        Ok(())
+    }
+
+    fn append(&mut self, section: &str, next: u64, bytes: Vec<u8>) -> io::Result<u64> {
+        self.bytes += bytes.len();
+        self.writes
+            .push((section.to_owned(), HeldWrite::Append(next), bytes));
+        Ok(next)
+    }
+}
+
 pub fn publish_endpoint(
     writer: &mut store::Writer,
+    state: &mut ProductionAccumulator,
+    page: &EndpointPage,
+) -> io::Result<u64> {
+    publish_endpoint_to(writer, state, page)
+}
+
+/// [`publish_endpoint`] into `writes`.
+pub fn publish_endpoint_to(
+    writes: &mut impl PageWrites,
     state: &mut ProductionAccumulator,
     page: &EndpointPage,
 ) -> io::Result<u64> {
@@ -2442,18 +2549,15 @@ pub fn publish_endpoint(
             .max(page.last_hour),
     );
     let endpoint = state.pages_written;
-    crate::prepared::series::write_reply(
-        writer,
-        &section(ENDPOINTS, state.branch),
-        endpoint,
-        &header,
-    )?;
+    // As `series::write_reply` writes a reply.
+    let header = crate::prepared::series::compress(serde_json::to_vec(&header)?.as_slice(), 3)?;
+    writes.write_range(&section(ENDPOINTS, state.branch), endpoint, header)?;
     let bytes = serde_json::to_vec(&TimeEntry {
         first: page.first_hour,
         last: page.last_hour,
         endpoint,
     })?;
-    let ordinal = writer.write(&section(TIMES, state.branch), bytes.as_slice())?;
+    let ordinal = writes.append(&section(TIMES, state.branch), state.pages_written, bytes)?;
     state.pages_written = ordinal
         .checked_add(1)
         .ok_or_else(|| io::Error::other("Production page count exceeds its integer range"))?;

@@ -24,10 +24,20 @@ pub struct Prepared {
     /// published windows report.
     #[serde(default)]
     refusals: catalogue::OwnRefusals,
+    /// Window pages of blocks ended since the last flush, while prepared on
+    /// its own: each section, window and compressed reply.
+    #[serde(skip)]
+    windows: Vec<(String, u64, Vec<u8>)>,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
 }
+
+mod block;
+#[cfg(any(test, feature = "test-support"))]
+pub use block::kept_hours;
+pub use block::{FAMILY, fold, observe_block};
+
 impl Prepared {
     /// Runs `run` as this family's own consumer of the shared content
     /// ([`catalogue::own_refusals`]).
@@ -150,6 +160,11 @@ impl Prepared {
     }
     pub fn bytes(&self) -> usize {
         self.series.bytes()
+            + self
+                .windows
+                .iter()
+                .map(|(_, _, page)| page.len())
+                .sum::<usize>()
     }
 
     pub fn finish_block(
@@ -172,6 +187,42 @@ impl Prepared {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        let (section, window, reply) =
+            self.window_at_end(source, replay, block, context, cancelled)?;
+        series::write_reply(writer, &section, window, &reply)?;
+        self.forget_closed_runs();
+        Ok(())
+    }
+    /// [`Self::finish_block`] for a family prepared on its own, whose block
+    /// ends without a writer: the window's page is held until the commit
+    /// publishes it ([`Self::publish_windows`]), as the block's end would
+    /// have written it.
+    pub(crate) fn finish_window(
+        &mut self,
+        source: &Source,
+        replay: &Replay,
+        block: usize,
+        context: &LoadContext,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.own(|state| -> io::Result<()> {
+            let (section, window, reply) =
+                state.window_at_end(source, replay, block, context, cancelled)?;
+            let page = series::compress(serde_json::to_vec(&reply)?.as_slice(), 3)?;
+            state.windows.push((section, window, page));
+            state.forget_closed_runs();
+            Ok(())
+        })
+    }
+    /// The window reply of `block`, at its end: its section and window.
+    fn window_at_end(
+        &mut self,
+        source: &Source,
+        replay: &Replay,
+        block: usize,
+        context: &LoadContext,
+        cancelled: &AtomicBool,
+    ) -> io::Result<(String, u64, AirAcesWindowReply)> {
         self.seal_portraits();
         let index = &replay.index[block];
         let window = replay.index[..block]
@@ -208,13 +259,15 @@ impl Prepared {
         let AirAcesReply::Window(reply) = bounded(reply, "window")? else {
             unreachable!()
         };
-        series::write_reply(
-            writer,
-            &format!("air-aces-{}-windows", index.branch),
+        Ok((
+            format!("air-aces-{}-windows", index.branch),
             window as u64,
-            &reply,
-        )?;
-        // Completed runs live only in the window files. All ace identities keep their bounds.
+            reply,
+        ))
+    }
+    /// After a block's window is published: completed runs live only in the
+    /// window files. All ace identities keep their bounds.
+    fn forget_closed_runs(&mut self) {
         let active: HashSet<_> = self.scan.active.iter().copied().collect();
         for (index, ace) in self.scan.aces.iter_mut().enumerate() {
             if active.contains(&index) {
@@ -224,6 +277,13 @@ impl Prepared {
             } else {
                 ace.runs.clear();
             }
+        }
+    }
+    /// Write the windows held since their blocks ended
+    /// ([`Self::finish_window`]), as each block's end wrote them hourly.
+    pub fn publish_windows(&mut self, writer: &mut store::Writer) -> io::Result<()> {
+        for (section, window, page) in std::mem::take(&mut self.windows) {
+            writer.write_at(&section, window, page.as_slice())?;
         }
         Ok(())
     }
@@ -279,17 +339,24 @@ impl Prepared {
                 store.read_prefix(previous, key, "map.resume", 0)?
             }
             _ => store.read(key, "map.resume", 0)?,
-        }
-        .ok_or_else(|| dashboard_core::invalid("Ace decoder continuation is missing"))?;
+        };
         // Shared pipeline checkpoints contain every table. The smaller selection
-        // applies only to the interleaved-branch fallback seek below.
-        let baseline = dashboard_base::prepared_map::decode_checkpoint(file, &TableId::ALL)?.frame;
-        let baseline = if baseline.branch == branch && Some(baseline.hour) == state.scan.last_frame
-        {
+        // applies only to the fallback seek below.
+        let baseline = match file {
+            Some(file) => {
+                Some(dashboard_base::prepared_map::decode_checkpoint(file, &TableId::ALL)?.frame)
+            }
+            None => None,
+        };
+        let baseline = if let Some(baseline) = baseline.filter(|baseline| {
+            baseline.branch == branch && Some(baseline.hour) == state.scan.last_frame
+        }) {
             baseline
         } else {
-            // Interleaved branches share one decoder resume page. Restore one hour,
-            // during preparation only, when that page belongs to another branch.
+            // Interleaved branches share one decoder resume page, and aces
+            // prepared on their own commit before the hourly walk writes it
+            // (or write it at another hour). Restore one hour, during
+            // preparation only, when that page is missing or another's.
             let hour = state
                 .scan
                 .last_frame
@@ -443,10 +510,11 @@ pub fn query(
         let params: AirAcePortraitParams = serde_json::from_value(params)?;
         AirAcePortraits::validate(&params).map_err(dashboard_core::invalid)?;
         let branch = params.branch_id.parse().expect("validated branch");
-        let Some(coverage) = dashboard_base::prepared::coverage::coverage(
+        let Some(coverage) = dashboard_base::prepared::coverage::product_coverage(
             source,
             context.content.as_ref(),
             branch,
+            AirAcePortraits::KEY,
             cancelled,
         )?
         else {
@@ -468,10 +536,11 @@ pub fn query(
     let params: AirAcesParams = serde_json::from_value(params)?;
     AirAces::validate(&params).map_err(dashboard_core::invalid)?;
     let branch = params.branch_id.parse().expect("validated branch");
-    let Some(coverage) = dashboard_base::prepared::coverage::coverage(
+    let Some(coverage) = dashboard_base::prepared::coverage::product_coverage(
         source,
         context.content.as_ref(),
         branch,
+        AirAces::KEY,
         cancelled,
     )?
     else {

@@ -231,7 +231,7 @@ struct Ace {
 #[derive(Default, Serialize, Deserialize)]
 struct Scan {
     /// The recording's format, which dates its daily tables
-    /// ([`crate::metadata::slot_read`]).
+    /// ([`dashboard_text::metadata::slot_read`]).
     #[serde(skip)]
     format: replay::format::FormatVersion,
     first: i32,

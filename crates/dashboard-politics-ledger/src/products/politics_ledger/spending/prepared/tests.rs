@@ -2580,3 +2580,337 @@ fn prepared_unit_leader_change_observes_only_countries_whose_allocators_it_names
         assert_eq!(replies[0], replies[1], "{tag}");
     }
 }
+
+/// Every section a fixture's store publishes, byte for byte.
+fn sections(fixture: &Fixture) -> BTreeMap<(String, u64), Vec<u8>> {
+    use std::io::Read;
+    let listing = store::Listing::open(&fixture.directory.join("manifest"))
+        .unwrap()
+        .expect("a published manifest");
+    let mut result = BTreeMap::new();
+    for (name, count) in listing.sections() {
+        for range in 0..count {
+            let mut bytes = Vec::new();
+            fixture
+                .store
+                .read(&fixture.key, name, range)
+                .unwrap()
+                .unwrap()
+                .read_to_end(&mut bytes)
+                .unwrap();
+            result.insert((name.to_owned(), range), bytes);
+        }
+    }
+    result
+}
+
+/// Each country's daily gain of `day`, its native application and cost,
+/// and the political power event it applies.
+fn daily_gain(
+    country: u32,
+    instance: u32,
+    day: i32,
+) -> (
+    CountryPowerDailyRow,
+    CountryPowerDailyCostRow,
+    CountryPowerChangeRow,
+) {
+    (
+        CountryPowerDailyRow {
+            country,
+            instance,
+            epoch: 1,
+            day_hour: day,
+            pp_gross_gain_raw: Some(100),
+            pp_cost_raw: Some(7),
+            pp_net_gain_raw: Some(93),
+            pp_realized_delta_raw: Some(80),
+            pp_sequence: Some(day as u64),
+            cp_gain_raw: Some(30),
+            cp_realized_delta_raw: Some(30),
+            cp_sequence: Some(day as u64 + 1),
+        },
+        CountryPowerDailyCostRow {
+            country,
+            instance,
+            epoch: 1,
+            day_hour: day,
+            pp_sequence: day as u64,
+            cost_raw: 7,
+            cause: PowerCause::DailyGain,
+            ..Default::default()
+        },
+        CountryPowerChangeRow {
+            country,
+            instance,
+            hour: day,
+            currency: PowerCurrency::Political,
+            balance_before_raw: 10,
+            balance_after_raw: 90,
+            ..event(
+                day as u64,
+                PowerCause::DailyGain,
+                PowerOperation::Add,
+                Some(93),
+            )
+        },
+    )
+}
+
+/// One hour of a campaign whose captures extend to every hour they are
+/// read, so that most hours only advance them: a payment at 30 that leaves
+/// the published window at 44; the third country's capture, not read from
+/// 35 to 37 (stale), starting again at 38 under another instance; a
+/// leader's command power allocation at 40; the first country's daily gain,
+/// applied with its daily cost, at day 48, leaving the window at 62, and the
+/// first and third countries' at day 72; the fourth country's capture
+/// deleted at 56 and starting again at 58; and the second country's losing
+/// its command power stream at 66.
+fn advancing_hour(
+    input: &mut DecodedFrame,
+    captures: &mut Vec<PoliticsCaptureCoverageRow>,
+    power: &mut Vec<CountryPowerChangeRow>,
+) {
+    let hour = input.hour;
+    let days: Vec<(u32, u32, i32)> = if hour >= 72 {
+        vec![(1, 1, 72), (3, 2, 72)]
+    } else if hour >= 48 {
+        vec![(1, 1, 48)]
+    } else {
+        Vec::new()
+    };
+    match hour {
+        30 => power.push(payment(1, 30, 30)),
+        38 => {
+            captures[2].instance = 2;
+            captures[2].since_hour = 38;
+        }
+        40 => {
+            power.push(CountryPowerChangeRow {
+                country: 2,
+                instance: 1,
+                epoch: 1,
+                hour,
+                sequence: 40,
+                currency: PowerCurrency::Command,
+                operation: PowerOperation::Subtract,
+                requested_delta_raw: Some(-300_000),
+                cause: PowerCause::LeaderAssignment,
+                site: PowerSite::AllocateCommandPower,
+                balance_before_raw: 1_000_000,
+                balance_after_raw: 700_000,
+                identity: PowerIdentity {
+                    object_kind: PowerObjectKind::Leader,
+                    object_reference: Some((7_u64 << 32) | 2),
+                    ..Default::default()
+                },
+            });
+            let mut command = input
+                .complete::<tables::CountryCommandPower>()
+                .unwrap()
+                .to_vec();
+            command[1].allocated_command_power_raw = 300_000;
+            put(input, TableRows::CountryCommandPower(command));
+        }
+        44 => power.retain(|row| (row.country, row.sequence) != (1, 30)),
+        48 | 72 => power.extend(
+            days.iter()
+                .map(|&(country, instance, day)| daily_gain(country, instance, day).2),
+        ),
+        56 => captures.retain(|row| row.country != 4),
+        58 => captures.push(capture(4, 58, 58)),
+        62 => power.retain(|row| (row.country, row.sequence) != (1, 48)),
+        66 => captures[1].streams &= !PoliticsCaptureCoverageRow::CP,
+        _ => {}
+    }
+    for row in captures.iter_mut() {
+        if row.country != 3 || !(35..=37).contains(&hour) {
+            row.through_hour = hour;
+        }
+    }
+    power.sort_by_key(|row| (row.country, row.sequence));
+    put(input, TableRows::PoliticsCaptureCoverage(captures.clone()));
+    put(input, TableRows::CountryPowerChanges(power.clone()));
+    let gains: Vec<_> = days
+        .iter()
+        .map(|&(country, instance, day)| daily_gain(country, instance, day))
+        .collect();
+    put(
+        input,
+        TableRows::CountryPowerDaily(gains.iter().map(|gain| gain.0.clone()).collect()),
+    );
+    put(
+        input,
+        TableRows::CountryPowerDailyCosts(gains.iter().map(|gain| gain.1.clone()).collect()),
+    );
+    // A live recording publishes the daily tables at every hour.
+    for table in [TableId::CountryPowerDaily, TableId::CountryPowerDailyCosts] {
+        input.metrics.table_ns[table.index()] = replay::frame::READ_TIME_NOT_RECORDED;
+    }
+}
+
+/// Hours that only advance captures publish and keep exactly what the
+/// whole accounting does, byte for byte, through payments, daily gains at
+/// day boundaries, a stale capture and one starting again, a deleted
+/// capture, a lost stream, a recording gap, a keyframe and two resumes; and
+/// they skip the whole accounting, which a dense observer takes at every
+/// hour that is not quiet.
+#[test]
+fn prepared_advance_only_hours_match_the_whole_accounting_byte_for_byte() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut observers = [Prepared::default(), Prepared::default()];
+    observers[1].dense = true;
+    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+    let mut recorded = Recorded::new();
+    let mut input = frame(24, 4);
+    put(&mut input, command_power(4));
+    let mut captures: Vec<_> = (1..=4).map(|country| capture(country, 24, 24)).collect();
+    let mut power = Vec::new();
+    let mut advanced = BTreeSet::new();
+    // Hours 52 and 53 are a recording gap; hour 70 a keyframe; both
+    // observers resume after 60 and 84.
+    let hours: Vec<i32> = (24..=95).filter(|hour| !(52..=53).contains(hour)).collect();
+    for &hour in &hours {
+        input.hour = hour;
+        advancing_hour(&mut input, &mut captures, &mut power);
+        let (decoded, wire) = recorded.next(&mut input, hour == 24 || hour == 70);
+        let before = observers[0].advanced_hours();
+        for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
+            let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), format);
+            observer.observe(&decoded, &changes, &flag).unwrap();
+        }
+        if observers[0].advanced_hours() > before {
+            advanced.insert(hour);
+        }
+        let [fast, dense] = &observers;
+        assert_eq!(fast.scan.events, dense.scan.events, "hour {hour}");
+        assert_eq!(
+            fast.scan.published_events, dense.scan.published_events,
+            "hour {hour}"
+        );
+        assert_eq!(fast.scan.costs, dense.scan.costs, "hour {hour}");
+        assert_eq!(
+            fast.scan.inputs.deadlines, dense.scan.inputs.deadlines,
+            "hour {hour}"
+        );
+        assert_eq!(
+            fast.scan.inputs.witnesses, dense.scan.inputs.witnesses,
+            "hour {hour}"
+        );
+        assert_eq!(
+            fast.scan.inputs.by_slot, dense.scan.inputs.by_slot,
+            "hour {hour}"
+        );
+        assert_eq!(
+            fast.current_daily_keys, dense.current_daily_keys,
+            "hour {hour}"
+        );
+        // Daily keys read once per allocation are the hour's; cost keys
+        // pruned once until the current keys change hold none but current.
+        let daily: BTreeSet<_> = decoded
+            .complete::<tables::CountryPowerDaily>()
+            .unwrap_or_default()
+            .iter()
+            .map(RowCodec::key)
+            .collect();
+        assert_eq!(fast.current_daily_keys, daily, "hour {hour}");
+        assert!(
+            fast.scan
+                .costs
+                .iter()
+                .all(|key| fast.scan.inputs.cost_keys.contains(key)),
+            "hour {hour}: a recorded cost key is no current row's"
+        );
+        assert_eq!(fast.scan.clock.next, dense.scan.clock.next, "hour {hour}");
+        assert_eq!(fast.scan.dirty, dense.scan.dirty, "hour {hour}");
+        assert_eq!(fast.day_tags, dense.day_tags, "hour {hour}");
+        assert_eq!(
+            fast.tail.keys().collect::<Vec<_>>(),
+            dense.tail.keys().collect::<Vec<_>>(),
+            "hour {hour}"
+        );
+        assert_eq!(fast.frontier, dense.frontier, "hour {hour}");
+        if ![44, 60, 84, 95].contains(&hour) {
+            continue;
+        }
+        // The kept state and every published section, byte for byte.
+        let saved = observers
+            .each_mut()
+            .map(|observer| observer.saved_bytes().unwrap());
+        assert_eq!(saved[0], saved[1], "state saved at hour {hour}");
+        for (observer, fixture) in observers.iter_mut().zip(&fixtures) {
+            publish(observer, fixture);
+        }
+        let published = fixtures.each_ref().map(sections);
+        assert!(!published[0].is_empty());
+        assert_eq!(
+            published[0].keys().collect::<Vec<_>>(),
+            published[1].keys().collect::<Vec<_>>(),
+            "sections published through hour {hour}"
+        );
+        for (section, bytes) in &published[0] {
+            assert!(
+                published[1][section] == *bytes,
+                "{section:?} published through hour {hour}"
+            );
+        }
+        for tag in ["C1", "C2", "C3", "C4"] {
+            for view in ["raw", "spending", "balance", "governments"] {
+                assert_eq!(
+                    read(&fixtures[0], tag, 24, hour, view),
+                    read(&fixtures[1], tag, 24, hour, view),
+                    "{tag} {view} published through hour {hour}"
+                );
+            }
+        }
+        if hour == 95 {
+            break;
+        }
+        for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
+            let (dense, paths) = (observer.dense, observer.paths);
+            *observer = Prepared::read(observer.saved_bytes().unwrap().as_slice()).unwrap();
+            observer.dense = dense;
+            observer.paths = paths;
+            observer.resume(&decoded);
+            tracker.invalidate();
+        }
+    }
+    let [fast, dense] = &observers;
+    assert_eq!(
+        dense.advanced_hours(),
+        0,
+        "the dense observer accounts every hour"
+    );
+    assert_eq!(
+        fast.advanced_hours() + fast.accounted_hours(),
+        dense.accounted_hours(),
+        "each hour not quiet takes one path"
+    );
+    // Hours whose captures all extend and nothing else changes: after a
+    // payment, after a capture went stale or started again, after a leader's
+    // allocation, after a daily gain, while a deleted capture is absent.
+    for hour in [
+        25, 26, 27, 28, 29, 31, 32, 33, 36, 37, 39, 41, 42, 43, 49, 50, 51, 57, 59, 63, 64, 65, 67,
+        68, 69, 73, 74, 75, 86, 87, 88,
+    ] {
+        assert!(
+            advanced.contains(&hour),
+            "hour {hour} only advanced captures; the advance path took {advanced:?}"
+        );
+    }
+    for hour in [24, 30, 38, 40, 48, 54, 56, 58, 61, 66, 70, 72, 85] {
+        assert!(
+            !advanced.contains(&hour),
+            "hour {hour} changed the ledger; the advance path took it"
+        );
+    }
+    assert!(
+        fast.accounted_hours() * 3 < hours.len(),
+        "most hours skip the whole accounting: {} of {} took it",
+        fast.accounted_hours(),
+        hours.len()
+    );
+}

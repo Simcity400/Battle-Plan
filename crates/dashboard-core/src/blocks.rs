@@ -97,31 +97,53 @@ pub fn scan_blocks<'a, R>(
     SCANNED_BLOCKS.with_borrow_mut(|scanned| {
         scanned.extend(blocks.iter().map(|block| block.offset));
     });
-    let ahead = Ahead {
+    let largest = blocks.iter().map(|block| tables.of(block).len()).max();
+    let ahead = if largest.unwrap_or(0) * 2 > TABLE_COUNT {
+        0
+    } else {
+        AHEAD
+    };
+    scan_blocks_by(
+        blocks,
+        ahead,
+        cancelled,
+        &|block| replay.read_block_selected(block, tables.of(block)),
+        scan,
+    )
+}
+
+/// `blocks`, each read by `read`, handed to `scan` in their given order, with at most
+/// `ahead` blocks read on spare cores ahead of the one `scan` works on (none: every
+/// block is read on the calling thread when `scan` asks for it). Reads share
+/// [`scan_blocks`]'s core budget. Reading ahead stops once `scan` returns or
+/// `cancelled` is set.
+pub fn scan_blocks_by<'a, T: Send, R>(
+    blocks: Vec<&'a BlockIndex>,
+    ahead: usize,
+    cancelled: &AtomicBool,
+    read_block: &(dyn Fn(&'a BlockIndex) -> io::Result<T> + Sync),
+    scan: impl FnOnce(&mut dyn Iterator<Item = (&'a BlockIndex, io::Result<T>)>) -> io::Result<R>,
+) -> io::Result<R> {
+    let readers = ahead;
+    let state = Ahead {
         state: Mutex::new(State {
             taken: 0,
             handed: 0,
             stop: false,
+            ahead,
             reads: engine::allocation::default_vec(blocks.len())?,
         }),
         changed: Condvar::new(),
     };
+    let ahead = &state;
     let read = |position: usize| {
         let _core = cores().take();
-        catch_unwind(AssertUnwindSafe(|| {
-            replay.read_block_selected(blocks[position], tables.of(blocks[position]))
-        }))
-        .unwrap_or_else(|_| Err(io::Error::other("block read failed")))
+        catch_unwind(AssertUnwindSafe(|| read_block(blocks[position])))
+            .unwrap_or_else(|_| Err(io::Error::other("block read failed")))
     };
     thread::scope(|scope| {
-        let largest = blocks.iter().map(|block| tables.of(block).len()).max();
-        let readers = if largest.unwrap_or(0) * 2 > TABLE_COUNT {
-            0
-        } else {
-            AHEAD
-        };
         // Install before spawning: a refused worker must wake and join those already running.
-        let _stop = Stop(&ahead);
+        let _stop = Stop(ahead);
         for _ in 0..readers.min(blocks.len().saturating_sub(1)) {
             thread::Builder::new().spawn_scoped(scope, || {
                 while let Some(position) = ahead.take(cancelled) {
@@ -160,21 +182,23 @@ pub fn scan_blocks<'a, R>(
     })
 }
 
-struct State {
+struct State<T> {
     /// The next block a reader takes, and the next one handed to the scan.
     taken: usize,
     handed: usize,
     stop: bool,
-    reads: Vec<Option<io::Result<Vec<Frame>>>>,
+    /// Blocks a reader may take beyond the one handed next.
+    ahead: usize,
+    reads: Vec<Option<io::Result<T>>>,
 }
 
-struct Ahead {
-    state: Mutex<State>,
+struct Ahead<T> {
+    state: Mutex<State<T>>,
     changed: Condvar,
 }
 
-impl Ahead {
-    fn lock(&self) -> MutexGuard<'_, State> {
+impl<T> Ahead<T> {
+    fn lock(&self) -> MutexGuard<'_, State<T>> {
         self.state.lock().unwrap_or_else(|error| error.into_inner())
     }
 
@@ -186,7 +210,7 @@ impl Ahead {
             if state.stop || state.taken == state.reads.len() || cancelled.load(Ordering::Acquire) {
                 return None;
             }
-            if state.taken <= state.handed + AHEAD {
+            if state.taken <= state.handed + state.ahead {
                 state.taken += 1;
                 return Some(state.taken - 1);
             }
@@ -198,9 +222,9 @@ impl Ahead {
     }
 }
 
-struct Stop<'a>(&'a Ahead);
+struct Stop<'a, T>(&'a Ahead<T>);
 
-impl Drop for Stop<'_> {
+impl<T> Drop for Stop<'_, T> {
     fn drop(&mut self) {
         self.0.lock().stop = true;
         self.0.changed.notify_all();

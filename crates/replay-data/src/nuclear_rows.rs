@@ -21,6 +21,9 @@ pub enum NuclearStrikePart {
 }
 
 impl Value for NuclearStrikePart {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     const MINIMUM_ENCODED_BYTES: usize = 1;
     fn encoded_bytes(&self) -> io::Result<usize> {
         Ok(1)

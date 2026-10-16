@@ -640,6 +640,12 @@ pub enum LaunchNavalBases {
 }
 
 impl Value for LaunchNavalBases {
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Self::Bases(bases) => Value::heap_bytes(bases),
+            Self::Unavailable | Self::NativeNull => 0,
+        }
+    }
     const MINIMUM_ENCODED_BYTES: usize = 1;
 
     fn encoded_bytes(&self) -> io::Result<usize> {
@@ -758,6 +764,9 @@ impl ReservedCountryIntelSample {
     }
 }
 impl crate::value::Value for ReservedCountryIntelSample {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     const MINIMUM_ENCODED_BYTES: usize = 8;
     #[cfg(test)]
     const STRUCT_FIELDS: usize = 2;

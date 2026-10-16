@@ -203,6 +203,17 @@ impl Census {
                 format!("Equipment variant {variant}: name not recorded or content unavailable"),
             );
         }
+        // A look-back that neither read nor forgot the variant's naming cannot
+        // tell whether forward preparation still holds an earlier read's name.
+        let unread = self.variants.current(variant).is_none()
+            && !self.variants.versions.contains_key(&variant);
+        if let Some(check) = &mut self.newest
+            && hour >= check.window_first
+            && unread
+            && !check.forgot
+        {
+            check.unnamed = true;
+        }
         // The handle keeps designs with identical display names apart.
         self.designs.intern(LandEquipmentDesign {
             name,
@@ -333,6 +344,17 @@ impl Census {
             }
             if result.end_hour <= coverage.from_hour || result.end_hour > coverage.to_hour {
                 continue;
+            }
+            // The battle a result in the newest window closes may have ended
+            // as early as its coverage starts.
+            if let Some(check) = &mut self.newest
+                && frame.hour >= check.window_first
+            {
+                check.results_from = Some(
+                    check
+                        .results_from
+                        .map_or(coverage.from_hour, |from| from.min(coverage.from_hour)),
+                );
             }
             let mut countries = [Vec::new(), Vec::new()];
             let mut countries_unknown = [!labels; 2];

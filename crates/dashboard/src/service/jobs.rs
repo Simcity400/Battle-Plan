@@ -1,4 +1,4 @@
-use super::{Inner, Lease, Request};
+use super::{Inner, Lane, Lease, Request};
 use crate::{
     Source, SourceKey, map_settings,
     products::{self, ContentOptions, LoadContext},
@@ -459,38 +459,41 @@ impl Inner {
     }
 
     pub(super) fn submit(&self, request: Arc<Request>, job: LoadJob) {
-        let interactive = match &job {
+        let lane = match &job {
             LoadJob::Product { body, .. } => {
-                products::find(&body.product).is_some_and(|product| product.interactive)
+                if products::find(&body.product).is_some_and(|product| product.interactive) {
+                    Lane::Interactive
+                } else {
+                    Lane::History
+                }
             }
-            LoadJob::HistoryCache { .. } => true,
-            LoadJob::PreparedQuery { .. } | LoadJob::Preparation { .. } => true,
-            LoadJob::PreparationRefresh { .. } => false,
-            LoadJob::PreparationPreferences { .. } => true,
-            LoadJob::MapSettings(_) | LoadJob::Open(_) => false,
+            LoadJob::PreparedQuery { .. } => Lane::Prepared,
+            LoadJob::HistoryCache { .. }
+            | LoadJob::Preparation { .. }
+            | LoadJob::PreparationPreferences { .. } => Lane::Interactive,
+            LoadJob::PreparationRefresh { .. } | LoadJob::MapSettings(_) | LoadJob::Open(_) => {
+                Lane::History
+            }
             #[cfg(test)]
-            LoadJob::Fixture { interactive, .. } => *interactive,
+            LoadJob::Fixture { lane, .. } => *lane,
         };
+        self.submit_to(lane, request, job);
+    }
+
+    /// Queue `job` on `lane`, or refuse it with the retryable capacity error
+    /// when the lane is full.
+    pub(super) fn submit_to(&self, lane: Lane, request: Arc<Request>, job: LoadJob) {
         let result = {
             let loader = self
                 .loader
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             match loader.as_ref() {
-                Some(lanes) => {
-                    let lane = if interactive {
-                        &lanes.interactive
-                    } else {
-                        &lanes.history
-                    };
-                    match lane.try_send(job) {
-                        Ok(()) => Ok(()),
-                        Err(TrySendError::Full(_)) => Err(crate::transport::CAPACITY_REACHED),
-                        Err(TrySendError::Disconnected(_)) => {
-                            Err("Dashboard data service is closing")
-                        }
-                    }
-                }
+                Some(lanes) => match lanes.sender(lane).try_send(job) {
+                    Ok(()) => Ok(()),
+                    Err(TrySendError::Full(_)) => Err(crate::transport::CAPACITY_REACHED),
+                    Err(TrySendError::Disconnected(_)) => Err("Dashboard data service is closing"),
+                },
                 None => Err("Dashboard data service is closing"),
             }
         };
@@ -620,7 +623,7 @@ impl Inner {
         bounded_json(&reply, &request.cancelled)
     }
 
-    pub(super) fn run_loader(self: &Arc<Self>, jobs: &Mutex<Receiver<LoadJob>>) {
+    pub(super) fn run_loader(self: &Arc<Self>, jobs: &Mutex<Receiver<LoadJob>>, lane: Lane) {
         loop {
             let job = {
                 let receiver = jobs.lock().unwrap_or_else(|error| error.into_inner());
@@ -643,7 +646,7 @@ impl Inner {
             }
             let request = job.request().cloned();
             let result = request_result(|| {
-                self.run_job(job);
+                self.run_job(job, lane);
                 Ok(())
             });
             if let (Err(error), Some(request)) = (result, request) {
@@ -652,7 +655,17 @@ impl Inner {
         }
     }
 
-    fn run_job(&self, job: LoadJob) {
+    /// `answer` as `lane` runs it: on [`Lane::Prepared`] without decoding
+    /// recorded blocks, `None` when it needed to and must run on [`Lane::Sampled`].
+    fn attempt<T>(lane: Lane, answer: impl FnOnce() -> T) -> Option<T> {
+        if lane != Lane::Prepared {
+            return Some(answer());
+        }
+        let (answer, refused) = crate::prepared::query::progressive::without_block_decodes(answer);
+        (!refused).then_some(answer)
+    }
+
+    fn run_job(&self, job: LoadJob, lane: Lane) {
         match job {
             LoadJob::PreparationRefresh { source, restart } => {
                 let restart = restart.load(Ordering::Acquire);
@@ -742,14 +755,29 @@ impl Inner {
                 if request.cancelled() {
                     return;
                 }
-                let result = crate::prepared::query::query(
-                    &source,
-                    &body,
-                    self.content().as_ref(),
-                    &request.cancelled,
-                )
-                .map_err(|error| error.to_string());
-                self.complete(request, result);
+                let answer = Self::attempt(lane, || {
+                    crate::prepared::query::query(
+                        &source,
+                        &body,
+                        self.content().as_ref(),
+                        &request.cancelled,
+                    )
+                    .map_err(|error| error.to_string())
+                });
+                match answer {
+                    Some(result) => self.complete(request, result),
+                    // The answer samples recorded blocks: it waits for a sampled-read
+                    // loader, and nothing this attempt read is kept.
+                    None => self.submit_to(
+                        Lane::Sampled,
+                        Arc::clone(&request),
+                        LoadJob::PreparedQuery {
+                            request,
+                            source,
+                            body,
+                        },
+                    ),
+                }
             }
             LoadJob::Preparation {
                 request,
@@ -837,7 +865,19 @@ impl Inner {
                 self.open_job(job);
             }
             #[cfg(test)]
-            LoadJob::Fixture { run, .. } => run(),
+            LoadJob::Fixture { request, run, .. } => {
+                if Self::attempt(lane, || run()).is_none() {
+                    self.submit_to(
+                        Lane::Sampled,
+                        Arc::clone(&request),
+                        LoadJob::Fixture {
+                            request,
+                            lane: Lane::Sampled,
+                            run,
+                        },
+                    );
+                }
+            }
         }
     }
 
@@ -973,11 +1013,13 @@ pub(super) enum LoadJob {
         source_id: String,
         action: crate::prepared::Action,
     },
+    /// A test job on `lane`, run again on [`Lane::Sampled`] when its run on
+    /// [`Lane::Prepared`] refused a block decode.
     #[cfg(test)]
     Fixture {
         request: Arc<Request>,
-        interactive: bool,
-        run: Box<dyn FnOnce() + Send>,
+        lane: Lane,
+        run: Arc<dyn Fn() + Send + Sync>,
     },
     MapSettings(MapSettingsJob),
     HistoryCache {

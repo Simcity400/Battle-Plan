@@ -149,6 +149,10 @@ pub(super) struct Scanned {
     /// Power and cost row keys not recorded as events, once known.
     pending: [BTreeSet<u128>; 2],
     pending_known: bool,
+    /// Whether the recorded cost keys were pruned to the current cost rows'
+    /// keys since those keys last changed: costs recorded since are current
+    /// rows', so pruning again removes none.
+    costs_pruned: bool,
     /// Countries whose capture and holds an accepted read observed.
     #[cfg(test)]
     country_visits: usize,
@@ -313,6 +317,7 @@ impl Scanned {
     pub(super) fn resume(&mut self, frame: &DecodedFrame) {
         self.retain_previous(frame);
         self.pending_known = false;
+        self.costs_pruned = false;
         self.clock.stable = false;
         self.clock.holders = self.holds.known_tags().cloned().collect();
         // A census lost on the next read is a holder transition, as without
@@ -529,9 +534,13 @@ impl Scanned {
                 self.events.remove(&key);
             }
         }
-        if self.inputs.costs_changed && frame.complete::<tables::CountryPowerDailyCosts>().is_ok() {
+        if self.inputs.costs_changed
+            && frame.complete::<tables::CountryPowerDailyCosts>().is_ok()
+            && !self.costs_pruned
+        {
             let current = &self.inputs.cost_keys;
             self.costs.retain(|key| current.contains(key));
+            self.costs_pruned = true;
         }
     }
 
@@ -953,6 +962,7 @@ pub(super) fn observe_all(
     content: Option<&PoliticsContent>,
 ) -> io::Result<()> {
     Arc::make_mut(&mut scan.inputs).refresh(frame, None);
+    scan.costs_pruned = false;
     observe_accounting(frame, scan, content)
 }
 

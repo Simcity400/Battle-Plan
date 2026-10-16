@@ -369,6 +369,31 @@ impl Prepared {
         self.observe_tables(format, frame, changes, previous)
     }
 
+    /// Hours `first..=last` that follow the last observed, at which no field
+    /// the holders or their naming read changed and no stock, logistics or
+    /// variant read is dated: observing each of them only advances the
+    /// series' accepted hours and the catalogue's last hour, since a holder
+    /// is stepped through hours it was not visited when it is next visited.
+    /// In constant time. False when the hours could only be observed from the
+    /// whole tables (no row index yet), which only observation does.
+    pub fn advance_quiet(&mut self, first: i32, last: i32) -> io::Result<bool> {
+        #[cfg(test)]
+        if self.whole_tables {
+            return Ok(false);
+        }
+        if self.rows.is_none() || self.frontier.and_then(|hour| hour.checked_add(1)) != Some(first)
+        {
+            return Ok(false);
+        }
+        self.naming.advance_span(first, last)?;
+        self.numbers.advance_span(first, last)?;
+        self.choices.advance_span(first, last)?;
+        self.frontier = Some(last);
+        self.names.advance(last);
+        self.naming.through(last);
+        Ok(true)
+    }
+
     /// Every holder from the whole tables, and the index of their rows that
     /// later hours keep current from their changed rows.
     fn observe_tables(
@@ -1004,6 +1029,18 @@ impl Numbers {
         }
         Ok(())
     }
+    /// [`Self::advance`] at every hour `first..=last`, in constant time.
+    fn advance_span(&mut self, first: i32, last: i32) -> io::Result<()> {
+        for series in self
+            .amounts
+            .iter_mut()
+            .chain(self.present.iter_mut())
+            .chain([&mut self.coverage, &mut self.reads])
+        {
+            series.advance_span(first, last)?;
+        }
+        Ok(())
+    }
     fn values<K: Ord + Copy + std::fmt::Display + Into<u64>>(
         &mut self,
         tag: &str,
@@ -1627,10 +1664,12 @@ pub fn query(
         return Err(dashboard_core::invalid("Invalid stockpile viewport"));
     }
     let branch = country.branch();
-    let Some(coverage) = dashboard_base::prepared::coverage::coverage(
+    // The stockpile prepared on its own answers from its own coverage.
+    let Some(coverage) = dashboard_base::prepared::coverage::product_coverage(
         source,
         context.content.as_ref(),
         branch,
+        "equipment-stockpile",
         cancelled,
     )?
     else {

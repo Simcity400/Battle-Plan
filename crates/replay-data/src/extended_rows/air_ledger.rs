@@ -125,6 +125,9 @@ impl From<engine::building_damage_sites::Cause> for BuildingBombingDamageCause {
 }
 
 impl NativeValue for BuildingBombingDamageCause {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     fn try_clone(&self) -> io::Result<Self> {
         Ok(*self)
     }

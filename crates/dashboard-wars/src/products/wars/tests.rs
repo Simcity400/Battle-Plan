@@ -1824,7 +1824,9 @@ fn prepared_wars_counter_only_hours_publish_one_global_input_change_and_reached_
     assert_eq!(hour, 100);
     assert!(serde_json::from_slice::<serde_json::Value>(&row).is_err());
     let (changes, packet) = walks::decode_input(&row).unwrap();
-    assert_eq!(changes.len(), TABLES.len());
+    // Every input but the clock, whose rows no reply reads.
+    assert_eq!(changes.len(), TABLES.len() - 1);
+    assert!(!changes.contains(&(TableId::Clock as u16)));
     let packet = dashboard_base::prepared::series::decompress(packet).unwrap();
     let mut input = replay::codec::Decoder::new(&packet);
     assert_eq!(
@@ -2829,4 +2831,78 @@ fn prepared_wars_keep_bounded_walks_per_viewpoint_and_catalogue() {
     let before = decoded_inputs();
     assert_eq!(walked(&fixture, &thin, None, None, &mid, None), expected);
     assert!(decoded_inputs() - before < thinned[0].interval as usize);
+}
+
+#[test]
+fn resumable_walks_keep_each_open_wars_continuation_and_not_its_history() {
+    use replay::{frame::TableView, rows::TableRows};
+    // Losses move every hour, so every hour adds a loss run to each war.
+    let losses = |hour: i32| {
+        let mut frame = recorded(hour);
+        if let TableView::Complete(TableRows::WarRelations(rows)) =
+            &mut *frame.tables[TableId::WarRelations.index()]
+        {
+            for row in rows {
+                row.second_casualties = i64::from(hour);
+            }
+        }
+        frame
+    };
+    let mut walk = Walk::new(1, 100);
+    for hour in 100..140 {
+        walk.observe(&losses(hour), None, None, None);
+    }
+    let ids = |walk: &Walk| walk.open.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+    let open = ids(&walk);
+    assert!(!open.is_empty(), "the fixture's wars are open");
+    let mut copy = walk.resumable();
+    for &id in &open {
+        assert!(
+            walk.reply.wars[id].casualties.len() >= 40,
+            "war {id}: a loss run every hour"
+        );
+        let kept = &copy.reply.wars[id];
+        assert_eq!(kept.casualties.len(), 1, "war {id}: its last loss run");
+        assert_eq!(kept.observations.len(), 1, "war {id}: its last observation");
+        assert_eq!(kept.participants.len(), kept.open_participants.len());
+        assert_eq!(kept.relations.len(), kept.open_relations.len());
+    }
+    // Continued alike, the copy holds what the walk holds of each open war.
+    for hour in 140..150 {
+        let frame = losses(hour);
+        walk.observe(&frame, None, None, None);
+        copy.observe(&frame, None, None, None);
+    }
+    assert_eq!(ids(&copy), ids(&walk));
+    fn json(value: impl Serialize) -> serde_json::Value {
+        serde_json::to_value(value).unwrap()
+    }
+    for (id, _) in &walk.open {
+        let (full, kept) = (&walk.reply.wars[*id], &copy.reply.wars[*id]);
+        assert_eq!(json(&full.casualties.last()), json(&kept.casualties.last()));
+        assert_eq!(
+            json(&full.observations.last()),
+            json(&kept.observations.last())
+        );
+        assert_eq!(
+            (full.first_hour, full.last_hour),
+            (kept.first_hour, kept.last_hour)
+        );
+        for (key, &index) in &full.open_participants {
+            assert_eq!(
+                json(&full.participants[index]),
+                json(&kept.participants[kept.open_participants[key]])
+            );
+        }
+        for (key, &index) in &full.open_relations {
+            let (a, b) = (
+                &full.relations[index],
+                &kept.relations[kept.open_relations[key]],
+            );
+            assert_eq!(
+                (&a.key, a.first_hour, a.last_hour),
+                (&b.key, b.first_hour, b.last_hour)
+            );
+        }
+    }
 }

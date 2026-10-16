@@ -13,8 +13,15 @@ struct Flushed {
 }
 
 /// One fresh run of the fixture's recording on `parallelism` processors (two
-/// or fewer prepare serially), cleared afterwards.
+/// or fewer prepare serially), every family in the hourly walk, cleared
+/// afterwards.
 fn flushed(fixture: &mut Fixture, parallelism: usize) -> Flushed {
+    independent::with_test_hourly(|| registered_flushed(fixture, parallelism))
+}
+
+/// [`flushed`] with the families prepared on their own the registry names,
+/// which the walk's flush skips on every thread.
+fn registered_flushed(fixture: &mut Fixture, parallelism: usize) -> Flushed {
     let source = fixture.source("parallel-flush");
     let (result, steps) = flush::with_recorded_steps(|| {
         lanes::with_test_lanes(parallelism, None, || {
@@ -80,10 +87,30 @@ fn block_end_flushes_run_on_several_threads_and_publish_the_serial_bytes() {
     );
     assert_eq!(parallel.refused, serial.refused);
     let steps = assert_same_steps(&serial.steps, &parallel.steps);
-    // Both branches' flushes ran every family's every step.
+    // Both branches' flushes ran every family's every step: the same
+    // positions, from the first to the last with none skipped.
     assert_eq!(steps.keys().copied().collect::<Vec<_>>(), [11, 21]);
+    let every = (0..steps[&11].len()).collect::<Vec<_>>();
+    assert!(every.len() > 40, "{every:?}");
     for positions in steps.values() {
-        assert_eq!(*positions, (0..48).collect::<Vec<_>>());
+        assert_eq!(*positions, every);
+    }
+    // With the registry's families prepared on their own, the helpers skip
+    // the same steps as serial flushing: none diverges.
+    let serial = registered_flushed(&mut fixture, 2);
+    let parallel = registered_flushed(&mut fixture, 4);
+    assert_payloads_equal(
+        &parallel.payloads,
+        &serial.payloads,
+        "registered: parallel vs serial flush",
+    );
+    assert_eq!(parallel.refused, serial.refused);
+    let steps = assert_same_steps(&serial.steps, &parallel.steps);
+    for positions in steps.values() {
+        assert!(
+            positions.len() < 48,
+            "registered families flush on their own"
+        );
     }
 }
 
@@ -104,8 +131,11 @@ fn refusals_raised_by_flushes_skip_the_serial_steps_and_publish_the_serial_bytes
         );
         assert_eq!(parallel.refused, serial.refused);
         let steps = assert_same_steps(&serial.steps, &parallel.steps);
+        // Every step position, the last of which no refusal here skips.
+        let every = 0..=steps.values().flatten().copied().max().unwrap();
         let skipped = |hour: i32| {
-            (0..48)
+            every
+                .clone()
                 .filter(|position| !steps[&hour].contains(position))
                 .collect::<Vec<_>>()
         };

@@ -349,7 +349,9 @@ fn take(catalogue: &Catalogue, subject: &str, findings: &mut Vec<Finding>) {
 fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<String, String> {
     use products::*;
     match key {
-        national_focus::NationalFocus::KEY | focus_artwork::FocusArtwork::KEY => {
+        national_focus::NationalFocus::KEY
+        | focus_artwork::FocusArtwork::KEY
+        | crate::prepared_focus::FocusArt::KEY => {
             artwork_check(content, artwork::Kind::Focus, findings)
         }
         research::Research::KEY | technology_artwork::TechnologyArtwork::KEY => {

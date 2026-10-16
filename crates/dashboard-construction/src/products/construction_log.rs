@@ -180,6 +180,27 @@ pub struct ConstructionLogManifest;
 const ICON_EDGE: u32 = 48;
 /// The fixed5 scale of `cost`.
 pub(crate) const COST_SCALE: u32 = 100_000;
+
+/// The tables the construction scan reads.
+pub const TABLES: &[TableId] = &[
+    TableId::Campaign,
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::Provinces,
+    TableId::StateBuildings,
+    TableId::ProvinceBuildings,
+    TableId::BuildingConstruction,
+    TableId::RailwayConstruction,
+    TableId::ConstructionLineOutput,
+    TableId::LexicalTokens,
+];
+
+/// The queue and output tables whose daily reads the scan dates.
+pub const READ_TABLES: [TableId; 3] = [
+    TableId::BuildingConstruction,
+    TableId::RailwayConstruction,
+    TableId::ConstructionLineOutput,
+];
 /// The construction queue's line entry gives each building's `icon_frame`
 /// (`picture`) and repair marker (`repair`). It uses production_building_line_entry;
 /// the authored entry supplies the icon and marker declarations through the stack.
@@ -1745,6 +1766,46 @@ impl Scan {
         self.log.railway_reads.clone_from(&self.railways.reads);
     }
 
+    /// Hours through `last`, each following the one before the last observed
+    /// (`frame`), at which no building level, queue, output, province state,
+    /// country key, link or dictionary changed and no queue or output read is
+    /// dated: what observing each of them does. Nothing carries or seals
+    /// between reads; an incomplete building table loses each such hour for
+    /// the changes since the queues' last reads, as it lost the last one.
+    pub(crate) fn advance_quiet(&mut self, last: i32, frame: &DecodedFrame) {
+        if frame.complete::<tables::StateBuildings>().is_err()
+            || frame.complete::<tables::ProvinceBuildings>().is_err()
+        {
+            self.changes.lost = true;
+            self.changes.railway_lost = true;
+        }
+        self.last = Some(last);
+        self.log.unresolved = self.unresolved.len();
+        self.log.last_hour = Some(last);
+    }
+
+    /// Whether the last observed hour left nothing to project: an hour that
+    /// follows it observes nothing new unless something it reads changed.
+    pub(crate) fn settled(&self) -> bool {
+        self.dirty.is_empty() && self.log.output_reads.is_empty()
+    }
+
+    /// The last hour observed.
+    pub(crate) fn last_hour(&self) -> Option<i32> {
+        self.last
+    }
+
+    /// The last observed hour read again from its block's keyframe
+    /// (`frame`): its complete dictionary is the one held, at that read's
+    /// allocation, so the dictionary is taken again only where continuing
+    /// that read would take it.
+    pub(crate) fn rebase_dictionary(&mut self, frame: &DecodedFrame) {
+        let view = &frame.tables[TableId::LexicalTokens.index()];
+        if self.dictionary.is_some() && matches!(&**view, TableView::Complete(_)) {
+            self.dictionary = Some(view.clone());
+        }
+    }
+
     /// Restore shared decoder operands without persisting another copy of replay tables.
     pub(crate) fn restore_frame(&mut self, frame: &DecodedFrame) {
         self.dictionary = Some(frame.tables[TableId::LexicalTokens.index()].clone());
@@ -2282,6 +2343,9 @@ fn project_states(log: &ScannedLog) -> BTreeSet<u32> {
 
 /// Names and pictures from the recorded content, cached per branch and catalogue.
 /// Without the game folders every type and state stays unnamed, and `warnings` says why.
+/// Preparation names through [`NameSource`]; the recording loaders and
+/// tests name through this.
+#[cfg(test)]
 pub(crate) fn content_names(
     source: &Source,
     context: &LoadContext,
@@ -2290,58 +2354,89 @@ pub(crate) fn content_names(
     cancelled: &AtomicBool,
     warnings: &mut Vec<String>,
 ) -> io::Result<ContentNames> {
-    let state = source.state::<Cache>();
-    let names = match context
-        .content()
-        .and_then(|content| catalogue::catalogue(source, content))
-    {
-        Ok(catalogue) => {
-            let cached = {
-                let cache = state.lock().unwrap_or_else(|error| error.into_inner());
-                cache
-                    .named
-                    .iter()
-                    .find(|(cached, from, _)| *cached == branch && Arc::ptr_eq(from, &catalogue))
-                    .map(|(_, _, named)| Arc::clone(named))
-            };
-            let named = match cached {
-                Some(named) => named,
-                None => {
-                    let localise = |key: &str| catalogue.localised(key, catalogue::View::Plain);
-                    let view = ContentView {
-                        layers: &catalogue.content.layers,
-                        sprites: &catalogue.sprites,
-                        guis: catalogue.guis().map_err(|error| error.to_string()),
-                        gui_decode: &catalogue.gui_decode,
-                        localise: &localise,
-                    };
-                    let named =
-                        Arc::new(named(&view, &log.types, &project_states(log), cancelled)?);
-                    let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-                    cache.named.retain(|(cached, _, _)| *cached != branch);
+    NameSource::of(source, context).names(branch, log, cancelled, warnings)
+}
+
+/// What naming reads of a source: the source's naming cache and its recorded
+/// content's catalogue, or why that is unavailable. Construction prepared on
+/// its own holds these from its first block, so its flush names a branch's
+/// scan exactly as [`content_names`] does at the same flush, filling the same
+/// cache at the same point.
+pub struct NameSource {
+    cache: Arc<std::sync::Mutex<Cache>>,
+    catalogue: Result<Arc<Catalogue>, String>,
+}
+
+impl NameSource {
+    pub fn of(source: &Source, context: &LoadContext) -> Self {
+        Self {
+            cache: source.state::<Cache>(),
+            catalogue: context
+                .content()
+                .and_then(|content| catalogue::catalogue(source, content))
+                .map_err(|error| error.to_string()),
+        }
+    }
+
+    /// [`content_names`] from these handles.
+    pub(crate) fn names(
+        &self,
+        branch: u64,
+        log: &ScannedLog,
+        cancelled: &AtomicBool,
+        warnings: &mut Vec<String>,
+    ) -> io::Result<ContentNames> {
+        let state = &self.cache;
+        let names = match &self.catalogue {
+            Ok(catalogue) => {
+                let catalogue: &Arc<Catalogue> = catalogue;
+                let cached = {
+                    let cache = state.lock().unwrap_or_else(|error| error.into_inner());
                     cache
                         .named
-                        .push((branch, Arc::clone(&catalogue), Arc::clone(&named)));
-                    if cache.named.len() > CACHED_BRANCHES {
-                        cache.named.remove(0);
+                        .iter()
+                        .find(|(cached, from, _)| *cached == branch && Arc::ptr_eq(from, catalogue))
+                        .map(|(_, _, named)| Arc::clone(named))
+                };
+                let named = match cached {
+                    Some(named) => named,
+                    None => {
+                        let localise = |key: &str| catalogue.localised(key, catalogue::View::Plain);
+                        let view = ContentView {
+                            layers: &catalogue.content.layers,
+                            sprites: &catalogue.sprites,
+                            guis: catalogue.guis().map_err(|error| error.to_string()),
+                            gui_decode: &catalogue.gui_decode,
+                            localise: &localise,
+                        };
+                        let named =
+                            Arc::new(named(&view, &log.types, &project_states(log), cancelled)?);
+                        let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+                        cache.named.retain(|(cached, _, _)| *cached != branch);
+                        cache
+                            .named
+                            .push((branch, Arc::clone(catalogue), Arc::clone(&named)));
+                        if cache.named.len() > CACHED_BRANCHES {
+                            cache.named.remove(0);
+                        }
+                        named
                     }
-                    named
+                };
+                warnings.extend(catalogue.verification.iter().cloned());
+                warnings.extend(catalogue.warnings.iter().cloned());
+                warnings.extend(named.live_warnings());
+                if named.types.values().any(|(_, icon)| icon.is_some()) {
+                    warnings.push("Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned());
                 }
-            };
-            warnings.extend(catalogue.verification.iter().cloned());
-            warnings.extend(catalogue.warnings.iter().cloned());
-            warnings.extend(named.live_warnings());
-            if named.types.values().any(|(_, icon)| icon.is_some()) {
-                warnings.push("Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned());
+                Some(named)
             }
-            Some(named)
-        }
-        Err(error) => {
-            warnings.push(format!("Building and state names are unavailable: {error}"));
-            None
-        }
-    };
-    Ok(ContentNames::of(log, names))
+            Err(error) => {
+                warnings.push(format!("Building and state names are unavailable: {error}"));
+                None
+            }
+        };
+        Ok(ContentNames::of(log, names))
+    }
 }
 
 /// Names from one view of the content without the cache, as `content_names`

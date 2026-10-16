@@ -88,24 +88,22 @@ pub(crate) struct Actor {
     pub(crate) key: u64,
     pub(crate) holder: Option<(u32, u32, i32, i32)>,
 }
+/// The hourly country-stability scan and its parts. Experience is its own
+/// family ([`ExperienceAccumulator`]).
 #[derive(Default, Serialize, Deserialize)]
 pub struct StabilityAccumulator {
     stability: country_stability::Scan,
     parts: crate::products::stability_parts::Prepared,
-    experience: country_experience::Scan,
     actors: BTreeMap<String, Actor>,
     last: Option<i32>,
-    experience_last: Option<i32>,
-    experience_actors: BTreeMap<String, Actor>,
     batch: Accumulator,
-    experience_batch: Accumulator,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     pub test_changes: Option<dashboard_base::prepared::frame_changes::FrameChangeTracker>,
 }
 impl StabilityAccumulator {
     pub fn buffered_bytes(&self) -> usize {
-        self.batch.bytes() + self.experience_batch.bytes() + self.parts.bytes()
+        self.batch.bytes() + self.parts.bytes()
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn observe(&mut self, frame: &replay::frame::DecodedFrame) -> io::Result<()> {
@@ -191,86 +189,6 @@ impl StabilityAccumulator {
         }
         Ok(())
     }
-    #[cfg(test)]
-    pub fn observe_experience(
-        &mut self,
-        frame: &replay::frame::DecodedFrame,
-        format: replay::format::FormatVersion,
-    ) -> io::Result<()> {
-        let changes = self
-            .test_changes
-            .get_or_insert_with(dashboard_base::prepared::frame_changes::FrameChangeTracker::new)
-            .observe(frame, format);
-        self.observe_experience_changes(frame, format, &changes)
-    }
-    pub fn observe_experience_changes(
-        &mut self,
-        frame: &replay::frame::DecodedFrame,
-        format: replay::format::FormatVersion,
-        changes: &FrameChanges,
-    ) -> io::Result<()> {
-        self.experience_last = Some(frame.hour);
-        self.experience_batch.advance(frame.hour)?;
-        self.experience
-            .step(frame, format, Some(changes), |tag, (slot, id), read| {
-                let tag = serde_json::to_string(&(tag, slot, id))?;
-                let holder = (slot, id, read.read_hour);
-                let boundary = read.first_hour == frame.hour;
-                let joined = !read.starts_segment || !boundary;
-                record(
-                    &mut self.experience_actors,
-                    &mut self.experience_batch,
-                    &tag,
-                    "experienceRead",
-                    frame.hour,
-                    Some(i128::from(read.read_hour)),
-                    joined,
-                    holder,
-                    boundary,
-                    Some(read),
-                )?;
-                for (measure, values) in ["banked", "gain", "change"].into_iter().zip(read.values())
-                {
-                    for (branch, value) in ["army", "navy", "air"].into_iter().zip(values) {
-                        record(
-                            &mut self.experience_actors,
-                            &mut self.experience_batch,
-                            &tag,
-                            &format!("{branch}-{measure}"),
-                            frame.hour,
-                            value,
-                            joined,
-                            holder,
-                            boundary,
-                            None,
-                        )?;
-                    }
-                }
-                Ok(())
-            })?;
-        for (tag, (slot, id)) in &self.experience.removed {
-            let tag = serde_json::to_string(&(tag, slot, id))?;
-            for measure in std::iter::once("experienceRead".to_owned()).chain(
-                ["banked", "gain", "change"]
-                    .into_iter()
-                    .flat_map(|measure| {
-                        ["army", "navy", "air"]
-                            .into_iter()
-                            .map(move |branch| format!("{branch}-{measure}"))
-                    }),
-            ) {
-                if let Some(actor) = self
-                    .experience_actors
-                    .get_mut(&series::field_key(&tag, &measure))
-                {
-                    self.experience_batch
-                        .observe(actor.key, frame.hour, None, false);
-                    actor.holder = None;
-                }
-            }
-        }
-        Ok(())
-    }
     pub fn flush(
         &mut self,
         writer: &mut store::Writer,
@@ -306,10 +224,136 @@ impl StabilityAccumulator {
                 cancelled,
             )?;
         }
-        if let Some(last) = self.experience_last {
+        Ok(())
+    }
+}
+
+/// The country-experience scan and its shared series: the family
+/// `experience`, prepared on its own from the hours its tables change or its
+/// banked experience is read, apart from the hourly stability family.
+#[derive(Default, Serialize, Deserialize)]
+pub struct ExperienceAccumulator {
+    scan: country_experience::Scan,
+    actors: BTreeMap<String, Actor>,
+    last: Option<i32>,
+    batch: Accumulator,
+    #[cfg(any(test, feature = "test-support"))]
+    #[serde(skip)]
+    pub test_changes: Option<dashboard_base::prepared::frame_changes::FrameChangeTracker>,
+}
+impl ExperienceAccumulator {
+    pub fn buffered_bytes(&self) -> usize {
+        self.batch.bytes()
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn observe(
+        &mut self,
+        frame: &replay::frame::DecodedFrame,
+        format: replay::format::FormatVersion,
+    ) -> io::Result<()> {
+        let changes = self
+            .test_changes
+            .get_or_insert_with(dashboard_base::prepared::frame_changes::FrameChangeTracker::new)
+            .observe(frame, format);
+        self.observe_changes(frame, format, &changes)
+    }
+    pub fn observe_changes(
+        &mut self,
+        frame: &replay::frame::DecodedFrame,
+        format: replay::format::FormatVersion,
+        changes: &FrameChanges,
+    ) -> io::Result<()> {
+        self.last = Some(frame.hour);
+        self.batch.advance(frame.hour)?;
+        self.scan
+            .step(frame, format, Some(changes), |tag, (slot, id), read| {
+                let tag = serde_json::to_string(&(tag, slot, id))?;
+                let holder = (slot, id, read.read_hour);
+                let boundary = read.first_hour == frame.hour;
+                let joined = !read.starts_segment || !boundary;
+                record(
+                    &mut self.actors,
+                    &mut self.batch,
+                    &tag,
+                    "experienceRead",
+                    frame.hour,
+                    Some(i128::from(read.read_hour)),
+                    joined,
+                    holder,
+                    boundary,
+                    Some(read),
+                )?;
+                for (measure, values) in ["banked", "gain", "change"].into_iter().zip(read.values())
+                {
+                    for (branch, value) in ["army", "navy", "air"].into_iter().zip(values) {
+                        record(
+                            &mut self.actors,
+                            &mut self.batch,
+                            &tag,
+                            &format!("{branch}-{measure}"),
+                            frame.hour,
+                            value,
+                            joined,
+                            holder,
+                            boundary,
+                            None,
+                        )?;
+                    }
+                }
+                Ok(())
+            })?;
+        self.close_removed(frame.hour)
+    }
+    /// The scan's holders that left the output at `hour` hold no value from it.
+    fn close_removed(&mut self, hour: i32) -> io::Result<()> {
+        for (tag, (slot, id)) in &self.scan.removed {
+            let tag = serde_json::to_string(&(tag, slot, id))?;
+            for measure in std::iter::once("experienceRead".to_owned()).chain(
+                ["banked", "gain", "change"]
+                    .into_iter()
+                    .flat_map(|measure| {
+                        ["army", "navy", "air"]
+                            .into_iter()
+                            .map(move |branch| format!("{branch}-{measure}"))
+                    }),
+            ) {
+                if let Some(actor) = self.actors.get_mut(&series::field_key(&tag, &measure)) {
+                    self.batch.observe(actor.key, hour, None, false);
+                    actor.holder = None;
+                }
+            }
+        }
+        Ok(())
+    }
+    /// Hours `first..=last` that follow the last observed, at which none of
+    /// the scan's tables changed and banked experience was not read: what
+    /// observing each does (country experience's quiet step), with the
+    /// series advanced to each, in constant time per gaining country. False
+    /// when `first` does not follow the last observed hour.
+    pub fn advance_quiet(&mut self, first: i32, last: i32) -> io::Result<bool> {
+        if self.last.and_then(|hour| hour.checked_add(1)) != Some(first) {
+            return Ok(false);
+        }
+        self.batch.advance(first)?;
+        if !self.scan.advance_quiet(first, last) {
+            return Ok(false);
+        }
+        self.last = Some(first);
+        self.close_removed(first)?;
+        self.batch.advance_span(first, last)?;
+        self.last = Some(last);
+        Ok(true)
+    }
+    pub fn flush(
+        &mut self,
+        writer: &mut store::Writer,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        if let Some(last) = self.last {
             flush(
-                &self.experience_actors,
-                &mut self.experience_batch,
+                &self.actors,
+                &mut self.batch,
                 writer,
                 ("experience", branch, last, 0),
                 cancelled,

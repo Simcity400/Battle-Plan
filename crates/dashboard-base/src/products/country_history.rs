@@ -29,6 +29,7 @@ use ts_rs::TS;
 mod native;
 #[cfg(any(test, feature = "test-support"))]
 pub use native::Names as NativeNames;
+pub mod prepared;
 
 /// A native identity, kept independently of a measure's availability or rank.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -932,10 +933,121 @@ impl HistoryScan {
             .collect();
         self.out
     }
+
+    /// The histories through `last_hour`, as a walk sealed there holds them,
+    /// for a reader whose own coverage ends there while this scan went
+    /// further: runs, segments and reads end there, and tags first held
+    /// later are left out. Counts of unreadable rows remain every observed
+    /// hour's.
+    pub(crate) fn finish_through(self, last_hour: i32) -> RecordedHistories {
+        fn clip<T>(runs: &mut Vec<T>, last_hour: i32, span: impl Fn(&mut T) -> (i32, &mut i32)) {
+            runs.retain_mut(|run| span(run).0 <= last_hour);
+            if let Some(run) = runs.last_mut() {
+                let (_, last) = span(run);
+                *last = (*last).min(last_hour);
+            }
+        }
+        let mut out = self.finish();
+        clip(&mut out.identity_reads, last_hour, |span| {
+            (span.first_hour, &mut span.last_hour)
+        });
+        out.countries.retain(|_, country| {
+            clip(Arc::make_mut(&mut country.identities), last_hour, |run| {
+                (run.first_hour, &mut run.last_hour)
+            });
+            clip(Arc::make_mut(&mut country.segments), last_hour, |span| {
+                (span.first_hour, &mut span.last_hour)
+            });
+            clip(Arc::make_mut(&mut country.territory), last_hour, |run| {
+                (run.first_hour, &mut run.last_hour)
+            });
+            for balance in [&mut country.political_power, &mut country.command_power] {
+                let balance = Arc::make_mut(balance);
+                clip(&mut balance.runs, last_hour, |run| {
+                    (run.first_hour, &mut run.last_hour)
+                });
+                balance.drops.retain(|drop| drop.hour <= last_hour);
+            }
+            !country.identities.is_empty()
+        });
+        out
+    }
+
+    /// What an unchanged hour's observation depends on besides the hour's
+    /// read evidence: two scans with equal inputs advance alike over the same
+    /// quiet hours ([`Self::advance_quiet`]).
+    pub(crate) fn quiet_inputs(&self) -> QuietInputs {
+        QuietInputs {
+            hour: self.hour,
+            joined: self.read.is_some(),
+            witnesses: self.witnesses.quiet_inputs(),
+        }
+    }
+
+    /// Whether the next hour reading every witness table needs its rows,
+    /// because the held native names are not the last hour's.
+    pub(crate) fn stale_witnesses(&self) -> bool {
+        self.witnesses.stale()
+    }
+
+    /// Hours `first..=last`, following the last hour observed, at which no
+    /// country key, link, counter row key, gain key or table availability
+    /// changed, and which read all three witness tables at every hour
+    /// (`witnessed`) or not all three at any: each hour's observation of
+    /// owned states, made without its rows. Counter values moving there
+    /// change no retained history; the holders they would visit are sealed
+    /// at the same hours by the next observation or seal. False, with
+    /// nothing changed, when the scan cannot step without rows: it holds
+    /// balances or territory, it did not observe the hour before `first`, or
+    /// a read hour would name stale witnesses.
+    pub(crate) fn advance_quiet(&mut self, first: i32, last: i32, witnessed: bool) -> bool {
+        if !self.measures.is_empty() || self.out.territory_loaded || first > last {
+            return false;
+        }
+        let joined = self.read.as_ref().map(|read| read.complete);
+        if joined.is_some() && self.hour.and_then(|hour| hour.checked_add(1)) != Some(first) {
+            return false;
+        }
+        if witnessed && self.witnesses.stale() {
+            return false;
+        }
+        if !self.witnesses.advance_quiet(first, last, witnessed) {
+            return false;
+        }
+        // Without complete countries and links each hour only closes what
+        // the hour observed closed; with them, each continues the same join.
+        if let Some(complete) = joined {
+            let Ok(hours) = usize::try_from(i64::from(last) - i64::from(first) + 1) else {
+                return true;
+            };
+            self.pending_hours += hours;
+            if complete {
+                super::country_groups::mark_unobserved(&mut self.out.identity_reads, first, last);
+            }
+            self.hour = Some(last);
+        }
+        true
+    }
 }
 
-/// The shared identity-only walk, available once the branch is fully prepared.
-/// Missing preparation remains pending; it never starts a recording scan.
+/// What a [`HistoryScan`]'s unchanged hours depend on besides their read
+/// evidence ([`HistoryScan::quiet_inputs`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct QuietInputs {
+    hour: Option<i32>,
+    joined: bool,
+    witnesses: (Option<i32>, bool, bool),
+}
+
+/// The prepared identity history's query product: the country identities'
+/// own coverage and refusals answer for every reader of the history.
+pub const IDENTITIES_PRODUCT: &str = "country-identities";
+
+/// The shared identity-only walk, available once the identity history covers
+/// the whole branch: the identities' own coverage when they are prepared on
+/// their own, ahead of the hourly walk, or the branch's. A refused history
+/// answers with its refusal, never with its earlier pages. Missing
+/// preparation remains pending; it never starts a recording scan.
 pub fn prepared_branch_histories(
     source: &Source,
     branch: u64,
@@ -943,11 +1055,42 @@ pub fn prepared_branch_histories(
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Arc<RecordedHistories>>> {
     crate::metadata::check_cancel(cancelled)?;
-    let Some(coverage) = crate::prepared::coverage::coverage(source, content, branch, cancelled)?
-    else {
-        return Ok(None);
+    crate::prepared::coverage::refusal(source, content, branch, IDENTITIES_PRODUCT, cancelled)?;
+    // Complete for this recording: through the branch's last recorded hour,
+    // not a page completed for a shorter recording of the same store.
+    let end = {
+        let replay = source.replay_ref();
+        replay
+            .index
+            .iter()
+            .filter(|block| block.branch == branch)
+            .map(|block| block.last_hour)
+            .chain(
+                replay
+                    .gaps
+                    .iter()
+                    .filter(|gap| gap.branch == branch)
+                    .map(|gap| gap.last_hour),
+            )
+            .max()
     };
-    if !coverage.complete {
+    let reaches = |coverage: Option<crate::prepared::coverage::Coverage>| {
+        coverage.is_some_and(|coverage| {
+            coverage.complete && end.is_none_or(|end| coverage.last_hour >= end)
+        })
+    };
+    // A store the hourly walk published alone covers the identities with
+    // the branch.
+    let complete = reaches(crate::prepared::coverage::product_coverage(
+        source,
+        content,
+        branch,
+        IDENTITIES_PRODUCT,
+        cancelled,
+    )?) || reaches(crate::prepared::coverage::coverage(
+        source, content, branch, cancelled,
+    )?);
+    if !complete {
         return Ok(None);
     }
     let (store, key) = crate::prepared::files(source, content)?;
@@ -1653,5 +1796,217 @@ mod tests {
             (8, 2),
             i32::MIN
         ));
+    }
+
+    const WITNESSED: [TableId; 3] = [
+        TableId::Countries,
+        TableId::CountryLinks,
+        TableId::CountryExperienceGains,
+    ];
+
+    /// `count` countries at hour 100 with their counter rows (and one whose
+    /// country no link resolves) and gains, every witness table read.
+    fn quiet_base(count: u32) -> DecodedFrame {
+        use replay::rows::CountryExperienceGainRow;
+        let mut frame = crate::test_fixtures::scale_frame(1, 100, count);
+        *frame.tables[TableId::CountryCounterInputs.index()] =
+            TableView::Complete(TableRows::CountryCounterInputs(
+                (0..count)
+                    .map(|index| CountryCounterInputRow {
+                        country: 100_000 + index,
+                        ..Default::default()
+                    })
+                    .chain([CountryCounterInputRow {
+                        country: 999_999,
+                        ..Default::default()
+                    }])
+                    .collect(),
+            ));
+        *frame.tables[TableId::CountryExperienceGains.index()] =
+            TableView::Complete(TableRows::CountryExperienceGains(
+                (0..count)
+                    .map(|index| CountryExperienceGainRow {
+                        country: 100_000 + index,
+                        instance: 7 + index,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ));
+        for table in WITNESSED {
+            frame.metrics.table_ns[table.index()] = 1;
+        }
+        frame
+    }
+
+    /// `previous` one hour on, at `hour`: counter counts and gain amounts
+    /// move, so both tables are rebuilt; nothing the history reads changes.
+    /// The gains are not read at 104.
+    fn quiet_hour(previous: &DecodedFrame, hour: i32) -> DecodedFrame {
+        let mut frame = previous.clone();
+        frame.hour = hour;
+        if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+            &mut *frame.tables[TableId::CountryCounterInputs.index()]
+        {
+            for (index, row) in rows.iter_mut().enumerate() {
+                row.owned_state_count = (hour + index as i32).rem_euclid(5);
+            }
+        }
+        if let TableView::Complete(TableRows::CountryExperienceGains(rows)) =
+            &mut *frame.tables[TableId::CountryExperienceGains.index()]
+        {
+            for row in rows {
+                row.army_raw = i64::from(hour);
+            }
+        }
+        frame.metrics.table_ns[TableId::CountryExperienceGains.index()] = u64::from(hour != 104);
+        frame
+    }
+
+    /// Quiet hours stepped without their rows leave the history, its native
+    /// witnesses and its unreadable-row counts exactly as observing each hour
+    /// does, although counter counts move every hour and a gain read is
+    /// missing in between.
+    fn quiet_steps_equal_hourly_observation(count: u32) {
+        let format = replay::format::FormatVersion::CURRENT;
+        let mut tracker = crate::prepared::frame_changes::FrameChangeTracker::new();
+        let mut frame = quiet_base(count);
+        let changes = tracker.observe(&frame, format);
+        let mut hourly = HistoryScan::new(false, &[]);
+        let mut quiet = HistoryScan::new(false, &[]);
+        hourly.observe_owned_states(&frame, Some(&changes), |_, _, _| {});
+        quiet.observe_owned_states(&frame, Some(&changes), |_, _, _| {});
+        for hour in 101..=110 {
+            frame = quiet_hour(&frame, hour);
+            let changes = tracker.observe(&frame, format);
+            assert!(changes.rows_changed[TableId::CountryCounterInputs.index()]);
+            assert!(!changes.rows_changed[TableId::CountryLinks.index()]);
+            hourly.observe_owned_states(&frame, Some(&changes), |_, _, _| {});
+        }
+        assert!(quiet.advance_quiet(101, 103, true));
+        assert!(quiet.advance_quiet(104, 104, false));
+        assert!(quiet.advance_quiet(105, 110, true));
+        assert_eq!(quiet.quiet_inputs(), hourly.quiet_inputs());
+        hourly.seal();
+        quiet.seal();
+        assert_eq!(
+            serde_json::to_vec(&quiet).unwrap(),
+            serde_json::to_vec(&hourly).unwrap()
+        );
+        assert!(hourly.out.unreadable_territory > 0);
+        let actor = replay::event_feed_rows::EventFeedCountry {
+            reference: 100_000,
+            id: 100_000,
+            instance: 7,
+        };
+        assert_eq!(quiet.native_tag(110, actor), hourly.native_tag(110, actor));
+        assert!(quiet.native_tag(110, actor).is_some());
+        assert!(quiet.native_tag(104, actor).is_none());
+    }
+
+    #[test]
+    fn country_history_quiet_hours_step_as_observed_hours() {
+        quiet_steps_equal_hourly_observation(3);
+    }
+
+    #[test]
+    fn country_history_quiet_hours_step_as_observed_hours_for_5000_countries() {
+        quiet_steps_equal_hourly_observation(5_000);
+    }
+
+    /// An hour that does not read the countries while their keys change
+    /// leaves the held native names stale: the next read hour needs its rows
+    /// and is not stepped, while unread hours still are.
+    #[test]
+    fn country_history_stale_witnesses_refuse_a_quiet_read_hour() {
+        let format = replay::format::FormatVersion::CURRENT;
+        let mut tracker = crate::prepared::frame_changes::FrameChangeTracker::new();
+        let base = quiet_base(3);
+        let mut scan = HistoryScan::new(false, &[]);
+        scan.observe_owned_states(&base, Some(&tracker.observe(&base, format)), |_, _, _| {});
+        assert!(!scan.stale_witnesses());
+        let mut renamed = quiet_hour(&base, 101);
+        renamed.metrics.table_ns[TableId::Countries.index()] = 0;
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *renamed.tables[TableId::Countries.index()]
+        {
+            rows[0].tag = b"mod/renamed".to_vec();
+        }
+        scan.observe_owned_states(
+            &renamed,
+            Some(&tracker.observe(&renamed, format)),
+            |_, _, _| {},
+        );
+        assert!(scan.stale_witnesses());
+        let before = serde_json::to_vec(&scan).unwrap();
+        let inputs = scan.quiet_inputs();
+        assert!(!scan.advance_quiet(102, 102, true));
+        assert_eq!(serde_json::to_vec(&scan).unwrap(), before);
+        assert_eq!(scan.quiet_inputs(), inputs);
+        assert!(scan.advance_quiet(102, 102, false));
+        // A scan holding balances never steps without rows.
+        let mut balances = HistoryScan::new(false, &[Measure::PoliticalPower]);
+        balances.observe_owned_states(&base, None, |_, _, _| {});
+        assert!(!balances.advance_quiet(101, 101, true));
+    }
+
+    /// Finished through an hour, a history that went further holds what one
+    /// sealed at that hour holds: its runs, segments and complete reads end
+    /// there, and tags first held later are absent.
+    #[test]
+    fn country_history_finished_through_an_hour_is_the_history_sealed_there() {
+        let frames: Vec<_> = (0..=6)
+            .map(|hour| {
+                let mut frame = crate::test_fixtures::scale_frame(1, hour, 3);
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *frame.tables[TableId::Countries.index()]
+                {
+                    if hour >= 2 {
+                        rows[1].tag = b"mod/renamed".to_vec();
+                    }
+                    if hour >= 5 {
+                        rows[2].id = 200_002;
+                    }
+                }
+                if hour == 4 {
+                    *frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
+                        reason: "fixture".into(),
+                    };
+                }
+                frame
+            })
+            .collect();
+        let mut whole = HistoryScan::new(false, &[]);
+        for frame in &frames {
+            whole.observe(frame);
+        }
+        let whole = serde_json::to_vec(&whole).unwrap();
+        for through in 0..=6_i32 {
+            let mut prefix = HistoryScan::new(false, &[]);
+            for frame in &frames[..=through as usize] {
+                prefix.observe(frame);
+            }
+            let sealed = prefix.finish();
+            let clipped = serde_json::from_slice::<HistoryScan>(&whole)
+                .unwrap()
+                .finish_through(through);
+            let runs = |history: &RecordedHistories| {
+                history
+                    .countries
+                    .iter()
+                    .map(|(tag, country)| {
+                        (
+                            tag.clone(),
+                            (*country.identities).clone(),
+                            (*country.segments).clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(runs(&clipped), runs(&sealed), "through {through}");
+            assert_eq!(
+                clipped.identity_reads, sealed.identity_reads,
+                "through {through}"
+            );
+        }
     }
 }

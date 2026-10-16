@@ -1,5 +1,5 @@
-//! The native data service: one owner of opened recordings, two small loader
-//! pools that answer product requests, and a bounded response pump.
+//! The native data service: one owner of opened recordings, loader pools
+//! (lanes) that answer product requests, and a bounded response pump.
 //!
 //! Opening files and answering products never depends on a visible window.
 //! Only compact JSON replies cross the desktop control pipe.
@@ -32,16 +32,83 @@ use pump::{Signal, run_pump};
 const MAX_PENDING: usize = 64;
 const MAX_SERIALIZED_BYTES: usize = MAX_REPLY_BYTES * 2;
 const MAX_CANCELLED: usize = MAX_PENDING * 2;
-const LOADER_THREADS: usize = 3;
-/// Threads for `Product::INTERACTIVE` reads, apart from the scans above.
+/// The fewest whole-recording and sampled-read loaders on any machine.
+const MIN_LOADER_THREADS: usize = 3;
+/// Threads for `Product::INTERACTIVE` reads, apart from the scans.
 const INTERACTIVE_THREADS: usize = 2;
+/// Threads answering prepared queries from prepared pages alone.
+const PREPARED_THREADS: usize = 2;
 
-/// Where jobs wait: whole-recording work, and hover or label reads and the
-/// history cache's size beside it.
+/// Where a job waits. Each lane has its own threads and its own bound of
+/// [`MAX_PENDING`] queued jobs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Lane {
+    /// Whole-recording products, opening, map settings and preparation refreshes.
+    History,
+    /// Hover and label reads, the history cache's size and preparation actions.
+    Interactive,
+    /// Every prepared query first, answered without decoding recorded blocks;
+    /// one that needs a block decode moves to [`Lane::Sampled`].
+    Prepared,
+    /// Prepared queries that sample recorded blocks.
+    Sampled,
+}
+
+impl Lane {
+    const ALL: [Self; 4] = [
+        Self::History,
+        Self::Interactive,
+        Self::Prepared,
+        Self::Sampled,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::History => "loader",
+            Self::Interactive => "interactive",
+            Self::Prepared => "prepared",
+            Self::Sampled => "sampled",
+        }
+    }
+
+    /// Threads serving this lane on a machine with `parallelism` hardware
+    /// threads. Sampled reads take half of them, whole-recording loads a
+    /// quarter, each at least [`MIN_LOADER_THREADS`]; the short lanes are fixed.
+    /// A sampled read holds one block's selected frames and the few read ahead
+    /// of it, so memory grows with this count, not with the recording.
+    pub(super) fn threads(self, parallelism: usize) -> usize {
+        match self {
+            Self::History => (parallelism / 4).max(MIN_LOADER_THREADS),
+            Self::Sampled => (parallelism / 2).max(MIN_LOADER_THREADS),
+            Self::Interactive => INTERACTIVE_THREADS,
+            Self::Prepared => PREPARED_THREADS,
+        }
+    }
+}
+
+/// The machine's hardware threads, as the lanes are sized from them.
+fn parallelism() -> usize {
+    thread::available_parallelism().map_or(1, |threads| threads.get())
+}
+
+/// Where jobs wait, one queue per [`Lane`].
 struct Lanes {
     history: SyncSender<LoadJob>,
     interactive: SyncSender<LoadJob>,
+    prepared: SyncSender<LoadJob>,
+    sampled: SyncSender<LoadJob>,
     refreshes: std::collections::BTreeMap<crate::SourceKey, Arc<AtomicBool>>,
+}
+
+impl Lanes {
+    fn sender(&self, lane: Lane) -> &SyncSender<LoadJob> {
+        match lane {
+            Lane::History => &self.history,
+            Lane::Interactive => &self.interactive,
+            Lane::Prepared => &self.prepared,
+            Lane::Sampled => &self.sampled,
+        }
+    }
 }
 
 type VisualCatalogue = (
@@ -82,8 +149,12 @@ impl Drop for ThreadExit {
 
 impl Service {
     pub fn new(emit: Arc<dyn Fn(DataEvent) -> bool + Send + Sync>) -> io::Result<Arc<Self>> {
+        crate::prepared::pipeline::install_gates();
         let (history, history_jobs) = mpsc::sync_channel::<LoadJob>(MAX_PENDING);
         let (interactive, interactive_jobs) = mpsc::sync_channel::<LoadJob>(MAX_PENDING);
+        let (prepared, prepared_jobs) = mpsc::sync_channel::<LoadJob>(MAX_PENDING);
+        let (sampled, sampled_jobs) = mpsc::sync_channel::<LoadJob>(MAX_PENDING);
+        let parallelism = parallelism();
         let inner = Arc::new(Inner {
             lease_namespace: uuid::Uuid::new_v4(),
             map_settings: Mutex::new(map_settings::Store::open()),
@@ -94,6 +165,8 @@ impl Service {
             loader: Mutex::new(Some(Lanes {
                 history,
                 interactive,
+                prepared,
+                sampled,
                 refreshes: std::collections::BTreeMap::new(),
             })),
             signal: Arc::new(Signal::default()),
@@ -105,20 +178,25 @@ impl Service {
         });
         let mut threads = Vec::new();
         let spawn_result = (|| -> io::Result<()> {
-            for (lane, jobs, count) in [
-                ("loader", history_jobs, LOADER_THREADS),
-                ("interactive", interactive_jobs, INTERACTIVE_THREADS),
-            ] {
+            for (lane, jobs) in Lane::ALL.into_iter().zip([
+                history_jobs,
+                interactive_jobs,
+                prepared_jobs,
+                sampled_jobs,
+            ]) {
                 let jobs = Arc::new(Mutex::new(jobs));
-                for index in 0..count {
+                for index in 0..lane.threads(parallelism) {
                     let load_inner = Arc::clone(&inner);
                     let jobs = Arc::clone(&jobs);
                     threads.push(
-                        crate::prepared::runner::worker_thread(format!("dashboard {lane} {index}"))
-                            .spawn(move || {
-                                let _exit = ThreadExit(Arc::clone(&load_inner));
-                                load_inner.run_loader(&jobs);
-                            })?,
+                        crate::prepared::runner::worker_thread(format!(
+                            "dashboard {} {index}",
+                            lane.name()
+                        ))
+                        .spawn(move || {
+                            let _exit = ThreadExit(Arc::clone(&load_inner));
+                            load_inner.run_loader(&jobs, lane);
+                        })?,
                     );
                 }
             }

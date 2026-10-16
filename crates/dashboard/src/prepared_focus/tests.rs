@@ -1,2023 +1,754 @@
+use super::art::art_at;
 use super::*;
-use crate::prepared::frame_changes::FrameChangeTracker;
-use crate::test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag};
-use replay::{
-    container::Replay,
-    frame::TableView,
-    rows::{CompletedFocusRow, CountryCounterInputRow, FocusRow, TableRows},
-};
+use crate::products::Product;
+use crate::test_fixtures::{CAMPAIGN, continuation_records, records, scale_frame, scale_tag};
+use replay::rows::{CountryLinkRow, CountryRow, FocusRow, TableRows};
+use std::sync::Arc;
 
-// Numeric fixtures omit presentation details and count only rebuilt observations.
 impl FocusAccumulator {
-    fn frame_changes(&mut self, frame: &DecodedFrame) -> FrameChanges {
-        self.test_changes
-            .get_or_insert_with(|| Arc::new(std::sync::Mutex::new(FrameChangeTracker::new())))
-            .lock()
-            .unwrap()
-            .observe(frame, replay::format::FormatVersion::CURRENT)
-    }
+    /// Each tag's focus observation at `frame`'s hour, read alone.
     pub(crate) fn observe(
         &mut self,
         frame: &DecodedFrame,
         cancelled: &AtomicBool,
-        mut emit: impl FnMut(Observation) -> io::Result<()>,
+        mut emit: impl FnMut(String) -> io::Result<()>,
     ) -> io::Result<()> {
-        let changes = self.frame_changes(frame);
-        let mut rows = Vec::new();
-        self.observe_changes(frame, &changes, cancelled, |tag, observation| {
-            rows.push((tag.to_owned(), observation));
-            Ok(())
-        })?;
-        for (tag, observation) in rows {
-            emit(observation.unwrap_or_else(|| self.observation(&tag, frame.hour)))?;
+        check_cancel(cancelled)?;
+        for tag in read_hour(frame, None, &HourRead::default(), false)
+            .tags
+            .into_keys()
+        {
+            emit(tag.to_string())?;
         }
         Ok(())
     }
 }
-impl FocusEvaluator {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn write_test_frame(
-        &mut self,
-        writer: &mut store::Writer,
-        source: &Source,
-        content: Option<&ContentOptions>,
-        frame: &DecodedFrame,
-        accumulator: &mut FocusAccumulator,
-        index: &mut FocusIndex,
-        preferred: Option<&str>,
-        cancelled: &AtomicBool,
-    ) -> io::Result<(u64, Option<String>)> {
-        let changes = self
-            .test_changes
-            .get_or_insert_with(FrameChangeTracker::new)
-            .observe(frame, source.replay_ref().format);
-        self.write_frame(
-            writer,
-            source,
-            content,
-            frame,
-            accumulator,
-            index,
-            preferred,
-            cancelled,
-            &changes,
-        )
+
+/// Countries A to E (`scale_tag(0..5)`, slots 0 to 4) whose balances move
+/// every hour, with their focus at `hour`:
+/// - A completes `a0`, `a1`, ... every ten hours from 100; its progress
+///   rises every five hours and holds while paused from 160 to 175 (longer
+///   than a block).
+/// - B completes `b0`, `b1`, ...; its list resets to `b_reset` at 140 (a
+///   shrink and a prefix break) and grows again.
+/// - C is country 2 until 129; from 130 country 4 holds the tag (an identity
+///   replacement) and country 2 is renamed.
+/// - D has no focus row from 120 to 125.
+/// - Focus is not read at 150 and 151; hours 136 and 137 are not recorded.
+fn focus_frame(branch: u64, hour: i32) -> DecodedFrame {
+    let mut frame = scale_frame(branch, hour, 5);
+    let tag = |index: u32| -> Vec<u8> {
+        match (index, hour >= 130) {
+            (2, true) => b"OLD".to_vec(),
+            (4, true) => scale_tag(2),
+            (4, false) => b"NEW".to_vec(),
+            _ => scale_tag(index),
+        }
+    };
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *frame.tables[TableId::Countries.index()]
+    {
+        for (index, row) in rows.iter_mut().enumerate() {
+            row.tag = tag(index as u32);
+            row.political_power_raw = Some(i64::from(hour) * 1000);
+            row.command_power_raw = i64::from(hour) * 7;
+        }
     }
-}
-impl FocusIndex {
-    #[allow(clippy::too_many_arguments)]
-    fn write_hour(
-        &mut self,
-        writer: &mut store::Writer,
-        branch: u64,
-        observation: Observation,
-        presentation: &mut dyn Iterator<Item = artwork::ResolvedArt>,
-        warnings: Vec<String>,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        self.write_hour_with_details(
-            writer,
-            branch,
-            observation,
-            presentation,
-            None,
-            warnings,
-            cancelled,
-        )
+    let step = i64::from(hour - 100);
+    let mut focus = Vec::new();
+    let mut completed = Vec::new();
+    for index in 0..5_u32 {
+        if index == 3 && (120..=125).contains(&hour) {
+            continue;
+        }
+        let country = 100_000 + index;
+        let (tokens, current, progress, paused): (Vec<String>, Option<String>, i64, bool) =
+            match index {
+                0 => {
+                    let paused = (160..=175).contains(&hour);
+                    let done = (step / 10) as usize;
+                    let held = if paused { 155 } else { hour };
+                    (
+                        (0..done).map(|n| format!("a{n}")).collect(),
+                        Some(format!("a{done}")),
+                        i64::from((held - 100) % 10 / 5) * 3,
+                        paused,
+                    )
+                }
+                1 => {
+                    let tokens = if hour < 140 {
+                        (0..(step / 7) as usize).map(|n| format!("b{n}")).collect()
+                    } else {
+                        std::iter::once("b_reset".to_owned())
+                            .chain((0..((hour - 140) / 9) as usize).map(|n| format!("r{n}")))
+                            .collect()
+                    };
+                    (tokens, Some("b_next".into()), step / 4, false)
+                }
+                _ => (
+                    vec![format!("c{index}")],
+                    (index != 4).then(|| "shared".to_owned()),
+                    step / 6,
+                    false,
+                ),
+            };
+        focus.push(FocusRow {
+            country,
+            tree: Some(format!("tree{}", hour % 3).into_bytes()),
+            current: current.map(String::into_bytes),
+            progress,
+            paused: u8::from(paused),
+            completed_count: tokens.len() as i32,
+            ..Default::default()
+        });
+        completed.extend(tokens.into_iter().enumerate().map(|(ordinal, token)| {
+            CompletedFocusRow {
+                country,
+                ordinal: ordinal as u32,
+                token: token.into_bytes(),
+            }
+        }));
     }
-    fn hour(
-        &self,
-        store: &store::Store,
-        key: &store::SourceKey,
-        branch: u64,
-        tag: &str,
-        hour: i32,
-        cancelled: &AtomicBool,
-    ) -> io::Result<Option<Hour>> {
-        query_hour(store, key, branch, tag, hour, cancelled)
-    }
-}
-fn frame(hour: i32, count: u32, tokens: &[&str]) -> DecodedFrame {
-    let mut frame = scale_frame(1, hour, count);
-    *frame.tables[TableId::Focus.index()] = TableView::Complete(TableRows::Focus(
-        (0..count)
-            .map(|index| FocusRow {
-                country: 100_000 + index,
-                current: Some(b"mod/current".to_vec()),
-                progress: i64::MIN,
-                completed_count: tokens.len() as i32,
-                ..FocusRow::default()
-            })
-            .collect(),
-    ));
+    *frame.tables[TableId::Focus.index()] = if (150..=151).contains(&hour) {
+        TableView::Unavailable {
+            reason: "Synthetic focus read unavailable".into(),
+        }
+    } else {
+        TableView::Complete(TableRows::Focus(focus))
+    };
     *frame.tables[TableId::CompletedFocuses.index()] =
-        TableView::Complete(TableRows::CompletedFocuses(
-            (0..count)
-                .flat_map(|index| {
-                    tokens
-                        .iter()
-                        .enumerate()
-                        .map(move |(ordinal, token)| CompletedFocusRow {
-                            country: 100_000 + index,
-                            ordinal: ordinal as u32,
-                            token: token.as_bytes().to_vec(),
-                        })
-                })
-                .collect(),
-        ));
+        TableView::Complete(TableRows::CompletedFocuses(completed));
     frame
 }
 
-fn presentation_source(
-    frames: &[DecodedFrame],
-    catalogue: Arc<crate::catalogue::Catalogue>,
-    root: &std::path::Path,
-) -> (Source, ContentOptions) {
-    let source = Source::from_replay(
-        crate::SourceKey {
-            source_id: uuid::Uuid::new_v4().to_string(),
-            revision: "1".into(),
-        },
-        "synthetic.battleplan".into(),
-        Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap()),
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    let content = ContentOptions {
-        options: installed_content::ResolveOptions {
-            game_dir: root.to_owned(),
-            user_dir: root.join("user"),
-            cache_dir: root.join("cache"),
-        },
-        allow_unverified: true,
-    };
-    crate::catalogue::set_test_catalogue(&source, &content, catalogue);
-    (source, content)
-}
-
-fn observer_work(
-    source: &Source,
-    content: &ContentOptions,
-    evaluator: &FocusEvaluator,
-    index: &FocusIndex,
-    accumulator: &FocusAccumulator,
-) -> crate::prepared::observer_tests::Work {
-    crate::prepared::observer_tests::Work {
-        content_loads: crate::catalogue::catalogue_loads(source, content)
-            + evaluator
-                .catalogue
-                .as_ref()
-                .map_or(0, |catalogue| artwork::Context::content_loads(catalogue)),
-        row_visits: evaluator.counts.observations + accumulator.work.row_visits,
-        history_visits: evaluator.counts.completed_rows_copied + accumulator.work.history_visits,
-        emitted: index
-            .countries
-            .values()
-            .map(|country| {
-                index
-                    .series
-                    .state(country.key)
-                    .map_or(0, |state| state.events) as usize
-            })
-            .sum::<usize>()
-            + index.series.state(0).map_or(0, |state| state.events) as usize,
-        interpreter_calls: evaluator.interpreter_calls,
-        dictionary_interpretations: 0,
-    }
-}
-
-#[test]
-fn configured_focus_content_and_refusals_do_not_reload_for_scaled_hours_and_history() {
-    engine::executable_tables::initialize_for_tests().unwrap();
-    use crate::prepared::observer_tests::{assert_flat, scaled_work, unchanged_frames};
-    for refused in [false, true] {
-        let histories = scaled_work(2, |history| {
-            let hours = scaled_work(2, |hours| {
-                let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
-                    ("common/national_focus/configured.txt", "focus_tree={focus={id=\"mod/a\" text=title_a} focus={id=\"mod/current\" text=scoped_title} focus={id=unused text=unused_scripted}}"),
-                    ("common/defines/configured.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NFocus={FOCUS_POINT_DAYS=7}}"),
-                    ("localisation/configured_l_english.yml", "\u{feff}l_english:\n title_a:0 \"A\"\n scoped_title:0 \"Current\"\n scoped_title_desc:0 \"For current\"\n unused_scripted:0 \"[ROOT.GetTag]\"\n"),
-                ]);
-                if refused {
-                    // The stack has inventoried this synthetic file. Its I/O
-                    // refusal reaches the real focus database loader.
-                    std::fs::remove_file(folder.0.join("common/national_focus/configured.txt"))?;
-                }
-                let decoded = frame(100, 3, &vec!["mod/a"; history]);
-                let (source, content) = presentation_source(std::slice::from_ref(&decoded), Arc::new(catalogue), &folder.0);
-                let cancelled = AtomicBool::new(false);
-                let mut evaluator = FocusEvaluator::default();
-                let error = evaluator.configure(&source, &content).err().map(|error| error.to_string());
-                assert_eq!(error.is_some(), refused);
-                let recording = folder.0.join("synthetic.battleplan");
-                std::fs::write(&recording, b"synthetic").unwrap();
-                let store = store::Store::local(uuid::Uuid::new_v4()).unwrap();
-                let mut writer = store.replace(store::SourceKey::capture(&recording, &[]).unwrap()).unwrap();
-                let mut accumulator = FocusAccumulator::default();
-                let mut index = FocusIndex::default();
-                let configured = observer_work(&source, &content, &evaluator, &index, &accumulator);
-                assert_eq!(configured.content_loads, 1, "an unrecorded scripted definition must not demand its database");
-                let mut observe = |frame: &DecodedFrame, changes: &FrameChanges| {
-                    let (failures, reason) = evaluator.write_frame(&mut writer, &source, Some(&content), frame, &mut accumulator, &mut index, None, &cancelled, changes)?;
-                    assert_eq!(failures, if refused { 3 } else { 0 });
-                    assert_eq!(reason, error);
-                    for country in index.countries.values() {
-                        let last = country.last.as_ref().unwrap();
-                        assert_eq!(last.order.completed.len(), history);
-                        if let Some(reason) = &error {
-                            assert_eq!(last.warnings, std::slice::from_ref(reason));
-                        }
-                    }
-                    Ok(observer_work(&source, &content, &evaluator, &index, &accumulator))
-                };
-                let first = observe(&decoded, &FrameChangeTracker::new().observe(&decoded, source.replay_ref().format))?;
-                assert_eq!(first.content_loads, configured.content_loads, "first observation loaded content after configure");
-                let work = unchanged_frames(first, &decoded, hours as i32, source.replay_ref().format, &mut observe)?;
-                index.flush(&mut writer, &cancelled)?;
-                writer.commit()?;
-                store.clear()?;
-                Ok(work)
-            })?;
-            assert_eq!(hours[0].content_loads, 0);
-            assert_eq!(hours[1].content_loads, 0);
-            assert_flat(hours);
-            assert_eq!(hours[0].row_visits, 0);
-            assert_eq!(hours[0].history_visits, 0);
-            Ok(hours[1])
-        }).unwrap();
-        assert_eq!(histories[0].content_loads, 0);
-        assert_eq!(histories[1].content_loads, 0);
-        assert_flat(histories);
-    }
-}
-
-#[test]
-fn configured_focus_catalogue_failure_is_loaded_once_and_keeps_hourly_refusal_counts() {
-    use crate::prepared::observer_tests::unchanged_frames;
-    let decoded = frame(100, 3, &["mod/a", "mod/a"]);
-    let mut replay =
-        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![decoded.clone()])]).unwrap();
-    replay.identity.verification = replay::identity::Verification::Unchecked;
-    let (_, folder) = crate::catalogue::tests::folder_catalogue(&[]);
-    let source = Source::from_replay(
-        crate::SourceKey {
-            source_id: "refused-focus-content".into(),
-            revision: "1".into(),
-        },
-        folder.0.join("synthetic.battleplan"),
-        Arc::new(replay),
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    let content = ContentOptions {
-        options: installed_content::ResolveOptions {
-            game_dir: folder.0.clone(),
-            user_dir: folder.0.join("user"),
-            cache_dir: folder.0.join("cache"),
-        },
-        allow_unverified: false,
-    };
-    let mut evaluator = FocusEvaluator::default();
-    let error = evaluator
-        .configure(&source, &content)
-        .unwrap_err()
-        .to_string();
-    assert!(error.starts_with("recording has unverified content:"));
-    let recording = folder.0.join("synthetic.battleplan");
-    std::fs::write(&recording, b"synthetic").unwrap();
-    let key = store::SourceKey::capture(&recording, &[]).unwrap();
-    let store = store::Store::local(uuid::Uuid::new_v4()).unwrap();
-    let mut writer = store.replace(key).unwrap();
-    let cancelled = AtomicBool::new(false);
-    let mut accumulator = FocusAccumulator::default();
-    let mut index = FocusIndex::default();
-    let configured = observer_work(&source, &content, &evaluator, &index, &accumulator);
-    assert_eq!(configured.content_loads, 1);
-    evaluator
-        .write_test_frame(
-            &mut writer,
-            &source,
-            Some(&content),
-            &decoded,
-            &mut accumulator,
-            &mut index,
-            None,
-            &cancelled,
-        )
-        .unwrap();
-    let warm = observer_work(&source, &content, &evaluator, &index, &accumulator);
-    let work = unchanged_frames(
-        warm,
-        &decoded,
-        20,
-        source.replay_ref().format,
-        |frame, changes| {
-            let (failures, reason) = evaluator.write_frame(
-                &mut writer,
-                &source,
-                Some(&content),
-                frame,
-                &mut accumulator,
-                &mut index,
-                None,
-                &cancelled,
-                changes,
-            )?;
-            assert_eq!(
-                failures, 3,
-                "cached failure must still count every affected country/hour"
-            );
-            assert_eq!(reason.as_deref(), Some(error.as_str()));
-            // Exercise a second consumer of the actual shared Source cache.
-            assert_eq!(
-                crate::catalogue::catalogue(&source, &content)
-                    .err()
-                    .unwrap()
-                    .to_string(),
-                error
-            );
-            Ok(observer_work(
-                &source,
-                &content,
-                &evaluator,
-                &index,
-                &accumulator,
-            ))
-        },
-    )
-    .unwrap();
-    assert_eq!(work.content_loads, 0);
-    assert_eq!(evaluator.counts.failed_countries, 63);
-    assert_eq!(work.row_visits, 0);
-    assert_eq!(work.history_visits, 0);
-    drop(writer);
-    store.clear().unwrap();
-}
-
-#[cfg(feature = "slow-tests")]
-#[test]
-fn shared_facts_keep_5000_country_work_flat_and_progress_updates_history_independent() {
-    engine::executable_tables::initialize_for_tests().unwrap();
-    use crate::prepared::observer_tests::{scaled_work, unchanged_frames};
-    let measured = scaled_work(2, |history| {
-        let hours = scaled_work(10, |hours| {
-            let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
-                ("common/national_focus/work.txt", "focus_tree={focus={id=\"mod/a\" text=title_a} focus={id=\"mod/current\" text=title_c}}"),
-                ("common/defines/work.lua", "NDefines={NFocus={FOCUS_POINT_DAYS=7}}"),
-                ("localisation/work_l_english.yml", "\u{feff}l_english:\n title_a:0 \"A\"\n title_c:0 \"Current\"\n"),
-            ]);
-            let decoded = frame(100, 5_000, &vec!["mod/a"; history]);
-            let (source, content) = presentation_source(std::slice::from_ref(&decoded), Arc::new(catalogue), &folder.0);
-            let mut evaluator = FocusEvaluator::default();
-            evaluator.configure(&source, &content)?;
-            let recording = folder.0.join("synthetic.battleplan");
-            std::fs::write(&recording, b"synthetic")?;
-            let key = store::SourceKey::capture(&recording, &[])?;
-            let store = store::Store::local(uuid::Uuid::new_v4())?;
-            let mut writer = store.replace(key.clone())?;
-            let mut accumulator = FocusAccumulator::default();
-            let mut index = FocusIndex::default();
-            let cancelled = AtomicBool::new(false);
-            evaluator.write_test_frame(&mut writer, &source, Some(&content), &decoded, &mut accumulator, &mut index, None, &cancelled)?;
-            let before = observer_work(&source, &content, &evaluator, &index, &accumulator);
-            let unchanged = unchanged_frames(before, &decoded, hours as i32, source.replay_ref().format, |frame, changes| {
-                evaluator.write_frame(&mut writer, &source, Some(&content), frame, &mut accumulator, &mut index, None, &cancelled, changes)?;
-                Ok(observer_work(&source, &content, &evaluator, &index, &accumulator))
-            })?;
-            assert_eq!(unchanged, Default::default(), "old per-country carry loop visits 5000 * hours rows");
-            let mut last = decoded.clone();
-            last.hour += hours as i32;
-            let mut tracker = FrameChangeTracker::new();
-            tracker.observe(&last, source.replay_ref().format);
-            let mut changed = last.clone();
-            changed.hour += 1;
-            if let TableView::Complete(TableRows::Focus(rows)) = &mut *changed.tables[TableId::Focus.index()] { rows[0].progress += 10; }
-            let changes = tracker.observe(&changed, source.replay_ref().format);
-            assert!(!changes.rows_changed[TableId::CompletedFocuses.index()]);
-            let before = observer_work(&source, &content, &evaluator, &index, &accumulator);
-            let native_before = accumulator.work.row_visits;
-            evaluator.write_frame(&mut writer, &source, Some(&content), &changed, &mut accumulator, &mut index, None, &cancelled, &changes)?;
-            let after = observer_work(&source, &content, &evaluator, &index, &accumulator);
-            assert_eq!(accumulator.work.row_visits - native_before, 5_001, "visit the 5000 changed Focus rows and only the one changed country's cached operands; no unchanged country/link table scan");
-            assert_eq!(after.history_visits, before.history_visits, "progress must not copy or walk the completed history");
-            assert_eq!(after.interpreter_calls, before.interpreter_calls);
-            assert_eq!(after.emitted, before.emitted);
-            index.flush(&mut writer, &cancelled)?;
-            writer.commit()?;
-            let row = query_hour(&store, &key, 1, "000", changed.hour, &cancelled)?.unwrap();
-            assert_eq!(row.progress_raw, (i64::MIN + 10).to_string());
-            assert_eq!(row.daily_gain_raw.as_deref(), Some("10"));
-            assert_eq!(row.completed.rows, history as u64);
-            store.clear()?;
-            Ok(crate::prepared::observer_tests::Work {
-                row_visits: after.row_visits - before.row_visits,
-                history_visits: after.history_visits - before.history_visits,
-                emitted: after.emitted - before.emitted,
-                content_loads: after.content_loads - before.content_loads,
-                interpreter_calls: after.interpreter_calls - before.interpreter_calls,
-                dictionary_interpretations: after.dictionary_interpretations
-                    - before.dictionary_interpretations,
-            })
-        })?;
-        assert_eq!(hours[0], hours[1]);
-        Ok(hours[1])
-    }).unwrap();
-    assert_eq!(measured[0], measured[1]);
-    assert_eq!(measured[0].history_visits, 0);
-    eprintln!(
-        "focus carried-hour row visits: before=50000/500000 after=0/0; progress completed-history visits at H=2/20: before proportional to H, after=0/0"
-    );
-}
-
-#[test]
-fn dynamic_presentation_builds_scoped_inputs_once_per_frame_for_5000_countries() {
-    engine::executable_tables::initialize_for_tests().unwrap();
-    let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
-        (
-            "common/national_focus/scoped.txt",
-            "focus_tree={focus={id=\"mod/current\" text=scoped_title icon={GFX_first={tag=000} GFX_other=yes}}}",
-        ),
-        (
-            "common/defines/scoped.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NFocus={FOCUS_POINT_DAYS=7}}",
-        ),
-        (
-            "localisation/scoped_l_english.yml",
-            "\u{feff}l_english:\n scoped_title:0 \"[ROOT.GetTag] [FROM.GetTag]\"\n scoped_title_desc:0 \"For [ROOT.GetTag]\"\n",
-        ),
-    ]);
-    let mut decoded = frame(100, 5_000, &[]);
-    // The tag trigger requires a recorded owned-state count for its operand.
-    *decoded.tables[TableId::CountryCounterInputs.index()] =
-        TableView::Complete(TableRows::CountryCounterInputs(
-            (0..5_000)
-                .map(|index| CountryCounterInputRow {
-                    country: 100_000 + index,
-                    owned_state_count: 1,
-                    controlled_state_count: 1,
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-    // Slot zero belongs to the native null country, not a named live row.
-    if let TableView::Complete(TableRows::Countries(rows)) =
-        &mut *decoded.tables[TableId::Countries.index()]
-    {
-        for row in rows {
-            row.canonical_slot += 1;
-        }
-    }
-    if let TableView::Complete(TableRows::CountryLinks(rows)) =
-        &mut *decoded.tables[TableId::CountryLinks.index()]
-    {
-        for row in rows {
-            row.canonical_slot += 1;
-        }
-    }
-    let (source, content) = presentation_source(
-        std::slice::from_ref(&decoded),
-        Arc::new(catalogue),
-        &folder.0,
-    );
-    let cancelled = AtomicBool::new(false);
-    let recording = folder.0.join("synthetic.battleplan");
-    std::fs::write(&recording, b"synthetic").unwrap();
-    let store = store::Store::local(uuid::Uuid::new_v4()).unwrap();
-    let mut writer = store
-        .replace(store::SourceKey::capture(&recording, &[]).unwrap())
-        .unwrap();
-    let mut evaluator = FocusEvaluator::default();
-    evaluator.configure(&source, &content).unwrap();
-    let mut accumulator = FocusAccumulator::default();
-    let mut index = FocusIndex::default();
-    let mut warmed_loads = None;
-    for hour in [100, 101] {
-        decoded.hour = hour;
-        let before = evaluator.scoped_input_builds;
-        evaluator
-            .write_test_frame(
-                &mut writer,
-                &source,
-                Some(&content),
-                &decoded,
-                &mut accumulator,
-                &mut index,
-                None,
-                &cancelled,
-            )
-            .unwrap();
-        assert_eq!(evaluator.scoped_input_builds - before, 1);
-        let loads =
-            observer_work(&source, &content, &evaluator, &index, &accumulator).content_loads;
-        assert_eq!(loads, *warmed_loads.get_or_insert(loads));
-        assert_eq!(index.countries.len(), 5_000);
-        for (tag, state) in &index.countries {
-            let state = state.last.as_ref().unwrap();
-            let reason = state.presentation[0].reason.as_deref().unwrap();
-            assert!(
-                reason.contains(if tag == "000" {
-                    "selected sprite GFX_first"
-                } else {
-                    "selected sprite GFX_other"
-                }),
-                "{tag}: {reason}"
-            );
-            assert_eq!(
-                state.presentation[0].artwork.name.as_deref(),
-                Some(format!("{tag} {tag}").as_str())
-            );
-            assert_eq!(
-                state.details.as_ref().unwrap()[0]
-                    .artwork
-                    .description
-                    .as_deref(),
-                Some(format!("For {tag}").as_str())
-            );
-        }
-    }
-    assert_eq!(evaluator.interpreter_calls, 20_000);
-    drop(writer);
-    store.clear().unwrap();
-}
-
-#[test]
-fn demanded_scripted_focus_failure_loads_once_and_matches_the_oracle() {
-    engine::executable_tables::initialize_for_tests().unwrap();
-    use crate::{
-        prepared::observer_tests::unchanged_frames,
-        products::{
-            LoadContext, Product,
-            focus_artwork::{FocusArtwork, FocusArtworkParams},
-        },
-    };
-    let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
-        (
-            "common/national_focus/demanded.txt",
-            "focus_tree={focus={id=\"mod/current\" text=scoped_title}}",
-        ),
-        // Focus duration is valid; the demanded scripted reader refuses the
-        // absent recursion define, using its ordinary named error.
-        (
-            "common/defines/demanded.lua",
-            "NDefines={NFocus={FOCUS_POINT_DAYS=7}}",
-        ),
-        (
-            "localisation/demanded_l_english.yml",
-            "\u{feff}l_english:\n scoped_title:0 \"[ROOT.GetTag]\"\n scoped_title_desc:0 \"[ROOT.GetTag]\"\n",
-        ),
-    ]);
-    let mut decoded = frame(100, 1, &[]);
-    if let TableView::Complete(TableRows::Countries(rows)) =
-        &mut *decoded.tables[TableId::Countries.index()]
-    {
-        rows[0].canonical_slot = 1;
-    }
-    if let TableView::Complete(TableRows::CountryLinks(rows)) =
-        &mut *decoded.tables[TableId::CountryLinks.index()]
-    {
-        rows[0].canonical_slot = 1;
-    }
-    // The shared driver observes 100..=120. The recording oracle must receive
-    // those real fixture hours too; a Source containing only 100 refuses 101.
-    let frames: Vec<_> = (100..=120)
-        .map(|hour| {
-            let mut frame = decoded.clone();
-            frame.hour = hour;
-            frame
-        })
+/// Branch 1's hours 100 through 190 without 136 and 137, in blocks of 12.
+fn scenario() -> Replay {
+    let hours: Vec<i32> = (100..=190)
+        .filter(|hour| !(136..=137).contains(hour))
         .collect();
-    let (source, content) = presentation_source(&frames, Arc::new(catalogue), &folder.0);
-    let mut evaluator = FocusEvaluator::default();
-    evaluator.configure(&source, &content).unwrap();
-    let mut accumulator = FocusAccumulator::default();
-    let mut index = FocusIndex::default();
-    let configured = observer_work(&source, &content, &evaluator, &index, &accumulator);
-    assert_eq!(
-        configured.content_loads, 1,
-        "configuration must not demand scripted text"
-    );
-    let recording = folder.0.join("synthetic.battleplan");
-    std::fs::write(&recording, b"synthetic").unwrap();
-    let store = store::Store::local(uuid::Uuid::new_v4()).unwrap();
-    let mut writer = store
-        .replace(store::SourceKey::capture(&recording, &[]).unwrap())
-        .unwrap();
-    let cancelled = AtomicBool::new(false);
-    let context = LoadContext {
-        content: Some(content.clone()),
-    };
-    let mut observe = |frame: &DecodedFrame, changes: &FrameChanges| {
-        let (failures, error) = evaluator.write_frame(
-            &mut writer,
-            &source,
-            Some(&content),
-            frame,
-            &mut accumulator,
-            &mut index,
-            None,
-            &cancelled,
-            changes,
-        )?;
-        assert_eq!(
-            (failures, error),
-            (0, None),
-            "token refusals remain token refusals"
-        );
-        let oracle = FocusArtwork::load(
-            &source,
-            &FocusArtworkParams {
-                branch_id: "1".into(),
-                hour: frame.hour,
-                tag: "000".into(),
-                tokens: vec!["mod/current".into()],
-                text_only: None,
-                icons_only: None,
-                include_descriptions: Some(false),
-            },
-            &context,
-            &cancelled,
-        )?;
-        let state = index.countries["000"].last.as_ref().unwrap();
-        crate::prepared::observer_tests::assert_reply_parity(&state.presentation, &oracle.items)?;
-        assert!(
-            state.presentation[0]
-                .reason
-                .as_deref()
-                .unwrap()
-                .contains("MAX_SCRIPTED_LOC_RECURSION")
-        );
-        Ok(observer_work(
-            &source,
-            &content,
-            &evaluator,
-            &index,
-            &accumulator,
-        ))
-    };
-    let warm = observe(
-        &decoded,
-        &FrameChangeTracker::new().observe(&decoded, source.replay_ref().format),
+    let mut blocks = hours.chunks(12);
+    let frames = |hours: &[i32]| hours.iter().map(|&hour| focus_frame(1, hour)).collect();
+    let mut replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, frames(blocks.next().unwrap()))],
     )
     .unwrap();
-    assert_eq!(warm.content_loads, configured.content_loads + 1);
-    let work =
-        unchanged_frames(warm, &decoded, 20, source.replay_ref().format, &mut observe).unwrap();
-    assert_eq!(work.content_loads, 0);
-    assert_eq!(evaluator.scoped_input_builds, 21);
-    drop(writer);
-    store.clear().unwrap();
-}
-
-#[cfg(feature = "slow-tests")]
-#[test]
-fn dynamic_focus_projects_only_changed_results_across_5000_countries_and_long_orders() {
-    engine::executable_tables::initialize_for_tests().unwrap();
-    use crate::prepared::observer_tests::{scaled_work, unchanged_frames};
-    let measured = scaled_work(2, |history| {
-        let work = scaled_work(2, |hours| {
-            let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
-                ("common/national_focus/dynamic.txt", "focus_tree={focus={id=\"mod/a\" text=static_title} focus={id=\"mod/current\" text=scoped_title icon={GFX_on={has_global_flag=flip} GFX_off=yes}}}"),
-                ("common/defines/dynamic.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NFocus={FOCUS_POINT_DAYS=7}}"),
-                ("localisation/dynamic_l_english.yml", "\u{feff}l_english:\n static_title:0 \"Static\"\n scoped_title:0 \"[ROOT.GetTag]\"\n scoped_title_desc:0 \"For [ROOT.GetTag]\"\n"),
-            ]);
-            let mut decoded = frame(100, 5_000, &vec!["mod/a"; history]);
-            if let TableView::Complete(TableRows::Countries(rows)) = &mut *decoded.tables[TableId::Countries.index()] {
-                for row in rows { row.canonical_slot += 1; }
-            }
-            if let TableView::Complete(TableRows::CountryLinks(rows)) = &mut *decoded.tables[TableId::CountryLinks.index()] {
-                for row in rows { row.canonical_slot += 1; }
-            }
-            *decoded.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![replay::rows::LexicalTokenRow { token: 900, literal: b"flip".to_vec() }]));
-            *decoded.tables[TableId::ScriptFlags.index()] = TableView::Complete(TableRows::ScriptFlags(vec![]));
-            let (source, content) = presentation_source(std::slice::from_ref(&decoded), Arc::new(catalogue), &folder.0);
-            let cancelled = AtomicBool::new(false);
-            let mut evaluator = FocusEvaluator::default();
-            evaluator.configure(&source, &content)?;
-            let path = folder.0.join("dynamic.battleplan");
-            std::fs::write(&path, b"synthetic")?;
-            let key = store::SourceKey::capture(&path, &[])?;
-            let store = store::Store::local(uuid::Uuid::new_v4())?;
-            let mut writer = store.replace(key.clone())?;
-            let mut accumulator = FocusAccumulator::default();
-            let mut index = FocusIndex::default();
-            evaluator.write_test_frame(&mut writer, &source, Some(&content), &decoded, &mut accumulator, &mut index, None, &cancelled)?;
-            let before = observer_work(&source, &content, &evaluator, &index, &accumulator);
-            let work = unchanged_frames(before, &decoded, hours as i32, source.replay_ref().format, |frame, changes| {
-                evaluator.write_frame(&mut writer, &source, Some(&content), frame, &mut accumulator, &mut index, None, &cancelled, changes)?;
-                Ok(observer_work(&source, &content, &evaluator, &index, &accumulator))
-            })?;
-            assert_eq!(work.content_loads, 0);
-            assert_eq!(work.history_visits, 0, "unchanged dynamic results must not project/copy completed lists");
-            assert_eq!(work.emitted, 0);
-            assert_eq!(work.interpreter_calls, 10_000 * hours);
-            index.flush(&mut writer, &cancelled)?;
-            writer.commit()?;
-            accumulator = serde_json::from_slice(&serde_json::to_vec(&accumulator)?)?;
-            index = serde_json::from_slice(&serde_json::to_vec(&index)?)?;
-            let mut writer = store.extend(&key)?;
-            decoded.hour += hours as i32;
-            let mut tracker = FrameChangeTracker::new();
-            // Production invalidates the tracker on restore: the first accepted
-            // frame must rebuild serde-skipped native joins, even for equal rows.
-            // Priming it here incorrectly closes every resumed country instead.
-            decoded.hour += 1;
-            evaluator.write_frame(&mut writer, &source, Some(&content), &decoded, &mut accumulator, &mut index, None, &cancelled, &tracker.observe(&decoded, source.replay_ref().format))?;
-            assert_eq!(accumulator.active.len(), 5_000, "restore must rebuild the current native joins");
-            for country in index.countries.values() {
-                assert!(country.last.as_ref().unwrap().presentation.last().unwrap().reason.as_deref().unwrap().contains("GFX_off"));
-            }
-            let before_events = observer_work(&source, &content, &evaluator, &index, &accumulator).emitted;
-            decoded.hour += 1;
-            *decoded.tables[TableId::ScriptFlags.index()] = TableView::Complete(TableRows::ScriptFlags(vec![replay::rows::ScriptFlagRow { scope_kind: 0, scope_id: 0, token: 900, value: 1, ..Default::default() }]));
-            evaluator.write_frame(&mut writer, &source, Some(&content), &decoded, &mut accumulator, &mut index, None, &cancelled, &tracker.observe(&decoded, source.replay_ref().format))?;
-            assert_eq!(observer_work(&source, &content, &evaluator, &index, &accumulator).emitted - before_events, 5_000);
-            index.flush(&mut writer, &cancelled)?; writer.commit()?;
-            let mut oracle = artwork::Context::load(crate::catalogue::catalogue(&source, &content)?, artwork::Kind::Focus)?;
-            for tag in ["000", "001"] {
-                let row = query_hour(&store, &key, 1, tag, decoded.hour, &cancelled)?.unwrap();
-                let actual = presentation_page(&store, &key, 1, tag, &row.presentation, 0, &cancelled)?.unwrap();
-                let expected = oracle.focus_display_at(&[("mod/a", tag), ("mod/current", tag)], &decoded, |items| items.map(|(artwork, reason)| PresentedFocus { artwork, reason }).collect());
-                let expected = align_presentation(&accumulator.previous[tag].order, expected)?;
-                crate::prepared::observer_tests::assert_reply_parity(&actual, &expected)?;
-                assert!(actual.last().unwrap().reason.as_deref().unwrap().contains("GFX_on"));
-            }
-            store.clear()?;
-            Ok(crate::prepared::observer_tests::Work { history_visits: work.history_visits, content_loads: work.content_loads, emitted: work.emitted, ..Default::default() })
-        })?;
-        assert_eq!(work[0], work[1]);
-        Ok(work[1])
-    }).unwrap();
-    assert_eq!(measured[0], measured[1]);
-}
-
-/// With check mode off, as in preparation, an hourly evaluation whose every
-/// input reads the same is reused without interpreting; once an input reads
-/// differently each country is evaluated again, and the published
-/// presentation matches the oracle.
-#[test]
-fn reused_focus_evaluations_skip_interpretation_until_an_input_differs() {
-    engine::executable_tables::initialize_for_tests().unwrap();
-    crate::triggers::inputs::reusing(|| -> io::Result<()> {
-        let countries = 50;
-        let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
-            ("common/national_focus/dynamic.txt", "focus_tree={focus={id=\"mod/a\" text=static_title} focus={id=\"mod/current\" text=scoped_title icon={GFX_on={has_global_flag=flip} GFX_off=yes}}}"),
-            ("common/defines/dynamic.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NFocus={FOCUS_POINT_DAYS=7}}"),
-            ("localisation/dynamic_l_english.yml", "\u{feff}l_english:\n static_title:0 \"Static\"\n scoped_title:0 \"[ROOT.GetTag]\"\n scoped_title_desc:0 \"For [ROOT.GetTag]\"\n"),
-        ]);
-        let mut decoded = frame(100, countries, &["mod/a"]);
-        if let TableView::Complete(TableRows::Countries(rows)) = &mut *decoded.tables[TableId::Countries.index()] {
-            for row in rows { row.canonical_slot += 1; }
-        }
-        if let TableView::Complete(TableRows::CountryLinks(rows)) = &mut *decoded.tables[TableId::CountryLinks.index()] {
-            for row in rows { row.canonical_slot += 1; }
-        }
-        *decoded.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![replay::rows::LexicalTokenRow { token: 900, literal: b"flip".to_vec() }]));
-        *decoded.tables[TableId::ScriptFlags.index()] = TableView::Complete(TableRows::ScriptFlags(vec![]));
-        // A recorded global variable store, as every recording has: without
-        // it, its refusal names each hour and so reads differently.
-        *decoded.tables[TableId::ScriptVariables.index()] = TableView::Complete(TableRows::ScriptVariables(vec![replay::rows::ScriptVariablesRow { scope_kind: 0, scope_id: 0, seed: replay::rows::Recorded::Value(Some(7)), ..Default::default() }]));
-        let (source, content) = presentation_source(std::slice::from_ref(&decoded), Arc::new(catalogue), &folder.0);
-        let cancelled = AtomicBool::new(false);
-        let mut evaluator = FocusEvaluator::default();
-        evaluator.configure(&source, &content)?;
-        let path = folder.0.join("dynamic.battleplan");
-        std::fs::write(&path, b"synthetic")?;
-        let key = store::SourceKey::capture(&path, &[])?;
-        let store = store::Store::local(uuid::Uuid::new_v4())?;
-        let mut writer = store.replace(key.clone())?;
-        let mut accumulator = FocusAccumulator::default();
-        let mut index = FocusIndex::default();
-        evaluator.write_test_frame(&mut writer, &source, Some(&content), &decoded, &mut accumulator, &mut index, None, &cancelled)?;
-        // The second hour runs each hourly evaluation and records its inputs.
-        decoded.hour += 1;
-        evaluator.write_test_frame(&mut writer, &source, Some(&content), &decoded, &mut accumulator, &mut index, None, &cancelled)?;
-        let before = observer_work(&source, &content, &evaluator, &index, &accumulator);
-        let reused = evaluator.reuse.reused;
-        for _ in 0..3 {
-            decoded.hour += 1;
-            evaluator.write_test_frame(&mut writer, &source, Some(&content), &decoded, &mut accumulator, &mut index, None, &cancelled)?;
-        }
-        let unchanged = observer_work(&source, &content, &evaluator, &index, &accumulator);
-        assert_eq!(unchanged.interpreter_calls, before.interpreter_calls, "unchanged inputs interpret nothing");
-        assert_eq!(unchanged.emitted, before.emitted);
-        assert_eq!(evaluator.reuse.reused - reused, 3 * u64::from(countries));
-        assert_eq!(evaluator.reuse.checked, 0);
-        // The flag every icon trigger reads is set: no evaluation is reused.
-        let evaluated = evaluator.reuse.evaluated;
-        decoded.hour += 1;
-        *decoded.tables[TableId::ScriptFlags.index()] = TableView::Complete(TableRows::ScriptFlags(vec![replay::rows::ScriptFlagRow { scope_kind: 0, scope_id: 0, token: 900, value: 1, ..Default::default() }]));
-        evaluator.write_test_frame(&mut writer, &source, Some(&content), &decoded, &mut accumulator, &mut index, None, &cancelled)?;
-        let flipped = observer_work(&source, &content, &evaluator, &index, &accumulator);
-        assert_eq!(evaluator.reuse.evaluated - evaluated, u64::from(countries));
-        assert_eq!(flipped.emitted - unchanged.emitted, countries as usize);
-        assert!(flipped.interpreter_calls > unchanged.interpreter_calls);
-        index.flush(&mut writer, &cancelled)?;
-        writer.commit()?;
-        let mut oracle = artwork::Context::load(crate::catalogue::catalogue(&source, &content)?, artwork::Kind::Focus)?;
-        for hour in [decoded.hour - 1, decoded.hour] {
-            let mut at = decoded.clone();
-            at.hour = hour;
-            if hour < decoded.hour {
-                *at.tables[TableId::ScriptFlags.index()] = TableView::Complete(TableRows::ScriptFlags(vec![]));
-            }
-            for tag in ["000", "001"] {
-                let row = query_hour(&store, &key, 1, tag, hour, &cancelled)?.unwrap();
-                let actual = presentation_page(&store, &key, 1, tag, &row.presentation, 0, &cancelled)?.unwrap();
-                let expected = oracle.focus_display_at(&[("mod/a", tag), ("mod/current", tag)], &at, |items| items.map(|(artwork, reason)| PresentedFocus { artwork, reason }).collect());
-                let expected = align_presentation(&accumulator.previous[tag].order, expected)?;
-                crate::prepared::observer_tests::assert_reply_parity(&actual, &expected)?;
-            }
-        }
-        store.clear()?;
-        Ok(())
-    })
-    .unwrap();
-}
-
-#[test]
-fn tree_overrides_skip_unreached_hourly_icons_and_reuse_exact_presentations() {
-    engine::executable_tables::initialize_for_tests().unwrap();
-    use crate::catalogue::texture_tests::{png_bytes, texture_catalogue};
-    let image = png_bytes(&installed_content::image::Rgba8Image {
-        width: 1,
-        height: 1,
-        pixels: vec![19, 0, 0, 255],
-    });
-    let (catalogue, folders) = texture_catalogue(
-        &[
-            (
-                "common/national_focus/overrides.txt",
-                "focus_tree={focus={id=global icon={GFX_unreached={has_country_flag=unrecorded_flag}}} focus={id=country icon={GFX_unreached={has_country_flag=unrecorded_flag}}} focus={id=bad icon={GFX_unreached={has_country_flag=unrecorded_flag}}}}",
-            ),
-            (
-                "common/defines/overrides.lua",
-                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NFocus={FOCUS_POINT_DAYS=7}}",
-            ),
-            (
-                "interface/overrides.gfx",
-                "spriteTypes={spriteType={name=GFX_global texturefile=gfx/override.png} spriteType={name=GFX_country texturefile=gfx/override.png} spriteType={name=GFX_000_country texturefile=gfx/override.png} corneredTileSpriteType={name=GFX_bad texturefile=gfx/override.png size={x=y y=1}}}",
-            ),
-        ],
-        &[("gfx/override.png", image)],
-    );
-    let catalogue = Arc::new(catalogue);
-    assert!(catalogue.sprites.find("GFX_bad").is_err());
-    let mut decoded = frame(100, 2, &["global", "country", "bad"]);
-    if let TableView::Complete(TableRows::Focus(rows)) =
-        &mut *decoded.tables[TableId::Focus.index()]
-    {
-        for row in rows {
-            row.current = None;
-        }
+    for block in blocks {
+        replay = replay
+            .append(&[continuation_records(&replay, 1, frames(block))])
+            .unwrap();
     }
-    *decoded.tables[TableId::ScriptFlags.index()] = TableView::Unavailable {
-        reason: "unrequested hourly flags".into(),
-    };
-    let (source, content) = presentation_source(
-        std::slice::from_ref(&decoded),
-        Arc::clone(&catalogue),
-        &folders[0].0,
-    );
-    let recording = folders[0].0.join("synthetic.battleplan");
-    std::fs::write(&recording, b"synthetic").unwrap();
+    replay
+}
+
+/// A store holding `replay`'s focus pages, prepared hour by hour as the
+/// hourly walk does, and the source reading them.
+struct Prepared {
+    source: Source,
+    store: store::Store,
+    key: store::SourceKey,
+    recording: std::path::PathBuf,
+    frames: Vec<DecodedFrame>,
+}
+
+impl Drop for Prepared {
+    fn drop(&mut self) {
+        let _ = self.store.clear();
+        let _ = std::fs::remove_file(&self.recording);
+    }
+}
+
+fn prepared(replay: Replay) -> Prepared {
     let cancelled = AtomicBool::new(false);
-    let key = store::SourceKey::capture(&recording, &[]).unwrap();
-    let stores = [
-        store::Store::local(uuid::Uuid::new_v4()).unwrap(),
-        store::Store::local(uuid::Uuid::new_v4()).unwrap(),
-    ];
-    let mut writers = [
-        stores[0].replace(key.clone()).unwrap(),
-        stores[1].replace(key).unwrap(),
-    ];
-    let mut evaluators = [
-        FocusEvaluator {
-            legacy: true,
-            ..Default::default()
-        },
-        FocusEvaluator::default(),
-    ];
-    let mut accumulators = [FocusAccumulator::default(), FocusAccumulator::default()];
-    let mut indexes = [FocusIndex::default(), FocusIndex::default()];
-    let mut oracle = artwork::Context::load(catalogue, artwork::Kind::Focus).unwrap();
-    for hour in [100, 101, 102] {
-        decoded.hour = hour;
-        if hour == 102
-            && let TableView::Complete(TableRows::Focus(rows)) =
-                &mut *decoded.tables[TableId::Focus.index()]
-        {
-            rows[0].progress += 1;
-        }
-        let before = evaluators[1].interpreter_calls;
-        for side in 0..2 {
-            evaluators[side]
-                .write_test_frame(
-                    &mut writers[side],
-                    &source,
-                    Some(&content),
-                    &decoded,
-                    &mut accumulators[side],
-                    &mut indexes[side],
-                    None,
-                    &cancelled,
-                )
-                .unwrap();
-            indexes[side].series.seal();
-        }
-        assert_eq!(
-            serde_json::to_value(&indexes[0]).unwrap(),
-            serde_json::to_value(&indexes[1]).unwrap()
-        );
-        if hour > 100 {
-            assert_eq!(evaluators[1].interpreter_calls, before);
-        }
-        for (tag, country) in &indexes[1].countries {
-            assert!(evaluators[1].reusable(tag));
-            assert!(!evaluators[0].reusable(tag));
-            let requests = [
-                ("bad", tag.as_str()),
-                ("country", tag.as_str()),
-                ("global", tag.as_str()),
-            ];
-            let expected: Vec<_> =
-                oracle.focus_display_at(&requests, &decoded, |items| items.collect());
-            for (art, reason) in expected {
-                let stored = country
-                    .last
-                    .as_ref()
-                    .unwrap()
-                    .presentation
-                    .iter()
-                    .find(|row| row.artwork.token == art.token)
-                    .unwrap();
-                assert_eq!(stored.artwork, art);
-                assert_eq!(stored.reason, reason);
-            }
-        }
-    }
-    assert_eq!(
-        evaluators[1].scoped_input_builds, 0,
-        "unreached triggers construct no scoped inputs"
-    );
-    assert_eq!(evaluators[1].counts.progress_reused, 1);
-    drop(writers);
-    for store in stores {
-        store.clear().unwrap();
-    }
-}
-
-#[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
-fn rare_changes_do_not_rebuild_hourly_orders_for_5000_countries() {
-    let (countries, hours) = (5_000, 3_000);
-    let mut decoded = frame(0, countries, &["mod/a", "mod/a", "mod/b"]);
-    let mut accumulator = FocusAccumulator::default();
-    let cancelled = AtomicBool::new(false);
-    let mut observations = 0;
-    for hour in 0..hours {
-        decoded.hour = hour;
-        // Countries balances change hourly, but focus reads only its keys.
-        if let TableView::Complete(TableRows::Countries(rows)) =
-            &mut *decoded.tables[TableId::Countries.index()]
-        {
-            rows[0].political_power_raw = Some(i64::from(hour));
-        }
-        if hour > 0
-            && hour % 1_000 == 0
-            && let TableView::Complete(TableRows::Focus(rows)) =
-                &mut *decoded.tables[TableId::Focus.index()]
-        {
-            rows[0].progress += 10;
-        }
-        accumulator
-            .observe(&decoded, &cancelled, |_| {
-                observations += 1;
-                Ok(())
-            })
-            .unwrap();
-    }
-    assert_eq!(observations, countries + 2);
-    assert!(
-        accumulator
-            .previous
-            .keys()
-            .all(|tag| accumulator.active.contains(tag) && accumulator.hour == Some(hours - 1))
-    );
-    eprintln!(
-        "focus observations: before={} after={observations}",
-        countries * hours as u32
-    );
-}
-
-#[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: runs in the full suite (--features slow-tests)"
-)]
-fn batched_focus_files_and_interpretations_at_scale_and_resume() {
-    engine::executable_tables::initialize_for_tests().unwrap();
-    let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
-        (
-            "common/national_focus/scale.txt",
-            "focus_tree={focus={id=\"mod/a\" text=title_a} focus={id=\"mod/b\" text=title_b} focus={id=\"mod/current\" text=title_c}}",
-        ),
-        (
-            "common/defines/scale.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NFocus={FOCUS_POINT_DAYS=7}}",
-        ),
-        (
-            "localisation/scale_l_english.yml",
-            "\u{feff}l_english:\n title_a:0 \"A\"\n title_b:0 \"B\"\n title_c:0 \"C\"\n",
-        ),
-    ]);
-    let cancelled = AtomicBool::new(false);
-    let mut decoded = frame(0, 5_000, &["mod/a", "mod/a", "mod/b"]);
-    let source = Source::from_replay(
-        crate::SourceKey {
-            source_id: "focus-files-scale".into(),
-            revision: "1".into(),
-        },
-        "synthetic.battleplan".into(),
-        std::sync::Arc::new(
-            Replay::from_records(CAMPAIGN.into(), &[records(1, vec![decoded.clone()])]).unwrap(),
-        ),
-        &cancelled,
-    )
-    .unwrap();
-    let content = ContentOptions {
-        options: installed_content::ResolveOptions {
-            game_dir: folder.0.clone(),
-            user_dir: folder.0.join("user"),
-            cache_dir: folder.0.join("cache"),
-        },
-        allow_unverified: true,
-    };
-    crate::catalogue::set_test_catalogue(&source, &content, std::sync::Arc::new(catalogue));
-    let id = uuid::Uuid::new_v4();
-    let recording = std::env::temp_dir().join(format!("focus-batch-scale-{id}.battleplan"));
-    std::fs::write(&recording, b"synthetic recording").unwrap();
-    let key = store::SourceKey::capture(&recording, &[]).unwrap();
-    let store = store::Store::local(id).unwrap();
-    let directory = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
-        .join("HOI4Replay/prepared")
-        .join(id.to_string());
-    // Ranges the manifest lists, whichever packs hold them.
-    let listed = || {
-        store::Listing::open(&directory.join("manifest"))
-            .unwrap()
-            .unwrap()
-            .sections()
-            .map(|(_, count)| count)
-            .sum::<u64>()
-    };
-    let mut accumulator = FocusAccumulator::default();
-    let mut index = FocusIndex::default();
-    let mut evaluator = FocusEvaluator::default();
-    let mut observations = 0;
-    let mut calls = 0;
-    let mut entry_calls = 0;
-    let mut writer = store.replace(key.clone()).unwrap();
-    for hour in 0..3_008 {
-        if hour == 3_000 {
-            index.flush(&mut writer, &cancelled).unwrap();
-            writer.commit().unwrap();
-            assert_eq!(listed(), 6); // Five focus payloads plus the completion-feed catalogue.
-            assert_eq!(
-                store
-                    .range_count(&key, "focus-completions-1-catalogue")
-                    .unwrap(),
-                Some(1)
-            );
-            assert_eq!(evaluator.interpreted, 6);
-            assert_eq!(evaluator.interpreter_calls, 2);
-            assert_eq!(observations, 5_002);
-            assert_eq!(
-                index
-                    .countries
-                    .values()
-                    .map(|country| index
-                        .series
-                        .state(country.key)
-                        .map_or(0, |state| state.events))
-                    .sum::<u64>(),
-                5_000
-            );
-            eprintln!(
-                "rare focus: files before=20011 after=6 (5 focus payloads + feed catalogue); interpreter calls before=30000000 after=2; tokens before=90000000 after=6"
-            );
-            let row = query_hour(&store, &key, 1, "000", 1_500, &cancelled)
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                (row.hour, row.last_hour, row.order_first_hour),
-                (1_000, 1_999, 0)
-            );
-            assert_eq!(row.daily_gain_raw.as_deref(), Some("10"));
-            assert_eq!(
-                query_page(
-                    &store,
-                    &key,
-                    1,
-                    "000",
-                    1_500,
-                    &row.completed,
-                    0,
-                    "focus-order-page",
-                    &cancelled
-                )
-                .unwrap(),
-                serde_json::to_value(
-                    order_page(&store, &key, 1, "000", &row.completed, 0, &cancelled).unwrap()
-                )
-                .unwrap()
-            );
-            assert_eq!(
-                query_page(
-                    &store,
-                    &key,
-                    1,
-                    "000",
-                    1_500,
-                    &row.presentation,
-                    0,
-                    "focus-presentation-page",
-                    &cancelled
-                )
-                .unwrap(),
-                serde_json::to_value(
-                    presentation_page(&store, &key, 1, "000", &row.presentation, 0, &cancelled)
-                        .unwrap()
-                )
-                .unwrap()
-            );
-            for pages in [
-                Pages {
-                    first: row.completed.first + 1,
-                    ..row.completed.clone()
-                },
-                Pages {
-                    rows: row.completed.rows + 1,
-                    ..row.completed.clone()
-                },
-            ] {
-                assert!(
-                    query_page(
-                        &store,
-                        &key,
-                        1,
-                        "000",
-                        1_500,
-                        &pages,
-                        0,
-                        "focus-order-page",
-                        &cancelled
-                    )
-                    .unwrap_err()
-                    .to_string()
-                    .contains("page changed")
-                );
-            }
-            assert_eq!(
-                order_page(&store, &key, 1, "000", &row.completed, 0, &cancelled)
-                    .unwrap()
-                    .unwrap()
-                    .len(),
-                3
-            );
-            assert_eq!(
-                presentation_page(&store, &key, 1, "000", &row.presentation, 0, &cancelled)
-                    .unwrap()
-                    .unwrap()
-                    .len(),
-                4
-            );
-            // Compare Display and Text with the production boundary at an
-            // actually observed hour, including the duplicated completion.
-            let mut oracle = artwork::Context::load(
-                crate::catalogue::catalogue(&source, &content).unwrap(),
-                artwork::Kind::Focus,
-            )
-            .unwrap();
-            let order = &accumulator.previous["000"].order;
-            let tokens: Vec<_> = order
-                .completed
-                .iter()
-                .map(|entry| entry.token.clone())
-                .chain(order.current.iter().cloned())
-                .collect();
-            let dated = query_hour(&store, &key, 1, "000", decoded.hour, &cancelled)
-                .unwrap()
-                .unwrap();
-            for mode in [Presentation::Display, Presentation::Text] {
-                let expected = crate::products::focus_artwork::present_decoded(
-                    &mut oracle,
-                    &crate::products::focus_artwork::FocusArtworkParams {
-                        branch_id: "1".into(),
-                        hour: decoded.hour,
-                        tag: "000".into(),
-                        tokens: tokens.clone(),
-                        text_only: Some(mode == Presentation::Text),
-                        icons_only: None,
-                        include_descriptions: Some(mode == Presentation::Text),
-                    },
-                    &decoded,
-                    &cancelled,
-                )
-                .unwrap();
-                let expected = align_presentation(
-                    order,
-                    serde_json::from_value(serde_json::to_value(expected.items).unwrap()).unwrap(),
-                )
-                .unwrap();
-                let actual = if mode == Presentation::Display {
-                    presentation_page(&store, &key, 1, "000", &dated.presentation, 0, &cancelled)
-                } else {
-                    details_page(
-                        &store,
-                        &key,
-                        1,
-                        "000",
-                        dated.details.as_ref().unwrap(),
-                        0,
-                        &cancelled,
-                    )
-                }
-                .unwrap()
-                .unwrap();
-                crate::prepared::observer_tests::assert_reply_parity(&actual, &expected).unwrap();
-            }
-            accumulator =
-                serde_json::from_slice(&serde_json::to_vec(&accumulator).unwrap()).unwrap();
-            index = serde_json::from_slice(&serde_json::to_vec(&index).unwrap()).unwrap();
-            calls += evaluator.interpreted;
-            entry_calls += evaluator.interpreter_calls;
-            evaluator = FocusEvaluator::default();
-            writer = store.extend(&key).unwrap();
-        }
-        decoded.hour = hour;
-        if let TableView::Complete(TableRows::Countries(rows)) =
-            &mut *decoded.tables[TableId::Countries.index()]
-        {
-            rows[0].political_power_raw = Some(i64::from(hour));
-        }
-        if let TableView::Complete(TableRows::Focus(rows)) =
-            &mut *decoded.tables[TableId::Focus.index()]
-        {
-            if hour >= 3_000 {
-                for row in rows {
-                    row.progress += 10;
-                }
-            } else if hour > 0 && hour % 1_000 == 0 {
-                rows[0].progress += 10;
-            }
-        }
-        let mut changed = Vec::new();
-        index
-            .write_unavailable(&mut writer, &decoded, &cancelled)
-            .unwrap();
-        let changes = accumulator.frame_changes(&decoded);
-        accumulator
-            .observe_changes(&decoded, &changes, &cancelled, |tag, row| {
-                observations += 1;
-                changed.push((tag.to_owned(), row));
-                Ok(())
-            })
-            .unwrap();
-        let before = evaluator.interpreted;
-        let before_bytes = writer.bytes_written();
-        for (tag, observation) in changed {
-            if observation.is_none()
-                && evaluator.reusable(&tag)
-                && index
-                    .write_progress(
-                        1,
-                        &tag,
-                        hour,
-                        &accumulator.previous[&tag],
-                        Some(evaluator.warnings()),
-                        &cancelled,
-                    )
-                    .unwrap()
-            {
-                continue;
-            }
-            let observation = observation.unwrap_or_else(|| accumulator.observation(&tag, hour));
-            if evaluator.reusable(&tag)
-                && index
-                    .write_progress(
-                        1,
-                        &tag,
-                        hour,
-                        &accumulator.previous[&tag],
-                        Some(evaluator.warnings()),
-                        &cancelled,
-                    )
-                    .unwrap()
-            {
-                continue;
-            }
-            let tokens: Vec<_> = observation
-                .order
-                .completed
-                .iter()
-                .map(|entry| entry.token.clone())
-                .chain(observation.order.current.iter().cloned())
-                .collect();
-            evaluator
-                .prepare_static_text(&mut writer, &source, &content, &tokens, &cancelled)
-                .unwrap();
-            let mut projections = Vec::new();
-            for mode in [Presentation::Display, Presentation::Text] {
-                projections.push(
-                    evaluator
-                        .present(
-                            &source,
-                            &content,
-                            &decoded,
-                            &tag,
-                            &tokens,
-                            mode,
-                            &cancelled,
-                            |items, _| Ok(items.collect::<Vec<_>>()),
-                        )
-                        .unwrap(),
-                );
-            }
-            let mut projections = projections.into_iter();
-            index
-                .write_hour_with_details(
-                    &mut writer,
-                    1,
-                    observation,
-                    &mut projections.next().unwrap().into_iter(),
-                    Some(&mut projections.next().unwrap().into_iter()),
-                    evaluator.warnings().to_vec(),
-                    &cancelled,
-                )
-                .unwrap();
-        }
-        index.finish_frame(&accumulator, hour, &cancelled).unwrap();
-        if (1..3_000).contains(&hour) {
-            assert_eq!(evaluator.interpreted, before);
-            assert_eq!(
-                writer.bytes_written(),
-                before_bytes,
-                "unchanged hours and two progress changes write no ranges"
-            );
-        }
-    }
-    index.flush(&mut writer, &cancelled).unwrap();
-    writer.commit().unwrap();
-    calls += evaluator.interpreted;
-    entry_calls += evaluator.interpreter_calls;
-    assert_eq!((observations, calls), (45_002, 12));
-    assert_eq!(entry_calls, 4);
-    assert_eq!(
-        index
-            .countries
-            .values()
-            .map(|country| index
-                .series
-                .state(country.key)
-                .map_or(0, |state| state.events))
-            .sum::<u64>(),
-        5_000,
-        "progress-only hours never emit focus state events"
-    );
-    // The completion feed's catalogue is its base plus a short chain of patches.
-    let completions = store
-        .range_count(&key, "focus-completions-1-catalogue")
-        .unwrap()
-        .unwrap();
-    assert!((1..=2).contains(&completions));
-    assert_eq!(listed(), 6 + completions); // The replaced country catalogue stays unlisted.
-    let active = store.range_count(&key, "focus-1").unwrap().unwrap()
-        + store
-            .range_count(&key, "focus-1-catalogue")
-            .unwrap()
-            .unwrap()
-        + completions
-        + 3;
-    assert_eq!(active, 6 + completions);
-    eprintln!(
-        "focus with dense progress and resume: files before=180011 after=9 (7 active); interpreter calls before=30080000 after={entry_calls}; tokens before=90240000 after={calls}"
-    );
-    let row = query_hour(&store, &key, 1, "001", 3_007, &cancelled)
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        (row.hour, row.last_hour, row.order_first_hour),
-        (3_007, 3_007, 0)
-    );
-    assert_eq!(row.daily_gain_raw.as_deref(), Some("10"));
-    assert_eq!(
-        query_hour(&store, &key, 1, "000", 999, &cancelled)
-            .unwrap()
-            .unwrap()
-            .last_hour,
-        999
-    );
-    assert_eq!(
-        static_text_page(&store, &key, &["mod/a".into()], &cancelled).unwrap()[0]
-            .name
-            .as_deref(),
-        Some("A")
-    );
-    store.clear().unwrap();
-    std::fs::remove_file(recording).unwrap();
-}
-
-#[test]
-fn sequential_observations_match_history_at_scale_and_resume() {
-    let count = 5_000;
-    let frames = vec![
-        frame(100, count, &["mod/a", "mod/a"]),
-        frame(101, count, &["mod/a", "mod/a", "mod/b"]),
-        frame(105, count, &["mod/a", "mod/a", "mod/b", "mod/c"]),
-    ];
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
-    let cancelled = AtomicBool::new(false);
-    let tag = String::from_utf8(scale_tag(count / 2)).unwrap();
-    let oracle = crate::focus_history(&replay, 1, &tag, &cancelled).unwrap();
-    let mut accumulator = FocusAccumulator::default();
-    for frame in &frames {
-        let mut observed = 0;
-        accumulator
-            .observe(frame, &cancelled, |row| {
-                observed += 1;
-                if row.tag == tag {
-                    assert_eq!(row.order, oracle.at(frame.hour).unwrap());
-                    assert_eq!(row.progress_raw, i64::MIN.to_string());
-                }
-                Ok(())
-            })
-            .unwrap();
-        assert_eq!(observed, count);
-        // A newly opened process resumes only the latest lists, never historical DTOs.
-        accumulator = serde_json::from_slice(&serde_json::to_vec(&accumulator).unwrap()).unwrap();
-        assert_eq!(accumulator.previous.len(), count as usize);
-    }
-}
-
-#[test]
-fn missing_reads_and_identity_replacement_preserve_oracle() {
-    let first = frame(100, 1, &["a"]);
-    let mut missing = frame(101, 1, &["a", "b"]);
-    *missing.tables[TableId::Focus.index()] = TableView::Unavailable {
-        reason: "synthetic unavailable".into(),
-    };
-    let after = frame(102, 1, &["a", "b"]);
-    let mut replacement = frame(103, 1, &["a", "b", "c"]);
-    if let TableView::Complete(TableRows::Countries(rows)) =
-        &mut *replacement.tables[TableId::Countries.index()]
-    {
-        rows[0].id = 200_000;
-    }
-    if let TableView::Complete(TableRows::CountryLinks(rows)) =
-        &mut *replacement.tables[TableId::CountryLinks.index()]
-    {
-        rows.push(replay::rows::CountryLinkRow {
-            id: 200_000,
-            canonical_slot: 0,
-        });
-    }
-    let frames = vec![first, missing, after, replacement];
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
-    let cancelled = AtomicBool::new(false);
-    let tag = String::from_utf8(scale_tag(0)).unwrap();
-    let oracle = crate::focus_history(&replay, 1, &tag, &cancelled).unwrap();
-    let mut accumulator = FocusAccumulator::default();
-    for frame in &frames {
-        let mut rows = Vec::new();
-        accumulator
-            .observe(frame, &cancelled, |row| {
-                rows.push(row);
-                Ok(())
-            })
-            .unwrap();
-        match oracle.at(frame.hour) {
-            Ok(order) => assert_eq!(rows[0].order, order),
-            Err(_) => assert!(rows.is_empty()),
-        }
-    }
-}
-
-#[test]
-fn cancelled_observation_does_not_advance_resumption() {
-    let mut accumulator = FocusAccumulator::default();
-    let error = accumulator
-        .observe(&frame(1, 1, &[]), &AtomicBool::new(true), |_| {
-            panic!("cancelled")
-        })
-        .unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-    assert!(accumulator.hour.is_none());
-}
-
-#[test]
-fn interval_pages_keep_all_progress_and_leave_gaps_missing() {
     let id = uuid::Uuid::new_v4();
     let recording = std::env::temp_dir().join(format!("prepared-focus-{id}.battleplan"));
     std::fs::write(&recording, b"synthetic recording").unwrap();
     let key = store::SourceKey::capture(&recording, &[]).unwrap();
     let store = store::Store::local(id).unwrap();
-    let cancelled = AtomicBool::new(false);
-    let mut writer = store.replace(key.clone()).unwrap();
-    let mut index = FocusIndex::default();
-    let mut accumulator = FocusAccumulator::default();
-    let tokens: Vec<_> = (0..300).map(|i| format!("mod/{i}")).collect();
-    let borrowed: Vec<_> = tokens.iter().map(String::as_str).collect();
-    for hour in [100, 101, 105, 106] {
-        let mut current = frame(hour, 1, &borrowed);
-        if let TableView::Complete(TableRows::Focus(rows)) =
-            &mut *current.tables[TableId::Focus.index()]
-        {
-            rows[0].progress = if hour < 106 { i64::MAX } else { i64::MIN };
-        }
-        accumulator
-            .observe(&current, &cancelled, |observation| {
-                index.write_hour(
-                    &mut writer,
-                    1,
-                    observation,
-                    &mut std::iter::empty(),
-                    Vec::new(),
-                    &cancelled,
-                )
-            })
+    let mut frames = Vec::new();
+    for block in &replay.index {
+        replay
+            .read_block_alone(
+                block,
+                TABLES,
+                |_, frame| {
+                    frames.push(frame.clone());
+                    Ok(())
+                },
+                || Ok(()),
+            )
             .unwrap();
-        assert!(
-            index.extend_hour(1, &String::from_utf8(scale_tag(0)).unwrap(), hour, &[])
-                || hour != 101
-        );
+    }
+    let mut index = FocusIndex::default();
+    let mut writer = store.replace(key.clone()).unwrap();
+    for frame in &frames {
+        index.observe_frame(&replay, frame, &cancelled).unwrap();
     }
     index.flush(&mut writer, &cancelled).unwrap();
-    let state = serde_json::to_vec(&index).unwrap();
     writer.commit().unwrap();
-    let index: FocusIndex = serde_json::from_slice(&state).unwrap();
-    let tag = String::from_utf8(scale_tag(0)).unwrap();
-    assert_eq!(
-        crate::prepared::series::Reader::new(&store, &key, "focus-1".into(), &cancelled)
-            .unwrap()
-            .runs(index.countries[&tag].key, 100, 106)
-            .unwrap()
-            .len(),
-        3
-    );
-    assert!(
-        index
-            .hour(&store, &key, 1, &tag, 102, &cancelled)
-            .unwrap()
-            .is_none()
-    );
-    let row = index
-        .hour(&store, &key, 1, &tag, 101, &cancelled)
-        .unwrap()
-        .unwrap();
-    assert_eq!(row.progress_raw, i64::MAX.to_string());
-    assert_eq!(row.completed.rows, 300);
-    let all: Vec<_> = (0..row.completed.count)
-        .flat_map(|page| {
-            let expected = order_page(&store, &key, 1, &tag, &row.completed, page, &cancelled)
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                query_page(
-                    &store,
-                    &key,
-                    1,
-                    &tag,
-                    101,
-                    &row.completed,
-                    page,
-                    "focus-order-page",
-                    &cancelled
-                )
-                .unwrap(),
-                serde_json::to_value(&expected).unwrap()
-            );
-            expected
-        })
-        .collect();
-    assert_eq!(all.len(), 300);
-    assert_eq!(all[299].token, "mod/299");
-    assert!(
-        query_page(
-            &store,
-            &key,
-            1,
-            &tag,
-            102,
-            &row.completed,
-            0,
-            "focus-order-page",
-            &cancelled
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("unavailable at this hour")
-    );
-    assert!(
-        order_page(
-            &store,
-            &key,
-            1,
-            &tag,
-            &row.completed,
-            row.completed.count,
-            &cancelled
-        )
-        .unwrap()
-        .is_none()
-    );
-    assert_eq!(
-        index
-            .hour(&store, &key, 1, &tag, 106, &cancelled)
-            .unwrap()
-            .unwrap()
-            .progress_raw,
-        i64::MIN.to_string()
-    );
-    let mut resumed: FocusAccumulator =
-        serde_json::from_slice(&serde_json::to_vec(&accumulator).unwrap()).unwrap();
-    let mut index = index;
-    use std::io::Write;
-    std::fs::OpenOptions::new()
-        .append(true)
-        .open(&recording)
-        .unwrap()
-        .write_all(b"appended tail")
-        .unwrap();
-    let appended_key = store::SourceKey::capture(&recording, &[]).unwrap();
-    let mut writer = store.append(&key, appended_key.clone()).unwrap();
-    resumed
-        .observe(&frame(107, 1, &borrowed), &cancelled, |row| {
-            index.write_hour(
-                &mut writer,
-                1,
-                row,
-                &mut std::iter::empty(),
-                Vec::new(),
-                &cancelled,
-            )
-        })
-        .unwrap();
-    index.flush(&mut writer, &cancelled).unwrap();
-    writer.commit().unwrap();
-    assert_eq!(
-        crate::prepared::series::Reader::new(&store, &appended_key, "focus-1".into(), &cancelled)
-            .unwrap()
-            .runs(index.countries[&tag].key, 100, 107)
-            .unwrap()
-            .len(),
-        4
-    );
-    assert_eq!(
-        index
-            .hour(&store, &appended_key, 1, &tag, 107, &cancelled)
-            .unwrap()
-            .unwrap()
-            .progress_raw,
-        i64::MIN.to_string()
-    );
-    assert!(
-        index
-            .hour(&store, &appended_key, 1, &tag, 103, &cancelled)
-            .unwrap()
-            .is_none()
-    );
-    store.clear().unwrap();
-    std::fs::remove_file(recording).unwrap();
-}
-
-#[test]
-fn prepared_titles_icons_and_refusals_match_product_modes() {
-    engine::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use crate::products::{
-        LoadContext, Product,
-        focus_artwork::{FocusArtwork, FocusArtworkParams},
-    };
-    use std::sync::Arc;
-    let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
-        (
-            "common/national_focus/synthetic.txt",
-            "focus_tree={focus={id=mod_a text=title_a icon=GFX_missing} focus={id=mod_b text=title_b icon=GFX_missing}}",
-        ),
-        (
-            "common/defines/synthetic.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NFocus={FOCUS_POINT_DAYS=7}}",
-        ),
-        (
-            "interface/synthetic.gfx",
-            "spriteTypes={spriteType={name=GFX_000_mod_a}}",
-        ),
-        (
-            "localisation/synthetic_l_english.yml",
-            "\u{feff}l_english:\n title_a:0 \"A title\"\n title_b:0 \"B title\"\n",
-        ),
-    ]);
-    let decoded = frame(100, 1, &[]);
-    let replay =
-        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![decoded.clone()])]).unwrap();
     let source = Source::from_replay(
         crate::SourceKey {
-            source_id: "prepared-focus-oracle".into(),
+            source_id: id.to_string(),
             revision: "1".into(),
         },
         "synthetic.battleplan".into(),
         Arc::new(replay),
-        &AtomicBool::new(false),
+        &cancelled,
     )
     .unwrap();
-    let content = ContentOptions {
-        options: installed_content::ResolveOptions {
-            game_dir: folder.0.clone(),
-            user_dir: folder.0.join("user"),
-            cache_dir: folder.0.join("cache"),
-        },
-        allow_unverified: true,
-    };
-    crate::catalogue::set_test_catalogue(&source, &content, Arc::new(catalogue));
-    let context = LoadContext {
-        content: Some(content.clone()),
-    };
-    let cancelled = AtomicBool::new(false);
-    let tag = String::from_utf8(scale_tag(0)).unwrap();
-    let mut evaluator = FocusEvaluator::default();
-    evaluator.configure(&source, &content).unwrap();
-    let content_loads = crate::catalogue::catalogue_loads(&source, &content)
-        + artwork::Context::content_loads(evaluator.catalogue.as_ref().unwrap());
-    for (mode, text_only, icons_only, include_descriptions) in [
-        (Presentation::Display, None, None, Some(false)),
-        (Presentation::Titles, Some(true), None, Some(false)),
-        (Presentation::Icons, None, Some(true), Some(false)),
-        (Presentation::Text, Some(true), None, Some(true)),
-        (Presentation::Full, None, None, Some(true)),
-    ] {
-        let mut params = FocusArtworkParams {
-            branch_id: "1".into(),
-            hour: 100,
-            tag: tag.clone(),
-            tokens: vec![
-                "mod_b".into(),
-                "mod_a".into(),
-                "mod_b".into(),
-                "arbitrary/mod/token".into(),
-            ],
-            text_only,
-            icons_only,
-            include_descriptions,
-        };
-        let oracle = FocusArtwork::load(&source, &params, &context, &cancelled).unwrap();
-        let (rows, warnings) = evaluator
-            .present(
-                &source,
-                &content,
-                &decoded,
-                &tag,
-                &params.tokens,
-                mode,
-                &cancelled,
-                |items, warnings| {
-                    Ok((
-                        items
-                            .map(|(artwork, reason)| PresentedFocus { artwork, reason })
-                            .collect::<Vec<_>>(),
-                        warnings,
-                    ))
-                },
+    Prepared {
+        source,
+        store,
+        key,
+        recording,
+        frames,
+    }
+}
+
+impl Prepared {
+    fn hour(&self, tag: &str, hour: i32) -> Option<Hour> {
+        query_hour(
+            &self.source,
+            &self.store,
+            &self.key,
+            1,
+            tag,
+            hour,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    }
+
+    /// Every completed focus the hour's pages list.
+    fn order(&self, tag: &str, hour: &Hour) -> Vec<FocusEntry> {
+        let mut entries = Vec::new();
+        for page in 0..hour.completed.count {
+            let rows = order_page(
+                &self.store,
+                &self.key,
+                1,
+                tag,
+                hour.at,
+                &hour.completed,
+                page,
+                &AtomicBool::new(false),
             )
             .unwrap();
-        assert_eq!(
-            serde_json::to_value(rows).unwrap(),
-            serde_json::to_value(&oracle.items).unwrap()
-        );
-        assert_eq!(warnings, oracle.warnings);
-        assert_eq!(
-            crate::catalogue::catalogue_loads(&source, &content)
-                + artwork::Context::content_loads(evaluator.catalogue.as_ref().unwrap()),
-            content_loads,
-            "prepared and oracle presentation must reuse configured databases"
-        );
-        let interpreted = evaluator.interpreted;
-        for tag in [&tag, "another country"] {
-            params.tag = tag.to_owned();
-            let oracle = FocusArtwork::load(&source, &params, &context, &cancelled).unwrap();
-            let cached = evaluator
-                .present(
-                    &source,
-                    &content,
-                    &decoded,
-                    tag,
-                    &params.tokens,
-                    mode,
-                    &cancelled,
-                    |items, warnings| {
-                        Ok((
-                            items
-                                .map(|(artwork, reason)| PresentedFocus { artwork, reason })
-                                .collect::<Vec<_>>(),
-                            warnings,
-                        ))
-                    },
-                )
+            entries.extend(serde_json::from_value::<Vec<FocusEntry>>(rows).unwrap());
+        }
+        entries
+    }
+}
+
+/// The progress and daily gain of `tag` at each hour it is observed, as
+/// hourly preparation carried them hour by hour: a run of equal progress
+/// breaks at a gap, an hour unobserved or another identity; its gain is the
+/// rise since the observation the hour before it began, while the same focus
+/// is active.
+fn hourly_progress(frames: &[DecodedFrame], tag: &str) -> BTreeMap<i32, (i64, Option<i128>)> {
+    struct Seen {
+        hour: i32,
+        identity: (u32, u32),
+        raw: i64,
+        current: Option<Recorded>,
+    }
+    let mut last: Option<Seen> = None;
+    let mut run: Option<(i32, i64, Option<(i64, i32, Option<Recorded>)>)> = None;
+    let mut result = BTreeMap::new();
+    for frame in frames {
+        let Some(observed) = read_hour(frame, Some(tag), &HourRead::default(), false)
+            .tags
+            .remove(tag)
+        else {
+            continue;
+        };
+        let identity = (observed.slot, observed.country_id);
+        let current = observed.order.current();
+        let same = last.as_ref().filter(|last| last.identity == identity);
+        let consecutive = same.is_some_and(|last| last.hour + 1 == frame.hour);
+        if !(consecutive && run.as_ref().is_some_and(|run| run.1 == observed.progress)) {
+            run = Some((
+                frame.hour,
+                observed.progress,
+                same.map(|last| (last.raw, last.hour, last.current.clone())),
+            ));
+        }
+        let (first, raw, previous) = run.as_ref().unwrap();
+        let gain = match previous {
+            Some((before, hour, active))
+                if hour + 1 == *first && current.is_some() && current == *active =>
+            {
+                Some(i128::from(*raw) - i128::from(*before)).filter(|gain| *gain > 0)
+            }
+            _ => None,
+        };
+        result.insert(frame.hour, (observed.progress, gain));
+        last = Some(Seen {
+            hour: frame.hour,
+            identity,
+            raw: observed.progress,
+            current,
+        });
+    }
+    result
+}
+
+/// At every recorded hour and for every country, the prepared order (its
+/// hours, the run it began, the active focus, pause and every dated
+/// completion) is the whole-branch focus history's, through completions, a
+/// reset, an identity replacement, a missing focus row, unread tables, a gap
+/// and a pause longer than a block. Progress and its daily gain are hourly
+/// preparation's, read from the hour's block alone.
+#[test]
+fn chain_dates_order_segments_and_gain_match_focus_history() {
+    let replay = scenario();
+    let prepared = prepared(replay);
+    let cancelled = AtomicBool::new(false);
+    let replay = prepared.source.replay();
+    let hours: Vec<i32> = prepared.frames.iter().map(|frame| frame.hour).collect();
+    let mut checked = 0;
+    for index in 0..5_u32 {
+        let tag = String::from_utf8(scale_tag(index)).unwrap();
+        let history =
+            crate::products::national_focus::focus_history(&replay, 1, &tag, &cancelled).unwrap();
+        let progress = hourly_progress(&prepared.frames, &tag);
+        for &hour in &hours {
+            let segment = history
+                .segments
+                .iter()
+                .find(|segment| segment.first_hour <= hour && hour <= segment.last_hour);
+            let reads = query::BLOCK_READS.with(|reads| reads.borrow().len());
+            let actual = prepared.hour(&tag, hour);
+            let Some(segment) = segment else {
+                assert!(actual.is_none(), "{tag} at {hour}");
+                continue;
+            };
+            let actual = actual.unwrap_or_else(|| panic!("{tag} at {hour}"));
+            let block = replay
+                .index
+                .iter()
+                .find(|block| block.first_hour <= hour && hour <= block.last_hour)
                 .unwrap();
             assert_eq!(
-                serde_json::to_value(cached.0).unwrap(),
-                serde_json::to_value(&oracle.items).unwrap()
+                query::BLOCK_READS.with(|reads| reads.borrow()[reads.borrow().len() - 1]),
+                block.first_hour,
+                "{tag} at {hour}: progress reads the hour's block"
             );
-            assert_eq!(cached.1, warnings);
-        }
-        let scoped = usize::from(matches!(
-            mode,
-            Presentation::Display | Presentation::Icons | Presentation::Full
-        ));
-        assert_eq!(
-            evaluator.interpreted,
-            interpreted + scoped,
-            "only country-specific sprite overrides split static results"
-        );
-    }
-    assert_eq!(evaluator.interpreted, 18);
-}
-
-#[test]
-fn preparation_retains_progress_when_old_retention_budget_refuses_it() {
-    let decoded = frame(100, 5_000, &[]);
-    let replay =
-        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![decoded.clone()])]).unwrap();
-    let cancelled = AtomicBool::new(false);
-    let old = crate::products::national_focus::focus_branch_within(&replay, 1, None, &cancelled, 0)
-        .unwrap();
-    assert_eq!(old.progress_stopped, Some(100));
-    assert!(
-        old.countries
-            .values()
-            .all(|history| history.progress.is_empty())
-    );
-    let mut prepared = FocusAccumulator::default();
-    let mut count = 0;
-    prepared
-        .observe(&decoded, &cancelled, |row| {
-            assert_eq!(row.progress_raw, i64::MIN.to_string());
-            count += 1;
-            Ok(())
-        })
-        .unwrap();
-    assert_eq!(count, 5_000);
-}
-
-#[test]
-fn long_opaque_tags_and_completed_tokens_are_not_dropped() {
-    let tag = "mod/tag/".repeat(200);
-    let token = "mod/focus/".repeat(200);
-    let mut decoded = frame(100, 1, &[&token]);
-    if let TableView::Complete(TableRows::Countries(rows)) =
-        &mut *decoded.tables[TableId::Countries.index()]
-    {
-        rows[0].tag = tag.as_bytes().to_vec();
-    }
-    let cancelled = AtomicBool::new(false);
-    let replay =
-        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![decoded.clone()])]).unwrap();
-    assert!(
-        crate::products::national_focus::focus_branch(&replay, 1, None, &cancelled)
-            .unwrap()
-            .countries
-            .is_empty()
-    );
-    let mut accumulator = FocusAccumulator::default();
-    let mut observed = Vec::new();
-    accumulator
-        .observe(&decoded, &cancelled, |row| {
-            observed.push(row);
-            Ok(())
-        })
-        .unwrap();
-    assert_eq!(observed.len(), 1);
-    assert_eq!(observed[0].tag, tag);
-    assert_eq!(observed[0].order.completed[0].token, token);
-}
-
-#[test]
-fn only_changed_prepared_focus_schema_is_refused() {
-    let accumulator = FocusAccumulator::default();
-    let index = FocusIndex::default();
-    for mut state in [
-        serde_json::to_value(accumulator).unwrap(),
-        serde_json::to_value(index).unwrap(),
-    ] {
-        assert_eq!(state["schema"], STATE_SCHEMA);
-        state["schema"] = serde_json::json!(STATE_SCHEMA + 1);
-        assert!(serde_json::from_value::<FocusAccumulator>(state.clone()).is_err());
-        assert!(serde_json::from_value::<FocusIndex>(state).is_err());
-    }
-    // Refusing derivative state changes no recording table or recording-only access.
-    let decoded = frame(100, 1, &[]);
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![decoded])]).unwrap();
-    let tag = String::from_utf8(scale_tag(0)).unwrap();
-    assert!(crate::focus_history(&replay, 1, &tag, &AtomicBool::new(false)).is_ok());
-}
-
-#[test]
-fn daily_gain_matches_progress_runs_without_crossing_focus_changes_or_gaps() {
-    let mut accumulator = FocusAccumulator::default();
-    let cancelled = AtomicBool::new(false);
-    for (hour, raw, current, expected) in [
-        (100, 10, "a", None),
-        (101, 20, "a", Some("10")),
-        (102, 20, "a", Some("10")),
-        (103, 20, "b", None),
-        (105, 20, "b", None),
-        (106, 30, "b", Some("10")),
-    ] {
-        let mut decoded = frame(hour, 1, &[]);
-        if let TableView::Complete(TableRows::Focus(rows)) =
-            &mut *decoded.tables[TableId::Focus.index()]
-        {
-            rows[0].progress = raw;
-            rows[0].current = Some(current.as_bytes().to_vec());
-        }
-        let mut observed = None;
-        accumulator
-            .observe(&decoded, &cancelled, |row| {
-                observed = Some(row);
-                Ok(())
-            })
-            .unwrap();
-        let row = observed.unwrap_or_else(|| {
-            accumulator.observation(&String::from_utf8(scale_tag(0)).unwrap(), hour)
-        });
-        assert_eq!(row.daily_gain_raw.as_deref(), expected);
-    }
-}
-
-#[test]
-fn stored_presentation_follows_repeated_ordinals_and_active_tail() {
-    let id = uuid::Uuid::new_v4();
-    let recording = std::env::temp_dir().join(format!("prepared-focus-order-{id}.battleplan"));
-    std::fs::write(&recording, b"synthetic recording").unwrap();
-    let key = store::SourceKey::capture(&recording, &[]).unwrap();
-    let store = store::Store::local(id).unwrap();
-    let cancelled = AtomicBool::new(false);
-    let mut writer = store.replace(key.clone()).unwrap();
-    let mut index = FocusIndex::default();
-    FocusAccumulator::default()
-        .observe(&frame(100, 1, &["z", "a", "z"]), &cancelled, |row| {
-            let mut evaluated = ["a", "mod/current", "z"].into_iter().map(|token| {
+            assert_eq!(
+                query::BLOCK_READS.with(|reads| reads.borrow().len()) - reads,
+                1,
+                "{tag} at {hour}: one block read"
+            );
+            assert_eq!(
+                (actual.hour, actual.last_hour, actual.order_first_hour),
+                (segment.first_hour, segment.last_hour, segment.first_hour),
+                "{tag} at {hour}"
+            );
+            assert_eq!(
+                (&actual.current, &actual.continuous, actual.paused),
                 (
-                    Artwork {
-                        token: token.into(),
-                        name: Some(token.into()),
-                        description: None,
-                        base_duration_days: None,
-                        icon: None,
-                    },
-                    None,
-                )
-            });
-            index.write_hour(&mut writer, 1, row, &mut evaluated, Vec::new(), &cancelled)
-        })
-        .unwrap();
-    index.flush(&mut writer, &cancelled).unwrap();
-    writer.commit().unwrap();
-    let tag = String::from_utf8(scale_tag(0)).unwrap();
-    let hour = query_hour(&store, &key, 1, &tag, 100, &cancelled)
-        .unwrap()
-        .unwrap();
-    assert_eq!(hour.order_first_hour, 100);
-    assert_eq!(hour.presentation.rows, 4);
-    let items = presentation_page(&store, &key, 1, &tag, &hour.presentation, 0, &cancelled)
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        items
+                    &segment.order.current,
+                    &segment.order.continuous,
+                    segment.order.paused
+                ),
+                "{tag} at {hour}"
+            );
+            assert_eq!(
+                prepared.order(&tag, &actual),
+                segment.order.completed,
+                "{tag} at {hour}"
+            );
+            let (raw, gain) = progress[&hour];
+            assert_eq!(actual.progress_raw, raw.to_string(), "{tag} at {hour}");
+            assert_eq!(
+                actual.daily_gain_raw,
+                gain.map(|gain| gain.to_string()),
+                "{tag} at {hour}"
+            );
+            assert_eq!(actual.at, hour);
+            checked += 1;
+        }
+    }
+    assert!(checked > 300, "{checked} observed country-hours checked");
+    // The fixture reaches every case: dates, a reset, an identity change and
+    // gains inside and across blocks.
+    let a = String::from_utf8(scale_tag(0)).unwrap();
+    let b = String::from_utf8(scale_tag(1)).unwrap();
+    let c = String::from_utf8(scale_tag(2)).unwrap();
+    let late = prepared.hour(&a, 190).unwrap();
+    assert!(
+        prepared
+            .order(&a, &late)
             .iter()
-            .map(|item| item.artwork.token.as_str())
-            .collect::<Vec<_>>(),
-        ["z", "a", "z", "mod/current"]
+            .filter(|entry| entry.completed_by_hour.is_some())
+            .count()
+            >= 8
     );
-    store.clear().unwrap();
-    std::fs::remove_file(recording).unwrap();
+    let reset = prepared.hour(&b, 140).unwrap();
+    assert!(
+        prepared
+            .order(&b, &reset)
+            .iter()
+            .all(|entry| entry.completed_by_hour.is_none())
+    );
+    assert_eq!(
+        (
+            prepared.hour(&c, 129).unwrap().country_id,
+            prepared.hour(&c, 130).unwrap().country_id
+        ),
+        (100_002, 100_004)
+    );
+    assert!(prepared.hour(&a, 150).is_none());
+    assert!(hours.iter().any(|&hour| {
+        prepared
+            .hour(&a, hour)
+            .is_some_and(|row| row.daily_gain_raw.is_some())
+    }));
 }
 
+/// Completions are the order's newly dated entries at hours whose country
+/// was observed the hour before; those first seen after a gap, an unread
+/// table or another identity are counted without an event date, and a
+/// reset is counted once.
 #[test]
-fn stored_full_order_matches_old_visible_subsets_with_scopes_random_and_effect_sessions() {
+fn completions_are_dated_only_when_observed_the_hour_before() {
+    let prepared = prepared(scenario());
+    let cancelled = AtomicBool::new(false);
+    let mut index = FocusIndex::default();
+    let replay = prepared.source.replay();
+    for frame in &prepared.frames {
+        index.observe_frame(&replay, frame, &cancelled).unwrap();
+    }
+    index.fold_held(&cancelled).unwrap();
+    let a = String::from_utf8(scale_tag(0)).unwrap();
+    let b = String::from_utf8(scale_tag(1)).unwrap();
+    let completions = |tag: &str| -> Vec<(String, i32)> {
+        index
+            .seen
+            .iter()
+            .filter(|event| event.tag == tag)
+            .map(|event| (event.token.clone(), event.hour))
+            .collect()
+    };
+    // a{n} completes at 100 + 10 (n + 1): a2 at 130 and a3 at 140 (after
+    // the gap), each observed the hour before; a4 completes at 150, unread,
+    // and is first seen at 152; a5 completes at 160, inside the pause.
+    let ours = completions(&a);
+    assert!(ours.contains(&("a2".into(), 130)));
+    assert!(ours.contains(&("a3".into(), 140)));
+    assert!(ours.contains(&("a5".into(), 160)));
+    assert!(
+        ours.iter().all(|(token, _)| token != "a4"),
+        "a4 first seen after unread hours has no event date: {ours:?}"
+    );
+    assert!(
+        completions(&b).iter().all(|(token, _)| token != "b_reset"),
+        "a reset lists nothing"
+    );
+    let (observed, unavailable) = index.completion_metadata();
+    assert!(observed);
+    assert_eq!(unavailable.get(RESET), Some(&1));
+    assert!(unavailable.get(UNDATED).is_some_and(|count| *count >= 1));
+    // Two hours with Focus unread.
+    assert_eq!(unavailable.get(INCOMPLETE_TABLES), Some(&2));
+    // D has no focus row for six hours.
+    assert_eq!(unavailable.get(NO_FOCUS_ROW), Some(&6));
+}
+
+/// Hours at which tables are not complete keep their named reasons, bounded
+/// by the hours they hold, beside the numeric focus of the hours between.
+#[test]
+fn unavailable_table_intervals_keep_named_reasons() {
+    let frames: Vec<DecodedFrame> = [100, 101, 102, 105]
+        .into_iter()
+        .map(|hour| {
+            let mut frame = focus_frame(1, hour);
+            if hour != 102 {
+                *frame.tables[TableId::Focus.index()] = TableView::Unavailable {
+                    reason: "exact synthetic supplying-read reason".into(),
+                };
+            }
+            if hour == 105 {
+                *frame.tables[TableId::CompletedFocuses.index()] = TableView::Truncated {
+                    rows: TableRows::CompletedFocuses(Vec::new()),
+                    missing: u32::MAX,
+                };
+            }
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let prepared = prepared(replay);
+    let cancelled = AtomicBool::new(false);
+    let missing = query_unavailable(&prepared.store, &prepared.key, 1, 101, &cancelled)
+        .unwrap()
+        .unwrap();
+    assert_eq!((missing.first_hour, missing.last_hour), (100, 101));
+    assert_eq!(
+        missing.reasons,
+        [TableRefusal {
+            table: "Focus".into(),
+            reason: Some("exact synthetic supplying-read reason".into()),
+            missing_rows: None
+        }]
+    );
+    assert!(
+        query_unavailable(&prepared.store, &prepared.key, 1, 102, &cancelled)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        query_unavailable(&prepared.store, &prepared.key, 1, 104, &cancelled)
+            .unwrap()
+            .is_none()
+    );
+    let tag = String::from_utf8(scale_tag(0)).unwrap();
+    assert!(prepared.hour(&tag, 102).is_some());
+    assert!(prepared.hour(&tag, 101).is_none());
+    let later = query_unavailable(&prepared.store, &prepared.key, 1, 105, &cancelled)
+        .unwrap()
+        .unwrap();
+    assert_eq!(later.reasons[1].missing_rows.as_deref(), Some("4294967295"));
+}
+
+/// Two recorded tokens that are not UTF-8 but show the same replacement text
+/// are different focuses: the order changes between them (the active focus
+/// at 102, a completed focus at 103, which starts an undated list). An
+/// unchanged recorded order holds its run hour after hour (104).
+#[test]
+fn distinct_recorded_bytes_with_one_rendering_change_the_order() {
+    let at = |hour: i32| {
+        let mut frame = scale_frame(1, hour, 1);
+        let current: &[u8] = if hour < 102 {
+            &b"x\xff"[..]
+        } else {
+            &b"x\xfe"[..]
+        };
+        let completed: Vec<&[u8]> = match hour {
+            100 => vec![&b"ok"[..]],
+            101 | 102 => vec![&b"ok"[..], &b"c\xff"[..]],
+            _ => vec![&b"ok"[..], &b"c\xfe"[..]],
+        };
+        *frame.tables[TableId::Focus.index()] =
+            TableView::Complete(TableRows::Focus(vec![FocusRow {
+                country: 100_000,
+                current: Some(current.to_vec()),
+                completed_count: completed.len() as i32,
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::CompletedFocuses.index()] =
+            TableView::Complete(TableRows::CompletedFocuses(
+                completed
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ordinal, token)| CompletedFocusRow {
+                        country: 100_000,
+                        ordinal: ordinal as u32,
+                        token: token.to_vec(),
+                    })
+                    .collect(),
+            ));
+        frame
+    };
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, (100..=104).map(at).collect())],
+    )
+    .unwrap();
+    let prepared = prepared(replay);
+    let tag = String::from_utf8(scale_tag(0)).unwrap();
+    let hour = |hour| prepared.hour(&tag, hour).unwrap();
+    // Both active focuses show one replacement text, yet the order changes.
+    assert_eq!(hour(101).current, hour(102).current);
+    assert_eq!(
+        (hour(101).order_first_hour, hour(101).last_hour),
+        (101, 101)
+    );
+    assert_eq!(hour(102).order_first_hour, 102);
+    let dated = prepared.order(&tag, &hour(102));
+    assert_eq!(dated[1].completed_by_hour, Some(101));
+    // The completed focus's bytes changed: a new, undated list.
+    let reset = prepared.order(&tag, &hour(103));
+    assert_eq!(reset[1].token, dated[1].token, "one rendering");
+    assert!(reset.iter().all(|entry| entry.completed_by_hour.is_none()));
+    assert_eq!(hour(103).order_first_hour, 103);
+    // Equal recorded bytes hold the run.
+    assert_eq!((hour(104).order_first_hour, hour(104).hour), (103, 103));
+}
+
+/// Completed-focus tokens a block's facts retain: each list part once,
+/// however many orders share it.
+fn retained_tokens(facts: &Facts) -> usize {
+    let mut parts = std::collections::HashSet::new();
+    let mut tokens = 0;
+    for stretches in facts.tags.values() {
+        for stretch in stretches {
+            for (_, order) in &stretch.orders {
+                let mut part = Some(&order.completed);
+                while let Some(at) = part {
+                    if parts.insert(Arc::as_ptr(&at.added) as *const Recorded as usize) {
+                        tokens += at.added.len();
+                    }
+                    part = at.before.as_deref();
+                }
+            }
+        }
+    }
+    tokens
+}
+
+/// Completions staggered over a block, one country an hour, each table a
+/// new allocation: the block's facts keep each country's completions once
+/// and each completion once (not a table per change), and the lists read
+/// back whole and in order.
+#[test]
+fn a_block_retains_each_country_s_completions_once_and_each_change() {
+    const COUNTRIES: u32 = 40;
+    const BASE: usize = 50;
+    let tokens = |country: u32, hour: i32| -> Vec<String> {
+        (0..BASE)
+            .map(|n| format!("b{n}"))
+            .chain(
+                (101..=hour)
+                    .filter(|at| (at - 101).rem_euclid(COUNTRIES as i32) as u32 == country)
+                    .map(|at| format!("x{at}")),
+            )
+            .collect()
+    };
+    let at = |hour: i32| {
+        let mut frame = scale_frame(1, hour, COUNTRIES);
+        *frame.tables[TableId::Focus.index()] = TableView::Complete(TableRows::Focus(
+            (0..COUNTRIES)
+                .map(|country| FocusRow {
+                    country: 100_000 + country,
+                    completed_count: tokens(country, hour).len() as i32,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        *frame.tables[TableId::CompletedFocuses.index()] =
+            TableView::Complete(TableRows::CompletedFocuses(
+                (0..COUNTRIES)
+                    .flat_map(|country| {
+                        tokens(country, hour).into_iter().enumerate().map(
+                            move |(ordinal, token)| CompletedFocusRow {
+                                country: 100_000 + country,
+                                ordinal: ordinal as u32,
+                                token: token.into_bytes(),
+                            },
+                        )
+                    })
+                    .collect(),
+            ));
+        frame
+    };
+    let mut builder = Builder::new(None);
+    let changes = 120;
+    for hour in 100..=100 + changes {
+        builder.hour(&at(hour)).unwrap();
+    }
+    let facts = builder.finish();
+    assert_eq!(
+        retained_tokens(&facts),
+        COUNTRIES as usize * BASE + changes as usize
+    );
+    for country in 0..COUNTRIES {
+        let tag = String::from_utf8(scale_tag(country)).unwrap();
+        let (_, last) = facts.tags[tag.as_str()][0].orders.last().unwrap();
+        let read: Vec<String> = last
+            .completed
+            .tokens()
+            .iter()
+            .map(|token| token.text())
+            .collect();
+        assert_eq!(read, tokens(country, 100 + changes), "{tag}");
+    }
+}
+
+/// Kept art stays within its byte budget: the least recently used goes
+/// first, art larger than the budget is not kept, and a replaced key counts
+/// once.
+#[test]
+fn kept_art_stays_within_its_budget_evicting_the_least_recently_used() {
+    let art = |token: &str, icon: usize| -> artwork::ResolvedArt {
+        (
+            Artwork {
+                token: token.into(),
+                name: Some("Name".into()),
+                description: None,
+                base_duration_days: None,
+                icon: Some("i".repeat(icon)),
+            },
+            None,
+        )
+    };
+    let key = |token: &str| (Presentation::Display, token.to_owned(), String::new());
+    let mut kept = art::Kept::with_budget(100_000);
+    kept.insert(key("a"), art("a", 40_000));
+    kept.insert(key("b"), art("b", 40_000));
+    // Using a makes b the least recently used.
+    assert!(kept.get(&key("a")).is_some());
+    kept.insert(key("c"), art("c", 40_000));
+    assert!(kept.bytes() <= 100_000);
+    assert!(
+        kept.get(&key("b")).is_none(),
+        "the least recently used is evicted"
+    );
+    assert!(kept.get(&key("a")).is_some() && kept.get(&key("c")).is_some());
+    kept.insert(key("c"), art("c", 40_000));
+    assert_eq!(kept.count(), 2);
+    assert!(kept.bytes() <= 100_000);
+    kept.insert(key("huge"), art("huge", 200_000));
+    assert!(kept.get(&key("huge")).is_none(), "larger than the budget");
+    assert_eq!(kept.count(), 2);
+}
+
+/// A tag held by two countries is the one with the higher country id, as
+/// hourly preparation published it, whichever row comes first.
+#[test]
+fn a_shared_tag_is_the_higher_country_id() {
+    let frames: Vec<DecodedFrame> = (100..=102)
+        .map(|hour| {
+            let mut frame = focus_frame(1, hour);
+            if let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *frame.tables[TableId::Countries.index()]
+            {
+                rows[3].tag = scale_tag(1);
+            }
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let prepared = prepared(replay);
+    let tag = String::from_utf8(scale_tag(1)).unwrap();
+    for hour in 100..=102 {
+        assert_eq!(prepared.hour(&tag, hour).unwrap().country_id, 100_003);
+    }
+}
+
+/// `focus-art` evaluates any recorded hour as hourly preparation presented
+/// it there, row for row and with its warnings: titles reading the country,
+/// Clock-seeded random text and effect sessions, conditional icons, a
+/// refused sprite and static titles, for a token subset or the whole order.
+/// Static art is kept per content binding: another country asking first
+/// leaves the next country's rows unchanged. A request of static tokens
+/// reads no recording; one with a dynamic token reads its hour once.
+#[test]
+fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_tokens() {
     engine::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::catalogue::texture_tests::{png_bytes, texture_catalogue};
-    use crate::products::{
-        LoadContext, Product,
-        focus_artwork::{FocusArtwork, FocusArtworkParams},
-    };
     use installed_content::image::Rgba8Image;
-    use std::sync::Arc;
-    let definitions = format!("focus_tree={{{} focus={{id=a_static text=static_title icon=GFX_mod_true}}}}", (0..12).map(|index| format!(
-        "focus={{id=t{index:02} text=title{} icon={{GFX_mod_true={{tag=GER}} GFX_mod_other=yes}}}}", index % 3)).collect::<Vec<_>>().join(" "));
+    let definitions = format!(
+        "focus_tree={{{} focus={{id=a_static text=static_title icon=GFX_mod_true}} focus={{id=b_refused text=static_title icon=GFX_missing}}}}",
+        (0..12)
+            .map(|index| format!(
+                "focus={{id=t{index:02} text=title{} icon={{GFX_mod_true={{tag=GER}} GFX_mod_other=yes}}}}",
+                index % 3
+            ))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
     let image = |red| {
         png_bytes(&Rgba8Image {
             width: 1,
@@ -2062,85 +793,126 @@ fn stored_full_order_matches_old_visible_subsets_with_scopes_random_and_effect_s
             ("gfx/mod/other.png", image(34)),
         ],
     );
-    let mut decoded = crate::test_fixtures::source(1, 100, Some(1));
-    for table in TableId::ALL {
-        // Unused singleton inputs keep their named unavailable state. Complete
-        // singleton tables cannot describe an empty set of rows.
-        if matches!(
-            table,
-            TableId::Clock
-                | TableId::Campaign
-                | TableId::EventFeedHistory
-                | TableId::AirSortieModifierMetadata
-                | TableId::CombatLogState
-                | TableId::ReservedCountryNaming
-                | TableId::LocalPlayer
-                | TableId::SimulationFeatures
-                | TableId::SunkShips
-                | TableId::WorldTension
-                | TableId::GameScoreMultipliers
-                | TableId::MapEvents
-        ) {
-            continue;
-        }
-        if matches!(
-            &*decoded.tables[table.index()],
-            TableView::Unavailable { .. }
-        ) {
-            *decoded.tables[table.index()] = TableView::Complete(TableRows::empty(table));
-        }
-    }
     let tokens: Vec<String> = (0..12)
         .map(|index| format!("t{index:02}"))
-        .chain(std::iter::once("t00".into()))
-        .chain(std::iter::once("a_static".into()))
+        .chain(["a_static".into(), "b_refused".into()])
         .collect();
-    *decoded.tables[TableId::Focus.index()] =
-        TableView::Complete(TableRows::Focus(vec![FocusRow {
-            country: 9001,
-            completed_count: tokens.len() as i32,
-            current: Some(b"t05".to_vec()),
-            ..Default::default()
-        }]));
-    *decoded.tables[TableId::CompletedFocuses.index()] =
-        TableView::Complete(TableRows::CompletedFocuses(
-            tokens
-                .iter()
-                .enumerate()
-                .map(|(ordinal, token)| CompletedFocusRow {
+    let frames: Vec<DecodedFrame> = [100, 101, 102]
+        .into_iter()
+        .map(|hour| {
+            let mut decoded = crate::test_fixtures::source(1, hour, Some(1));
+            for table in TableId::ALL {
+                // Unused singleton inputs keep their named unavailable state.
+                if matches!(
+                    table,
+                    TableId::Clock
+                        | TableId::Campaign
+                        | TableId::EventFeedHistory
+                        | TableId::AirSortieModifierMetadata
+                        | TableId::CombatLogState
+                        | TableId::ReservedCountryNaming
+                        | TableId::LocalPlayer
+                        | TableId::SimulationFeatures
+                        | TableId::SunkShips
+                        | TableId::WorldTension
+                        | TableId::GameScoreMultipliers
+                        | TableId::MapEvents
+                ) {
+                    continue;
+                }
+                if matches!(
+                    &*decoded.tables[table.index()],
+                    TableView::Unavailable { .. }
+                ) {
+                    *decoded.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+                }
+            }
+            // ENG (9002, slot 8) completes the static focus too.
+            *decoded.tables[TableId::Countries.index()] =
+                TableView::Complete(TableRows::Countries(vec![
+                    CountryRow {
+                        id: 9001,
+                        canonical_slot: 7,
+                        tag: b"GER".to_vec(),
+                        ..Default::default()
+                    },
+                    CountryRow {
+                        id: 9002,
+                        canonical_slot: 8,
+                        tag: b"ENG".to_vec(),
+                        ..Default::default()
+                    },
+                ]));
+            *decoded.tables[TableId::CountryLinks.index()] =
+                TableView::Complete(TableRows::CountryLinks(vec![
+                    CountryLinkRow {
+                        id: 9001,
+                        canonical_slot: 7,
+                    },
+                    CountryLinkRow {
+                        id: 9002,
+                        canonical_slot: 8,
+                    },
+                ]));
+            *decoded.tables[TableId::Focus.index()] = TableView::Complete(TableRows::Focus(vec![
+                FocusRow {
                     country: 9001,
-                    ordinal: ordinal as u32,
-                    token: token.as_bytes().to_vec(),
-                })
-                .collect(),
-        ));
-    *decoded.tables[TableId::Clock.index()] =
-        TableView::Complete(TableRows::Clock(vec![replay::rows::ClockRow {
-            hour: decoded.hour,
-            seed: 987,
-            ..Default::default()
-        }]));
-    *decoded.tables[TableId::PowerBalances.index()] =
-        TableView::Complete(TableRows::PowerBalances(vec![
-            replay::rows::PowerBalanceRow {
-                balance: b"balance".to_vec(),
-                active_range: b"active".to_vec(),
-                ..Default::default()
-            },
-        ]));
-    *decoded.tables[TableId::PowerBalanceMembers.index()] =
-        TableView::Complete(TableRows::PowerBalanceMembers(vec![
-            replay::rows::PowerBalanceMemberRow {
-                country: 9001,
-                ..Default::default()
-            },
-        ]));
-    let replay =
-        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![decoded.clone()])]).unwrap();
+                    completed_count: tokens.len() as i32,
+                    current: Some(b"t05".to_vec()),
+                    ..Default::default()
+                },
+                FocusRow {
+                    country: 9002,
+                    completed_count: 1,
+                    ..Default::default()
+                },
+            ]));
+            *decoded.tables[TableId::CompletedFocuses.index()] =
+                TableView::Complete(TableRows::CompletedFocuses(
+                    tokens
+                        .iter()
+                        .enumerate()
+                        .map(|(ordinal, token)| CompletedFocusRow {
+                            country: 9001,
+                            ordinal: ordinal as u32,
+                            token: token.as_bytes().to_vec(),
+                        })
+                        .chain(std::iter::once(CompletedFocusRow {
+                            country: 9002,
+                            ordinal: 0,
+                            token: b"a_static".to_vec(),
+                        }))
+                        .collect(),
+                ));
+            *decoded.tables[TableId::Clock.index()] =
+                TableView::Complete(TableRows::Clock(vec![replay::rows::ClockRow {
+                    hour,
+                    seed: 900 + hour,
+                    ..Default::default()
+                }]));
+            *decoded.tables[TableId::PowerBalances.index()] =
+                TableView::Complete(TableRows::PowerBalances(vec![
+                    replay::rows::PowerBalanceRow {
+                        balance: b"balance".to_vec(),
+                        active_range: b"active".to_vec(),
+                        ..Default::default()
+                    },
+                ]));
+            *decoded.tables[TableId::PowerBalanceMembers.index()] =
+                TableView::Complete(TableRows::PowerBalanceMembers(vec![
+                    replay::rows::PowerBalanceMemberRow {
+                        country: 9001,
+                        ..Default::default()
+                    },
+                ]));
+            decoded
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
     let cancelled = AtomicBool::new(false);
     let source = Source::from_replay(
         crate::SourceKey {
-            source_id: "subset-oracle".into(),
+            source_id: uuid::Uuid::new_v4().to_string(),
             revision: "1".into(),
         },
         "synthetic.battleplan".into(),
@@ -2158,324 +930,170 @@ fn stored_full_order_matches_old_visible_subsets_with_scopes_random_and_effect_s
     };
     let catalogue = Arc::new(catalogue);
     crate::catalogue::set_test_catalogue(&source, &content, Arc::clone(&catalogue));
-    let context = LoadContext {
-        content: Some(content.clone()),
-    };
-    let id = uuid::Uuid::new_v4();
-    let recording = std::env::temp_dir().join(format!("prepared-focus-subsets-{id}.battleplan"));
-    std::fs::write(&recording, b"synthetic recording").unwrap();
-    let key = store::SourceKey::capture(&recording, &[]).unwrap();
-    let store = store::Store::local(id).unwrap();
-    let mut writer = store.replace(key.clone()).unwrap();
-    let mut index = FocusIndex::default();
-    let mut evaluator = FocusEvaluator::default();
-    let mut observation = None;
-    FocusAccumulator::default()
-        .observe(&decoded, &cancelled, |row| {
-            observation = Some(row);
-            Ok(())
-        })
-        .unwrap();
-    let inputs = artwork::FocusFrame::new(&decoded, &catalogue);
-    let text = evaluator
-        .present_in(
-            &source,
-            &content,
-            &inputs,
-            "GER",
-            &tokens,
-            Presentation::Text,
-            &cancelled,
-            |items, _| Ok(items.collect::<Vec<_>>()),
-        )
-        .unwrap();
-    evaluator
-        .present_in(
-            &source,
-            &content,
-            &inputs,
-            "GER",
-            &tokens,
-            Presentation::Display,
-            &cancelled,
-            |items, warnings| {
-                index.write_hour_with_details(
-                    &mut writer,
-                    1,
-                    observation.take().unwrap(),
-                    items,
-                    Some(&mut text.into_iter()),
-                    warnings,
-                    &cancelled,
+    let reads = || art::FRAME_READS.with(std::cell::Cell::get);
+    // Hourly preparation's rows: every token of the country's order
+    // evaluated on the hour's whole frame by a context of its own.
+    let oracle = |frame: &DecodedFrame, tag: &str, tokens: &[String], mode: Presentation| {
+        let mut context =
+            artwork::Context::load(Arc::clone(&catalogue), artwork::Kind::Focus).unwrap();
+        let inputs = artwork::FocusFrame::new(frame, &catalogue);
+        let requests: Vec<_> = tokens.iter().map(|token| (token.as_str(), tag)).collect();
+        let rows: Vec<artwork::ResolvedArt> =
+            context.focuses_in(&requests, &inputs, true, mode, |items| items.collect());
+        let mut warnings = context.standing_warnings();
+        warnings.sort();
+        warnings.dedup();
+        let rows: BTreeMap<String, serde_json::Value> = rows
+            .into_iter()
+            .map(|(artwork, reason)| {
+                (
+                    artwork.token.clone(),
+                    serde_json::to_value(PresentedFocus { artwork, reason }).unwrap(),
                 )
-            },
-        )
-        .unwrap();
-    assert_eq!(inputs.text_builds.get(), 1);
-    drop(inputs);
-    index.flush(&mut writer, &cancelled).unwrap();
-    writer.commit().unwrap();
-    let hour = query_hour(&store, &key, 1, "GER", 100, &cancelled)
-        .unwrap()
-        .unwrap();
-    assert_eq!((hour.slot, hour.country_id), (7, 9001));
-    let display = presentation_page(&store, &key, 1, "GER", &hour.presentation, 0, &cancelled)
-        .unwrap()
-        .unwrap();
-    let details = details_page(
-        &store,
-        &key,
-        1,
-        "GER",
-        hour.details.as_ref().unwrap(),
-        0,
-        &cancelled,
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(display[0].artwork.name.as_deref(), Some("GER GER"));
-    assert!(display[1].artwork.name.is_some());
-    assert!(
-        display[2]
-            .artwork
-            .name
-            .as_deref()
-            .unwrap()
-            .contains("Session seven")
-    );
-    let full_display = FocusArtwork::load(
-        &source,
-        &FocusArtworkParams {
-            branch_id: "1".into(),
-            hour: 100,
-            tag: "GER".into(),
-            tokens: tokens.clone(),
-            text_only: None,
-            icons_only: None,
-            include_descriptions: Some(false),
-        },
-        &context,
-        &cancelled,
-    )
-    .unwrap();
-    for item in &display {
-        let old = full_display
-            .items
-            .iter()
-            .find(|old| old.artwork.token == item.artwork.token)
-            .unwrap();
-        assert_eq!(
-            item.artwork.icon, old.artwork.icon,
-            "display icon for {}",
-            item.artwork.token
-        );
-    }
-    for count in [1, 2, 7, 8, 9, 12] {
-        let subset: Vec<_> = tokens[..count]
-            .iter()
-            .rev()
-            .cloned()
-            .chain(std::iter::once(tokens[0].clone()))
+            })
             .collect();
-        for (text_only, stored) in [(None, &display), (Some(true), &details)] {
-            let params = FocusArtworkParams {
-                branch_id: "1".into(),
-                hour: 100,
-                tag: "GER".into(),
-                tokens: subset.clone(),
-                text_only,
-                include_descriptions: Some(text_only == Some(true)),
-                icons_only: None,
-            };
-            let old = FocusArtwork::load(&source, &params, &context, &cancelled).unwrap();
-            for item in old.items {
-                let stored = stored
-                    .iter()
-                    .find(|row| row.artwork.token == item.artwork.token)
-                    .unwrap();
+        (rows, warnings)
+    };
+    let mut sorted = tokens.clone();
+    sorted.sort();
+    for frame in &frames {
+        for mode in [Presentation::Display, Presentation::Text] {
+            // ENG asks for the shared static focus first.
+            let before = reads();
+            let eng = art_at(
+                &source,
+                &content,
+                1,
+                "ENG",
+                frame.hour,
+                &["a_static".into()],
+                mode,
+                &cancelled,
+            )
+            .unwrap();
+            assert_eq!(reads(), before, "a static request reads no recording");
+            let (expected, warnings) = oracle(frame, "ENG", &["a_static".into()], mode);
+            assert_eq!(
+                serde_json::to_value(&eng.art[0]).unwrap(),
+                expected["a_static"]
+            );
+            assert_eq!(eng.warnings, warnings);
+            let (expected, warnings) = oracle(frame, "GER", &sorted, mode);
+            for subset in [
+                sorted.clone(),
+                vec!["a_static".into(), "b_refused".into()],
+                sorted[..5].to_vec(),
+            ] {
+                let before = reads();
+                let reply = art_at(
+                    &source, &content, 1, "GER", frame.hour, &subset, mode, &cancelled,
+                )
+                .unwrap();
+                let dynamic = subset.iter().any(|token| token.starts_with('t'));
                 assert_eq!(
-                    serde_json::to_value(stored).unwrap(),
-                    serde_json::to_value(item).unwrap(),
-                    "subset count {count}"
+                    reads() - before,
+                    usize::from(dynamic),
+                    "{subset:?}: a frame only for a dynamic token"
                 );
+                assert!(reply.failures.is_empty());
+                assert_eq!(reply.warnings, warnings);
+                assert_eq!(reply.art.len(), subset.len());
+                for (token, row) in subset.iter().zip(&reply.art) {
+                    assert_eq!(
+                        serde_json::to_value(row).unwrap(),
+                        expected[token],
+                        "{token} at {} in {mode:?}",
+                        frame.hour
+                    );
+                }
             }
         }
     }
-    let mut oracle = artwork::Context::load(
-        crate::catalogue::catalogue(&source, &content).unwrap(),
-        artwork::Kind::Focus,
-    )
-    .unwrap();
-    let sorted: BTreeSet<_> = tokens.iter().map(String::as_str).collect();
-    let requests: Vec<_> = sorted.into_iter().map(|token| (token, "GER")).collect();
-    for hour in [101, 102] {
-        decoded.hour = hour;
-        if let TableView::Complete(TableRows::Clock(rows)) =
-            &mut *decoded.tables[TableId::Clock.index()]
-        {
-            rows[0].hour = hour;
-            rows[0].seed = hour;
-        }
-        let before = evaluator.interpreted;
-        let inputs = artwork::FocusFrame::new(&decoded, &catalogue);
-        for mode in [Presentation::Display, Presentation::Text] {
-            let expected: Vec<_> = match mode {
-                Presentation::Display => {
-                    oracle.focus_display_at(&requests, &decoded, |items| items.collect())
-                }
-                _ => oracle.focus_text_at(&requests, &decoded, |items| items.collect()),
-            };
-            let actual = evaluator
-                .present_in(
-                    &source,
-                    &content,
-                    &inputs,
-                    "GER",
-                    &tokens,
-                    mode,
-                    &cancelled,
-                    |items, _| Ok(items.collect::<Vec<_>>()),
-                )
-                .unwrap();
-            assert_eq!(
-                serde_json::to_value(actual).unwrap(),
-                serde_json::to_value(expected).unwrap()
-            );
-        }
-        assert_eq!(inputs.text_builds.get(), 1);
-        assert_eq!(
-            evaluator.interpreted - before,
-            24,
-            "only twelve dynamic tokens per mode"
-        );
-        assert!(!evaluator.reusable("GER"));
-    }
-    store.clear().unwrap();
-    std::fs::remove_file(recording).unwrap();
-}
-
-#[test]
-fn unavailable_table_intervals_keep_named_reasons_without_refusing_numeric_recovery() {
-    let id = uuid::Uuid::new_v4();
-    let recording =
-        std::env::temp_dir().join(format!("prepared-focus-unavailable-{id}.battleplan"));
-    std::fs::write(&recording, b"synthetic recording").unwrap();
-    let key = store::SourceKey::capture(&recording, &[]).unwrap();
-    let store = store::Store::local(id).unwrap();
-    let cancelled = AtomicBool::new(false);
-    let mut writer = store.replace(key.clone()).unwrap();
-    let mut index = FocusIndex::default();
-    let mut accumulator = FocusAccumulator::default();
-    for hour in [100, 101, 102, 105] {
-        let mut decoded = frame(hour, 1, &[]);
-        if hour != 102 {
-            *decoded.tables[TableId::Focus.index()] = TableView::Unavailable {
-                reason: "exact synthetic supplying-read reason".into(),
-            };
-        }
-        if hour == 105 {
-            *decoded.tables[TableId::CompletedFocuses.index()] = TableView::Truncated {
-                rows: TableRows::CompletedFocuses(Vec::new()),
-                missing: u32::MAX,
-            };
-        }
-        index
-            .write_unavailable(&mut writer, &decoded, &cancelled)
-            .unwrap();
-        accumulator
-            .observe(&decoded, &cancelled, |row| {
-                index.write_hour(
-                    &mut writer,
-                    1,
-                    row,
-                    &mut std::iter::empty(),
-                    Vec::new(),
-                    &cancelled,
-                )
-            })
-            .unwrap();
-    }
-    index.flush(&mut writer, &cancelled).unwrap();
-    writer.commit().unwrap();
-    let missing = query_unavailable(&store, &key, 1, 101, &cancelled)
-        .unwrap()
-        .unwrap();
-    assert_eq!((missing.first_hour, missing.last_hour), (100, 101));
-    assert_eq!(
-        missing.reasons,
-        [TableRefusal {
-            table: "Focus".into(),
-            reason: Some("exact synthetic supplying-read reason".into()),
-            missing_rows: None
-        }]
-    );
-    assert!(
-        query_unavailable(&store, &key, 1, 102, &cancelled)
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        query_unavailable(&store, &key, 1, 104, &cancelled)
-            .unwrap()
-            .is_none()
-    );
-    let tag = String::from_utf8(scale_tag(0)).unwrap();
-    assert!(
-        query_hour(&store, &key, 1, &tag, 102, &cancelled)
-            .unwrap()
-            .is_some()
-    );
-    let later = query_unavailable(&store, &key, 1, 105, &cancelled)
-        .unwrap()
-        .unwrap();
-    assert_eq!(later.reasons[1].missing_rows.as_deref(), Some("4294967295"));
-    store.clear().unwrap();
-    std::fs::remove_file(recording).unwrap();
-}
-
-#[test]
-fn static_text_is_requested_by_token_without_catalogue_or_history_scan() {
-    let id = uuid::Uuid::new_v4();
-    let recording = std::env::temp_dir().join(format!("prepared-focus-text-{id}.battleplan"));
-    std::fs::write(&recording, b"synthetic recording").unwrap();
-    let key = store::SourceKey::capture(&recording, &[]).unwrap();
-    let store = store::Store::local(id).unwrap();
-    let cancelled = AtomicBool::new(false);
-    let mut writer = store.replace(key.clone()).unwrap();
-    let tokens = ["opaque/long/".repeat(100), "mod/a".into(), "mod/b".into()];
-    for token in &tokens {
-        write_static_text(
-            &mut writer,
-            &Artwork {
-                token: token.clone(),
-                name: Some(String::new()),
-                description: Some(format!("details {token}")),
-                base_duration_days: Some(7.5),
-                icon: None,
-            },
-            &cancelled,
-        )
-        .unwrap();
-    }
-    writer.commit().unwrap();
-    let items = static_text_page(
-        &store,
-        &key,
-        &[tokens[2].clone(), tokens[0].clone(), tokens[2].clone()],
+    // The refused sprite is named on its row.
+    let refused = art_at(
+        &source,
+        &content,
+        1,
+        "GER",
+        100,
+        &["b_refused".into()],
+        Presentation::Display,
         &cancelled,
     )
     .unwrap();
-    assert_eq!(
-        items.iter().map(|item| &item.token).collect::<Vec<_>>(),
-        [&tokens[2], &tokens[0], &tokens[2]]
-    );
-    assert_eq!(items[0].name.as_deref(), Some(""));
-    assert_eq!(items[0].base_duration_days, Some(7.5));
-    assert_eq!(
-        items[1].description.as_deref(),
-        Some(format!("details {}", tokens[0]).as_str())
-    );
-    assert!(static_text_page(&store, &key, &["unprepared".into()], &cancelled).is_err());
-    store.clear().unwrap();
-    std::fs::remove_file(recording).unwrap();
+    assert!(refused.art[0].reason.is_some());
+    // Static text is the content's, in request order with repeats.
+    let wanted = vec!["t00".to_owned(), "a_static".into(), "t00".into()];
+    let text = art::static_text(&source, Some(&content), &wanted, &cancelled).unwrap();
+    let context = artwork::Context::load(Arc::clone(&catalogue), artwork::Kind::Focus).unwrap();
+    for (token, item) in wanted.iter().zip(&text) {
+        let (mut expected, _) = context
+            .text_catalogue(BTreeSet::from([token.as_str()]), &cancelled)
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(item).unwrap(),
+            serde_json::to_value(expected.pop().unwrap()).unwrap()
+        );
+    }
+    assert!(art::static_text(&source, None, &wanted, &cancelled).is_err());
+    // The event feed's art at each completion's hour is the event
+    // presentation of that hour's frame.
+    let requests = [
+        (101, "GER", "t00"),
+        (102, "GER", "a_static"),
+        (101, "ENG", "a_static"),
+    ];
+    let (art, _) = art::event_art(&source, &content, 1, &requests, &cancelled)
+        .unwrap()
+        .unwrap();
+    let mut events = artwork::Context::load(Arc::clone(&catalogue), artwork::Kind::Focus).unwrap();
+    for ((hour, tag, token), actual) in requests.iter().zip(&art) {
+        let expected = events
+            .focuses_at(&[(*token, *tag)], &frames[(*hour - 100) as usize])
+            .pop()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+    }
+}
+
+/// `focus-art` asks for distinct tokens in order, at most a page.
+#[test]
+fn focus_art_params_are_one_ordered_page_of_distinct_tokens() {
+    let params = |tokens: Vec<&str>| FocusArtParams {
+        branch_id: "1".into(),
+        tag: "GER".into(),
+        hour: 100,
+        tokens: tokens.into_iter().map(str::to_owned).collect(),
+        mode: FocusArtMode::Display,
+    };
+    assert!(FocusArt::validate(&params(vec!["a", "b"])).is_ok());
+    for tokens in [
+        vec![],
+        vec!["b", "a"],
+        vec!["a", "a"],
+        vec![""],
+        vec!["a\0"],
+    ] {
+        assert!(FocusArt::validate(&params(tokens)).is_err());
+    }
+    let page: Vec<String> = (0..=PAGE_ROWS)
+        .map(|index| format!("t{index:04}"))
+        .collect();
+    let mut over = params(Vec::new());
+    over.tokens = page;
+    assert!(FocusArt::validate(&over).is_err());
+}
+
+/// A continuation of another schema is refused, so preparation rebuilds it.
+#[test]
+fn only_changed_prepared_focus_schema_is_refused() {
+    let saved = serde_json::to_value(FocusIndex::default()).unwrap();
+    assert_eq!(saved["schema"], STATE_SCHEMA);
+    serde_json::from_value::<FocusIndex>(saved.clone()).unwrap();
+    let mut old = saved;
+    old["schema"] = 5.into();
+    assert!(serde_json::from_value::<FocusIndex>(old).is_err());
 }

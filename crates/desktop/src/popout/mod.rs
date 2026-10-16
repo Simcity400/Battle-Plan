@@ -142,6 +142,8 @@ struct PopOutError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mirror {
     Diagnostics(bool),
+    /// Every map's audio is silenced or restored together.
+    Muted(bool),
     /// VSync and map scale, queued like the main viewer's.
     Display,
     SettingsSaved,
@@ -152,6 +154,7 @@ enum Mirror {
 fn mirrored(action: &MapAction) -> Option<Mirror> {
     match action {
         MapAction::Diagnostics { enabled } => Some(Mirror::Diagnostics(*enabled)),
+        MapAction::Mute { muted } => Some(Mirror::Muted(*muted)),
         MapAction::Vsync { .. } | MapAction::UiScale { .. } => Some(Mirror::Display),
         MapAction::MapSettingsSaved => Some(Mirror::SettingsSaved),
         MapAction::Unload { .. }
@@ -223,6 +226,7 @@ impl PopOuts {
         };
         match mirror {
             Mirror::Diagnostics(enabled) => host.set_diagnostics(enabled),
+            Mirror::Muted(muted) => host.set_muted(muted),
             Mirror::Display => host.set_display(action.clone()),
             Mirror::SettingsSaved => host.map_settings_saved(),
         }
@@ -811,6 +815,10 @@ mod tests {
         assert_eq!(
             mirrored(&MapAction::Diagnostics { enabled: true }),
             Some(Mirror::Diagnostics(true))
+        );
+        assert_eq!(
+            mirrored(&MapAction::Mute { muted: true }),
+            Some(Mirror::Muted(true))
         );
         assert_eq!(
             mirrored(&MapAction::Vsync { enabled: false }),

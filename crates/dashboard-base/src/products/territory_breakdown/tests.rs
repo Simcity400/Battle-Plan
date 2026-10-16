@@ -727,3 +727,399 @@ fn restored_breakdown_closes_a_column_unknown_at_the_first_hour_after_a_commit()
         },
     );
 }
+
+/// Three realms over strategic regions one to four, with a province held by an
+/// unresolved link and an unassigned controller. Realm 2's province changes
+/// controller at 102, hour 103 is not recorded, realm 1 is renamed at 104,
+/// realm 2's native holder is replaced at 105, hour 106 has no province read,
+/// and realm 3 is annexed at 107 while it still exists.
+fn regional(hour: i32) -> DecodedFrame {
+    let mut frame = frame(hour, 3);
+    let replaced = hour >= 105;
+    let annexed = hour >= 107;
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *frame.tables[TableId::Countries.index()]
+    {
+        if hour >= 104 {
+            rows[0].tag = b"renamed realm".to_vec();
+        }
+        if replaced {
+            rows[1].id = 2002;
+        }
+        rows.sort_by_key(|row| row.id);
+    }
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *frame.tables[TableId::CountryLinks.index()]
+    {
+        if replaced {
+            rows[1].id = 2002;
+        }
+        rows.sort_by_key(|row| row.id);
+    }
+    let holder = |raw: u32| match raw {
+        2 if replaced => 2002,
+        3 if annexed => 1,
+        raw => raw,
+    };
+    if let TableView::Complete(TableRows::States(rows)) =
+        &mut *frame.tables[TableId::States.index()]
+    {
+        for row in rows.iter_mut() {
+            row.owner = holder(row.owner);
+            row.controller = holder(row.controller);
+        }
+    }
+    if let TableView::Complete(TableRows::Provinces(rows)) =
+        &mut *frame.tables[TableId::Provinces.index()]
+    {
+        for row in rows.iter_mut() {
+            row.owner = holder(row.owner);
+            row.controller = holder(row.controller);
+            if hour >= 102 && row.id == 2 {
+                row.controller = 1;
+            }
+            row.victory_points = (hour + row.id as i32) % 3;
+        }
+        rows.push(ProvinceRow {
+            id: 4,
+            state: 1,
+            owner: 999,
+            controller: 0,
+            victory_points: 5,
+            ..Default::default()
+        });
+    }
+    if hour == 106 {
+        *frame.tables[TableId::Provinces.index()] = TableView::Unavailable {
+            reason: "fixture".into(),
+        };
+    }
+    frame
+}
+
+/// Hours recorded in each replay block; hour 103 lies between blocks.
+const REGIONAL_BLOCKS: [&[i32]; 7] = [
+    &[100, 101, 102],
+    &[104, 105],
+    &[106, 107],
+    &[108, 109],
+    &[110, 111],
+    &[112, 113],
+    &[114, 115],
+];
+
+fn regional_totals() -> super::super::territory::TerritoryReply {
+    super::super::territory::TerritoryReply {
+        branch_id: "1".into(),
+        world_totals: vec![],
+        series: vec![],
+        area_unit: None,
+        area_reason: None,
+        warnings: vec![],
+    }
+}
+
+/// Prepare the given commits through the production observer, resuming its
+/// published continuation between commits as preparation does.
+fn prepare_regional(
+    fixture: &crate::prepared::series::tests::Fixture,
+    commits: &[&[i32]],
+    format: replay::format::FormatVersion,
+) {
+    let flag = AtomicBool::new(false);
+    let mut prepared = Prepared {
+        regions: Some(regions(4)),
+        ..Default::default()
+    };
+    let mut tracker = crate::prepared::frame_changes::FrameChangeTracker::new();
+    for hours in commits {
+        for &hour in *hours {
+            let frame = regional(hour);
+            let changes = tracker.observe(&frame, format);
+            prepared.observe(&frame, format, None, &changes).unwrap();
+        }
+        let mut writer = fixture.writer();
+        prepared.flush(&mut writer, 1, &flag).unwrap();
+        writer
+            .write_at(
+                "regional-continuation",
+                0,
+                serde_json::to_vec(&prepared).unwrap().as_slice(),
+            )
+            .unwrap();
+        writer.commit().unwrap();
+        prepared = serde_json::from_reader(
+            fixture
+                .store
+                .read(&fixture.key, "regional-continuation", 0)
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        prepared.regions = Some(regions(4));
+        tracker.invalidate();
+    }
+}
+
+/// Everything a regional reply dates at `hour`. A transient read knows a run
+/// only at the hour itself, so run extents, segment starts and observed spans
+/// beyond the hour are not compared.
+/// A series the frame does not reach is absent: preparation's zero runs for a
+/// holder without land there, and its unknown runs at an unread hour, carry no
+/// value the frame lacks, while `observed` says which columns the hour proves.
+fn at_hour(reply: &TerritoryBreakdownReply, hour: i32) -> serde_json::Value {
+    let series: Vec<_> = reply
+        .series
+        .iter()
+        .filter_map(|series| {
+            let run = series
+                .runs
+                .iter()
+                .find(|run| run.first_hour <= hour && hour <= run.last_hour)?;
+            let evidence = run.values.iter().flatten().any(|value| value != "0")
+                || run
+                    .state_shares
+                    .iter()
+                    .flatten()
+                    .any(|terms| !terms.is_empty());
+            evidence.then(|| {
+                serde_json::json!([
+                    series.tag,
+                    series.region,
+                    series.missing,
+                    run.values,
+                    run.state_shares
+                ])
+            })
+        })
+        .collect();
+    // Observed columns at the hour itself: a prepared reply for one hour is
+    // clipped to it, while a continuous scan's spans run on.
+    let observed: Vec<Vec<HourSpan>> = reply
+        .observed
+        .iter()
+        .map(|spans| {
+            spans
+                .iter()
+                .filter(|span| span.first_hour <= hour && hour <= span.last_hour)
+                .map(|_| HourSpan {
+                    first_hour: hour,
+                    last_hour: hour,
+                })
+                .collect()
+        })
+        .collect();
+    serde_json::json!({
+        "series": series,
+        "observed": observed,
+        "regions": reply.regions,
+        "countries": reply.countries,
+        "worldTotals": reply.world_totals,
+        "warnings": reply.warnings,
+    })
+}
+
+#[test]
+fn regional_hours_answer_beyond_preparation_from_one_frame_as_preparation_does() {
+    use crate::test_fixtures::{CAMPAIGN, continuation_records, records};
+    let mut replay = replay::container::Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            REGIONAL_BLOCKS[0]
+                .iter()
+                .map(|&hour| regional(hour))
+                .collect(),
+        )],
+    )
+    .unwrap();
+    for block in &REGIONAL_BLOCKS[1..] {
+        replay = replay
+            .append(&[continuation_records(
+                &replay,
+                1,
+                block.iter().map(|&hour| regional(hour)).collect(),
+            )])
+            .unwrap();
+    }
+    assert_eq!(replay.index.len(), REGIONAL_BLOCKS.len());
+    let format = replay.format;
+    let source = Source::from_replay(
+        crate::SourceKey {
+            source_id: "regional-progressive".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let flag = AtomicBool::new(false);
+    let cold = |hour: i32| {
+        sample_reply(
+            read_frame(&source, 1, hour, &flag).unwrap().as_deref(),
+            format,
+            &regions(4),
+            None,
+            regional_totals(),
+        )
+        .unwrap()
+    };
+    // A published prefix through hour 107, in two commits.
+    let prefix = crate::prepared::series::tests::Fixture::new();
+    prepare_regional(
+        &prefix,
+        &[REGIONAL_BLOCKS[0], &[104, 105, 106, 107]],
+        format,
+    );
+    // The whole branch, in three commits.
+    let full = crate::prepared::series::tests::Fixture::new();
+    prepare_regional(
+        &full,
+        &[
+            REGIONAL_BLOCKS[0],
+            &[104, 105, 106, 107],
+            &[108, 109, 110, 111, 112, 113, 114, 115],
+        ],
+        format,
+    );
+    let prepared = |fixture: &crate::prepared::series::tests::Fixture, hour: i32| {
+        Prepared::reply(
+            &fixture.store,
+            &fixture.key,
+            1,
+            hour,
+            hour,
+            regional_totals(),
+            &flag,
+        )
+        .unwrap()
+    };
+    for hour in 100..=115 {
+        let direct = cold(hour);
+        let expected = prepared(&full, hour);
+        let joined = if hour <= 107 {
+            prepared(&prefix, hour)
+        } else {
+            direct.clone()
+        };
+        assert_eq!(
+            at_hour(&direct, hour),
+            at_hour(&expected, hour),
+            "cold {hour}"
+        );
+        assert_eq!(
+            at_hour(&joined, hour),
+            at_hour(&expected, hour),
+            "prefix and tail {hour}"
+        );
+    }
+
+    // Cold reads answer with values, never pending.
+    let late = cold(115);
+    assert!(late.series.iter().any(|series| {
+        series.tag.as_deref() == Some("renamed realm")
+            && series.region == Some(3)
+            && series.runs[0].values[0].as_deref() == Some("1")
+    }));
+    assert!(
+        late.series
+            .iter()
+            .any(|series| series.tag.is_none() && series.region == Some(4)),
+        "unresolved and unassigned holders keep their parts"
+    );
+    let replaced = cold(105);
+    assert!(replaced.series.iter().any(|series| {
+        series.tag.as_deref() == Some("realm 2") && series.runs[0].values[3].as_deref() == Some("1")
+    }));
+    assert!(
+        replaced
+            .series
+            .iter()
+            .all(|series| series.tag.as_deref() != Some("realm 1")),
+        "the renamed holder appears only under its recorded tag"
+    );
+    // An annexed realm that still exists has a zero run when prepared, and no
+    // series on a direct read: absence, never an invented value.
+    assert!(
+        cold(107)
+            .series
+            .iter()
+            .all(|series| series.tag.as_deref() != Some("realm 3"))
+    );
+    assert!(prepared(&full, 107).series.iter().any(|series| {
+        series.tag.as_deref() == Some("realm 3")
+            && series
+                .runs
+                .iter()
+                .any(|run| run.first_hour <= 107 && run.values[0].as_deref() == Some("0"))
+    }));
+    // An unread province table proves only the state columns.
+    let unread = cold(106);
+    assert!(unread.observed[1].is_empty() && unread.observed[5].is_empty());
+    assert_eq!(
+        unread.observed[0],
+        vec![HourSpan {
+            first_hour: 106,
+            last_hour: 106
+        }]
+    );
+    // The unrecorded hour reads nothing.
+    let gap = cold(103);
+    assert!(gap.series.is_empty());
+    assert!(gap.observed.iter().all(Vec::is_empty));
+    let cancelled = AtomicBool::new(true);
+    assert_eq!(
+        read_frame(&source, 1, 115, &cancelled).unwrap_err().kind(),
+        io::ErrorKind::Interrupted
+    );
+}
+
+#[test]
+fn regional_sample_matches_the_continuous_scan_for_5000_countries() {
+    const COUNT: u32 = 5_000;
+    let format = replay::format::FormatVersion::CURRENT;
+    let inputs = regions(COUNT);
+    let frames: Vec<_> = (100..=102)
+        .map(|hour| {
+            let mut frame = frame(hour, COUNT);
+            if hour >= 101 {
+                if let TableView::Complete(TableRows::Provinces(rows)) =
+                    &mut *frame.tables[TableId::Provinces.index()]
+                {
+                    for row in rows.iter_mut().filter(|row| row.id % 7 == 0) {
+                        row.controller = row.id % COUNT + 1;
+                    }
+                }
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *frame.tables[TableId::Countries.index()]
+                {
+                    rows[0].tag = b"renamed realm".to_vec();
+                }
+            }
+            frame
+        })
+        .collect();
+    let mut oracle = Scan {
+        format,
+        ..Default::default()
+    };
+    let mut builder = Builder::default();
+    for frame in &frames {
+        observe(&mut oracle, frame, &inputs, None, &mut builder, None).unwrap();
+    }
+    oracle.series.sort_unstable_by(|a, b| {
+        (&a.tag, a.region, &a.missing).cmp(&(&b.tag, b.region, &b.missing))
+    });
+    let scanned = build_reply(&oracle, &inputs, regional_totals()).unwrap();
+    for frame in &frames {
+        let sampled = sample_reply(Some(frame), format, &inputs, None, regional_totals()).unwrap();
+        assert!(sampled.series.len() >= COUNT as usize);
+        assert_eq!(
+            at_hour(&sampled, frame.hour),
+            at_hour(&scanned, frame.hour),
+            "hour {}",
+            frame.hour
+        );
+    }
+}

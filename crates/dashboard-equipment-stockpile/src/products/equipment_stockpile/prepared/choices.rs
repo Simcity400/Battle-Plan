@@ -572,6 +572,16 @@ impl Choices {
         }
         Ok(())
     }
+    /// [`Self::advance`] at every hour `first..=last`, in constant time.
+    pub(super) fn advance_span(&mut self, first: i32, last: i32) -> io::Result<()> {
+        self.metadata.first.get_or_insert(first);
+        self.metadata.last = last;
+        self.intervals.advance_span(first, last)?;
+        for values in &mut self.values {
+            values.advance_span(first, last)?;
+        }
+        Ok(())
+    }
     pub(super) fn bind_content(&mut self, content: &Content) {
         self.content = content.clone();
     }

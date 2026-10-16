@@ -11,7 +11,7 @@ here as `dashboard_base::…`.
 | Module | What it does |
 |---|---|
 | [source.rs](src/source.rs), [content.rs](src/content.rs), [catalogue.rs](src/catalogue.rs) | One recording revision with its metadata, resolved content and typed per-source caches; content verification and cache keys; one content catalogue per source and folders (the catalogue itself is in [dashboard-text](../dashboard-text/README.md)). |
-| [prepared/](src/prepared/mod.rs) | The prepared store of one recording path and its source key, each branch's published coverage, binary series and event batches (with the recorded accumulator calls block folds make again, and the patched family catalogues), frame changes, the contract of a family prepared from blocks (its fields, block extract and fold outcome), exact group sums and progressive (prepared plus recorded tail) query helpers. |
+| [prepared/](src/prepared/mod.rs) | The prepared store of one recording path and its source key, each branch's published coverage (with the gates the dashboard installs for families prepared on their own), binary series and event batches (with the recorded accumulator calls block folds make again, and the patched family catalogues), frame changes, the contract of a family prepared from blocks (its fields, block extract and fold outcome), exact group sums, progressive (prepared plus recorded tail) query helpers and the per-source cache of their decoded reads. |
 | [prepared_chart.rs](src/prepared_chart.rs), [prepared_measure.rs](src/prepared_measure.rs), [prepared_production.rs](src/prepared_production.rs) | Aligned width summaries and event clusters; exact balance and holder observations; production observations and selections. |
 | [prepared_map.rs](src/prepared_map.rs) | Sparse native map checkpoints prepared beside the products, and the reader that serves viewer playback from them. |
 | [ranking.rs](src/ranking.rs) | Event-based top-N selection and clipping. |
@@ -69,10 +69,138 @@ catalogue's ranges through one store session; restoration after growth reads the
 saved key's chain (`series::read_saved_catalogue`); the event feed stamps its
 decoded catalogues with the identities of every range in their chains.
 
+## Sampled reads
+
+Beyond a family's committed prepared prefix, queries sample the recording itself
+([prepared/query/progressive.rs](src/prepared/query/progressive.rs)): a window of
+at most 13 blocks is read exactly, every hour decoded and sampled in order; a wider
+one reads each block's keyframe. The exact read takes its blocks through
+dashboard-core's `scan_blocks_by`, two blocks read ahead on spare cores while the
+calling thread decodes and samples, block by block, so samplers see the same hours
+in the same order as a serial read. `tail_recorded` also hands the sampler each
+exactly read hour's recorded updates (`Recorded`), so a sampler can carry its own
+state from hour to hour; a frame read alone (a keyframe, the hour before a window)
+comes without them.
+
+Each source keeps a cache of what these reads decode
+([prepared/query/frames.rs](src/prepared/query/frames.rs)): a block's frames as
+read for the tables asked of it, and one hour's reconstructed frame with the union
+of the tables asked of it (`frame_at` and the hour before an exact window or state
+read). A request missing tables reads only those: a block keeps each read beside
+the earlier ones and decodes them in step, an hour joins them to its frame.
+Concurrent requests for one block or hour wait for a single read. Every table is
+read and reconstructed on its own, so a request receives exactly what its own
+narrower read gives, with only its tables selected; an error, a gap or a keyframe
+whose extra table the decoder would refuse is read directly and not kept. The cache
+holds at most 512 MiB per source, counting everything an entry keeps alive: each
+read's frames whole (every table's update, read or not, and the hour's metrics), the
+rows they hold with every string, list and nested value each row owns at its
+capacity (replay's `TableRows::heap_bytes`), and the reasons of unavailable tables.
+A request that may not decode makes no entry for what the cache does not hold, and
+an entry left empty when its read ends is removed. It evicts
+the least recently used entry first. A reader publishes and accounts its read before
+any other request may read the same block or hour.
+
+`progressive::without_block_decodes` runs a query with every block decode refused
+(a sampled read with blocks to read, an hour the cache does not hold) and says
+whether one was; the data service answers prepared queries this way first. Such a
+query takes what the cache holds and never waits on another request's read of a
+block or hour: it is refused at once.
+
 The `test-support` feature compiles the fixtures, test oracles (the `#[cfg(test)]`
 whole-recording loaders of prepared-only products) and the test instrumentation
 (read and work counters) for the tests of the crates above, so their test builds
 behave exactly as this crate's own. Only dev-dependencies enable it.
+
+## Country identity history
+
+The country identity history is prepared on its own. Its extract
+([products/country_history/prepared.rs](src/products/country_history/prepared.rs)) reads a block by the fields the
+history reads: the countries' keys, slots and tags; every decode of the links
+(the join and the native names are held for one links allocation); only the
+row keys of the counter rows (whose join counts unresolved and repeated rows)
+and of the experience gains (country and native instance). Balances,
+owned-state counts and gain amounts change every hour without making an hour
+observed. Its history of the block alone observes each changed hour as hourly
+preparation observes owned states, and steps each quiet span without its rows
+(`HistoryScan::advance_quiet`) from the hour's read evidence alone: whether all
+three witness tables (countries, links, gains) were read. An hour that did not
+read them seals and closes the native witnesses; the next read opens them
+again from the held names. Counter counts moving in a quiet hour change no
+retained history: the holders hourly observation visits there are sealed at the
+same hours by the next observation or seal. When an hour that did not read the
+countries leaves the held names stale, the extract's deadline is the next hour,
+observed on the last frame's rows until a read hour names them again. The
+worker keeps the observed hours' frames (countries reduced to their keys,
+counter rows to their country and owned-state count) and the quiet spans; the
+fold observes each kept hour on the carried history and steps each span, and
+observes the rest of the block hour by hour when the carried history does not
+hold the inputs the worker's held before a span. Each commit writes
+`country-identities-<branch>` whole, sealed, as hourly preparation's flush
+does; it is also the history's continuation.
+
+The shared country-history observer also retains native holders, aliases, identity
+segments and complete-read coverage. Each commit replaces one branch identity
+state page; cached table joins rebuild from the next accepted frame on resume.
+Prepared identity lookup (`prepared_branch_histories`, [products/country_history.rs](src/products/country_history.rs)) returns the same
+identity-only histories as the shared recording walk once the identities cover
+the branch through this recording's last branch hour (a page completed for a
+shorter recording of the same store does not count), by their own coverage,
+ahead of the hourly walk (or by the branch's
+in a store the hourly walk published alone), and remains pending before then; a
+refused history answers every reader with its refusal. The identity gate of
+naval losses, the occupation trend, the operatives roster, the raid tally and
+the event feed therefore waits for the identities alone, not for every family. A
+partial reader (`progressive::histories`) takes the history through its own
+coverage's last hour (`HistoryScan::finish_through`), as a history sealed
+there holds it. Its retained histories grow with identity and coverage changes.
+
+## Idea history
+
+Idea history is prepared on its own ([products/idea_history/prepared.rs](src/products/idea_history/prepared.rs),
+registered in the dashboard's
+[independent/quiet_politics.rs](../dashboard/src/prepared/pipeline/independent/quiet_politics.rs)) with the
+production branch-wide idea observer. Its blocks are read by the fields the
+observer and its change publisher read: country keys and links, held ideas and
+appointed advisors, the characters' naming and template fields, every spelling
+and modifier definition (packed together whenever either changes), the
+appearance fields a holder is named by, and the civil-war lists, enemy
+vectors, war operands and owned state counts a new holding's naming reads.
+Kept frames hold countries, characters and country counters reduced to those
+fields. Each hour read is observed as hourly preparation observes it; the
+hours between visit no holder, so they advance the frontier at once, keep an
+hour without its inputs unobserved and date missing character-template
+refusals at their last hour. One `idea-history-{branch}` range holds its
+zstd-compressed JSON state and `idea-state-{branch}` its change publisher's
+continuation, both replaced at each of its commits. Resume reloads the same
+observer; append observes only the accepted tail. The frame fact updates
+changed holdings through the same native scan. Open endpoints materialize at a relevant
+change, publication or reply. Missing character-template refusals retain their
+hour-dependent text without rebuilding holdings. Stored spans, identity naming and refusal sets grow with recorded
+changes, rather than elapsed hours.
+Idea classification content is bound at configuration; the shared result cache
+retains successful and refused loads, and fixed token classifications use the
+shared keyed result cache. Only new additions contribute classification counts.
+
+Prepared `idea-history` requests use `{branchId, tag}` and the production topic
+reply builder. The observer retains both identity-start naming for topic replies
+and span-start naming for event-feed, plus country-scoped refusal counts.
+Queries wait for the family's own complete coverage and refuse from its own
+coverage page. The shared idea-history UI hook uses
+the ordinary preparation status, cancellation and retry handling; idea timelines
+and national-spirit widgets retain their existing reply shapes and presentation.
+The legacy product and event-feed branch scan remain available as references.
+Idea holdings, acquisition/removal bounds, advisor seats and recorded renames
+depend on preceding observations; they have no stateless progressive sampler.
+
+## Territory breakdown
+
+A reached regional territory breakdown hour
+([products/territory_breakdown.rs](src/products/territory_breakdown.rs)) runs the
+regional observer's step over that hour's frame alone, read directly with its
+country totals: region series the frame does not reach are absent rather than
+zero, and its observed spans name the columns the hour proves. Other regional
+views keep their coverage gate.
 
 ## Prepared map checkpoints
 

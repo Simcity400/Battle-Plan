@@ -1,16 +1,24 @@
-//! Sequential focus preparation and requested-page reads. Interactive reads never decode history.
-use crate::products::{
-    ContentOptions, artwork,
-    national_focus::{completed_for_owner, date_completions},
-};
+//! National focus prepared on its own: each country's focus order (its
+//! completed focuses with their dates, the active focus and pause), when it
+//! was observed, and the progress each block starts from. A block is read
+//! alone ([`Builder`]) into its focus facts, which fold in block order on the
+//! carried state ([`FocusIndex`]); the hourly walk builds the same facts from
+//! every hour and folds them at each block's end. Focus titles, icons and
+//! descriptions are not prepared: [`art`] evaluates them at the hour a reply
+//! asks for, and progress at an hour is read from that hour's block.
+use crate::products::{ContentOptions, LoadContext, artwork, national_focus::FocusCompletion};
 use crate::{
     Artwork, FocusEntry, FocusOrder, Source,
     metadata::{CountryKeys, check_cancel},
-    prepared::{frame_changes::FrameChanges, series::Accumulator},
+    prepared::{
+        frame_changes::FrameChanges,
+        series::{self, Accumulator},
+    },
 };
 use replay::{
-    frame::DecodedFrame,
-    rows::{TableId, tables},
+    container::Replay,
+    frame::{DecodedFrame, TableView, ViewIdentity},
+    rows::{CompletedFocusRow, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -23,9 +31,9 @@ use ts_rs::TS;
 /// Row-page size limits a read, never the number of countries or completed focuses.
 const PAGE_ROWS: usize = 128;
 
-// Event/query rows keep their schema. Continuations require the active/series
-// fields below; an incompatible continuation is rebuilt by the pipeline.
-const STATE_SCHEMA: u32 = 5;
+/// Published rows and saved state; a continuation of another schema is
+/// rebuilt by the pipeline.
+const STATE_SCHEMA: u32 = 6;
 
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 struct StateSchema;
@@ -46,1325 +54,1253 @@ impl<'de> Deserialize<'de> for StateSchema {
     }
 }
 
-fn complete_order(rows: &[replay::rows::CompletedFocusRow], count: i32) -> bool {
+pub use artwork::FocusProjection as Presentation;
+
+/// The four tables a country's focus observation reads, in this order.
+const READ_TABLES: [TableId; 4] = [
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::Focus,
+    TableId::CompletedFocuses,
+];
+
+/// Why a country has no focus observation at an hour (counted per country
+/// and hour), or a completion has no event date (counted per completion).
+const UNRESOLVED: &str = "Focus completion observation: unresolved country identity";
+const NO_FOCUS_ROW: &str = "Focus completion observation: country focus row missing";
+const NO_TAG: &str = "Focus completion observation: country tag is empty or not UTF-8";
+const INCOMPLETE_ORDER: &str = "Focus completion observation: completed order incomplete";
+const INCOMPLETE_TABLES: &str =
+    "Focus completion observation: required tables incomplete (counted per hour)";
+const UNDATED: &str = "Focus completion observation: completions first seen after the country was not observed have no event dates";
+const RESET: &str =
+    "Focus completion observation: reset or reordered completion list has no event dates";
+
+/// Whether `count` completed focuses are recorded whole and in order.
+fn complete_order(rows: &[CompletedFocusRow], count: i32) -> bool {
     usize::try_from(count).ok() == Some(rows.len())
         && rows.iter().enumerate().all(|(index, row)| {
             usize::try_from(row.ordinal).ok() == Some(index) && !row.token.is_empty()
         })
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Observation {
-    pub hour: i32,
-    pub order_first_hour: i32,
-    pub tag: String,
-    pub slot: u32,
-    pub country_id: u32,
-    pub order: FocusOrder,
-    pub progress_raw: String,
-    pub daily_gain_raw: Option<String>,
+/// The rows of one raw owner in a complete, key-ordered CompletedFocuses table.
+fn owner_range(rows: &[CompletedFocusRow], owner: u32) -> std::ops::Range<usize> {
+    let start = rows.partition_point(|row| row.country < owner);
+    start..start + rows[start..].partition_point(|row| row.country <= owner)
 }
-impl Observation {
-    fn values(&self) -> io::Result<(i128, i128)> {
-        let parse = |raw: &str| {
-            raw.parse::<i128>()
-                .map_err(|error| crate::invalid(error.to_string()))
-        };
-        Ok((
-            parse(&self.progress_raw)?,
-            parse(self.daily_gain_raw.as_deref().unwrap_or("0"))?,
-        ))
+
+/// Text as replies show it: bytes that are not UTF-8 show their replacement
+/// text. Never compared: two recorded tokens can share one rendering.
+fn lossy(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// Recorded text by its bytes, shared rather than copied while it repeats.
+/// Comparisons use the bytes; saved as a string when it is UTF-8, as its
+/// bytes otherwise.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Recorded(Arc<[u8]>);
+
+impl Recorded {
+    fn text(&self) -> String {
+        lossy(&self.0)
+    }
+
+    /// `bytes` (nonempty), sharing `held` when it holds the same bytes.
+    fn interned(bytes: Option<&[u8]>, held: Option<&Recorded>) -> Option<Self> {
+        let bytes = bytes.filter(|bytes| !bytes.is_empty())?;
+        Some(
+            held.filter(|held| *held.0 == *bytes)
+                .cloned()
+                .unwrap_or_else(|| Self(Arc::from(bytes))),
+        )
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-struct Previous {
+impl Serialize for Recorded {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match std::str::from_utf8(&self.0) {
+            Ok(text) => serializer.serialize_str(text),
+            Err(_) => self.0[..].serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Recorded {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Form {
+            Text(String),
+            Bytes(Vec<u8>),
+        }
+        Ok(Self(match Form::deserialize(deserializer)? {
+            Form::Text(text) => Arc::from(text.into_bytes()),
+            Form::Bytes(bytes) => Arc::from(bytes),
+        }))
+    }
+}
+
+/// The recorded bytes of an order's texts that replies show by replacement
+/// text: its completed focuses that are not UTF-8 (by position), and its
+/// active and continuous focus.
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct RawOrder {
+    invalid: BTreeMap<usize, Recorded>,
+    current: Option<Recorded>,
+    continuous: Option<Recorded>,
+}
+
+impl RawOrder {
+    /// The recorded bytes of `entry`, the order's `position`th completion.
+    fn token<'a>(&'a self, position: usize, entry: &'a FocusEntry) -> &'a [u8] {
+        self.invalid
+            .get(&position)
+            .map_or(entry.token.as_bytes(), |raw| &raw.0[..])
+    }
+
+    fn note(&mut self, position: usize, token: &Recorded) {
+        if std::str::from_utf8(&token.0).is_err() {
+            self.invalid.insert(position, token.clone());
+        }
+    }
+}
+
+/// One table's refusal at an hour.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename = "PreparedFocusTableRefusal")]
+pub struct TableRefusal {
+    pub table: String,
+    pub reason: Option<String>,
+    pub missing_rows: Option<String>,
+}
+
+/// The refusals of the four focus tables at `frame`'s hour, none when all
+/// are complete.
+fn table_refusals(frame: &DecodedFrame) -> Vec<TableRefusal> {
+    let mut reasons = Vec::new();
+    for (table, error) in [
+        (
+            TableId::Countries,
+            frame.complete::<tables::Countries>().err(),
+        ),
+        (
+            TableId::CountryLinks,
+            frame.complete::<tables::CountryLinks>().err(),
+        ),
+        (TableId::Focus, frame.complete::<tables::Focus>().err()),
+        (
+            TableId::CompletedFocuses,
+            frame.complete::<tables::CompletedFocuses>().err(),
+        ),
+    ] {
+        let Some(error) = error else { continue };
+        let (reason, missing_rows) = match &*frame.tables[table.index()] {
+            TableView::Unavailable { reason } => (Some(reason.clone()), None),
+            TableView::Truncated { missing, .. } => (None, Some(missing.to_string())),
+            TableView::Complete(_) => (Some(error.to_string()), None),
+        };
+        reasons.push(TableRefusal {
+            table: format!("{table:?}"),
+            reason,
+            missing_rows,
+        });
+    }
+    reasons
+}
+
+/// A country's completed focuses at an hour, its own tokens only (never the
+/// whole table they were read from): the list it extends, shared, and the
+/// tokens added after it. An unchanged list is the same allocation hour
+/// after hour, and an extension holds only its new tokens, so a block's
+/// lists take memory for the countries' completions and their changes.
+#[derive(Clone)]
+struct Completed {
+    added: Arc<[Recorded]>,
+    before: Option<Arc<Completed>>,
+    len: usize,
+}
+
+impl Completed {
+    /// `rows`' tokens, sharing `held` (the country's list the hour before)
+    /// where they begin with its tokens.
+    fn read(rows: &[CompletedFocusRow], held: Option<&Completed>) -> Self {
+        let token = |row: &CompletedFocusRow| Recorded(Arc::from(&row.token[..]));
+        if let Some(held) = held
+            && held.len <= rows.len()
+            && held
+                .tokens()
+                .iter()
+                .zip(rows)
+                .all(|(token, row)| *token.0 == *row.token)
+        {
+            if held.len == rows.len() {
+                return held.clone();
+            }
+            return Self {
+                added: rows[held.len..].iter().map(token).collect(),
+                before: Some(Arc::new(held.clone())),
+                len: rows.len(),
+            };
+        }
+        Self {
+            added: rows.iter().map(token).collect(),
+            before: None,
+            len: rows.len(),
+        }
+    }
+
+    /// The tokens in order.
+    fn tokens(&self) -> Vec<&Recorded> {
+        let mut parts = Vec::new();
+        let mut part = Some(self);
+        while let Some(at) = part {
+            parts.push(&at.added);
+            part = at.before.as_deref();
+        }
+        parts
+            .into_iter()
+            .rev()
+            .flat_map(|added| added.iter())
+            .collect()
+    }
+
+    fn same(&self, other: &Self) -> bool {
+        self.len == other.len
+            && (Arc::ptr_eq(&self.added, &other.added)
+                || self
+                    .tokens()
+                    .iter()
+                    .zip(other.tokens())
+                    .all(|(a, b)| a.0 == b.0))
+    }
+}
+
+/// A country's focus order as recorded at an hour, compared by its recorded
+/// bytes.
+#[derive(Clone)]
+struct OrderObs {
+    completed: Completed,
+    current: Option<Recorded>,
+    continuous: Option<Recorded>,
+    paused: bool,
+}
+
+impl OrderObs {
+    fn same(&self, other: &Self) -> bool {
+        self.paused == other.paused
+            && self.current == other.current
+            && self.continuous == other.continuous
+            && self.completed.same(&other.completed)
+    }
+
+    fn current(&self) -> Option<Recorded> {
+        self.current.clone()
+    }
+}
+
+/// A country's focus observation at an hour, and where its completed rows
+/// were in that hour's table.
+#[derive(Clone)]
+struct Obs {
     slot: u32,
     country_id: u32,
-    completed_owner: u32,
-    order: FocusOrder,
-    order_first_hour: i32,
-    progress: ProgressBaseline,
+    progress: i64,
+    order: OrderObs,
+    rows: (usize, usize),
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-struct ProgressBaseline {
+/// One hour's reading of the four focus tables: their refusals, each tag's
+/// observation when all are complete, and the countries without one.
+#[derive(Clone, Default)]
+struct HourRead {
+    reasons: Vec<TableRefusal>,
+    tags: BTreeMap<Arc<str>, Obs>,
+    tally: BTreeMap<&'static str, u64>,
+}
+
+/// Each tag's focus observation at `frame`'s hour (only `filter`'s when
+/// given). A tag held by several countries is the one with the highest
+/// country id, as hourly preparation always published it. Tags, texts and
+/// completion lists `before` holds are shared rather than copied; with
+/// `completed_held`, CompletedFocuses is the allocation `before` read.
+fn read_hour(
+    frame: &DecodedFrame,
+    filter: Option<&str>,
+    before: &HourRead,
+    completed_held: bool,
+) -> HourRead {
+    let mut read = HourRead {
+        reasons: table_refusals(frame),
+        ..Default::default()
+    };
+    let (Ok(countries), Ok(links), Ok(focuses), Ok(completed)) = (
+        frame.complete::<tables::Countries>(),
+        frame.complete::<tables::CountryLinks>(),
+        frame.complete::<tables::Focus>(),
+        frame.complete::<tables::CompletedFocuses>(),
+    ) else {
+        read.tally.insert(INCOMPLETE_TABLES, 1);
+        return read;
+    };
+    // A slot's focus row is its owner link's; a later row of one slot wins.
+    let mut by_slot = BTreeMap::new();
+    for focus in focuses {
+        if let Some(slot) = crate::metadata::link_slot(links, focus.country) {
+            by_slot.insert(slot, focus);
+        }
+    }
+    let mut refuse = |reason: &'static str| *read.tally.entry(reason).or_default() += 1;
+    let mut tags: BTreeMap<Arc<str>, Obs> = BTreeMap::new();
+    for country in countries {
+        if filter.is_some_and(|tag| tag.as_bytes() != country.tag.as_slice()) {
+            continue;
+        }
+        let Ok(slot) = crate::metadata::mapped_slot(country, links) else {
+            refuse(UNRESOLVED);
+            continue;
+        };
+        let Some(focus) = by_slot.get(&slot) else {
+            refuse(NO_FOCUS_ROW);
+            continue;
+        };
+        let Some(tag) = std::str::from_utf8(&country.tag)
+            .ok()
+            .filter(|tag| !tag.is_empty())
+        else {
+            refuse(NO_TAG);
+            continue;
+        };
+        let range = owner_range(completed, focus.country);
+        if !complete_order(&completed[range.clone()], focus.completed_count) {
+            refuse(INCOMPLETE_ORDER);
+            continue;
+        }
+        let (tag, held) = match before.tags.get_key_value(tag) {
+            Some((held, observation)) => (Arc::clone(held), Some(observation)),
+            None => (Arc::from(tag), None),
+        };
+        let rows = (range.start, range.end);
+        let list = match held {
+            // The same rows of the same allocation: the same list.
+            Some(held) if completed_held && held.rows == rows => held.order.completed.clone(),
+            held => Completed::read(
+                &completed[range.clone()],
+                held.map(|held| &held.order.completed),
+            ),
+        };
+        let observation = Obs {
+            slot,
+            country_id: country.id,
+            progress: focus.progress,
+            order: OrderObs {
+                completed: list,
+                current: Recorded::interned(
+                    focus.current.as_deref(),
+                    held.and_then(|held| held.order.current.as_ref()),
+                ),
+                continuous: Recorded::interned(
+                    focus.continuous.as_deref(),
+                    held.and_then(|held| held.order.continuous.as_ref()),
+                ),
+                paused: focus.paused != 0,
+            },
+            rows,
+        };
+        match tags.entry(tag) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(observation);
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                if observation.country_id > entry.get().country_id {
+                    entry.insert(observation);
+                }
+            }
+        }
+    }
+    read.tags = tags;
+    read
+}
+
+/// A run of equal progress begun inside a stretch: its first hour, raw
+/// progress and the observation the hour before (raw progress, that hour
+/// and its active focus).
+struct RunStart {
+    first: i32,
+    raw: i64,
+    previous: (i64, i32, Option<Recorded>),
+}
+
+/// A country observed at consecutive recorded hours under one identity.
+struct Stretch {
     first: i32,
     last: i32,
+    slot: u32,
+    country_id: u32,
+    raw_first: i64,
     raw: i64,
-    previous: Option<(i64, i32, Option<String>)>,
+    /// Its order at `first` and at each hour it changed.
+    orders: Vec<(i32, OrderObs)>,
+    /// The last run of equal progress begun after `first`.
+    run: Option<RunStart>,
 }
 
-/// Only the most recent completion list per tag is needed to date new observations.
-/// Missing reads do not supply data; they retain attribution exactly as focus history does.
-#[derive(Default, Clone, Serialize, Deserialize)]
-pub struct FocusAccumulator {
-    schema: StateSchema,
-    branch: Option<u64>,
-    hour: Option<i32>,
-    previous: BTreeMap<String, Previous>,
-    active: BTreeSet<String>,
-    #[serde(skip)]
-    keys: Option<CountryKeys>,
-    #[serde(skip)]
-    reusable_inputs: bool,
-    #[serde(skip)]
-    native: NativeFocus,
-    #[serde(skip)]
-    removed: Vec<String>,
+/// One block's focus facts, read alone (or a part of a block from its first
+/// hour read): its recorded hours, the tables' refusals where they change,
+/// each country's stretches and the countries without an observation.
+#[derive(Default)]
+pub(crate) struct Facts {
+    /// Consecutive recorded hours, in order.
+    runs: Vec<(i32, i32)>,
+    /// The refusals at each run's first hour and where they change.
+    availability: Vec<(i32, Vec<TableRefusal>)>,
+    tags: BTreeMap<Arc<str>, Vec<Stretch>>,
+    tally: BTreeMap<&'static str, u64>,
+    /// Hours read from a frame.
     #[cfg(test)]
-    #[serde(skip)]
-    work: crate::prepared::observer_tests::Work,
-    #[cfg(test)]
-    #[serde(skip)]
-    test_changes: Option<Arc<std::sync::Mutex<crate::prepared::frame_changes::FrameChangeTracker>>>,
+    pub(crate) frames: usize,
 }
 
-/// The current operand joins, refreshed from A3 once for each changed source.
-#[derive(Default, Clone)]
-struct NativeFocus {
-    countries: Option<Vec<replay::rows::CountryRow>>,
-    links: Option<Vec<replay::rows::CountryLinkRow>>,
-    focuses: Option<Vec<replay::rows::FocusRow>>,
-    completed: Option<Vec<replay::rows::CompletedFocusRow>>,
-    by_slot: BTreeMap<u32, replay::rows::FocusRow>,
-    country_slots: BTreeMap<u32, Vec<usize>>,
-    completion_slots: BTreeMap<u32, Vec<u32>>,
-    unique: bool,
-}
-impl NativeFocus {
-    fn refresh(
-        &mut self,
-        frame: &DecodedFrame,
-        changes: &FrameChanges,
-        countries_changed: bool,
-    ) -> BTreeSet<usize> {
-        let mut dirty = BTreeSet::new();
-        let changed = |table: TableId| changes.rows_changed[table.index()];
-        if countries_changed || self.countries.is_none() && changed(TableId::Countries) {
-            self.countries = frame
-                .complete::<tables::Countries>()
-                .ok()
-                .map(|rows| rows.to_vec());
-            let mut tags = BTreeSet::new();
-            self.unique = self
-                .countries
-                .as_ref()
-                .is_some_and(|rows| rows.iter().all(|row| tags.insert(row.tag.as_slice())));
-        }
-        if changed(TableId::CountryLinks) {
-            self.links = frame
-                .complete::<tables::CountryLinks>()
-                .ok()
-                .map(|rows| rows.to_vec());
-        }
-        if countries_changed || changed(TableId::CountryLinks) {
-            self.country_slots.clear();
-            if let Some((countries, links)) = self.countries.as_ref().zip(self.links.as_ref()) {
-                for (index, country) in countries.iter().enumerate() {
-                    if let Ok(slot) = crate::metadata::mapped_slot(country, links) {
-                        self.country_slots.entry(slot).or_default().push(index);
-                    }
-                }
-            }
-        }
-        if changed(TableId::Focus) {
-            self.focuses = frame
-                .complete::<tables::Focus>()
-                .ok()
-                .map(|rows| rows.to_vec());
-        }
-        if changed(TableId::Focus) || changed(TableId::CountryLinks) {
-            let next: BTreeMap<_, _> = self
-                .focuses
-                .iter()
-                .flatten()
-                .filter_map(|focus| {
-                    let links = self.links.as_ref()?;
-                    let index = links
-                        .binary_search_by_key(&focus.country, |link| link.id)
-                        .ok()?;
-                    Some((links[index].canonical_slot, focus.clone()))
-                })
-                .collect();
-            for slot in self.by_slot.keys().chain(next.keys()) {
-                if self.by_slot.get(slot) != next.get(slot) {
-                    dirty.extend(self.country_slots.get(slot).into_iter().flatten().copied());
-                }
-            }
-            self.by_slot = next;
-            self.completion_slots.clear();
-            for (slot, row) in &self.by_slot {
-                self.completion_slots
-                    .entry(row.country)
-                    .or_default()
-                    .push(*slot);
-            }
-        }
-        if changed(TableId::CompletedFocuses) {
-            let next = frame.complete::<tables::CompletedFocuses>().ok();
-            let owners: BTreeSet<_> = self
-                .completed
-                .iter()
-                .flatten()
-                .chain(next.into_iter().flatten())
-                .map(|row| row.country)
-                .collect();
-            for owner in owners {
-                let old = self
-                    .completed
-                    .as_deref()
-                    .map_or(&[][..], |rows| completed_for_owner(rows, owner));
-                let new = next.map_or(&[][..], |rows| completed_for_owner(rows, owner));
-                if old != new {
-                    for slot in self.completion_slots.get(&owner).into_iter().flatten() {
-                        dirty.extend(self.country_slots.get(slot).into_iter().flatten().copied());
-                    }
-                }
-            }
-            self.completed = next.map(|rows| rows.to_vec());
-        }
-        if countries_changed || changed(TableId::CountryLinks) {
-            dirty.extend(0..self.countries.as_ref().map_or(0, Vec::len));
-        }
-        dirty
+impl Facts {
+    pub(crate) fn last_hour(&self) -> Option<i32> {
+        self.runs.last().map(|run| run.1)
     }
 }
 
-impl FocusAccumulator {
-    /// Emit changed orders or progress (None), never an unchanged country-hour.
-    pub(crate) fn observe_changes(
-        &mut self,
-        frame: &DecodedFrame,
-        changes: &FrameChanges,
-        cancelled: &AtomicBool,
-        mut emit: impl FnMut(&str, Option<Observation>) -> io::Result<()>,
-    ) -> io::Result<()> {
-        check_cancel(cancelled)?;
-        if self.branch.is_some_and(|branch| branch != frame.branch)
-            || self.hour.is_some_and(|hour| hour >= frame.hour)
-        {
+fn add(tally: &mut BTreeMap<&'static str, u64>, counts: &BTreeMap<&'static str, u64>, times: u64) {
+    for (reason, count) in counts {
+        let total = tally.entry(reason).or_default();
+        *total = total.saturating_add(count.saturating_mul(times));
+    }
+}
+
+/// Builds one block's [`Facts`] from its hours in order: the hours whose
+/// tables it is given, and the quiet hours between them, at which no field
+/// it reads changed. An hour whose tables read as the hour before is quiet
+/// too, so the facts are the same whether every hour comes with its tables
+/// or only the hours a watched field changed.
+pub(crate) struct Builder {
+    filter: Option<String>,
+    facts: Facts,
+    last: Option<i32>,
+    views: Option<[ViewIdentity; 4]>,
+    keys: Option<CountryKeys>,
+    read: HourRead,
+    /// Tags observed at the last hour, with their open stretch.
+    open: BTreeMap<Arc<str>, usize>,
+}
+
+impl Builder {
+    /// A builder of every country's facts, or only `filter`'s.
+    pub(crate) fn new(filter: Option<&str>) -> Self {
+        Self {
+            filter: filter.map(str::to_owned),
+            facts: Facts::default(),
+            last: None,
+            views: None,
+            keys: None,
+            read: HourRead::default(),
+            open: BTreeMap::new(),
+        }
+    }
+
+    /// The next recorded hour, with its tables.
+    pub(crate) fn hour(&mut self, frame: &DecodedFrame) -> io::Result<()> {
+        let hour = frame.hour;
+        if self.last.is_some_and(|last| last >= hour) {
             return Err(io::Error::other(
                 "Focus preparation requires increasing hours in one branch",
             ));
         }
-        self.removed.clear();
-        let consecutive = self.hour.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
-        let countries_changed = changes.rows_changed[TableId::Countries.index()]
-            && !self.keys.as_ref().is_some_and(|keys| {
-                frame.complete::<tables::Countries>().is_ok_and(|rows| {
-                    #[cfg(test)]
-                    let before = keys.row_visits();
-                    let same = keys.same(rows);
-                    #[cfg(test)]
-                    {
-                        self.work.row_visits += keys.row_visits() - before;
-                    }
-                    same
-                })
+        #[cfg(test)]
+        {
+            self.facts.frames += 1;
+        }
+        let consecutive = self.last.and_then(|last| last.checked_add(1)) == Some(hour);
+        // The same allocations, or Countries changed only in what the focus
+        // observation does not read (its balances), read as the hour before.
+        let countries = &frame.tables[TableId::Countries.index()];
+        let unchanged = consecutive
+            && self.views.as_ref().is_some_and(|views| {
+                views[1..]
+                    .iter()
+                    .zip(&READ_TABLES[1..])
+                    .all(|(view, table)| view.is(&frame.tables[table.index()]))
+                    && (views[0].is(countries)
+                        || self.keys.as_ref().is_some_and(|keys| {
+                            frame
+                                .complete::<tables::Countries>()
+                                .is_ok_and(|rows| keys.same(rows))
+                        }))
             });
-        if countries_changed {
+        if unchanged {
+            if let Some(views) = &mut self.views {
+                views[0] = countries.identity();
+            }
+            self.quiet_hours(hour, hour);
+            return Ok(());
+        }
+        let completed_held = self
+            .views
+            .as_ref()
+            .is_some_and(|views| views[3].is(&frame.tables[TableId::CompletedFocuses.index()]));
+        let read = read_hour(frame, self.filter.as_deref(), &self.read, completed_held);
+        // Keys equal to the last read's are kept, not copied again.
+        let held = self
+            .views
+            .as_ref()
+            .is_some_and(|views| views[0].is(countries))
+            || self.keys.as_ref().is_some_and(|keys| {
+                frame
+                    .complete::<tables::Countries>()
+                    .is_ok_and(|rows| keys.same(rows))
+            });
+        if !held {
             self.keys = frame
                 .complete::<tables::Countries>()
                 .ok()
                 .map(CountryKeys::read);
         }
-        let mut candidates = self.native.refresh(frame, changes, countries_changed);
-        #[cfg(test)]
-        {
-            for table in TABLES[2..]
-                .iter()
-                .filter(|table| changes.rows_changed[table.index()])
-            {
-                self.work.row_visits += match &*frame.tables[table.index()] {
-                    replay::frame::TableView::Complete(rows)
-                    | replay::frame::TableView::Truncated { rows, .. } => rows.len(),
-                    replay::frame::TableView::Unavailable { .. } => 0,
-                };
-            }
-        }
-        if consecutive
-            && self.reusable_inputs
-            && !countries_changed
-            && TABLES[2..]
-                .iter()
-                .all(|table| !changes.rows_changed[table.index()])
-        {
-            self.hour = Some(frame.hour);
-            return Ok(());
-        }
-        let had_inputs = self.reusable_inputs;
-        self.reusable_inputs = false;
-        let (Some(countries), Some(links), Some(_), Some(completed)) = (
-            self.native.countries.as_deref(),
-            self.native.links.as_deref(),
-            self.native.focuses.as_deref(),
-            self.native.completed.as_deref(),
-        ) else {
-            self.close_missing(&BTreeSet::new());
-            self.branch = Some(frame.branch);
-            self.hour = Some(frame.hour);
-            return Ok(());
-        };
-        let unique = self.native.unique;
-        let mut reusable = unique;
-        let full = !had_inputs
-            || !unique
-            || !consecutive
-            || countries_changed
-            || changes.rows_changed[TableId::CountryLinks.index()];
-        if full {
-            candidates.extend(0..countries.len());
-        }
-        let by_slot = &self.native.by_slot;
-        let mut active = BTreeSet::new();
-        let mut touched = BTreeSet::new();
-        for index in candidates {
-            let country = &countries[index];
-            if let Ok(tag) = std::str::from_utf8(&country.tag) {
-                touched.insert(tag);
-            }
-            check_cancel(cancelled)?;
-            #[cfg(test)]
-            {
-                self.work.row_visits += 1;
-            }
-            let Ok(slot) = crate::metadata::mapped_slot(country, links) else {
-                continue;
-            };
-            let Some(focus) = by_slot.get(&slot) else {
-                continue;
-            };
-            let Ok(tag) = std::str::from_utf8(&country.tag) else {
-                continue;
-            };
-            if tag.is_empty() {
-                continue;
-            }
-            let old = self
-                .previous
-                .get(tag)
-                .filter(|old| (old.slot, old.country_id) == (slot, country.id));
-            let last = if old.is_some_and(|old| old.progress.last == frame.hour) {
-                Some(frame.hour)
-            } else if self.active.contains(tag) {
-                self.hour
-            } else {
-                old.map(|old| old.progress.last)
-            };
-            let same_token = |old: &Option<String>, raw: &Option<Vec<u8>>| {
-                old.as_ref().map(|text| text.as_bytes())
-                    == raw.as_deref().filter(|text| !text.is_empty())
-            };
-            let same_completed = had_inputs
-                && unique
-                && consecutive
-                && !changes.rows_changed[TableId::CompletedFocuses.index()]
-                && old.is_some_and(|old| {
-                    old.completed_owner == focus.country
-                        && usize::try_from(focus.completed_count).ok()
-                            == Some(old.order.completed.len())
-                });
-            let rows = completed_for_owner(completed, focus.country);
-            if !same_completed {
-                #[cfg(test)]
-                {
-                    self.work.history_visits += rows.len();
-                }
-                if !complete_order(rows, focus.completed_count) {
-                    continue;
-                }
-            }
-            let unchanged_order = old.is_some_and(|old| {
-                old.order.paused == (focus.paused != 0)
-                    && same_token(&old.order.current, &focus.current)
-                    && same_token(&old.order.continuous, &focus.continuous)
-            }) && (same_completed
-                || old.is_some_and(|old| {
-                    old.order.completed.len() == rows.len()
-                        && old
-                            .order
-                            .completed
-                            .iter()
-                            .zip(rows)
-                            .all(|(entry, row)| entry.token.as_bytes() == row.token)
-                }));
-            active.insert(tag);
-            if had_inputs && unique && consecutive && last == self.hour && unchanged_order {
-                let old = self.previous.get_mut(tag).expect("observed focus country");
-                old.completed_owner = focus.country;
-                if old.progress.raw != focus.progress {
-                    old.progress = ProgressBaseline {
-                        first: frame.hour,
-                        last: frame.hour,
-                        raw: focus.progress,
-                        previous: Some((
-                            old.progress.raw,
-                            last.expect("adjacent focus hour"),
-                            old.order.current.clone(),
-                        )),
-                    };
-                    emit(tag, None)?;
-                }
-                continue;
-            }
-            #[cfg(test)]
-            {
-                self.work.history_visits += rows.len();
-            }
-            let mut order = FocusOrder {
-                completed: rows
-                    .iter()
-                    .map(|row| FocusEntry {
-                        ordinal: row.ordinal,
-                        token: String::from_utf8_lossy(&row.token).into_owned(),
-                        completed_by_hour: None,
-                    })
-                    .collect(),
-                current: focus
-                    .current
-                    .as_deref()
-                    .filter(|token| !token.is_empty())
-                    .map(|token| String::from_utf8_lossy(token).into_owned()),
-                continuous: focus
-                    .continuous
-                    .as_deref()
-                    .filter(|token| !token.is_empty())
-                    .map(|token| String::from_utf8_lossy(token).into_owned()),
-                paused: focus.paused != 0,
-            };
-            if let Some(old) = old {
-                date_completions(&mut order, &old.order, frame.hour);
-            }
-            let progress = if let Some(old) = old
-                && last.and_then(|hour| hour.checked_add(1)) == Some(frame.hour)
-                && old.progress.raw == focus.progress
-            {
-                ProgressBaseline {
-                    last: frame.hour,
-                    ..old.progress.clone()
-                }
-            } else {
-                ProgressBaseline {
-                    first: frame.hour,
-                    last: frame.hour,
-                    raw: focus.progress,
-                    previous: old.map(|old| {
-                        (
-                            old.progress.raw,
-                            last.unwrap_or(old.progress.last),
-                            old.order.current.clone(),
-                        )
-                    }),
-                }
-            };
-            let raw_text_valid = focus
-                .current
-                .as_deref()
-                .is_none_or(|token| std::str::from_utf8(token).is_ok())
-                && focus
-                    .continuous
-                    .as_deref()
-                    .is_none_or(|token| std::str::from_utf8(token).is_ok())
-                && rows
-                    .iter()
-                    .all(|row| std::str::from_utf8(&row.token).is_ok());
-            reusable &= raw_text_valid;
-            let order_first_hour = old
-                .filter(|old| {
-                    raw_text_valid
-                        && last.and_then(|hour| hour.checked_add(1)) == Some(frame.hour)
-                        && old.order == order
-                })
-                .map_or(frame.hour, |old| old.order_first_hour);
-            let observation = Observation {
-                hour: frame.hour,
-                order_first_hour,
-                tag: tag.to_owned(),
-                slot,
-                country_id: country.id,
-                order: order.clone(),
-                progress_raw: focus.progress.to_string(),
-                daily_gain_raw: daily_gain(&progress, &order).map(|value| value.to_string()),
-            };
-            emit(tag, Some(observation))?;
-            self.previous.insert(
-                tag.to_owned(),
-                Previous {
-                    slot,
-                    country_id: country.id,
-                    completed_owner: focus.country,
-                    order,
-                    order_first_hour,
-                    progress,
-                },
-            );
-        }
-        let missing: Vec<_> = if full {
-            self.active
-                .iter()
-                .filter(|tag| !active.contains(tag.as_str()))
-                .cloned()
-                .collect()
-        } else {
-            touched
-                .difference(&active)
-                .filter(|tag| self.active.contains(**tag))
-                .map(|tag| (*tag).to_owned())
-                .collect()
-        };
-        for tag in missing {
-            if let Some(hour) = self.hour {
-                self.previous
-                    .get_mut(&tag)
-                    .expect("active focus")
-                    .progress
-                    .last = hour;
-            }
-            self.active.remove(&tag);
-            self.removed.push(tag);
-        }
-        for tag in active {
-            self.active.insert(tag.to_owned());
-        }
-        self.reusable_inputs = reusable;
-        self.branch = Some(frame.branch);
-        self.hour = Some(frame.hour);
+        self.views = Some(READ_TABLES.map(|table| frame.tables[table.index()].identity()));
+        self.apply(hour, consecutive, read);
         Ok(())
     }
 
-    fn close_missing(&mut self, active: &BTreeSet<&str>) {
-        self.removed.extend(
-            self.active
-                .iter()
-                .filter(|tag| !active.contains(tag.as_str()))
-                .cloned(),
-        );
-        for tag in &self.removed {
-            if let Some(hour) = self.hour {
-                self.previous
-                    .get_mut(tag)
-                    .expect("active focus")
-                    .progress
-                    .last = hour;
-            }
-            self.active.remove(tag);
-        }
-        for tag in active {
-            if !self.active.contains(*tag) {
-                self.active.insert((*tag).to_owned());
-            }
-        }
-    }
-
-    pub(crate) fn observation(&self, tag: &str, hour: i32) -> Observation {
-        let previous = &self.previous[tag];
-        Observation {
-            hour,
-            order_first_hour: previous.order_first_hour,
-            tag: tag.to_owned(),
-            slot: previous.slot,
-            country_id: previous.country_id,
-            order: previous.order.clone(),
-            progress_raw: previous.progress.raw.to_string(),
-            daily_gain_raw: daily_gain(&previous.progress, &previous.order)
-                .map(|value| value.to_string()),
-        }
-    }
-}
-fn daily_gain(progress: &ProgressBaseline, order: &FocusOrder) -> Option<i128> {
-    progress.previous.as_ref().and_then(|(raw, last, current)| {
-        if last.checked_add(1) != Some(progress.first)
-            || order.current.is_none()
-            || &order.current != current
+    /// Recorded hours after the last, at which no field it reads changed.
+    pub(crate) fn quiet(&mut self, hours: &[i32]) -> io::Result<()> {
+        let (Some(&first), Some(&last)) = (hours.first(), hours.last()) else {
+            return Ok(());
+        };
+        if self.last.and_then(|hour| hour.checked_add(1)) != Some(first)
+            || i64::from(last) - i64::from(first) + 1 != hours.len() as i64
         {
-            return None;
+            return Err(io::Error::other(
+                "Quiet focus hours do not continue the hour before",
+            ));
         }
-        let gain = i128::from(progress.raw) - i128::from(*raw);
-        (gain > 0).then_some(gain)
-    })
+        self.quiet_hours(first, last);
+        Ok(())
+    }
+
+    fn quiet_hours(&mut self, first: i32, last: i32) {
+        if let Some(run) = self.facts.runs.last_mut() {
+            run.1 = last;
+        }
+        let hours = u64::try_from(i64::from(last) - i64::from(first) + 1).unwrap_or(0);
+        add(&mut self.facts.tally, &self.read.tally, hours);
+        self.last = Some(last);
+    }
+
+    fn close(&mut self, tag: &str) {
+        if let (Some(index), Some(last)) = (self.open.remove(tag), self.last)
+            && let Some(stretch) = self
+                .facts
+                .tags
+                .get_mut(tag)
+                .and_then(|stretches| stretches.get_mut(index))
+        {
+            stretch.last = last;
+        }
+    }
+
+    fn close_all(&mut self) {
+        let open: Vec<Arc<str>> = self.open.keys().cloned().collect();
+        for tag in open {
+            self.close(&tag);
+        }
+    }
+
+    fn apply(&mut self, hour: i32, consecutive: bool, read: HourRead) {
+        if consecutive {
+            if let Some(run) = self.facts.runs.last_mut() {
+                run.1 = hour;
+            }
+        } else {
+            self.close_all();
+            self.facts.runs.push((hour, hour));
+        }
+        if !consecutive || read.reasons != self.read.reasons {
+            self.facts.availability.push((hour, read.reasons.clone()));
+        }
+        add(&mut self.facts.tally, &read.tally, 1);
+        let absent: Vec<Arc<str>> = self
+            .open
+            .keys()
+            .filter(|tag| !read.tags.contains_key(*tag))
+            .cloned()
+            .collect();
+        for tag in absent {
+            self.close(&tag);
+        }
+        for (tag, observation) in &read.tags {
+            let stretches = self.facts.tags.entry(Arc::clone(tag)).or_default();
+            if let Some(&index) = self.open.get(tag) {
+                let stretch = &mut stretches[index];
+                if (stretch.slot, stretch.country_id) == (observation.slot, observation.country_id)
+                {
+                    let (changed, current) = {
+                        let (_, previous) = stretch.orders.last().expect("a stretch has an order");
+                        (!previous.same(&observation.order), previous.current())
+                    };
+                    if changed {
+                        stretch.orders.push((hour, observation.order.clone()));
+                    }
+                    if observation.progress != stretch.raw {
+                        stretch.run = Some(RunStart {
+                            first: hour,
+                            raw: observation.progress,
+                            previous: (stretch.raw, hour - 1, current),
+                        });
+                        stretch.raw = observation.progress;
+                    }
+                    continue;
+                }
+                // Another country holds the tag from this hour.
+                stretch.last = hour - 1;
+            }
+            self.open.insert(Arc::clone(tag), stretches.len());
+            stretches.push(Stretch {
+                first: hour,
+                last: hour,
+                slot: observation.slot,
+                country_id: observation.country_id,
+                raw_first: observation.progress,
+                raw: observation.progress,
+                orders: vec![(hour, observation.order.clone())],
+                run: None,
+            });
+        }
+        self.read = read;
+        self.last = Some(hour);
+    }
+
+    /// The facts of the hours given so far.
+    pub(crate) fn finish(mut self) -> Facts {
+        self.close_all();
+        self.facts
+    }
 }
 
-pub use artwork::FocusProjection as Presentation;
-
-struct FocusBinding {
-    source: crate::SourceKey,
-    key: crate::catalogue::Binding,
-    result: Result<(), crate::catalogue::ContentError>,
+/// A country's progress as carried from hour to hour: its identity, the last
+/// hour it was observed, the run of equal progress through that hour (first
+/// hour, raw progress and the observation before the run: raw progress, its
+/// hour and active focus, None when the run began this identity's
+/// observations) and its active focus at the last hour.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Progress {
+    slot: u32,
+    country_id: u32,
+    last: i32,
+    first: i32,
+    raw: i64,
+    previous: Option<(i64, i32, Option<Recorded>)>,
+    current: Option<Recorded>,
 }
 
-/// Current request operands: only clock/state-dependent tokens and their row
-/// positions. Rebuilt from a changed order, never from retained history hourly.
+/// The progress after `stretch`, carried from `prior` (the country's
+/// progress before it).
+fn stretch_progress(prior: Option<&Progress>, stretch: &Stretch) -> Progress {
+    let same =
+        prior.filter(|prior| (prior.slot, prior.country_id) == (stretch.slot, stretch.country_id));
+    let consecutive = same.filter(|prior| prior.last.checked_add(1) == Some(stretch.first));
+    let (first, raw, previous) = if let Some(run) = &stretch.run {
+        (run.first, run.raw, Some(run.previous.clone()))
+    } else if let Some(prior) = consecutive.filter(|prior| prior.raw == stretch.raw_first) {
+        (prior.first, prior.raw, prior.previous.clone())
+    } else {
+        (
+            stretch.first,
+            stretch.raw_first,
+            same.map(|prior| (prior.raw, prior.last, prior.current.clone())),
+        )
+    };
+    Progress {
+        slot: stretch.slot,
+        country_id: stretch.country_id,
+        last: stretch.last,
+        first,
+        raw,
+        previous,
+        current: stretch.orders.last().and_then(|(_, order)| order.current()),
+    }
+}
+
+/// The progress gained since the observation before the run, when that was
+/// the hour before the run and the same focus was active then and now.
+fn daily_gain(progress: &Progress) -> Option<i128> {
+    let (raw, last, current) = progress.previous.as_ref()?;
+    if last.checked_add(1) != Some(progress.first)
+        || progress.current.is_none()
+        || progress.current != *current
+    {
+        return None;
+    }
+    let gain = i128::from(progress.raw) - i128::from(*raw);
+    (gain > 0).then_some(gain)
+}
+
+/// A country's published focus order from an hour: its identity, the first
+/// hour of this order's consecutive run, the active focus and pause, and its
+/// completed focuses as the first `len` rows of a completion chain from
+/// row `chain`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OrderEvent {
+    schema: StateSchema,
+    slot: u32,
+    country_id: u32,
+    order_first_hour: i32,
+    current: Option<String>,
+    continuous: Option<String>,
+    paused: bool,
+    chain: u64,
+    len: u64,
+}
+
+/// A tag's carried state: its series key, progress, dated order and the run
+/// it began, its completion chain, and what it last published.
+#[derive(Clone, Serialize, Deserialize)]
+struct Track {
+    key: u64,
+    progress: Progress,
+    order: FocusOrder,
+    /// The order's recorded bytes its replacement text cannot tell apart.
+    raw: RawOrder,
+    order_first_hour: i32,
+    /// The first chain row of the order's completed focuses.
+    chain: u64,
+    /// Chain rows published for this tag.
+    rows: u64,
+    event: Option<OrderEvent>,
+    /// The progress last published at a block's first hour.
+    published: Option<Progress>,
+}
+
+/// A series call the fold makes at an hour.
+enum Call {
+    Event(u64, Vec<u8>),
+    Observe(u64, Option<i128>, bool),
+    Completion(Vec<u8>),
+}
+
+/// The block being read by the hourly walk, folded at its last hour.
+struct Pending {
+    first: i32,
+    last: i32,
+    builder: Builder,
+}
+
+/// One branch's focus state and publication: its series (`focus-{branch}`:
+/// key 0 the tables' refusals; for each tag's key `k`, presence runs and order
+/// events, `k + 1` completion chain rows, `k + 2` the progress each block
+/// starts from), its completion events (`focus-completions-{branch}`) and
+/// each tag's carried state.
+#[derive(Default, Serialize, Deserialize)]
+pub struct FocusIndex {
+    schema: StateSchema,
+    branch: Option<u64>,
+    series: Accumulator,
+    completions: Accumulator,
+    tracks: BTreeMap<String, Track>,
+    reasons: Option<Vec<TableRefusal>>,
+    /// The last hour folded.
+    frontier: Option<i32>,
+    observed: bool,
+    unavailable: BTreeMap<String, u64>,
+    #[serde(skip)]
+    pending: Option<Pending>,
+    /// Completion events in fold order.
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(crate) seen: Vec<FocusCompletion>,
+}
+
+impl FocusIndex {
+    /// One recorded hour of the hourly walk: read into its block's facts,
+    /// folded at the block's last hour.
+    pub(crate) fn observe_frame(
+        &mut self,
+        replay: &Replay,
+        frame: &DecodedFrame,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        check_cancel(cancelled)?;
+        let bounds = match &self.pending {
+            Some(pending) if pending.first <= frame.hour && frame.hour <= pending.last => {
+                (pending.first, pending.last)
+            }
+            _ => replay
+                .index
+                .iter()
+                .find(|block| {
+                    block.branch == frame.branch
+                        && block.first_hour <= frame.hour
+                        && frame.hour <= block.last_hour
+                })
+                .map_or((frame.hour, frame.hour), |block| {
+                    (block.first_hour, block.last_hour)
+                }),
+        };
+        self.observe_hour(frame.branch, bounds, frame, &mut || check_cancel(cancelled))
+    }
+
+    /// One recorded hour of the block `bounds` (its first and last hour).
+    pub(crate) fn observe_hour(
+        &mut self,
+        branch: u64,
+        bounds: (i32, i32),
+        frame: &DecodedFrame,
+        check: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
+        if self.branch.is_some_and(|held| held != branch)
+            || self
+                .pending
+                .as_ref()
+                .map_or(self.frontier, |pending| pending.builder.last)
+                .is_some_and(|last| last >= frame.hour)
+        {
+            return Err(io::Error::other(
+                "Focus preparation requires increasing hours in one branch",
+            ));
+        }
+        self.branch = Some(branch);
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.first != bounds.0)
+        {
+            self.fold_pending(check)?;
+        }
+        let pending = self.pending.get_or_insert_with(|| Pending {
+            first: bounds.0,
+            last: bounds.1,
+            builder: Builder::new(None),
+        });
+        pending.builder.hour(frame)?;
+        if frame.hour >= pending.last {
+            self.fold_pending(check)?;
+        }
+        Ok(())
+    }
+
+    fn fold_pending(&mut self, check: &mut dyn FnMut() -> io::Result<()>) -> io::Result<()> {
+        if let Some(pending) = self.pending.take() {
+            self.fold(pending.builder.finish(), check)?;
+        }
+        Ok(())
+    }
+
+    /// Fold one block's facts read alone, after the blocks before it.
+    pub(crate) fn fold_block(
+        &mut self,
+        branch: u64,
+        facts: Facts,
+        check: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
+        if self.branch.is_some_and(|held| held != branch) {
+            return Err(io::Error::other(
+                "Focus preparation requires increasing hours in one branch",
+            ));
+        }
+        self.branch = Some(branch);
+        self.fold_pending(check)?;
+        self.fold(facts, check)
+    }
+
+    /// Fold facts that follow the frontier: every series call they make, in
+    /// hour order, on the carried state.
+    fn fold(&mut self, facts: Facts, check: &mut dyn FnMut() -> io::Result<()>) -> io::Result<()> {
+        let Facts {
+            runs,
+            availability,
+            tags,
+            tally,
+            ..
+        } = facts;
+        let (Some(&(first, _)), Some(&(_, end))) = (runs.first(), runs.last()) else {
+            return Ok(());
+        };
+        if self.frontier.is_some_and(|frontier| frontier >= first) {
+            return Err(io::Error::other(
+                "Focus preparation requires increasing hours in one branch",
+            ));
+        }
+        let continues = self.frontier.and_then(|hour| hour.checked_add(1)) == Some(first);
+        for (reason, count) in tally {
+            let total = self.unavailable.entry(reason.to_owned()).or_default();
+            *total = total.saturating_add(count);
+        }
+        let mut calls: Vec<(i32, Call)> = Vec::new();
+        let starts: BTreeSet<i32> = runs.iter().map(|run| run.0).collect();
+        for (hour, reasons) in availability {
+            let discontinuous = starts.contains(&hour) && !(hour == first && continues);
+            let changed = self.reasons.as_ref() != Some(&reasons);
+            if changed {
+                calls.push((hour, Call::Event(0, serde_json::to_vec(&reasons)?)));
+                self.reasons = Some(reasons);
+            }
+            if changed || discontinuous {
+                calls.push((hour, Call::Observe(0, Some(0), true)));
+            }
+        }
+        // A tag observed at the frontier and not at the next hour ends there.
+        if continues && let Some(frontier) = self.frontier {
+            for (tag, track) in &self.tracks {
+                if track.progress.last == frontier
+                    && !tags
+                        .get(tag.as_str())
+                        .is_some_and(|stretches| stretches[0].first == first)
+                {
+                    calls.push((first, Call::Observe(track.key, None, false)));
+                }
+            }
+        }
+        let run_end = |hour: i32| -> i32 {
+            let index = runs.partition_point(|run| run.0 <= hour);
+            runs[index - 1].1
+        };
+        let mut resets = 0_u64;
+        let mut undated = 0_u64;
+        for (tag, stretches) in tags {
+            check()?;
+            self.observed = true;
+            let key = match self.tracks.get(&*tag) {
+                Some(track) => track.key,
+                None => 1 + 3 * self.tracks.len() as u64,
+            };
+            let mut track = self.tracks.remove(&*tag);
+            if let Some(track) = &mut track
+                && track.published.as_ref() != Some(&track.progress)
+            {
+                calls.push((
+                    first,
+                    Call::Event(key + 2, serde_json::to_vec(&track.progress)?),
+                ));
+                track.published = Some(track.progress.clone());
+            }
+            for (position, stretch) in stretches.iter().enumerate() {
+                let next = self.fold_stretch(
+                    &tag,
+                    key,
+                    track,
+                    stretch,
+                    &mut calls,
+                    &mut resets,
+                    &mut undated,
+                )?;
+                track = Some(next);
+                // Not observed at the next recorded hour: its presence ends.
+                if stretch.last < run_end(stretch.last)
+                    && stretches
+                        .get(position + 1)
+                        .is_none_or(|following| following.first != stretch.last + 1)
+                {
+                    calls.push((stretch.last + 1, Call::Observe(key, None, false)));
+                }
+            }
+            if let Some(track) = track {
+                self.tracks.insert(tag.to_string(), track);
+            }
+        }
+        for (reason, count) in [(RESET, resets), (UNDATED, undated)] {
+            if count > 0 {
+                let total = self.unavailable.entry(reason.to_owned()).or_default();
+                *total = total.saturating_add(count);
+            }
+        }
+        calls.sort_by_key(|(hour, _)| *hour);
+        let mut calls = calls.into_iter().peekable();
+        for &(run_first, run_last) in &runs {
+            let mut next = run_first;
+            while calls.peek().is_some_and(|(hour, _)| *hour <= run_last) {
+                let (hour, call) = calls.next().expect("a peeked call");
+                if hour >= next {
+                    self.advance(next, hour)?;
+                    next = hour.saturating_add(1);
+                }
+                match call {
+                    Call::Event(key, row) => self.series.event_raw(key, hour, row)?,
+                    Call::Observe(key, value, starts) => {
+                        self.series.observe(key, hour, value, starts)
+                    }
+                    Call::Completion(row) => self.completions.event_raw(0, hour, row)?,
+                }
+            }
+            if next <= run_last {
+                self.advance(next, run_last)?;
+            }
+        }
+        if calls.next().is_some() {
+            return Err(io::Error::other("Focus call outside its recorded hours"));
+        }
+        self.frontier = Some(end);
+        Ok(())
+    }
+
+    fn advance(&mut self, first: i32, last: i32) -> io::Result<()> {
+        self.series.advance_span(first, last)?;
+        self.completions.advance_span(first, last)
+    }
+
+    /// One stretch of `tag` on its track before it: its order events,
+    /// completion chain rows and completions, and its presence's start.
+    #[allow(clippy::too_many_arguments)]
+    fn fold_stretch(
+        &mut self,
+        tag: &str,
+        key: u64,
+        prior: Option<Track>,
+        stretch: &Stretch,
+        calls: &mut Vec<(i32, Call)>,
+        resets: &mut u64,
+        undated: &mut u64,
+    ) -> io::Result<Track> {
+        let progress = stretch_progress(prior.as_ref().map(|track| &track.progress), stretch);
+        let same = prior.as_ref().is_some_and(|track| {
+            (track.progress.slot, track.progress.country_id) == (stretch.slot, stretch.country_id)
+        });
+        let consecutive = same
+            && prior
+                .as_ref()
+                .is_some_and(|track| track.progress.last.checked_add(1) == Some(stretch.first));
+        let (mut order, mut raw, mut order_first_hour, mut chain, mut rows, mut event, published) =
+            match prior {
+                Some(track) => (
+                    same.then_some(track.order),
+                    if same { track.raw } else { RawOrder::default() },
+                    track.order_first_hour,
+                    track.chain,
+                    track.rows,
+                    track.event,
+                    track.published,
+                ),
+                None => (None, RawOrder::default(), stretch.first, 0, 0, None, None),
+            };
+        if !consecutive {
+            calls.push((stretch.first, Call::Observe(key, Some(1), true)));
+        }
+        for (position, (hour, observed)) in stretch.orders.iter().enumerate() {
+            let hour = *hour;
+            // The order before this one was observed the hour before.
+            let continuing = position > 0 || consecutive;
+            let tokens = observed.completed.tokens();
+            // Compared by the recorded bytes, shown by their text.
+            let current = observed.current();
+            let continuous = observed.continuous.clone();
+            let extends =
+                order.as_ref().is_some_and(|before| {
+                    before.completed.len() <= tokens.len()
+                        && before.completed.iter().zip(&tokens).enumerate().all(
+                            |(position, (entry, row))| raw.token(position, entry) == &row.0[..],
+                        )
+                });
+            let unchanged = extends
+                && order.as_ref().is_some_and(|before| {
+                    before.completed.len() == tokens.len() && before.paused == observed.paused
+                })
+                && raw.current == current
+                && raw.continuous == continuous;
+            let mut next = match order.take() {
+                Some(before) if extends => before,
+                before => {
+                    if before.is_some() {
+                        *resets += 1;
+                    }
+                    chain = rows;
+                    raw.invalid.clear();
+                    for (position, row) in tokens.iter().enumerate() {
+                        raw.note(position, row);
+                    }
+                    let completed: Vec<FocusEntry> = tokens
+                        .iter()
+                        .enumerate()
+                        .map(|(position, row)| FocusEntry {
+                            ordinal: position as u32,
+                            token: row.text(),
+                            completed_by_hour: None,
+                        })
+                        .collect();
+                    for entry in &completed {
+                        calls.push((hour, Call::Event(key + 1, serde_json::to_vec(entry)?)));
+                        rows += 1;
+                    }
+                    FocusOrder {
+                        completed,
+                        current: None,
+                        continuous: None,
+                        paused: false,
+                    }
+                }
+            };
+            for (position, row) in tokens.iter().enumerate().skip(next.completed.len()) {
+                raw.note(position, row);
+                let entry = FocusEntry {
+                    ordinal: position as u32,
+                    token: row.text(),
+                    completed_by_hour: Some(hour),
+                };
+                calls.push((hour, Call::Event(key + 1, serde_json::to_vec(&entry)?)));
+                rows += 1;
+                if continuing {
+                    let completion = FocusCompletion {
+                        tag: tag.to_owned(),
+                        token: entry.token.clone(),
+                        hour,
+                    };
+                    calls.push((hour, Call::Completion(serde_json::to_vec(&completion)?)));
+                    #[cfg(test)]
+                    self.seen.push(completion);
+                } else {
+                    *undated += 1;
+                }
+                next.completed.push(entry);
+            }
+            next.current = current.as_ref().map(Recorded::text);
+            next.continuous = continuous.as_ref().map(Recorded::text);
+            next.paused = observed.paused;
+            raw.current = current;
+            raw.continuous = continuous;
+            if !(continuing && unchanged) {
+                order_first_hour = hour;
+            }
+            let published_order = OrderEvent {
+                schema: StateSchema,
+                slot: stretch.slot,
+                country_id: stretch.country_id,
+                order_first_hour,
+                current: next.current.clone(),
+                continuous: next.continuous.clone(),
+                paused: next.paused,
+                chain,
+                len: next.completed.len() as u64,
+            };
+            if event.as_ref() != Some(&published_order) {
+                calls.push((
+                    hour,
+                    Call::Event(key, serde_json::to_vec(&published_order)?),
+                ));
+                event = Some(published_order);
+            }
+            order = Some(next);
+        }
+        Ok(Track {
+            key,
+            progress,
+            order: order.expect("a stretch has an order"),
+            raw,
+            order_first_hour,
+            chain,
+            rows,
+            event,
+            published,
+        })
+    }
+
+    /// Fold the block being read, through its last hour given.
+    #[cfg(test)]
+    pub(crate) fn fold_held(&mut self, cancelled: &AtomicBool) -> io::Result<()> {
+        self.fold_pending(&mut || check_cancel(cancelled))
+    }
+
+    /// Whether any country was observed, and the countries and completions
+    /// without an event date by reason.
+    #[cfg(test)]
+    pub(crate) fn completion_metadata(&self) -> (bool, &BTreeMap<String, u64>) {
+        (self.observed, &self.unavailable)
+    }
+
+    /// Bytes buffered for the next flush.
+    pub fn buffered_bytes(&self) -> usize {
+        self.series.bytes() + self.completions.bytes()
+    }
+
+    /// Kept for the hourly walk's call site: completions are folded with the
+    /// order ([`Self::observe_frame`]).
+    pub(crate) fn observe_completions(
+        &mut self,
+        _frame: &DecodedFrame,
+        _source: &Source,
+        _context: &LoadContext,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        check_cancel(cancelled)
+    }
+
+    /// Publish what was folded: a block the hourly walk is still reading is
+    /// folded first, through its last hour given.
+    pub fn flush(&mut self, writer: &mut store::Writer, cancelled: &AtomicBool) -> io::Result<()> {
+        self.fold_pending(&mut || check_cancel(cancelled))?;
+        let Some(branch) = self.branch else {
+            return Ok(());
+        };
+        self.completions
+            .flush(writer, &format!("focus-completions-{branch}"), 0, cancelled)?;
+        series::write_catalogue(
+            writer,
+            "focus-completions",
+            branch,
+            &BTreeMap::new(),
+            &(
+                self.observed,
+                &self.unavailable,
+                series::LateIndex::default(),
+            ),
+        )?;
+        self.series
+            .flush(writer, &format!("focus-{branch}"), 0, cancelled)?;
+        let catalogue: BTreeMap<&String, u64> = self
+            .tracks
+            .iter()
+            .map(|(tag, track)| (tag, track.key))
+            .collect();
+        writer.write_at(
+            &format!("focus-{branch}-catalogue"),
+            0,
+            serde_json::to_vec(&catalogue)?.as_slice(),
+        )
+    }
+}
+
+/// The hourly walk's focus state in its branch state; everything focus
+/// carries is in [`FocusIndex`].
+#[derive(Default, Clone, Serialize, Deserialize)]
+pub struct FocusAccumulator {
+    schema: StateSchema,
+}
+
+/// The hourly walk's focus observer: each hour goes to [`FocusIndex`].
+/// Presentation is not prepared, so it binds no content.
 #[derive(Default)]
-struct HourlyFocus {
-    modes: BTreeMap<Presentation, Vec<(String, Vec<usize>)>>,
-}
-
-/// Static results share the content binding; dynamic tokens retain hourly evaluation.
-#[derive(Default)]
-pub struct FocusEvaluator {
-    binding: Option<FocusBinding>,
-    context: Option<artwork::Context>,
-    catalogue: Option<Arc<crate::catalogue::Catalogue>>,
-    warnings: Vec<String>,
-    static_text: BTreeSet<String>,
-    presentations: BTreeMap<(Presentation, String, String), (bool, Option<artwork::ResolvedArt>)>,
-    reusable: BTreeSet<String>,
-    hourly: BTreeMap<String, HourlyFocus>,
-    /// The inputs of each hourly tag's last evaluation, while they read the
-    /// same values ([`crate::triggers::inputs`]); runtime state, empty on resume.
-    inputs: BTreeMap<String, crate::triggers::inputs::Inputs>,
-    /// Hourly evaluations run, reused, and reused but checked.
-    pub(crate) reuse: crate::triggers::inputs::ReuseCounts,
-    failed: BTreeSet<String>,
-    failed_error: Option<String>,
-    #[cfg(test)]
-    test_changes: Option<crate::prepared::frame_changes::FrameChangeTracker>,
-    #[cfg(test)]
-    interpreted: usize,
-    #[cfg(test)]
-    interpreter_calls: usize,
-    #[cfg(test)]
-    legacy: bool,
-    #[cfg(test)]
-    scoped_input_builds: usize,
-    #[cfg(test)]
-    counts: FocusCounts,
-}
-
-#[cfg(test)]
-#[derive(Default, Serialize)]
-struct FocusCounts {
-    observations: usize,
-    unchanged: usize,
-    changed_order: usize,
-    progress_only: usize,
-    progress_reused: usize,
-    evaluated_dynamic: usize,
-    evaluated_static: usize,
-    refused_items: usize,
-    failed_countries: usize,
-    dynamic_tokens: BTreeMap<String, BTreeMap<String, usize>>,
-    completed_rows_copied: usize,
-}
+pub struct FocusEvaluator;
 
 impl FocusEvaluator {
-    /// Bind fixed content before accepting frames. Failed bindings remain local
-    /// to countries that actually ask for focus presentation, as before.
     pub(crate) fn configure(
         &mut self,
-        source: &Source,
-        content: &ContentOptions,
+        _source: &Source,
+        _content: &ContentOptions,
     ) -> io::Result<()> {
-        if !self.binding.as_ref().is_some_and(|bound| {
-            bound.source == *source.key() && crate::catalogue::binding_matches(&bound.key, content)
-        }) {
-            self.binding = None;
-            self.context = None;
-            self.catalogue = None;
-            self.warnings.clear();
-            self.static_text.clear();
-            self.presentations.clear();
-            self.reusable.clear();
-            self.hourly.clear();
-            self.inputs.clear();
-            self.failed.clear();
-            self.failed_error = None;
-            let result = (|| {
-                let catalogue = crate::catalogue::catalogue(source, content)?;
-                self.catalogue = Some(Arc::clone(&catalogue));
-                let context = artwork::Context::load(catalogue, artwork::Kind::Focus)?;
-                self.warnings = context.standing_warnings();
-                self.context = Some(context);
-                Ok(())
-            })();
-            if result
-                .as_ref()
-                .is_err_and(|error: &io::Error| error.kind() == io::ErrorKind::Interrupted)
-            {
-                return result;
-            }
-            self.binding = Some(FocusBinding {
-                source: source.key().clone(),
-                key: crate::catalogue::binding(content),
-                result: result.map_err(crate::catalogue::ContentError::from),
-            });
-        }
-        self.binding
-            .as_ref()
-            .expect("focus content bound")
-            .result
-            .as_ref()
-            .map(|_| ())
-            .map_err(crate::catalogue::ContentError::error)
+        Ok(())
     }
 
-    pub(crate) fn reusable(&self, tag: &str) -> bool {
-        self.reusable.contains(tag)
-    }
-
-    pub(crate) fn refuse(&mut self, tag: &str) {
-        self.reusable.remove(tag);
-    }
-    #[allow(clippy::too_many_arguments)]
-    pub fn present<T>(
-        &mut self,
-        source: &Source,
-        content: &ContentOptions,
-        frame: &DecodedFrame,
-        tag: &str,
-        tokens: &[String],
-        mode: Presentation,
-        cancelled: &AtomicBool,
-        collect: impl FnOnce(
-            &mut dyn Iterator<Item = artwork::ResolvedArt>,
-            Vec<String>,
-        ) -> io::Result<T>,
-    ) -> io::Result<T> {
-        check_cancel(cancelled)?;
-        self.configure(source, content)?;
-        let catalogue = Arc::clone(self.catalogue.as_ref().expect("focus catalogue loaded"));
-        let inputs = artwork::FocusFrame::new(frame, &catalogue);
-        let result = self.present_in(
-            source, content, &inputs, tag, tokens, mode, cancelled, collect,
-        );
-        #[cfg(test)]
-        {
-            self.scoped_input_builds += inputs.text_builds.get();
-        }
-        result
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn present_in<T>(
-        &mut self,
-        source: &Source,
-        content: &ContentOptions,
-        inputs: &artwork::FocusFrame<'_>,
-        tag: &str,
-        tokens: &[String],
-        mode: Presentation,
-        cancelled: &AtomicBool,
-        collect: impl FnOnce(
-            &mut dyn Iterator<Item = artwork::ResolvedArt>,
-            Vec<String>,
-        ) -> io::Result<T>,
-    ) -> io::Result<T> {
-        check_cancel(cancelled)?;
-        self.configure(source, content)?;
-        #[cfg(test)]
-        let legacy = self.legacy;
-        let context = self.context.as_mut().expect("focus context loaded");
-        // focus-artwork requests deduplicate and sort tokens before the interpreter.
-        let tokens: BTreeSet<_> = tokens.iter().map(String::as_str).collect();
-        let mut dynamic = false;
-        let mut requests = Vec::new();
-        let keys: Vec<_> = tokens
-            .into_iter()
-            .map(|token| {
-                let token = token.to_owned();
-                let scoped_icon = matches!(
-                    mode,
-                    Presentation::Display | Presentation::Icons | Presentation::Full
-                ) && context.focus_country_icon_override(&token, tag);
-                let key = (
-                    mode,
-                    token.clone(),
-                    if scoped_icon {
-                        tag.to_owned()
-                    } else {
-                        String::new()
-                    },
-                );
-                let result = self.presentations.entry(key.clone()).or_insert_with(|| {
-                    #[cfg(test)]
-                    if legacy {
-                        let tokens = std::slice::from_ref(&token);
-                        let needs_frame = match mode {
-                            Presentation::Display => {
-                                context.requested_focus_display_needs_frame(tokens)
-                            }
-                            Presentation::Titles => {
-                                context.requested_focus_title_needs_frame(tokens)
-                            }
-                            Presentation::Icons => context.requested_focus_icons_need_frame(tokens),
-                            Presentation::Text => context.requested_focus_text_needs_frame(tokens),
-                            Presentation::Full => context.requested_focus_needs_frame(tokens),
-                        };
-                        return (needs_frame, None);
-                    }
-                    (
-                        context.requested_tree_focus_needs_frame(&token, tag, mode),
-                        None,
-                    )
-                });
-                let hourly = result.0;
-                dynamic |= hourly;
-                if result.1.is_none() || hourly {
-                    #[cfg(test)]
-                    {
-                        if hourly {
-                            self.counts.evaluated_dynamic += 1;
-                            let tokens = std::slice::from_ref(&token);
-                            let reasons =
-                                self.counts.dynamic_tokens.entry(token.clone()).or_default();
-                            if context.requested_focus_title_needs_frame(tokens) {
-                                *reasons.entry("scripted_title".into()).or_default() += 1;
-                            }
-                            if matches!(mode, Presentation::Text | Presentation::Full)
-                                && context.requested_focus_text_needs_frame(tokens)
-                            {
-                                *reasons.entry("scripted_text".into()).or_default() += 1;
-                            }
-                            if matches!(
-                                mode,
-                                Presentation::Display | Presentation::Icons | Presentation::Full
-                            ) && if legacy {
-                                context.requested_focus_icons_need_frame(tokens)
-                            } else {
-                                context.requested_tree_focus_needs_frame(
-                                    &token,
-                                    tag,
-                                    Presentation::Icons,
-                                )
-                            } {
-                                *reasons.entry("conditional_icon".into()).or_default() += 1;
-                            }
-                        } else {
-                            self.counts.evaluated_static += 1;
-                        }
-                    }
-                    requests.push(token);
-                }
-                key
-            })
-            .collect();
-        if matches!(mode, Presentation::Display) {
-            self.reusable.insert(tag.to_owned());
-            self.hourly.remove(tag);
-        }
-        if dynamic {
-            self.reusable.remove(tag);
-            self.hourly.entry(tag.to_owned()).or_default();
-        }
-        #[cfg(test)]
-        {
-            self.interpreted += requests.len();
-        }
-        let requests: Vec<_> = requests.iter().map(|token| (token.as_str(), tag)).collect();
-        let warnings = self.warnings.clone();
-        let cache = &mut self.presentations;
-        #[cfg(test)]
-        let refused_items = &mut self.counts.refused_items;
-        let collect = |items: &mut dyn Iterator<Item = artwork::ResolvedArt>| {
-            let mut merged = keys.into_iter().map(|key| {
-                let item = match &cache[&key] {
-                    (false, Some(item)) => item.clone(),
-                    (hourly, _) => {
-                        let hourly = *hourly;
-                        let item = items.next().expect("focus interpreter result");
-                        if !hourly {
-                            cache.insert(key, (false, Some(item.clone())));
-                        }
-                        item
-                    }
-                };
-                #[cfg(test)]
-                if item.1.is_some() {
-                    *refused_items += 1;
-                }
-                item
-            });
-            collect(&mut merged, warnings)
-        };
-        if requests.is_empty() {
-            return collect(&mut std::iter::empty());
-        }
-        #[cfg(test)]
-        {
-            self.interpreter_calls += 1;
-        }
-        context.focuses_in(&requests, inputs, true, mode, collect)
-    }
+    /// Observe one hour; it never counts a display failure.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn write_frame(
         &mut self,
-        writer: &mut store::Writer,
+        _writer: &mut store::Writer,
         source: &Source,
-        content: Option<&ContentOptions>,
+        _content: Option<&ContentOptions>,
         frame: &DecodedFrame,
-        accumulator: &mut FocusAccumulator,
+        _accumulator: &mut FocusAccumulator,
         index: &mut FocusIndex,
-        preferred: Option<&str>,
+        _preferred: Option<&str>,
         cancelled: &AtomicBool,
-        changes: &FrameChanges,
+        _changes: &FrameChanges,
     ) -> io::Result<(u64, Option<String>)> {
-        check_cancel(cancelled)?;
-        if let Some(content) = content
-            && let Err(error) = self.configure(source, content)
-            && error.kind() == io::ErrorKind::Interrupted
-        {
-            return Err(error);
-        }
-        let mut display_error = None;
-        index.write_unavailable(writer, frame, cancelled)?;
-        let mut observations = Vec::new();
-        accumulator.observe_changes(frame, changes, cancelled, |tag, observation| {
-            observations.push((tag.to_owned(), observation));
-            Ok(())
-        })?;
-        for tag in &accumulator.removed {
-            index.close(tag, frame.hour);
-            self.hourly.remove(tag);
-            self.inputs.remove(tag);
-            self.reusable.remove(tag);
-            self.failed.remove(tag);
-        }
-        let changed: BTreeSet<_> = observations.iter().map(|(tag, _)| tag.as_str()).collect();
-        let hourly: Vec<_> = self
-            .hourly
-            .keys()
-            .filter(|tag| !changed.contains(tag.as_str()) && accumulator.active.contains(*tag))
-            .cloned()
-            .collect();
-        for tag in hourly {
-            observations.push((tag, None));
-        }
-        let changed_failures: BTreeSet<_> = observations
-            .iter()
-            .filter_map(|(tag, _)| self.failed.contains(tag).then_some(tag.as_str()))
-            .collect();
-        let mut failures = (self.failed.len() - changed_failures.len()) as u64;
-        if failures != 0 {
-            display_error.clone_from(&self.failed_error);
-        }
-        #[cfg(test)]
-        {
-            self.counts.failed_countries += failures as usize;
-        }
-        observations.sort_by_key(|(tag, row)| {
-            (
-                preferred != Some(tag.as_str()),
-                row.as_ref()
-                    .map_or(accumulator.previous[tag].country_id, |row| row.country_id),
-            )
-        });
-        let catalogue = self.catalogue.as_ref().map(Arc::clone);
-        let inputs = std::sync::OnceLock::new();
-        for (tag, observation) in observations {
-            check_cancel(cancelled)?;
-            #[cfg(test)]
-            {
-                self.counts.observations += 1;
-                match &observation {
-                    None => self.counts.unchanged += 1,
-                    Some(row) if row.order_first_hour == frame.hour => {
-                        self.counts.changed_order += 1
-                    }
-                    Some(_) => self.counts.progress_only += 1,
-                }
-            }
-            if observation.is_none()
-                && (self.reusable(&tag) || self.failed.contains(&tag))
-                && index.write_progress(
-                    frame.branch,
-                    &tag,
-                    frame.hour,
-                    &accumulator.previous[&tag],
-                    (!self.failed.contains(&tag)).then(|| self.warnings()),
-                    cancelled,
-                )?
-            {
-                if self.failed.contains(&tag) {
-                    failures = failures
-                        .checked_add(1)
-                        .ok_or_else(|| crate::invalid("focus refusal count overflow"))?;
-                    display_error.clone_from(&self.failed_error);
-                    #[cfg(test)]
-                    {
-                        self.counts.failed_countries += 1;
-                    }
-                }
-                #[cfg(test)]
-                {
-                    self.counts.progress_reused += 1;
-                }
-                continue;
-            }
-            #[cfg(test)]
-            let can_refresh = !self.legacy;
-            #[cfg(not(test))]
-            let can_refresh = true;
-            if can_refresh
-                && observation.is_none()
-                && !self.failed.contains(&tag)
-                && let (Some(content), Some(catalogue)) = (content, catalogue.as_ref())
-                && self
-                    .hourly
-                    .get(&tag)
-                    .is_some_and(|layout| !layout.modes.is_empty())
-            {
-                let shared = inputs.get_or_init(|| artwork::FocusFrame::new(frame, catalogue));
-                if self.refresh_hourly(
-                    source,
-                    content,
-                    shared,
-                    &tag,
-                    &accumulator.previous[&tag],
-                    index,
-                    cancelled,
-                )? {
-                    continue;
-                }
-            }
-            // The full path rebuilds this tag's hourly layout.
-            self.inputs.remove(&tag);
-            let observation =
-                observation.unwrap_or_else(|| accumulator.observation(&tag, frame.hour));
-            let mut tokens: Vec<_> = observation
-                .order
-                .completed
-                .iter()
-                .map(|entry| entry.token.clone())
-                .collect();
-            #[cfg(test)]
-            {
-                self.counts.completed_rows_copied += observation.order.completed.len();
-            }
-            tokens.extend(observation.order.current.iter().cloned());
-            tokens.extend(observation.order.continuous.iter().cloned());
-            let mut projections = Vec::new();
-            let mut warnings = Vec::new();
-            let mut failed = false;
-            if let Some(content) = content
-                && let Err(error) =
-                    self.prepare_static_text(writer, source, content, &tokens, cancelled)
-            {
-                if error.kind() == io::ErrorKind::Interrupted {
-                    return Err(error);
-                }
-                failed = true;
-                display_error.get_or_insert_with(|| error.to_string());
-                warnings.push(error.to_string());
-            }
-            for mode in [Presentation::Display, Presentation::Text] {
-                let collect =
-                    |items: &mut dyn Iterator<Item = crate::products::artwork::ResolvedArt>,
-                     warnings| {
-                        let values = items
-                            .map(|value| {
-                                check_cancel(cancelled)?;
-                                Ok(value)
-                            })
-                            .collect::<io::Result<Vec<_>>>()?;
-                        Ok((values, warnings))
-                    };
-                let presentation = match content {
-                    Some(content) => {
-                        let shared = catalogue.as_ref().map(|catalogue| {
-                            inputs.get_or_init(|| artwork::FocusFrame::new(frame, catalogue))
-                        });
-                        #[cfg(test)]
-                        let shared = shared.filter(|_| !self.legacy);
-                        match shared {
-                            Some(inputs) => self.present_in(
-                                source,
-                                content,
-                                inputs,
-                                &observation.tag,
-                                &tokens,
-                                mode,
-                                cancelled,
-                                collect,
-                            ),
-                            None => self.present(
-                                source,
-                                content,
-                                frame,
-                                &observation.tag,
-                                &tokens,
-                                mode,
-                                cancelled,
-                                collect,
-                            ),
-                        }
-                    }
-                    None => Err(io::Error::other(
-                        "Choose the game and user folders for focus titles, icons and descriptions",
-                    )),
-                };
-                match presentation {
-                    Ok((items, reasons)) => {
-                        projections.push(items);
-                        warnings.extend(reasons);
-                    }
-                    Err(error) => {
-                        if error.kind() == io::ErrorKind::Interrupted {
-                            return Err(error);
-                        }
-                        failed = true;
-                        display_error.get_or_insert_with(|| error.to_string());
-                        warnings.push(error.to_string());
-                        projections.push(Vec::new());
-                    }
-                }
-            }
-            if failed {
-                #[cfg(test)]
-                {
-                    self.counts.failed_countries += 1;
-                }
-                self.refuse(&tag);
-                failures = failures
-                    .checked_add(1)
-                    .ok_or_else(|| crate::invalid("focus refusal count overflow"))?;
-                if content.is_none()
-                    || self
-                        .binding
-                        .as_ref()
-                        .is_some_and(|binding| binding.result.is_err())
-                {
-                    self.failed.insert(tag.clone());
-                    self.failed_error.clone_from(&display_error);
-                } else {
-                    self.hourly.entry(tag.clone()).or_default();
-                }
-            } else {
-                self.failed.remove(&tag);
-            }
-            warnings.sort();
-            warnings.dedup();
-            let mut projections = projections.into_iter();
-            index.write_hour_with_details(
-                writer,
-                frame.branch,
-                observation,
-                &mut projections.next().unwrap().into_iter(),
-                Some(&mut projections.next().unwrap().into_iter()),
-                warnings,
-                cancelled,
-            )?;
-            if let Some(layout) = self.hourly.get_mut(&tag) {
-                let state = index.countries[&tag].last.as_ref().unwrap();
-                layout.modes.clear();
-                for (mode, rows) in [
-                    (Presentation::Display, state.presentation.as_slice()),
-                    (Presentation::Text, state.details.as_deref().unwrap_or(&[])),
-                ] {
-                    let mut tokens: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-                    for (position, row) in rows.iter().enumerate() {
-                        let token = &row.artwork.token;
-                        let dynamic = self
-                            .presentations
-                            .get(&(mode, token.clone(), tag.clone()))
-                            .or_else(|| {
-                                self.presentations
-                                    .get(&(mode, token.clone(), String::new()))
-                            })
-                            .is_some_and(|result| result.0);
-                        if dynamic {
-                            tokens.entry(token.clone()).or_default().push(position);
-                        }
-                    }
-                    if !tokens.is_empty() {
-                        layout.modes.insert(mode, tokens.into_iter().collect());
-                    }
-                }
-            }
-        }
-        #[cfg(test)]
-        if let Some(inputs) = inputs.get() {
-            self.scoped_input_builds += inputs.text_builds.get();
-        }
-        index.finish_frame(accumulator, frame.hour, cancelled)?;
-        Ok((failures, display_error))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn refresh_hourly(
-        &mut self,
-        source: &Source,
-        content: &ContentOptions,
-        inputs: &artwork::FocusFrame<'_>,
-        tag: &str,
-        previous: &Previous,
-        index: &mut FocusIndex,
-        cancelled: &AtomicBool,
-    ) -> io::Result<bool> {
-        let country = &index.countries[tag];
-        let last = country.last.as_ref().unwrap();
-        if (last.slot, last.country_id, last.order_first_hour)
-            != (
-                previous.slot,
-                previous.country_id,
-                previous.order_first_hour,
-            )
-        {
-            return Ok(false);
-        }
-        let frame = inputs.frame;
-        // Every value the last evaluation read reads the same now, so it would
-        // present exactly what it presented: no change this hour.
-        let reused = self
-            .inputs
-            .get(tag)
-            .is_some_and(|recorded| recorded.confirm(frame, |key| inputs.reread(key)));
-        if reused && !crate::triggers::inputs::check_reuse() {
-            self.reuse.reused += 1;
-            self.reusable.remove(tag);
-            index.progress(
-                tag,
-                frame.hour,
-                i128::from(previous.progress.raw),
-                daily_gain(&previous.progress, &previous.order).unwrap_or(0),
-                false,
-            );
-            return Ok(true);
-        }
-        self.reuse.evaluated += 1;
-        let layout = self.hourly.remove(tag).unwrap();
-        let mut update: Option<FocusState> = None;
-        let (result, recorded) = crate::triggers::inputs::capture(frame, || {
-            (|| {
-                let mut warnings = Vec::new();
-                for mode in [Presentation::Display, Presentation::Text] {
-                    let Some(rows) = layout.modes.get(&mode) else {
-                        continue;
-                    };
-                    let tokens: Vec<_> = rows.iter().map(|row| row.0.clone()).collect();
-                    let (evaluated, notes) = self.present_in(
-                        source,
-                        content,
-                        inputs,
-                        tag,
-                        &tokens,
-                        mode,
-                        cancelled,
-                        |items, warnings| {
-                            let items = items
-                                .map(|item| {
-                                    check_cancel(cancelled)?;
-                                    Ok(item)
-                                })
-                                .collect::<io::Result<Vec<_>>>()?;
-                            Ok((items, warnings))
-                        },
-                    )?;
-                    if evaluated.len() != rows.len() {
-                        return Err(io::Error::other("Focus presentation omitted token"));
-                    }
-                    warnings.extend(notes);
-                    let old = if mode == Presentation::Display {
-                        &last.presentation
-                    } else {
-                        last.details.as_ref().unwrap()
-                    };
-                    for ((_, positions), (artwork, reason)) in rows.iter().zip(evaluated) {
-                        let next = PresentedFocus { artwork, reason };
-                        if old[positions[0]] != next {
-                            if update.is_none() {
-                                #[cfg(test)]
-                                {
-                                    self.counts.completed_rows_copied += last.order.completed.len();
-                                }
-                                update = Some(last.clone());
-                            }
-                            let changed = update.as_mut().unwrap();
-                            let target = if mode == Presentation::Display {
-                                &mut changed.presentation
-                            } else {
-                                changed.details.as_mut().unwrap()
-                            };
-                            for &position in positions {
-                                target[position] = next.clone();
-                            }
-                        }
-                    }
-                }
-                // Each projection has the same standing warnings; an earlier
-                // transient write refusal needs the full path to retry its write.
-                warnings.sort();
-                warnings.dedup();
-                Ok(warnings == last.warnings)
-            })()
-        });
-        self.hourly.insert(tag.to_owned(), layout);
-        self.reusable.remove(tag);
-        if reused {
-            // Check mode: the reused evaluation, run anyway, changed nothing.
-            self.reuse.checked += 1;
-            if update.is_some() || !matches!(result, Ok(true)) {
-                self.reuse.mismatched += 1;
-                #[cfg(test)]
-                panic!(
-                    "focus {tag}: a reused evaluation changed at hour {}",
-                    frame.hour
-                );
-            }
-        }
-        match &result {
-            Ok(true) => {
-                self.inputs.insert(tag.to_owned(), recorded);
-            }
-            _ => {
-                self.inputs.remove(tag);
-            }
-        }
-        if !result? {
-            return Ok(false);
-        }
-        let changed = update.is_some();
-        if let Some(update) = update {
-            let country = index.countries.get_mut(tag).unwrap();
-            index
-                .series
-                .event(country.key, inputs.frame.hour, &update)?;
-            country.last = Some(update);
-        }
-        index.progress(
-            tag,
-            inputs.frame.hour,
-            i128::from(previous.progress.raw),
-            daily_gain(&previous.progress, &previous.order).unwrap_or(0),
-            changed,
-        );
-        Ok(true)
-    }
-
-    /// Store independent text for every observed token without consulting history.
-    pub fn prepare_static_text(
-        &mut self,
-        writer: &mut store::Writer,
-        source: &Source,
-        content: &ContentOptions,
-        tokens: &[String],
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        check_cancel(cancelled)?;
-        self.configure(source, content)?;
-        let context = self.context.as_mut().expect("focus context loaded");
-        for token in tokens.iter().map(String::as_str).collect::<BTreeSet<_>>() {
-            check_cancel(cancelled)?;
-            if self.static_text.contains(token) {
-                continue;
-            }
-            if writer.read_at(&static_text_section(token), 0)?.is_some() {
-                self.static_text.insert(token.to_owned());
-                continue;
-            }
-            let (mut items, _) = context.text_catalogue(BTreeSet::from([token]), cancelled)?;
-            let item = items
-                .pop()
-                .ok_or_else(|| io::Error::other("Focus static text omitted token"))?;
-            write_static_text(writer, &item, cancelled)?;
-            self.static_text.insert(token.to_owned());
-        }
-        Ok(())
-    }
-
-    pub fn warnings(&self) -> &[String] {
-        &self.warnings
+        index.observe_frame(source.replay_ref(), frame, cancelled)?;
+        Ok((0, None))
     }
 }
 
@@ -1403,6 +1339,8 @@ mod decimal_u64 {
     }
 }
 
+/// A country's focus at an hour: its order fields hold from `hour` through
+/// `lastHour`; progress and its daily gain are those at `at`, the hour asked.
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename = "PreparedFocusHour")]
@@ -1412,69 +1350,17 @@ pub struct Hour {
     pub slot: u32,
     pub country_id: u32,
     pub hour: i32,
-    pub order_first_hour: i32,
     pub last_hour: i32,
+    pub order_first_hour: i32,
     pub current: Option<String>,
     pub continuous: Option<String>,
     pub paused: bool,
+    pub completed: Pages,
+    pub at: i32,
     pub progress_raw: String,
     pub daily_gain_raw: Option<String>,
-    pub completed: Pages,
-    pub presentation: Pages,
-    pub details: Option<Pages>,
-    pub warnings: Vec<String>,
 }
 
-fn align_presentation(
-    order: &FocusOrder,
-    evaluated: Vec<PresentedFocus>,
-) -> io::Result<Vec<PresentedFocus>> {
-    // Interpretation retains sorted/deduplicated caller order; storage follows
-    // recorded ordinals including repeats, with the active card at the tail.
-    let by_token: BTreeMap<_, _> = evaluated
-        .into_iter()
-        .map(|item| (item.artwork.token.clone(), item))
-        .collect();
-    if by_token.is_empty() {
-        return Ok(Vec::new());
-    }
-    order
-        .completed
-        .iter()
-        .map(|entry| entry.token.as_str())
-        .chain(order.current.as_deref().or(order.continuous.as_deref()))
-        .map(|token| {
-            by_token.get(token).cloned().ok_or_else(|| {
-                io::Error::other(format!("Focus presentation omitted token {token}"))
-            })
-        })
-        .collect()
-}
-
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-struct FocusState {
-    schema: StateSchema,
-    slot: u32,
-    country_id: u32,
-    order_first_hour: i32,
-    order: FocusOrder,
-    presentation: Vec<PresentedFocus>,
-    details: Option<Vec<PresentedFocus>>,
-    warnings: Vec<String>,
-}
-#[derive(Default, Serialize, Deserialize)]
-struct CountryState {
-    key: u64,
-    last: Option<FocusState>,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(rename = "PreparedFocusTableRefusal")]
-pub struct TableRefusal {
-    pub table: String,
-    pub reason: Option<String>,
-    pub missing_rows: Option<String>,
-}
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename = "PreparedFocusUnavailableHour")]
@@ -1485,378 +1371,14 @@ pub struct UnavailableHour {
     pub last_hour: i32,
     pub reasons: Vec<TableRefusal>,
 }
-/// Current country state and shared series counters are the complete resume state.
-#[derive(Default, Serialize, Deserialize)]
-pub struct FocusIndex {
-    completions: crate::products::national_focus::FocusCompletionProjection,
-    completion_events: crate::prepared::series::Accumulator,
-    completion_warnings: BTreeSet<String>,
-    completion_presentation_refusal: Option<String>,
-    #[serde(skip)]
-    completion_art: Option<artwork::Context>,
-    schema: StateSchema,
-    branch: Option<u64>,
-    countries: BTreeMap<String, CountryState>,
-    hour: Option<i32>,
-    #[serde(skip)]
-    discontinuous: bool,
-    series: Accumulator,
-    reasons: Vec<TableRefusal>,
-    #[serde(skip)]
-    first: Option<i32>,
-}
-impl FocusIndex {
-    pub(crate) fn observe_completions(
-        &mut self,
-        frame: &DecodedFrame,
-        source: &Source,
-        context: &crate::products::LoadContext,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        check_cancel(cancelled)?;
-        self.through(frame.branch, frame.hour)?;
-        self.completion_events.through(frame.hour);
-        if let Ok(content) = context.content()
-            && let Err(reason) = artwork::ensure(
-                &mut self.completion_art,
-                source,
-                content,
-                artwork::Kind::Focus,
-            )
-        {
-            self.completion_presentation_refusal
-                .get_or_insert_with(|| reason.to_string());
-        }
-        let mut events = self.completions.observe(frame);
-        events.sort_by(|a, b| (&a.tag, a.hour).cmp(&(&b.tag, b.hour)));
-        let requests: Vec<_> = events
-            .iter()
-            .map(|event| (event.token.as_str(), event.tag.as_str()))
-            .collect();
-        let presented = if requests.is_empty() {
-            Vec::new()
-        } else {
-            self.completion_art
-                .as_mut()
-                .map(|art| art.focuses_at(&requests, frame))
-                .unwrap_or_default()
-        };
-        for (index, event) in events.into_iter().enumerate() {
-            self.completion_events.event(
-                0,
-                event.hour,
-                &Completion {
-                    event,
-                    presentation: presented
-                        .get(index)
-                        .map(|(artwork, reason)| PresentedFocus {
-                            artwork: artwork.clone(),
-                            reason: reason.clone(),
-                        }),
-                },
-            )?;
-        }
-        if let Some(art) = &self.completion_art {
-            self.completion_warnings.extend(art.standing_warnings());
-        }
-        Ok(())
-    }
-    fn through(&mut self, branch: u64, hour: i32) -> io::Result<()> {
-        self.branch = Some(branch);
-        self.first.get_or_insert(hour);
-        if self.hour != Some(hour) {
-            self.discontinuous = self.hour.and_then(|old| old.checked_add(1)) != Some(hour);
-            self.hour = Some(hour);
-        }
-        self.series.advance(hour)
-    }
-    pub fn buffered_bytes(&self) -> usize {
-        self.series.bytes() + self.completion_events.bytes()
-    }
-    fn progress(&mut self, tag: &str, hour: i32, raw: i128, gain: i128, changed: bool) {
-        let country = self.countries.get(tag).expect("observed focus country");
-        // Publication keeps the existing immutable interval boundary on resume.
-        let break_before = changed || self.discontinuous || self.first == Some(hour);
-        self.series
-            .observe(country.key, hour, Some(raw), break_before);
-        self.series
-            .observe(country.key + 1, hour, Some(gain), break_before);
-    }
-    #[cfg(test)]
-    pub(crate) fn extend_hour(
-        &mut self,
-        branch: u64,
-        tag: &str,
-        hour: i32,
-        warnings: &[String],
-    ) -> bool {
-        let Some(country) = self.countries.get(tag) else {
-            return false;
-        };
-        let Some(raw) = self
-            .series
-            .state(country.key)
-            .and_then(|state| state.last)
-            .filter(|run| run.last_hour.checked_add(1) == Some(hour))
-        else {
-            return false;
-        };
-        if country
-            .last
-            .as_ref()
-            .is_none_or(|last| last.warnings != warnings)
-        {
-            return false;
-        }
-        let gain = self
-            .series
-            .state(country.key + 1)
-            .and_then(|state| state.last)
-            .expect("focus gain run")
-            .value;
-        if self.through(branch, hour).is_err() {
-            return false;
-        }
-        self.progress(tag, hour, raw.value, gain, false);
-        true
-    }
-    fn write_progress(
-        &mut self,
-        branch: u64,
-        tag: &str,
-        hour: i32,
-        previous: &Previous,
-        warnings: Option<&[String]>,
-        cancelled: &AtomicBool,
-    ) -> io::Result<bool> {
-        check_cancel(cancelled)?;
-        let Some(country) = self.countries.get(tag) else {
-            return Ok(false);
-        };
-        if country.last.as_ref().is_none_or(|last| {
-            (last.slot, last.country_id, last.order_first_hour)
-                != (
-                    previous.slot,
-                    previous.country_id,
-                    previous.order_first_hour,
-                )
-                || warnings.is_some_and(|warnings| last.warnings != warnings)
-        }) {
-            return Ok(false);
-        }
-        let raw = i128::from(previous.progress.raw);
-        let gain = daily_gain(&previous.progress, &previous.order).unwrap_or(0);
-        self.through(branch, hour)?;
-        self.progress(tag, hour, raw, gain, false);
-        Ok(true)
-    }
-    fn close(&mut self, tag: &str, hour: i32) {
-        if let Some(country) = self.countries.get(tag) {
-            self.series.observe(country.key, hour, None, false);
-            self.series.observe(country.key + 1, hour, None, false);
-        }
-    }
-    fn finish_frame(
-        &mut self,
-        accumulator: &FocusAccumulator,
-        hour: i32,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        // Preserve focus's immutable publication boundaries. Only active keys
-        // are visited once at a new publication, never at each carried hour.
-        if self.first == Some(hour) {
-            for tag in &accumulator.active {
-                check_cancel(cancelled)?;
-                if let Some(country) = self.countries.get(tag)
-                    && self
-                        .series
-                        .state(country.key)
-                        .and_then(|state| state.last)
-                        .is_some_and(|run| run.last_hour != hour)
-                {
-                    let old = &accumulator.previous[tag];
-                    self.progress(
-                        tag,
-                        hour,
-                        i128::from(old.progress.raw),
-                        daily_gain(&old.progress, &old.order).unwrap_or(0),
-                        false,
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-    #[allow(clippy::too_many_arguments)]
-    pub fn write_hour_with_details(
-        &mut self,
-        _writer: &mut store::Writer,
-        branch: u64,
-        observation: Observation,
-        presentation: &mut dyn Iterator<Item = artwork::ResolvedArt>,
-        details: Option<&mut dyn Iterator<Item = artwork::ResolvedArt>>,
-        warnings: Vec<String>,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        check_cancel(cancelled)?;
-        let (raw, gain) = observation.values()?;
-        let collect = |items: &mut dyn Iterator<Item = artwork::ResolvedArt>| {
-            let items = items
-                .map(|(artwork, reason)| {
-                    check_cancel(cancelled)?;
-                    Ok(PresentedFocus { artwork, reason })
-                })
-                .collect::<io::Result<Vec<_>>>()?;
-            align_presentation(&observation.order, items)
-        };
-        let state = FocusState {
-            schema: StateSchema,
-            slot: observation.slot,
-            country_id: observation.country_id,
-            order_first_hour: observation.order_first_hour,
-            presentation: collect(presentation)?,
-            details: details.map(collect).transpose()?,
-            warnings,
-            order: observation.order,
-        };
-        self.through(branch, observation.hour)?;
-        let key = self.countries.len() as u64 * 2 + 1; // Key zero holds branch table refusals.
-        let country = self
-            .countries
-            .entry(observation.tag.clone())
-            .or_insert_with(|| CountryState {
-                key,
-                ..Default::default()
-            });
-        let changed = country.last.as_ref() != Some(&state);
-        if changed {
-            self.series.event(country.key, observation.hour, &state)?;
-            country.last = Some(state);
-        }
-        self.progress(&observation.tag, observation.hour, raw, gain, changed);
-        Ok(())
-    }
-    pub fn write_unavailable(
-        &mut self,
-        _writer: &mut store::Writer,
-        frame: &DecodedFrame,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        use replay::frame::TableView;
-        check_cancel(cancelled)?;
-        self.through(frame.branch, frame.hour)?;
-        let mut reasons = Vec::new();
-        for (table, error) in [
-            (
-                TableId::Countries,
-                frame.complete::<tables::Countries>().err(),
-            ),
-            (
-                TableId::CountryLinks,
-                frame.complete::<tables::CountryLinks>().err(),
-            ),
-            (TableId::Focus, frame.complete::<tables::Focus>().err()),
-            (
-                TableId::CompletedFocuses,
-                frame.complete::<tables::CompletedFocuses>().err(),
-            ),
-        ] {
-            let Some(error) = error else { continue };
-            let (reason, missing_rows) = match &*frame.tables[table.index()] {
-                TableView::Unavailable { reason } => (Some(reason.clone()), None),
-                TableView::Truncated { missing, .. } => (None, Some(missing.to_string())),
-                TableView::Complete(_) => (Some(error.to_string()), None),
-            };
-            reasons.push(TableRefusal {
-                table: format!("{table:?}"),
-                reason,
-                missing_rows,
-            });
-        }
-        let changed =
-            self.series.state(0).is_none_or(|state| state.events == 0) || self.reasons != reasons;
-        if changed {
-            self.series.event(0, frame.hour, &reasons)?;
-            self.reasons = reasons;
-        }
-        if changed || self.discontinuous || self.first == Some(frame.hour) {
-            self.series.observe(0, frame.hour, Some(0), true);
-        }
-        Ok(())
-    }
-    pub fn flush(&mut self, writer: &mut store::Writer, cancelled: &AtomicBool) -> io::Result<()> {
-        let Some(branch) = self.branch else {
-            return Ok(());
-        };
-        self.completion_events.flush(
-            writer,
-            &format!("focus-completions-{branch}"),
-            0,
-            cancelled,
-        )?;
-        crate::prepared::series::write_catalogue(
-            writer,
-            "focus-completions",
-            branch,
-            &BTreeMap::new(),
-            &(
-                self.completions.observed,
-                &self.completions.unavailable,
-                &self.completion_warnings,
-                &self.completion_presentation_refusal,
-                crate::prepared::series::LateIndex::default(),
-            ),
-        )?;
-        self.series
-            .flush(writer, &format!("focus-{branch}"), 0, cancelled)?;
-        self.first = None;
-        let catalogue: BTreeMap<_, _> = self
-            .countries
-            .iter()
-            .map(|(tag, country)| (tag, country.key))
-            .collect();
-        writer.write_at(
-            &format!("focus-{branch}-catalogue"),
-            0,
-            serde_json::to_vec(&catalogue)?.as_slice(),
-        )
-    }
-}
 
-#[derive(Clone, Serialize, Deserialize)]
-pub(crate) struct Completion {
-    pub event: crate::products::national_focus::FocusCompletion,
-    pub presentation: Option<PresentedFocus>,
-}
-fn static_text_section(token: &str) -> String {
-    let mut name = String::from("focus-static-text-v1-");
-    for byte in token.bytes() {
-        use std::fmt::Write;
-        write!(name, "{byte:02x}").expect("String formatting");
-    }
-    name
-}
-pub fn write_static_text(
-    writer: &mut store::Writer,
-    item: &Artwork,
-    cancelled: &AtomicBool,
-) -> io::Result<()> {
-    check_cancel(cancelled)?;
-    writer.write_at(
-        &static_text_section(&item.token),
-        0,
-        serde_json::to_vec(item)?.as_slice(),
-    )
-}
+pub mod art;
+pub(crate) mod family;
 mod query;
-pub use query::{
-    details_page, order_page, presentation_page, query_hour, query_page, query_unavailable,
-    static_text_page,
-};
+pub use art::{FocusArt, FocusArtFailure, FocusArtMode, FocusArtParams, FocusArtReply};
+pub use query::{order_page, query_hour, query_unavailable};
 
 /// The runner unions these inputs with scripted-text inputs and Clock before decoding.
 pub const TABLES: &[TableId] = crate::products::national_focus::FOCUS_COMPLETION_TABLES;
-#[cfg(test)]
-mod profile_tests;
 #[cfg(test)]
 mod tests;

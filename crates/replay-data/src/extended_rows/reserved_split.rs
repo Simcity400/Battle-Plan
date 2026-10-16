@@ -114,6 +114,12 @@ impl Default for SpottingLanes {
 }
 
 impl Value for SpottingLanes {
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Self::Copied(lanes) => Value::heap_bytes(lanes),
+            Self::CountryIntel => 0,
+        }
+    }
     const MINIMUM_ENCODED_BYTES: usize = 1;
     fn encoded_bytes(&self) -> io::Result<usize> {
         match self {

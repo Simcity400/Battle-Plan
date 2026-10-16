@@ -41,6 +41,7 @@ use {
 
 pub struct Raids;
 
+pub mod kept;
 pub mod prepared;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -483,7 +484,7 @@ struct Track {
 #[derive(Serialize, Deserialize)]
 struct Scan {
     /// The recording's format, which dates its daily tables
-    /// ([`crate::metadata::slot_read`]); every observation supplies it.
+    /// ([`dashboard_text::metadata::slot_read`]); every observation supplies it.
     #[serde(skip)]
     format: replay::format::FormatVersion,
     result: ScannedRaids,

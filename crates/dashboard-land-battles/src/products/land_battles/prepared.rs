@@ -20,7 +20,7 @@ impl Census {
         self.catalogue = catalogue;
         self.content_warnings = warning.into_iter().collect();
     }
-    fn window_records(&self, window: &BattleWindow) -> Self {
+    pub(super) fn window_records(&self, window: &BattleWindow) -> Self {
         let first = window.first_hour;
         let last = window.last_hour;
         let episodes = self

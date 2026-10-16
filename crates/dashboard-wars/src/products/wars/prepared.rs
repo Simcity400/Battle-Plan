@@ -5,22 +5,55 @@ use replay::{codec::Decoder, frame::SharedView};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
+/// The wars inputs the observer holds and publishes: every table it reads but
+/// the clock, whose hourly rows no reply reads, so a change input is the same
+/// whichever hour's clock preparation read with it.
+pub(super) fn is_input(table: TableId) -> bool {
+    table != TableId::Clock && TABLES.contains(&table)
+}
+
+/// The first recorded capitulation date after `hour`: the hour at which an
+/// already captured capitulation becomes usable.
+pub(super) fn next_capitulation(capitulations: &[rows::CapitulationRow], hour: i32) -> Option<i32> {
+    capitulations
+        .iter()
+        .filter(|row| row.capitulated != 0 && row.capitulated_hour > hour)
+        .map(|row| row.capitulated_hour)
+        .min()
+}
+
 /// One branch's global change inputs and relation-lifetime counters, never viewpoints.
 #[derive(Default, Serialize, Deserialize)]
 pub struct Observer {
     #[serde(skip)]
-    indices: BTreeMap<String, u64>,
-    first_reads: Vec<i32>,
+    pub(super) indices: BTreeMap<String, u64>,
+    pub(super) first_reads: Vec<i32>,
     snapshot: Vec<u8>,
-    batch: Accumulator,
+    pub(super) batch: Accumulator,
     #[serde(skip)]
-    frame: Option<DecodedFrame>,
+    pub(super) frame: Option<DecodedFrame>,
     #[serde(skip)]
-    inputs: Option<Hour>,
-    next_capitulation: Option<i32>,
+    pub(super) inputs: Option<Hour>,
+    pub(super) next_capitulation: Option<i32>,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     pub(super) work: dashboard_base::prepared::observer_tests::Work,
+    /// Each change input published since they were last taken, with its
+    /// hour, while the recorded viewpoint's walk follows them.
+    #[serde(skip)]
+    published: Option<Vec<(i32, Vec<u8>)>>,
+    /// While a block's extract records its calls ([`Self::record_calls`]),
+    /// each hour it observed the change inputs' ordinal at, and whether after
+    /// a gap: its fold observes them on the carried count of inputs
+    /// ([`series::record_family`]).
+    #[serde(skip)]
+    pub(super) recorded: Option<Vec<(i32, bool)>>,
+    /// Whether an observation since the extract began recording found no
+    /// join of the hour before and took the relations it held from the open
+    /// counters, which a block's own observer does not share with the carried
+    /// one.
+    #[serde(skip)]
+    pub(super) unjoined: bool,
     #[cfg(test)]
     #[serde(skip)]
     test_changes: Option<dashboard_base::prepared::frame_changes::FrameChangeTracker>,
@@ -57,7 +90,7 @@ impl Observer {
             && !dated_cap
             && TABLES
                 .iter()
-                .filter(|&&table| table != TableId::Clock)
+                .filter(|&&table| is_input(table))
                 .all(|table| !fact.rows_changed[table.index()])
         {
             self.frame.as_mut().expect("continuing war inputs").hour = frame.hour;
@@ -69,11 +102,7 @@ impl Observer {
             {
                 self.work.row_visits += capitulations.len();
             }
-            self.next_capitulation = capitulations
-                .iter()
-                .filter(|row| row.capitulated != 0 && row.capitulated_hour > frame.hour)
-                .map(|row| row.capitulated_hour)
-                .min();
+            self.next_capitulation = next_capitulation(capitulations, frame.hour);
         }
         let mut current = DecodedFrame {
             branch: frame.branch,
@@ -81,7 +110,7 @@ impl Observer {
             metrics: Default::default(),
             tables: std::array::from_fn(|index| {
                 let table = TableId::ALL[index];
-                if !TABLES.contains(&table) {
+                if !is_input(table) {
                     return TableView::Unavailable {
                         reason: "Table not selected for reconstruction".into(),
                     }
@@ -118,7 +147,7 @@ impl Observer {
         };
         let mut changes = Vec::new();
         if let Some(old) = &self.frame {
-            for &table in TABLES.iter().filter(|&&table| table != TableId::Clock) {
+            for &table in TABLES.iter().filter(|&&table| is_input(table)) {
                 if !fact.rows_changed[table.index()] {
                     continue;
                 }
@@ -148,10 +177,11 @@ impl Observer {
         }
         if gap || !changes.is_empty() || dated_cap {
             if self.frame.is_none() {
-                changes = TABLES.iter().map(|table| *table as u16).collect();
-            }
-            if !changes.contains(&(TableId::Clock as u16)) {
-                changes.push(TableId::Clock as u16);
+                changes = TABLES
+                    .iter()
+                    .filter(|&&table| is_input(table))
+                    .map(|table| *table as u16)
+                    .collect();
             }
             let packet = DecodedFrame {
                 tables: std::array::from_fn(|index| {
@@ -171,11 +201,11 @@ impl Observer {
             // A compressed packet keeps the open batch compact; its row is raw
             // bytes, read back without a JSON layer.
             let packet = dashboard_base::prepared::series::compress(bytes.as_slice(), 3)?;
-            self.batch.event_raw(
-                0,
-                frame.hour,
-                super::walks::encode_input(&changes, &packet)?,
-            )?;
+            let row = super::walks::encode_input(&changes, &packet)?;
+            if let Some(published) = &mut self.published {
+                published.push((frame.hour, row.clone()));
+            }
+            self.batch.event_raw(0, frame.hour, row)?;
             #[cfg(any(test, feature = "test-support"))]
             {
                 self.work.emitted += 1;
@@ -189,8 +219,20 @@ impl Observer {
                 .and_then(|state| state.last)
                 .is_none_or(|run| run.value != i128::from(event))
         {
-            self.batch
-                .observe(0, frame.hour, Some(i128::from(event)), gap);
+            match &mut self.recorded {
+                // A block's extract records the ordinal for its fold to
+                // observe on the carried count of inputs.
+                Some(recorded) if series::record_family(recorded.len()) => {
+                    recorded.push((frame.hour, gap));
+                    let batch = &mut self.batch;
+                    series::unrecorded(|| {
+                        batch.observe(0, frame.hour, Some(i128::from(event)), gap);
+                    });
+                }
+                _ => self
+                    .batch
+                    .observe(0, frame.hour, Some(i128::from(event)), gap),
+            }
         }
         // Names and dated presentation operands publish topology without
         // rebuilding the unchanged native relation join or casualty keys.
@@ -231,11 +273,13 @@ impl Observer {
             // A restored observer has no join of the hour before; the relations
             // it held are those whose counters are still open. Without a join
             // otherwise, none are.
-            None => self
-                .batch
-                .active()
-                .filter_map(|key| key.checked_sub(1).map(|key| key / 4))
-                .collect(),
+            None => {
+                self.unjoined = true;
+                self.batch
+                    .active()
+                    .filter_map(|key| key.checked_sub(1).map(|key| key / 4))
+                    .collect()
+            }
         };
         let mut present = std::collections::BTreeSet::new();
         // Canonical endpoint identity, not raw references or a selected viewpoint.
@@ -318,6 +362,50 @@ impl Observer {
     pub fn bytes(&self) -> usize {
         self.batch.bytes()
     }
+    /// Whether hours `first..=last`, at which no input the observer compares
+    /// changed or was decoded again whole, continue the hour it observed
+    /// last and reach no capitulation date: then observing each would only
+    /// authenticate it and move the held inputs to it ([`Self::advance_quiet`]).
+    pub fn quiet_continues(&self, first: i32, last: i32) -> bool {
+        self.frame
+            .as_ref()
+            .is_some_and(|frame| frame.hour.checked_add(1) == Some(first))
+            && self.next_capitulation.is_none_or(|hour| hour > last)
+    }
+    /// Keep each change input published from now on until taken
+    /// ([`Self::take_inputs`]).
+    pub fn keep_inputs(&mut self) {
+        self.published.get_or_insert_with(Vec::new);
+    }
+    /// From now on, record the calls this observer makes on its series as
+    /// series 0 while a recording is active ([`series::with_recording`]),
+    /// its change-input ordinals as its own calls, and the change inputs it
+    /// publishes: a block's extract after the block's first hour.
+    pub(super) fn record_calls(&mut self) {
+        self.batch.record_as(0);
+        self.recorded = Some(Vec::new());
+        self.unjoined = false;
+        self.published = Some(Vec::new());
+    }
+    /// The change inputs published since they were last taken.
+    pub fn take_inputs(&mut self) -> Vec<(i32, Vec<u8>)> {
+        self.published
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+    /// Hours `first..=last` that [`Self::quiet_continues`] allows: each hour
+    /// authenticated in turn, which a block extract's recording keeps as one
+    /// span that its fold makes again in constant time.
+    pub fn advance_quiet(&mut self, first: i32, last: i32) -> io::Result<()> {
+        for hour in first..=last {
+            self.batch.advance(hour)?;
+        }
+        if let Some(frame) = &mut self.frame {
+            frame.hour = last;
+        }
+        Ok(())
+    }
     pub fn flush(
         &mut self,
         writer: &mut store::Writer,
@@ -335,7 +423,9 @@ impl Observer {
     }
 }
 
-fn same_inputs(table: TableId, a: &SharedView, b: &SharedView) -> bool {
+/// Whether two views of an input `table` agree on every field the observer
+/// compares: the fields its block read watches.
+pub(super) fn same_inputs(table: TableId, a: &SharedView, b: &SharedView) -> bool {
     if SharedView::ptr_eq(a, b) {
         return true;
     }

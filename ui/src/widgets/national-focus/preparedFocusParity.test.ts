@@ -7,22 +7,26 @@ import type { DashboardSource } from '../../dashboard/client';
 
 const source = { id: 'synthetic', revision: 'r' } as DashboardSource;
 function fixture(size: number, fail = false) {
-  const row: PreparedFocusHour = { schema: 5, slot: 1, countryId: 7, hour: 12, lastHour: 20, orderFirstHour: 4,
+  const row: PreparedFocusHour = { schema: 6, slot: 1, countryId: 7, hour: 12, lastHour: 20, orderFirstHour: 4,
     current: 'active', continuous: null, paused: true, progressRaw: '9007199254740993001', dailyGainRaw: '7',
-    completed: { first: '0', count: String(Math.ceil(size / 128)), rows: String(size) },
-    presentation: { first: '0', count: String(Math.ceil((size + 1) / 128)), rows: String(size + 1) }, details: null, warnings: [] };
+    completed: { first: '0', count: String(Math.ceil(size / 128)), rows: String(size) }, at: 12 };
   const calls: string[] = [];
-  const client = { preparedQuery: async (_source: unknown, product: string, params: any) => {
+  const counted = (product: string) => {
     calls.push(product);
     assert.ok(calls.length <= 1 + 6 * Math.ceil(size / 128), 'parity reads must stay proportional to the advertised page count');
+  };
+  const client = { preparedQuery: async (_source: unknown, product: string, params: any) => {
+    counted(product);
     if (product === 'focus-static-text') return params.tokens.map((token: string) => ({ token, name: 'Observed', description: 'Static details', baseDurationDays: 7, icon: null }));
-    if (product === 'focus-hour') return { ...row, hour: Math.min(params.hour, 12) };
+    if (product === 'focus-hour') return { ...row, hour: Math.min(params.hour, 12), at: params.hour };
     const start = Number(params.page) * 128;
     if (product === 'focus-order-page') return Array.from({ length: Math.min(128, size - start) - (fail ? 1 : 0) }, (_, i) =>
       ({ ordinal: start + i, token: 'repeat', completedByHour: (start + i) % 2 ? null : 8 }));
-    if (product === 'focus-presentation-page') return Array.from({ length: Math.min(128, size + 1 - start) }, (_, i) =>
-      ({ artwork: { token: start + i === size ? 'active' : 'repeat', name: 'Observed', description: null, baseDurationDays: null, icon: null }, reason: null }));
     throw new Error(product);
+  }, product: async (request: any) => {
+    counted(request.product);
+    return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: { warnings: [], failures: [],
+      art: request.params.tokens.map((token: string) => ({ artwork: { token, name: 'Observed', description: null, baseDurationDays: null, icon: null }, reason: null })) } };
   } } as unknown as FocusPreparedClient;
   return { client, calls };
 }
@@ -61,21 +65,23 @@ test('ready missing data yields an empty model; cancelled reads cannot certify',
 for (const size of [0, 47]) for (const moment of [false, true]) for (const openedOrdinal of size ? [undefined, 0] : [undefined]) test(`warm capture request trace: ${size} completions, moment=${moment}, opened=${openedOrdinal}`, async () => {
   const hour = 35, calls: { product: string; params: any }[] = [];
   let statuses = 0;
-  const row: PreparedFocusHour = { schema: 5, slot: 1, countryId: 7, hour: 30, lastHour: 40, orderFirstHour: 10,
+  const row: PreparedFocusHour = { schema: 6, slot: 1, countryId: 7, hour: 30, lastHour: 40, orderFirstHour: 10,
     current: size ? 'synthetic-active' : null, continuous: null, paused: true, progressRaw: '1000000', dailyGainRaw: null,
-    completed: { first: '0', count: size ? '1' : '0', rows: String(size) },
-    presentation: { first: '0', count: size ? '1' : '0', rows: String(size ? size + 1 : 0) },
-    details: { first: '0', count: size ? '1' : '0', rows: String(size ? size + 1 : 0) }, warnings: [] };
+    completed: { first: '0', count: size ? '1' : '0', rows: String(size) }, at: hour };
   const token = (index: number) => index === size ? 'synthetic-active' : `synthetic-completed-${index}`;
   const art = (name: string, description: string | null = null) => ({ token: name, name: 'Observed', description, baseDurationDays: 7, icon: null });
   const client = { preparationStatus: async (request: any) => { statuses++; return { ...request, state: 'ready', sections: [] }; },
     preparedQuery: async (_source: unknown, product: string, params: any) => {
       calls.push({ product, params });
-      if (product === 'focus-hour') return params.hour === 10 ? { ...row, hour: 10, lastHour: 10 } : row;
+      if (product === 'focus-hour') return row;
       if (product === 'focus-order-page') return Array.from({ length: size }, (_, ordinal) => ({ ordinal, token: token(ordinal), completedByHour: null }));
-      if (product === 'focus-presentation-page' || product === 'focus-details-page') return Array.from({ length: size + 1 }, (_, index) => ({ artwork: art(token(index), product === 'focus-details-page' ? 'Scoped details' : null), reason: null }));
       if (product === 'focus-static-text') return params.tokens.map((name: string) => art(name, 'Static details'));
       throw new Error(product);
+    },
+    product: async (request: any) => {
+      calls.push({ product: request.product, params: request.params });
+      return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: { warnings: [], failures: [],
+        art: request.params.tokens.map((name: string) => ({ artwork: art(name, request.params.mode === 'text' ? 'Scoped details' : null), reason: null })) } };
     },
   } as unknown as FocusPreparedClient;
     calls.length = 0; statuses = 0;
@@ -84,9 +90,11 @@ for (const size of [0, 47]) for (const moment of [false, true]) for (const opene
     const visible: PreparedFocusSnapshot = { ...await loadPreparedFocusPage(client, source, 'branch', 'opaque', hour, point, 0n, signal), hour: point, page: 0n };
     if (openedOrdinal !== undefined) visible.details = new Map([[openedOrdinal, (await loadPreparedFocusDetail(client, source, 'branch', 'opaque', point, visible.order[openedOrdinal], signal))!]]);
     const model = await gatherPreparedFocusParity(client, source, 'branch', 'opaque', hour, moment, signal, openedOrdinal === undefined ? [] : [openedOrdinal], visible);
-    const counts = Object.fromEntries([...new Set(calls.map(call => call.product))].map(product => [product, calls.filter(call => call.product === product).length]));
-    const expected = size ? { 'focus-hour': openedOrdinal === undefined ? 2 : 3, 'focus-order-page': 1, 'focus-presentation-page': 1,
-      ...(openedOrdinal === undefined ? {} : { 'focus-details-page': 1 }), 'focus-static-text': 1 } : { 'focus-hour': 1 };
+    const counts = Object.fromEntries([...new Set(calls.map(call => call.product))].sort().map(product => [product, calls.filter(call => call.product === product).length]));
+    // One numeric point; art at the completions' confirming hour and the
+    // active focus's hour, and the opened row's description.
+    const expected = size ? { 'focus-hour': 1, 'focus-order-page': 1, 'focus-static-text': 1,
+      'focus-art': openedOrdinal === undefined ? 2 : 3 } : { 'focus-hour': 1 };
     console.log(JSON.stringify({ completions: size, moment, openedOrdinal: openedOrdinal ?? null, counts, statuses }));
     assert.deepEqual(counts, expected, 'parity reuses the settled numeric, presentation and opened-description reads');
     assert.equal(statuses, 0, 'accepted points do not start readiness polling');

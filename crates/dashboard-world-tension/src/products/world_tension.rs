@@ -76,6 +76,7 @@ use ts_rs::TS;
 
 pub struct WorldTension;
 
+pub mod block;
 pub mod prepared;
 
 /// Branches kept per source.
@@ -666,27 +667,8 @@ impl Scan {
             ]
             .iter()
             .any(|table| changes.rows_changed[table.index()]);
-        if same && self.last_hour.and_then(|hour| hour.checked_add(1)) == Some(frame.hour) {
-            if !self.open {
-                self.last_hour = Some(frame.hour);
-                return Ok(());
-            }
-            let read = self.result.reads.last_mut().expect("held tension read");
-            if changes.slot_read[TableId::WorldTension.index()] {
-                self.result.read_count += 1;
-                self.result.unnamed_reads += self.diagnostic_rate.0;
-                self.result.partial_sources += self.diagnostic_rate.1;
-                self.result.aggregate_mismatches += self.diagnostic_rate.2;
-                self.result.tension_mismatches += self.diagnostic_rate.3;
-                read.first_hour = frame.hour;
-                read.starts_segment = false;
-                self.batch
-                    .observe(3, frame.hour, Some(i128::from(frame.hour)), false);
-                self.last_source_read = Some(frame.hour);
-            }
-            read.last_hour = frame.hour;
-            self.last_hour = Some(frame.hour);
-            dashboard_base::products::country_groups::record_hour(&mut self.coverage, frame.hour);
+        if same && self.continues_to(frame.hour) {
+            self.hold(frame.hour, changes.slot_read[TableId::WorldTension.index()]);
             return Ok(());
         }
         self.seal_sources();
@@ -719,6 +701,44 @@ impl Scan {
             self.result.tension_mismatches - before.3,
         );
         Ok(())
+    }
+    /// Whether `hour` follows the last hour observed, as an hour whose inputs
+    /// are unchanged must for [`Self::advance_quiet`].
+    pub(crate) fn continues_to(&self, hour: i32) -> bool {
+        self.last_hour.and_then(|last| last.checked_add(1)) == Some(hour)
+    }
+    /// [`Self::prepare_changed`] at an hour that follows the last one
+    /// observed ([`Self::continues_to`]) and changes none of the rows,
+    /// country keys or links it reads: the same step, given only whether the
+    /// tension tables were read there (`read`, their slot read).
+    pub(crate) fn advance_quiet(&mut self, hour: i32, read: bool) -> io::Result<()> {
+        self.batch.advance(hour)?;
+        self.hold(hour, read);
+        Ok(())
+    }
+    /// An hour whose inputs equal the hour before's: the held read extends to
+    /// it, and a read there starts the held values again at the hour with the
+    /// diagnostic counts of the read before.
+    fn hold(&mut self, hour: i32, read: bool) {
+        if !self.open {
+            self.last_hour = Some(hour);
+            return;
+        }
+        let held = self.result.reads.last_mut().expect("held tension read");
+        if read {
+            self.result.read_count += 1;
+            self.result.unnamed_reads += self.diagnostic_rate.0;
+            self.result.partial_sources += self.diagnostic_rate.1;
+            self.result.aggregate_mismatches += self.diagnostic_rate.2;
+            self.result.tension_mismatches += self.diagnostic_rate.3;
+            held.first_hour = hour;
+            held.starts_segment = false;
+            self.batch.observe(3, hour, Some(i128::from(hour)), false);
+            self.last_source_read = Some(hour);
+        }
+        held.last_hour = hour;
+        self.last_hour = Some(hour);
+        dashboard_base::products::country_groups::record_hour(&mut self.coverage, hour);
     }
     fn seal_sources(&mut self) {
         if let Some(hour) = self.last_source_read {

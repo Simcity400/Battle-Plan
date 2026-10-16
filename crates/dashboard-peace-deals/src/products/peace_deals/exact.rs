@@ -95,9 +95,7 @@ pub(super) struct Capture {
     tags: HashMap<u32, String>,
     #[serde(skip)]
     countries: HashMap<u32, PeaceTransferCountry>,
-    #[serde(
-        serialize_with = "dashboard_core::map_pairs::ordered_optional_map"
-    )]
+    #[serde(serialize_with = "dashboard_core::map_pairs::ordered_optional_map")]
     vps: Option<HashMap<u32, i64>>,
     vps_hour: Option<i32>,
     state_action_key: Option<String>,
@@ -219,29 +217,20 @@ impl Observed {
             self.materialized = Some(frame.hour);
         }
         self.frontier = Some(frame.hour);
+        let view = &*frame.tables[TableId::PeaceSettlements.index()];
         if !changes.rows_changed[TableId::PeaceSettlements.index()]
-            && matches!(
-                &*frame.tables[TableId::PeaceSettlements.index()],
-                TableView::Complete(_)
-            )
+            && matches!(view, TableView::Complete(_))
         {
             return;
         }
-        let rows = match &*frame.tables[TableId::PeaceSettlements.index()] {
-            TableView::Complete(rows) => rows.rows::<tables::PeaceSettlements>(),
-            TableView::Truncated { rows, missing } => {
-                self.missing(
-                    frame.hour,
-                    format!(
-                        "Finalizer table truncated: at least {missing} lost conferences or unread operands."
-                    ),
-                );
+        if let Some(reason) = missing_reason(view) {
+            self.missing(frame.hour, reason);
+        }
+        let rows = match view {
+            TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
                 rows.rows::<tables::PeaceSettlements>()
             }
-            TableView::Unavailable { reason } => {
-                self.missing(frame.hour, format!("Finalizer table unavailable: {reason}"));
-                None
-            }
+            TableView::Unavailable { .. } => None,
         };
         let Some(rows) = rows else {
             return;
@@ -418,6 +407,24 @@ impl Observed {
                 .retain(|raw, _| row.winners.contains(raw) || row.losers.contains(raw));
             self.captures.push(capture);
         }
+    }
+    /// Whether `hour` follows the last hour observed.
+    pub(super) fn continues(&self, hour: i32) -> bool {
+        self.frontier.and_then(|frontier| frontier.checked_add(1)) == Some(hour)
+    }
+    /// Hours `first..=last` that continue the last hour observed, with the
+    /// same holders and an unchanged finalizer table, as
+    /// [`Self::observe_changed`] observes each: the frontier advances, and
+    /// while the table is not complete (`missing`, its reason) each hour is
+    /// a missing one.
+    pub(super) fn advance_quiet(&mut self, first: i32, last: i32, missing: Option<String>) {
+        if let Some(reason) = missing {
+            self.missing(first, reason);
+            if let Some(span) = self.unobserved.last_mut() {
+                span.last_hour = last;
+            }
+        }
+        self.frontier = Some(last);
     }
     pub(super) fn apply(self, reply: &mut PeaceDealsReply) {
         reply.unobserved.settlements = self.unobserved;
@@ -658,6 +665,17 @@ impl Observed {
             .deals
             .iter()
             .any(|deal| deal.derived || deal.items.iter().any(|item| item.derived));
+    }
+}
+/// Why an hour's finalizer table misses conferences, as that hour records
+/// it; None for a complete table.
+pub(super) fn missing_reason(view: &TableView) -> Option<String> {
+    match view {
+        TableView::Complete(_) => None,
+        TableView::Truncated { missing, .. } => Some(format!(
+            "Finalizer table truncated: at least {missing} lost conferences or unread operands."
+        )),
+        TableView::Unavailable { reason } => Some(format!("Finalizer table unavailable: {reason}")),
     }
 }
 fn action(

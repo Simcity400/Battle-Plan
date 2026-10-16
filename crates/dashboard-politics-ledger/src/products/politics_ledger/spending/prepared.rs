@@ -57,9 +57,23 @@ pub struct Prepared {
     /// Parts added since the last capture read.
     #[serde(skip)]
     new_parts: BTreeSet<String>,
+    /// The daily table allocation `current_daily_keys` were read from: an
+    /// hour holding it holds the same rows.
+    #[serde(skip)]
+    daily_view: Option<replay::frame::ViewIdentity>,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
+    /// The hours that only advanced captures, and those of the whole
+    /// accounting.
+    #[cfg(any(test, feature = "test-support"))]
+    #[serde(skip)]
+    paths: [usize; 2],
+    /// Take the whole accounting at every hour that is not quiet, so tests
+    /// compare it with the advance path.
+    #[cfg(test)]
+    #[serde(skip)]
+    dense: bool,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -481,6 +495,28 @@ impl Prepared {
     }
     pub fn bytes(&self) -> usize {
         self.series.bytes() + self.recurring.bytes()
+    }
+    /// The hours observed that only advanced captures, without the whole
+    /// accounting.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn advanced_hours(&self) -> usize {
+        self.paths[0]
+    }
+    /// The hours observed with the whole accounting.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn accounted_hours(&self) -> usize {
+        self.paths[1]
+    }
+    /// Whether every hour that is not quiet takes the whole accounting.
+    fn dense(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.dense
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
     }
     fn key(&mut self, tag: &str, field: &str) -> io::Result<u64> {
         let next = u64::try_from(self.keys.len())
@@ -1201,18 +1237,38 @@ impl Prepared {
             self.scan.retain_previous(frame);
             return Ok(());
         }
-        if expires {
-            let slots: BTreeSet<_> = self
-                .scan
+        let expired: BTreeSet<_> = if expires {
+            self.scan
                 .inputs
                 .deadlines
                 .range(self.scan.clock.next.unwrap()..=frame.hour)
                 .flat_map(|(_, raws)| raws)
                 .filter_map(|raw| self.scan.inputs.links.get(raw))
                 .copied()
-                .collect();
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
+        // Every capture extended to the hour and nothing else read changes
+        // which country the accounting visits: it would visit none.
+        if expired.is_empty()
+            && daily_tags.is_empty()
+            && !self.dense()
+            && self.scan.advances_only(frame)
+        {
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                self.paths[0] += 1;
+            }
+            return self.observe_advance(frame, content, changes);
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.paths[1] += 1;
+        }
+        if expires {
             let inputs = Arc::make_mut(&mut self.scan.inputs);
-            inputs.slots.extend(slots);
+            inputs.slots.extend(expired);
         }
         self.scan.dirty.extend(daily_tags);
         let hold_boundaries: BTreeSet<_> = if self.scan.inputs.countries_changed {
@@ -1230,83 +1286,10 @@ impl Prepared {
         self.scan.begin_accounting(frame)?;
         observe_accounting(frame, &mut self.scan, content)?;
         self.scan.end_accounting(frame.hour);
-        let census_known = frame.complete::<tables::Countries>().is_ok();
-        let census_starts = self
-            .scan
-            .clock
-            .previous
-            .and_then(|last| last.checked_add(1))
-            != Some(frame.hour);
-        self.scalar(
-            "*",
-            "census",
-            frame.hour,
-            census_known.then_some(1),
-            census_starts,
-            false,
-        )?;
-        self.scalar("*", "accepted", frame.hour, Some(1), census_starts, false)?;
-        if census_known
-            && self
-                .scan
-                .presence
-                .last()
-                .is_some_and(|row| self.last_presence != Some(row.first))
-        {
-            let row = self.scan.presence.last().unwrap().clone();
-            let key = self.key("*", "census:events")?;
-            self.series
-                .event(key, frame.hour, &Event::Presence { row: row.clone() })?;
-            self.last_presence = Some(row.first);
-        }
+        let census_starts = self.publish_census(frame)?;
         self.scan.prune_publications(frame);
-        let native_changed = [
-            TableId::CountryPowerDaily,
-            TableId::CountryPowerChanges,
-            TableId::GovernmentChanges,
-        ]
-        .iter()
-        .any(|table| changes.rows_changed[table.index()] || changes.table_read[table.index()]);
-        if native_changed {
-            let native = &self.scan.inputs;
-            // The power and government rows' newest native days are kept as
-            // their rows change.
-            let newest = native
-                .daily()
-                .iter()
-                .take(if native.daily_changed {
-                    native.daily().len()
-                } else {
-                    0
-                })
-                .map(|row| row.day_hour)
-                .chain(native.newest_day(0).filter(|_| native.power_changed))
-                .chain(native.newest_day(1).filter(|_| native.governments_changed))
-                .max();
-            #[cfg(test)]
-            {
-                let visits = if native.daily_changed {
-                    native.daily().len()
-                } else {
-                    0
-                };
-                self.scan.publication_visits += visits;
-            }
-            if let Some(newest) = newest {
-                self.settle_before(newest)?;
-            }
-        }
-
-        if changes.rows_changed[TableId::CountryPowerDaily.index()]
-            || changes.table_read[TableId::CountryPowerDaily.index()]
-        {
-            self.current_daily_keys = frame
-                .complete::<tables::CountryPowerDaily>()
-                .unwrap_or_default()
-                .iter()
-                .map(RowCodec::key)
-                .collect();
-        }
+        self.settle_native(changes)?;
+        self.read_daily_keys(frame, changes);
         let tags = std::mem::take(&mut self.scan.dirty);
         for tag in &tags {
             #[cfg(any(test, feature = "test-support"))]
@@ -1737,6 +1720,178 @@ impl Prepared {
             )?;
             self.project_parts(tag, frame.hour, identity.clone(), starts)?;
         }
+        self.check_parts(frame, changes)?;
+        self.scan.retain_open(frame, &tags);
+        for tag in &tags {
+            let Some(pending) = self.open_notes.get_mut(tag) else {
+                continue;
+            };
+            let unresolved: BTreeSet<_> = self
+                .scan
+                .countries
+                .get(tag)
+                .into_iter()
+                .flat_map(|country| &country.daily_costs)
+                .map(|cost| {
+                    let row = &cost.row;
+                    format!(
+                        "daily:{}:{}:{}:{}:{}",
+                        row.country, row.instance, row.epoch, row.day_hour, row.ordinal
+                    )
+                })
+                .collect();
+            let completed: Vec<_> = pending
+                .keys()
+                .filter(|id| !unresolved.contains(*id))
+                .cloned()
+                .collect();
+            let totals = self.metadata.presentation.entry(tag.clone()).or_default();
+            for id in completed {
+                for (reason, count) in pending.remove(&id).unwrap() {
+                    count_reason(totals, reason, count)?;
+                }
+            }
+            let totals = self
+                .metadata
+                .pending_presentation
+                .entry(tag.clone())
+                .or_default();
+            totals.clear();
+            for warnings in pending.values() {
+                for (reason, count) in warnings {
+                    count_reason(totals, reason.clone(), *count)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// An hour that only advances captures ([`Scanned::advances_only`]):
+    /// what the whole accounting does there, in its order. It selects no
+    /// country, so it presents, projects, settles and notes none: no
+    /// country's capture, coverage, holds, events, daily rows, costs or
+    /// parts change, and every series key it would observe holds its value.
+    /// Its accounting is [`Scanned::advance_accounting`]; then the census
+    /// and accepted hour are observed, publications pruned, native days
+    /// settled, the current daily keys and the captured parts kept as the
+    /// hour reads them, and the closed census runs dropped.
+    fn observe_advance(
+        &mut self,
+        frame: &DecodedFrame,
+        content: Option<&PoliticsContent>,
+        changes: &FrameChanges,
+    ) -> io::Result<()> {
+        self.scan.advance_accounting(frame, content)?;
+        self.publish_census(frame)?;
+        self.scan.prune_publications(frame);
+        self.settle_native(changes)?;
+        self.read_daily_keys(frame, changes);
+        self.check_parts(frame, changes)?;
+        self.scan.retain_open(frame, &BTreeSet::new());
+        Ok(())
+    }
+
+    /// Observe whether the hour's census is known and that the hour was
+    /// accepted, and publish a census run that began since the last one
+    /// published. Whether the hour starts an episode after a gap.
+    fn publish_census(&mut self, frame: &DecodedFrame) -> io::Result<bool> {
+        let census_known = frame.complete::<tables::Countries>().is_ok();
+        let census_starts = self
+            .scan
+            .clock
+            .previous
+            .and_then(|last| last.checked_add(1))
+            != Some(frame.hour);
+        self.scalar(
+            "*",
+            "census",
+            frame.hour,
+            census_known.then_some(1),
+            census_starts,
+            false,
+        )?;
+        self.scalar("*", "accepted", frame.hour, Some(1), census_starts, false)?;
+        if census_known
+            && self
+                .scan
+                .presence
+                .last()
+                .is_some_and(|row| self.last_presence != Some(row.first))
+        {
+            let row = self.scan.presence.last().unwrap().clone();
+            let key = self.key("*", "census:events")?;
+            self.series
+                .event(key, frame.hour, &Event::Presence { row: row.clone() })?;
+            self.last_presence = Some(row.first);
+        }
+        Ok(census_starts)
+    }
+
+    /// Settle the open native days before the newest day the hour's power,
+    /// government and daily rows publish.
+    fn settle_native(&mut self, changes: &FrameChanges) -> io::Result<()> {
+        let native_changed = [
+            TableId::CountryPowerDaily,
+            TableId::CountryPowerChanges,
+            TableId::GovernmentChanges,
+        ]
+        .iter()
+        .any(|table| changes.rows_changed[table.index()] || changes.table_read[table.index()]);
+        if native_changed {
+            let native = &self.scan.inputs;
+            // The power and government rows' newest native days are kept as
+            // their rows change.
+            let newest = native
+                .daily()
+                .iter()
+                .take(if native.daily_changed {
+                    native.daily().len()
+                } else {
+                    0
+                })
+                .map(|row| row.day_hour)
+                .chain(native.newest_day(0).filter(|_| native.power_changed))
+                .chain(native.newest_day(1).filter(|_| native.governments_changed))
+                .max();
+            #[cfg(test)]
+            {
+                let visits = if native.daily_changed {
+                    native.daily().len()
+                } else {
+                    0
+                };
+                self.scan.publication_visits += visits;
+            }
+            if let Some(newest) = newest {
+                self.settle_before(newest)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The keys of the daily rows the hour publishes, read again only from a
+    /// daily table allocation they were not read from.
+    fn read_daily_keys(&mut self, frame: &DecodedFrame, changes: &FrameChanges) {
+        let index = TableId::CountryPowerDaily.index();
+        if !(changes.rows_changed[index] || changes.table_read[index]) {
+            return;
+        }
+        let view = &frame.tables[index];
+        if self.daily_view.as_ref().is_some_and(|read| read.is(view)) {
+            return;
+        }
+        self.current_daily_keys = frame
+            .complete::<tables::CountryPowerDaily>()
+            .unwrap_or_default()
+            .iter()
+            .map(RowCodec::key)
+            .collect();
+        self.daily_view = Some(view.identity());
+    }
+
+    /// Keep the open parts of the captured countries only, when the hour
+    /// reads its captures.
+    fn check_parts(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> io::Result<()> {
         if (changes.rows_changed[TableId::PoliticsCaptureCoverage.index()]
             || changes.table_read[TableId::PoliticsCaptureCoverage.index()])
             && let Ok(rows) = frame.complete::<tables::PoliticsCaptureCoverage>()
@@ -1781,48 +1936,6 @@ impl Prepared {
             }
             self.new_parts.clear();
             self.parts_checked = true;
-        }
-        self.scan.retain_open(frame, &tags);
-        for tag in &tags {
-            let Some(pending) = self.open_notes.get_mut(tag) else {
-                continue;
-            };
-            let unresolved: BTreeSet<_> = self
-                .scan
-                .countries
-                .get(tag)
-                .into_iter()
-                .flat_map(|country| &country.daily_costs)
-                .map(|cost| {
-                    let row = &cost.row;
-                    format!(
-                        "daily:{}:{}:{}:{}:{}",
-                        row.country, row.instance, row.epoch, row.day_hour, row.ordinal
-                    )
-                })
-                .collect();
-            let completed: Vec<_> = pending
-                .keys()
-                .filter(|id| !unresolved.contains(*id))
-                .cloned()
-                .collect();
-            let totals = self.metadata.presentation.entry(tag.clone()).or_default();
-            for id in completed {
-                for (reason, count) in pending.remove(&id).unwrap() {
-                    count_reason(totals, reason, count)?;
-                }
-            }
-            let totals = self
-                .metadata
-                .pending_presentation
-                .entry(tag.clone())
-                .or_default();
-            totals.clear();
-            for warnings in pending.values() {
-                for (reason, count) in warnings {
-                    count_reason(totals, reason.clone(), *count)?;
-                }
-            }
         }
         Ok(())
     }

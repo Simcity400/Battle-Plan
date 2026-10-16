@@ -162,6 +162,27 @@ impl Prepared {
         Ok(())
     }
 
+    /// Hours `first..=last` that continue the last observed hour (`frame`)
+    /// with no field the scan reads changing, the roster's slot read at
+    /// `reads`: [`Self::observe_changed`] for each, at once
+    /// ([`Scan::advance_quiet`]); no deal, comparison or finalizer event
+    /// changes in them. False, with nothing changed, when the hours must be
+    /// observed on their frames.
+    pub fn advance_quiet(
+        &mut self,
+        frame: &DecodedFrame,
+        first: i32,
+        last: i32,
+        reads: &[i32],
+    ) -> io::Result<bool> {
+        if !self.scan.advance_quiet(frame, first, last, reads) {
+            return Ok(false);
+        }
+        self.events.advance_span(first, last)?;
+        self.scan.last = self.scan.last.max(last);
+        Ok(true)
+    }
+
     pub fn buffered_bytes(&self) -> usize {
         self.events.bytes()
     }
@@ -284,6 +305,8 @@ pub fn query(
     )?)
     .map_err(Into::into)
 }
+
+pub mod family;
 
 #[cfg(test)]
 mod tests;

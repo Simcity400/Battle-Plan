@@ -86,12 +86,11 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
     ? snapshot.order.filter(item => opened.rows.has(preparedArtKey(item.completedByHour ?? snapshot.hour.orderFirstHour, item.token))) : [], [opened, identity, runtime.client, snapshot]);
   const detailOwner = JSON.stringify([identity, snapshot?.hour.slot, snapshot?.hour.countryId, snapshot?.page.toString()]);
   const detailKeys = JSON.stringify(detailEntries.map(item => preparedArtKey(item.completedByHour ?? snapshot!.hour.orderFirstHour, item.token)));
-  const hasPreparedDetails = snapshot?.hour.details !== null && snapshot?.hour.details !== undefined;
   type DetailResult = { data: PreparedFocusArt | null; pending: boolean; error: string | null };
   const [preparedDetail, setPreparedDetail] = useState<{ owner: string; client: typeof runtime.client; rows: Map<string, DetailResult> } | null>(null);
   const detailResults = preparedDetail?.owner === detailOwner && preparedDetail.client === runtime.client ? preparedDetail.rows : undefined;
   useEffect(() => {
-    if (!active || !track || !tag || !detailEntries.length || !snapshot || snapshot.hour.details === null) { setPreparedDetail(null); return; }
+    if (!active || !track || !tag || !detailEntries.length || !snapshot) { setPreparedDetail(null); return; }
     const controller = new AbortController();
     let current = true;
     const wanted = new Map(detailEntries.map(entry => [preparedArtKey(entry.completedByHour ?? snapshot.hour.orderFirstHour, entry.token), entry]));
@@ -106,20 +105,20 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
       } catch (error) { results.set(key, { data: null, pending: false, error: error instanceof Error ? error.message : String(error) }); }
     })).then(() => { if (current) setPreparedDetail({ owner: detailOwner, client: runtime.client, rows: results }); });
     return () => { current = false; controller.abort(); };
-  }, [runtime.client, track, tag, detailOwner, detailKeys, active, hasPreparedDetails]);
+  }, [runtime.client, track, tag, detailOwner, detailKeys, active]);
   const fallbackDetails = (key: string) => {
     const result = detailResults?.get(key);
-    return snapshot?.hour.details === null || result?.pending === false && result.data === null && result.error === null;
+    return result?.pending === false && result.data === null && result.error === null;
   };
   const detailsWanted = useMemo(() => detailEntries.filter(entry => fallbackDetails(preparedArtKey(entry.completedByHour ?? snapshot!.hour.orderFirstHour, entry.token)))
     .map(entry => ({ tag: entry.token, hour: entry.completedByHour ?? snapshot!.hour.orderFirstHour })), [detailEntries, snapshot, detailResults]);
-  // Absent/unprepared detail sections retain the dated oracle for opened rows.
+  // A description focus art did not return keeps the dated oracle for opened rows.
   const details = useFocusArtwork(runtime.client, track, tag, NO_WANTED, active && inRange, detailsWanted);
   const detailRead = (key: string) => fallbackDetails(key) ? details.details?.get(key) : detailResults?.get(key)?.data;
   const detailPending = (key: string) => fallbackDetails(key) ? detailRead(key) === undefined : detailResults?.get(key)?.pending !== false;
   const descriptions = useRef<{ owner: string; client: typeof runtime.client; texts: Map<string, string> } | null>(null);
   if (descriptions.current?.owner !== detailOwner || descriptions.current.client !== runtime.client) descriptions.current = { owner: detailOwner, client: runtime.client, texts: new Map() };
-  const warnings = useMemo(() => snapshot ? [...(shown?.warnings ?? []), ...snapshot.hour.warnings, ...details.warnings,
+  const warnings = useMemo(() => snapshot ? [...(shown?.warnings ?? []), ...snapshot.warnings, ...details.warnings,
     ...[...detailResults?.values() ?? []].flatMap(item => item.error ? [item.error] : item.data?.reason ? [item.data.reason] : []),
     ...[...details.details?.values() ?? []].flatMap(item => item && item !== FAILED_FACT && item.reason ? [item.reason] : []),
     ...[...snapshot.art.values()].flatMap(item => item.reason ? [item.reason] : [])] : shown?.warnings ?? [], [snapshot, details.warnings, details.details, detailResults, shown?.warnings]);

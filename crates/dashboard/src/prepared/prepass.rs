@@ -1006,40 +1006,13 @@ thread_local! {
     static TEST_WORKERS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     static TEST_HOOK: std::cell::RefCell<Option<Hook>> = const { std::cell::RefCell::new(None) };
     static TEST_ALONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static TEST_COUNTS: std::cell::RefCell<BTreeMap<&'static str, usize>> =
-        const { std::cell::RefCell::new(BTreeMap::new()) };
 }
 
-/// Count a fallback or hourly block of a family's fold on this thread.
-pub(crate) fn note(name: &'static str) {
-    #[cfg(test)]
-    TEST_COUNTS.with(|counts| *counts.borrow_mut().entry(name).or_default() += 1);
-    #[cfg(not(test))]
-    let _ = name;
-}
-
-/// How often `name` was noted on this thread.
+// Fold counts are dashboard-base's (`dashboard_base::prepared::prepass::note`),
+// which the families below the dashboard note too.
+pub(crate) use dashboard_base::prepared::prepass::note;
 #[cfg(test)]
-pub(crate) fn noted(name: &str) -> usize {
-    TEST_COUNTS.with(|counts| counts.borrow().get(name).copied().unwrap_or(0))
-}
-
-/// Every count noted on this thread, to carry to another.
-#[cfg(test)]
-pub(crate) fn notes() -> BTreeMap<&'static str, usize> {
-    TEST_COUNTS.with(|counts| counts.borrow().clone())
-}
-
-/// Add counts noted on another thread to this thread's.
-#[cfg(test)]
-pub(crate) fn add_notes(notes: &BTreeMap<&'static str, usize>) {
-    TEST_COUNTS.with(|counts| {
-        let mut counts = counts.borrow_mut();
-        for (&name, &count) in notes {
-            *counts.entry(name).or_default() += count;
-        }
-    });
-}
+pub(crate) use dashboard_base::prepared::prepass::{add_notes, noted, notes};
 
 /// Run `run` with migrated families observed hour by hour, as before.
 #[cfg(test)]

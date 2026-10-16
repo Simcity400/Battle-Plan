@@ -469,6 +469,8 @@ pub trait RowCodec: Default + Clone + Eq {
     fn try_clone(&self) -> io::Result<Self>;
     /// Copy admitted rows without repeating their key/nested validation.
     fn try_clone_validated(&self) -> io::Result<Self>;
+    /// Bytes this row's strings, lists and nested values hold beyond the row.
+    fn heap_bytes(&self) -> usize;
     fn encoded_bound(&self) -> io::Result<usize>;
     fn snapshot_bytes(&self) -> io::Result<usize>;
     const KEY_BITS: u32;
@@ -626,6 +628,12 @@ macro_rules! define_tables {
             /// row size. Strings and lists a row owns on the heap are not counted.
             pub fn allocated_bytes(&self) -> usize {
                 match self { $(Self::$table(rows) => rows.capacity() * std::mem::size_of::<$row>()),+ }
+            }
+            /// Bytes the rows keep alive: their allocation and what each
+            /// row's strings, lists and nested values hold in turn.
+            pub fn heap_bytes(&self) -> usize {
+                match self { $(Self::$table(rows) => rows.capacity() * std::mem::size_of::<$row>()
+                    + rows.iter().map($crate::rows::RowCodec::heap_bytes).sum::<usize>()),+ }
             }
             pub fn truncate(&mut self, len: usize) {
                 match self { $(Self::$table(rows) => rows.truncate(len)),+ }
@@ -1930,6 +1938,9 @@ pub trait NativeValue: Sized {
         false
     }
     fn try_clone(&self) -> io::Result<Self>;
+    /// Bytes this field's own allocations hold: its string or list at its
+    /// capacity, and what a nested value holds in turn ([`Value::heap_bytes`]).
+    fn heap_bytes(&self) -> usize;
     fn field(&self) -> Field<'_>;
     fn from_field(field: Field<'_>) -> io::Result<Self>;
     fn not_recorded() -> io::Result<Self> {
@@ -1951,6 +1962,12 @@ pub trait NativeValue: Sized {
     }
 }
 impl<T: NativeValue> NativeValue for Recorded<T> {
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Self::Value(value) => NativeValue::heap_bytes(value),
+            Self::NotRecorded => 0,
+        }
+    }
     const HAS_STEPS: bool = T::HAS_STEPS;
     fn restored_tombstone(&self) -> bool {
         T::RESTORED && matches!(self, Self::NotRecorded)
@@ -2103,6 +2120,9 @@ fn apply_stepped_value<T: NativeValue>(
 macro_rules! native_scalar {
     ($ty:ty, $kind:ident) => {
         impl NativeValue for $ty {
+            fn heap_bytes(&self) -> usize {
+                0
+            }
             fn try_clone(&self) -> io::Result<Self> {
                 Ok(*self)
             }
@@ -2141,6 +2161,9 @@ native_scalar!(bool, Bool);
 native_scalar!(Option<i32>, OptionalI32);
 native_scalar!(Option<u64>, OptionalU64);
 impl NativeValue for Vec<u8> {
+    fn heap_bytes(&self) -> usize {
+        self.capacity()
+    }
     fn try_clone(&self) -> io::Result<Self> {
         allocation::copy_vec(self)
     }
@@ -2155,6 +2178,9 @@ impl NativeValue for Vec<u8> {
     }
 }
 impl NativeValue for String {
+    fn heap_bytes(&self) -> usize {
+        self.capacity()
+    }
     fn try_clone(&self) -> io::Result<Self> {
         allocation::string(self)
     }
@@ -2173,6 +2199,9 @@ impl NativeValue for String {
 macro_rules! native_vector {
     ($ty:ty, $kind:ident) => {
         impl NativeValue for Vec<$ty> {
+            fn heap_bytes(&self) -> usize {
+                self.capacity() * size_of::<$ty>()
+            }
             fn try_clone(&self) -> io::Result<Self> {
                 allocation::copy_vec(self)
             }
@@ -2224,6 +2253,9 @@ macro_rules! typed_codec {
         }
         impl RowCodec for $ty {
             const KEY_BITS: u32 = $bits;
+            fn heap_bytes(&self) -> usize {
+                0 $(+ NativeValue::heap_bytes(&self.$($field)+))+
+            }
             fn key(&self) -> u128 { self.key() }
             fn has_display_steps(&self) -> bool {
                 [$(native_has_steps(&self.$($field)+, $crate::value::display_step!($($step)?))),+].contains(&true)
@@ -2916,6 +2948,9 @@ macro_rules! opaque_value {
         impl NativeValue for $ty {
             const HAS_STEPS: bool = <$ty as Value>::HAS_STEPS;
             const RESTORED: bool = $restored;
+            fn heap_bytes(&self) -> usize {
+                <$ty as Value>::heap_bytes(self)
+            }
             fn visit_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
                 Value::visit_field_gaps(self, visit);
             }

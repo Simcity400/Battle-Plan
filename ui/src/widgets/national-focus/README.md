@@ -20,12 +20,16 @@ First-use history loading prepares the shared focus content while scanning the r
 
 ## Prepared queries
 
-Clients with prepared queries read the selected country's hour metadata and one
-completion page. They read dated artwork pages for that page and the active
-focus, using each completion's confirming hour or its undated order segment's
-first hour. A repeated token completed and active at different hours keeps both
-presentations. Current progress and its known daily gain remain exact decimal
-strings until formatting.
+Clients with prepared queries read the selected country's `focus-hour` (its order
+from `hour` through `lastHour`, and its progress and daily gain at the hour asked)
+and one completion page (`focus-order-page`). Titles and icons come from
+`focus-art`, evaluated at the hour asked: one request per distinct hour (a page of
+distinct tokens, in ascending order), each completion's confirming hour or its
+undated order's first hour, and the shown hour for the active focus. A repeated
+token completed and active at different hours keeps both presentations. Each
+reply's standing warnings and named failures join the widget's diagnostics; a
+failed request marks its tokens with its reason. Current progress and its known
+daily gain remain exact decimal strings until formatting.
 
 The completion list uses the legacy disclosure rows and shared measured ordered
 list, including independent expanded descriptions and the final unfinished row.
@@ -44,14 +48,14 @@ status while a block is preparing; an instant wait with unchanged status stops
 with a retryable error. Numeric order remains
 available when dated artwork refuses. Readiness polls only queued or preparing
 work, starts an idle source once, and stops on ready or terminal failures.
-Focus-hour replies wait for accepted coverage because confirming dates, order
-segments and daily gain require preceding observations. Native raw progress alone
-does not provide the ordered, dated presentation shown here.
+Focus-hour replies wait for the focus family's accepted coverage because
+confirming dates and order runs require preceding observations.
 
-Opened-row descriptions read prepared text-only pages at their confirming or
-undated order hour. Icon failures do not contaminate those text requests. An
-absent prepared detail section retains the existing dated oracle for opened rows. Clients without prepared queries use the historical
-product renderer, including its virtual list and keyboard interactions.
+Opened-row descriptions read `focus-art` in `text` mode at their confirming or
+undated order hour. Icon failures do not contaminate those text requests. A
+description `focus-art` did not return keeps the existing dated oracle for opened
+rows. Clients without prepared queries use the historical product renderer,
+including its virtual list and keyboard interactions.
 
 ## Settings
 
@@ -77,7 +81,7 @@ Country and campaign/follow/pin; Whole campaign is the default. There are no wid
 | File | Responsibility |
 |---|---|
 | [NationalFocusWidget.tsx](NationalFocusWidget.tsx) | Current card, completion rows and interactions. |
-| [PreparedFocusWidget.tsx](PreparedFocusWidget.tsx), [preparedFocusData.ts](preparedFocusData.ts) | Prepared hour/page requests, exact validation and bounded completion display; adjacent tests. |
+| [PreparedFocusWidget.tsx](PreparedFocusWidget.tsx), [preparedFocusData.ts](preparedFocusData.ts) | Prepared hour/page and focus art requests, exact validation and bounded completion display; adjacent tests. |
 | [focusData.ts](focusData.ts), [useFocusArtwork.ts](useFocusArtwork.ts) | Validation/local lookups and dated artwork requests; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [nationalFocus.css](nationalFocus.css) | Metadata, registration, layout and row motion; [nationalFocusMotion.test.ts](nationalFocusMotion.test.ts) checks the motion. |
 
@@ -85,15 +89,14 @@ The parity build registers prepared focus rows during loading and gathers every
 completion page only after the capture preparation handshake. It preserves exact
 ordinals, completion dates, progress integers and actual dated artwork evidence.
 Missing numeric pages fail preparation. Production continues to read one selected
-completion page. Independent static text is stored per observed token.
+completion page. Static text comes from the content per token.
 
 Accepted hour reads bypass readiness polling. Full-model preparation reuses the
 settled visible page, its independent static text and opened descriptions,
 fetching only unseen pages. Visible static descriptions remain available before
-an opened row's dated text arrives. Each static-text batch validates inputs and
-reads the store manifest once; the full parent model owns parity for its list.
-Different supplying hours that reference the same immutable presentation page
-share one read while retaining both dated artwork keys.
+an opened row's dated text arrives. Each static-text batch validates its inputs;
+the full parent model owns parity for its list. Completions confirmed at one hour
+share one art request while each keeps its dated artwork key.
 
 Focus parity uses one shown-hour model on both paths. The historical product
 includes static metadata for future focus tokens too; the comparison selects all
@@ -102,5 +105,5 @@ static Artwork field. Unreferenced future metadata cannot affect rendering, Jump
 progress or opened details. Ordered dated observations retain resolved titles,
 icons, duration, static descriptions, explicitly demanded descriptions, pending
 state and named refusals. Reading the baseline model calls its ordinary presentation
-getter and starts no additional content demand. Prepared parity reads independently
-stored static text in requested token pages and Text pages for an opened row.
+getter and starts no additional content demand. Prepared parity reads static text
+in requested token pages and `focus-art` text for an opened row.

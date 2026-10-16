@@ -685,13 +685,16 @@ fn observe(
         if let Some(provinces) = builder.values[1].get(&index) {
             values.values = provinces.values;
         }
+        // A gap breaks every line, a holderless one too: its first hour after
+        // the gap starts a run rather than stretching the one before over
+        // hours not recorded.
         let identity_continues = !slot.unknown_holder
+            && contiguous
             && slot.tag.is_none_or(|tag| {
-                contiguous
-                    && lineage
-                        .identities
-                        .get(&tag)
-                        .is_some_and(|identity| builder.identities.get(&tag) == Some(identity))
+                lineage
+                    .identities
+                    .get(&tag)
+                    .is_some_and(|identity| builder.identities.get(&tag) == Some(identity))
             });
         if deferred
             && builder.active.contains(&index)
@@ -871,6 +874,82 @@ fn build_reply(
         warnings: warnings.into_iter().chain(totals.warnings).collect(),
     };
     super::check_reply_budget(&reply)?;
+    Ok(reply)
+}
+
+/// One reached hour beyond accepted preparation. The observer's own step runs
+/// over that hour's frame alone, read directly from the recording, so each
+/// region series carries exactly the values preparation dates at the hour.
+/// Run extents and segment starts are the hour's own evidence. Series the
+/// frame does not reach are absent rather than zero, and the observed spans
+/// say which columns the frame proves; nothing is written to the store.
+pub(crate) fn sampled_reply(
+    source: &Source,
+    context: &LoadContext,
+    branch: u64,
+    hour: i32,
+    areas: Option<&ProvinceAreas>,
+    totals: super::territory::TerritoryReply,
+    cancelled: &AtomicBool,
+) -> io::Result<TerritoryBreakdownReply> {
+    // Missing content refuses exactly as the prepared catalogue's recorded reason does.
+    let regions = context
+        .content()
+        .and_then(|content| catalogue::catalogue(source, content))
+        .and_then(|cat| Regions::read(&cat))
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let frame = read_frame(source, branch, hour, cancelled)?;
+    sample_reply(
+        frame.as_deref(),
+        source.replay_ref().format,
+        &regions,
+        areas,
+        totals,
+    )
+}
+
+/// The territory tables at one hour, decoded directly; none inside a gap.
+fn read_frame(
+    source: &Source,
+    branch: u64,
+    hour: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Box<DecodedFrame>>> {
+    crate::prepared::query::progressive::frame_at(
+        source,
+        branch,
+        hour,
+        territory::TABLES,
+        cancelled,
+    )
+}
+
+/// The stateless regional step over one frame, or none at a gap.
+fn sample_reply(
+    frame: Option<&DecodedFrame>,
+    format: replay::format::FormatVersion,
+    regions: &Regions,
+    areas: Option<&ProvinceAreas>,
+    totals: super::territory::TerritoryReply,
+) -> io::Result<TerritoryBreakdownReply> {
+    let mut scan = Scan {
+        format,
+        ..Scan::default()
+    };
+    if let Some(frame) = frame {
+        observe(
+            &mut scan,
+            frame,
+            regions,
+            areas,
+            &mut Builder::default(),
+            None,
+        )?;
+    }
+    let mut reply = build_reply(&scan, regions, totals)?;
+    reply.series.sort_unstable_by(|a, b| {
+        (&a.tag, a.region, &a.missing).cmp(&(&b.tag, b.region, &b.missing))
+    });
     Ok(reply)
 }
 

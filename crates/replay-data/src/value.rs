@@ -44,6 +44,10 @@ pub trait Value: Sized {
         })
     }
     fn try_clone(&self) -> io::Result<Self>;
+    /// Bytes this value's own allocations hold: each collection it owns at
+    /// its capacity and element size, and what those elements hold in turn.
+    /// Its inline size is counted by whatever holds it.
+    fn heap_bytes(&self) -> usize;
     fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()>;
     fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
         allocation::reserve(output, Value::encoded_bytes(self)?)?;
@@ -75,6 +79,12 @@ pub trait Value: Sized {
 }
 
 impl<T: Value> Value for crate::rows::Recorded<T> {
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Self::Value(value) => Value::heap_bytes(value),
+            Self::NotRecorded => 0,
+        }
+    }
     fn recorded_bytes(&self) -> io::Result<usize> {
         match self {
             Self::Value(value) => Value::recorded_bytes(value),
@@ -168,6 +178,7 @@ fn check_count(count: usize, minimum_item_bytes: usize, remaining: usize) -> io:
 macro_rules! integer {
     ($($ty:ty),+ $(,)?) => {
         $(impl Value for $ty {
+            fn heap_bytes(&self) -> usize { 0 }
             const MINIMUM_ENCODED_BYTES: usize = size_of::<Self>();
 
             fn encoded_bytes(&self) -> io::Result<usize> { Ok(size_of::<Self>()) }
@@ -192,6 +203,9 @@ integer!(i8, u16, i16, u32, i32, u64);
 /// The only number a display step applies to: every stepped native value is a
 /// signed 64-bit word (fixed5 or Q15).
 impl Value for i64 {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     const MINIMUM_ENCODED_BYTES: usize = 8;
 
     fn encoded_bytes(&self) -> io::Result<usize> {
@@ -222,6 +236,9 @@ impl Value for i64 {
 }
 
 impl Value for u8 {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     const MINIMUM_ENCODED_BYTES: usize = 1;
 
     fn encoded_bytes(&self) -> io::Result<usize> {
@@ -256,6 +273,9 @@ impl Value for u8 {
 }
 
 impl Value for bool {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     const MINIMUM_ENCODED_BYTES: usize = 1;
 
     fn encoded_bytes(&self) -> io::Result<usize> {
@@ -278,6 +298,9 @@ impl Value for bool {
 }
 
 impl<T: Value> Value for Option<T> {
+    fn heap_bytes(&self) -> usize {
+        self.as_ref().map_or(0, Value::heap_bytes)
+    }
     fn recorded_bytes(&self) -> io::Result<usize> {
         allocation::add(1, self.as_ref().map_or(Ok(0), Value::recorded_bytes)?)
     }
@@ -337,6 +360,9 @@ impl<T: Value> Value for Option<T> {
 }
 
 impl<T: Value> Value for Vec<T> {
+    fn heap_bytes(&self) -> usize {
+        self.capacity() * size_of::<T>() + self.iter().map(Value::heap_bytes).sum::<usize>()
+    }
     fn recorded_bytes(&self) -> io::Result<usize> {
         self.iter().try_fold(4, |size, value| {
             allocation::add(size, Value::recorded_bytes(value)?)
@@ -413,6 +439,9 @@ impl<T: Value> Value for Vec<T> {
 }
 
 impl<T: Value, const N: usize> Value for [T; N] {
+    fn heap_bytes(&self) -> usize {
+        self.iter().map(Value::heap_bytes).sum()
+    }
     fn recorded_bytes(&self) -> io::Result<usize> {
         self.iter().try_fold(0, |size, value| {
             allocation::add(size, Value::recorded_bytes(value)?)
@@ -577,6 +606,10 @@ macro_rules! value_struct {
                     || <$appended_ty as $crate::value::Value>::HAS_STEPS,)*)?
             ]);
 
+            fn heap_bytes(&self) -> usize {
+                0 $(+ <$field_ty as $crate::value::Value>::heap_bytes(&self.$field))*
+                $($(+ <$appended_ty as $crate::value::Value>::heap_bytes(&self.$appended))*)?
+            }
             fn round_display(&mut self) {
                 $($crate::value::round_field(&mut self.$field, $crate::value::display_step!($($step)?));)*
                 $($($crate::value::round_field(&mut self.$appended, $crate::value::display_step!($($appended_step)?));)*)?

@@ -31,6 +31,9 @@ pub enum EventFeedSource {
 }
 
 impl Value for EventFeedSource {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     const MINIMUM_ENCODED_BYTES: usize = 1;
     fn encoded_bytes(&self) -> io::Result<usize> {
         Ok(1)
@@ -66,6 +69,9 @@ pub enum EventFeedCoverage {
 }
 
 impl Value for EventFeedCoverage {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     const MINIMUM_ENCODED_BYTES: usize = 1;
     fn encoded_bytes(&self) -> io::Result<usize> {
         Ok(1)
@@ -137,6 +143,7 @@ macro_rules! routes {
         }
 
         impl Value for EventFeedRoute {
+            fn heap_bytes(&self) -> usize { 0 }
             const MINIMUM_ENCODED_BYTES: usize = 1;
             fn encoded_bytes(&self) -> io::Result<usize> {
                 Ok(1)
@@ -452,6 +459,11 @@ impl EventFeedHistoryRow {
 }
 
 impl Value for EventFeedHistoryRow {
+    fn heap_bytes(&self) -> usize {
+        Value::heap_bytes(&self.counts)
+            + Value::heap_bytes(&self.failure)
+            + Value::heap_bytes(&self.events)
+    }
     const MINIMUM_ENCODED_BYTES: usize = 27;
     fn encoded_bytes(&self) -> io::Result<usize> {
         self.validate()?;

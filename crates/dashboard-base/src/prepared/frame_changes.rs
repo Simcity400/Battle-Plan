@@ -99,6 +99,23 @@ impl FrameChanges {
     }
 }
 
+/// The hour's changes from the hour before as a trigger evaluation's
+/// inputs read them ([`crate::triggers::inputs::Since`]): an unchanged
+/// table is the same view, a table changed by one delta changed exactly its
+/// rows, and any other table anything.
+impl crate::triggers::inputs::TableChanges for FrameChanges {
+    fn table(&self, table: TableId) -> crate::triggers::inputs::TableChange<'_> {
+        use crate::triggers::inputs::TableChange;
+        if !self.rows_changed[table.index()] {
+            return TableChange::Same;
+        }
+        match self.rows(table) {
+            Some((changed, deleted)) => TableChange::Rows(changed, deleted),
+            None => TableChange::Any,
+        }
+    }
+}
+
 struct Previous {
     tables: [ViewIdentity; TABLE_COUNT],
     branch: BranchId,

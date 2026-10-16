@@ -1,11 +1,17 @@
 //! Native, viewpoint-dependent war blobs with explicitly app-owned continuity.
 //! The game stores no group identity or participant join/leave dates.
+pub mod block;
 mod labels;
 mod naming;
 mod native;
 pub mod prepared;
+mod published;
+#[cfg(any(test, feature = "test-support"))]
+pub use published::POINT_INPUTS;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_fixtures;
+#[cfg(any(test, feature = "test-support"))]
+pub use walks::decoded_inputs as walks_decoded_inputs;
 #[cfg(test)]
 pub(crate) mod tests;
 mod walks;
@@ -287,7 +293,7 @@ impl Wars {
         Ok(reply)
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct RelationRun {
     first: String,
     second: String,
@@ -729,6 +735,54 @@ fn append_relations(war: &mut WarTimeline, hour: i32, relations: &[RelationRun])
                 last_hour: hour,
             });
         }
+    }
+}
+/// An open war as a resumable walk keeps it: what continuing the walk reads
+/// or extends (its last observation and loss run, and its open participant
+/// and relation runs, renumbered in their order) without its settled
+/// history. Continuing reads only the last observation and loss run, and the
+/// participant and relation runs its open maps point at, and appends new
+/// ones after them.
+fn resumable_war(war: &WarTimeline) -> WarTimeline {
+    let mut participants: Vec<_> = war
+        .open_participants
+        .iter()
+        .map(|(key, &index)| (index, key.clone()))
+        .collect();
+    participants.sort_unstable_by_key(|(index, _)| *index);
+    let mut relations: Vec<_> = war
+        .open_relations
+        .iter()
+        .map(|(key, &index)| (index, key.clone()))
+        .collect();
+    relations.sort_unstable_by_key(|(index, _)| *index);
+    WarTimeline {
+        id: war.id.clone(),
+        first_hour: war.first_hour,
+        last_hour: war.last_hour,
+        started_by: war.started_by,
+        ended_by: war.ended_by,
+        observations: war.observations.last().cloned().into_iter().collect(),
+        casualties: war.casualties.last().cloned().into_iter().collect(),
+        participants: participants
+            .iter()
+            .map(|(index, _)| war.participants[*index].clone())
+            .collect(),
+        capitulations: Vec::new(),
+        relations: relations
+            .iter()
+            .map(|(index, _)| war.relations[*index].clone())
+            .collect(),
+        open_participants: participants
+            .into_iter()
+            .enumerate()
+            .map(|(at, (_, key))| (key, at))
+            .collect(),
+        open_relations: relations
+            .into_iter()
+            .enumerate()
+            .map(|(at, (_, key))| (key, at))
+            .collect(),
     }
 }
 fn continue_wars(
@@ -1203,9 +1257,11 @@ impl Walk {
     }
     /// A copy that only continues this walk's groups for exact casualty reads.
     /// Later hours change only open wars, the last dated run of each kind and
-    /// the held inputs: wars no longer open keep their place and app ID
-    /// without their history, and no names, capitulations or warnings are
-    /// collected for a reply.
+    /// the held inputs: an open war keeps only what continuing it reads or
+    /// extends ([`resumable_war`]), wars no longer open keep their place and
+    /// app ID without their history, and no names, capitulations or warnings
+    /// are collected for a reply. Its size follows the open wars, not the
+    /// hours they lasted.
     fn resumable(&self) -> Self {
         let open: HashSet<usize> = self.open.iter().map(|(id, _)| *id).collect();
         let wars = self
@@ -1215,7 +1271,7 @@ impl Walk {
             .enumerate()
             .map(|(id, war)| {
                 if open.contains(&id) {
-                    war.clone()
+                    resumable_war(war)
                 } else {
                     WarTimeline {
                         id: war.id.clone(),

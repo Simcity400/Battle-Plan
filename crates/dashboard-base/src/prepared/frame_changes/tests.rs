@@ -302,3 +302,44 @@ fn frame_changes_rows_refuse_tables_an_observer_marks_changed_itself() {
     changes.rows_changed[TableId::Countries.index()] = true;
     assert_eq!(changes.rows(TableId::Countries), None);
 }
+
+#[test]
+fn frame_changes_name_each_tables_changes_for_trigger_inputs() {
+    use crate::triggers::inputs::{TableChange, TableChanges};
+    let format = FormatVersion::CURRENT;
+    let mut tracker = FrameChangeTracker::new();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    let mut hour = |hour, power, tracker: &mut FrameChangeTracker, updates: bool| {
+        let wire = encoder.encode(source(1, hour, Some(power)), false).unwrap();
+        let decoded = decoder.advance(&wire).unwrap().clone();
+        if updates {
+            tracker.observe_updates(&decoded, Arc::new(wire), format)
+        } else {
+            tracker.observe(&decoded, format)
+        }
+    };
+    // The first hour may differ anywhere.
+    let first = hour(10, 7, &mut tracker, true);
+    assert!(matches!(first.table(TableId::Countries), TableChange::Any));
+    // A table changed by one delta changed its rows; one carried, none.
+    let changed = hour(11, 8, &mut tracker, true);
+    assert!(matches!(
+        changed.table(TableId::Countries),
+        TableChange::Rows(rows, deleted) if rows.len() == 1 && deleted.is_empty()
+    ));
+    assert!(matches!(
+        changed.table(TableId::CountryLinks),
+        TableChange::Same
+    ));
+    // Without the hour's updates, a changed table may differ anywhere.
+    let unknown = hour(12, 9, &mut tracker, false);
+    assert!(matches!(
+        unknown.table(TableId::Countries),
+        TableChange::Any
+    ));
+    assert!(matches!(
+        unknown.table(TableId::CountryLinks),
+        TableChange::Same
+    ));
+}

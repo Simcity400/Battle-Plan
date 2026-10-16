@@ -4,6 +4,7 @@
 
 use dashboard::{
     Source, SourceKey, prepared,
+    prepared_focus::{FocusArt, FocusArtMode, FocusArtParams},
     products::{
         ContentOptions, LoadContext, Product,
         country_measure::{CountryMeasure, FixedRun, Measure, MeasureParams, MeasureSeries},
@@ -710,35 +711,16 @@ fn focus(
             if context.content.is_none() {
                 continue;
             }
-            for (product, descriptor, descriptions) in [
-                ("focus-presentation-page", &actual["presentation"], false),
-                ("focus-details-page", &actual["details"], true),
-            ] {
-                if descriptor.is_null() {
-                    evidence.error(
-                        &format!("{label}/{product}"),
-                        &invalid("Requested prepared page descriptor is absent"),
-                    )?;
-                    continue;
-                }
-                let values = focus_pages(
-                    source,
-                    context,
-                    evidence,
-                    branch,
-                    tag,
-                    hour,
-                    product,
-                    descriptor,
-                    repetitions,
-                )?;
-                let mut expected = Vec::new();
-                let mut dates: BTreeMap<i32, Vec<String>> = BTreeMap::new();
+            // Each date's art from `focus-art`, as the focus-artwork product
+            // presents the same tokens at that hour.
+            for (mode, descriptions) in [(FocusArtMode::Display, false), (FocusArtMode::Text, true)]
+            {
+                let mut dates: BTreeMap<i32, BTreeSet<String>> = BTreeMap::new();
                 for entry in &dated.order.completed {
                     dates
                         .entry(entry.completed_by_hour.unwrap_or(dated.first_hour))
                         .or_default()
-                        .push(entry.token.clone());
+                        .insert(entry.token.clone());
                 }
                 if let Some(active) = dated
                     .order
@@ -746,57 +728,49 @@ fn focus(
                     .as_ref()
                     .or(dated.order.continuous.as_ref())
                 {
-                    dates.entry(hour).or_default().push(active.clone());
+                    dates.entry(hour).or_default().insert(active.clone());
                 }
-                let mut by_date = BTreeMap::new();
                 for (at, tokens) in dates {
-                    let params = FocusArtworkParams {
-                        branch_id: branch.clone(),
-                        hour: at,
-                        tag: tag.clone(),
-                        tokens,
-                        text_only: descriptions.then_some(true),
-                        include_descriptions: Some(descriptions),
-                        icons_only: None,
-                    };
-                    let reply =
-                        FocusArtwork::load(source, &params, context, &AtomicBool::new(false))?;
-                    by_date.insert(
-                        at,
-                        reply
-                            .items
-                            .into_iter()
-                            .map(|item| {
-                                (
-                                    item.artwork.token.clone(),
-                                    serde_json::to_value(item).unwrap(),
-                                )
-                            })
-                            .collect::<BTreeMap<_, _>>(),
-                    );
+                    let tokens: Vec<String> = tokens.into_iter().collect();
+                    for (page, tokens) in tokens.chunks(128).enumerate() {
+                        let art = FocusArt::load(
+                            source,
+                            &FocusArtParams {
+                                branch_id: branch.clone(),
+                                tag: tag.clone(),
+                                hour: at,
+                                tokens: tokens.to_vec(),
+                                mode,
+                            },
+                            context,
+                            &AtomicBool::new(false),
+                        )?;
+                        let expected = FocusArtwork::load(
+                            source,
+                            &FocusArtworkParams {
+                                branch_id: branch.clone(),
+                                hour: at,
+                                tag: tag.clone(),
+                                tokens: tokens.to_vec(),
+                                text_only: descriptions.then_some(true),
+                                include_descriptions: Some(descriptions),
+                                icons_only: None,
+                            },
+                            context,
+                            &AtomicBool::new(false),
+                        )?;
+                        evidence.compare(
+                            &format!("{label}/focus-art/{mode:?}/{at}/{page}"),
+                            serde_json::to_value(&expected.items)?,
+                            serde_json::to_value(&art.art)?,
+                        )?;
+                        evidence.compare(
+                            &format!("{label}/focus-art/{mode:?}/{at}/{page}/failures"),
+                            json!([]),
+                            serde_json::to_value(&art.failures)?,
+                        )?;
+                    }
                 }
-                for entry in &dated.order.completed {
-                    let at = entry.completed_by_hour.unwrap_or(dated.first_hour);
-                    expected.push(
-                        by_date[&at]
-                            .get(&entry.token)
-                            .cloned()
-                            .unwrap_or(Value::Null),
-                    );
-                }
-                if let Some(active) = dated
-                    .order
-                    .current
-                    .as_ref()
-                    .or(dated.order.continuous.as_ref())
-                {
-                    expected.push(by_date[&hour].get(active).cloned().unwrap_or(Value::Null));
-                }
-                evidence.compare(
-                    &format!("{label}/{product}"),
-                    json!(expected),
-                    json!(values),
-                )?;
             }
         }
     }

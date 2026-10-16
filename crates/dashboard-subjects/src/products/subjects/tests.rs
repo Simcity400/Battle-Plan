@@ -902,3 +902,29 @@ fn subject_holder_change_reuses_unchanged_native_relation_level_and_link_tables(
     );
     assert_eq!(scan.change_warnings(), oracle.change_warnings());
 }
+
+/// A span of unchanged hours adds each diagnostic rate as that many hourly
+/// additions do: the same sum, and an overflow exactly where one addition at
+/// a time overflows (a panic where overflow is checked, a wrap otherwise).
+#[test]
+fn unchanged_spans_add_diagnostic_rates_as_hourly_additions_do() {
+    for (value, rate, hours) in [
+        (0, 0, 5),
+        (7, 3, 1),
+        (7, 3, 1_000),
+        (u32::MAX - 10, 2, 5),
+        (u32::MAX - 10, 2, 6),
+        (u32::MAX, 0, 1_000_000),
+        (1, u32::MAX, 2),
+    ] {
+        let hourly = std::panic::catch_unwind(|| (0..hours).fold(value, |value, _| value + rate));
+        let spanned = std::panic::catch_unwind(|| super::repeated(value, rate, hours));
+        match (hourly, spanned) {
+            (Ok(hourly), Ok(spanned)) => {
+                assert_eq!(spanned, hourly, "{value} + {hours} x {rate}");
+            }
+            (Err(_), Err(_)) => {}
+            _ => panic!("{value} + {hours} x {rate}: only one way overflowed"),
+        }
+    }
+}

@@ -76,13 +76,9 @@ const FAMILIES: [&str; 7] = [
     country_nukes::prepared::INCREASES,
     completion_stream::FAMILY,
 ];
-type FocusMetadata = (
-    bool,
-    BTreeMap<String, usize>,
-    BTreeSet<String>,
-    Option<String>,
-    LateIndex,
-);
+/// Whether any country's focus was observed, the completions and countries
+/// without an event date by reason, and the late references.
+type FocusMetadata = (bool, BTreeMap<String, u64>, LateIndex);
 struct Metadata {
     groups: country_groups::changes::Metadata,
     subjects: (bool, Vec<String>, LateIndex),
@@ -99,7 +95,7 @@ impl Metadata {
             0 => Some(&self.groups.late),
             1 => Some(&self.subjects.2),
             2 => Some(&self.ideas.late),
-            3 => Some(&self.focus.4),
+            3 => Some(&self.focus.2),
             4 => Some(&self.facts.2),
             6 => Some(&self.projects.late),
             _ => None,
@@ -169,7 +165,7 @@ enum SourceRow {
     Group(country_groups::changes::Change),
     Subject(subjects::SubjectStart),
     Idea(idea_history::Addition),
-    Focus(crate::prepared_focus::Completion),
+    Focus(national_focus::FocusCompletion),
     Fact(Box<Fact>),
     Increase(country_nukes::prepared::StockpileIncrease),
     Project(completion_stream::Change),
@@ -209,9 +205,9 @@ fn decode(source: usize, row: DatedRow) -> io::Result<(Position, SourceRow)> {
             None,
         ),
         SourceRow::Focus(change) => (
-            change.event.hour,
+            change.hour,
             EventFeedKind::FocusCompleted,
-            vec![change.event.tag.clone()],
+            vec![change.tag.clone()],
             None,
         ),
         SourceRow::Fact(fact) => (
@@ -541,6 +537,7 @@ fn project(
     politics: Option<&politics_content::PoliticsContent>,
     catalogue: Option<&Catalogue>,
     nuclear_art: &Result<Option<String>, String>,
+    focus_art: Option<&artwork::ResolvedArt>,
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
     let from = builder.feed.rows.len();
@@ -572,11 +569,8 @@ fn project(
         SourceRow::Focus(change) => {
             focus_row(
                 builder,
-                &change.event,
-                change
-                    .presentation
-                    .as_ref()
-                    .map(|presented| (&presented.artwork, presented.reason.as_ref())),
+                &change,
+                focus_art.map(|(artwork, reason)| (artwork, reason.as_ref())),
             )?;
         }
         SourceRow::Increase(change) => {
@@ -837,11 +831,47 @@ pub(crate) fn query(
     } else {
         Ok(None)
     };
+    // Each completion's art at its own hour, evaluated now: preparation
+    // keeps completions as plain events.
+    let completions: Vec<(i32, &str, &str)> = rows
+        .values()
+        .filter_map(|row| match row {
+            SourceRow::Focus(change) => {
+                Some((change.hour, change.tag.as_str(), change.token.as_str()))
+            }
+            _ => None,
+        })
+        .collect();
+    let focus_art: Vec<Option<artwork::ResolvedArt>> = match context.content() {
+        Ok(content) => match crate::prepared_focus::art::event_art(
+            source,
+            content,
+            branch,
+            &completions,
+            cancelled,
+        )? {
+            Ok((art, warnings)) => {
+                builder.feed.warnings.extend(warnings);
+                art.into_iter().map(Some).collect()
+            }
+            Err(reason) => {
+                builder.unavailable("focusPresentation", "Focus presentation", reason, Some(1));
+                vec![None; completions.len()]
+            }
+        },
+        Err(_) => vec![None; completions.len()],
+    };
+    let mut focus_art = focus_art.into_iter();
     for (position, row) in rows {
         check_cancel(cancelled)?;
         if position.kind == EventFeedKind::Peace {
             builder.war_ends = peace[&position.native].clone();
         }
+        let art = if matches!(row, SourceRow::Focus(_)) {
+            focus_art.next().flatten()
+        } else {
+            None
+        };
         project(
             &mut builder,
             &position,
@@ -850,6 +880,7 @@ pub(crate) fn query(
             politics.as_deref(),
             catalogue.as_deref(),
             &nuclear_art,
+            art.as_ref(),
             cancelled,
         )?;
     }
@@ -908,10 +939,6 @@ fn diagnostics(builder: &mut Builder, metadata: &Metadata, live: i32) -> io::Res
         .feed
         .warnings
         .extend(metadata.subjects.1.iter().cloned());
-    builder
-        .feed
-        .warnings
-        .extend(metadata.focus.2.iter().cloned());
     builder
         .feed
         .warnings
@@ -1074,9 +1101,6 @@ fn diagnostics(builder: &mut Builder, metadata: &Metadata, live: i32) -> io::Res
             "Focus and CompletedFocuses were not recorded complete with resolved countries.",
             None,
         );
-    }
-    if let Some(reason) = &metadata.focus.3 {
-        builder.unavailable("focusPresentation", "Focus presentation", reason, Some(1));
     }
     if metadata.ideas.gap_additions > 0 {
         builder.unavailable("ideaAdditionAfterGap", "Law and advisor changes", "Changed holdings after an unrecorded stretch cannot establish whether a law changed or an advisor was hired.", Some(counted(metadata.ideas.gap_additions)?));

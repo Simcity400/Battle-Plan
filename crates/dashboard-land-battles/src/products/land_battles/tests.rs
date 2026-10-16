@@ -7,6 +7,7 @@ use replay::{
     },
 };
 
+mod newest;
 mod speed;
 
 fn frame(hour: i32, countries: u32, combats: u32) -> DecodedFrame {

@@ -122,3 +122,42 @@ pub fn extract_alone(
     )?;
     extract.finish()
 }
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static COUNTS: std::cell::RefCell<std::collections::BTreeMap<&'static str, usize>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// Count `name` on this thread: a fallback or hourly block of a family's
+/// fold, or another step a family's tests count. The dashboard's pre-pass
+/// carries the counts to the thread that asks for them.
+pub fn note(name: &'static str) {
+    #[cfg(any(test, feature = "test-support"))]
+    COUNTS.with(|counts| *counts.borrow_mut().entry(name).or_default() += 1);
+    #[cfg(not(any(test, feature = "test-support")))]
+    let _ = name;
+}
+
+/// How often `name` was noted on this thread.
+#[cfg(any(test, feature = "test-support"))]
+pub fn noted(name: &str) -> usize {
+    COUNTS.with(|counts| counts.borrow().get(name).copied().unwrap_or(0))
+}
+
+/// Every count noted on this thread, to carry to another.
+#[cfg(any(test, feature = "test-support"))]
+pub fn notes() -> std::collections::BTreeMap<&'static str, usize> {
+    COUNTS.with(|counts| counts.borrow().clone())
+}
+
+/// Add counts noted on another thread to this thread's.
+#[cfg(any(test, feature = "test-support"))]
+pub fn add_notes(notes: &std::collections::BTreeMap<&'static str, usize>) {
+    COUNTS.with(|counts| {
+        let mut counts = counts.borrow_mut();
+        for (&name, &count) in notes {
+            *counts.entry(name).or_default() += count;
+        }
+    });
+}

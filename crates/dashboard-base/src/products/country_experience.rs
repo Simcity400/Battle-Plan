@@ -674,6 +674,159 @@ impl Scan {
     }
 }
 
+impl Scan {
+    /// Hours `first..=last` that follow the last stepped hour, at which none
+    /// of the scan's tables changed (country keys, links, banked experience
+    /// and hourly gains, whole rows) and banked experience was not read: what
+    /// [`Self::step`] does at each, with no output. Every country whose last
+    /// gain interval was complete gains it again each hour, and one that no
+    /// longer holds banked experience or an open read leaves the output, at
+    /// `first` ([`Self::removed`]). Each later hour repeats that step with
+    /// nothing changing, so the span ends in constant time per gaining
+    /// country. False when `first` does not follow the last stepped hour.
+    pub fn advance_quiet(&mut self, first: i32, last: i32) -> bool {
+        if self.hour.and_then(|hour| hour.checked_add(1)) != Some(first) || last < first {
+            return false;
+        }
+        // The step at `first`: nothing changed, so the native join keeps
+        // every operand, marks nothing dirty and removes no holder. The scan
+        // ends the span at `last`.
+        self.hour = Some(last);
+        self.removed.clear();
+        self.native.removed.clear();
+        self.native.roster_changed = false;
+        let gaining: BTreeSet<(u32, u32)> = self
+            .native
+            .clock
+            .iter()
+            .flat_map(|slot| self.native.slots.get(slot).into_iter().flatten().copied())
+            .collect();
+        let Self {
+            seen,
+            native,
+            active,
+            present,
+            removed,
+            ..
+        } = self;
+        for &identity in &gaining {
+            let tag = &native.identities[&identity];
+            let output = (tag.clone(), identity);
+            let state = seen.entry(identity).or_default();
+            if present.contains(&identity) {
+                state.track.advance(first - 1);
+            }
+            let mut continues = state.track.step(Some(identity), first);
+            if !continues {
+                state.native_instance = None;
+            }
+            let observed = native
+                .gains
+                .as_ref()
+                .and_then(|rows| rows.get(&identity.0))
+                .and_then(Option::as_ref);
+            if let Some(row) = observed {
+                continues &= state
+                    .native_instance
+                    .is_none_or(|instance| instance == row.instance);
+                state.native_instance = Some(row.instance);
+            }
+            if !continues {
+                state.gains.clear();
+            }
+            match observed.filter(|row| row.complete == 1) {
+                Some(gained) => {
+                    #[cfg(test)]
+                    {
+                        native.clock_ticks += 1;
+                    }
+                    if state.gains.back().is_some_and(|(previous, instance, _)| {
+                        previous.checked_add(1) != Some(first) || *instance != gained.instance
+                    }) {
+                        state.gains.clear();
+                    }
+                    while state.gains.front().is_some_and(|(at, _, _)| {
+                        i64::from(first) - i64::from(*at) >= i64::from(DAY_HOURS)
+                    }) {
+                        state.gains.pop_front();
+                    }
+                    state.gains.push_back((
+                        first,
+                        gained.instance,
+                        [gained.army_raw, gained.navy_raw, gained.air_raw],
+                    ));
+                }
+                None => state.gains.clear(),
+            }
+            state.open &= continues;
+            if !state.open {
+                state.recent.clear();
+            }
+            let banked = native
+                .banked
+                .as_ref()
+                .and_then(|rows| rows.get(&identity.0))
+                .and_then(Option::as_ref);
+            if banked.is_none() {
+                state.open = false;
+                if active.remove(&output) {
+                    removed.push(output);
+                }
+                continue;
+            }
+            // No read: a held read carries without publishing, as nothing it
+            // reads changed.
+            if state.open && state.held.is_some() {
+                active.insert(output);
+            } else if active.remove(&output) {
+                removed.push(output);
+            }
+        }
+        if last == first {
+            return true;
+        }
+        // Every later hour: each gaining country continues, gains its last
+        // complete interval again and keeps its output; only the last day of
+        // gains is kept.
+        let from = first
+            .saturating_add(1)
+            .max(last.saturating_sub(DAY_HOURS - 1));
+        for &identity in &gaining {
+            let Some(gained) = native
+                .gains
+                .as_ref()
+                .and_then(|rows| rows.get(&identity.0))
+                .and_then(Option::as_ref)
+                .filter(|row| row.complete == 1)
+            else {
+                continue;
+            };
+            let state = seen.entry(identity).or_default();
+            state.track.advance(last - 1);
+            state.track.step(Some(identity), last);
+            #[cfg(test)]
+            {
+                native.clock_ticks += usize::try_from(last - first).unwrap_or(usize::MAX);
+            }
+            for hour in from..=last {
+                state.gains.push_back((
+                    hour,
+                    gained.instance,
+                    [gained.army_raw, gained.navy_raw, gained.air_raw],
+                ));
+            }
+            while state
+                .gains
+                .front()
+                .is_some_and(|(at, _, _)| i64::from(last) - i64::from(*at) >= i64::from(DAY_HOURS))
+            {
+                state.gains.pop_front();
+            }
+        }
+        true
+    }
+}
+
 fn publish(
     published: &mut BTreeMap<String, ((u32, u32), RawRead)>,
     tag: &str,

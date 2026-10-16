@@ -3132,7 +3132,7 @@ fn claimed_by_on_a_warmed_world_records_the_claims_it_read() {
     let scopes = || Scopes::of(Scope::State(64));
     // The first evaluation builds the world's claims; the second reuses them.
     assert_eq!(world.evaluate(&body, scopes()), Eval::True);
-    let (eval, inputs) = capture(&before, || world.evaluate(&body, scopes()));
+    let (eval, mut inputs) = capture(&before, || world.evaluate(&body, scopes()));
     assert_eq!(eval, Eval::True);
     let later = World::read(&after, ContentFacts::content_only(&dlcs, &names, &aliases));
     let reread = |world: &World<'_>, key: &Key| match key {
@@ -3173,7 +3173,7 @@ fn invasion_preparation_on_a_warmed_world_records_its_table() {
     let world = World::read(&before, ContentFacts::content_only(&dlcs, &names, &aliases));
     // The first read builds the index; the second reuses it.
     let _ = world.invasion_preparation((7, 1));
-    let (_, inputs) = capture(&before, || world.invasion_preparation((7, 1)));
+    let (_, mut inputs) = capture(&before, || world.invasion_preparation((7, 1)));
     assert!(inputs.confirm(&before, |_| None));
     assert!(!inputs.confirm(&after, |_| None));
 }

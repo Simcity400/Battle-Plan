@@ -123,6 +123,9 @@ impl FuelDemandHour {
 }
 
 impl Value for FuelDemandHour {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     const MINIMUM_ENCODED_BYTES: usize = 1;
     fn encoded_bytes(&self) -> io::Result<usize> {
         Ok(match (crate::rows::historical_stamp(), self) {
@@ -247,6 +250,15 @@ impl FuelDemandPart {
 }
 
 impl Value for FuelDemandPart {
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Self::Division(value) | Self::TaskForce(value) => Value::heap_bytes(value),
+            Self::Group(value) => Value::heap_bytes(value),
+            Self::Fleet(value) => Value::heap_bytes(value),
+            Self::Site(value) => Value::heap_bytes(value),
+            Self::Context(value) => Value::heap_bytes(value),
+        }
+    }
     const MINIMUM_ENCODED_BYTES: usize = 1;
     fn encoded_bytes(&self) -> io::Result<usize> {
         engine::allocation::add(

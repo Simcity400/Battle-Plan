@@ -219,8 +219,17 @@ fn parallel(
     };
     let mut done = std::thread::scope(|scope| {
         let (worker, injected) = (&worker, &injected);
+        // Helpers skip and keep the families the caller's registry does.
+        #[cfg(test)]
+        let registry = super::independent::test_registry();
         let helpers: Vec<_> = (0..helpers)
-            .map(|_| scope.spawn(move || with_injected(injected, worker)))
+            .map(|_| {
+                scope.spawn(move || {
+                    #[cfg(test)]
+                    registry.install();
+                    with_injected(injected, worker)
+                })
+            })
             .collect();
         let mut done = worker();
         for helper in helpers {

@@ -1246,8 +1246,8 @@ fn idea_rows<'a>(
     Ok(())
 }
 
-/// One selective forward decode per block supplies both lean completion
-/// observations and their artwork. No event hour performs a replay seek.
+/// The feed's focus completions as the focus family folds them hour by hour
+/// over the branch, each with its art evaluated on its own hour's frame.
 #[cfg(test)]
 fn focus_completion_rows(
     builder: &mut Builder,
@@ -1258,7 +1258,6 @@ fn focus_completion_rows(
 ) -> io::Result<()> {
     use replay::frame::FrameDecoder;
     let replay = source.replay_ref();
-    let mut focus = national_focus::FocusCompletionProjection::default();
     let mut focus_art = None;
     if let Ok(content) = context.content()
         && let Err(reason) = artwork::ensure(&mut focus_art, source, content, artwork::Kind::Focus)
@@ -1272,25 +1271,22 @@ fn focus_completion_rows(
     }
     let mut needed = BTreeSet::new();
     needed.extend(national_focus::FOCUS_COMPLETION_TABLES.iter().copied());
-    if focus_art
-        .as_ref()
-        .is_some_and(|art| art.focus_text_needs_frame())
-    {
-        needed.extend(crate::scripted_text::TABLES.iter().copied());
-        needed.insert(TableId::Clock);
-    }
+    needed.extend(crate::scripted_text::TABLES.iter().copied());
+    needed.insert(TableId::Clock);
     needed.insert(TableId::Campaign);
     let needed: Vec<_> = needed.into_iter().collect();
+    let mut focus = crate::prepared_focus::FocusIndex::default();
+    let mut frames = BTreeMap::new();
     crate::blocks::scan_blocks(
         replay,
         replay.index.iter().filter(|block| block.branch == branch),
         &needed,
         cancelled,
         |blocks| {
-            for (_, frames) in blocks {
+            for (_, read) in blocks {
                 check_cancel(cancelled)?;
-                let frames = match frames {
-                    Ok(frames) => frames,
+                let read = match read {
+                    Ok(read) => read,
                     Err(reason) => {
                         builder.sampled_unavailable(
                             "completionRead",
@@ -1302,7 +1298,7 @@ fn focus_completion_rows(
                     }
                 };
                 let mut decoder = FrameDecoder::for_tables(&needed);
-                for frame in frames {
+                for frame in read {
                     check_cancel(cancelled)?;
                     let decoded = match decoder.advance(&frame) {
                         Ok(decoded) => decoded,
@@ -1325,34 +1321,30 @@ fn focus_completion_rows(
                         );
                         break;
                     }
-                    let events = focus.observe(decoded);
-                    let requests: Vec<_> = events
-                        .iter()
-                        .map(|event| (event.token.as_str(), event.tag.as_str()))
-                        .collect();
-                    let presented = if requests.is_empty() {
-                        Vec::new()
-                    } else {
-                        focus_art
-                            .as_mut()
-                            .map(|art| art.focuses_at(&requests, decoded))
-                            .unwrap_or_default()
-                    };
-                    for (index, event) in events.iter().enumerate() {
-                        focus_row(
-                            builder,
-                            event,
-                            presented
-                                .get(index)
-                                .map(|(art, reason)| (art, reason.as_ref())),
-                        )?;
-                    }
+                    focus.observe_frame(replay, decoded, cancelled)?;
+                    frames.insert(decoded.hour, decoded.clone());
                 }
             }
             Ok(())
         },
     )?;
-    if !focus.observed {
+    focus.fold_held(cancelled)?;
+    for event in focus.seen.clone() {
+        let art = focus_art.as_mut().and_then(|art| {
+            art.focuses_at(
+                &[(event.token.as_str(), event.tag.as_str())],
+                &frames[&event.hour],
+            )
+            .pop()
+        });
+        focus_row(
+            builder,
+            &event,
+            art.as_ref().map(|(art, reason)| (art, reason.as_ref())),
+        )?;
+    }
+    let (observed, unavailable) = focus.completion_metadata();
+    if !observed {
         builder.unavailable(
             "focusCompleted",
             "Focus completions",
@@ -1360,13 +1352,13 @@ fn focus_completion_rows(
             None,
         );
     }
-    for (reason, count) in focus.unavailable {
+    for (reason, count) in unavailable {
         builder.unavailable(
             "focusCompleted",
             "Focus completions",
-            reason,
+            reason.clone(),
             Some(
-                u32::try_from(count)
+                u32::try_from(*count)
                     .map_err(|_| io::Error::other("Focus refusal count exceeds u32"))?,
             ),
         );

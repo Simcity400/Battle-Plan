@@ -204,6 +204,35 @@ pub enum Query {
     Roster,
 }
 
+impl Query {
+    /// What this query's answer is a function of besides the content
+    /// ([`crate::triggers::inputs::Key::dependence`]); None when undeclared.
+    pub(crate) fn dependence(&self) -> Option<Vec<crate::triggers::inputs::TableRead>> {
+        use crate::triggers::inputs::TableRead;
+        use replay::rows::TableId;
+        let link = |raw: u32| {
+            TableRead::fields(TableId::CountryLinks, &["canonical_slot"]).row(raw.into())
+        };
+        let tags = || TableRead::fields(TableId::Countries, &["canonical_slot", "tag"]);
+        Some(match self {
+            &Query::Slot(raw) => vec![link(raw)],
+            &Query::RawSlot(raw) => {
+                if raw == 0 {
+                    Vec::new()
+                } else {
+                    vec![link(raw)]
+                }
+            }
+            &Query::PositiveCountry(raw) => vec![
+                link(raw),
+                TableRead::fields(TableId::Countries, &["canonical_slot"]),
+            ],
+            Query::Tag(_) | Query::Country(_) => vec![tags()],
+            _ => return None,
+        })
+    }
+}
+
 /// A parsed scope as a query argument, compared and hashed by its full
 /// `Debug` form.
 #[derive(Clone, Debug, PartialEq, Eq)]

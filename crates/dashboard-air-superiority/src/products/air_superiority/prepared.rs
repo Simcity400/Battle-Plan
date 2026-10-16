@@ -23,6 +23,52 @@ struct ChoiceRead {
     first_hour: i32,
     last_hour: i32,
 }
+/// The tables whose change chooses the day's sides again: any change of
+/// their rows (a new decoding of them) marks the day's choice for a new read.
+pub(super) const CHOICE_TABLES: [TableId; 6] = [
+    TableId::Factions,
+    TableId::FactionMembers,
+    TableId::WarRelations,
+    TableId::LexicalTokens,
+    TableId::Capitulation,
+    TableId::HumanControllers,
+];
+
+/// The countries' score identity an hour's scores are projected through:
+/// the score operands and each raw owner's tag.
+pub(super) type ScoreIdentity = (scan::ScoreOperands, HashMap<u32, String>);
+
+/// An hour's score projection made on a pre-pass worker, through the score
+/// identity that worker read ([`Prepared::observe_scored`]).
+pub(super) struct Scored {
+    pub identity: Arc<ScoreIdentity>,
+    pub projection: scan::CountryScores,
+    /// This projection, as the next projection's [`PairDiff::after`] names it.
+    pub mark: Arc<ProjectionMark>,
+    /// How its pairs differ from the worker's projection before it in the
+    /// same block, when there was one.
+    pub diff: Option<PairDiff>,
+}
+
+/// One worker projection, told apart from every other by its allocation.
+pub(super) struct ProjectionMark;
+
+/// A worker projection's pairs against the worker's projection before it
+/// (`after`): the pairs new or with other scores, in pair order, and the
+/// pairs gone, in pair order.
+pub(super) struct PairDiff {
+    pub after: Arc<ProjectionMark>,
+    pub changed: Vec<((String, u32), (i64, i64))>,
+    pub removed: Vec<(String, u32)>,
+}
+
+/// Time a measured fold spent in each part of the observation, with the
+/// times it took that part ([`Prepared::measure`]).
+#[derive(Default)]
+struct FoldParts {
+    parts: BTreeMap<&'static str, (std::time::Duration, u64)>,
+}
+
 #[derive(Default, Serialize, Deserialize)]
 pub struct Prepared {
     values: Accumulator,
@@ -49,7 +95,11 @@ pub struct Prepared {
     #[serde(skip)]
     country_keys: Option<dashboard_text::metadata::CountryKeys>,
     #[serde(skip)]
-    score_identity: Option<(scan::ScoreOperands, HashMap<u32, String>)>,
+    score_identity: Option<ScoreIdentity>,
+    /// A worker's score identity found equal to [`Self::score_identity`],
+    /// whose projections are this observer's own until the identity changes.
+    #[serde(skip)]
+    verified: Option<Arc<ScoreIdentity>>,
     #[serde(skip)]
     choice_indices: HashMap<String, usize>,
     #[serde(skip)]
@@ -60,9 +110,25 @@ pub struct Prepared {
     choice_ready: bool,
     #[serde(skip)]
     choice_index: Option<usize>,
+    /// Each region's wings and active keys once named, so a region's fields
+    /// are named (serialized and looked up) once, not every hour.
+    #[serde(skip)]
+    region_keys: HashMap<u32, [Option<u64>; 2]>,
+    /// The worker projection this observer applied last, while its pairs
+    /// are [`Self::current_keys`]: the projection a worker's next pair diff
+    /// must follow to be taken.
+    #[serde(skip)]
+    applied: Option<Arc<ProjectionMark>>,
+    #[serde(skip)]
+    parts: Option<Box<FoldParts>>,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
+    /// Name every field anew and walk every pair, taking no pair diff, as
+    /// observation did before held ids and diffs: the parity oracle.
+    #[cfg(test)]
+    #[serde(skip)]
+    plain: bool,
 }
 impl Prepared {
     fn key(&mut self, field: &Field) -> io::Result<u64> {
@@ -71,6 +137,93 @@ impl Prepared {
             u64::try_from(self.keys.len()).map_err(|_| invalid("Air series key count overflow"))?;
         Ok(*self.keys.entry(name).or_insert(next))
     }
+    /// [`Self::key`], held per region for its wings and active fields: the
+    /// same key, named once.
+    fn region_key(&mut self, field: &Field) -> io::Result<u64> {
+        let (region, slot) = match field {
+            Field::Wings(region) => (*region, 0),
+            Field::Active(region) => (*region, 1),
+            Field::Friendly(..) | Field::Enemy(..) => return self.key(field),
+        };
+        #[cfg(test)]
+        if self.plain {
+            return self.key(field);
+        }
+        if let Some(key) = self.region_keys.get(&region).and_then(|keys| keys[slot]) {
+            return Ok(key);
+        }
+        let key = self.key(field)?;
+        self.region_keys.entry(region).or_default()[slot] = Some(key);
+        Ok(key)
+    }
+    /// Measure the parts of each observation from now on ([`Self::take_parts`]).
+    pub fn measure(&mut self) {
+        self.parts.get_or_insert_with(Box::default);
+    }
+    /// The time each part took since last asked, by part name, with the
+    /// times it took it; none unless measured.
+    pub fn take_parts(&mut self) -> Vec<(&'static str, std::time::Duration, u64)> {
+        self.parts
+            .as_mut()
+            .map(|parts| std::mem::take(&mut parts.parts))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, (took, times))| (name, took, times))
+            .collect()
+    }
+    /// When a measured part starts.
+    pub(super) fn clock(&self) -> Option<std::time::Instant> {
+        self.parts.as_ref().map(|_| std::time::Instant::now())
+    }
+    /// Count the time since `started` to `part`.
+    pub(super) fn lap(&mut self, started: Option<std::time::Instant>, part: &'static str) {
+        if let (Some(parts), Some(started)) = (self.parts.as_mut(), started) {
+            let entry = parts.parts.entry(part).or_default();
+            entry.0 += started.elapsed();
+            entry.1 += 1;
+        }
+    }
+    /// One projected pair's scores at `hour` as the pair loop observes them,
+    /// on its held keys while it is current and on its named fields when it
+    /// is new; its keys.
+    fn observe_pair(
+        &mut self,
+        pair: &(String, u32),
+        (friendly, enemy): (i64, i64),
+        hour: i32,
+        continuous: bool,
+    ) -> io::Result<(u64, u64)> {
+        let held = self.current_keys.get(pair).copied();
+        let previous = held
+            .and_then(|(key, _)| self.values.state(key))
+            .and_then(|state| state.last);
+        self.choice_dirty |= previous.is_none_or(|run| (run.value > 0) != (friendly > 0));
+        let fresh = !continuous || held.is_none();
+        #[cfg(test)]
+        let held = held.filter(|_| !self.plain);
+        // A pair's friendly field is named before its enemy field, as each
+        // is named before it is observed: the same numbering.
+        let (friendly_key, enemy_key) = match held {
+            Some(keys) => keys,
+            None => (
+                self.key(&Field::Friendly(pair.0.clone(), pair.1))?,
+                self.key(&Field::Enemy(pair.0.clone(), pair.1))?,
+            ),
+        };
+        self.observe_key(friendly_key, hour, Some(i128::from(friendly)), fresh);
+        self.observe_key(enemy_key, hour, Some(i128::from(enemy)), fresh);
+        Ok((friendly_key, enemy_key))
+    }
+    /// A pair gone from the projection: both its values end.
+    fn end_pair(&mut self, (friendly, enemy): (u64, u64), hour: i32) {
+        self.choice_dirty = true;
+        self.values.observe(friendly, hour, None, false);
+        self.values.observe(enemy, hour, None, false);
+        #[cfg(test)]
+        {
+            self.work.emitted += 2;
+        }
+    }
     fn observe_value(
         &mut self,
         field: &Field,
@@ -78,7 +231,12 @@ impl Prepared {
         value: Option<i128>,
         force: bool,
     ) -> io::Result<u64> {
-        let key = self.key(field)?;
+        let key = self.region_key(field)?;
+        self.observe_key(key, hour, value, force);
+        Ok(key)
+    }
+    /// Observe `value` on `key` when forced or when it is not the held one.
+    fn observe_key(&mut self, key: u64, hour: i32, value: Option<i128>, force: bool) {
         if force
             || self
                 .values
@@ -93,7 +251,6 @@ impl Prepared {
                 self.work.emitted += 1;
             }
         }
-        Ok(key)
     }
     #[cfg(test)]
     pub fn observe(
@@ -113,14 +270,47 @@ impl Prepared {
         groups: &mut dashboard_base::products::country_groups::Scan,
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
+        self.observe_scored(frame, replay, groups, changes, None)
+    }
+    /// Whether a worker's score identity is this observer's: the same
+    /// operands and owners, so its projections are the ones this observer
+    /// would make.
+    fn accepts(&mut self, identity: &Arc<ScoreIdentity>) -> bool {
+        if self
+            .verified
+            .as_ref()
+            .is_some_and(|verified| Arc::ptr_eq(verified, identity))
+        {
+            return true;
+        }
+        let held = self.score_identity.as_ref() == Some(&**identity);
+        if held {
+            self.verified = Some(Arc::clone(identity));
+        }
+        held
+    }
+    /// [`Self::observe_changed`], with the hour's score projection made on a
+    /// pre-pass worker (`scored`), used when that worker's score identity is
+    /// this observer's; otherwise, or without one, the projection is made
+    /// here.
+    pub(super) fn observe_scored(
+        &mut self,
+        frame: &DecodedFrame,
+        replay: &Replay,
+        groups: &mut dashboard_base::products::country_groups::Scan,
+        changes: &dashboard_base::prepared::frame_changes::FrameChanges,
+        scored: Option<Scored>,
+    ) -> io::Result<()> {
         if self
             .previous_hour
             .is_some_and(|hour| hour.div_euclid(DAY_HOURS) != frame.hour.div_euclid(DAY_HOURS))
         {
+            let started = self.clock();
             if self.choice_dirty || !self.choice_ready {
                 groups.finish(replay, frame.branch);
             }
             self.publish_day(groups, false)?;
+            self.lap(started, "air_superiority.fold.day");
         }
         let continuous = self
             .previous_hour
@@ -141,6 +331,7 @@ impl Prepared {
             restoring || country_changed || changes.rows_changed[TableId::CountryLinks.index()];
         if identity_changed {
             self.score_identity = Some(scan::score_countries(frame)?);
+            self.verified = None;
             let countries = frame.complete::<tables::Countries>().unwrap_or(&[]);
             self.country_keys = Some(dashboard_text::metadata::CountryKeys::read(countries));
             #[cfg(test)]
@@ -169,25 +360,47 @@ impl Prepared {
         let mut new_regions = BTreeSet::new();
         let mut score_operands_changed = false;
         if score_changed {
-            let rows = dashboard_text::metadata::recorded_rows::<tables::RaidAirScores>(frame)?;
+            let accepted = scored.filter(|scored| self.accepts(&scored.identity));
+            let started = self.clock();
+            let (projection, mark, diff) = match accepted {
+                Some(scored) => (scored.projection, Some(scored.mark), scored.diff),
+                None => {
+                    let rows =
+                        dashboard_text::metadata::recorded_rows::<tables::RaidAirScores>(frame)?;
+                    #[cfg(test)]
+                    {
+                        self.work.row_visits += rows.len();
+                    }
+                    let (operands, owners) = self
+                        .score_identity
+                        .as_ref()
+                        .expect("score identity projection");
+                    let projection = scan::score_values(
+                        scores::ScoreView {
+                            rows,
+                            complete: frame.complete::<tables::RaidAirScores>().is_ok(),
+                            owners: None,
+                            active: None,
+                        },
+                        operands.clone(),
+                        owners,
+                    );
+                    self.lap(started, "air_superiority.fold.projection");
+                    (projection, None, None)
+                }
+            };
+            // A worker's pair diff is taken only after the projection it
+            // follows, applied the hour before: the held pairs are then that
+            // projection's, each holding its score as its last value.
+            let diff = diff.filter(|diff| {
+                continuous
+                    && self
+                        .applied
+                        .as_ref()
+                        .is_some_and(|applied| Arc::ptr_eq(applied, &diff.after))
+            });
             #[cfg(test)]
-            {
-                self.work.row_visits += rows.len();
-            }
-            let (operands, owners) = self
-                .score_identity
-                .as_ref()
-                .expect("score identity projection");
-            let projection = scan::score_values(
-                scores::ScoreView {
-                    rows,
-                    complete: frame.complete::<tables::RaidAirScores>().is_ok(),
-                    owners: None,
-                    active: None,
-                },
-                operands.clone(),
-                owners,
-            );
+            let diff = diff.filter(|_| !self.plain);
             self.available |= projection.operands.available;
             if self.operands.as_ref() != Some(&projection.operands) {
                 score_operands_changed = true;
@@ -198,45 +411,48 @@ impl Prepared {
                 }
                 self.operands = Some(projection.operands);
             }
-            let mut current = BTreeMap::new();
-            for ((tag, region), (friendly, enemy)) in projection.pairs {
-                let previous = self
-                    .current_keys
-                    .get(&(tag.clone(), region))
-                    .and_then(|(key, _)| self.values.state(*key))
-                    .and_then(|state| state.last);
-                self.choice_dirty |= previous.is_none_or(|run| (run.value > 0) != (friendly > 0));
-                let fresh = !continuous || !self.current_keys.contains_key(&(tag.clone(), region));
-                let friendly = self.observe_value(
-                    &Field::Friendly(tag.clone(), region),
-                    frame.hour,
-                    Some(i128::from(friendly)),
-                    fresh,
-                )?;
-                let enemy = self.observe_value(
-                    &Field::Enemy(tag.clone(), region),
-                    frame.hour,
-                    Some(i128::from(enemy)),
-                    fresh,
-                )?;
-                current.insert((tag, region), (friendly, enemy));
-            }
-            for (pair, &(friendly, enemy)) in &self.current_keys {
-                #[cfg(test)]
-                {
-                    self.work.history_visits += 1;
+            let started = self.clock();
+            if let Some(diff) = diff {
+                // An unchanged pair would observe its held score unforced,
+                // naming no field and dirtying no choice: only the changed
+                // pairs, then the gone ones, observe anything, in the order
+                // the whole walk observes them.
+                for (pair, scores) in diff.changed {
+                    let keys = self.observe_pair(&pair, scores, frame.hour, continuous)?;
+                    self.current_keys.insert(pair, keys);
                 }
-                if !current.contains_key(pair) {
-                    self.choice_dirty = true;
-                    self.values.observe(friendly, frame.hour, None, false);
-                    self.values.observe(enemy, frame.hour, None, false);
+                for pair in diff.removed {
                     #[cfg(test)]
                     {
-                        self.work.emitted += 2;
+                        self.work.history_visits += 1;
+                    }
+                    let keys = self
+                        .current_keys
+                        .remove(&pair)
+                        .ok_or_else(|| invalid("Air pair diff names a pair not held"))?;
+                    self.end_pair(keys, frame.hour);
+                }
+                self.lap(started, "air_superiority.fold.diffed");
+            } else {
+                let mut current = BTreeMap::new();
+                for (pair, scores) in projection.pairs {
+                    let keys = self.observe_pair(&pair, scores, frame.hour, continuous)?;
+                    current.insert(pair, keys);
+                }
+                let held = std::mem::replace(&mut self.current_keys, current);
+                for (pair, keys) in held {
+                    #[cfg(test)]
+                    {
+                        self.work.history_visits += 1;
+                    }
+                    if !self.current_keys.contains_key(&pair) {
+                        self.end_pair(keys, frame.hour);
                     }
                 }
+                self.lap(started, "air_superiority.fold.pairs");
             }
-            self.current_keys = current;
+            self.applied = mark;
+            let started = self.clock();
             let changed: BTreeSet<_> = self
                 .active_regions
                 .symmetric_difference(&projection.active)
@@ -257,7 +473,9 @@ impl Prepared {
                 )?;
             }
             self.active_regions = projection.active;
+            self.lap(started, "air_superiority.fold.regions");
         }
+        let started = self.clock();
         let previous_theatre_read = self.theatre_read;
         let auxiliary = self.auxiliary.read(
             changes.slot_read[TableId::AirTheatres.index()],
@@ -323,6 +541,8 @@ impl Prepared {
                 self.work.emitted += 1;
             }
         }
+        self.lap(started, "air_superiority.fold.auxiliary");
+        let started = self.clock();
         if wings_changed {
             for region in auxiliary.wings.keys() {
                 if self.regions.insert(*region) {
@@ -369,22 +589,57 @@ impl Prepared {
                 reopen,
             )?;
         }
+        self.lap(started, "air_superiority.fold.regions");
         // Positive/zero eligibility above can change the published sides; other
         // score magnitudes leave the recorded identity/name operands unchanged.
         self.choice_dirty |= score_operands_changed
             || identity_changed
             || !continuous
-            || [
-                TableId::Factions,
-                TableId::FactionMembers,
-                TableId::WarRelations,
-                TableId::LexicalTokens,
-                TableId::Capitulation,
-                TableId::HumanControllers,
-            ]
-            .iter()
-            .any(|table| changes.rows_changed[table.index()]);
+            || CHOICE_TABLES
+                .iter()
+                .any(|table| changes.rows_changed[table.index()]);
         self.previous_hour = Some(frame.hour);
+        Ok(())
+    }
+    /// Whether `hour` can take [`Self::quiet_hour`]: it follows the last hour
+    /// observed within the same day, after the scores' identity was read.
+    pub(super) fn quiet_follows(&self, hour: i32) -> bool {
+        self.score_identity.is_some()
+            && self.previous_hour.is_some_and(|previous| {
+                previous.checked_add(1) == Some(hour)
+                    && previous.div_euclid(DAY_HOURS) == hour.div_euclid(DAY_HOURS)
+            })
+    }
+    /// [`Self::observe_changed`] at an hour that [`Self::quiet_follows`] and
+    /// whose scores, country keys, links, wings' regions and theatre rosters
+    /// are the hour before's: the series reach the hour, the held theatres
+    /// are dated by the hour's read of them (`theatres_read`, their slot
+    /// read), and the day's choice is chosen again when a table the choice
+    /// reads was decoded again (`choices_changed`), as that observation would
+    /// find there. Rows decoded again with equal values change nothing else:
+    /// every value it would observe is the one it holds, and every key it
+    /// would name it named before.
+    pub(super) fn quiet_hour(
+        &mut self,
+        hour: i32,
+        theatres_read: bool,
+        choices_changed: bool,
+    ) -> io::Result<()> {
+        self.values.advance(hour)?;
+        self.events.through(hour);
+        self.hours.advance(hour)?;
+        let previous_theatre_read = self.theatre_read;
+        self.auxiliary
+            .date(theatres_read, hour, &mut self.theatre_read);
+        if previous_theatre_read != self.theatre_read {
+            self.events.event(2, hour, &self.theatre_read)?;
+            #[cfg(test)]
+            {
+                self.work.emitted += 1;
+            }
+        }
+        self.choice_dirty |= choices_changed;
+        self.previous_hour = Some(hour);
         Ok(())
     }
     fn current_projection(&mut self) -> io::Result<scan::CountryScores> {
@@ -764,6 +1019,25 @@ impl Prepared {
     }
 }
 
+/// The country groups the published values were chosen against, as complete
+/// as air superiority's coverage: its own read of them where it keeps one
+/// (prepared on its own, or kept by the hourly walk while the groups are
+/// prepared on their own), the published groups otherwise. Its own read makes
+/// the groups' calls on the groups' frames, so both hold the same history.
+fn read_groups(
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+) -> io::Result<dashboard_base::products::country_groups::Scan> {
+    let file = match store.read(key, &super::block::groups_section(branch), 0)? {
+        Some(file) => file,
+        None => store
+            .read(key, &format!("country-groups-{branch}"), 0)?
+            .ok_or_else(|| invalid("Prepared country groups are missing"))?,
+    };
+    dashboard_base::products::country_groups::Scan::read(io::BufReader::new(file))
+}
+
 pub fn query(
     source: &Source,
     params: serde_json::Value,
@@ -793,10 +1067,13 @@ pub fn query(
         check_reply_size(&reply)?;
         return serde_json::to_value(reply).map_err(Into::into);
     }
-    let Some(coverage) = dashboard_base::prepared::coverage::coverage(
+    // Air superiority's own coverage: the branch's, or its own while it is
+    // prepared on its own.
+    let Some(coverage) = dashboard_base::prepared::coverage::product_coverage(
         source,
         context.content.as_ref(),
         branch,
+        "air-superiority",
         cancelled,
     )?
     else {
@@ -809,10 +1086,7 @@ pub fn query(
     }
     let (store, key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
     let state = Prepared::read(&store, &key, None, branch)?;
-    let file = store
-        .read(&key, &format!("country-groups-{branch}"), 0)?
-        .ok_or_else(|| invalid("Prepared country groups are missing"))?;
-    let groups = dashboard_base::products::country_groups::Scan::read(io::BufReader::new(file))?;
+    let groups = read_groups(&store, &key, branch)?;
     let mut cache = state.catalogue(&groups);
     let naming_hour = params
         .last_hour
@@ -1527,6 +1801,151 @@ mod tests {
         eprintln!("air-superiority continuation bytes after 100 and 10000 hours: {sizes:?}");
         assert!(sizes[1] < sizes[0] + 4096);
     }
+    /// Held key ids and the workers' pair diffs publish, byte for byte, what
+    /// naming every field anew and walking every pair publishes: scores
+    /// changing every hour of an air war, a score's sign flipping, a pair
+    /// appearing, going and coming back, a pair unchanged for hours, a new
+    /// region, a wing moving, a gap, two day boundaries and the worker's
+    /// projections starting again at block boundaries.
+    #[test]
+    fn superiority_held_keys_and_pair_diffs_publish_what_plain_observation_does() {
+        use super::super::block::ScoreTracker;
+        use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+        use replay::rows::AirWingRow;
+        let score = |country, region, friendly, enemy| RaidAirScoreRow {
+            country,
+            region,
+            friendly,
+            enemy,
+            impact: Default::default(),
+        };
+        let frames: Vec<_> = (0..60)
+            .filter(|hour| *hour != 33)
+            .map(|hour| {
+                let mut frame = air(hour, 200_000 + i64::from(hour) * 1_000);
+                let germany = if hour % 7 == 3 {
+                    -500
+                } else {
+                    1_000 + i64::from(hour)
+                };
+                let mut scores = vec![
+                    score(44, 7000, 100_000, 200_000 + i64::from(hour) * 1_000),
+                    score(9001, 7000, germany, 100_000),
+                ];
+                if (10..20).contains(&hour) || (30..40).contains(&hour) {
+                    scores.push(score(55, 7999, 3_000 + i64::from(hour % 3), 0));
+                }
+                if hour >= 25 {
+                    scores.push(score(66, 7100, 4_000, 1_000));
+                }
+                *frame.tables[TableId::RaidAirScores.index()] =
+                    TableView::Complete(TableRows::RaidAirScores(scores));
+                if hour >= 5 {
+                    *frame.tables[TableId::AirWings.index()] =
+                        TableView::Complete(TableRows::AirWings(vec![AirWingRow {
+                            id: 1,
+                            owner: 44,
+                            mission_region: Some(if hour < 50 { 7000 } else { 7200 }),
+                            ..Default::default()
+                        }]));
+                }
+                frame
+            })
+            .collect();
+        let replay = recording(frames.clone());
+        let flag = AtomicBool::new(false);
+        let run = |plain: bool| -> (BTreeMap<String, Vec<Vec<u8>>>, Prepared) {
+            let fixture = Fixture::new();
+            let mut groups = dashboard_base::products::country_groups::Scan::new(&replay, 1);
+            let mut state = Prepared {
+                plain,
+                ..Default::default()
+            };
+            state.measure();
+            let mut changes = FrameChangeTracker::new();
+            let mut worker = ScoreTracker::default();
+            for frame in &frames {
+                // The pre-pass reads each block alone: its worker starts
+                // again at each block's first hour.
+                if [20, 45].contains(&frame.hour) {
+                    worker = ScoreTracker::default();
+                }
+                let changes = changes.observe(frame, replay.format);
+                groups.observe(frame).unwrap();
+                if plain {
+                    state
+                        .observe_changed(frame, &replay, &mut groups, &changes)
+                        .unwrap();
+                } else {
+                    let scored = worker.scored(frame, &changes).unwrap();
+                    state
+                        .observe_scored(frame, &replay, &mut groups, &changes, scored)
+                        .unwrap();
+                }
+            }
+            groups.finish(&replay, 1);
+            state.publish_day(&groups, true).unwrap();
+            let mut writer = fixture.writer();
+            state.flush(&mut writer, 1, &flag).unwrap();
+            writer.commit().unwrap();
+            let mut sections = BTreeMap::new();
+            for name in [
+                "air-superiority-1",
+                "air-superiority-1-values",
+                "air-superiority-1-operands",
+                "air-superiority-1-hours",
+                "air-superiority-1-catalogue",
+            ] {
+                let count = fixture
+                    .store
+                    .range_count(&fixture.key, name)
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("{name} was not written"));
+                let ranges = (0..count)
+                    .map(|range| {
+                        let mut bytes = Vec::new();
+                        std::io::Read::read_to_end(
+                            &mut fixture
+                                .store
+                                .read(&fixture.key, name, range)
+                                .unwrap()
+                                .unwrap(),
+                            &mut bytes,
+                        )
+                        .unwrap();
+                        bytes
+                    })
+                    .collect();
+                sections.insert(name.to_owned(), ranges);
+            }
+            (sections, state)
+        };
+        let (plain, _) = run(true);
+        let (held, mut state) = run(false);
+        assert_eq!(
+            held.keys().collect::<Vec<_>>(),
+            plain.keys().collect::<Vec<_>>()
+        );
+        for (name, ranges) in &plain {
+            assert_eq!(&held[name], ranges, "{name}");
+        }
+        let parts: BTreeMap<_, _> = state
+            .take_parts()
+            .into_iter()
+            .map(|(name, _, times)| (name, times))
+            .collect();
+        assert!(
+            parts
+                .get("air_superiority.fold.diffed")
+                .is_some_and(|times| *times > 20),
+            "most war hours observe only their changed pairs: {parts:?}"
+        );
+        assert!(
+            parts.contains_key("air_superiority.fold.pairs"),
+            "block starts and the gap walk every pair: {parts:?}"
+        );
+    }
+
     #[test]
     fn prepared_air_superiority_window_list_reads_no_scan_state() {
         let source = Source::from_replay(

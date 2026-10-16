@@ -400,9 +400,16 @@ impl Accumulator {
         }
     }
     /// [`Self::advance`] at every hour `first..=last` in order, in constant time.
-    pub(crate) fn advance_span(&mut self, first: i32, last: i32) -> io::Result<()> {
+    pub fn advance_span(&mut self, first: i32, last: i32) -> io::Result<()> {
         self.advance(first)?;
         if last > first {
+            if let Some(series) = self.recorded {
+                RECORDING.with(|recording| {
+                    if let Some(recording) = recording.borrow_mut().as_mut() {
+                        recording.advance_through(series, last);
+                    }
+                });
+            }
             self.previous = Some(last - 1);
             self.frontier = Some(last);
             self.batch.through(last);
@@ -681,6 +688,14 @@ impl Recording {
     }
     pub fn is_empty(&self) -> bool {
         self.calls.is_empty()
+    }
+    /// Extends the advance span `series` just recorded through `last`.
+    fn advance_through(&mut self, series: u8, last: i32) {
+        if let Some(&at) = self.spans.get(&series)
+            && let Some(Call::Advance { last: through, .. }) = self.calls.get_mut(at)
+        {
+            *through = last;
+        }
     }
     fn advance(&mut self, series: u8, hour: i32) {
         if let Some(&at) = self.spans.get(&series)

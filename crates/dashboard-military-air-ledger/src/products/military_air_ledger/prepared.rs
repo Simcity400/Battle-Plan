@@ -2,6 +2,11 @@
 use super::*;
 use dashboard_base::prepared::series::{self, Accumulator, Reader};
 
+mod block;
+pub use block::{FAMILY, fold, observe_block};
+#[cfg(any(test, feature = "test-support"))]
+pub use block::{add_counts, counts};
+
 #[derive(Serialize, Deserialize)]
 struct Event {
     leaf: LeafKey,

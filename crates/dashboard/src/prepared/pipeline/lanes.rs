@@ -251,7 +251,11 @@ impl<'scope> Lanes<'scope> {
                 let hook = hook.clone();
                 #[cfg(test)]
                 let injected = injected.clone();
+                #[cfg(test)]
+                let registry = super::independent::test_registry();
                 let join = scope.spawn(move || {
+                    #[cfg(test)]
+                    registry.install();
                     #[cfg(windows)]
                     unsafe {
                         use windows_sys::Win32::System::Threading::{

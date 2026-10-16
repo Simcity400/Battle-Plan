@@ -470,7 +470,10 @@ pub fn query(
         other => other?,
     };
     let partial = !accepted.as_ref().is_some_and(|coverage| coverage.complete);
+    // A direct regional read and its country totals carry every column, areas included.
+    let regional_tail = partial && params.family.breakdown && product == "series-state";
     let inputs = if params.family.metadata
+        || regional_tail
         || matches!(params.family.measure, Some(TerritoryMeasure::Area))
     {
         Some(area_data(source, context, cancelled)?)
@@ -513,7 +516,8 @@ pub fn query(
             warnings,
         })?);
     }
-    if partial && params.family.breakdown {
+    // A reached regional hour is one frame's state; other regional views need the scan.
+    if partial && params.family.breakdown && !regional_tail {
         let end = params.reads.iter().map(|read| read.hour).max();
         if accepted
             .as_ref()
@@ -574,7 +578,7 @@ pub fn query(
         .find(|start| start.id == branch)
         .ok_or_else(|| crate::invalid("Unknown territory branch"))?;
     let bounds = crate::metadata::branch_bounds(source.replay_ref(), start);
-    let sampled = if partial && !params.family.breakdown && product == "series-state" {
+    let sampled = if partial && product == "series-state" {
         let hours: Vec<_> = params.reads.iter().map(|read| read.hour).collect();
         crate::prepared::query::progressive::state_tail(
             source,
@@ -1354,10 +1358,26 @@ pub fn query(
                 value["sum"] = serde_json::to_value(sum.runs.unwrap_or_default())?;
                 Ok(value)
             } else if params.family.breakdown {
-                super::super::territory_breakdown::Prepared::reply(
-                    &store, &key, branch, from, to, totals, cancelled,
-                )
-                .and_then(|reply| serde_json::to_value(reply).map_err(Into::into))
+                let reply = if regional_tail
+                    && accepted
+                        .as_ref()
+                        .is_none_or(|coverage| from > coverage.last_hour)
+                {
+                    super::super::territory_breakdown::sampled_reply(
+                        source,
+                        context,
+                        branch,
+                        from,
+                        inputs.as_ref().and_then(|inputs| inputs.areas.as_deref()),
+                        totals,
+                        cancelled,
+                    )
+                } else {
+                    super::super::territory_breakdown::Prepared::reply(
+                        &store, &key, branch, from, to, totals, cancelled,
+                    )
+                };
+                reply.and_then(|reply| serde_json::to_value(reply).map_err(Into::into))
             } else {
                 Ok(serde_json::to_value(totals)?)
             }

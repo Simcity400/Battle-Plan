@@ -973,7 +973,7 @@ impl<'a> ScriptedText<'a> {
     pub fn reread(&self, key: &crate::triggers::inputs::Key) -> Option<u64> {
         use crate::triggers::inputs::Key;
         match key {
-            Key::Table(_) | Key::FocusTag(_) => None,
+            Key::Table(_) | Key::Fields(..) | Key::FocusTag(_) => None,
             Key::ClockSeed => Some(crate::triggers::inputs::digest(&clock_seed(self.frame))),
             Key::World(query) => self.trigger_world().ok().map(|world| world.reread(query)),
             Key::Scopes(query) => Some(self.scopes.reread(query)),

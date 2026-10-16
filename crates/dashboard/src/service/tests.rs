@@ -27,8 +27,8 @@ fn panicking_recording_requests_report_errors_and_leave_loaders_running() {
             Arc::clone(&request),
             LoadJob::Fixture {
                 request,
-                interactive: false,
-                run: Box::new(move || panic!("synthetic {stage} panic")),
+                lane: Lane::History,
+                run: Arc::new(move || panic!("synthetic {stage} panic")),
             },
         );
         assert!(matches!(
@@ -1346,17 +1346,12 @@ fn library_preparation_failed_opens_stop_at_one_attempt_for_5000_inputs() {
 /// calls below go through the real service admission and physical lane queue.
 struct LoaderHold(Arc<(Mutex<bool>, std::sync::Condvar)>);
 impl LoaderHold {
-    fn new(service: &Service, interactive: bool) -> Self {
+    fn new(service: &Service, lane: Lane) -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
         let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
         let (sent, seen) = mpsc::channel();
-        let count = if interactive {
-            INTERACTIVE_THREADS
-        } else {
-            LOADER_THREADS
-        };
-        for index in 0..count {
+        for index in 0..lane.threads(parallelism()) {
             let id = format!("stalled-{sequence}-{index}");
             let request = service.inner.begin(id.clone()).unwrap();
             let released = Arc::clone(&release);
@@ -1365,8 +1360,8 @@ impl LoaderHold {
                 Arc::clone(&request),
                 LoadJob::Fixture {
                     request,
-                    interactive,
-                    run: Box::new(move || {
+                    lane,
+                    run: Arc::new(move || {
                         sent.send(()).unwrap();
                         let ready = released.0.lock().unwrap();
                         let (ready, _) = released
@@ -1413,14 +1408,14 @@ fn settled_live_requests(retained: &[std::sync::Weak<Request>]) -> usize {
 }
 
 #[test]
-fn cancelled_resubmitted_jobs_keep_both_loader_lanes_bounded() {
+fn cancelled_resubmitted_jobs_keep_the_history_and_prepared_lanes_bounded() {
     // Hard bound: the old unbounded channel fails at MAX_PENDING + 1, rather
     // than letting the reproducer itself run away.
     const CYCLES: usize = MAX_PENDING * 4;
-    for interactive in [false, true] {
+    for (lane, prepared) in [(Lane::History, false), (Lane::Prepared, true)] {
         let (sent, receive) = mpsc::channel();
         let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
-        let hold = LoaderHold::new(&service, interactive);
+        let hold = LoaderHold::new(&service, lane);
         let source = source();
         let countries: Vec<_> = (0..5_000)
             .map(|index| format!("synthetic-{index}"))
@@ -1438,7 +1433,7 @@ fn cancelled_resubmitted_jobs_keep_both_loader_lanes_bounded() {
                 params: params.clone(),
             };
             assert_eq!(body.params["countries"].as_array().unwrap().len(), 5_000);
-            let job = if interactive {
+            let job = if prepared {
                 LoadJob::PreparedQuery {
                     request: Arc::clone(&request),
                     source: Arc::clone(&source),
@@ -1465,7 +1460,7 @@ fn cancelled_resubmitted_jobs_keep_both_loader_lanes_bounded() {
         let request = service.inner.begin("lane-full".into()).unwrap();
         service.inner.submit(
             Arc::clone(&request),
-            if interactive {
+            if prepared {
                 LoadJob::PreparedQuery {
                     request,
                     source: Arc::clone(&source),
@@ -1510,7 +1505,7 @@ fn cancelled_resubmitted_jobs_keep_both_loader_lanes_bounded() {
 #[test]
 fn preparation_refreshes_coalesce_per_source_and_share_the_history_bound() {
     let service = Service::new(Arc::new(|_| true)).unwrap();
-    let hold = LoaderHold::new(&service, false);
+    let hold = LoaderHold::new(&service, Lane::History);
     let source = source();
     for _ in 0..MAX_PENDING * 4 {
         service
@@ -1603,7 +1598,7 @@ fn preparation_refreshes_coalesce_per_source_and_share_the_history_bound() {
 #[test]
 fn preparation_refresh_coalescing_retires_when_loader_receives_the_job() {
     let service = Service::new(Arc::new(|_| true)).unwrap();
-    let hold = LoaderHold::new(&service, false);
+    let hold = LoaderHold::new(&service, Lane::History);
     let source = source();
     service
         .inner
@@ -1624,7 +1619,7 @@ fn preparation_refresh_coalescing_retires_when_loader_receives_the_job() {
     drop(hold);
     // Occupying every worker behind that refresh proves physical retirement,
     // without an unbounded status/request poll.
-    let behind_refresh = LoaderHold::new(&service, false);
+    let behind_refresh = LoaderHold::new(&service, Lane::History);
     assert!(
         service
             .inner
@@ -1650,5 +1645,104 @@ fn preparation_refresh_coalescing_retires_when_loader_receives_the_job() {
         1
     );
     drop(behind_refresh);
+    service.shutdown();
+}
+
+#[test]
+fn lanes_are_sized_from_the_machine_with_at_least_three_loaders() {
+    for (parallelism, history, sampled) in
+        [(1, 3, 3), (4, 3, 3), (8, 3, 4), (16, 4, 8), (64, 16, 32)]
+    {
+        assert_eq!(Lane::History.threads(parallelism), history);
+        assert_eq!(Lane::Sampled.threads(parallelism), sampled);
+        assert_eq!(Lane::Interactive.threads(parallelism), INTERACTIVE_THREADS);
+        assert_eq!(Lane::Prepared.threads(parallelism), PREPARED_THREADS);
+    }
+    // Every lane's loaders and the response pump.
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    assert_eq!(
+        service.thread_ids.len(),
+        Lane::ALL
+            .iter()
+            .map(|lane| lane.threads(parallelism()))
+            .sum::<usize>()
+            + 1
+    );
+    service.shutdown();
+}
+
+/// A prepared answer that needs no block decode is given while every sampled
+/// loader is busy; one that samples a block leaves the prepared lane at its
+/// first block decode and is answered on a sampled loader.
+#[test]
+fn prepared_answers_do_not_wait_behind_sampled_reads() {
+    use crate::test_fixtures::{CAMPAIGN, records, source as frame};
+    use replay::rows::TableId;
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let recording = Arc::new(
+        Source::from_replay(
+            SourceKey {
+                source_id: "sampled".into(),
+                revision: "1".into(),
+            },
+            PathBuf::from("memory.battleplan"),
+            Arc::new(
+                Replay::from_records(
+                    CAMPAIGN.into(),
+                    &[records(1, vec![frame(1, 0, Some(1)), frame(1, 1, Some(2))])],
+                )
+                .unwrap(),
+            ),
+            &AtomicBool::new(false),
+        )
+        .unwrap(),
+    );
+    let hold = LoaderHold::new(&service, Lane::Sampled);
+    let (sent, answers) = mpsc::channel::<(&str, Option<i32>, String)>();
+    let lane_of = || thread::current().name().unwrap_or_default().to_owned();
+    let submit = |id: &str, run: Arc<dyn Fn() + Send + Sync>| {
+        let request = service.inner.begin(id.into()).unwrap();
+        service.inner.submit(
+            Arc::clone(&request),
+            LoadJob::Fixture {
+                request,
+                lane: Lane::Prepared,
+                run,
+            },
+        );
+    };
+    let sampled = sent.clone();
+    submit(
+        "sampled",
+        Arc::new(move || {
+            let read = crate::prepared::query::progressive::frame_at(
+                &recording,
+                1,
+                1,
+                &[TableId::Countries],
+                &AtomicBool::new(false),
+            );
+            // A refused decode answers nothing; the job runs again.
+            if let Ok(found) = read {
+                let hour = found.map(|found| found.hour);
+                sampled.send(("sampled", hour, lane_of())).unwrap();
+            }
+        }),
+    );
+    submit(
+        "prepared",
+        Arc::new(move || sent.send(("prepared", None, lane_of())).unwrap()),
+    );
+    let (job, _, lane) = answers.recv_timeout(HANG_GUARD).unwrap();
+    assert_eq!(job, "prepared");
+    assert!(lane.starts_with("dashboard prepared"), "{lane}");
+    assert!(
+        answers.try_recv().is_err(),
+        "the sampled read waits for a sampled loader"
+    );
+    drop(hold);
+    let (job, hour, lane) = answers.recv_timeout(HANG_GUARD).unwrap();
+    assert_eq!((job, hour), ("sampled", Some(1)));
+    assert!(lane.starts_with("dashboard sampled"), "{lane}");
     service.shutdown();
 }

@@ -31,6 +31,15 @@ impl TemplateNameValue {
 }
 
 impl Value for TemplateNameValue {
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Self::SameAsDivisionTemplates => 0,
+            Self::Changed {
+                literal,
+                fallback_key,
+            } => Value::heap_bytes(literal) + Value::heap_bytes(fallback_key),
+        }
+    }
     const MINIMUM_ENCODED_BYTES: usize = 1;
 
     fn encoded_bytes(&self) -> io::Result<usize> {

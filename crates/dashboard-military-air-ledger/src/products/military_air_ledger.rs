@@ -166,10 +166,40 @@ struct FamilyScan {
     identities: Option<IdentityOperands>,
     #[serde(skip)]
     country_keys: Option<dashboard_text::metadata::CountryKeys>,
+    /// While a block's extract follows the hours after the block's first
+    /// ([`prepared::block`]): what they read of the event ordinal and unread
+    /// interval carried into the block.
+    #[serde(skip)]
+    entry: Option<Entry>,
+    /// The last hour observed found every table complete and could not read
+    /// the identities: the next hour reads them again, whatever changed.
+    #[serde(skip)]
+    retry: bool,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
 }
+
+/// What a block's hours after its first read of the state carried into the
+/// block (`last_event`, `unread_since`), which a block's extract, starting
+/// with none, cannot know: the first unread hour, and the first use of the
+/// ordinal.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Entry {
+    unread: Option<i32>,
+    used: Option<EntryUse>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EntryUse {
+    /// The first read with events: its first identity and earliest date.
+    Read { first: u64, earliest: i32 },
+    /// An ordinal checked outside a read with events.
+    Event,
+}
+
+/// The warning each hour gives for every country whose tag is not UTF-8.
+const UNNAMED_TAG: &str = "country tag is not UTF-8; its events cannot be named";
 
 #[derive(PartialEq, Eq)]
 struct IdentityOperands {
@@ -185,6 +215,11 @@ impl FamilyScan {
 
     /// An event table not read completely this hour.
     fn unread(&mut self, hour: i32) {
+        if let Some(entry) = self.entry.as_mut()
+            && entry.used.is_none()
+        {
+            entry.unread.get_or_insert(hour);
+        }
         self.unread_since.get_or_insert(hour);
     }
 
@@ -193,6 +228,12 @@ impl FamilyScan {
     /// dated within or after that interval: those events were never read
     /// before. Any other backwards identity still refuses.
     fn begin_read(&mut self, first: Option<u64>, earliest: Option<i32>) {
+        if let Some(entry) = self.entry.as_mut()
+            && entry.used.is_none()
+            && let (Some(first), Some(earliest)) = (first, earliest)
+        {
+            entry.used = Some(EntryUse::Read { first, earliest });
+        }
         let (Some(first), Some(earliest), Some(since)) = (first, earliest, self.unread_since)
         else {
             return;
@@ -204,6 +245,11 @@ impl FamilyScan {
     }
 
     fn event(&mut self, id: u64) -> io::Result<()> {
+        if let Some(entry) = self.entry.as_mut()
+            && entry.used.is_none()
+        {
+            entry.used = Some(EntryUse::Event);
+        }
         if self.last_event.is_some_and(|last| id <= last) {
             return Err(dashboard_core::invalid(
                 "military air event ordinal repeated or moved backwards",
@@ -256,7 +302,7 @@ impl FamilyScan {
             };
             let Ok(tag) = std::str::from_utf8(tag) else {
                 invalid_tags += 1;
-                self.note("country tag is not UTF-8; its events cannot be named");
+                self.note(UNNAMED_TAG);
                 continue;
             };
             dashboard_core::protocol::validate_tag(tag).map_err(dashboard_core::invalid)?;
@@ -309,6 +355,7 @@ impl FamilyScan {
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
         bombing: bool,
     ) -> io::Result<()> {
+        self.retry = false;
         let source = if bombing {
             TableId::BuildingBombingDamage
         } else {
@@ -365,16 +412,14 @@ impl FamilyScan {
                 Err(_) => {
                     self.identities = None;
                     self.presence_through = None;
+                    self.retry = true;
                     return Ok(());
                 }
             }
         }
         let identities = self.identities.as_ref().expect("complete identity read");
         if !refresh && identities.invalid_tags != 0 {
-            *self
-                .warnings
-                .entry("country tag is not UTF-8; its events cannot be named".into())
-                .or_default() += identities.invalid_tags;
+            *self.warnings.entry(UNNAMED_TAG.into()).or_default() += identities.invalid_tags;
         }
         self.presence_through = Some(frame.hour);
         self.available = true;

@@ -154,6 +154,14 @@ impl SparseBytes {
 }
 
 impl crate::value::Value for SparseBytes {
+    fn heap_bytes(&self) -> usize {
+        self.runs.capacity() * size_of::<ByteRun>()
+            + self
+                .runs
+                .iter()
+                .map(|run| run.bytes.capacity())
+                .sum::<usize>()
+    }
     const MINIMUM_ENCODED_BYTES: usize = 8;
 
     fn encoded_bytes(&self) -> io::Result<usize> {
@@ -518,6 +526,9 @@ value_struct!(StrategicRedeploymentInputs {
 });
 
 impl crate::value::Value for StrategicAction {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     const MINIMUM_ENCODED_BYTES: usize = 1;
 
     fn encoded_bytes(&self) -> io::Result<usize> {
@@ -823,6 +834,9 @@ impl StoredOrigins {
 }
 
 impl Value for StoredOrigins {
+    fn heap_bytes(&self) -> usize {
+        Value::heap_bytes(&self.origins)
+    }
     const MINIMUM_ENCODED_BYTES: usize = 1;
 
     // The tag keeps its width.
@@ -1008,6 +1022,12 @@ const _: () = assert!(
 );
 
 impl Value for DivisionSupplyFooter {
+    fn heap_bytes(&self) -> usize {
+        Value::heap_bytes(&self.division_demand)
+            + Value::heap_bytes(&self.airplane_demand)
+            + Value::heap_bytes(&self.ship_demand)
+            + Value::heap_bytes(&self.origins)
+    }
     const MINIMUM_ENCODED_BYTES: usize = <UnitSupplyInputs as Value>::MINIMUM_ENCODED_BYTES;
     const HAS_STEPS: bool = true;
     #[cfg(test)]

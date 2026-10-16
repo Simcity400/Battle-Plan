@@ -11,9 +11,9 @@ pub(super) const CACHED_WALKS: usize = 4;
 /// Over 50 years of near-hourly inputs a point every few hundred inputs keeps
 /// a mid-branch read short; the byte budget bounds their memory. Tests keep
 /// fewer, so their short fixtures double the interval.
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 pub(super) const WALK_POINTS: usize = 1024;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) const WALK_POINTS: usize = 64;
 /// Estimated bytes of one walk's resume points, beyond which their interval
 /// doubles.
@@ -21,7 +21,7 @@ pub(super) const WALK_POINT_BYTES: usize = 64 << 20;
 /// Nominal bytes of one held row, run, name or key in the estimate.
 const NOMINAL_ROW_BYTES: usize = 64;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     /// Change inputs decoded on this thread.
     pub(super) static DECODED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -30,7 +30,7 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 fn point_budget() -> usize {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if let Some(bytes) = POINT_BYTES.with(std::cell::Cell::get) {
         return bytes;
     }
@@ -174,7 +174,7 @@ impl Resume {
         let mut input = Decoder::new(&bytes);
         let packet = DecodedFrame::decode_checkpoint(&mut input)?;
         input.finish()?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         DECODED.with(|count| count.set(count.get() + 1));
         let changed = changes
             .iter()
@@ -369,6 +369,22 @@ pub(super) fn walk(
     if first > last {
         return Err(invalid("Wars change inputs: invalid event page"));
     }
+    // The recorded viewpoint's walk is published while preparing.
+    if params.viewpoint_tag.is_none()
+        && selected.is_none()
+        && let Some(reply) = published(
+            store,
+            key,
+            branch,
+            (first, last),
+            cat.map(|cat| &**cat),
+            hours,
+            cancelled,
+            &mut hydrate,
+        )?
+    {
+        return Ok(reply);
+    }
     let mut topology = Reader::new(store, key, format!("wars-series-{branch}"), cancelled)?;
     let base = if first == i32::MIN {
         0
@@ -467,6 +483,105 @@ pub(super) fn walk(
     }
     drop(guard);
     walk.finish(last, cat.map(|cat| &**cat))
+}
+
+/// The recorded viewpoint's walk as preparation published it
+/// ([`super::published`]): the tail, with its closed wars back in place,
+/// finishes the reply, and each requested hour's input is hydrated from the
+/// nearest published point, walking fewer than its interval of inputs. None
+/// when no walk is published through the store's last input (prepared hour
+/// by hour, or the branch's first hour moved), so the query walks.
+#[allow(clippy::too_many_arguments)]
+fn published(
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    (first, last): (i32, i32),
+    cat: Option<&Catalogue>,
+    hours: &BTreeSet<i32>,
+    cancelled: &AtomicBool,
+    hydrate: &mut impl FnMut(&Walk, series::Run) -> io::Result<()>,
+) -> io::Result<Option<WarsReply>> {
+    use super::published::{POINT_INPUTS, Published, point};
+    let Some(mut tail) = Published::read(store, key, branch, cat)? else {
+        return Ok(None);
+    };
+    let mut topology = Reader::new(store, key, format!("wars-series-{branch}"), cancelled)?;
+    let base = if first == i32::MIN {
+        0
+    } else {
+        topology.event_count_through(0, first - 1)?
+    };
+    let end = topology.event_count_through(0, last)?;
+    if tail.first != first || base != 0 || tail.next != end {
+        return Ok(None);
+    }
+    let mut wanted = BTreeSet::new();
+    for &hour in hours {
+        let through = topology.event_count_through(0, hour)?.min(end);
+        if let Some(ordinal) = through.checked_sub(1) {
+            wanted.insert(ordinal);
+        }
+    }
+    let mut walker = Walker {
+        topology: &mut topology,
+        base,
+        view: None,
+        selected: None,
+        cat,
+        cancelled,
+    };
+    let mut work: Option<Resume> = None;
+    for &ordinal in &wanted {
+        if ordinal + 1 == end {
+            let hour = tail
+                .hour
+                .ok_or_else(|| invalid("Published wars walk has no input"))?;
+            let span = walker.span(ordinal, hour)?;
+            hydrate(&tail.walk, span)?;
+            continue;
+        }
+        let at = (ordinal + 1) / POINT_INPUTS;
+        if !work
+            .as_ref()
+            .is_some_and(|work| at * POINT_INPUTS <= work.next && work.next <= ordinal + 1)
+        {
+            work = Some(if at == 0 {
+                Resume::start(branch, first, base)
+            } else {
+                let (next, hour, walk, decoded) = point(store, key, branch, at, cat, first)?;
+                Resume {
+                    next,
+                    hour,
+                    walk,
+                    decoded: Some(decoded),
+                }
+            });
+        }
+        let resume = work.as_mut().expect("resume point");
+        let mut known = None;
+        while resume.next <= ordinal {
+            known = Some(resume.step(&mut walker, known)?);
+        }
+        let span = match known {
+            Some(span) => span,
+            None => walker.span(ordinal, resume.hour.expect("observed input"))?,
+        };
+        hydrate(&resume.walk, span)?;
+    }
+    tail.close(store, key, branch)?;
+    let mut walk = tail.walk;
+    if let Some(hour) = tail.hour {
+        let span = walker.span(end - 1, hour)?;
+        walk.extend(span.last_hour);
+    }
+    walk.finish(last, cat).map(Some)
+}
+
+/// Change inputs decoded on this thread.
+#[cfg(any(test, feature = "test-support"))]
+pub fn decoded_inputs() -> usize {
+    DECODED.with(std::cell::Cell::get)
 }
 
 /// One kept walk's bounds, for tests.

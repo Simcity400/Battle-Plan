@@ -249,6 +249,12 @@ fn decode_committed(input: &mut Decoder<'_>) -> io::Result<(Vec<u64>, bool)> {
 macro_rules! side_value {
     ([$($before:ident: $before_ty:ty),* $(,)?], [$($after:ident: $after_ty:ty),* $(,)?]) => {
         impl Value for LandCombatSideDetails {
+            fn heap_bytes(&self) -> usize {
+                <Vec<u64> as Value>::heap_bytes(&self.committed)
+                    $(+ <$before_ty as Value>::heap_bytes(&self.$before))*
+                    + <i64 as Value>::heap_bytes(&self.organisation_loss_sum)
+                    $(+ <$after_ty as Value>::heap_bytes(&self.$after))*
+            }
             #[cfg(test)]
             const STRUCT_FIELDS: usize =
                 2 + [$(stringify!($before)),*].len() + [$(stringify!($after)),*].len();

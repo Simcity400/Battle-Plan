@@ -14,6 +14,9 @@ use crate::rows::compatibility::RETIRED_INPUTS_FORMAT;
 pub struct Retired;
 
 impl Value for Retired {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     const MINIMUM_ENCODED_BYTES: usize = 0;
     fn encoded_bytes(&self) -> io::Result<usize> {
         Ok(0)
@@ -73,6 +76,9 @@ fn historical_writer() -> bool {
 }
 
 impl<T: Value + Default> Value for RetiredNested<T> {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     const MINIMUM_ENCODED_BYTES: usize = 0;
     fn encoded_bytes(&self) -> io::Result<usize> {
         if historical_writer() {
@@ -126,6 +132,9 @@ impl<T> RetiredKept<T> {
 }
 
 impl<T: Value + Default> Value for RetiredKept<T> {
+    fn heap_bytes(&self) -> usize {
+        Value::heap_bytes(&self.0)
+    }
     const MINIMUM_ENCODED_BYTES: usize = 0;
     fn encoded_bytes(&self) -> io::Result<usize> {
         if historical_writer() {
@@ -178,6 +187,9 @@ impl RetiredI64 {
 }
 
 impl NativeValue for RetiredI64 {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     fn try_clone(&self) -> io::Result<Self> {
         Ok(*self)
     }
@@ -210,6 +222,9 @@ macro_rules! retired_fixed {
         }
 
         impl NativeValue for $name {
+            fn heap_bytes(&self) -> usize {
+                0
+            }
             fn try_clone(&self) -> io::Result<Self> {
                 Ok(*self)
             }
@@ -271,6 +286,9 @@ impl RetiredU32List {
 }
 
 impl NativeValue for RetiredU32List {
+    fn heap_bytes(&self) -> usize {
+        self.0.capacity() * size_of::<u32>()
+    }
     fn try_clone(&self) -> io::Result<Self> {
         allocation::copy_vec(&self.0).map(Self)
     }

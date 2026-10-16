@@ -16,6 +16,40 @@ use replay::{
 
 type Evaluation<T> = Result<T, String>;
 
+/// The fields of each table [`Tables`] reads, by
+/// [`replay::rows::TableId::field_name`]: the row keys besides, and nothing
+/// else of their rows. An evaluation reading through [`Tables`] reads these
+/// ([`crate::triggers::inputs::fields`]).
+pub const FIELDS: [(replay::rows::TableId, &[&str]); 6] = {
+    use replay::rows::TableId;
+    [
+        (TableId::Characters, &["country", "name_token_id"]),
+        (
+            TableId::UnitLeaders,
+            &[
+                "character_id",
+                "category",
+                "owner",
+                "skill_status",
+                "skill_level",
+            ],
+        ),
+        (TableId::UnitLeaderTraits, &["definition_ordinal"]),
+        (TableId::CharacterRoleTraits, &["tokens", "definitions"]),
+        (
+            TableId::CharacterOperatives,
+            &[
+                "resolved",
+                "category",
+                "owner",
+                "skill_level",
+                "trait_definitions",
+            ],
+        ),
+        (TableId::CountryRetiredCharacters, &["character"]),
+    ]
+};
+
 /// The recorded character tables a character scope's `has_trait`, `skill`
 /// and `tag` read.
 pub struct Tables<'a> {

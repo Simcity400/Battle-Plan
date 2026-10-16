@@ -145,6 +145,10 @@ impl Scanned {
         #[cfg(test)]
         let pending = pending.filter(|_| !self.whole_tables);
         Arc::make_mut(&mut self.inputs).refresh_changes(frame, changes, pending);
+        // Only a join of the whole tables replaces the current cost keys.
+        if !self.inputs.narrow && self.inputs.costs_changed {
+            self.costs_pruned = false;
+        }
         #[cfg(test)]
         {
             self.row_hours += usize::from(self.inputs.narrow);
@@ -233,16 +237,74 @@ impl Scanned {
             );
         }
         self.clock.census_known = frame.complete::<tables::Countries>().is_ok();
-        self.clock.next = self
-            .inputs
-            .deadlines
-            .range((
-                std::ops::Bound::Excluded(frame.hour),
-                std::ops::Bound::Unbounded,
-            ))
-            .next()
-            .map(|(&hour, _)| hour);
+        self.clock.next = self.next_deadline(frame.hour);
         self.clock.recording = true;
+        Ok(())
+    }
+
+    /// The first hour after `hour` at which a capture's relation to the
+    /// current hour changes.
+    fn next_deadline(&self, hour: i32) -> Option<i32> {
+        self.inputs
+            .deadlines
+            .range((std::ops::Bound::Excluded(hour), std::ops::Bound::Unbounded))
+            .next()
+            .map(|(&hour, _)| hour)
+    }
+
+    /// Whether the hour just joined ([`Self::inputs_changed`]) only advances
+    /// captures: joined from its changed rows, which join no country
+    /// ([`super::inputs::Inputs::joins_nothing`]), it continues the hour before
+    /// with the census as readable as there, no country is dirty or to be
+    /// checked again, and the per-read rates are bound. The whole accounting
+    /// then selects no country: [`Self::advance_accounting`] is all it does.
+    pub(super) fn advances_only(&self, frame: &DecodedFrame) -> bool {
+        self.inputs.joins_nothing()
+            && self.dirty.is_empty()
+            && self.clock.recheck.is_empty()
+            && self.clock.stable
+            && self.clock.bound
+            && !self.clock.presence_refreshed
+            && self.clock.previous.and_then(|last| last.checked_add(1)) == Some(frame.hour)
+            && self.clock.census_known == frame.complete::<tables::Countries>().is_ok()
+    }
+
+    /// The accounting of an hour that only advances captures
+    /// ([`Self::advances_only`]): what [`Self::begin_accounting`],
+    /// [`observe_accounting`] and [`Self::end_accounting`] do when no country
+    /// is selected, joined or dirty. The deferred endpoints materialize
+    /// through the hour before for no tag but the branch's own warnings; the
+    /// census run extends; modifier formats follow the hour's dictionary;
+    /// hold names are indexed once after a resume; the read is kept for the
+    /// next. Every per-country step visits no country there, and no pending
+    /// row changes, so none is taken.
+    pub(super) fn advance_accounting(
+        &mut self,
+        frame: &DecodedFrame,
+        content: Option<&PoliticsContent>,
+    ) -> io::Result<()> {
+        let hour = frame.hour;
+        // As begin_accounting with nothing selected.
+        self.clock.selected.clear();
+        if let Some(previous) = self.clock.previous {
+            self.materialize_tags(previous, &BTreeSet::new())?;
+        }
+        self.clock.stable = true;
+        self.clock.census_known = frame.complete::<tables::Countries>().is_ok();
+        self.clock.next = self.next_deadline(hour);
+        self.clock.recording = true;
+        // As observe_accounting: its event, identity, diagnostic and row
+        // steps visit none of the joined countries, of which there are none.
+        super::observe_presence(self, frame)?;
+        self.refresh_modifier_formats(frame);
+        super::holds::observe_holds(frame, self, content);
+        self.first_hour.get_or_insert(hour);
+        self.last_hour = Some(self.last_hour.map_or(hour, |last| last.max(hour)));
+        self.retain_previous(frame);
+        // As end_accounting: the presence refresh is not pending, the holds
+        // of no selected tag advance, and with nothing observed the pending
+        // rows stay those already known.
+        self.clock.recording = false;
         Ok(())
     }
 

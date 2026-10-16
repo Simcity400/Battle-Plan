@@ -36,7 +36,14 @@ pub fn query(
     else {
         return Err(crate::invalid("Unknown production branch"));
     };
-    let Some(coverage) = crate::prepared::coverage::coverage(source, content, branch, cancel)?
+    // Production prepared on its own answers from its own coverage.
+    let Some(coverage) = crate::prepared::coverage::product_coverage(
+        source,
+        content,
+        branch,
+        "production-spending",
+        cancel,
+    )?
     else {
         return Ok(None);
     };

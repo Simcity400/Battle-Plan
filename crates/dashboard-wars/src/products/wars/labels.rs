@@ -3,6 +3,7 @@ use super::*;
 use crate::products::war_casualties::same_name_rows;
 use installed_content::country_names::{self, CountryNames, Operands};
 use replay::frame::SharedView;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Default)]
 pub(super) struct CountryLabels {
@@ -138,6 +139,29 @@ impl CountryLabels {
             {
                 self.involved.insert(raw);
             }
+        }
+    }
+
+    /// The names read so far by raw country id and the countries involved:
+    /// all [`Self::finish`] reads, in key order.
+    pub fn saved(&self) -> (BTreeMap<u32, BTreeSet<String>>, BTreeSet<u32>) {
+        (
+            self.names
+                .iter()
+                .map(|(&raw, names)| (raw, names.clone()))
+                .collect(),
+            self.involved.iter().copied().collect(),
+        )
+    }
+
+    /// Labels holding `saved` names and involved countries and no read
+    /// operands: observing the frame they were last read from reads them
+    /// again and adds no name.
+    pub fn restored((names, involved): (BTreeMap<u32, BTreeSet<String>>, BTreeSet<u32>)) -> Self {
+        Self {
+            names: names.into_iter().collect(),
+            involved: involved.into_iter().collect(),
+            ..Default::default()
         }
     }
 

@@ -4,6 +4,13 @@ use dashboard_base::prepared::series::{self, Accumulator, Reader, Run};
 use replay::frame::DecodedFrame;
 use serde_json::{Value, json};
 
+pub mod block;
+
+/// The section holding a branch's pair windows, one range per block.
+fn pairs_section(branch: u64) -> String {
+    format!("casualty-pairs-{branch}")
+}
+
 pub struct Presentation {
     catalogue: Arc<dashboard_text::catalogue::Catalogue>,
     unknown_label: String,
@@ -278,16 +285,34 @@ impl Prepared {
             .is_some_and(|hour| hour.checked_add(1) == Some(frame.hour));
         self.builder.frame_changes(frame, replay, changes);
         self.pairs.observe_changes(&self.builder);
-        let scan = &mut self.builder.scan;
         self.first.get_or_insert(frame.hour);
         self.last = frame.hour;
-        let observed = scan.hour == Some(frame.hour);
+        let observed = self.builder.scan.hour == Some(frame.hour);
         if !continuous || observed != self.covered {
             self.coverage
                 .observe(0, frame.hour, observed.then_some(1), false);
             self.covered = observed;
         }
-        for tag in &self.builder.changed_tags {
+        let tags = std::mem::take(&mut self.builder.changed_tags);
+        let sampled = self.observe_tags(&tags, frame.hour, continuous, observed);
+        self.builder.changed_tags = tags;
+        sampled?;
+        self.name_tags(cancelled)
+    }
+
+    /// Each changed tag's values and observation at `hour`, in tag order,
+    /// from its track's open sample: what observing an hour publishes for
+    /// the tags its frame changed. `continuous` when the hour follows the
+    /// hour observed before; `observed` when it is a supplying read.
+    fn observe_tags<'a>(
+        &mut self,
+        tags: impl IntoIterator<Item = &'a String>,
+        hour: i32,
+        continuous: bool,
+        observed: bool,
+    ) -> io::Result<()> {
+        let scan = &self.builder.scan;
+        for tag in tags {
             #[cfg(any(test, feature = "test-support"))]
             {
                 self.work.history_visits += 1;
@@ -298,26 +323,40 @@ impl Prepared {
             let Some(tail) = &track.tail else {
                 continue;
             };
-            let next = self.tags.len() as u64;
-            let key = *self
-                .tags
-                .entry(actor_key(tag, tail.identity)?)
-                .or_insert(next);
-            self.catalogue
-                .actors
-                .entry(key)
-                .or_insert_with(|| (tag.clone(), tail.identity));
+            // The tag's held actor when it names this identity: its key is
+            // the one its actor key numbers, with no key to spell.
+            let held = self.actors.get(tag).copied().filter(|key| {
+                self.catalogue
+                    .actors
+                    .get(key)
+                    .is_some_and(|(named, identity)| named == tag && *identity == tail.identity)
+            });
+            let key = match held {
+                Some(key) => key,
+                None => {
+                    let next = self.tags.len() as u64;
+                    let key = *self
+                        .tags
+                        .entry(actor_key(tag, tail.identity)?)
+                        .or_insert(next);
+                    self.catalogue
+                        .actors
+                        .entry(key)
+                        .or_insert_with(|| (tag.clone(), tail.identity));
+                    key
+                }
+            };
             let sample = track
                 .tail
                 .as_ref()
-                .filter(|run| observed && run.last == frame.hour);
+                .filter(|run| observed && run.last == hour);
             let previous = self.actors.get(tag).copied();
             if let Some(previous) = previous.filter(|previous| *previous != key || sample.is_none())
             {
                 for values in &mut self.values {
-                    values.observe(previous, frame.hour, None, false);
+                    values.observe(previous, hour, None, false);
                 }
-                self.observations.observe(previous, frame.hour, None, false);
+                self.observations.observe(previous, hour, None, false);
                 self.actors.remove(tag);
             }
             let starts = sample.is_some() && (previous != Some(key) || !continuous);
@@ -328,7 +367,7 @@ impl Prepared {
                 }
                 values.observe(
                     key,
-                    frame.hour,
+                    hour,
                     sample.and_then(|sample| match index {
                         0 => Some(sample.dealt),
                         1 => Some(sample.taken),
@@ -341,13 +380,13 @@ impl Prepared {
                 self.actors.insert(tag.clone(), key);
                 let observation = Observation {
                     first: if starts {
-                        frame.hour
+                        hour
                     } else {
                         self.latest[&key].first
                     },
                     sample_first: sample.first,
                     identity: sample.identity,
-                    read_hour: (sample.confirmed != frame.hour).then_some(sample.confirmed),
+                    read_hour: (sample.confirmed != hour).then_some(sample.confirmed),
                     at_least: sample.at_least,
                 };
                 if starts || self.latest.get(&key) != Some(&observation) {
@@ -355,16 +394,24 @@ impl Prepared {
                     {
                         self.work.emitted += 1;
                     }
-                    self.observations.event(key, frame.hour, &observation)?;
+                    self.observations.event(key, hour, &observation)?;
                     self.latest.insert(key, observation);
                 }
                 let version = self.observations.state(key).map_or(0, |state| state.events);
                 self.observations
-                    .observe(key, frame.hour, Some(i128::from(version)), starts);
+                    .observe(key, hour, Some(i128::from(version)), starts);
             } else {
-                self.observations.observe(key, frame.hour, None, false);
+                self.observations.observe(key, hour, None, false);
             }
         }
+        Ok(())
+    }
+
+    /// Label the naming operands the scan met since they were last
+    /// labelled, and refresh the warnings, as observing an hour does after
+    /// its tags.
+    fn name_tags(&mut self, cancelled: &AtomicBool) -> io::Result<()> {
+        let scan = &self.builder.scan;
         if self.named < scan.names.len() || self.catalogue.warnings.is_empty() {
             if let Some(presentation) = self.presentation.as_ref() {
                 let content = &presentation.catalogue;
@@ -420,19 +467,27 @@ impl Prepared {
         first_hour: i32,
         last_hour: i32,
     ) -> io::Result<()> {
+        let (ordinal, window) = self.finish_block_window(first_hour, last_hour)?;
+        writer.write_at(&pairs_section(branch), ordinal, window.as_slice())
+    }
+
+    /// The pair window of the block `first_hour..=last_hour` and its ordinal,
+    /// as [`Self::finish_block`] publishes it: preparation on the family's
+    /// own writes it with its next flush.
+    pub(crate) fn finish_block_window(
+        &mut self,
+        first_hour: i32,
+        last_hour: i32,
+    ) -> io::Result<(u64, Vec<u8>)> {
         self.builder.scan.seal();
         self.pairs.seal();
         let span = HourSpan {
             first_hour,
             last_hour,
         };
-        self.pairs.publish_window(
-            writer,
-            branch,
-            self.next_pair_window,
-            span,
-            &self.builder.scan.observed,
-        )?;
+        let window = self.pairs.window(span, &self.builder.scan.observed);
+        // `series::write_reply`'s bytes.
+        let window = series::compress(serde_json::to_vec(&window)?.as_slice(), 3)?;
         let observed = self
             .builder
             .scan
@@ -440,7 +495,37 @@ impl Prepared {
             .iter()
             .any(|read| read.first_hour <= span.last_hour && span.first_hour <= read.last_hour);
         self.catalogue.pair_available |= observed;
+        let ordinal = self.next_pair_window;
         self.next_pair_window += 1;
+        Ok((ordinal, window))
+    }
+
+    /// Whether hours `first..=last`, read by their changes, can advance in
+    /// constant time ([`Self::advance_quiet`]): every one read WarRelations
+    /// (`read`) and no field the scan reads changed or was decoded again
+    /// there, and the carried scan continues the hour it observed last as a
+    /// covered supplying read, with nothing left to name or join.
+    pub(crate) fn quiet_continues(&self, first: i32, read: bool) -> bool {
+        read && self.first.is_some()
+            && self.covered
+            && self.named == self.builder.scan.names.len()
+            && self.builder.quiet_continues(first)
+            && self.pairs.quiet_continues(first)
+    }
+
+    /// Hours `first..=last` that [`Self::quiet_continues`] allows: what
+    /// observing each does, in constant time. Each authenticates the hour in
+    /// every series and confirms the scan's read; no country, pair or value
+    /// is visited.
+    pub(crate) fn advance_quiet(&mut self, first: i32, last: i32) -> io::Result<()> {
+        for values in &mut self.values {
+            values.advance_span(first, last)?;
+        }
+        self.observations.advance_span(first, last)?;
+        self.coverage.advance_span(first, last)?;
+        self.builder.advance_quiet(first, last);
+        self.pairs.advance_quiet(last);
+        self.last = last;
         Ok(())
     }
 

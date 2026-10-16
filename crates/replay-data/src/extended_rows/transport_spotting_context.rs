@@ -55,6 +55,9 @@ impl SpottingSample {
 
 /// Only inline packets store a sample, in their format-101 layout.
 impl Value for SpottingSample {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     const MINIMUM_ENCODED_BYTES: usize = <Option<u32> as Value>::MINIMUM_ENCODED_BYTES;
     fn encoded_bytes(&self) -> io::Result<usize> {
         match self {

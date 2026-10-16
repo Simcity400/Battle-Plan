@@ -10,7 +10,7 @@ use replay::rows::{
     WarRelationRow,
 };
 
-type Payloads = BTreeMap<(String, u64), Vec<u8>>;
+pub(super) type Payloads = BTreeMap<(String, u64), Vec<u8>>;
 
 const A: u32 = 100_000;
 const B: u32 = 100_001;
@@ -128,7 +128,7 @@ fn groups_frame(branch: u64, hour: i32) -> DecodedFrame {
 
 /// Branch 1's first `blocks` blocks of six (hours 112 and 113 are a gap
 /// between the third and fourth), then branch 2's one block when `second`.
-fn scenario(blocks: usize, second: bool) -> Replay {
+pub(super) fn scenario(blocks: usize, second: bool) -> Replay {
     let hours: [&[i32]; 6] = [
         &[100, 101, 102, 103],
         &[104, 105, 106, 107],
@@ -185,18 +185,22 @@ fn query(source: &Source, product: &str, branch: &str) -> io::Result<serde_json:
 
 /// Sections only one mode writes: the checkpoint (which holds the groups'
 /// progress), the groups' own coverage pages and change publisher state, and
-/// air superiority's own read of the groups.
+/// air superiority's own read of the groups (and territory's of the country
+/// identities, also prepared on their own). The walk's branch state is
+/// compared field by field ([`assert_same`]).
 fn mode_specific(name: &str) -> bool {
     name == "preparation-checkpoint-v1"
+        || name.starts_with("preparation-branch-")
         || name.starts_with("preparation-family-")
         || name.starts_with("country-group-state-")
         || name.starts_with("air-superiority-group")
+        || name.starts_with("territory-identities-")
 }
 
 /// Every section both modes publish is byte-identical, air superiority's
 /// first. With `continuation`, the groups' change publisher state is the one
 /// hourly preparation saves in its branch state.
-fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, continuation: bool) {
+pub(super) fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, continuation: bool) {
     let shared = |payloads: &Payloads, air: bool| -> Payloads {
         payloads
             .iter()
@@ -216,6 +220,26 @@ fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, continuation: 
         &format!("{label}: air superiority"),
     );
     assert_payloads_equal(&shared(actual, false), &shared(hourly, false), label);
+    // The walk's branch state is hourly preparation's, apart from the state
+    // of the families prepared on their own, which it leaves out.
+    let decoded = |bytes: &[u8]| -> serde_json::Value {
+        serde_json::from_slice(&zstd::stream::decode_all(bytes).unwrap()).unwrap()
+    };
+    let mut states = 0;
+    for ((name, range), bytes) in hourly
+        .iter()
+        .filter(|((name, _), _)| name.starts_with("preparation-branch-"))
+    {
+        let own = decoded(&actual[&(name.clone(), *range)]);
+        let mut expected = decoded(bytes);
+        expected
+            .as_object_mut()
+            .unwrap()
+            .retain(|field, _| own.get(field).is_some());
+        assert_eq!(own, expected, "{label}: {name}");
+        states += 1;
+    }
+    assert!(states > 0, "{label}: no branch state");
     assert!(
         actual
             .keys()
@@ -264,111 +288,62 @@ fn hours(replay: &Replay) -> usize {
 
 #[test]
 fn country_groups_prepared_on_their_own_publish_and_save_what_hourly_preparation_does() {
-    let replay = scenario(6, true);
-    let mut fixture = Fixture::new(&replay);
-    let hourly = independent::with_test_hourly(|| {
-        let source = fixture.source("groups-parity");
-        run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
-        let payloads = payloads(&source, None);
-        clear(source);
-        payloads
-    });
-    for (workers, parallelism) in [(1, 2), (3, 4)] {
-        let source = fixture.source("groups-parity");
-        let before = (
-            prepass::noted("groups.sequential"),
-            prepass::noted("groups.fallback"),
-            observed_hours(),
-        );
-        prepass::with_test_prepass(workers, None, || {
-            lanes::with_test_lanes(parallelism, None, || {
-                run(&source, None, &AtomicBool::new(false), |_| {})
+    // The groups alone prepared on their own; every other family hourly.
+    independent::with_test_only(&["groups"], || {
+        let replay = scenario(6, true);
+        let mut fixture = Fixture::new(&replay);
+        let hourly = independent::with_test_hourly(|| {
+            let source = fixture.source("groups-parity");
+            run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
+            let payloads = payloads(&source, None);
+            clear(source);
+            payloads
+        });
+        for (workers, parallelism) in [(1, 2), (3, 4)] {
+            let source = fixture.source("groups-parity");
+            let before = (
+                prepass::noted("groups.sequential"),
+                prepass::noted("groups.fallback"),
+                observed_hours(),
+            );
+            prepass::with_test_prepass(workers, None, || {
+                lanes::with_test_lanes(parallelism, None, || {
+                    run(&source, None, &AtomicBool::new(false), |_| {})
+                })
             })
-        })
-        .unwrap();
-        let label = format!("{workers} workers, {parallelism} processors");
-        assert_same(&payloads(&source, None), &hourly, &label, true);
-        assert_eq!(
-            (
-                prepass::noted("groups.sequential") - before.0,
-                prepass::noted("groups.fallback") - before.1
-            ),
-            (0, 0),
-            "{label}: every block folded from its extract"
-        );
-        // Unchanged hours are not observed on the coordinator.
-        let observed = observed_hours() - before.2;
-        assert!(
-            observed >= replay.index.len() && observed < hours(&replay),
-            "{label}: {observed} of {} hours observed",
-            hours(&replay)
-        );
-        clear(source);
-    }
+            .unwrap();
+            let label = format!("{workers} workers, {parallelism} processors");
+            assert_same(&payloads(&source, None), &hourly, &label, true);
+            assert_eq!(
+                (
+                    prepass::noted("groups.sequential") - before.0,
+                    prepass::noted("groups.fallback") - before.1
+                ),
+                (0, 0),
+                "{label}: every block folded from its extract"
+            );
+            // Unchanged hours are not observed on the coordinator.
+            let observed = observed_hours() - before.2;
+            assert!(
+                observed >= replay.index.len() && observed < hours(&replay),
+                "{label}: {observed} of {} hours observed",
+                hours(&replay)
+            );
+            clear(source);
+        }
+    });
 }
 
 #[test]
 fn country_groups_prepared_on_their_own_commit_resume_reload_and_append_as_hourly_preparation() {
-    let first = scenario(3, false);
-    let grown = scenario(6, true);
-    let plain = |source: &Source| {
-        run(source, None, &AtomicBool::new(false), |_| {}).unwrap();
-    };
-    // Every block committed on its own.
-    let measured = |source: &Source| {
-        run_measured_through(
-            source,
-            None,
-            &AtomicBool::new(false),
-            true,
-            Duration::ZERO,
-            Some(u64::MAX),
-            |_| Ok(()),
-            |_| {},
-        )
-        .unwrap();
-    };
-    // The hourly walk prepares one block per run.
-    let resumed = |source: &Source| {
-        let flag = AtomicBool::new(false);
-        while unprepared_blocks(source, None).unwrap() != Some(0) {
-            run_measured(source, None, &flag, false, Duration::ZERO, |_| {}).unwrap();
-        }
-    };
-    let modes: [(&str, &dyn Fn(&Source), bool); 4] = [
-        ("run", &plain, false),
-        ("measured", &measured, false),
-        ("measured, reloaded", &measured, true),
-        ("resumed", &resumed, false),
-    ];
-    let mut fixture = Fixture::new(&first);
-    for (mode, prepare, reload) in modes {
-        let both = |fixture: &mut Fixture| -> Payloads {
-            super::super::RELOAD_FLUSHED.with(|flag| flag.set(reload));
-            fixture.replace(&first);
-            let source = fixture.source("groups-commits");
-            prepare(&source);
-            drop(source);
-            fixture.replace(&grown);
-            let source = fixture.source("groups-commits");
-            prepare(&source);
-            super::super::RELOAD_FLUSHED.with(|flag| flag.set(false));
-            let payloads = payloads(&source, None);
-            clear(source);
-            payloads
+    // The groups alone prepared on their own; every other family hourly.
+    independent::with_test_only(&["groups"], || {
+        let first = scenario(3, false);
+        let grown = scenario(6, true);
+        let plain = |source: &Source| {
+            run(source, None, &AtomicBool::new(false), |_| {}).unwrap();
         };
-        let hourly = independent::with_test_hourly(|| both(&mut fixture));
-        let own = both(&mut fixture);
-        assert_same(&own, &hourly, mode, true);
-    }
-}
-
-#[test]
-fn country_groups_prepared_on_their_own_refuse_where_hourly_preparation_does() {
-    let replay = scenario(6, true);
-    // At a block's first hour, and inside a block.
-    for hour in [108, 115] {
-        let refusals = [("groups", hour)];
+        // Every block committed on its own.
         let measured = |source: &Source| {
             run_measured_through(
                 source,
@@ -382,105 +357,175 @@ fn country_groups_prepared_on_their_own_refuse_where_hourly_preparation_does() {
             )
             .unwrap();
         };
-        let mut fixture = Fixture::new(&replay);
-        let (hourly, hourly_refused) = independent::with_test_hourly(|| {
-            lanes::with_test_refusals(&refusals, || {
-                let source = fixture.source("groups-refusal");
-                measured(&source);
-                let result = (payloads(&source, None), refused(&source));
+        // The hourly walk prepares one block per run.
+        let resumed = |source: &Source| {
+            let flag = AtomicBool::new(false);
+            while unprepared_blocks(source, None).unwrap() != Some(0) {
+                run_measured(source, None, &flag, false, Duration::ZERO, |_| {}).unwrap();
+            }
+        };
+        let modes: [(&str, &dyn Fn(&Source), bool); 4] = [
+            ("run", &plain, false),
+            ("measured", &measured, false),
+            ("measured, reloaded", &measured, true),
+            ("resumed", &resumed, false),
+        ];
+        let mut fixture = Fixture::new(&first);
+        for (mode, prepare, reload) in modes {
+            let both = |fixture: &mut Fixture| -> Payloads {
+                super::super::RELOAD_FLUSHED.with(|flag| flag.set(reload));
+                fixture.replace(&first);
+                let source = fixture.source("groups-commits");
+                prepare(&source);
+                drop(source);
+                fixture.replace(&grown);
+                let source = fixture.source("groups-commits");
+                prepare(&source);
+                super::super::RELOAD_FLUSHED.with(|flag| flag.set(false));
+                let payloads = payloads(&source, None);
                 clear(source);
-                result
-            })
-        });
-        let source = fixture.source("groups-refusal");
-        let sequential = prepass::noted("groups.sequential");
-        lanes::with_test_refusals(&refusals, || {
-            prepass::with_test_prepass(2, None, || measured(&source))
-        });
-        let label = format!("refusal at {hour}");
-        assert_eq!(
-            prepass::noted("groups.sequential") - sequential,
-            1,
-            "{label}: the refusing block is observed hour by hour"
-        );
-        assert_same(&payloads(&source, None), &hourly, &label, false);
-        // Air superiority refuses with the groups at the same hour.
-        let text = format!("Injected refusal of groups at hour {hour}");
-        assert_eq!(refused(&source), hourly_refused, "{label}");
-        let branch = &hourly_refused[&1].0;
-        assert_eq!(branch["groups"].hour, hour);
-        assert_eq!(branch["air_superiority"].hour, hour);
-        assert_eq!(branch["air_superiority"].from.as_deref(), Some("groups"));
-        let error = query(&source, "country-groups", "1").unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert_eq!(error.to_string(), text);
-        assert!(!query(&source, "country-groups", "2").unwrap().is_null());
-        clear(source);
-    }
+                payloads
+            };
+            let hourly = independent::with_test_hourly(|| both(&mut fixture));
+            let own = both(&mut fixture);
+            assert_same(&own, &hourly, mode, true);
+        }
+    });
+}
+
+#[test]
+fn country_groups_prepared_on_their_own_refuse_where_hourly_preparation_does() {
+    // The groups alone prepared on their own; every other family hourly.
+    independent::with_test_only(&["groups"], || {
+        let replay = scenario(6, true);
+        // At a block's first hour, and inside a block.
+        for hour in [108, 115] {
+            let refusals = [("groups", hour)];
+            let measured = |source: &Source| {
+                run_measured_through(
+                    source,
+                    None,
+                    &AtomicBool::new(false),
+                    true,
+                    Duration::ZERO,
+                    Some(u64::MAX),
+                    |_| Ok(()),
+                    |_| {},
+                )
+                .unwrap();
+            };
+            let mut fixture = Fixture::new(&replay);
+            let (hourly, hourly_refused) = independent::with_test_hourly(|| {
+                lanes::with_test_refusals(&refusals, || {
+                    let source = fixture.source("groups-refusal");
+                    measured(&source);
+                    let result = (payloads(&source, None), refused(&source));
+                    clear(source);
+                    result
+                })
+            });
+            let source = fixture.source("groups-refusal");
+            let sequential = prepass::noted("groups.sequential");
+            lanes::with_test_refusals(&refusals, || {
+                prepass::with_test_prepass(2, None, || measured(&source))
+            });
+            let label = format!("refusal at {hour}");
+            assert_eq!(
+                prepass::noted("groups.sequential") - sequential,
+                1,
+                "{label}: the refusing block is observed hour by hour"
+            );
+            assert_same(&payloads(&source, None), &hourly, &label, false);
+            // Air superiority refuses with the groups at the same hour.
+            let text = format!("Injected refusal of groups at hour {hour}");
+            assert_eq!(refused(&source), hourly_refused, "{label}");
+            let branch = &hourly_refused[&1].0;
+            assert_eq!(branch["groups"].hour, hour);
+            assert_eq!(branch["air_superiority"].hour, hour);
+            assert_eq!(branch["air_superiority"].from.as_deref(), Some("groups"));
+            let error = query(&source, "country-groups", "1").unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(error.to_string(), text);
+            assert!(!query(&source, "country-groups", "2").unwrap().is_null());
+            clear(source);
+        }
+    });
 }
 
 #[test]
 fn country_groups_answer_from_their_own_coverage_while_the_hourly_walk_accepts_nothing() {
-    use crate::products::{
-        LoadContext, Product,
-        country_groups::{CountryGroupParams, CountryGroups},
-    };
-    let replay = scenario(6, true);
-    let mut fixture = Fixture::new(&replay);
-    let source = fixture.source("groups-stalled");
-    let flag = AtomicBool::new(false);
-    // The hourly walk stalls: it is cancelled at its first commit.
-    let mut commits = 0;
-    let error = run_checked(
-        &source,
-        None,
-        &flag,
-        |_| {},
-        |_| {
-            commits += 1;
-            flag.store(true, Ordering::Release);
-            Ok(())
-        },
-    )
-    .unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-    assert_eq!(commits, 1);
-    flag.store(false, Ordering::Release);
-    assert_eq!(
-        unprepared_blocks(&source, None).unwrap(),
-        Some(replay.index.len()),
-        "the hourly walk accepted no block"
-    );
-    for branch in ["1", "2"] {
-        let oracle = CountryGroups::load(
+    // The groups alone prepared on their own; every other family hourly.
+    independent::with_test_only(&["groups"], || {
+        use crate::products::{
+            LoadContext, Product,
+            country_groups::{CountryGroupParams, CountryGroups},
+        };
+        let replay = scenario(6, true);
+        let mut fixture = Fixture::new(&replay);
+        let source = fixture.source("groups-stalled");
+        let flag = AtomicBool::new(false);
+        // The hourly walk stalls: it is cancelled at its first commit.
+        let mut commits = 0;
+        let error = run_checked(
             &source,
-            &CountryGroupParams {
-                branch_id: branch.into(),
-            },
-            &LoadContext { content: None },
+            None,
             &flag,
+            |_| {},
+            |_| {
+                commits += 1;
+                flag.store(true, Ordering::Release);
+                Ok(())
+            },
         )
-        .unwrap();
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(commits, 1);
+        flag.store(false, Ordering::Release);
         assert_eq!(
-            query(&source, "country-groups", branch).unwrap(),
-            serde_json::to_value(oracle).unwrap(),
-            "branch {branch}: the groups answer from their own coverage"
+            unprepared_blocks(&source, None).unwrap(),
+            Some(replay.index.len()),
+            "the hourly walk accepted no block"
         );
-        assert!(
-            query(&source, "subjects", branch).unwrap().is_null(),
-            "branch {branch}: a family of the hourly walk still waits"
-        );
-    }
-    // The hourly walk then resumes from its first block and the groups stay.
-    let accepted = run(&source, None, &flag, |_| {}).unwrap();
-    assert_eq!(accepted.new_blocks, replay.index.len());
-    let ready = accepted
-        .sections
-        .iter()
-        .find(|section| section.id == "country-groups")
-        .unwrap();
-    assert_eq!(ready.state, State::Ready);
-    clear(source);
+        for branch in ["1", "2"] {
+            let oracle = CountryGroups::load(
+                &source,
+                &CountryGroupParams {
+                    branch_id: branch.into(),
+                },
+                &LoadContext { content: None },
+                &flag,
+            )
+            .unwrap();
+            assert_eq!(
+                query(&source, "country-groups", branch).unwrap(),
+                serde_json::to_value(oracle).unwrap(),
+                "branch {branch}: the groups answer from their own coverage"
+            );
+            // A product only the hourly walk prepares still waits for it.
+            let waiting = FAMILIES
+                .iter()
+                .filter(|family| !independent::registered(family.name))
+                .flat_map(|family| family.queries.iter().copied())
+                .find(|product| independent::gating(product).is_none())
+                .expect("a product of the hourly walk");
+            assert!(
+                product_coverage(&source, None, branch.parse().unwrap(), waiting, &flag)
+                    .unwrap()
+                    .is_none(),
+                "branch {branch}: {waiting} still waits for the hourly walk"
+            );
+        }
+        // The hourly walk then resumes from its first block and the groups stay.
+        let accepted = run(&source, None, &flag, |_| {}).unwrap();
+        assert_eq!(accepted.new_blocks, replay.index.len());
+        let ready = accepted
+            .sections
+            .iter()
+            .find(|section| section.id == "country-groups")
+            .unwrap();
+        assert_eq!(ready.state, State::Ready);
+        clear(source);
+    });
 }
 
 use crate::products::country_groups::prepared::built_frames;
@@ -538,64 +583,67 @@ fn noisy_scenario() -> Replay {
 /// that war's end.
 #[test]
 fn country_groups_read_by_their_changes_keep_the_hours_a_whole_read_keeps() {
-    let replay = noisy_scenario();
-    let mut fixture = Fixture::new(&replay);
-    let hourly = independent::with_test_hourly(|| {
-        let source = fixture.source("groups-changes");
-        run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
-        let payloads = payloads(&source, None);
-        clear(source);
-        payloads
-    });
-    let mut kept = Vec::new();
-    for whole in [true, false] {
-        let label = if whole {
-            "read whole"
-        } else {
-            "read by changes"
-        };
-        let source = fixture.source("groups-changes");
-        let before = (
-            observed_hours(),
-            built_frames(),
-            prepass::noted("groups.sequential"),
-            prepass::noted("groups.fallback"),
-        );
-        let read = || {
-            prepass::with_test_prepass(2, None, || {
-                run(&source, None, &AtomicBool::new(false), |_| {})
-            })
-        };
-        if whole {
-            prepass::with_test_alone(read)
-        } else {
-            read()
-        }
-        .unwrap();
-        assert_same(&payloads(&source, None), &hourly, label, true);
-        assert_eq!(
-            (
-                prepass::noted("groups.sequential") - before.2,
-                prepass::noted("groups.fallback") - before.3
-            ),
-            (0, 0),
-            "{label}: every block folded from its extract"
-        );
-        let observed = observed_hours() - before.0;
-        let frames = built_frames() - before.1;
-        if whole {
-            assert_eq!(frames, hours(&replay), "{label}: a frame every hour");
-        } else {
-            assert_eq!(
-                frames, observed,
-                "{label}: frames only at the hours that change the groups"
+    // The groups alone prepared on their own; every other family hourly.
+    independent::with_test_only(&["groups"], || {
+        let replay = noisy_scenario();
+        let mut fixture = Fixture::new(&replay);
+        let hourly = independent::with_test_hourly(|| {
+            let source = fixture.source("groups-changes");
+            run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
+            let payloads = payloads(&source, None);
+            clear(source);
+            payloads
+        });
+        let mut kept = Vec::new();
+        for whole in [true, false] {
+            let label = if whole {
+                "read whole"
+            } else {
+                "read by changes"
+            };
+            let source = fixture.source("groups-changes");
+            let before = (
+                observed_hours(),
+                built_frames(),
+                prepass::noted("groups.sequential"),
+                prepass::noted("groups.fallback"),
             );
-            assert!(frames < hours(&replay), "{label}: {frames} frames");
+            let read = || {
+                prepass::with_test_prepass(2, None, || {
+                    run(&source, None, &AtomicBool::new(false), |_| {})
+                })
+            };
+            if whole {
+                prepass::with_test_alone(read)
+            } else {
+                read()
+            }
+            .unwrap();
+            assert_same(&payloads(&source, None), &hourly, label, true);
+            assert_eq!(
+                (
+                    prepass::noted("groups.sequential") - before.2,
+                    prepass::noted("groups.fallback") - before.3
+                ),
+                (0, 0),
+                "{label}: every block folded from its extract"
+            );
+            let observed = observed_hours() - before.0;
+            let frames = built_frames() - before.1;
+            if whole {
+                assert_eq!(frames, hours(&replay), "{label}: a frame every hour");
+            } else {
+                assert_eq!(
+                    frames, observed,
+                    "{label}: frames only at the hours that change the groups"
+                );
+                assert!(frames < hours(&replay), "{label}: {frames} frames");
+            }
+            kept.push(observed);
+            clear(source);
         }
-        kept.push(observed);
-        clear(source);
-    }
-    assert_eq!(kept[0], kept[1], "both reads keep the same hours");
+        assert_eq!(kept[0], kept[1], "both reads keep the same hours");
+    });
 }
 
 /// Three countries in faction 5, named by the dictionary's template 77, at
@@ -616,8 +664,8 @@ fn dictionary_frame(hour: i32) -> DecodedFrame {
             color_red: hour.clamp(101, 103) as u32,
             ..Default::default()
         }]));
-    *observed.tables[TableId::FactionMembers.index()] = TableView::Complete(
-        TableRows::FactionMembers(
+    *observed.tables[TableId::FactionMembers.index()] =
+        TableView::Complete(TableRows::FactionMembers(
             [A, B, C]
                 .into_iter()
                 .enumerate()
@@ -627,8 +675,7 @@ fn dictionary_frame(hour: i32) -> DecodedFrame {
                     ordinal: ordinal as u32,
                 })
                 .collect(),
-        ),
-    );
+        ));
     *observed.tables[TableId::WarRelations.index()] =
         TableView::Complete(TableRows::WarRelations(Vec::new()));
     *observed.tables[TableId::Capitulation.index()] = TableView::Complete(TableRows::Capitulation(

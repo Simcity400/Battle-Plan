@@ -166,6 +166,61 @@ fn advances(old: &PoliticsCaptureCoverageRow, row: &PoliticsCaptureCoverageRow, 
         && row.through_hour == hour
 }
 
+/// Move the deadlines of the captures that advanced to `hour` (each country
+/// with its first hour) exactly as unscheduling each one's old hours and
+/// scheduling its first hour and its next expiry does, one capture at a
+/// time: each leaves the hour before (its old last hour), unless it began
+/// then, and its expiry at `hour`, keeps its first hour, and expires at the
+/// hour after. When every capture due at `hour` advanced, their expiries
+/// move together.
+fn advance_deadlines(
+    deadlines: &mut BTreeMap<i32, BTreeSet<u32>>,
+    advanced: &mut [(u32, i32)],
+    hour: i32,
+) {
+    if advanced.is_empty() {
+        return;
+    }
+    advanced.sort_unstable_by_key(|&(raw, _)| raw);
+    let advanced = &*advanced;
+    let first_hour = |raw: &u32| {
+        advanced
+            .binary_search_by_key(raw, |&(raw, _)| raw)
+            .ok()
+            .map(|at| advanced[at].1)
+    };
+    if let Some(last) = hour.checked_sub(1)
+        && let Some(raws) = deadlines.get_mut(&last)
+    {
+        raws.retain(|raw| first_hour(raw).is_none_or(|since| since == last));
+        if raws.is_empty() {
+            deadlines.remove(&last);
+        }
+    }
+    let mut moving = match deadlines.remove(&hour) {
+        Some(due)
+            if due.len() == advanced.len()
+                && due.iter().zip(advanced).all(|(due, (raw, _))| due == raw) =>
+        {
+            due
+        }
+        due => {
+            if let Some(mut due) = due {
+                for (raw, _) in advanced {
+                    due.remove(raw);
+                }
+                if !due.is_empty() {
+                    deadlines.insert(hour, due);
+                }
+            }
+            advanced.iter().map(|&(raw, _)| raw).collect()
+        }
+    };
+    if let Some(next) = hour.checked_add(1) {
+        deadlines.entry(next).or_default().append(&mut moving);
+    }
+}
+
 impl Inputs {
     pub(super) fn power(&self) -> &[CountryPowerChangeRow] {
         held::<tables::CountryPowerChanges>(&self.power)
@@ -254,6 +309,21 @@ impl Inputs {
         self.identity_countries
             .iter()
             .filter_map(|raw| self.witnesses.get(raw))
+    }
+
+    /// Whether this hour was joined from its changed rows and they join no
+    /// country: no census, link, capture identity, power, government,
+    /// allocation, completeness, daily gain or naming change selects one,
+    /// and no row is observed again. Its captures at most extend their
+    /// intervals to the hour.
+    pub(super) fn joins_nothing(&self) -> bool {
+        self.narrow
+            && !self.countries_changed
+            && self.slots.is_empty()
+            && self.previous_tags.is_empty()
+            && self.identity_slots.is_empty()
+            && self.identity_countries.is_empty()
+            && self.touched.iter().all(BTreeSet::is_empty)
     }
 
     /// The hour's joins: from its changed rows when every table it reads
@@ -772,11 +842,19 @@ impl Inputs {
             let Ok(rows) = frame.complete::<tables::PoliticsCaptureCoverage>() else {
                 return false;
             };
+            // Changed rows usually follow the table's key order: try the row
+            // after the last one found before searching.
+            let mut next = 0;
             for change in coverage.0 {
-                let Ok(at) = rows.binary_search_by_key(&change.key, |row| row.key()) else {
-                    return false;
+                let at = match rows.get(next) {
+                    Some(row) if row.key() == change.key => next,
+                    _ => match rows.binary_search_by_key(&change.key, |row| row.key()) {
+                        Ok(at) => at,
+                        Err(_) => return false,
+                    },
                 };
                 captures.push(&rows[at]);
+                next = at + 1;
             }
         }
         let mut allocations = Vec::with_capacity(command.0.len());
@@ -815,46 +893,39 @@ impl Inputs {
             }
             self.identity_countries.insert(raw);
         }
+        // A capture that only extends its interval keeps its witness, whose
+        // last hour moves in place, and only its expiry moves, to the hour
+        // after this one: every such capture's together
+        // ([`advance_deadlines`]).
+        let mut advanced = Vec::new();
         for row in captures {
             let raw = row.country;
-            let previous = self.witnesses.get(&raw).map(|old| {
-                (
-                    witness_hours(old),
-                    old.through_hour,
-                    advances(old, row, frame.hour),
-                )
-            });
-            // No power row dated after the old interval: the extension adds
-            // no event, daily gain or unknown addition to it.
-            let advance = previous.is_some_and(|(_, through, advances)| {
-                advances
+            if let Some(old) = self.witnesses.get_mut(&raw) {
+                // No power row dated after the old interval: the extension adds
+                // no event, daily gain or unknown addition to it.
+                if advances(old, row, frame.hour)
                     && self
                         .latest_power
                         .get(&raw)
-                        .is_none_or(|&latest| latest <= through)
-            });
-            if let Some((hours, _, _)) = previous {
-                unschedule(&mut self.deadlines, raw, &hours);
-            }
-            if advance {
-                // Only the expiry moves, to the hour after this one.
-                schedule(
-                    &mut self.deadlines,
-                    raw,
-                    &[Some(row.since_hour), None, row.through_hour.checked_add(1)],
-                );
-                if let Some(slot) = self.links.get(&raw)
-                    && let Some(witness) = self.by_slot.get_mut(slot)
-                    && witness.country == raw
+                        .is_none_or(|&latest| latest <= old.through_hour)
                 {
-                    witness.through_hour = row.through_hour;
+                    advanced.push((raw, old.since_hour));
+                    old.through_hour = row.through_hour;
+                    if let Some(slot) = self.links.get(&raw)
+                        && let Some(witness) = self.by_slot.get_mut(slot)
+                        && witness.country == raw
+                    {
+                        witness.through_hour = row.through_hour;
+                    }
+                    continue;
                 }
-            } else {
-                schedule(&mut self.deadlines, raw, &witness_hours(row));
-                self.identity_countries.insert(raw);
+                unschedule(&mut self.deadlines, raw, &witness_hours(old));
             }
+            schedule(&mut self.deadlines, raw, &witness_hours(row));
+            self.identity_countries.insert(raw);
             self.witnesses.insert(raw, row.clone());
         }
+        advance_deadlines(&mut self.deadlines, &mut advanced, frame.hour);
         self.identity_slots.extend(
             self.identity_countries
                 .iter()
@@ -1212,4 +1283,97 @@ fn selected_rows<'a, T>(
             .filter(move |_| !all)
             .flat_map(move |&country| country_rows(rows, index, country, of)),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each advancing capture's old hours unscheduled and its first hour and
+    /// next expiry scheduled, one capture at a time.
+    fn one_at_a_time(
+        deadlines: &mut BTreeMap<i32, BTreeSet<u32>>,
+        advanced: &[(u32, i32)],
+        hour: i32,
+    ) {
+        for &(raw, since) in advanced {
+            unschedule(
+                deadlines,
+                raw,
+                &[Some(since), hour.checked_sub(1), Some(hour)],
+            );
+            schedule(deadlines, raw, &[Some(since), None, hour.checked_add(1)]);
+        }
+    }
+
+    /// Captures advancing together move their deadlines exactly as one at a
+    /// time: every capture due advancing, some not (a stale capture still
+    /// due, one stopped long before), captures begun the hour before or at
+    /// the hour, and an hour with no hour after it.
+    #[test]
+    fn advancing_captures_move_their_deadlines_as_one_at_a_time() {
+        // Each case: the hour; the captures that extended to their last hour
+        // before it (country, first hour, last hour), whose expiry alone is
+        // scheduled; those that began at their last hour, all of whose hours
+        // are; and the countries that advance to the hour.
+        type Capture = (u32, i32, i32);
+        let cases: [(i32, Vec<Capture>, Vec<Capture>, Vec<u32>); 5] = [
+            (
+                50,
+                vec![(1, 10, 49), (3, 30, 49)],
+                vec![(2, 49, 49)],
+                vec![3, 1, 2],
+            ),
+            (
+                50,
+                vec![(1, 10, 49), (3, 30, 49), (4, 20, 40)],
+                vec![(2, 49, 49), (6, 49, 49)],
+                vec![3, 2],
+            ),
+            (
+                50,
+                vec![(1, 10, 49)],
+                vec![(5, 50, 50), (7, 51, 51)],
+                vec![1],
+            ),
+            (50, vec![(1, 10, 49)], vec![(2, 30, 49)], vec![2, 1]),
+            (
+                i32::MAX,
+                vec![(1, 10, i32::MAX - 1)],
+                vec![(2, i32::MAX - 1, i32::MAX - 1)],
+                vec![1, 2],
+            ),
+        ];
+        for (case, (hour, extended, begun, advancing)) in cases.into_iter().enumerate() {
+            let mut deadlines = BTreeMap::new();
+            let mut first = BTreeMap::new();
+            for &(raw, since, through) in &extended {
+                schedule(
+                    &mut deadlines,
+                    raw,
+                    &[Some(since), None, through.checked_add(1)],
+                );
+                first.insert(raw, since);
+            }
+            for &(raw, since, through) in &begun {
+                let row = PoliticsCaptureCoverageRow {
+                    country: raw,
+                    since_hour: since,
+                    through_hour: through,
+                    ..Default::default()
+                };
+                schedule(&mut deadlines, raw, &witness_hours(&row));
+                first.insert(raw, since);
+            }
+            let mut advanced: Vec<_> = advancing.iter().map(|raw| (*raw, first[raw])).collect();
+            let mut expected = deadlines.clone();
+            one_at_a_time(&mut expected, &advanced, hour);
+            advance_deadlines(&mut deadlines, &mut advanced, hour);
+            assert_eq!(deadlines, expected, "case {case}");
+            assert!(
+                deadlines.values().all(|raws| !raws.is_empty()),
+                "case {case}: no empty deadline is kept"
+            );
+        }
+    }
 }

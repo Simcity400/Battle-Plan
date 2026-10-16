@@ -533,6 +533,18 @@ impl Prepared {
         ordinal: usize,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        self.finish_block_into(source, writer, branch, ordinal, cancelled)
+    }
+    /// [`Self::finish_block`], reading and writing the block's day pages
+    /// through `pages`.
+    pub(crate) fn finish_block_into(
+        &mut self,
+        source: &Source,
+        pages: &mut impl DayPages,
+        branch: u64,
+        ordinal: usize,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
         self.initialize(source, branch)?;
         let windows = source.block_windows(branch);
         let mut last = windows
@@ -563,14 +575,11 @@ impl Prepared {
                     .map_err(|_| dashboard_core::invalid("Espionage block overflow"))?,
             )
             .or_default();
-        self.repair(source, writer, branch, cancelled)?;
+        self.repair(source, pages, branch, cancelled)?;
         for (ordinal, replies) in std::mem::take(&mut self.replies) {
             check_cancel(cancelled)?;
             let section = format!("espionage-log-{branch}-windows");
-            let mut saved: Vec<EspionageLogReply> = match writer.read_at(&section, ordinal)? {
-                Some(file) => serde_json::from_reader(zstd::stream::Decoder::new(file)?)?,
-                None => Vec::new(),
-            };
+            let mut saved = pages.read(&section, ordinal)?.unwrap_or_default();
             for reply in replies {
                 let window = reply.window.expect("espionage day reply");
                 match saved.binary_search_by_key(&window, |reply| {
@@ -580,7 +589,7 @@ impl Prepared {
                     Err(index) => saved.insert(index, reply),
                 }
             }
-            series::write_reply(writer, &section, ordinal, &saved)?;
+            pages.write(&section, ordinal, saved)?;
         }
         self.reply_bytes = 0;
         Ok(())
@@ -588,7 +597,7 @@ impl Prepared {
     fn repair(
         &mut self,
         source: &Source,
-        writer: &mut store::Writer,
+        pages: &mut impl DayPages,
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
@@ -612,9 +621,7 @@ impl Prepared {
                     .saturating_sub(1) as u64;
                 if loaded.insert(ordinal) {
                     let section = format!("espionage-log-{branch}-windows");
-                    if let Some(file) = writer.read_at(&section, ordinal)? {
-                        let mut saved: Vec<EspionageLogReply> =
-                            serde_json::from_reader(zstd::stream::Decoder::new(file)?)?;
+                    if let Some(mut saved) = pages.read(&section, ordinal)? {
                         saved.extend(self.replies.remove(&ordinal).unwrap_or_default());
                         self.replies.insert(ordinal, saved);
                     }
@@ -754,6 +761,114 @@ impl Prepared {
         Ok(serde_json::from_reader(zstd::stream::Decoder::new(
             reader,
         )?)?)
+    }
+}
+
+/// Where a finished block's day pages are read and written. Hourly
+/// preparation reads and writes them through the store writer as each block
+/// finishes; the intelligence family prepared on its own finishes its blocks
+/// without a writer, so it stages them until its next commit ([`StagedPages`]).
+pub(crate) trait DayPages {
+    /// The pages of `section`'s range `ordinal` as they stand.
+    fn read(&mut self, section: &str, ordinal: u64) -> io::Result<Option<Vec<EspionageLogReply>>>;
+    /// Replace that range's pages.
+    fn write(
+        &mut self,
+        section: &str,
+        ordinal: u64,
+        pages: Vec<EspionageLogReply>,
+    ) -> io::Result<()>;
+}
+
+impl DayPages for store::Writer {
+    fn read(&mut self, section: &str, ordinal: u64) -> io::Result<Option<Vec<EspionageLogReply>>> {
+        match self.read_at(section, ordinal)? {
+            Some(file) => Ok(Some(serde_json::from_reader(zstd::stream::Decoder::new(
+                file,
+            )?)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn write(
+        &mut self,
+        section: &str,
+        ordinal: u64,
+        pages: Vec<EspionageLogReply>,
+    ) -> io::Result<()> {
+        series::write_reply(self, section, ordinal, &pages)
+    }
+}
+
+/// Day pages finished since the family's last commit, by section and range,
+/// and their serialized size against its batch budget. Each range holds the
+/// pages its latest finishing block left, as the store writer would.
+#[derive(Default)]
+pub(crate) struct StagedPages {
+    pages: BTreeMap<(String, u64), Vec<EspionageLogReply>>,
+    bytes: usize,
+}
+
+impl StagedPages {
+    /// Serialized bytes staged since the last flush.
+    pub(crate) fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// The staged pages over the committed store: a range staged since the
+    /// last flush reads as staged, any other as `key` last committed it.
+    pub(crate) fn through<'a>(
+        &'a mut self,
+        store: &'a store::Store,
+        key: &'a store::SourceKey,
+    ) -> impl DayPages + 'a {
+        ThroughStore {
+            staged: self,
+            store,
+            key,
+        }
+    }
+
+    /// Write every staged range, in range order (so each section's ranges
+    /// are appended in turn), with the bytes the store writer would have
+    /// been given as each block finished.
+    pub(crate) fn write(&mut self, writer: &mut store::Writer) -> io::Result<()> {
+        for ((section, ordinal), pages) in std::mem::take(&mut self.pages) {
+            series::write_reply(writer, &section, ordinal, &pages)?;
+        }
+        self.bytes = 0;
+        Ok(())
+    }
+}
+
+struct ThroughStore<'a> {
+    staged: &'a mut StagedPages,
+    store: &'a store::Store,
+    key: &'a store::SourceKey,
+}
+
+impl DayPages for ThroughStore<'_> {
+    fn read(&mut self, section: &str, ordinal: u64) -> io::Result<Option<Vec<EspionageLogReply>>> {
+        if let Some(pages) = self.staged.pages.get(&(section.to_owned(), ordinal)) {
+            return Ok(Some(pages.clone()));
+        }
+        series::read_reply(self.store, self.key, section, ordinal)
+    }
+
+    fn write(
+        &mut self,
+        section: &str,
+        ordinal: u64,
+        pages: Vec<EspionageLogReply>,
+    ) -> io::Result<()> {
+        self.staged.bytes = self
+            .staged
+            .bytes
+            .saturating_add(serde_json::to_vec(&pages)?.len());
+        self.staged
+            .pages
+            .insert((section.to_owned(), ordinal), pages);
+        Ok(())
     }
 }
 

@@ -173,6 +173,9 @@ impl TryFrom<u8> for EquipmentDestructionCause {
 }
 
 impl NativeValue for EquipmentDestructionCause {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     fn try_clone(&self) -> io::Result<Self> {
         Ok(*self)
     }
@@ -234,6 +237,9 @@ pub enum EquipmentDestructionCoverage {
 }
 
 impl NativeValue for EquipmentDestructionCoverage {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     fn try_clone(&self) -> io::Result<Self> {
         Ok(*self)
     }
@@ -330,6 +336,9 @@ impl DivisionDeletionDisposition {
 }
 
 impl NativeValue for DivisionDeletionDisposition {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     fn try_clone(&self) -> io::Result<Self> {
         Ok(*self)
     }
@@ -353,6 +362,9 @@ impl NativeValue for DivisionDeletionDisposition {
 }
 
 impl NativeValue for Option<EquipmentDestructionCause> {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
     fn try_clone(&self) -> io::Result<Self> {
         Ok(*self)
     }

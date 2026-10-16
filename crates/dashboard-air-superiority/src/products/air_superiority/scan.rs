@@ -910,11 +910,11 @@ pub(super) fn apply_auxiliary(sample: &mut Snapshot, aux: &Auxiliary) {
     }
 }
 
-fn date_theatres(read: bool, frame: &DecodedFrame, known: bool, last_read: &mut Option<i32>) {
+fn date_theatres(read: bool, hour: i32, known: bool, last_read: &mut Option<i32>) {
     if !known {
         *last_read = None;
     } else if read {
-        *last_read = Some(frame.hour);
+        *last_read = Some(hour);
     }
 }
 
@@ -928,7 +928,7 @@ fn dated_auxiliary(frame: &DecodedFrame, last_read: &mut Option<i32>) -> Auxilia
             TableId::AirTheatres,
             frame.hour,
         ),
-        frame,
+        frame.hour,
         result.theatres_known,
         last_read,
     );
@@ -976,11 +976,18 @@ impl AuxiliaryRead {
                 .map(|table| frame.tables[table.index()].identity())
                 .collect();
         }
-        date_theatres(read, frame, self.value.theatres_known, last_read);
+        self.date(read, frame.hour, last_read);
+        Arc::clone(&self.value)
+    }
+
+    /// Date the held theatres at `hour`, read there or not (`read`), as
+    /// [`Self::read`] dates them after taking the hour's tables: at an hour
+    /// whose auxiliary rows are the hour before's, this is all it does.
+    pub(super) fn date(&mut self, read: bool, hour: i32, last_read: &mut Option<i32>) {
+        date_theatres(read, hour, self.value.theatres_known, last_read);
         if self.value.theatre_read != *last_read {
             Arc::make_mut(&mut self.value).theatre_read = *last_read;
         }
-        Arc::clone(&self.value)
     }
 }
 
@@ -988,7 +995,7 @@ impl AuxiliaryRead {
 #[derive(Default)]
 pub(super) struct DayReads {
     /// The recording's format, which dates its daily tables
-    /// ([`crate::metadata::slot_read`]).
+    /// ([`dashboard_text::metadata::slot_read`]).
     format: replay::format::FormatVersion,
     scores: ScoreRead,
     regions: HashSet<u32>,

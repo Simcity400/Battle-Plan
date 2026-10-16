@@ -15,15 +15,39 @@ use std::{
 
 mod casualty_pending;
 mod catalogue_refusals;
+mod commit_points;
 mod equipment_loss_pending;
 mod family_lanes;
 mod family_refusal;
+mod independent_air;
 mod independent_families;
+mod independent_focus;
 mod independent_groups;
+mod independent_identities;
+mod independent_intelligence;
+mod independent_ledgers;
+mod independent_politics;
+mod independent_politics_ledger;
+mod independent_superiority;
+mod independent_tension;
+mod independent_wars;
+mod newest_windows;
 mod parallel_flush;
 mod prepass_parity;
 mod serialization_order;
 mod stability_progressive;
+
+/// Whether `query`'s data covers the whole branch ([`product_coverage`]).
+fn complete(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    branch: u64,
+    query: &str,
+    cancelled: &AtomicBool,
+) -> io::Result<bool> {
+    Ok(product_coverage(source, content, branch, query, cancelled)?
+        .is_some_and(|range| range.complete))
+}
 
 #[test]
 #[cfg_attr(
@@ -101,13 +125,13 @@ fn observer_timing_table_is_filled_only_in_measured_mode() {
     )
     .unwrap();
     let families = timing.families.expect("measured call sites fill the table");
-    assert_eq!(families["focus.write_frame"].calls, 2);
     assert_eq!(families["naval.observe"].calls, 2);
     assert_eq!(families["naval.observe_details"].calls, 2);
     assert_eq!(families["store_commit"].calls, 1);
     assert!(families.values().all(|family| family.calls > 0));
     for name in [
-        "politics_ledger",
+        // The politics ledger is prepared on its own, before the walk.
+        "independent.politics_ledger",
         "stability_parts",
         "setup.files",
         "setup.state",
@@ -1115,11 +1139,15 @@ fn prepared_country_identities_match_after_commits_resume_and_append() {
     );
     assert_eq!(commits, [1, 2, 3]);
     flag.store(false, Ordering::Release);
+    // The identities are prepared on their own before the hourly walk, so
+    // branch 3's answer from their own coverage although the walk stopped
+    // before reaching it.
     assert!(
-        crate::products::country_history::prepared_branch_histories(&source, 3, None, &flag,)
+        !coverage(&source, None, 3, &flag)
             .unwrap()
-            .is_none()
+            .is_some_and(|coverage| coverage.complete)
     );
+    assert_prepared_identities(&source, 3);
     assert_prepared_identities(&source, 2);
     let resumed = fixture.source("resume");
     let mut visited = Vec::new();
@@ -1391,7 +1419,9 @@ fn cancellation_discards_whole_block_and_resume_visits_only_unaccepted_tail() {
             .find(|section| section.id == "focus-display")
             .unwrap()
             .state,
-        State::Failed
+        // Focus art is evaluated when asked (`focus-art`), so preparation
+        // without content has no display failure to report.
+        State::Ready
     );
     assert_eq!(
         coverage(&source, None, 2, &flag)
@@ -2391,21 +2421,16 @@ fn prepared_ideas_replace_one_range_and_reload_it_after_append() {
     let compare = |source: &Source| {
         let (store, key) = super::super::files(source, None).unwrap();
         assert_eq!(store.range_count(&key, "idea-history-1").unwrap(), Some(1));
-        let loaded = load_branch(
-            &store,
-            &key,
-            Some(&key),
-            source.replay_ref(),
-            1,
-            10,
-            &Refused::default(),
-        )
+        // The ideas are prepared on their own: their one range is the scan
+        // their next preparation reloads.
+        let loaded = idea_history::Scan::read(std::io::BufReader::new(
+            store.read(&key, "idea-history-1", 0).unwrap().unwrap(),
+        ))
         .unwrap();
         let tag = String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap();
         for tag in [tag.as_str(), "missing"] {
             assert_eq!(
-                serde_json::to_value(loaded.ideas.country(source.replay_ref(), 1, tag).unwrap())
-                    .unwrap(),
+                serde_json::to_value(loaded.country(source.replay_ref(), 1, tag).unwrap()).unwrap(),
                 serde_json::to_value(
                     idea_history::scan(source.replay_ref(), 1, tag, &flag).unwrap()
                 )

@@ -30,6 +30,11 @@ pub(super) enum Update<'a> {
     Decoded(Option<(&'a [DeltaRow], &'a [u128])>),
 }
 
+/// How one inventory table changed since the hour last applied: unchanged
+/// (`None`), by the rows a recorded delta changed and the keys it deleted
+/// (`Some(Some(..))`), or to be read whole (`Some(None)`).
+pub(super) type Change<'a> = Option<Option<(&'a [DeltaRow], &'a [u128])>>;
+
 /// The inventory tables' updates this hour.
 #[derive(Clone, Copy)]
 pub(super) struct Updates<'a> {
@@ -63,6 +68,23 @@ impl<'a> Updates<'a> {
             divisions: update(TableId::Divisions),
             templates: update(TableId::DivisionTemplateIcons),
             land: update(TableId::DivisionLandInputs),
+        }
+    }
+
+    /// The decoded tables' updates of the hour after `applied`, the hour last
+    /// applied, as [`Self::decoded`] gives them from an hour's frame changes:
+    /// for Divisions, DivisionTemplateIcons and DivisionLandInputs in turn,
+    /// unchanged since `applied` (`None`), read from the rows a recorded delta
+    /// changed (`Some(Some(..))`), or read whole (`Some(None)`).
+    pub fn following(applied: i32, [divisions, templates, land]: [Change<'a>; 3]) -> Self {
+        let update = |change: Change<'a>| match change {
+            None => Update::Unchanged(applied),
+            Some(rows) => Update::Decoded(rows),
+        };
+        Self {
+            divisions: update(divisions),
+            templates: update(templates),
+            land: update(land),
         }
     }
 

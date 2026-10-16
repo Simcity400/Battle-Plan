@@ -60,6 +60,7 @@ use {
 };
 
 mod losses;
+pub mod newest;
 pub mod prepared;
 mod terrain;
 pub use terrain::LandBattleTerrains;
@@ -70,7 +71,7 @@ pub struct LandBattlesManifest;
 pub struct LandBattlesRanking;
 /// One battle's whole course, for a drill.
 pub struct LandBattleCourses;
-#[cfg(any(test, feature = "test-support"))]
+/// Every table the census reads.
 const CENSUS_TABLES: [TableId; 13] = [
     TableId::Campaign,
     TableId::Countries,
@@ -541,6 +542,10 @@ pub struct Census {
     live_sides: HashMap<u64, LiveSide>,
     #[serde(skip)]
     live_sides_read: bool,
+    /// What a newest-window look-back notes for its proof; none in forward
+    /// preparation.
+    #[serde(skip)]
+    newest: Option<newest::Check>,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
@@ -703,7 +708,9 @@ impl Census {
         }
         Ok(())
     }
-    #[cfg(any(test, feature = "test-support"))]
+    /// Observes with no change facts, as the recording product does: every
+    /// table is treated as changed, which publishes what observation with
+    /// the facts publishes.
     pub fn observe(&mut self, frame: &DecodedFrame) -> io::Result<()> {
         self.observe_with_changes(frame, None)
     }
@@ -740,6 +747,12 @@ impl Census {
         // In particular, a restored carry can precede this supplying frame.
         self.available |= frame_available(self.format, frame);
         self.variants.observe(self.format, frame);
+        // An hour whose variant table is not complete forgets every name.
+        if let Some(check) = &mut self.newest
+            && frame.complete::<tables::VariantDefinitions>().is_err()
+        {
+            check.forgot = true;
+        }
         let update = self.links.update(frame);
         let labels = update.is_ok();
         let links_changed = labels != self.labels_known || matches!(update, Ok(true));

@@ -72,7 +72,7 @@ impl Sources {
         self.ideas
             .prepare_changes(frame, &mut self.idea_changes, source, context)?;
         self.focus
-            .observe_completions(frame, source, context, cancelled)?;
+            .observe_frame(source.replay_ref(), frame, cancelled)?;
         let changes = self.changes.observe(frame, source.replay_ref().format);
         self.nukes.observe(frame, source.replay_ref(), &changes)?;
         self.projects.observe(source, context, frame, cancelled)?;
@@ -470,21 +470,18 @@ fn prepared_feed_sources_equal_their_change_builders_across_commits_resume_appen
                 })
                 .collect();
             assert_eq!(actual, wanted);
-            let completions: Vec<crate::prepared_focus::Completion> =
+            // Published across commits and resumes, the completions are those
+            // one uninterrupted fold of every hour gives.
+            let completions: Vec<crate::products::national_focus::FocusCompletion> =
                 rows(&fixture, "focus-completions-1", &[0], &cancelled);
-            let mut original =
-                crate::products::national_focus::FocusCompletionProjection::default();
-            let wanted: Vec<_> = seen
-                .iter()
-                .flat_map(|frame| original.observe(frame))
-                .collect();
-            assert_eq!(
-                completions
-                    .into_iter()
-                    .map(|row| row.event)
-                    .collect::<Vec<_>>(),
-                wanted
-            );
+            let mut original = crate::prepared_focus::FocusIndex::default();
+            for frame in &seen {
+                original
+                    .observe_frame(source.replay_ref(), frame, &cancelled)
+                    .unwrap();
+            }
+            original.fold_held(&cancelled).unwrap();
+            assert_eq!(completions, original.seen);
             let facts: Vec<Fact> = rows(&fixture, "event-feed-facts-1", &FACT_KEYS, &cancelled);
             assert_eq!(
                 facts

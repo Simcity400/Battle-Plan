@@ -65,10 +65,9 @@ test('the prepared widget supplies its settled page and description to one parit
     }] });
   try {
     const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/PreparedFocusWidget.tsx');
-    const row: PreparedFocusHour = { schema: 5, slot: 1, countryId: 7, hour: 30, lastHour: 40, orderFirstHour: 10,
+    const row: PreparedFocusHour = { schema: 6, slot: 1, countryId: 7, hour: 30, lastHour: 40, orderFirstHour: 10,
       current: 'active', continuous: null, paused: true, progressRaw: '1000000', dailyGainRaw: null,
-      completed: { first: '0', count: '1', rows: '2' }, presentation: { first: '0', count: '1', rows: '3' },
-      details: { first: '0', count: '1', rows: '3' }, warnings: [] };
+      completed: { first: '0', count: '1', rows: '2' }, at: 35 };
     const size = () => Number(row.completed.rows);
     const entry = (ordinal: number) => ({ ordinal, token: `completed-${ordinal}`, completedByHour: null });
     const tokens = () => [...Array.from({length:size()}, (_, index) => entry(index).token), ...(row.current ? [row.current] : [])];
@@ -76,12 +75,17 @@ test('the prepared widget supplies its settled page and description to one parit
     const client = { preparationStatus: async (request: any) => { fixture.statuses++; return { ...request, state: 'ready', sections: [] }; },
       preparedQuery: async (_source: unknown, product: string, params: any) => {
         fixture.calls.push(product);
-        if (product === 'focus-hour') return params.hour === 10 ? { ...row, hour: 10, lastHour: 10 } : row;
+        if (product === 'focus-hour') return { ...row, at: params.hour };
         if (product === 'focus-order-page') return Array.from({length:Math.min(128, size()-Number(params.page)*128)}, (_, index) => entry(Number(params.page)*128+index));
-        const art = (token: string) => ({ token, name: 'Observed', description: product === 'focus-details-page' ? 'Scoped details' : null, baseDurationDays: 7, icon: null });
-        if (product === 'focus-static-text') return params.tokens.map(art);
-        if (product === 'focus-presentation-page' || product === 'focus-details-page') return tokens().slice(Number(params.page)*128, (Number(params.page)+1)*128).map(token => ({ artwork: art(token), reason: null }));
+        if (product === 'focus-static-text') return params.tokens.map(staticArt);
         throw new Error(product);
+      },
+      product: async (request: any) => {
+        const { mode, tokens: asked } = request.params;
+        fixture.calls.push(`focus-art:${mode}`);
+        assert.ok(asked.every((token: string) => tokens().includes(token)));
+        return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: { warnings: [], failures: [],
+          art: asked.map((token: string) => ({ artwork: { ...staticArt(token), description: mode === 'text' ? 'Scoped details' : null }, reason: null })) } };
       },
     };
     const props = { widget: { id: 'focus', kind: 'national-focus', trackIds: ['main'], countries: { kind: 'tags', tags: ['opaque'] }, time: { mode: 'follow' } },
@@ -104,7 +108,8 @@ test('the prepared widget supplies its settled page and description to one parit
         'settled prepared rows and empty/current layouts match the legacy renderer');
     };
     render(); await settle();
-    assert.equal(fixture.calls.length, 5, 'the visible page reads two points, order, static text and one shared presentation');
+    assert.equal(fixture.calls.length, 5, 'the visible page reads one point, order, static text and art at its two hours');
+    assert.deepEqual(fixture.calls.filter(call => call.startsWith('focus-art')), ['focus-art:display', 'focus-art:display']);
     assert.equal(fixture.statuses, 0);
     assert.equal(fixture.providers.length, 1, 'the complete parent model suppresses the page-only child model');
     fixture.providers[0].prepare!(); render(); await settle();
@@ -116,13 +121,13 @@ test('the prepared widget supplies its settled page and description to one parit
     assert.match(fixture.markup, /<details class="focus-details"><summary class="focus-row">/);
     fixture.completions[0].onToggle(true); render(); await settle();
     assert.equal(fixture.providers[0].ready!(), true);
-    assert.equal(fixture.calls.filter(call => call === 'focus-details-page').length, 1, 'reading the complete model reuses the opened row description');
+    assert.equal(fixture.calls.filter(call => call === 'focus-art:text').length, 1, 'reading the complete model reuses the opened row description');
     assert.equal((fixture.providers[0].read().artwork as any[])[0].art.artwork.description, 'Scoped details');
     assert.match(fixture.markup, /<details class="focus-details" open=""><summary[\s\S]*Base duration <strong>7 days<\/strong>[\s\S]*Scoped details/);
     fixture.completions[1].onToggle(true); render(); await settle();
     assert.deepEqual(fixture.completions.map(row => row.open), [true,true], 'completion disclosures open independently');
     assert.ok((fixture.providers[0].read().artwork as any[]).every(row => row.art.descriptionDemanded));
-    assert.equal(fixture.calls.filter(call => call === 'focus-details-page').length, 2, 'opening another row retains the accepted first description');
+    assert.equal(fixture.calls.filter(call => call === 'focus-art:text').length, 2, 'opening another row retains the accepted first description');
     fixture.completions[0].onToggle(false); render(); await settle();
     assert.deepEqual(fixture.completions.map(row => row.open), [false,true]);
     const count = fixture.calls.length;
@@ -130,7 +135,7 @@ test('the prepared widget supplies its settled page and description to one parit
     assert.equal(fixture.calls.length, count, 'settled redraws do not restart request loops');
     const reset = () => { for (const slot of fixture.slots) slot.cleanup?.(); fixture.slots = []; fixture.calls = []; };
     row.current = null;
-    for (const pages of [row.completed,row.presentation,row.details!]) Object.assign(pages,{count:'0',rows:'0'});
+    Object.assign(row.completed,{count:'0',rows:'0'});
     for (const mode of ['campaign','follow'] as const) {
       reset(); props.widget.time = {mode}; render(); await settle(); compareOracle();
       assert.doesNotMatch(fixture.markup, /Completion pages|<ol|focus-number/);
@@ -138,7 +143,6 @@ test('the prepared widget supplies its settled page and description to one parit
       assert.deepEqual(fixture.calls,['focus-hour']);
     }
     reset(); row.current = 'active'; Object.assign(row.completed,{count:'2',rows:'129'});
-    for (const pages of [row.presentation,row.details!]) Object.assign(pages,{count:'2',rows:'130'});
     props.widget.time = {mode:'follow'}; render(); await settle();
     assert.match(fixture.markup, /aria-label="Completion pages"/);
     assert.match(fixture.markup, /Page 2 of 2/);

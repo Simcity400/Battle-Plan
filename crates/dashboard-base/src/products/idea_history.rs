@@ -1314,6 +1314,50 @@ impl Scan {
         Ok(())
     }
 
+    /// Hours `first..=last` of a block read by its changes, which continue
+    /// the last observed hour and at which no field this scan reads changed:
+    /// [`Self::prepare_changes_in`]'s step for each, at once. Its joins find
+    /// every holder's ideas, advisors, characters, spellings and appearance
+    /// as the hour before, so no holder is visited and nothing is published:
+    /// the frontier advances, an hour without its inputs stays unobserved,
+    /// and dated template refusals take the last hour's text (each hour
+    /// rewrites them with its own). False, with nothing changed, after a gap;
+    /// the caller then observes the hours on their frames.
+    pub(crate) fn advance_quiet(
+        &mut self,
+        first: i32,
+        last: i32,
+        changes: &mut PreparedChanges,
+    ) -> bool {
+        if last < first || self.previous_hour.and_then(|hour| hour.checked_add(1)) != Some(first) {
+            return false;
+        }
+        self.updated.clear();
+        let known = self.native.countries.is_some()
+            && self.native.links.is_some()
+            && self.native.ideas.is_some()
+            && self.native.advisors.is_some();
+        if known {
+            self.previous_hour = Some(last);
+            self.observed = true;
+            for tag in &self.dated {
+                if let Some(state) = self.states.get_mut(tag) {
+                    state.date_template_refusals(last);
+                }
+            }
+        } else {
+            self.seal();
+            self.active.clear();
+            self.unresolved.clear();
+            self.dated.clear();
+            self.previous_hour = Some(last);
+            mark(&mut self.unobserved, first, last);
+        }
+        changes.events.through(first);
+        changes.events.through(last);
+        true
+    }
+
     fn seal(&mut self) {
         if let Some(hour) = self.previous_hour {
             for tag in &self.active {
@@ -2121,6 +2165,8 @@ pub fn reply(
         warnings,
     })
 }
+
+pub mod prepared;
 
 #[cfg(test)]
 mod tests;
