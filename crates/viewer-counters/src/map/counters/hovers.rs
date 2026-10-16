@@ -485,7 +485,7 @@ mod tests {
         assert!(!contains(rect, [109., 222.]));
         assert!(!contains(rect, [108., 222.5]));
         let mut batch = sprites::Batch::default();
-        land::draw_type_icon(
+        let _ = land::draw_type_icon(
             &atlas,
             &mut batch,
             &Child {

@@ -2189,14 +2189,15 @@ pub(super) fn draw_land_counter(
     priority: i8,
 ) -> io::Result<hovers::Presented> {
     let first = batch.quads.len();
-    draw_land_children(inputs, batch, origin, land, member)?;
-    let controls = hovers::presented(
+    let type_refusal = draw_land_children(inputs, batch, origin, land, member)?;
+    let mut controls = hovers::presented(
         inputs,
         &land.stacks[member],
         land.stacks[member].coarse,
         origin,
         &batch.quads[first..],
     );
+    controls.refused.extend(type_refusal);
     rank_children(batch, first, priority, icon)?;
     Ok(controls)
 }
@@ -2208,17 +2209,18 @@ fn draw_land_children(
     origin: [f32; 2],
     land: &PreparedLand,
     member: usize,
-) -> io::Result<()> {
+) -> io::Result<Option<String>> {
     let stack = &land.stacks[member];
     if let (Some(gun), Ok(layout)) = (&stack.gun, &inputs.assets.layouts.gun) {
-        draw_gun_children(inputs, batch, origin, land, member, gun, layout);
-        return Ok(());
+        return Ok(draw_gun_children(
+            inputs, batch, origin, land, member, gun, layout,
+        ));
     }
     let style = &land.styles[member];
     let (countries, icons_of) = (&land.countries, &land.templates);
     // `land_plate` counts and skips a plate whose colour the hour cannot give.
     let Ok(plate) = stack.plate else {
-        return Ok(());
+        return Ok(None);
     };
     let layout = inputs
         .assets
@@ -2268,7 +2270,7 @@ fn draw_land_children(
                 [1.0; 4],
             );
         }
-        return Ok(());
+        return Ok(None);
     }
     // count_bg binds a Button; the game uses Up's
     // strip frame 0 unless a positive authored frame overrides it.
@@ -2346,7 +2348,7 @@ fn draw_land_children(
         stack.flag_owner,
     );
     batch.at_layer(u64::from(layout.type_icon.order));
-    draw_type_icon(
+    let type_refusal = draw_type_icon(
         &assets.types,
         batch,
         &layout.type_icon,
@@ -2431,7 +2433,7 @@ fn draw_land_children(
             }
         }
     }
-    Ok(())
+    Ok(type_refusal)
 }
 
 /// Where the `position`th ability item's sprite lands. The grid steps one `slotsize` right per
@@ -2527,12 +2529,12 @@ fn draw_gun_children(
     member: usize,
     gun: &GunStack,
     layout: &GunCounter,
-) {
+) -> Option<String> {
     let stack = &land.stacks[member];
     let style = &land.styles[member];
     let assets = inputs.assets;
     let Ok(plate) = stack.plate else {
-        return;
+        return None;
     };
     let mut draw = |child: &Child, frame: u32, tint: [f32; 4]| {
         batch.at_layer(u64::from(child.order));
@@ -2577,7 +2579,7 @@ fn draw_gun_children(
                 [1.0; 4],
             );
         }
-        return;
+        return None;
     }
     draw(&layout.plate, layout.plate.frame_index(0), plate);
     if stack.selected && !stack.members.is_empty() {
@@ -2606,7 +2608,7 @@ fn draw_gun_children(
         stack.flag_owner,
     );
     batch.at_layer(u64::from(layout.type_icon.order));
-    draw_type_icon(
+    let type_refusal = draw_type_icon(
         &assets.types,
         batch,
         &layout.type_icon,
@@ -2641,6 +2643,7 @@ fn draw_gun_children(
         batch.at_layer(u64::from(layout.action.order));
         draw_child(batch, sheet, &layout.action, origin, frame, [1.0; 4]);
     }
+    type_refusal
 }
 
 /// Where one stack's counter hangs: its province's anchor, or a point along its route.
@@ -2730,9 +2733,8 @@ pub(super) fn draw_glyphs(
     }
 }
 
-/// Select a type icon only when its operands and sprite resolve. A hidden
-/// counter uses the no-intel icon; missing visible artwork leaves the panel bare.
-/// `tint` is the selected relation colour.
+/// Draw the selected type icon. An undeclared selection keeps the game's pooled
+/// drawable, which the recording does not hold; refuse that icon by name.
 pub(super) fn draw_type_icon(
     types: &templates::TypeAtlas,
     batch: &mut Batch,
@@ -2740,11 +2742,17 @@ pub(super) fn draw_type_icon(
     origin: [f32; 2],
     icon: Option<&templates::TypeIcon>,
     tint: Option<[f32; 4]>,
-) {
-    let Some(tint) = tint else { return };
-    let Some(cell) = icon.and_then(|icon| types.cell(icon)) else {
-        return;
-    };
+) -> Option<String> {
+    let icon = icon?;
+    if !types.declares(&icon.sprite) {
+        return Some(format!(
+            "type icon refused: sprite {} is undeclared; the game keeps the pooled counter's \
+             previous drawable, which the recording does not hold",
+            icon.sprite
+        ));
+    }
+    let tint = tint?;
+    let cell = types.cell(icon)?;
     let size = types.frame_size(cell);
     batch.cell(
         types.texture,
@@ -2753,6 +2761,7 @@ pub(super) fn draw_type_icon(
         types.uv(cell),
         tint,
     );
+    None
 }
 
 #[cfg(test)]

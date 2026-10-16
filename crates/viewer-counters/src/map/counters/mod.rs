@@ -1833,8 +1833,8 @@ pub struct CounterReport {
     /// pool's growth, an icon kept by its province's presentation-dirty bit whose anchor does not
     /// project, a window that does not build or tick.
     pub naval_window_notes: BTreeMap<Cow<'static, str>, usize>,
-    /// Land and railway-gun plates not drawn, by the operand the hour lacks: the logical owner's
-    /// current UI colour in country-colour mode ([`counter_plate_color`]).
+    /// Land and railway-gun counters or children not drawn, by missing input or refused
+    /// drawable: plate colour, hover metadata or an undeclared type sprite.
     pub land_counter_gaps: BTreeMap<Cow<'static, str>, usize>,
     /// Action children withheld on drawn own detailed division plates, by missing operand or
     /// unsupported sprite. The plate and its other children still draw.

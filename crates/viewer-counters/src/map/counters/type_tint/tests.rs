@@ -51,6 +51,38 @@ fn empty_frame() -> DecodedFrame {
     }
 }
 
+#[test]
+fn foreign_division_icons_complete_war_census_survives_the_tint_memo_projection() {
+    let (links, _, mut frame) = world(&[(1, 4)], &[(1, 9), (2, 9)], &[]);
+    // Current recordings derive directed wars; no per-country packet supplies a shortcut.
+    if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *frame.tables[TableId::CountryCounterInputs.index()]
+    {
+        for row in rows {
+            row.directed_wars = Recorded::NotRecorded;
+        }
+    }
+    let memo = Memo::new(TABLES, 2);
+    let index = Index::read(&memo, &frame, &links, 1);
+    assert_eq!(index.of(101, 101), Some(Side::Friend));
+    assert_eq!(index.of(102, 102), Some(Side::Friend));
+    assert_eq!(index.of(103, 103), Some(Side::Neutral));
+    assert_eq!(index.of(104, 104), Some(Side::Enemy));
+    *frame.tables[TableId::WarRelations.index()] =
+        TableView::Complete(TableRows::WarRelations(Vec::new()));
+    assert_eq!(
+        Index::read(&memo, &frame, &links, 1).of(104, 104),
+        Some(Side::Neutral)
+    );
+    *frame.tables[TableId::WarRelations.index()] = TableView::Unavailable {
+        reason: "capture refused".into(),
+    };
+    let unavailable = Index::read(&memo, &frame, &links, 1);
+    assert_eq!(unavailable.of(101, 101), Some(Side::Friend));
+    assert_eq!(unavailable.of(104, 104), None);
+    assert!(unavailable.problem().contains("WarRelations"));
+}
+
 fn world(
     wars: &[(u32, u32)],
     factions: &[(u32, u64)],

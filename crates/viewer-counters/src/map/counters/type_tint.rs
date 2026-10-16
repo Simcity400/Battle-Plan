@@ -99,6 +99,7 @@ impl Colors {
 /// The tables [`Index`] is built from besides its volunteer and hour [`Key`].
 pub const TABLES: &[TableId] = &[
     TableId::CountryLinks,
+    TableId::WarRelations,
     TableId::FactionMembers,
     TableId::Countries,
     TableId::CountryCounterInputs,

@@ -105,7 +105,7 @@ fn visible_and_question_mark_type_quads_keep_each_relation_color() {
         let tint = type_tint::Colors::TEST.of(side);
         for hidden in [false, true] {
             let mut batch = Batch::default();
-            land::draw_type_icon(
+            let _ = land::draw_type_icon(
                 &atlas,
                 &mut batch,
                 &child,
@@ -127,7 +127,7 @@ fn visible_and_question_mark_type_quads_keep_each_relation_color() {
                 ]
             );
             batch.clear();
-            land::draw_type_icon(
+            let _ = land::draw_type_icon(
                 &atlas,
                 &mut batch,
                 &child,
@@ -137,7 +137,7 @@ fn visible_and_question_mark_type_quads_keep_each_relation_color() {
             );
             assert!(batch.quads.is_empty());
             // NATO counters use the no-intel icon's second frame.
-            land::draw_type_icon(
+            let _ = land::draw_type_icon(
                 &atlas,
                 &mut batch,
                 &child,
@@ -156,6 +156,36 @@ fn visible_and_question_mark_type_quads_keep_each_relation_color() {
 }
 
 use super::*;
+
+#[test]
+fn foreign_division_icons_undeclared_selection_draws_no_type_quad_and_is_counted_by_name() {
+    engine::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let guis = layout_gui(
+        br#"guiTypes={
+        containerWindowType={name=unit_counter_navy}
+        containerWindowType={name=naval_combat_mapicon}
+        containerWindowType={name=unit_counter size={width=81 height=29}
+            buttonType={name=count_bg spriteType=GFX_synthetic_plate}
+            iconType={name=type spriteType=GFX_synthetic_actions
+                position={x=3 y=4} scale=0.5 frame=9}
+        }}"#,
+    );
+    let mut hidden = land_unit(7, 2, 10, 10, true);
+    hidden.sight = Sight::Partial;
+    let members = [hidden, land_unit(3, 2, 10, 10, true)];
+    let (batch, report) = draw_land_action_fixture(guis, &members, false);
+    // Even a loaded authored sprite cannot stand in for the unrecorded pool history.
+    assert!(!batch.quads.is_empty());
+    assert!(batch.quads.iter().all(|quad| quad.texture == 1));
+    assert_eq!(report.land_counters, 1);
+    assert_eq!(report.no_intel_counters, 1);
+    assert_eq!(report.land_counter_gaps.len(), 1);
+    let (refusal, count) = report.land_counter_gaps.first_key_value().unwrap();
+    assert!(refusal.contains(NO_INTEL_SPRITE));
+    assert!(refusal.contains("previous drawable, which the recording does not hold"));
+    assert_eq!(*count, 1);
+}
 
 #[test]
 fn dump_census_excludes_combat_window_quads() {
