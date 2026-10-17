@@ -152,7 +152,7 @@ impl Scope {
             None,
             cancelled,
             bytes,
-            extract,
+            |_| extract(),
             true,
         )
     }
@@ -177,7 +177,7 @@ impl Scope {
             None,
             cancelled,
             bytes,
-            extract,
+            |_| extract(),
             false,
         )
     }
@@ -197,6 +197,31 @@ impl Scope {
         cancelled: &AtomicBool,
         bytes: impl FnOnce(&T) -> usize,
         extract: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<Arc<T>> {
+        self.get_inner(
+            branch,
+            None,
+            params,
+            Some(serde_json::to_vec(publication)?),
+            cancelled,
+            bytes,
+            |_| extract(),
+            false,
+        )
+    }
+
+    /// Replace a publication while offering its completed predecessor to an
+    /// incremental reader. A busy predecessor is skipped without waiting; the
+    /// extractor must validate every part it reuses against the new publication.
+    #[allow(clippy::too_many_arguments)]
+    pub fn continue_entry<T: Send + Sync + 'static>(
+        &self,
+        branch: u64,
+        params: &impl Serialize,
+        publication: &impl Serialize,
+        cancelled: &AtomicBool,
+        bytes: impl FnOnce(&T) -> usize,
+        extract: impl FnOnce(Option<Arc<T>>) -> io::Result<T>,
     ) -> io::Result<Arc<T>> {
         self.get_inner(
             branch,
@@ -260,7 +285,7 @@ impl Scope {
         publication: Option<Vec<u8>>,
         cancelled: &AtomicBool,
         bytes: impl FnOnce(&T) -> usize,
-        extract: impl FnOnce() -> io::Result<T>,
+        extract: impl FnOnce(Option<Arc<T>>) -> io::Result<T>,
         recording: bool,
     ) -> io::Result<Arc<T>> {
         check_cancel(cancelled)?;
@@ -272,6 +297,7 @@ impl Scope {
             kind: TypeId::of::<T>(),
             params: serde_json::to_vec(params)?,
         };
+        let mut previous = None;
         let slot = {
             let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
             cache.clock += 1;
@@ -282,6 +308,13 @@ impl Scope {
                 .is_some_and(|entry| entry.publication != publication)
             {
                 let old = cache.entries.remove(&key).unwrap();
+                // No lock is held across extraction. A superseded in-flight
+                // reply still belongs to its original callers.
+                if let Ok(held) = old.slot.try_lock() {
+                    previous = held
+                        .as_ref()
+                        .and_then(|value| Arc::clone(value).downcast::<T>().ok());
+                }
                 let product = cache.products.get_mut(self.product).unwrap();
                 product.bytes -= old.bytes;
             }
@@ -324,7 +357,7 @@ impl Scope {
             self.remove_pending(&key, &slot);
             return Err(error);
         }
-        let value = match extract().and_then(|value| {
+        let value = match extract(previous).and_then(|value| {
             check_cancel(cancelled)?;
             Ok(value)
         }) {
@@ -418,6 +451,46 @@ mod tests {
     use super::*;
     use crate::test_fixtures::{file_source, replay, source as frame};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn continuation_receives_only_the_completed_predecessor_of_its_request() {
+        let (source, root) = file_source(replay(vec![frame(1, 0, None)]));
+        let flag = AtomicBool::new(false);
+        let cache = scope(&source, "test-continuation", None);
+        for publication in 0..4u32 {
+            let answer = cache
+                .continue_entry(
+                    1,
+                    &"selection",
+                    &publication,
+                    &flag,
+                    |_: &u32| 4,
+                    |old: Option<Arc<u32>>| {
+                        assert_eq!(old.as_deref().copied(), publication.checked_sub(1));
+                        Ok(publication)
+                    },
+                )
+                .unwrap();
+            assert_eq!(*answer, publication);
+            assert_eq!(
+                *cache
+                    .continue_entry(
+                        1,
+                        &"selection",
+                        &publication,
+                        &flag,
+                        |_: &u32| 4,
+                        |_| panic!("unchanged publication recomputed")
+                    )
+                    .unwrap(),
+                publication
+            );
+        }
+        let (bytes, bound, computations) = usage(&source, "test-continuation");
+        assert!(bytes <= bound);
+        assert_eq!(computations, 4);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn branch_entries_are_distinct_from_blocks_and_share_the_source_binding() {

@@ -720,6 +720,66 @@ pub fn tail_cached(
     sample: Sample<'_>,
     cancelled: &AtomicBool,
 ) -> io::Result<TailData> {
+    tail_cached_selected(
+        source,
+        product,
+        branch,
+        coverage,
+        tables,
+        requested,
+        cached_requested,
+        window,
+        sample,
+        false,
+        cancelled,
+    )
+}
+
+/// Cache a stateless census whose full set of keys is discovered in each
+/// frame. Countries first appearing in the tail need no prepared catalogue key.
+/// Content-dependent callers bind recorded content before lookup and distinguish
+/// non-recorded projection inputs in `product`, including verification choices
+/// and input availability. These helpers retain the sampler's numeric facts.
+#[allow(clippy::too_many_arguments)]
+pub fn tail_all_cached(
+    source: &Source,
+    product: &'static str,
+    branch: u64,
+    coverage: Option<&Coverage>,
+    tables: &[TableId],
+    window: (i32, i32),
+    sample: Sample<'_>,
+    cancelled: &AtomicBool,
+) -> io::Result<TailData> {
+    tail_cached_selected(
+        source,
+        product,
+        branch,
+        coverage,
+        tables,
+        &[],
+        &[],
+        window,
+        sample,
+        true,
+        cancelled,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tail_cached_selected(
+    source: &Source,
+    product: &'static str,
+    branch: u64,
+    coverage: Option<&Coverage>,
+    tables: &[TableId],
+    requested: &[(String, String)],
+    cached_requested: &[(String, String)],
+    window: (i32, i32),
+    sample: Sample<'_>,
+    all: bool,
+    cancelled: &AtomicBool,
+) -> io::Result<TailData> {
     check_cancel(cancelled)?;
     if coverage.is_some_and(|coverage| coverage.complete) || window.0 > window.1 {
         return Ok(TailData::default());
@@ -748,9 +808,10 @@ pub fn tail_cached(
             cached_requested,
             (first, window.1),
             blocks,
-            &|frame, _, keys| sample(frame, keys),
+            &|frame, _, keys| sample(frame, if all { None } else { keys }),
             None,
             true,
+            all,
             cancelled,
         );
     }
@@ -774,7 +835,7 @@ pub fn tail_cached(
         }
         let observed = cache.get(
             block,
-            &(&selected, &keys),
+            &(&selected, &keys, all),
             cancelled,
             |samples: &Samples| {
                 let mut bytes = crate::prepared::prepass::HeldBytes::default();
@@ -784,7 +845,10 @@ pub fn tail_cached(
             || {
                 let keyframe = source.replay_ref().read_keyframe_selected(block, tables)?;
                 let mut decoder = FrameDecoder::for_tables(tables);
-                sample(decoder.advance(&keyframe)?, Some(cached_requested))
+                sample(
+                    decoder.advance(&keyframe)?,
+                    if all { None } else { Some(cached_requested) },
+                )
             },
         )?;
         let spans = crate::prepared::prefix::without_gaps(
@@ -796,7 +860,9 @@ pub fn tail_cached(
         sampled_spans(
             &mut result,
             &spans,
-            observed.iter().filter(|(key, _)| wanted.contains(key)),
+            observed
+                .iter()
+                .filter(|(key, _)| all || wanted.contains(key)),
         );
     }
     Ok(result)
@@ -828,6 +894,7 @@ pub fn state_tail_cached(
         hours,
         &|frame, _, keys| sample(frame, keys),
         true,
+        false,
         cancelled,
     )
 }
@@ -873,6 +940,35 @@ pub fn tail(
         blocks,
         sample,
         None,
+        cancelled,
+    )
+}
+
+/// Exact state hours for the same full census as `tail_all_cached`.
+#[allow(clippy::too_many_arguments)]
+pub fn state_tail_all_cached(
+    source: &Source,
+    product: &'static str,
+    branch: u64,
+    coverage: Option<&Coverage>,
+    tables: &[TableId],
+    hours: &[i32],
+    sample: Sample<'_>,
+    cancelled: &AtomicBool,
+) -> io::Result<TailData> {
+    state_tail_recorded_bounded(
+        source,
+        product,
+        branch,
+        coverage,
+        tables,
+        1,
+        &[],
+        &[],
+        hours,
+        &|frame, _, _| sample(frame, None),
+        true,
+        true,
         cancelled,
     )
 }
@@ -1012,6 +1108,7 @@ pub fn state_tail_recorded(
         hours,
         sample,
         false,
+        false,
         cancelled,
     )
 }
@@ -1029,6 +1126,7 @@ fn state_tail_recorded_bounded(
     hours: &[i32],
     sample: SampleRecorded<'_>,
     bounded: bool,
+    all: bool,
     cancelled: &AtomicBool,
 ) -> io::Result<TailData> {
     check_cancel(cancelled)?;
@@ -1067,6 +1165,7 @@ fn state_tail_recorded_bounded(
         sample,
         Some(&hours),
         bounded,
+        all,
         cancelled,
     )
 }
@@ -1153,6 +1252,7 @@ pub fn tail_first_read(
             blocks,
             sample,
             None,
+            false,
             false,
             cancelled,
         );
@@ -1292,6 +1392,7 @@ fn cached_recorded_blocks(
     sample: SampleRecorded<'_>,
     state_hours: Option<&[i32]>,
     bounded: bool,
+    all: bool,
     cancelled: &AtomicBool,
 ) -> io::Result<TailData> {
     let cache = super::observations::scope(source, product, None).working_set(blocks.len());
@@ -1304,7 +1405,7 @@ fn cached_recorded_blocks(
     keys.sort();
     keys.dedup();
     for block in blocks {
-        let whole = (&selected, &keys, cadence, None::<(i64, i32)>);
+        let whole = (&selected, &keys, cadence, all, None::<(i64, i32)>);
         let extent = bounded
             .then_some((
                 i64::from(block.first_hour).max(window.0),
@@ -1322,7 +1423,7 @@ fn cached_recorded_blocks(
             Some(observed) => observed,
             None => cache.get(
                 block,
-                &(&selected, &keys, cadence, extent),
+                &(&selected, &keys, cadence, all, extent),
                 cancelled,
                 block_sample_bytes,
                 || {
@@ -1367,7 +1468,7 @@ fn cached_recorded_blocks(
             }
         };
         for (key, runs) in &observed.0.0 {
-            if !wanted.contains(key) {
+            if !all && !wanted.contains(key) {
                 continue;
             }
             for &(first, last) in &spans {
@@ -1396,7 +1497,7 @@ fn cached_recorded_blocks(
             }
         }
         for (key, identities) in &observed.0.2 {
-            if !wanted.contains(key) {
+            if !all && !wanted.contains(key) {
                 continue;
             }
             for &(first, last) in &spans {
@@ -2753,6 +2854,211 @@ mod tests {
         )
         .map(|(runs, approximate, _)| (runs, approximate))
         .unwrap()
+    }
+
+    #[test]
+    fn full_census_cache_keeps_every_one_of_five_thousand_countries() {
+        let source = source(1);
+        let flag = AtomicBool::new(false);
+        let calls = Cell::new(0);
+        let sample = |frame: &DecodedFrame, _: Option<&[(String, String)]>| {
+            calls.set(calls.get() + 1);
+            Ok((0..5_000u32)
+                .map(|country| {
+                    (
+                        (format!("T{country}"), "value".into()),
+                        (Some((country, country + 1)), Some(i128::from(frame.hour))),
+                    )
+                })
+                .collect())
+        };
+        let tables = crate::prepared_measure::TABLES;
+        let cold = tail_all_cached(
+            &source,
+            "test-census-scale",
+            1,
+            None,
+            tables,
+            (0, 1),
+            &sample,
+            &flag,
+        )
+        .unwrap();
+        assert_eq!(cold.0.len(), 5_000);
+        let computed = calls.get();
+        let (state, refused) = without_block_decodes(|| {
+            state_tail_all_cached(
+                &source,
+                "test-census-scale",
+                1,
+                None,
+                tables,
+                &[1],
+                &sample,
+                &flag,
+            )
+        });
+        assert!(!refused);
+        let state = state.unwrap();
+        assert_eq!(state.0.len(), 5_000);
+        assert_eq!(state.2.len(), 5_000);
+        assert!(state.0.values().all(|runs| runs[0].value == 1));
+        assert_eq!(calls.get(), computed);
+        let (bytes, bound, _) = super::super::observations::usage(&source, "test-census-scale");
+        assert!(bytes > 0 && bytes <= bound);
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: runs in the full suite (--features slow-tests)"
+    )]
+    fn full_census_keyframes_keep_their_marks_until_the_exact_zoom_transition() {
+        let source = source(15);
+        let flag = AtomicBool::new(false);
+        let calls = Cell::new(0);
+        let sample = |frame: &DecodedFrame, _: Option<&[(String, String)]>| {
+            calls.set(calls.get() + 1);
+            crate::prepared_measure::sample(frame, None)
+        };
+        let oracle = |frame: &DecodedFrame, _: Option<&[(String, String)]>| {
+            crate::prepared_measure::sample(frame, None)
+        };
+        let tables = crate::prepared_measure::TABLES;
+        for through in [-1, 0, 1, 3] {
+            let prefix = (through >= 0).then_some(Coverage {
+                schema: 0,
+                first_hour: 0,
+                last_hour: through,
+                complete: false,
+            });
+            let actual = tail_all_cached(
+                &source,
+                "test-census-zoom",
+                1,
+                prefix.as_ref(),
+                tables,
+                (0, 29),
+                &sample,
+                &flag,
+            )
+            .unwrap();
+            assert_eq!(
+                actual,
+                tail(
+                    &source,
+                    1,
+                    prefix.as_ref(),
+                    tables,
+                    &[],
+                    (0, 29),
+                    &oracle,
+                    &flag
+                )
+                .unwrap()
+            );
+            assert_eq!(actual.1.is_empty(), through == 3);
+            if through < 3 {
+                assert_eq!(calls.get(), 15);
+            }
+        }
+    }
+
+    #[test]
+    fn full_census_folds_reuse_discovered_keys_for_states_and_moving_prefixes() {
+        let source = source(2);
+        let flag = AtomicBool::new(false);
+        let calls = Cell::new(0);
+        let census = |frame: &DecodedFrame, _: Option<&[(String, String)]>| {
+            let mut values = crate::prepared_measure::sample(frame, None)?;
+            // A tail-only alias is discovered by the census, not supplied by
+            // a prepared catalogue or by the request's country selection.
+            if frame.hour >= 2 {
+                values.insert(
+                    ("NEW".into(), "politicalPower".into()),
+                    (Some((77, 88)), Some(123)),
+                );
+            }
+            Ok(values)
+        };
+        let sample = |frame: &DecodedFrame, keys: Option<&[(String, String)]>| {
+            calls.set(calls.get() + 1);
+            census(frame, keys)
+        };
+        let tables = crate::prepared_measure::TABLES;
+        let cold = tail_all_cached(
+            &source,
+            "test-census",
+            1,
+            None,
+            tables,
+            (0, 3),
+            &sample,
+            &flag,
+        )
+        .unwrap();
+        assert!(
+            cold.0
+                .contains_key(&("NEW".into(), "politicalPower".into()))
+        );
+        assert_eq!(
+            cold,
+            tail(&source, 1, None, tables, &[], (0, 3), &census, &flag).unwrap()
+        );
+        let computed = calls.get();
+        for through in [0, 1, 2] {
+            let prefix = Coverage {
+                schema: 0,
+                first_hour: 0,
+                last_hour: through,
+                complete: false,
+            };
+            let (actual, refused) = without_block_decodes(|| {
+                tail_all_cached(
+                    &source,
+                    "test-census",
+                    1,
+                    Some(&prefix),
+                    tables,
+                    (0, 3),
+                    &sample,
+                    &flag,
+                )
+            });
+            assert!(!refused);
+            assert_eq!(
+                actual.unwrap(),
+                tail(
+                    &source,
+                    1,
+                    Some(&prefix),
+                    tables,
+                    &[],
+                    (0, 3),
+                    &census,
+                    &flag
+                )
+                .unwrap()
+            );
+        }
+        for hours in [[0, 2], [1, 3]] {
+            let actual = state_tail_all_cached(
+                &source,
+                "test-census",
+                1,
+                None,
+                tables,
+                &hours,
+                &sample,
+                &flag,
+            )
+            .unwrap();
+            assert_eq!(
+                actual,
+                state_tail(&source, 1, None, tables, &[], &hours, &census, &flag).unwrap()
+            );
+        }
+        assert_eq!(calls.get(), computed);
     }
 
     #[test]

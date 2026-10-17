@@ -9,9 +9,12 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io::{self, Read, Seek, SeekFrom},
-    sync::atomic::AtomicBool,
+    sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
+mod query;
+pub use query::{SummaryCache, cache_scope};
+
 const LEVELS: [i64; 4] = [16, 256, 4096, 65536];
 const HEADER: u64 = 16;
 const DIRECTORY: u64 = 64;
@@ -1857,6 +1860,7 @@ pub struct Reader<'a> {
     /// claims more entries than it holds.
     tables: HashMap<u64, Option<Table>>,
     table_bytes: usize,
+    publication: Option<Arc<Vec<[u64; 3]>>>,
 }
 impl<'a> Reader<'a> {
     pub fn from_first_file(
@@ -1881,6 +1885,7 @@ impl<'a> Reader<'a> {
             searches: HashMap::new(),
             tables: HashMap::new(),
             table_bytes: 0,
+            publication: None,
         }
     }
 
@@ -1909,6 +1914,7 @@ impl<'a> Reader<'a> {
             searches: HashMap::new(),
             tables: HashMap::new(),
             table_bytes: 0,
+            publication: None,
         })
     }
     fn file(&mut self, batch: u64) -> io::Result<&mut store::Range> {
@@ -2012,6 +2018,7 @@ impl<'a> Reader<'a> {
     /// reaches; None when no batch ends by then.
     pub fn through_hour(&mut self, hour: i32) -> io::Result<Option<i32>> {
         self.count = lower(self.count, |batch| Ok(self.hours(batch)?.1 <= hour))?;
+        self.publication = None;
         match self.count.checked_sub(1) {
             Some(last) => Ok(Some(self.hours(last)?.1)),
             None => Ok(None),
@@ -2179,6 +2186,11 @@ impl<'a> Reader<'a> {
             runs: exact.then(Vec::new),
             approximate: Vec::new(),
         };
+        if !exact {
+            let ranges: Vec<_> = bins.into_iter().map(Some).collect();
+            result.buckets = self.folded_buckets(key, bounds, view, &ranges, decimals)?;
+            return Ok(result);
+        }
         for (start, end) in bins {
             let bucket = if let Some(runs) = &mut result.runs {
                 let run = self.value_at(key, start)?;
@@ -2341,7 +2353,23 @@ impl<'a> Reader<'a> {
         } else {
             Some(self.hours(self.count - 1)?.1)
         };
-        for (first, last) in bins {
+        let ranges: Vec<_> = bins
+            .iter()
+            .map(|&(first, last)| {
+                let end = published_last.map_or(i64::from(first) - 1, |published| {
+                    i64::from(last)
+                        .min(i64::from(head.first_hour) - 1)
+                        .min(i64::from(published))
+                });
+                (i64::from(first) <= end).then_some((first, end as i32))
+            })
+            .collect();
+        let folded = if exact {
+            None
+        } else {
+            Some(self.folded_buckets(key, bounds, view, &ranges, decimals)?)
+        };
+        for (index, (first, last)) in bins.into_iter().enumerate() {
             let end = published_last.map_or(i64::from(first) - 1, |published| {
                 i64::from(last)
                     .min(i64::from(head.first_hour) - 1)
@@ -2369,7 +2397,7 @@ impl<'a> Reader<'a> {
                         bucket = Some(run_bucket(run, first, end as i32, decimals));
                     }
                 } else {
-                    bucket = self.range_bucket(key, first, end as i32, decimals)?;
+                    bucket = folded.as_ref().expect("non-hourly buckets folded above")[index];
                 }
                 if let Some(spans) = within {
                     bucket = self.bucket_within(key, bucket, decimals, spans)?;
@@ -2395,6 +2423,8 @@ impl<'a> Reader<'a> {
         to: i32,
         decimals: u8,
     ) -> io::Result<Option<ChartBucket>> {
+        #[cfg(test)]
+        query::BUCKET_FOLDS.set(query::BUCKET_FOLDS.get() + 1);
         let mut result = None;
         let mut initialized = false;
         let mut hour = i64::from(from);

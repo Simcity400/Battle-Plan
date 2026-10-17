@@ -459,12 +459,12 @@ pub fn query(
         .collect();
     let sample_all = |frame: &DecodedFrame, _: Option<&[(String, String)]>| sample(frame, None);
     let tail = if partial && product == "series-state" {
-        progressive::state_tail(
+        progressive::state_tail_all_cached(
             source,
+            "factories:series",
             branch,
             accepted.as_ref(),
             TABLES,
-            &requested,
             &reads.iter().map(|read| read.hour).collect::<Vec<_>>(),
             &sample_all,
             cancelled,
@@ -475,12 +475,12 @@ pub fn query(
         } else {
             series::range(params["firstHour"].as_f64(), params["lastHour"].as_f64())?
         };
-        progressive::tail(
+        progressive::tail_all_cached(
             source,
+            "factories:series",
             branch,
             accepted.as_ref(),
             TABLES,
-            &requested,
             (from.floor() as i32, to.floor() as i32),
             &sample_all,
             cancelled,

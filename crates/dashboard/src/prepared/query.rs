@@ -77,6 +77,7 @@ struct Reply<'a> {
 struct CachedQuery {
     data: Value,
     short: std::collections::BTreeSet<&'static str>,
+    summaries: super::series::SummaryCache,
 }
 
 /// Content files and the recorded mod stack are bound by the observation
@@ -2319,6 +2320,9 @@ pub fn query(
             .unwrap_or_default(),
         product => product,
     };
+    let _cpu = matches!(request.product.as_str(), "series-summary" | "series-state").then(|| {
+        replay::cpu::scope_named("prepared query", &format!("{}:{name}", request.product))
+    });
     let branch = request
         .params
         .get("branchId")
@@ -2330,10 +2334,16 @@ pub fn query(
     }
     // Null is a query result whose coverage has not been accepted yet. Clients
     // inspect real preparation status and retry; it is not an empty history.
-    let read = || {
+    let read = |previous: Option<std::sync::Arc<CachedQuery>>| {
+        let scope = cache_product(&request.product)
+            .map(|_| super::series::cache_scope(previous.as_ref().map(|reply| &reply.summaries)));
         let (data, short) =
             super::coverage::waiting(|| query_data(source, request, content, cancelled));
-        Ok(CachedQuery { data: data?, short })
+        Ok(CachedQuery {
+            data: data?,
+            short,
+            summaries: scope.map(|scope| scope.finish()).unwrap_or_default(),
+        })
     };
     dashboard_base::prepared::query::observations::bind(source, &key);
     let answer = if let (Some(product), Some(branch)) = (cache_product(&request.product), branch) {
@@ -2349,7 +2359,7 @@ pub fn query(
             )?);
         }
         dashboard_base::prepared::query::observations::scope(source, product, Some(&key))
-            .get_entry(
+            .continue_entry(
                 branch,
                 &request.params,
                 &(
@@ -2364,11 +2374,12 @@ pub fn query(
                     std::mem::size_of::<CachedQuery>()
                         + dashboard_base::prepared::query::observations::json_bytes(&reply.data)
                         + bytes.total() as usize
+                        + reply.summaries.bytes()
                 },
                 read,
             )?
     } else {
-        std::sync::Arc::new(read()?)
+        std::sync::Arc::new(read(None)?)
     };
     let mut data = answer.data.clone();
     let short = answer.short.clone();

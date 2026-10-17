@@ -85,6 +85,18 @@ it in memory (up to 64 MiB of directories per reader).
 `Reader::latest_event_rows` reads many keys' latest events at one hour, finding
 the hour's batch once.
 
+A query's whole reply can retain its numeric summary folds
+([`series/query.rs`](src/prepared/series/query.rs)). Each fold keeps its actual
+bucket intervals and the immutable identities of its supplying pages. On a new
+publication, buckets wholly inside the unchanged page prefix and on the same
+grid are reused; changed intervals are folded again. A narrower window keeps
+its ordinary reads instead of opening unrelated pages for their identities.
+Membership masks, sampled
+tails and approximate spans are applied to the current reply after that reuse.
+Hourly zooms retain the ordinary full-run lookup, including run bounds that can
+extend with later pages. Only the current request's folds survive, and their
+allocation capacities are charged with its reply to the observation cache.
+
 Every family's catalogue (`{family}-{branch}-catalogue`, the JSON text of its
 keys and metadata) goes through the shared writer in
 [prepared/series/catalogue.rs](src/prepared/series/catalogue.rs).
@@ -132,6 +144,13 @@ state hours and short windows. Re-asks clip these immutable facts to their
 viewport and moving prefix; blocks covered by the prefix are not sampled.
 Crossing the exact-zoom threshold replaces keyframe approximations with hourly
 folds, including the preceding hour's identity/value continuity.
+Factory and territory censuses use `tail_all_cached` and
+`state_tail_all_cached` for their existing full-frame projections. Their keys
+come from each sampled frame, including aliases not yet in the prepared
+catalogue; catalogue growth changes neither the observation selection nor its
+cache identity. Territory counts and content-bound areas have separate scopes. Area scopes also
+distinguish the current unverified-content choice and whether the area inputs
+are available; file identities alone do not establish either.
 When no whole fold is held, an exact read caches only the requested extent of
 an edge block. Errors propagate directly; a failure never retries the read.
 

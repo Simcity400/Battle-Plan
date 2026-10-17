@@ -3166,7 +3166,12 @@ numeric publication identities of gates and declared suppliers, current
 localisation key, content folders, cache folder, unverified-content choice and
 texture decode setting bind its validity; the observation scope also binds the
 recording and recorded content stack. A changed binding replaces the previous
-answer. Branch replies share the product's bounded LRU with block observations:
+answer. Series replies also keep the numeric prefix folds used by that request.
+A changed publication offers the completed predecessor without waiting for an
+in-flight reply; series readers validate page identities and bucket intervals
+before reusing a fold. Fold storage is charged with the reply, so all selected
+series share the request's retention and eviction. Branch replies share the
+product's bounded LRU with block observations:
 largest observed entry times live blocks, evicting the least recently used entry
 across selections and viewports. Retained replies with unchanged bindings reuse
 their projection; supplier refusals are checked before lookup. Live content warnings

@@ -545,34 +545,31 @@ pub fn query(
         .filter(|tag| !tag.is_empty())
         .cloned()
         .collect();
-    let requested: Vec<_> = requested_tags
-        .iter()
-        .flat_map(|tag| {
-            SAMPLE_FIELDS
-                .iter()
-                .chain([&"present"])
-                .map(move |field| (tag.clone(), (*field).to_owned()))
-        })
-        .chain(
-            SAMPLE_FIELDS
-                .iter()
-                .map(|field| (String::new(), (*field).to_owned())),
+    crate::prepared::query::observations::bind(source, &key);
+    // SourceKey binds the content files, but not the verification choice or
+    // whether the current area read succeeded. Both affect this projection.
+    let sample_product = match inputs.as_ref().map(|inputs| {
+        (
+            context
+                .content
+                .as_ref()
+                .is_some_and(|content| content.allow_unverified),
+            inputs.areas.is_some(),
         )
-        .chain([(String::new(), "roster".into())])
-        .collect();
+    }) {
+        None => "territory:counts",
+        Some((false, false)) => "territory:areas:strict:unavailable",
+        Some((false, true)) => "territory:areas:strict:available",
+        Some((true, false)) => "territory:areas:allow-unverified:unavailable",
+        Some((true, true)) => "territory:areas:allow-unverified:available",
+    };
     let sample = |frame: &DecodedFrame, _requested: Option<&[(String, String)]>| {
-        let mut sampled = super::sample(
+        super::sample(
             frame,
             None,
             inputs.as_ref().and_then(|inputs| inputs.areas.as_deref()),
             source.replay_ref().format,
-        )?;
-        // Tail-only aliases need no prepared catalogue entry. The shared join
-        // admits their native holder after this bounded sample window is read.
-        for key in &requested {
-            sampled.entry(key.clone()).or_insert((None, None));
-        }
-        Ok(sampled)
+        )
     };
     let start = source
         .replay_ref()
@@ -583,12 +580,12 @@ pub fn query(
     let bounds = crate::metadata::branch_bounds(source.replay_ref(), start);
     let sampled = if partial && product == "series-state" {
         let hours: Vec<_> = params.reads.iter().map(|read| read.hour).collect();
-        crate::prepared::query::progressive::state_tail(
+        crate::prepared::query::progressive::state_tail_all_cached(
             source,
+            sample_product,
             branch,
             accepted.as_ref(),
             TABLES,
-            &requested,
             &hours,
             &sample,
             cancelled,
@@ -599,12 +596,12 @@ pub fn query(
         } else {
             series::range(value["firstHour"].as_f64(), value["lastHour"].as_f64())?
         };
-        crate::prepared::query::progressive::tail(
+        crate::prepared::query::progressive::tail_all_cached(
             source,
+            sample_product,
             branch,
             accepted.as_ref(),
             TABLES,
-            &requested,
             (window.0.floor() as i32, window.1.floor() as i32),
             &sample,
             cancelled,
@@ -748,12 +745,12 @@ pub fn query(
                     .next()
                     .map(|bucket| bucket.last_hour);
                 let end_sampled = if partial && let Some(end) = end {
-                    crate::prepared::query::progressive::state_tail(
+                    crate::prepared::query::progressive::state_tail_all_cached(
                         source,
+                        sample_product,
                         branch,
                         accepted.as_ref(),
                         TABLES,
-                        &requested,
                         &[end],
                         &sample,
                         cancelled,
@@ -979,12 +976,12 @@ pub fn query(
             for (hour, ends) in end_reads {
                 // One target hour always uses the core's exact state path. Countries
                 // sharing an endpoint share this read, and no dated values accumulate.
-                let point = crate::prepared::query::progressive::state_tail(
+                let point = crate::prepared::query::progressive::state_tail_all_cached(
                     source,
+                    sample_product,
                     branch,
                     accepted.as_ref(),
                     TABLES,
-                    &requested,
                     &[hour],
                     &sample,
                     cancelled,
@@ -1533,6 +1530,138 @@ fn aggregate_summary(
 mod tests {
     use super::*;
     use crate::prepared::series::tests::Fixture;
+
+    #[test]
+    fn cached_area_state_refuses_after_unverified_content_is_disabled() {
+        area_state_verification_transition(true);
+    }
+
+    #[test]
+    fn cached_area_state_recovers_after_unverified_content_is_enabled() {
+        area_state_verification_transition(false);
+    }
+
+    fn area_state_verification_transition(initially_allowed: bool) {
+        use crate::test_fixtures::{CAMPAIGN, content_identity, file_source, records};
+        let root =
+            std::env::temp_dir().join(format!("territory-area-binding-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("user")).unwrap();
+        std::fs::write(root.join("hoi4.exe"), "test").unwrap();
+        std::fs::write(
+            root.join("user/dlc_load.json"),
+            r#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
+        )
+        .unwrap();
+        let (options, identity) = content_identity(&root);
+        let mut input = records(
+            1,
+            vec![
+                super::super::tests::frame(0, 2, 4),
+                super::super::tests::frame(1, 2, 4),
+            ],
+        );
+        let replay::spool::Record::SessionStart(session) = &mut input[0] else {
+            unreachable!()
+        };
+        session.identity = identity;
+        let (source, recording_root) = file_source(
+            replay::container::Replay::from_records(CAMPAIGN.into(), &[input]).unwrap(),
+        );
+        assert!(matches!(
+            source.replay_ref().identity.verification,
+            replay::identity::Verification::Unchecked
+        ));
+        let mut context = LoadContext {
+            content: Some(options),
+        };
+        let resolved = source
+            .content(&context.content.as_ref().unwrap().options)
+            .unwrap();
+        let areas = Arc::new(ProvinceAreas {
+            land: (0..=4).map(|id| i64::from(id) * 10).collect(),
+        });
+        // Supply a synthetic raster through the real area's read cache.
+        // load_areas still checks the current recording verification first.
+        source.state::<super::super::Cache>().lock().unwrap().areas =
+            Some((Arc::clone(&resolved), Ok(Arc::clone(&areas))));
+        let flag = AtomicBool::new(false);
+        let (store, key) = crate::prepared::files(&source, context.content.as_ref()).unwrap();
+        assert!(
+            crate::prepared::coverage::coverage(&source, context.content.as_ref(), 1, &flag)
+                .unwrap()
+                .is_none()
+        );
+        let params = json!({"branchId":"1", "family":{"kind":"territory",
+            "measure":"area", "rule":"controlled"}, "tags":[], "reads":[{"hour":1}]});
+        let ask = |context: &LoadContext| -> TerritoryReply {
+            serde_json::from_value(
+                query(&source, context, "series-state", params.clone(), &flag).unwrap(),
+            )
+            .unwrap()
+        };
+        let check = |reply: &TerritoryReply, available: bool| {
+            let country = reply
+                .series
+                .iter()
+                .find(|country| country.tag == "realm 00000")
+                .unwrap();
+            assert_eq!(country.runs.len(), 1);
+            assert_eq!(country.runs[0].values[3], available.then_some(60));
+            assert_eq!(
+                country.runs[0].values[0],
+                Some(1),
+                "independent counts stay known"
+            );
+            assert_eq!(reply.area_unit.is_some(), available);
+        };
+        // Exercise the lower census cache directly; the whole-reply cache
+        // cannot invalidate or mask a stale area observation in this test.
+        for allowed in [initially_allowed, !initially_allowed, initially_allowed] {
+            context.content.as_mut().unwrap().allow_unverified = allowed;
+            assert_eq!(
+                crate::prepared::files(&source, context.content.as_ref())
+                    .unwrap()
+                    .1,
+                key
+            );
+            let inputs = area_data(&source, &context, &flag).unwrap();
+            assert_eq!(inputs.areas.is_some(), allowed);
+            let reply = ask(&context);
+            check(&reply, allowed);
+            if !allowed {
+                assert!(
+                    reply
+                        .area_reason
+                        .as_ref()
+                        .unwrap()
+                        .contains("recording has unverified content")
+                );
+            }
+            assert_eq!(
+                serde_json::to_value(ask(&context)).unwrap(),
+                serde_json::to_value(reply).unwrap()
+            );
+        }
+        // Availability is a separate operand even when permission and
+        // content stamps do not move.
+        context.content.as_mut().unwrap().allow_unverified = true;
+        source.state::<super::super::Cache>().lock().unwrap().areas = Some((
+            Arc::clone(&resolved),
+            Err("synthetic area input unavailable".into()),
+        ));
+        assert_eq!(
+            crate::prepared::files(&source, context.content.as_ref())
+                .unwrap()
+                .1,
+            key
+        );
+        check(&ask(&context), false);
+        source.state::<super::super::Cache>().lock().unwrap().areas = Some((resolved, Ok(areas)));
+        check(&ask(&context), true);
+        store.clear().unwrap();
+        std::fs::remove_dir_all(recording_root).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     #[cfg(feature = "slow-tests")]
