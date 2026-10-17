@@ -359,7 +359,10 @@ impl FrameEncoder {
             return Err(invalid("segment context does not name this encoder state"));
         }
         let (mut bytes, mut deleted) = (Vec::new(), Vec::new());
-        let unchanged = self.encode_table(context, table, input, &mut bytes, &mut deleted)?;
+        let unchanged = crate::codec::with_error_details(|| {
+            self.encode_table(context, table, input, &mut bytes, &mut deleted)
+                .map_err(|error| crate::codec::error_context(error, format_args!("{table:?}")))
+        })?;
         Ok(TableSegment {
             context: *context,
             table,
@@ -444,7 +447,10 @@ impl FrameEncoder {
                         &source.tables[table.index()],
                         &mut output,
                         &mut deleted,
-                    )?
+                    )
+                    .map_err(|error| {
+                        crate::codec::error_context(error, format_args!("{table:?}"))
+                    })?
                 }
             };
         }

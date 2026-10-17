@@ -2308,16 +2308,17 @@ macro_rules! typed_codec {
             }
             fn snapshot_bytes(&self) -> io::Result<usize> {
                 let size = ($bits as usize).div_ceil(7).max(1);
-                $(let size = allocation::add(size, native_wire_field(&self.$($field)+).encoded_bytes()?)?;)+
+                $(let size = allocation::add(size, native_wire_field(&self.$($field)+).encoded_bytes().map_err(|error| crate::codec::error_context(error, format_args!("row {} column {}", self.key(), stringify!($($field)+))))?)?;)+
                 Ok(size)
             }
             fn encoded_bound(&self) -> io::Result<usize> {
                 let size = ($bits as usize).div_ceil(7).max(1) + Self::SCHEMA.len().div_ceil(8);
-                $(let size = allocation::add(size, native_wire_field(&self.$($field)+).encoded_bound()?)?;)+
+                $(let size = allocation::add(size, native_wire_field(&self.$($field)+).encoded_bound().map_err(|error| crate::codec::error_context(error, format_args!("row {} column {}", self.key(), stringify!($($field)+))))?)?;)+
                 Ok(size)
             }
             fn encode_change_reserved(&self, previous: Option<&Self>, previous_key: u128, output: &mut Vec<u8>) -> io::Result<bool> {
-                if self.not_recorded_fields() & !self.restored_tombstones() != 0 { return Err(invalid("row fields not recorded")); }
+                let missing = self.not_recorded_fields() & !self.restored_tombstones();
+                if missing != 0 { return Err(crate::codec::error_context(invalid("row fields not recorded"), format_args!("row {} column {}", self.key(), Self::NAMES[missing.trailing_zeros() as usize]))); }
                 self.check_key_fields()?;
                 check_native_key(self.key(), Self::KEY_BITS)?;
                 if let Some(previous) = previous {
@@ -2331,12 +2332,13 @@ macro_rules! typed_codec {
                 put_varint(output, self.key().checked_sub(previous_key).ok_or_else(|| invalid("row keys decreased"))?);
                 output.extend_from_slice(&mask.to_le_bytes()[..Self::SCHEMA.len().div_ceil(8)]);
                 $(if mask & (1_u64 << $index) != 0 {
-                    encode_native_change(&self.$($field)+, previous.map(|old| &old.$($field)+), $crate::value::display_step!($($step)?), output)?;
+                    encode_native_change(&self.$($field)+, previous.map(|old| &old.$($field)+), $crate::value::display_step!($($step)?), output).map_err(|error| crate::codec::error_context(error, format_args!("row {} column {}", self.key(), stringify!($($field)+))))?;
                 })+
                 Ok(true)
             }
             fn delta(&self, previous: Option<&Self>) -> io::Result<Option<DeltaRow>> {
-                if self.not_recorded_fields() & !self.restored_tombstones() != 0 { return Err(invalid("row fields not recorded")); }
+                let missing = self.not_recorded_fields() & !self.restored_tombstones();
+                if missing != 0 { return Err(crate::codec::error_context(invalid("row fields not recorded"), format_args!("row {} column {}", self.key(), Self::NAMES[missing.trailing_zeros() as usize]))); }
                 self.check_key_fields()?;
                 check_native_key(self.key(), Self::KEY_BITS)?;
                 if let Some(previous) = previous {
@@ -2348,13 +2350,13 @@ macro_rules! typed_codec {
                 $(
                     if previous.is_none_or(|old| old.$($field)+ != self.$($field)+) {
                         delta.mask |= 1_u64 << $index;
-                        encode_native_change(&self.$($field)+, previous.map(|old| &old.$($field)+), $crate::value::display_step!($($step)?), &mut delta.values)?;
+                        encode_native_change(&self.$($field)+, previous.map(|old| &old.$($field)+), $crate::value::display_step!($($step)?), &mut delta.values).map_err(|error| crate::codec::error_context(error, format_args!("row {} column {}", self.key(), stringify!($($field)+))))?;
                     }
                 )+
                 Ok(Some(delta))
             }
             fn encode_fields_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
-                $(encode_native_field(&self.$($field)+, $crate::value::display_step!($($step)?), output)?;)+
+                $(encode_native_field(&self.$($field)+, $crate::value::display_step!($($step)?), output).map_err(|error| crate::codec::error_context(error, format_args!("row {} column {}", self.key(), stringify!($($field)+))))?;)+
                 Ok(())
             }
             #[allow(clippy::field_reassign_with_default)]

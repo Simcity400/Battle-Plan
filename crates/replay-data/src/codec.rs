@@ -2,6 +2,41 @@
 
 use std::io;
 
+thread_local! {
+    static ERROR_DETAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Retain validation diagnostics until this output-worker guard is dropped.
+/// Never enter this scope from an acquisition callback: constructing an I/O
+/// error can allocate. The guard must stay on the thread that entered it.
+#[must_use = "hold the guard until output work completes"]
+pub fn error_details_scope() -> impl Drop {
+    struct Restore(bool, std::marker::PhantomData<*mut ()>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ERROR_DETAILS.set(self.0);
+        }
+    }
+    Restore(ERROR_DETAILS.replace(true), std::marker::PhantomData)
+}
+
+/// Run output-worker work with validation diagnostics, restoring any outer scope.
+pub fn with_error_details<T>(work: impl FnOnce() -> T) -> T {
+    let _restore = error_details_scope();
+    work()
+}
+
+/// Attach output-worker context without formatting on capture callbacks.
+pub fn error_context(error: io::Error, context: std::fmt::Arguments<'_>) -> io::Error {
+    if error.kind() != io::ErrorKind::InvalidData || !ERROR_DETAILS.get() {
+        return error;
+    }
+    match try_format(format_args!("{context}: {error}")) {
+        Ok(message) => invalid(message),
+        Err(error) => error,
+    }
+}
+
 /// Diagnostic excerpts never copy a recording-sized string. Data itself is
 /// preserved; only the diagnostic shown to a caller is shortened.
 pub fn diagnostic_text(text: &str) -> &str {
@@ -32,13 +67,45 @@ pub fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// Collector error paths cannot allocate even for a static diagnostic.
+/// Capture callbacks keep static diagnostics allocation-free; output-worker
+/// scopes retain their text.
 pub fn invalid_static(message: &'static str) -> io::Error {
-    if engine::allocation::capture_active() {
+    invalid_for_capture(message, engine::allocation::capture_active())
+}
+
+fn invalid_for_capture(message: &'static str, capture_active: bool) -> io::Error {
+    if capture_active && !ERROR_DETAILS.get() {
         io::Error::from(io::ErrorKind::InvalidData)
+    } else if ERROR_DETAILS.get() {
+        match engine::allocation::string(message) {
+            Ok(message) => invalid(message),
+            Err(error) => error,
+        }
     } else {
         invalid(message)
     }
+}
+
+#[cfg(test)]
+#[test]
+fn spool_validation_worker_details_do_not_enable_callback_diagnostics() {
+    let growths = engine::allocation::growths();
+    assert!(
+        invalid_for_capture("callback refusal", true)
+            .get_ref()
+            .is_none()
+    );
+    assert_eq!(engine::allocation::growths(), growths);
+    let error = {
+        let _details = error_details_scope();
+        with_error_details(|| with_error_details(|| invalid_for_capture("worker refusal", true)))
+    };
+    assert_eq!(error.to_string(), "worker refusal");
+    assert!(
+        invalid_for_capture("callback refusal", true)
+            .get_ref()
+            .is_none()
+    );
 }
 
 pub fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> io::Result<()> {

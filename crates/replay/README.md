@@ -349,6 +349,8 @@ Research inventories and definitions key each native template occurrence by data
 6. Add synthetic fixtures and fault-campaign coverage in [acceptance.rs](src/acceptance.rs). `DOMAIN_TABLES` plus direct fixtures must cover each table exactly once. Exercise snapshots/deltas, unchanged/carried freshness, missing/truncated reads, baseline recovery, malformed input and readable older prefixes as applicable.
 7. Run scoped [AGENTS.md checks](../../AGENTS.md) and relevant [fresh-save/load and smoke checks](../recorder/README.md#inspect-and-compare). Reconcile provisional version/IDs against current main at merge.
 
+Frame output validation adds the table name to worker-scoped row and column diagnostics. Collector output workers retain these messages in recording status.
+
 ## Checking changes
 
 Use existing round-trip, delta/baseline, compatibility, provenance, branch, recovery and fault-campaign tests with synthetic fixtures. Exercise affected consumers together; decoding success does not certify capture or display fidelity. Follow [AGENTS.md](../../AGENTS.md) and the [live-check guide](../recorder/README.md#live-checks-and-performance). Documentation-only changes need link/diff checks.

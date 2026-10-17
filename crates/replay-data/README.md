@@ -18,6 +18,8 @@ its `identity` module writes and reads. [weather-period](../weather-period/READM
 | [checkpoint/](src/checkpoint/), [rows/checkpoint.rs](src/rows/checkpoint.rs) | Prepared row and value codecs, independent of frame snapshot framing. |
 | [country_flags.rs](src/country_flags.rs), [day_night.rs](src/day_night.rs), [naval_trees.rs](src/naval_trees.rs), [temperature.rs](src/temperature.rs) | Shared recorded operands and exact calculations, including the operands that pick a country's flag. |
 
+Output workers can hold `codec::error_details_scope` or use `codec::with_error_details` to retain validation reasons and row/column context. Scopes nest and restore the calling thread's previous setting on return. Outside that scope, installed capture allocation hooks keep static I/O errors allocation-free.
+
 Row declarations own versions, field counts, keys, representations and
 availability. Writers emit the current format; readers admit unchanged contracts
 through the compatibility history and refuse changed tables by name. Preserve

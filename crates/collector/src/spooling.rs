@@ -36,6 +36,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::{
+    borrow::Cow,
     fs::{self, File},
     io,
     path::{Path, PathBuf},
@@ -156,11 +157,17 @@ impl<'a> IntoIterator for &'a mut Campaigns {
     }
 }
 
-fn error_reason(error: &io::Error) -> &'static str {
+fn error_reason(error: &io::Error) -> Cow<'static, str> {
     match error.kind() {
-        io::ErrorKind::OutOfMemory => "collector allocation failed",
-        io::ErrorKind::InvalidData => "spool validation failed",
-        _ => "spool I/O failed",
+        io::ErrorKind::OutOfMemory => Cow::Borrowed("collector allocation failed"),
+        io::ErrorKind::InvalidData => {
+            // Retained by the spool worker, after the original error is dropped.
+            // Checked formatting keeps allocation failure on its existing path.
+            replay::codec::try_format(format_args!("spool validation failed: {error}"))
+                .map(Cow::Owned)
+                .unwrap_or(Cow::Borrowed("collector allocation failed"))
+        }
+        _ => Cow::Borrowed("spool I/O failed"),
     }
 }
 
@@ -1149,6 +1156,7 @@ impl<B: SegmentBackend> Campaign<B> {
         work: &mut WorkSample,
         helpers: Option<crate::spool_helper::Helpers<'_>>,
     ) -> io::Result<()> {
+        let _details = replay::codec::error_details_scope();
         let (branch, hour) = (source.branch, source.hour);
         let held_line_output = crate::extended::line_output::holds_publication(
             &source.tables[TableId::ProductionLineOutput.index()],
@@ -1336,20 +1344,27 @@ struct BoundOrderCounterSample {
     source_capacity_bytes: usize,
     cache_status: engine::country_memory::SeedStatus,
     frame_write_succeeded: bool,
-    frame_write_error: Option<&'static str>,
-    subsequent_io_error: Option<&'static str>,
+    frame_write_error: Option<Cow<'static, str>>,
+    subsequent_io_error: Option<Cow<'static, str>>,
 }
 
 impl OrderCounterWitness {
     fn observe(&mut self, captured: &Captured, branch: Option<BranchId>, result: &io::Result<()>) {
-        if result
-            .as_ref()
-            .err()
-            .is_some_and(|error| error.kind() == io::ErrorKind::OutOfMemory)
-        {
+        self.observe_error(captured, branch, result.as_ref().err());
+    }
+
+    fn observe_error(
+        &mut self,
+        captured: &Captured,
+        branch: Option<BranchId>,
+        error: Option<&io::Error>,
+    ) {
+        if error.is_some_and(|error| error.kind() == io::ErrorKind::OutOfMemory) {
             if let Some(sample) = &mut self.sample {
                 sample.frame_write_succeeded = false;
-                sample.frame_write_error = Some("collector allocation failed");
+                sample
+                    .frame_write_error
+                    .get_or_insert(Cow::Borrowed("collector allocation failed"));
             }
             return;
         }
@@ -1358,7 +1373,7 @@ impl OrderCounterWitness {
             // A failed later append can also fail while closing its segment.
             // Keep the old sample's identity, but conservatively revoke its
             // write binding just as periodic sync/detach failures do.
-            if let Err(error) = result
+            if let Some(error) = error
                 && let Some(clock) = captured.clock.as_ref()
                 && let Ok(campaign) = std::str::from_utf8(clock.campaign_id.as_bytes())
             {
@@ -1390,8 +1405,8 @@ impl OrderCounterWitness {
             source_range_valid,
             source_capacity_bytes: source.allocated_bytes(),
             cache_status: captured.country_cache_status,
-            frame_write_succeeded: result.is_ok(),
-            frame_write_error: result.as_ref().err().map(error_reason),
+            frame_write_succeeded: error.is_none(),
+            frame_write_error: error.map(error_reason),
             subsequent_io_error: None,
         });
     }
@@ -1403,7 +1418,9 @@ impl OrderCounterWitness {
                 .as_ref()
                 .is_some_and(|clock| clock.campaign_id.as_bytes() == campaign.as_bytes())
         {
-            sample.subsequent_io_error = Some(error_reason(error));
+            sample
+                .subsequent_io_error
+                .get_or_insert_with(|| error_reason(error));
         }
     }
 
@@ -1477,8 +1494,8 @@ impl OrderCounterWitness {
                 "source_capacity_bytes": sample.source_capacity_bytes,
                 "sample_valid": sample_valid,
                 "frame_write_succeeded": sample.frame_write_succeeded,
-                "frame_write_error": sample.frame_write_error,
-                "subsequent_io_error": sample.subsequent_io_error,
+                "frame_write_error": &sample.frame_write_error,
+                "subsequent_io_error": &sample.subsequent_io_error,
                 "usable_with_recorded_frame": sample_valid && sample.branch.is_some()
                     && sample.frame_write_succeeded && sample.subsequent_io_error.is_none(),
                 "durability": "frame write result; not an independent replay-recovery verification",
@@ -1770,7 +1787,7 @@ struct Statistics {
     interval_hours: u64,
     interval_qpc: u64,
     errors: u64,
-    last_error: Option<&'static str>,
+    last_error: Option<Cow<'static, str>>,
     input_demand_errors: u64,
     input_demand_last_error: Option<&'static str>,
     conversion: Distribution,
@@ -2088,9 +2105,11 @@ impl Processor {
         &mut self,
         sizing: &engine::game_score_inputs::ArenaSizing,
     ) -> io::Result<()> {
+        let _details = replay::codec::error_details_scope();
         self.stats.game_score.observe_sizing(sizing)
     }
     pub fn new(root: &Path, history: PreparedCampaigns, session: SessionStart) -> io::Result<Self> {
+        let _details = replay::codec::error_details_scope();
         session.validate()?;
         fs::create_dir_all(root).map_err(engine::allocation::allocation_error)?;
         Ok(Self {
@@ -2143,7 +2162,10 @@ impl Processor {
 
     fn error(&mut self, error: &io::Error) {
         self.stats.errors += 1;
-        self.stats.last_error = Some(error_reason(error));
+        // Preserve the cause of recovery when later sync/detach work also fails.
+        self.stats
+            .last_error
+            .get_or_insert_with(|| error_reason(error));
     }
 
     /// A failed or racing off-thread sizing hint loses no captured data; it is
@@ -2174,6 +2196,7 @@ impl Processor {
     /// do I/O, but this preflight never observes or acknowledges a callback.
     /// Once prepared, consume its loss witnesses and then call `frame` once.
     pub fn prepare(&mut self, captured: &Captured) -> io::Result<()> {
+        let _details = replay::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
         if crate::allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
@@ -2210,6 +2233,7 @@ impl Processor {
 
     /// Quiescent detach uses the same preflight before consuming its final batch.
     pub fn prepare_losses(&mut self, losses: &LossBatch) -> io::Result<()> {
+        let _details = replay::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Teardown);
         if crate::allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
@@ -2234,6 +2258,7 @@ impl Processor {
     }
 
     pub fn lost(&mut self, loss: &LostObservation) -> io::Result<()> {
+        let _details = replay::codec::error_details_scope();
         if crate::allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
@@ -2272,6 +2297,7 @@ impl Processor {
     }
 
     pub(crate) fn prepare_frame(&mut self, captured: &Captured) -> io::Result<PreparedFrame> {
+        let _details = replay::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
         if crate::allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
@@ -2345,11 +2371,9 @@ impl Processor {
         let mut branch = None;
         let result = self.prepare_frame_inner(captured, &mut branch, span);
         if let Err(error) = &result {
-            self.stats.order_counters.observe(
-                captured,
-                branch,
-                &Err(io::Error::from(error.kind())),
-            );
+            self.stats
+                .order_counters
+                .observe_error(captured, branch, Some(error));
             self.error(error);
         }
         result
@@ -2543,6 +2567,7 @@ impl Processor {
     }
 
     pub(crate) fn write_prepared(&mut self, prepared: PreparedFrame) -> io::Result<()> {
+        let _details = replay::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
         if crate::allocation::failed() {
             if let Some(publication) = &prepared.event_feed_publication {
@@ -2681,6 +2706,7 @@ impl Processor {
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
+        let _details = replay::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
         crate::allocation::attempted_hour(None);
         if crate::allocation::failed() {
@@ -2710,6 +2736,7 @@ impl Processor {
     }
 
     pub fn detach(&mut self) -> io::Result<()> {
+        let _details = replay::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Teardown);
         crate::allocation::attempted_hour(None);
         if crate::allocation::failed() {
@@ -2789,6 +2816,7 @@ impl Processor {
     /// The campaign directories whose `spool.*` files `status.json` reports
     /// as `spool_bytes`. The status writer measures them off this thread.
     pub fn spool_directories(&self) -> io::Result<Vec<std::path::PathBuf>> {
+        let _details = replay::codec::error_details_scope();
         let mut directories = engine::allocation::vec(self.campaigns.0.len())?;
         for campaign in self.campaigns.values() {
             directories.push(campaign.directory.clone());
@@ -2826,6 +2854,7 @@ impl Processor {
         &'a self,
         work: crate::status::Object<T>,
     ) -> io::Result<impl Serialize + 'a> {
+        let _details = replay::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Status);
         crate::allocation::attempted_hour(None);
         if crate::allocation::failed() {
@@ -4164,6 +4193,180 @@ mod tests {
                 "force_full": true, "recovery": true, "refresh": true,
             }),
         );
+    }
+
+    #[test]
+    fn spool_validation_detail_survives_ordinary_failure_and_detach() {
+        const TEST: &str =
+            "spooling::tests::spool_validation_detail_survives_ordinary_failure_and_detach";
+        const CHILD: &str = "BATTLE_PLAN_SPOOL_VALIDATION_DETAIL_TEST";
+        // Allocation hooks are process-wide. Exercise the worker with the same
+        // hooks as capture without changing other tests' diagnostic behaviour.
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return;
+        }
+        crate::allocation::install_hooks();
+        let directory = std::env::temp_dir().join(format!(
+            "hoi4-spool-validation-detail-{}",
+            std::process::id()
+        ));
+        let mut processor =
+            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+        let mut source = captured(10);
+        prepare_order_counter_sample(&mut source, 10, 7);
+        processor.prepare(&source).unwrap();
+        processor.frame(&source).unwrap();
+
+        // Fail an ordinary hour after the forced sample's successful keyframe.
+        // The failed write closes the segment and queues a gap for recovery.
+        source = captured(11);
+        source.order_counters.forced = false;
+        let mut prepared = processor.prepare_frame(&source).unwrap();
+        prepared.source.tables[TableId::States.index()] =
+            TableView::Complete(TableRows::States(vec![StateRow {
+                id: 64,
+                continent: Recorded::NotRecorded,
+                ..Default::default()
+            }]))
+            .into();
+        let detail = "States: row 64 column continent: missing or not recorded row field";
+        let expected = format!("spool validation failed: {detail}");
+        assert_eq!(
+            processor.write_prepared(prepared).unwrap_err().to_string(),
+            detail
+        );
+        let campaign = processor
+            .campaigns
+            .get_mut(std::str::from_utf8(ID).unwrap())
+            .unwrap();
+        assert!(!campaign.spool.is_open());
+        assert!(!campaign.pending.is_empty());
+        let detach_error = processor.detach().unwrap_err();
+
+        // Persist the terminal status after both original errors are gone.
+        let detach_detail = detach_error.to_string();
+        drop(detach_error);
+        let mut bytes = Vec::new();
+        crate::status::serialize_into(&mut bytes, &processor.status().unwrap()).unwrap();
+        let status_path = directory.join("status.json");
+        fs::write(&status_path, bytes).unwrap();
+        let persisted: Value = serde_json::from_slice(&fs::read(status_path).unwrap()).unwrap();
+        assert_eq!(persisted["write_errors"], 2);
+        assert_eq!(persisted["last_error"], expected);
+        let sample = &persisted["order_instance_counters"]["sample"];
+        assert_eq!(sample["clock"]["hour"], 10);
+        assert_eq!(sample["frame_write_succeeded"], true);
+        assert_eq!(sample["subsequent_io_error"], expected);
+        assert_eq!(sample["usable_with_recorded_frame"], false);
+        assert_eq!(
+            detach_detail,
+            "spool unavailable at detach; pending gaps need another observed keyframe"
+        );
+
+        // Preflight and loss handling must retain static reasons with capture
+        // hooks installed too, and must restore callback behaviour on return.
+        let mut preflight =
+            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+        assert_eq!(
+            preflight.prepare(&source).unwrap_err().to_string(),
+            "attach output already contains spool segments; use a fresh attach directory"
+        );
+        let loss = LostObservation {
+            campaign_id: owned_text(ID),
+            first_hour: 12,
+            last_hour: 12,
+            count: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            processor.lost(&loss).unwrap_err().to_string(),
+            "queue loss witness has inconsistent hours and count"
+        );
+        assert_eq!(processor.json()["write_errors"], 3);
+        assert_eq!(processor.json()["last_error"], expected);
+        assert!(invalid("callback refusal").get_ref().is_none());
+        drop(preflight);
+        drop(processor);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn spool_validation_detail_survives_owned_status_and_forced_witness() {
+        let mut processor = Processor {
+            root: PathBuf::new(),
+            history: PreparedCampaigns::default(),
+            session: session(),
+            campaigns: Campaigns::new(),
+            stats: Statistics::default(),
+            unknown_pending: 0,
+            suppress_origin: false,
+            retry_full: false,
+            unpublished_families: 0,
+            helper: None,
+            second_helper: None,
+            backlogged: false,
+            comparison: Box::default(),
+        };
+        let mut source = captured(10);
+        prepare_order_counter_sample(&mut source, 10, 7);
+        let mut witness = OrderCounterWitness::default();
+        let prepared = PreparedOrderWitness::capture(&source, Some(1));
+        let detail = "States: row 64 column continent: missing or not recorded row field";
+        let expected = format!("spool validation failed: {detail}");
+        {
+            let (mut campaign, _) = campaign();
+            let branch = campaign.observe(None, 10, Some(1)).unwrap();
+            let mut frame = staggered_frame(branch, 10, false);
+            *frame.tables[TableId::States.index()] =
+                TableView::Complete(TableRows::States(vec![StateRow {
+                    id: 64,
+                    continent: Recorded::NotRecorded,
+                    ..Default::default()
+                }]));
+            let result = campaign.write(frame, 1000, Some(1), 0, &mut WorkSample::default());
+            assert_eq!(result.as_ref().unwrap_err().to_string(), detail);
+            processor.error(result.as_ref().unwrap_err());
+            witness.observe(&source, Some(1), &result);
+            // Preparation failures borrow the original error, rather than
+            // reconstructing one from its kind before retaining the witness.
+            witness.observe_error(&source, Some(1), result.as_ref().err());
+            prepared.bind(&mut processor.stats.order_counters, &result);
+            witness.invalidate_write(
+                std::str::from_utf8(ID).unwrap(),
+                result.as_ref().unwrap_err(),
+            );
+        }
+        let generic = io::Error::from(io::ErrorKind::InvalidData);
+        processor.error(&generic);
+        witness.invalidate_write(std::str::from_utf8(ID).unwrap(), &generic);
+        processor.stats.order_counters.observe_error(
+            &source,
+            Some(1),
+            Some(&io::ErrorKind::OutOfMemory.into()),
+        );
+        // The original error is gone before the status writer serializes it.
+        let mut bytes = Vec::new();
+        crate::status::serialize_into(&mut bytes, &processor.status().unwrap()).unwrap();
+        let persisted: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(persisted["write_errors"], 2);
+        assert_eq!(persisted["last_error"], expected);
+        assert_eq!(
+            persisted["order_instance_counters"]["sample"]["frame_write_error"],
+            expected
+        );
+        assert_eq!(witness.json()["sample"]["frame_write_error"], expected);
+        assert_eq!(witness.json()["sample"]["subsequent_io_error"], expected);
     }
 
     #[test]
