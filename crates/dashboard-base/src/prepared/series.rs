@@ -1152,6 +1152,7 @@ impl Batch {
         put(&mut bytes, 4, &self.last.to_le_bytes());
         put(&mut bytes, 8, &(self.keys.len() as u64).to_le_bytes());
         let mut states = BTreeMap::new();
+        let mut blobs = HashMap::new();
         for (index, (key, mut rows)) in self.keys.into_iter().enumerate() {
             check_cancel(cancelled)?;
             let at = HEADER as usize + index * DIRECTORY as usize;
@@ -1265,7 +1266,7 @@ impl Batch {
                     previous = aligned;
                 }
             }
-            blob(&mut bytes, at + 8, &raw)?;
+            blob(&mut bytes, at + 8, raw, &mut blobs)?;
             states.insert(key, rows.state);
         }
         check_cancel(cancelled)?;
@@ -1324,17 +1325,49 @@ pub fn decompress(bytes: &[u8]) -> io::Result<Vec<u8>> {
             .decompress(bytes, size)
     })
 }
-fn blob(bytes: &mut Vec<u8>, at: usize, raw: &[u8]) -> io::Result<()> {
-    let encoded = if raw.is_empty() {
-        Vec::new()
-    } else {
-        compress(raw, 3)?
+/// Equal per-key payloads share compression work, while each keeps its own
+/// bytes and offset in the batch. The full collision-resistant BLAKE3 digest
+/// and raw length identify a payload, following production endpoint identities,
+/// so reuse needs no retained raw bytes for a second equality check. The cache
+/// refers to encoded bytes already in the batch and retains no raw buffers.
+fn blob(
+    bytes: &mut Vec<u8>,
+    at: usize,
+    raw: Vec<u8>,
+    blobs: &mut HashMap<([u8; 32], usize), (usize, usize)>,
+) -> io::Result<()> {
+    let offset = bytes.len();
+    let identity = (*blake3::hash(&raw).as_bytes(), raw.len());
+    let length = match blobs.entry(identity) {
+        std::collections::hash_map::Entry::Occupied(entry) => {
+            let &(start, length) = entry.get();
+            bytes.extend_from_within(start..start + length);
+            #[cfg(test)]
+            BLOB_WORK.with(|work| work.borrow_mut().1 += raw.len());
+            length
+        }
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            let encoded = if raw.is_empty() {
+                Vec::new()
+            } else {
+                compress(&raw, 3)?
+            };
+            let length = encoded.len();
+            bytes.extend(encoded);
+            #[cfg(test)]
+            BLOB_WORK.with(|work| work.borrow_mut().0 += raw.len());
+            entry.insert((offset, length));
+            length
+        }
     };
-    let offset = bytes.len() as u64;
-    put(bytes, at, &offset.to_le_bytes());
-    put(bytes, at + 8, &(encoded.len() as u64).to_le_bytes());
-    bytes.extend(encoded);
+    put(bytes, at, &(offset as u64).to_le_bytes());
+    put(bytes, at + 8, &(length as u64).to_le_bytes());
     Ok(())
+}
+#[cfg(test)]
+thread_local! {
+    /// Raw bytes compressed and reused on this thread.
+    static BLOB_WORK: std::cell::RefCell<(usize, usize)> = const { std::cell::RefCell::new((0, 0)) };
 }
 fn run_bucket(run: Run, first: i32, last: i32, decimals: u8) -> ChartBucket {
     constant_bucket(

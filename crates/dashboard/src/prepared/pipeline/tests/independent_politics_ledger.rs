@@ -10,7 +10,7 @@ use super::*;
 use crate::prepared::prepass;
 use independent::ledger;
 use replay::rows::{
-    CountryCommandPowerRow, CountryPowerChangeRow, CountryPowerDailyRow,
+    CountryCommandPowerRow, CountryPowerChangeRow, CountryPowerDailyCostRow, CountryPowerDailyRow,
     PoliticsCaptureCoverageRow, PowerCause, PowerCurrency, PowerIdentity, PowerObjectKind,
     PowerOperation, PowerSite,
 };
@@ -608,6 +608,7 @@ fn dense_frame(branch: u64, hour: i32) -> DecodedFrame {
     let held = |at: i32| at <= hour && hour < at + WINDOW && at >= start;
     let mut power = Vec::new();
     let mut daily = Vec::new();
+    let mut costs = Vec::new();
     let today = hour.div_euclid(24) * 24;
     for index in 0..DENSE {
         let country = FIRST + index;
@@ -624,8 +625,8 @@ fn dense_frame(branch: u64, hour: i32) -> DecodedFrame {
                     currency: PowerCurrency::Political,
                     operation: PowerOperation::Add,
                     balance_before_raw: 4_975_000,
-                    balance_after_raw: 4_975_500,
-                    requested_delta_raw: Some(500),
+                    balance_after_raw: 4_975_493,
+                    requested_delta_raw: Some(493),
                     cause: PowerCause::DailyGain,
                     ..Default::default()
                 });
@@ -637,13 +638,23 @@ fn dense_frame(branch: u64, hour: i32) -> DecodedFrame {
                     epoch: 1,
                     day_hour: day,
                     pp_gross_gain_raw: Some(500),
-                    pp_cost_raw: Some(0),
-                    pp_net_gain_raw: Some(500),
-                    pp_realized_delta_raw: Some(500),
+                    pp_cost_raw: Some(7),
+                    pp_net_gain_raw: Some(493),
+                    pp_realized_delta_raw: Some(493),
                     pp_sequence: Some(sequence),
                     cp_gain_raw: Some(30),
                     cp_realized_delta_raw: Some(30),
                     cp_sequence: Some(sequence + 2),
+                });
+                costs.push(CountryPowerDailyCostRow {
+                    country,
+                    instance: instance(index, day),
+                    epoch: 1,
+                    day_hour: day,
+                    pp_sequence: sequence,
+                    cost_raw: 7,
+                    cause: PowerCause::DailyGain,
+                    ..Default::default()
                 });
             }
         }
@@ -694,7 +705,7 @@ fn dense_frame(branch: u64, hour: i32) -> DecodedFrame {
     set(&mut observed, TableRows::CountryPowerChanges(power));
     daily.sort_by_key(|row| row.country);
     set(&mut observed, TableRows::CountryPowerDaily(daily));
-    set(&mut observed, TableRows::CountryPowerDailyCosts(Vec::new()));
+    set(&mut observed, TableRows::CountryPowerDailyCosts(costs));
     set(&mut observed, TableRows::GovernmentChanges(Vec::new()));
     set(
         &mut observed,

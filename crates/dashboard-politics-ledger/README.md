@@ -54,6 +54,21 @@ and governments. It does so only once the content's power diagnostics are
 reachable (`PoliticsContent::power_requested`), since a presentation reports
 them only from the first item that demanded the power content.
 
+Daily gain and cost publications join from their changed owners when the
+recorded deltas are available: those owners' daily keys, applications, wrapping
+cost sums and reconciliation counts are replaced, and other owners retain
+their indexes and deferred coverage. Recorded cost keys are pruned again only
+after a nonempty cost delta or a read whose rows may all have changed; an equal
+cost acquisition keeps the previous prune. Rebuilt tables, changes to census keys,
+links or the dictionary, and incomplete reads whose former rows must be
+removed use the whole-table join. Each country's presented payments share
+indexes of their source identities, item definitions, categories and row
+order, and select a tooltip's effects once. A balance sentence reuses its
+spending item's resolution before tooltip and upkeep grouping changes it;
+all response-budget checks still run in their original order. Series keys look
+up borrowed tag and field operands without encoding them; publication and saved
+state encode the same sorted flat key map.
+
 `cargo test -p dashboard-politics-ledger` builds and runs only this product's
 tests. The `test-support` feature compiles its whole-recording test loader and
 instrumentation for the dashboard's pipeline tests.

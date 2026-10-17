@@ -1597,6 +1597,82 @@ fn hourly_dense_runs_use_compact_key_blobs_and_keep_wide_values_exact() {
 }
 
 #[test]
+fn equal_series_payloads_compress_once_without_changing_batch_bytes() {
+    let count = 5_000;
+    let mut bytes = vec![0; count * DIRECTORY as usize];
+    let mut expected = bytes.clone();
+    let mut blobs = HashMap::new();
+    let before = BLOB_WORK.with(|work| *work.borrow());
+    let mut total = 0;
+    for key in 0..count {
+        // Many countries share a value's runs and summaries; a few differ.
+        let raw = serde_json::to_vec(&(key % 4, vec![17; 24])).unwrap();
+        total += raw.len();
+        let at = key * DIRECTORY as usize + 8;
+        let compressed = compress(&raw, 3).unwrap();
+        let offset = expected.len() as u64;
+        put(&mut expected, at, &offset.to_le_bytes());
+        put(
+            &mut expected,
+            at + 8,
+            &(compressed.len() as u64).to_le_bytes(),
+        );
+        expected.extend(compressed);
+        blob(&mut bytes, at, raw, &mut blobs).unwrap();
+    }
+    let after = BLOB_WORK.with(|work| *work.borrow());
+    let compressed = after.0 - before.0;
+    let reused = after.1 - before.1;
+    assert_eq!(compressed + reused, total);
+    assert_eq!(blobs.len(), 4);
+    assert!(
+        compressed * 1_000 <= total,
+        "{compressed} bytes compressed of {total}"
+    );
+    assert_eq!(bytes, expected);
+}
+
+#[test]
+fn series_flush_reuses_equal_payloads_after_restore_and_append() {
+    let mut fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    for batch in 0..3 {
+        let first = batch * 16;
+        values.advance(first).unwrap();
+        for key in 0..128 {
+            values.observe(key, first, Some(i128::from(key % 2)), batch == 0);
+        }
+        values.advance_span(first + 1, first + 15).unwrap();
+        let mut writer = if batch == 2 {
+            fixture.append_writer()
+        } else {
+            fixture.writer()
+        };
+        let before = BLOB_WORK.with(|work| *work.borrow());
+        values.flush(&mut writer, "repeated", 0, &flag).unwrap();
+        let after = BLOB_WORK.with(|work| *work.borrow());
+        assert!(
+            after.1 > before.1,
+            "batch {batch} reused no compressed bytes"
+        );
+        writer.commit().unwrap();
+        let state = serde_json::to_vec(&values).unwrap();
+        values = serde_json::from_slice(&state).unwrap();
+        assert_eq!(serde_json::to_vec(&values).unwrap(), state);
+    }
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "repeated".into(), &flag).unwrap();
+    for key in 0..128 {
+        for hour in [0, 15, 16, 31, 32, 47] {
+            assert_eq!(
+                reader.value_at(key, hour).unwrap().unwrap().value,
+                i128::from(key % 2)
+            );
+        }
+    }
+}
+
+#[test]
 fn whole_replies_are_plain_compressed_json_and_replace_only_the_requested_ordinal() {
     let fixture = Fixture::new();
     for value in ["first", "appended"] {

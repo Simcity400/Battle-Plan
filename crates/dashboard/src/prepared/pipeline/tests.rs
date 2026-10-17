@@ -46,6 +46,56 @@ mod serialization_order;
 mod stability_progressive;
 mod walk_selection;
 
+#[test]
+fn family_commits_rewrite_no_unchanged_map_binding_bytes() {
+    let mut fixture = dashboard_base::prepared::series::tests::Fixture::new();
+    let mut progress = dashboard_base::prepared_map::Progress {
+        stride: 720,
+        selected: vec![TableId::Countries as u16],
+        ..Default::default()
+    };
+    let mut writer = fixture.writer();
+    write_map_progress(&mut writer, &progress).unwrap();
+    assert_eq!(
+        writer.bytes_written(),
+        serde_json::to_vec(&progress).unwrap().len() as u64
+    );
+    writer.commit().unwrap();
+    let original = fixture
+        .store
+        .read(&fixture.key, MAP_PROGRESS, 0)
+        .unwrap()
+        .unwrap()
+        .id();
+    for append in [false, true] {
+        let mut writer = if append {
+            fixture.append_writer()
+        } else {
+            fixture.writer()
+        };
+        write_map_progress(&mut writer, &progress).unwrap();
+        assert_eq!(writer.bytes_written(), 0);
+        assert_eq!(writer.payload_bytes_change(), 0);
+        writer.commit().unwrap();
+        assert_eq!(
+            fixture
+                .store
+                .read(&fixture.key, MAP_PROGRESS, 0)
+                .unwrap()
+                .unwrap()
+                .id(),
+            original
+        );
+    }
+    progress.resume_range = Some(3);
+    let expected = serde_json::to_vec(&progress).unwrap();
+    let mut writer = fixture.writer();
+    write_map_progress(&mut writer, &progress).unwrap();
+    assert_eq!(writer.bytes_written(), expected.len() as u64);
+    writer.commit().unwrap();
+    assert_eq!(fixture.payloads()[&(MAP_PROGRESS.to_owned(), 0)], expected);
+}
+
 /// Whether `query`'s data covers the whole branch ([`product_coverage`]).
 fn complete(
     source: &Source,

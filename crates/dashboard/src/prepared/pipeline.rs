@@ -1683,7 +1683,13 @@ pub fn write_map_progress(
     writer: &mut store::Writer,
     progress: &dashboard_base::prepared_map::Progress,
 ) -> io::Result<()> {
-    json(writer, MAP_PROGRESS, progress)
+    let text = serde_json::to_vec(progress)?;
+    if dashboard_base::prepared::pages::Pages::read_at(writer, MAP_PROGRESS, 0)?.as_deref()
+        != Some(text.as_slice())
+    {
+        writer.write_at(MAP_PROGRESS, 0, text.as_slice())?;
+    }
+    Ok(())
 }
 
 /// The map attaches already-published checkpoints through the host's recording

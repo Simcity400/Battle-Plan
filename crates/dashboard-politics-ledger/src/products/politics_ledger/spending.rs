@@ -137,6 +137,9 @@ pub(super) struct Scanned {
     /// Event keys and rows visited to publish and settle this observer's reads.
     #[cfg(test)]
     publication_visits: usize,
+    /// Recorded cost keys visited by publication pruning.
+    #[cfg(test)]
+    cost_prune_visits: usize,
     #[cfg(any(test, feature = "test-support"))]
     dated: Option<BTreeSet<i32>>,
     warnings: BTreeMap<Option<String>, BTreeMap<String, u64>>,
@@ -539,7 +542,15 @@ impl Scanned {
             && !self.costs_pruned
         {
             let current = &self.inputs.cost_keys;
-            self.costs.retain(|key| current.contains(key));
+            #[cfg(test)]
+            let visits = &mut self.cost_prune_visits;
+            self.costs.retain(|key| {
+                #[cfg(test)]
+                {
+                    *visits += 1;
+                }
+                current.contains(key)
+            });
             self.costs_pruned = true;
         }
     }
@@ -2124,6 +2135,10 @@ fn character_art(
         ),
     }
 }
+#[cfg(test)]
+thread_local! {
+    static RESOLVED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 fn resolve_item(
     scan: &Scanned,
     row: &LedgerMutation,
@@ -2133,6 +2148,8 @@ fn resolve_item(
     id: String,
     daily_component: Option<&str>,
 ) -> (LedgerSpendItem, Option<IdeaInfo>, (String, String)) {
+    #[cfg(test)]
+    RESOLVED.with(|count| count.set(count.get() + 1));
     let own = scan.name_at(row.country, row.hour);
     let target = row
         .item
@@ -2767,7 +2784,13 @@ fn present_fields(
     let mut item_ids = BTreeSet::new();
     let mut upkeep = BTreeMap::new();
     let mut pngs = BTreeMap::new();
+    // The balance sentence uses the spending resolution before tooltip IDs,
+    // icons and grouped upkeep change its presentation.
+    let mut balance_items = Vec::with_capacity(if balance { raw.mutations.len() } else { 0 });
     for stored in &raw.mutations {
+        if balance {
+            balance_items.push(None);
+        }
         if cancelled.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
@@ -2791,6 +2814,9 @@ fn present_fields(
             id.clone(),
             None,
         );
+        if balance {
+            *balance_items.last_mut().unwrap() = Some((item.action.clone(), item.unknown.clone()));
+        }
         if intern {
             intern_tooltip(&mut item, &mut info, &mut tooltip_ids, tag);
         } else if let Some(order) = tooltip_order.as_mut() {
@@ -3160,7 +3186,7 @@ fn present_fields(
     budget.add(holds)?;
     reply.command_holds = holds.to_vec();
     if balance {
-        for stored in &raw.mutations {
+        for (stored, resolved) in raw.mutations.iter().zip(balance_items) {
             cancelled_request(cancelled)?;
             let row = &stored.ledger();
             let (action, reason) = match row.cause.as_str() {
@@ -3182,20 +3208,21 @@ fn present_fields(
                 "CapCorrection" => ("Maximum correction".into(), None),
                 "ResetSetup" => ("Balance set/reset".into(), None),
                 "Console" => ("Console adjustment".into(), None),
-                _ => {
-                    // Shares spending's dated item/content resolution. The chart
-                    // needs the sentence; the log owns art and idea tooltips.
-                    let (item, _, _) = resolve_item(
-                        scan,
-                        row,
-                        &stored.facts,
-                        content,
-                        &mut pngs,
-                        mutation_id(row),
-                        None,
-                    );
-                    (item.action, item.unknown)
-                }
+                _ => match resolved {
+                    Some(resolved) => resolved,
+                    None => {
+                        let (item, _, _) = resolve_item(
+                            scan,
+                            row,
+                            &stored.facts,
+                            content,
+                            &mut pngs,
+                            mutation_id(row),
+                            None,
+                        );
+                        (item.action, item.unknown)
+                    }
+                },
             };
             if let Some(reason) = &reason
                 && charge(row).is_none()

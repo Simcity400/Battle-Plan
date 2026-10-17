@@ -732,36 +732,7 @@ impl Inputs {
             self.slots.extend(self.countries.keys().copied());
         }
         if self.daily_changed || self.costs_changed {
-            for country in daily_owners {
-                let previous = self.unreconciled.remove(&country);
-                for row in country_rows(
-                    held::<tables::CountryPowerDaily>(&self.daily),
-                    self.daily_index.as_ref(),
-                    country,
-                    |row| row.country,
-                ) {
-                    if let Some(sequence) = row.pp_sequence {
-                        let key = (row.country, row.instance, row.epoch, row.day_hour, sequence);
-                        if row
-                            .pp_cost_raw
-                            .is_none_or(|cost| self.sums.get(&key).copied().unwrap_or(0) != cost)
-                        {
-                            self.unreconciled.insert(row.country);
-                        }
-                    }
-                }
-                if !links
-                    && previous != self.unreconciled.contains(&country)
-                    && let Some(slot) = self.links.get(&country)
-                {
-                    let count = self.unreconciled_counts.entry(*slot).or_default();
-                    if previous {
-                        *count -= 1;
-                    } else {
-                        *count += 1;
-                    }
-                }
-            }
+            self.reconcile_daily(daily_owners, links);
         }
         if links {
             self.unreconciled_counts.clear();
@@ -796,8 +767,8 @@ impl Inputs {
     /// as events are skipped when observed, so only `pending` rows of the
     /// whole tables the full refresh would observe are observed again.
     /// False, changing nothing, when a table read was rebuilt rather than
-    /// changed by one recorded delta, or a census key, link, dictionary or
-    /// daily publication changed: the caller then refreshes the whole tables.
+    /// changed by one recorded delta, or a census key, link or dictionary
+    /// changed: the caller then refreshes the whole tables.
     fn refresh_rows(
         &mut self,
         frame: &DecodedFrame,
@@ -852,14 +823,22 @@ impl Inputs {
         {
             return false;
         }
-        for (table, none_held) in [
-            (TableId::CountryPowerDaily, self.daily().is_empty()),
-            (TableId::CountryPowerDailyCosts, self.costs().is_empty()),
-        ] {
-            if read(table) && !unchanged(table_delta(changes, frame, table, none_held)) {
-                return false;
-            }
-        }
+        let (Some(daily), Some(costs)) = (
+            table_delta(
+                changes,
+                frame,
+                TableId::CountryPowerDaily,
+                self.daily().is_empty(),
+            ),
+            table_delta(
+                changes,
+                frame,
+                TableId::CountryPowerDailyCosts,
+                self.costs().is_empty(),
+            ),
+        ) else {
+            return false;
+        };
         let (Some(coverage), Some(power), Some(governments), Some(command), Some(_characters)) = (
             table_delta(
                 changes,
@@ -932,8 +911,12 @@ impl Inputs {
         }
         #[cfg(test)]
         {
-            self.row_visits +=
-                captures.len() + allocations.len() + power.0.len() + governments.0.len();
+            self.row_visits += captures.len()
+                + allocations.len()
+                + power.0.len()
+                + governments.0.len()
+                + daily.0.len()
+                + costs.0.len();
         }
         self.narrow = true;
         self.touched = Default::default();
@@ -1082,13 +1065,139 @@ impl Inputs {
         }
         changed_rows[1].clone_from(&self.touched[1]);
         self.changed_rows = Some(changed_rows);
-        // Unchanged daily publications read as before.
+        // Replace only changed owners' daily keys, applications and wrapping
+        // cost sums. Key order groups each table's rows by country, including
+        // after additions and deletions move their positions.
+        let daily_owners: BTreeSet<u32> = daily
+            .0
+            .iter()
+            .map(|row| row.key)
+            .chain(daily.1.iter().copied())
+            .map(|key| key as u32)
+            .collect();
+        let cost_owners: BTreeSet<u32> = costs
+            .0
+            .iter()
+            .map(|row| row.key)
+            .chain(costs.1.iter().copied())
+            .map(|key| (key >> 32) as u32)
+            .collect();
         if self.daily_changed {
+            for &raw in &daily_owners {
+                for row in country_rows(
+                    held::<tables::CountryPowerDaily>(&self.daily),
+                    self.daily_index.as_ref(),
+                    raw,
+                    |row| row.country,
+                ) {
+                    self.daily_keys
+                        .remove(&(row.country, row.instance, row.epoch, row.day_hour));
+                    if let Some(sequence) = row.pp_sequence {
+                        self.applications.remove(&(
+                            row.country,
+                            row.instance,
+                            row.epoch,
+                            row.day_hour,
+                            sequence,
+                        ));
+                    }
+                }
+            }
             self.daily = Some(frame.tables[TableId::CountryPowerDaily.index()].clone());
+            if !daily_owners.is_empty() {
+                self.daily_index = None;
+                for &raw in &daily_owners {
+                    for row in country_rows(
+                        held::<tables::CountryPowerDaily>(&self.daily),
+                        None,
+                        raw,
+                        |row| row.country,
+                    ) {
+                        self.daily_keys.insert((
+                            row.country,
+                            row.instance,
+                            row.epoch,
+                            row.day_hour,
+                        ));
+                        if let Some(sequence) = row.pp_sequence {
+                            self.applications.insert((
+                                row.country,
+                                row.instance,
+                                row.epoch,
+                                row.day_hour,
+                                sequence,
+                            ));
+                        }
+                    }
+                }
+            }
         }
         if self.costs_changed {
+            for &raw in &cost_owners {
+                for row in country_rows(
+                    held::<tables::CountryPowerDailyCosts>(&self.costs),
+                    self.cost_index.as_ref(),
+                    raw,
+                    |row| row.country,
+                ) {
+                    self.cost_keys.remove(&(
+                        row.country,
+                        row.instance,
+                        row.epoch,
+                        row.day_hour,
+                        row.ordinal,
+                    ));
+                    self.sums.remove(&(
+                        row.country,
+                        row.instance,
+                        row.epoch,
+                        row.day_hour,
+                        row.pp_sequence,
+                    ));
+                }
+            }
             self.costs = Some(frame.tables[TableId::CountryPowerDailyCosts.index()].clone());
+            if !cost_owners.is_empty() {
+                self.cost_index = None;
+                for &raw in &cost_owners {
+                    for row in country_rows(
+                        held::<tables::CountryPowerDailyCosts>(&self.costs),
+                        None,
+                        raw,
+                        |row| row.country,
+                    ) {
+                        self.cost_keys.insert((
+                            row.country,
+                            row.instance,
+                            row.epoch,
+                            row.day_hour,
+                            row.ordinal,
+                        ));
+                        let sum = self
+                            .sums
+                            .entry((
+                                row.country,
+                                row.instance,
+                                row.epoch,
+                                row.day_hour,
+                                row.pp_sequence,
+                            ))
+                            .or_default();
+                        *sum = sum.wrapping_add(row.cost_raw);
+                    }
+                }
+            }
         }
+        let affected: BTreeSet<_> = daily_owners.union(&cost_owners).copied().collect();
+        self.reconcile_daily(affected.iter().copied(), false);
+        self.slots.extend(
+            affected
+                .iter()
+                .filter_map(|raw| self.links.get(raw))
+                .copied(),
+        );
+        self.touched[2] = daily_owners;
+        self.touched[3] = cost_owners;
         // The whole tables observe every row, and identity reads every row
         // of a linked or captured country, again; only rows not yet recorded
         // as events can change anything.
@@ -1397,6 +1506,40 @@ impl Inputs {
                         .entry(row.hour)
                         .or_default()
                         .insert(row.country);
+                }
+            }
+        }
+    }
+
+    /// Reconcile only countries whose daily applications or cost rows changed.
+    fn reconcile_daily(&mut self, owners: impl IntoIterator<Item = u32>, links_changed: bool) {
+        for country in owners {
+            let previous = self.unreconciled.remove(&country);
+            for row in country_rows(
+                held::<tables::CountryPowerDaily>(&self.daily),
+                self.daily_index.as_ref(),
+                country,
+                |row| row.country,
+            ) {
+                if let Some(sequence) = row.pp_sequence {
+                    let key = (row.country, row.instance, row.epoch, row.day_hour, sequence);
+                    if row
+                        .pp_cost_raw
+                        .is_none_or(|cost| self.sums.get(&key).copied().unwrap_or(0) != cost)
+                    {
+                        self.unreconciled.insert(row.country);
+                    }
+                }
+            }
+            if !links_changed
+                && previous != self.unreconciled.contains(&country)
+                && let Some(slot) = self.links.get(&country)
+            {
+                let count = self.unreconciled_counts.entry(*slot).or_default();
+                if previous {
+                    *count -= 1;
+                } else {
+                    *count += 1;
                 }
             }
         }

@@ -1587,3 +1587,58 @@ fn daily_currencies_keep_their_independent_supplying_reads_in_either_order() {
         assert_eq!(reply.daily[0].cp_income_raw.as_deref(), Some("5"));
     }
 }
+
+#[test]
+fn balance_sentences_resolve_each_spending_item_once_before_upkeep_grouping() {
+    let mut input = frame(24, 1);
+    let mut upkeep = event(
+        2,
+        PowerCause::AbilityUpkeep,
+        PowerOperation::Subtract,
+        Some(-7),
+    );
+    upkeep.currency = PowerCurrency::Command;
+    let mut next = upkeep.clone();
+    next.sequence = 3;
+    put(
+        &mut input,
+        TableRows::CountryPowerChanges(vec![
+            event(1, PowerCause::Decision, PowerOperation::Subtract, Some(-17)),
+            upkeep,
+            next,
+        ]),
+    );
+    let mut scan = Scanned::default();
+    scan.observe(&input, None).unwrap();
+    let before = RESOLVED.with(std::cell::Cell::get);
+    let reply = present_view(
+        &scan,
+        1,
+        "C1",
+        None,
+        &AtomicBool::new(false),
+        LedgerView::Balance,
+    )
+    .unwrap();
+    assert_eq!(RESOLVED.with(std::cell::Cell::get) - before, 3);
+    assert_eq!(reply.balance_changes.len(), 3);
+    for (stored, balance) in scan.countries["C1"]
+        .mutations
+        .iter()
+        .zip(&reply.balance_changes)
+    {
+        let (item, _, _) = resolve_item(
+            &scan,
+            &stored.ledger(),
+            &stored.facts,
+            None,
+            &mut BTreeMap::new(),
+            mutation_id(&stored.ledger()),
+            None,
+        );
+        assert_eq!(
+            (&balance.action, &balance.reason),
+            (&item.action, &item.unknown)
+        );
+    }
+}

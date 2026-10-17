@@ -145,8 +145,13 @@ impl Scanned {
         #[cfg(test)]
         let pending = pending.filter(|_| !self.whole_tables);
         Arc::make_mut(&mut self.inputs).refresh_changes(frame, changes, pending);
-        // Only a join of the whole tables replaces the current cost keys.
-        if !self.inputs.narrow && self.inputs.costs_changed {
+        // An equal acquisition keeps the cost keys. A nonempty delta or a
+        // read whose rows may all have changed requires another prune.
+        if self.inputs.costs_changed
+            && changes
+                .rows(TableId::CountryPowerDailyCosts)
+                .is_none_or(|(changed, deleted)| !changed.is_empty() || !deleted.is_empty())
+        {
             self.costs_pruned = false;
         }
         #[cfg(test)]

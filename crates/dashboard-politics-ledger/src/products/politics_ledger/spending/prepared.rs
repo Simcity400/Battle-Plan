@@ -6,6 +6,8 @@ use dashboard_base::prepared::priority::{JobPriority, Level};
 use dashboard_base::prepared::series::{self, Accumulator, Reader, Run};
 use replay::rows::RowCodec;
 
+mod keys;
+
 pub(crate) type PreparedContent = Result<Option<Arc<PoliticsContent>>, String>;
 
 pub fn prepared_content(
@@ -29,7 +31,7 @@ pub struct Prepared {
     scan: Scanned,
     series: Accumulator,
     recurring: Accumulator,
-    keys: BTreeMap<String, u64>,
+    keys: keys::Keys,
     metadata: Catalogue,
     /// Only the newest native day remains mutable. Delayed settlements behind
     /// the published frontier use a sparse publication-hour event instead.
@@ -268,95 +270,143 @@ fn is_recurring(category: &str) -> bool {
     )
 }
 
-fn payment(reply: &PoliticsLedgerReply, spend: &LedgerSpend) -> io::Result<Payment> {
-    let item = reply
-        .spend_items
-        .iter()
-        .find(|item| item.id == spend.item_id)
-        .cloned()
-        .ok_or_else(|| dashboard_core::invalid("Missing prepared spending item"))?;
-    let ideas = reply
-        .idea_tooltips
-        .as_ref()
-        .map(|ideas| LedgerIdeaTooltips {
-            ideas: ideas
-                .ideas
-                .iter()
-                .filter(|info| Some(&info.token) == item.tooltip_token.as_ref())
-                .cloned()
-                .collect(),
-            artwork: ideas
-                .artwork
-                .iter()
-                .filter(|art| Some(&art.token) == item.tooltip_token.as_ref())
-                .cloned()
-                .collect(),
-            modifiers: {
-                let (keys, _) = idea_history::effect_keys(
-                    ideas
+/// Lookup operands shared by every payment of one country's presentation.
+/// First occurrences preserve the presentation's ordered searches.
+struct Payments<'a> {
+    reply: &'a PoliticsLedgerReply,
+    items: BTreeMap<&'a str, &'a LedgerSpendItem>,
+    categories: BTreeMap<&'a str, &'a LedgerSpendCategory>,
+    identities: BTreeMap<String, (u32, u32, String)>,
+    order: BTreeMap<String, usize>,
+    ideas: BTreeMap<Option<&'a str>, Option<LedgerIdeaTooltips>>,
+    #[cfg(test)]
+    indexed: usize,
+}
+
+impl<'a> Payments<'a> {
+    fn new(reply: &'a PoliticsLedgerReply) -> Self {
+        let mut result = Self {
+            reply,
+            items: BTreeMap::new(),
+            categories: BTreeMap::new(),
+            identities: BTreeMap::new(),
+            order: BTreeMap::new(),
+            ideas: BTreeMap::new(),
+            #[cfg(test)]
+            indexed: 0,
+        };
+        if reply.spending.is_empty() {
+            return result;
+        }
+        for item in &reply.spend_items {
+            #[cfg(test)]
+            {
+                result.indexed += 1;
+            }
+            result.items.entry(&item.id).or_insert(item);
+        }
+        for category in &reply.spend_categories {
+            #[cfg(test)]
+            {
+                result.indexed += 1;
+            }
+            result.categories.entry(&category.id).or_insert(category);
+        }
+        for (order, row) in reply.mutations.iter().enumerate() {
+            #[cfg(test)]
+            {
+                result.indexed += 1;
+            }
+            let id = mutation_id(row);
+            result
+                .identities
+                .entry(id.clone())
+                .or_insert_with(|| (row.country, row.instance, row.epoch.clone()));
+            result.order.entry(id).or_insert(order);
+        }
+        for (order, row) in reply.daily_costs.iter().enumerate() {
+            #[cfg(test)]
+            {
+                result.indexed += 1;
+            }
+            let id = format!(
+                "daily:{}:{}:{}:{}:{}",
+                row.country, row.instance, row.epoch, row.day_hour, row.ordinal
+            );
+            result
+                .identities
+                .entry(id.clone())
+                .or_insert_with(|| (row.country, row.instance, row.epoch.clone()));
+            result.order.entry(id).or_insert(order);
+        }
+        result
+    }
+
+    fn payment(&mut self, spend: &LedgerSpend) -> io::Result<Payment> {
+        let item = *self
+            .items
+            .get(spend.item_id.as_str())
+            .ok_or_else(|| dashboard_core::invalid("Missing prepared spending item"))?;
+        let ideas = self
+            .ideas
+            .entry(item.tooltip_token.as_deref())
+            .or_insert_with(|| {
+                self.reply.idea_tooltips.as_ref().map(|ideas| {
+                    let infos: Vec<_> = ideas
                         .ideas
                         .iter()
-                        .filter(|info| Some(&info.token) == item.tooltip_token.as_ref()),
-                );
-                ideas
-                    .modifiers
-                    .iter()
-                    .filter(|modifier| keys.contains(&modifier.key))
-                    .cloned()
-                    .collect()
-            },
-            texts: {
-                let (_, keys) = idea_history::effect_keys(
-                    ideas
-                        .ideas
-                        .iter()
-                        .filter(|info| Some(&info.token) == item.tooltip_token.as_ref()),
-                );
-                ideas
-                    .texts
-                    .iter()
-                    .filter(|text| keys.contains(&text.key))
-                    .cloned()
-                    .collect()
-            },
-        });
-    let identity = reply
-        .mutations
-        .iter()
-        .find(|row| mutation_id(row) == spend.id)
-        .map(|row| (row.country, row.instance, row.epoch.clone()))
-        .or_else(|| {
-            reply
-                .daily_costs
-                .iter()
-                .find(|row| {
-                    format!(
-                        "daily:{}:{}:{}:{}:{}",
-                        row.country, row.instance, row.epoch, row.day_hour, row.ordinal
-                    ) == spend.id
+                        .filter(|info| Some(&info.token) == item.tooltip_token.as_ref())
+                        .cloned()
+                        .collect();
+                    let (modifiers, texts) = idea_history::effect_keys(&infos);
+                    LedgerIdeaTooltips {
+                        ideas: infos,
+                        artwork: ideas
+                            .artwork
+                            .iter()
+                            .filter(|art| Some(&art.token) == item.tooltip_token.as_ref())
+                            .cloned()
+                            .collect(),
+                        modifiers: ideas
+                            .modifiers
+                            .iter()
+                            .filter(|modifier| modifiers.contains(&modifier.key))
+                            .cloned()
+                            .collect(),
+                        texts: ideas
+                            .texts
+                            .iter()
+                            .filter(|text| texts.contains(&text.key))
+                            .cloned()
+                            .collect(),
+                    }
                 })
-                .map(|row| (row.country, row.instance, row.epoch.clone()))
-        })
-        .ok_or_else(|| dashboard_core::invalid("Missing prepared payment identity"))?;
-    Ok(Payment {
-        spend: spend.clone(),
-        item,
-        category: reply
-            .spend_categories
-            .iter()
-            .find(|category| category.id == spend.category)
+            })
+            .clone();
+        let identity = self
+            .identities
+            .get(&spend.id)
             .cloned()
-            .ok_or_else(|| dashboard_core::invalid("Missing prepared spending category"))?,
-        ideas,
-        count: 1,
-        known_raw: spend.charge_raw.clone().unwrap_or_else(|| "0".into()),
-        identity,
-        known_count: if spend.charge_raw.is_some() {
-            spend.occurrences
-        } else {
-            0
-        },
-    })
+            .ok_or_else(|| dashboard_core::invalid("Missing prepared payment identity"))?;
+        Ok(Payment {
+            spend: spend.clone(),
+            item: item.clone(),
+            category: (*self
+                .categories
+                .get(spend.category.as_str())
+                .ok_or_else(|| dashboard_core::invalid("Missing prepared spending category"))?)
+            .clone(),
+            ideas,
+            count: 1,
+            known_raw: spend.charge_raw.clone().unwrap_or_else(|| "0".into()),
+            identity,
+            known_count: if spend.charge_raw.is_some() {
+                spend.occurrences
+            } else {
+                0
+            },
+        })
+    }
 }
 
 fn raw_cost_field(cost: &LedgerDailyCost) -> io::Result<String> {
@@ -538,12 +588,7 @@ impl Prepared {
         }
     }
     fn key(&mut self, tag: &str, field: &str) -> io::Result<u64> {
-        let next = u64::try_from(self.keys.len())
-            .map_err(|_| dashboard_core::invalid("Politics series key count overflow"))?;
-        Ok(*self
-            .keys
-            .entry(series::field_key(tag, field))
-            .or_insert(next))
+        self.keys.key(tag, field)
     }
     fn scalar(
         &mut self,
@@ -1590,8 +1635,9 @@ impl Prepared {
                 }
             }
             let mut payments = BTreeMap::new();
+            let mut projection = Payments::new(&reply);
             for spend in &reply.spending {
-                let mut projected = payment(&reply, spend)?;
+                let mut projected = projection.payment(spend)?;
                 if projected.spend.category == "upkeep" {
                     let day = projected.spend.hour.div_euclid(24) * 24;
                     if let Some(first) = self.tail.get(&day).and_then(|open| {
@@ -1622,25 +1668,7 @@ impl Prepared {
                     }
                 }
                 let cost = spend.id.starts_with("daily:");
-                let country = &self.scan.countries[tag];
-                let order = if cost {
-                    country.daily_costs.iter().position(|row| {
-                        format!(
-                            "daily:{}:{}:{}:{}:{}",
-                            row.row.country,
-                            row.row.instance,
-                            row.row.epoch,
-                            row.row.day_hour,
-                            row.row.ordinal
-                        ) == spend.id
-                    })
-                } else {
-                    country
-                        .mutations
-                        .iter()
-                        .position(|row| mutation_id(&row.ledger()) == spend.id)
-                }
-                .unwrap_or(0);
+                let order = projection.order.get(&spend.id).copied().unwrap_or(0);
                 self.register(tag, &projected, frame.hour, order as u64, cost)?;
                 payments.insert(spend.id.clone(), projected);
             }
@@ -2119,7 +2147,7 @@ impl Prepared {
             writer,
             "politics-ledger",
             branch,
-            &self.keys,
+            &self.keys.flat(),
             &self.metadata,
         )?;
         Ok(())
@@ -2209,9 +2237,7 @@ impl Extract for BlockExtract {
         let mut held = dashboard_base::prepared::prepass::HeldBytes::default();
         // The join (its box and all it keeps), and each span's captures,
         // each shared allocation once.
-        held.heap(&self.facts.first)
-            .heap(&self.facts.spans)
-            .total()
+        held.heap(&self.facts.first).heap(&self.facts.spans).total()
     }
 
     fn observe(

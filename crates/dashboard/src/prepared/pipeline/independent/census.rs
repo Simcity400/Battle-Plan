@@ -24,6 +24,7 @@
 //! state, as `<family>-continuation-<branch>`, and publishes the series and
 //! catalogue hourly preparation publishes, flushing where it flushes.
 
+use super::super::compressed_json;
 use super::{Block, Branch, Load, Observed, Own};
 use crate::{
     prepared::{
@@ -453,9 +454,7 @@ pub(super) fn save<T: Serialize>(
     section: &str,
     value: &T,
 ) -> io::Result<()> {
-    let mut encoder = zstd::stream::Encoder::new(Vec::new(), 1)?;
-    serde_json::to_writer(&mut encoder, value)?;
-    writer.write_at(section, 0, encoder.finish()?.as_slice())
+    writer.write_at(section, 0, compressed_json(value)?.as_slice())
 }
 
 /// A continuation the last commit saved, if it has one.
@@ -574,5 +573,38 @@ impl Own for Nukes {
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         CensusBranch::<country_nukes::prepared::Prepared>::load(load, branch)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dashboard_base::prepared::series::tests::Fixture;
+    use std::{collections::BTreeMap, io::Read};
+
+    #[test]
+    fn continuation_compression_preserves_saved_bytes() {
+        let value: BTreeMap<_, _> = (0..5_000)
+            .map(|id| (format!("holder {id}"), vec![id; 24]))
+            .collect();
+        let plain = serde_json::to_vec(&value).unwrap();
+        let mut direct = zstd::stream::Encoder::new(Vec::new(), 1).unwrap();
+        serde_json::to_writer(&mut direct, &value).unwrap();
+        let expected = direct.finish().unwrap();
+        let fixture = Fixture::new();
+        let mut writer = fixture.writer();
+        save(&mut writer, "census-continuation", &value).unwrap();
+        assert_eq!(writer.bytes_written(), expected.len() as u64);
+        writer.commit().unwrap();
+        let mut actual = Vec::new();
+        fixture
+            .store
+            .read(&fixture.key, "census-continuation", 0)
+            .unwrap()
+            .unwrap()
+            .read_to_end(&mut actual)
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(zstd::stream::decode_all(actual.as_slice()).unwrap(), plain);
     }
 }

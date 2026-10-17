@@ -23,6 +23,13 @@ here as `dashboard_base::…`.
 
 ## Prepared series
 
+Each batch reuses the compression of byte-identical per-key payloads within
+that batch. Keys keep separate directories, offsets and payload copies, so
+the batch bytes and saved continuation are unchanged by reuse. The temporary
+lookup holds each distinct payload's BLAKE3 digest and raw length and refers
+to compressed bytes already in the batch; raw buffers are released after
+each key.
+
 A series family adopts the dashboard's block pre-pass through shared recording
 ([prepared/series.rs](src/prepared/series.rs)). Its extract marks its accumulators `record_as`, and from
 the block's second hour every call they receive (advances as spans of

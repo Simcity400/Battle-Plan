@@ -689,8 +689,12 @@ Domain data, branch accumulators, decoder resume state, accepted coverage and th
 common cursor share one manifest commit. Saved hash-backed continuation
 maps and sets serialize in key order, including tuple-key pair arrays and nested
 holder sets. A source-tree test rejects unreviewed hash-backed serialized fields.
-Saved continuations read every floating-point value back bit for bit. An
-observer restored from its saved state publishes and saves exactly what the same
+Saved continuations read every floating-point value back bit for bit. Each
+hourly branch, census and sampled-family continuation buffers its JSON writes
+before level-1 compression, sharing the economy continuations' encoder. The
+saved bytes are the same as streaming each JSON write directly. Group commits
+keep the map binding's current range when its serialized bytes are unchanged.
+An observer restored from its saved state publishes and saves exactly what the same
 observer continued in memory would: a commit never adds a run break, an event or
 a changed value. What a family does not save it rebuilds from its next frame,
 including the holders and relations of the hour before that it still holds open.
@@ -1727,6 +1731,10 @@ fold's own state (no row it has not yet recorded is observed again, no linked
 capture is due, no day boundary, nothing dirty) then takes the advance path
 without visiting its captures: each one's expiry moves at the hour, and its
 witness reaches the last hour it extended to before any other join reads it.
+Daily gain and cost changes with recorded deltas join only their affected
+owners, including replacing their applications and wrapping component sums.
+Rebuilt reads and incomplete reads whose former rows must be removed use the
+whole-table join.
 Every other hour, and every hour of a block whose first join is not the
 worker's, is observed as the walk observes it; a block whose extract fails or
 refuses is observed hour by hour. An hour presenting many countries (a day's

@@ -1462,7 +1462,7 @@ fn prepared_spending_coverage_uses_each_read_after_gaps_across_commit_resume_and
             &flag,
         )
         .unwrap();
-        let reason = prepared.keys[&series::field_key("C1", "coverage-reason")];
+        let reason = prepared.key("C1", "coverage-reason").unwrap();
         assert_eq!(
             reader.event_count_through(reason, hour).unwrap(),
             1,
@@ -3107,4 +3107,263 @@ fn prepared_blocks_folded_from_worker_joins_match_hourly_observation_byte_for_by
         folded.parallel_hours() > 0,
         "the accounting hours present their countries on several threads"
     );
+}
+
+/// Daily publications can change one owner while every capture extends. Their
+/// keys, applications, wrapping sums and diagnostic rates remain the whole
+/// join's through edits, deletions, a replacement, a keyframe, resume and a gap.
+fn assert_daily_changes_observe_only_their_owners(count: u32) {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut observers = [Prepared::default(), Prepared::default()];
+    observers[1].scan.whole_tables = true;
+    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+    let mut recorded = Recorded::new();
+    let mut input = frame(24, count);
+    put(&mut input, command_power(count));
+    let mut days = Vec::new();
+    let mut costs = Vec::new();
+    let mut power = Vec::new();
+    for country in 1..=count {
+        let (day, cost, gain) = daily_gain(country, 1, 24);
+        days.push(day);
+        costs.push(cost);
+        power.push(gain);
+    }
+    put(&mut input, TableRows::CountryPowerChanges(power));
+    for hour in (24..=35).filter(|hour| *hour != 32) {
+        input.hour = hour;
+        match hour {
+            25 => days[0].cp_gain_raw = Some(31),
+            // Two wrapping components replace one owner's sum.
+            26 => {
+                costs[1].cost_raw = i64::MAX;
+                costs.push(CountryPowerDailyCostRow {
+                    ordinal: 1,
+                    cost_raw: 8,
+                    ..costs[1].clone()
+                });
+                days[1].pp_cost_raw = Some(i64::MIN + 7);
+            }
+            27 => costs.retain(|row| row.country != 2 || row.ordinal == 0),
+            28 => days.retain(|row| row.country != 3),
+            29 => {
+                let (day, cost, _) = daily_gain(3, 2, 24);
+                days.push(day);
+                costs.retain(|row| row.country != 3);
+                costs.push(cost);
+            }
+            31 => {
+                // The last cost and its zero-cost application disappear together.
+                costs.retain(|row| row.country != 4);
+                days.iter_mut()
+                    .find(|row| row.country == 4)
+                    .unwrap()
+                    .pp_cost_raw = Some(0);
+            }
+            _ => {}
+        }
+        days.sort_by_key(|row| row.country);
+        costs.sort_by_key(|row| (row.country, row.ordinal));
+        put(&mut input, TableRows::CountryPowerDaily(days.clone()));
+        put(&mut input, TableRows::CountryPowerDailyCosts(costs.clone()));
+        for (at, table) in [
+            (33, TableId::CountryPowerDailyCosts),
+            (34, TableId::CountryPowerDaily),
+        ] {
+            if hour == at {
+                input.tables[table.index()] = replay::frame::TableView::Unavailable {
+                    reason: "synthetic daily read refused".into(),
+                }
+                .into();
+            }
+        }
+        extend_captures(&mut input);
+        let (decoded, wire) = recorded.next(&mut input, hour == 24 || hour == 30);
+        let mut work = [0; 2];
+        for ((observer, tracker), visits) in observers.iter_mut().zip(&mut trackers).zip(&mut work)
+        {
+            let before = observer.scan.country_visits;
+            let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), format);
+            observer.observe(&decoded, &changes, &flag).unwrap();
+            *visits = observer.scan.country_visits - before;
+        }
+        if hour == 25 {
+            assert_eq!(work, [1, count as usize], "one daily owner, not the census");
+        }
+        let [rows, whole] = &observers;
+        assert!(
+            rows.scan.inputs.same_join(&whole.scan.inputs),
+            "join at {hour}"
+        );
+        if ![27, 35].contains(&hour) {
+            continue;
+        }
+        for (observer, fixture) in observers.iter_mut().zip(&fixtures) {
+            publish(observer, fixture);
+        }
+        assert_eq!(
+            sections(&fixtures[0]),
+            sections(&fixtures[1]),
+            "pages and saved state at {hour}"
+        );
+        if hour == 27 {
+            for observer in &mut observers {
+                let whole_tables = observer.scan.whole_tables;
+                *observer = Prepared::read(observer.saved_bytes().unwrap().as_slice()).unwrap();
+                observer.scan.whole_tables = whole_tables;
+                observer.resume(&decoded);
+            }
+        }
+    }
+}
+
+#[test]
+fn prepared_daily_changes_observe_only_their_owners_and_keep_the_whole_joins_bytes() {
+    assert_daily_changes_observe_only_their_owners(20);
+}
+
+#[test]
+#[cfg(feature = "slow-tests")]
+fn prepared_daily_changes_among_5000_countries_observe_only_their_owners() {
+    assert_daily_changes_observe_only_their_owners(5000);
+}
+
+#[test]
+fn prepared_payment_projection_indexes_each_source_row_once() {
+    let flag = AtomicBool::new(false);
+    let mut input = frame(24, 1);
+    let changes = (1..=128)
+        .map(|sequence| {
+            event(
+                sequence,
+                PowerCause::Decision,
+                PowerOperation::Subtract,
+                Some(-17),
+            )
+        })
+        .collect();
+    put(&mut input, TableRows::CountryPowerChanges(changes));
+    let mut scan = Scanned::default();
+    scan.observe(&input, None).unwrap();
+    let (reply, _, _) = present_one(&scan, 1, "C1", None, &flag).unwrap();
+    assert_eq!(reply.spending.len(), 128);
+    let mut payments = Payments::new(&reply);
+    let indexed = payments.indexed;
+    for spend in &reply.spending {
+        let payment = payments.payment(spend).unwrap();
+        assert_eq!(payment.identity, (1, 1, "1".into()));
+        assert_eq!(payment.item.id, spend.item_id);
+        assert_eq!(payment.category.id, spend.category);
+        assert_eq!(payment.spend, *spend);
+    }
+    assert_eq!(
+        payments.indexed, indexed,
+        "projecting payments never searches source rows again"
+    );
+    assert_eq!(
+        payments.ideas.len(),
+        1,
+        "the shared tooltip is selected once"
+    );
+    assert!(indexed <= 2 * reply.spending.len() + 1);
+}
+
+#[test]
+fn prepared_equal_cost_reads_with_unrelated_events_do_not_revisit_retained_cost_keys() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut observers = [Prepared::default(), Prepared::default()];
+    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+    let mut recorded = Recorded::new();
+    let mut input = frame(24, 2);
+    put(&mut input, command_power(2));
+    let (mut day, mut cost, _) = daily_gain(1, 1, 24);
+    day.pp_cost_raw = Some(0);
+    day.pp_net_gain_raw = Some(100);
+    cost.cost_raw = 0;
+    put(&mut input, TableRows::CountryPowerDaily(vec![day]));
+    let mut costs: Vec<_> = (0..2048)
+        .map(|ordinal| CountryPowerDailyCostRow {
+            ordinal,
+            ..cost.clone()
+        })
+        .collect();
+    for hour in 24..=36 {
+        input.hour = hour;
+        match hour {
+            28 => {
+                costs.pop().unwrap();
+            }
+            // Replace an occurrence while keeping its midnight application.
+            29 => costs[0].ordinal = 2049,
+            36 => costs.push(CountryPowerDailyCostRow {
+                ordinal: 2048,
+                ..cost.clone()
+            }),
+            _ => {}
+        }
+        costs.sort_by_key(|row| (row.country, row.ordinal));
+        put(&mut input, TableRows::CountryPowerDailyCosts(costs.clone()));
+        if hour == 30 {
+            input.tables[TableId::CountryPowerDailyCosts.index()] =
+                replay::frame::TableView::Unavailable {
+                    reason: "synthetic cost read refused".into(),
+                }
+                .into();
+        }
+        input.metrics.table_ns[TableId::CountryPowerDailyCosts.index()] =
+            replay::frame::READ_TIME_NOT_RECORDED;
+        put(
+            &mut input,
+            TableRows::CountryPowerChanges(vec![payment(2, hour as u64, hour)]),
+        );
+        extend_captures(&mut input);
+        let (decoded, wire) = recorded.next(&mut input, hour == 24 || hour == 32);
+        let mut visits = [0; 2];
+        for (index, ((observer, tracker), visits)) in observers
+            .iter_mut()
+            .zip(&mut trackers)
+            .zip(&mut visits)
+            .enumerate()
+        {
+            // The reference scans on every cost acquisition, including empty
+            // deltas, so skipping scans must preserve its state and pages.
+            if index == 1 {
+                observer.scan.costs_pruned = false;
+            }
+            let before = (observer.scan.cost_prune_visits, observer.accounted_hours());
+            let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), format);
+            observer.observe(&decoded, &changes, &flag).unwrap();
+            assert!(changes.table_read[TableId::CountryPowerDailyCosts.index()]);
+            assert!(observer.scan.inputs.costs_changed);
+            assert_eq!(observer.accounted_hours(), before.1 + 1);
+            *visits = observer.scan.cost_prune_visits - before.0;
+        }
+        match hour {
+            25..=27 | 33..=35 => {
+                assert!(observers[0].scan.inputs.narrow);
+                assert_eq!(visits[0], 0, "equal cost acquisition at {hour}");
+                assert_eq!(visits[1], costs.len(), "reference scans every key");
+            }
+            30 => assert_eq!(visits, [0, 0], "failed reads prove no removals"),
+            _ => assert!(
+                visits[0] > 0 && visits[0] == visits[1],
+                "changed or rebuilt cost read at {hour}: {visits:?}"
+            ),
+        }
+        assert_eq!(
+            observers[0].scan.costs, observers[1].scan.costs,
+            "hour {hour}"
+        );
+    }
+    assert_eq!(observers[0].scan.costs.len(), costs.len());
+    for (observer, fixture) in observers.iter_mut().zip(&fixtures) {
+        publish(observer, fixture);
+    }
+    assert_eq!(sections(&fixtures[0]), sections(&fixtures[1]));
 }
