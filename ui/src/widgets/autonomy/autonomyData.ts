@@ -4,6 +4,7 @@ import { inSpans } from '../../charts/timeline/layout.ts';
 import type { TimelineSpan } from '../../charts/timeline/layout';
 import { formatFixed } from '../../charts/valueAxis.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
+import { preparationCoverage } from '../../dashboard/preparedPrefix.ts';
 import type { CountryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import type { AutonomyLevel, AutonomyReply, AutonomyRun, AutonomySubject } from '../../generated/dashboard';
 
@@ -244,8 +245,19 @@ export function membershipUnknownFor(subjects: readonly AutonomySubject[], bySub
   });
 }
 
-/** Missing identities or membership cannot establish that there were no subjects. */
-export function noLanesMessage(reply: AutonomyReply, branch: Span, membershipUnknown = false): string {
+type PreparationSpans = { approximate?: readonly Span[]; pending?: readonly Span[] };
+
+/** Only a prepared census of the whole displayed range establishes absence. */
+export function autonomyUnprepared(reply: PreparationSpans, within: Span): boolean {
+  const coverage = preparationCoverage(reply);
+  return !coverage || coverage.firstHour > within.firstHour || coverage.lastHour < within.lastHour
+    || [reply.approximate, reply.pending].some(spans => spans?.some(span =>
+    span.firstHour <= within.lastHour && within.firstHour <= span.lastHour));
+}
+
+/** Missing identities, membership or preparation cannot establish no subjects. */
+export function noLanesMessage(reply: AutonomyReply & PreparationSpans, branch: Span, membershipUnknown = false): string {
+  if (autonomyUnprepared(reply, branch)) return 'Subject data is still being prepared.';
   return membershipUnknown || partlyIdentified(reply, branch)
     ? 'Subject data is incomplete for these countries.' : 'No subjects found for these countries.';
 }

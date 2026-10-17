@@ -40,8 +40,9 @@ test('a release at hour 150 keeps the historical lane and names recorded absence
 
 // A mod's own levels, in its own order and number: one the content names, one
 // only recorded (named by its id), one the game left unlocalised.
-const REPLY: AutonomyReply = {
+const REPLY: AutonomyReply & { coverage: { firstHour: number; lastHour: number; complete: boolean } } = {
   branchId: '1', scoreScale: 100_000,
+  coverage: { firstHour: 100, lastHour: 160, complete: true },
   levels: [
     { id: 'mod_serf', name: 'Serf State', defined: true },
     { id: 'mod_vassal', name: null, defined: true },
@@ -145,7 +146,7 @@ test('known subjects retain their values when an unresolved overlord prevents pr
 });
 
 test('actual Autonomy refuses false overlord absence while keeping known subject values and proved empty selections', async () => {
-  const data: AutonomyReply = { ...REPLY, recorded: [{ firstHour: 0, lastHour: 30 }],
+  const data = { ...REPLY, coverage: { firstHour: 0, lastHour: 30, complete: true }, recorded: [{ firstHour: 0, lastHour: 30 }],
     subjects: [{ tag: 'SUB', runs: [run(10, 19, 0, '123', '0', '1000', { overlord: 'X' })] }] };
   const groups: CountryGroupReply = { branchId: '1', humans: [], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
     countryIdentities: [
@@ -347,6 +348,15 @@ test('an hour with a subject or overlord the recording does not name is never ca
   // Fully identified selections can establish that no subjects were found.
   assert.equal(noLanesMessage({ ...partial, unidentified: [] }, branch), 'No subjects found for these countries.');
   assert.equal(noLanesMessage(REPLY, branch), 'No subjects found for these countries.');
+});
+
+test('sampled and pending empty censuses do not claim no subjects in the requested span', () => {
+  const within = { firstHour: 100, lastHour: 160 };
+  for (const field of ['approximate', 'pending'] as const) {
+    const reply = { ...REPLY, subjects: [], [field]: [{ firstHour: 135, lastHour: 136 }] };
+    assert.equal(noLanesMessage(reply, within), 'Subject data is still being prepared.');
+    assert.equal(noLanesMessage(reply, { firstHour: 100, lastHour: 134 }), 'No subjects found for these countries.');
+  }
 });
 
 test('a lane cut away where the group’s membership was unknown is said, never called "no subjects"', () => {

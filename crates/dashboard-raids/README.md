@@ -28,3 +28,6 @@ are change-read in parallel and retained per block in the shared source-revision
 observation cache. Compressed newest proofs use the same cache in a content-bound
 scope. Both use its live-block retention bound; recording/content changes
 invalidate them, while coverage re-asks reuse retained observations.
+The local scan precedes the older-key proof. A look-back containing no raid
+keys needs no older read; a missing country anchor leaves the window pending
+without starting that read.

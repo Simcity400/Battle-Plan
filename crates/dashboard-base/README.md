@@ -144,8 +144,9 @@ state hours and short windows. Re-asks clip these immutable facts to their
 viewport and moving prefix; blocks covered by the prefix are not sampled.
 Crossing the exact-zoom threshold replaces keyframe approximations with hourly
 folds, including the preceding hour's identity/value continuity.
-Factory and territory censuses use `tail_all_cached` and
-`state_tail_all_cached` for their existing full-frame projections. Their keys
+Factory summaries over a range use `tail_all_cached`, and territory censuses use
+`tail_all_cached` and `state_tail_all_cached`, for their existing full-frame
+projections; factory points read one frame each (below). Their keys
 come from each sampled frame, including aliases not yet in the prepared
 catalogue; catalogue growth changes neither the observation selection nor its
 cache identity. Territory counts and content-bound areas have separate scopes. Area scopes also
@@ -512,6 +513,12 @@ selected; a re-ask visits every hour again through the shared frame cache.
 independently of requested hours and moving coverage. State requests visit every
 requested block exactly even when a day is split across many short blocks. The wide keyframe approximation belongs to summary
 requests; it cannot omit requested state hours.
+
+Stateless factory state reads and single-hour summaries use `points_cached`:
+one reached frame per requested hour, with the numeric observations held in
+the shared source cache independently of coverage. They observe no preceding
+hour and claim no continuity outside the requested points. Daily carried
+values retain their supplying-read folds.
 
 Cold object replies carry an empty preparation extent: `firstHour` is the
 branch's first recorded hour, `lastHour` the preceding hour, and `complete`

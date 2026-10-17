@@ -694,16 +694,38 @@ fn progressive_query(
             }
             Ok(samples)
         };
-        let tail = progressive::tail(
-            source,
-            branch,
-            coverage,
-            TABLES,
-            &requested,
-            (from, to),
-            &sampler,
-            cancelled,
-        )?;
+        let point = if from == to {
+            progressive::frame_at(source, branch, from, TABLES, cancelled)?
+        } else {
+            None
+        };
+        let tail = if let Some(frame) = point.filter(|frame| land_present(frame)) {
+            let mut tail = progressive::TailData::default();
+            let values = sampler(&frame, Some(&requested))?;
+            progressive::sampled_spans(
+                &mut tail,
+                &[dashboard_base::products::country_groups::HourSpan {
+                    first_hour: from,
+                    last_hour: to,
+                }],
+                values.iter(),
+            );
+            tail.1.clear();
+            tail
+        } else {
+            // Missing endpoint inputs cannot decide branch availability.
+            // Keep the ordinary fold's availability and refusal evidence.
+            progressive::tail(
+                source,
+                branch,
+                coverage,
+                TABLES,
+                &requested,
+                (from, to),
+                &sampler,
+                cancelled,
+            )?
+        };
         Ok(PointSample {
             tail,
             available: available.get(),

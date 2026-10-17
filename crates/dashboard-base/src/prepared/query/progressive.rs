@@ -899,6 +899,66 @@ pub fn state_tail_cached(
     )
 }
 
+/// Isolated state values need only their reached frames. Unlike an hourly
+/// fold this sampler must be stateless; a held daily value still needs its
+/// supplying-read observer. Observations are independent of moving coverage.
+#[allow(clippy::too_many_arguments)]
+pub fn points_cached(
+    source: &Source,
+    product: &'static str,
+    branch: u64,
+    coverage: Option<&Coverage>,
+    tables: &[TableId],
+    requested: &[(String, String)],
+    hours: &[i32],
+    sample: Sample<'_>,
+    cancelled: &AtomicBool,
+) -> io::Result<TailData> {
+    let cache = super::observations::scope(source, product, None);
+    let mut result = TailData::default();
+    let mut selected: Vec<_> = tables.iter().map(|table| table.index()).collect();
+    selected.sort_unstable();
+    selected.dedup();
+    for hour in hours
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        check_cancel(cancelled)?;
+        if coverage.is_some_and(|c| c.complete || hour <= c.last_hour) {
+            continue;
+        }
+        let Some(block) = source.replay_ref().index.iter().find(|block| {
+            block.branch == branch && block.first_hour <= hour && hour <= block.last_hour
+        }) else {
+            continue;
+        };
+        let observed = cache.get_query(
+            block,
+            &(&selected, requested, hour),
+            cancelled,
+            |values: &Samples| {
+                let mut bytes = crate::prepared::prepass::HeldBytes::default();
+                bytes.value(values);
+                bytes.total() as usize
+            },
+            || {
+                frame_at(source, branch, hour, tables, cancelled)?
+                    .map(|frame| sample(&frame, Some(requested)))
+                    .transpose()
+                    .map(Option::unwrap_or_default)
+            },
+        )?;
+        let span = HourSpan {
+            first_hour: hour,
+            last_hour: hour,
+        };
+        sampled_spans(&mut result, &[span], observed.iter());
+    }
+    result.1.clear();
+    Ok(result)
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn tail(
     source: &Source,
@@ -1298,7 +1358,8 @@ pub fn tail_first_read(
 /// holder stays one identity row across adjacent blocks, while values retain
 /// their sampled block boundaries.
 #[allow(clippy::type_complexity)]
-fn sampled_spans<'a>(
+/// Extend a tail with a keyframe's observations over visibly approximate spans.
+pub fn sampled_spans<'a>(
     result: &mut TailData,
     spans: &[HourSpan],
     observed: impl Iterator<Item = (&'a (String, String), &'a (Option<(u32, u32)>, Option<i128>))>,

@@ -512,6 +512,11 @@ fn newest_division_window_matches_hourly_rows_with_reappearing_handles_and_reuse
         serde_json::to_value(actual).unwrap(),
         serde_json::to_value(expected).unwrap()
     );
+    assert_eq!(
+        dashboard_base::prepared::query::observations::usage(&source, "division-log:keys").2,
+        0,
+        "a window without creation candidates needs no earlier handle read"
+    );
     let neighbour = DivisionLogParams {
         branch_id: "1".into(),
         window: params.window - 1,

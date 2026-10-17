@@ -169,9 +169,12 @@ export function mergeReachedRows<R extends { firstHour: number; lastHour: number
 
 /** One source/content owner, one viewport and one set of exact reached hours.
  * Generic summaries page on the transport budget; exact reads are independent
- * of geometry. Departed source/view owners cannot publish data or navigation. */
+ * of geometry. Page merging combines peers; an optional reached overlay can
+ * reconcile point evidence differently. Departed source/view owners cannot
+ * publish data or navigation. */
 export function usePreparedWindow<T>(client: DashboardClient, source: DashboardSource | undefined, family: 'autonomy' | 'world-tension', params: object,
-  bounds: readonly [number, number], hours: readonly number[], active: boolean, validate: (value: unknown) => T, merge: (a:T,b:T) => T) {
+  bounds: readonly [number, number], hours: readonly number[], active: boolean, validate: (value: unknown) => T,
+  merge: (a:T,b:T) => T, overlayReached: (geometry:T,reached:T) => T = merge) {
   const content = useContentRevision(client);
   const key = JSON.stringify([source?.id, source?.revision, family, params, content]);
   const owner = useMemo(() => ({ client, key }), [client, key]);
@@ -232,7 +235,7 @@ export function usePreparedWindow<T>(client: DashboardClient, source: DashboardS
   },[change,pickOwner]);
   const geometry=summaries?.owner===owner ? summaries.data : undefined;
   const exact=states?.owner===owner ? states.data : undefined;
-  const data=useMemo(()=>geometry && exact ? merge(geometry,exact) : exact ?? geometry,[geometry,exact]);
+  const data=useMemo(()=>geometry && exact ? overlayReached(geometry,exact) : exact ?? geometry,[geometry,exact,overlayReached]);
   return { data, error: (summaries?.owner === owner ? summaries.error : undefined) ?? (states?.owner===owner ? states.error : undefined),
     pickOwner,onNavigateHour,keyboardHour: keyboard?.owner === pickOwner ? keyboard.hour : undefined, keyboardRevision: keyboard?.owner===pickOwner ? keyboard.revision : undefined,
     geometryReady: !!geometry && summaries!.geometryKey === geometryKey,

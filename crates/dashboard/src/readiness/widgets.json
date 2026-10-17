@@ -294,8 +294,8 @@
     {
       "kind": "autonomy",
       "requests": [
-        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "overlords": [], "subjects": [], "family": {"kind": "autonomy"}, "from": "$first", "to": "$last", "width": 1, "within": {}}},
-        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "overlords": [], "subjects": [], "family": {"kind": "autonomy"}, "reads": [{"hour": "$last"}]}}
+        {"product": "series-summary", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "overlords": [], "subjects": [], "family": {"kind": "autonomy"}, "from": "$first", "to": "$last", "width": 1, "within": {}}},
+        {"product": "series-state", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "overlords": [], "subjects": [], "family": {"kind": "autonomy"}, "reads": [{"hour": "$last"}]}}
       ]
     },
     {

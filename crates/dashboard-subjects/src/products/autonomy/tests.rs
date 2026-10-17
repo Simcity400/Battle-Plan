@@ -10,6 +10,281 @@ use std::sync::{Arc, atomic::AtomicBool};
 /// lower, upper, previous and next exist).
 type Status = (u32, Option<u32>, &'static [u8], i64, i64, i64, bool, bool);
 
+#[test]
+fn coarse_autonomy_uses_cached_keyframes_with_an_exact_prefix_and_reached_values() {
+    use dashboard_base::prepared::{
+        coverage::publish_coverage,
+        query::{frames, observations, progressive},
+    };
+    use dashboard_base::test_fixtures::{continuation_records, file_source, replay};
+    use dashboard_core::config::LoadContext;
+    use serde_json::json;
+    let frames = [100, 101, 104, 105].map(|hour| {
+        autonomy_frame(
+            hour,
+            &[(
+                31,
+                Some(11),
+                if hour < 104 { b"low" } else { b"high" },
+                i64::from(hour) * 10_000,
+                0,
+                2_000_000,
+                true,
+                true,
+            )],
+        )
+    });
+    let recording = replay(frames[..2].to_vec());
+    let recording = recording
+        .append(&[continuation_records(&recording, 1, frames[2..].to_vec())])
+        .unwrap();
+    let (source, root) = file_source(recording);
+    let (store, key) = dashboard_base::prepared::files(&source, None).unwrap();
+    let flag = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let request = json!({"branchId":"1", "from":100, "to":105, "width":1,
+        "within":{"subject":[["D01 mod",100,105,true]]}});
+    let ask = |product, value: &serde_json::Value| {
+        super::prepared::progressive_query(&source, product, value, &store, &key, &context, &flag)
+            .unwrap()
+    };
+    let cold = ask("series-summary", &request);
+    assert_eq!(
+        cold["approximate"],
+        json!([
+            {"firstHour":100,"lastHour":101}, {"firstHour":104,"lastHour":105}
+        ])
+    );
+    assert_eq!(observations::usage(&source, "autonomy:keyframes").2, 2);
+    assert_eq!(
+        frames::reads(&source),
+        (0, 0),
+        "a coarse view reads no hourly blocks"
+    );
+    let (again, refused) = progressive::without_block_decodes(|| ask("series-summary", &request));
+    assert!(!refused);
+    assert_eq!(again, cold);
+    let mut prepared = super::ScannedAutonomy::default();
+    let mut writer = store.replace(key.clone()).unwrap();
+    for frame in &frames[..2] {
+        prepared.prepare(frame).unwrap();
+    }
+    prepared.flush(&mut writer, 1, &flag).unwrap();
+    publish_coverage(&mut writer, 1, 100, 101, false).unwrap();
+    writer.commit().unwrap();
+    let (prefix, refused) = progressive::without_block_decodes(|| ask("series-summary", &request));
+    assert!(!refused);
+    assert_eq!(prefix["coverage"]["lastHour"], 101);
+    assert_eq!(prefix["levels"], cold["levels"]);
+    assert_eq!(observations::usage(&source, "autonomy:keyframes").2, 2);
+    let reached = ask(
+        "series-state",
+        &json!({"branchId":"1", "reads":[{"hour":105}]}),
+    );
+    assert_eq!(reached["exactHours"], json!([105]));
+    assert!(
+        reached["subjects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|row| row["runs"].as_array().unwrap())
+            .any(|run| run["scoreRaw"] == "1050000")
+    );
+    let mut writer = store.extend(&key).unwrap();
+    for frame in &frames[2..] {
+        prepared.prepare(frame).unwrap();
+    }
+    prepared.flush(&mut writer, 1, &flag).unwrap();
+    publish_coverage(&mut writer, 1, 100, 105, true).unwrap();
+    writer.commit().unwrap();
+    let exact = ask("series-summary", &request);
+    let mut oracle = super::prepared::query(
+        &source,
+        "series-summary",
+        &request,
+        &store,
+        &key,
+        &context,
+        &flag,
+    )
+    .unwrap();
+    oracle["coverage"] = exact["coverage"].clone();
+    oracle["identities"] = exact["identities"].clone();
+    oracle["pending"] = json!([]);
+    assert_eq!(exact, oracle);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_subject_between_keyframes_keeps_the_empty_bootstrap_visibly_approximate() {
+    use dashboard_base::prepared::{coverage::publish_coverage, query::progressive};
+    use dashboard_base::test_fixtures::{continuation_records, file_source, replay};
+    use dashboard_core::config::LoadContext;
+    use serde_json::json;
+    let frames = [100, 101, 102, 104, 105].map(|hour| {
+        autonomy_frame(
+            hour,
+            if hour == 101 {
+                &[(31, Some(11), b"between/mod-level", 50, 0, 100, true, true)]
+            } else {
+                &[]
+            },
+        )
+    });
+    let recording = replay(frames[..3].to_vec());
+    let recording = recording
+        .append(&[continuation_records(&recording, 1, frames[3..].to_vec())])
+        .unwrap();
+    let (source, root) = file_source(recording);
+    let (store, key) = dashboard_base::prepared::files(&source, None).unwrap();
+    let flag = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let request = json!({"branchId":"1", "from":100, "to":105, "width":1, "within":{}});
+    let ask = || {
+        super::prepared::progressive_query(
+            &source,
+            "series-summary",
+            &request,
+            &store,
+            &key,
+            &context,
+            &flag,
+        )
+        .unwrap()
+    };
+    let cold = ask();
+    assert_eq!(cold["subjects"], json!([]));
+    assert_eq!(cold["bands"], json!([]));
+    assert_eq!(cold["summaries"], json!({}));
+    assert_eq!(cold["pending"], json!([]));
+    assert_eq!(
+        cold["approximate"],
+        json!([
+            {"firstHour":100,"lastHour":102}, {"firstHour":104,"lastHour":105}
+        ])
+    );
+    let (again, refused) = progressive::without_block_decodes(ask);
+    assert!(!refused);
+    assert_eq!(again, cold);
+    let reached = super::prepared::progressive_query(
+        &source,
+        "series-state",
+        &json!({"branchId":"1", "reads":[{"hour":105}]}),
+        &store,
+        &key,
+        &context,
+        &flag,
+    )
+    .unwrap();
+    assert_eq!(reached["bands"], json!([]));
+    assert_eq!(reached["exactHours"], json!([105]));
+    assert_eq!(
+        reached["pending"],
+        json!([
+            {"firstHour":100,"lastHour":102}, {"firstHour":104,"lastHour":105}
+        ])
+    );
+    let mut prepared = super::ScannedAutonomy::default();
+    let mut writer = store.replace(key.clone()).unwrap();
+    for frame in &frames[..3] {
+        prepared.prepare(frame).unwrap();
+    }
+    prepared.flush(&mut writer, 1, &flag).unwrap();
+    publish_coverage(&mut writer, 1, 100, 102, false).unwrap();
+    writer.commit().unwrap();
+    let prefix = ask();
+    assert_eq!(prefix["bands"][0]["tag"], "D01 mod");
+    assert_eq!(prefix["bands"][0]["runs"][0]["firstHour"], 101);
+    assert_eq!(prefix["bands"][0]["runs"][0]["lastHour"], 101);
+    assert_eq!(
+        prefix["approximate"],
+        json!([{"firstHour":104,"lastHour":105}])
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn skipped_autonomy_keyframes_leave_every_recorded_unprepared_hour_pending() {
+    use dashboard_base::prepared::{coverage::publish_coverage, query::progressive};
+    use dashboard_base::test_fixtures::{continuation_records, file_source, replay};
+    use dashboard_core::config::LoadContext;
+    use serde_json::json;
+    let frames = [100, 101, 102, 104, 105].map(|hour| {
+        autonomy_frame(
+            hour,
+            if hour == 101 {
+                &[(31, Some(11), b"between/mod-level", 50, 0, 100, true, true)]
+            } else {
+                &[]
+            },
+        )
+    });
+    let recording = replay(frames[..3].to_vec());
+    let mut recording = recording
+        .append(&[continuation_records(&recording, 1, frames[3..].to_vec())])
+        .unwrap();
+    for hour in [100, 104] {
+        recording.gaps.push(replay::branches::Gap {
+            branch: 1,
+            first_hour: hour,
+            last_hour: hour,
+            reason: "synthetic gap".into(),
+        });
+    }
+    let (source, root) = file_source(recording);
+    let (store, key) = dashboard_base::prepared::files(&source, None).unwrap();
+    let flag = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let ask = |product, request: &serde_json::Value| {
+        super::prepared::progressive_query(
+            &source, product, request, &store, &key, &context, &flag,
+        )
+        .unwrap()
+    };
+    let request = json!({"branchId":"1", "from":100, "to":105, "width":1, "within":{}});
+    let cold = ask("series-summary", &request);
+    assert_eq!(cold["bands"], json!([]));
+    assert!(cold["approximate"].as_array().is_none_or(Vec::is_empty));
+    let pending = json!([
+        {"firstHour":101,"lastHour":102}, {"firstHour":105,"lastHour":105}
+    ]);
+    assert_eq!(cold["pending"], pending);
+    let reached = ask(
+        "series-state",
+        &json!({"branchId":"1", "reads":[{"hour":105}]}),
+    );
+    assert_eq!(reached["bands"], json!([]));
+    assert_eq!(reached["exactHours"], json!([105]));
+    assert_eq!(reached["pending"], pending);
+    let mut bounded_request = request.clone();
+    bounded_request["from"] = json!(102);
+    bounded_request["to"] = json!(104);
+    let (bounded, refused) =
+        progressive::without_block_decodes(|| ask("series-summary", &bounded_request));
+    assert!(!refused);
+    assert_eq!(bounded["pending"], json!([{"firstHour":102,"lastHour":102}]));
+    let mut prepared = super::ScannedAutonomy::default();
+    let mut writer = store.replace(key.clone()).unwrap();
+    for frame in &frames[..3] {
+        prepared.prepare(frame).unwrap();
+    }
+    prepared.flush(&mut writer, 1, &flag).unwrap();
+    publish_coverage(&mut writer, 1, 100, 102, false).unwrap();
+    writer.commit().unwrap();
+    let prefix = ask("series-summary", &request);
+    assert_eq!(prefix["bands"][0]["runs"][0]["firstHour"], 101);
+    assert_eq!(prefix["pending"], json!([{"firstHour":105,"lastHour":105}]));
+    let mut writer = store.extend(&key).unwrap();
+    for frame in &frames[3..] {
+        prepared.prepare(frame).unwrap();
+    }
+    prepared.flush(&mut writer, 1, &flag).unwrap();
+    publish_coverage(&mut writer, 1, 100, 105, true).unwrap();
+    writer.commit().unwrap();
+    assert_eq!(ask("series-summary", &request)["pending"], json!([]));
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// A world frame (Austria included) with the autonomy and subject tables.
 fn autonomy_frame(hour: i32, statuses: &[Status]) -> DecodedFrame {
     use replay::rows::{AutonomyRow, SubjectRow};

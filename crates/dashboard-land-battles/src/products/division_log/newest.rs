@@ -40,26 +40,7 @@ fn query_uncached(
         .get(params.window)
         .ok_or_else(|| dashboard_core::invalid("Division window not in branch"))?;
     let start = params.window.saturating_sub(1);
-    let earlier = earlier::keys(
-        source,
-        "division-log:keys",
-        &blocks[..start],
-        &[TableFields::named(TableId::Divisions, &["reveal_skip"])?],
-        |frame, facts| {
-            if let Ok(rows) = frame.complete::<tables::Divisions>() {
-                facts.available = true;
-                facts.values.extend(
-                    rows.iter()
-                        .filter(|row| row.reveal_skip == 0)
-                        .map(|row| row.id),
-                );
-            }
-        },
-        cancelled,
-    )?;
     let scan = RefCell::new(Scan::new(source.replay_ref().format));
-    scan.borrow_mut().seen.extend(earlier.values);
-    scan.borrow_mut().available = earlier.available;
     // An extra seek before the supplying block is only a numeric sampler's
     // baseline; the census proof starts at the supplying block itself.
     let mut anchored = start == 0;
@@ -96,7 +77,7 @@ fn query_uncached(
         cancelled,
     )?;
     drop(proof);
-    let scan = scan.into_inner();
+    let mut scan = scan.into_inner();
     // The supplying census also needs a dated template read before the
     // window; otherwise its presentation date would be invented.
     if !anchored
@@ -107,6 +88,39 @@ fn query_uncached(
             })
     {
         return Ok(None);
+    }
+    // Earlier handles only decide whether a creation is a reappearance.
+    // Losses and transfers already have their local census/drain proof.
+    scan.events
+        .retain(|event| event.row.read_hour >= target.first_hour);
+    if scan
+        .events
+        .iter()
+        .any(|event| event.row.kind == DivisionLogKind::Created)
+    {
+        let earlier = earlier::keys(
+            source,
+            "division-log:keys",
+            &blocks[..start],
+            &[TableFields::named(TableId::Divisions, &["reveal_skip"])?],
+            |frame, facts| {
+                if let Ok(rows) = frame.complete::<tables::Divisions>() {
+                    facts.available = true;
+                    facts.values.extend(
+                        rows.iter()
+                            .filter(|row| row.reveal_skip == 0)
+                            .map(|row| row.id),
+                    );
+                }
+            },
+            cancelled,
+        )?;
+        scan.events.retain(|event| {
+            event.row.kind != DivisionLogKind::Created
+                || !earlier
+                    .values
+                    .contains(&event.row.division.parse::<u64>().expect("division handle"))
+        });
     }
     Ok(Some((
         scan.reply(source, params, context, cancelled)?,

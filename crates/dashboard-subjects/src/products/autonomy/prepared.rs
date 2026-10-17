@@ -1,5 +1,5 @@
 use super::*;
-use dashboard_base::prepared::query::progressive;
+use dashboard_base::prepared::query::{keyframes, progressive};
 use dashboard_base::prepared::series::{self, MeasureKey, Navigation, Reader};
 use dashboard_base::prepared_chart::{ChartSummary, merge};
 use serde_json::Value;
@@ -20,6 +20,13 @@ struct Requested {
 #[derive(Deserialize)]
 struct Read {
     hour: i32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Observation {
+    scan: ScannedAutonomy,
+    #[serde(with = "dashboard_core::map_pairs")]
+    values: progressive::Samples,
 }
 
 /// Bind the widget's native request to the shared progressive reader. The
@@ -51,6 +58,7 @@ pub fn progressive_query(
         other => other?,
     };
     let mut sampled = (BTreeMap::new(), Vec::new(), BTreeMap::new());
+    let mut history_range = None;
     let mut result;
     if accepted.as_ref().is_some_and(|coverage| coverage.complete) {
         result = query(source, product, value, store, key, context, cancelled)?;
@@ -70,6 +78,7 @@ pub fn progressive_query(
         } else {
             (f64::from(bounds.0), f64::from(bounds.1), 1)
         };
+        history_range = Some((from.floor() as i32, to.floor() as i32));
         series::summary_budget(from, to, width, requested.within.len())?;
         let (keys, mut metadata) = if accepted.is_some() {
             series::read_catalogue::<ScannedAutonomy>(store, key, "autonomy", branch)?
@@ -175,6 +184,90 @@ pub fn progressive_query(
                 &observe,
                 cancelled,
             )?
+        } else if product == "series-summary" && !fine {
+            // A coarse chart needs one observation per block, even when the
+            // entire campaign happens to fit inside the exact zoom budget.
+            let mut result = progressive::TailData::default();
+            keyframes::after(
+                source,
+                "autonomy:keyframes",
+                branch,
+                accepted
+                    .as_ref()
+                    .map_or(bounds.0.saturating_sub(1), |c| c.last_hour)
+                    .max((from.floor() as i32).saturating_sub(1)),
+                Some(to.floor() as i32),
+                TABLES,
+                cancelled,
+                &|frame| {
+                    let mut scan = ScannedAutonomy::default();
+                    scan.observe(frame)?;
+                    Ok(Some(serde_json::to_vec(&Observation {
+                        scan,
+                        values: sample(frame, None)?,
+                    })?))
+                },
+                &|bytes: &Vec<u8>| std::mem::size_of::<Vec<u8>>() + bytes.capacity(),
+                |spans, bytes| {
+                    let observation: Observation = serde_json::from_slice(bytes)?;
+                    let mut native = tail.borrow_mut();
+                    let mut bands = categories.borrow_mut();
+                    let mut tokens = vec![None; observation.scan.levels.len()];
+                    for (token, &index) in &observation.scan.level_indices {
+                        tokens[index] = Some(token);
+                    }
+                    let mut levels = Vec::new();
+                    for (at, id) in observation.scan.levels.iter().enumerate() {
+                        let token = tokens[at].expect("observed autonomy level");
+                        let index = if let Some(&index) = native.level_indices.get(token) {
+                            index
+                        } else {
+                            let index = native.levels.len();
+                            native.level_indices.insert(token.clone(), index);
+                            native.levels.push(id.clone());
+                            native.lowest_lower.push(observation.scan.lowest_lower[at]);
+                            index
+                        };
+                        native.lowest_lower[index] =
+                            native.lowest_lower[index].min(observation.scan.lowest_lower[at]);
+                        levels.push(index as u32);
+                    }
+                    for (tag, rows) in observation.scan.subjects {
+                        if !native.by_tag.contains_key(&tag) {
+                            let index = native.subjects.len();
+                            native.by_tag.insert(tag.clone(), index);
+                            native.subjects.push((tag.clone(), Vec::new()));
+                        }
+                        bands
+                            .entry(tag)
+                            .or_default()
+                            .extend(rows.into_iter().map(|mut row| {
+                                row.level = levels[row.level as usize];
+                                row
+                            }));
+                    }
+                    for (overlord, subjects) in observation.scan.overlord_subjects {
+                        native
+                            .overlord_subjects
+                            .entry(overlord)
+                            .or_default()
+                            .extend(subjects);
+                    }
+                    native.recorded.extend(observation.scan.recorded);
+                    native.unidentified.extend(observation.scan.unidentified);
+                    native.shared_subjects += observation.scan.shared_subjects;
+                    let mut values = observation.values;
+                    for ((tag, field), (_, value)) in &mut values {
+                        if !selected.contains(tag) || !fields.contains(&field.as_str()) {
+                            *value = None;
+                        }
+                    }
+                    values.retain(|(_, field), (_, value)| value.is_some() || field == "relative");
+                    progressive::sampled_spans(&mut result, spans, values.iter());
+                    Ok(())
+                },
+            )?;
+            result
         } else {
             progressive::tail(
                 source,
@@ -548,6 +641,11 @@ pub fn progressive_query(
             result["summaries"] = Value::Object(summaries);
         }
     }
+    // Categorical bands and an empty sampled census are approximate even
+    // when the request asked for no numeric summaries.
+    if !sampled.1.is_empty() {
+        result["approximate"] = serde_json::to_value(&sampled.1)?;
+    }
     let no_identities = BTreeMap::new();
     let exact_identities = if product == "series-state" && sampled.1.is_empty() {
         &sampled.2
@@ -588,9 +686,23 @@ pub fn progressive_query(
             .map(|(tag, country)| serde_json::json!({"tag":tag,"identities":country.identities}))
             .collect::<Vec<_>>(),
     )?;
-    result["coverage"] = serde_json::to_value(dashboard_base::prepared::prefix::extent(
-        source, branch, accepted,
-    )?)?;
+    // Preparation proves the history's census. A reached observation proves
+    // only that hour; every unsampled recorded hour after the prefix stays
+    // pending, including blocks whose keyframe could not be read.
+    let mut prefix = dashboard_base::prepared::prefix::Prefix::new(
+        source,
+        branch,
+        dashboard_base::prepared::prefix::extent(source, branch, accepted)?,
+        history_range.map(|(_, last)| last),
+    );
+    if let Some((first, _)) = history_range {
+        prefix.pending.retain(|span| span.last_hour >= first);
+        for span in &mut prefix.pending {
+            span.first_hour = span.first_hour.max(first);
+        }
+    }
+    prefix.sampled(&sampled.1);
+    prefix.mark(&mut result)?;
     Ok(result)
 }
 

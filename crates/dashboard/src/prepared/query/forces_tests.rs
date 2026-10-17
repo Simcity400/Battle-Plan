@@ -633,6 +633,11 @@ mod supply {
         let fixture = Fixture::new();
         let point = json!({"branchId":"1", "tags":[tag(0),tag(1)], "from":31, "to":31, "width":1});
         let cold_point = fixture.query("supply-health", point.clone());
+        assert_eq!(
+            dashboard_base::prepared::query::frames::reads(&fixture.source),
+            (0, 1),
+            "a reached supply view does not fold preceding block hours"
+        );
         let mut history_point = point.clone();
         history_point.as_object_mut().unwrap().remove("width");
         let (history_point, refused) =

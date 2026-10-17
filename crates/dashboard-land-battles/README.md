@@ -27,9 +27,12 @@ are written at its next commit.
 tests.
 
 The division log answers its manifest and committed windows before preparation
-finishes. A requested window can also be proved from its block and predecessor,
-seeded with all earlier seen division handles from a parallel key-only change
-read. This preserves the distinction between a creation and a reappearance.
+finishes. A requested window can also be proved from its block and predecessor.
+Only creation candidates in the target window need the parallel key-only read
+of earlier seen handles; candidates already seen are removed before rendering.
+Losses and transfers need only the local census and adjacent drains. This
+preserves the distinction between a creation and a reappearance without reading
+older blocks for windows with no creation candidates.
 The local scan needs an earlier complete census and dated presentation evidence;
 otherwise the window stays pending. Template choices combine the prefix's
 catalogue with proved newest rows; cumulative totals remain visibly preparing.

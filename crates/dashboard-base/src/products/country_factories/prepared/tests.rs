@@ -4,6 +4,42 @@ use crate::test_fixtures::scale_frame;
 use crate::test_fixtures::{CAMPAIGN, records};
 use replay::{frame::TableView, rows::TableRows};
 
+#[test]
+fn factory_point_queries_share_one_reached_observation_without_folding_the_block() {
+    use crate::prepared::query::{frames, observations, progressive};
+    use crate::test_fixtures::{file_source, replay};
+    let reached = frame(31, 2);
+    let (source, root) = file_source(replay((0..32).map(|hour| frame(hour, 2)).collect()));
+    let flag = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let tag = String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap();
+    let params = json!({"branchId":"1", "tags":[tag], "family":{"kind":"country-factories"},
+        "from":31,"to":31,"width":1});
+    let cold = query(&source, "series-summary", &params, &context, &flag).unwrap();
+    assert_eq!(frames::reads(&source), (0, 1));
+    let expected = sample(&reached, None).unwrap();
+    let values: Vec<_> = (0..fields().len())
+        .map(|index| expected[&(tag.clone(), index.to_string())].1.unwrap() as i32)
+        .collect();
+    assert_eq!(cold["series"][0]["runs"][0]["values"], json!(values));
+    let mut states = params.clone();
+    states["reads"] = json!([{"tag":tag,"hour":31}]);
+    let (states, refused) = progressive::without_block_decodes(|| {
+        query(&source, "series-state", &states, &context, &flag)
+    });
+    assert!(!refused);
+    assert_eq!(
+        states.unwrap()["series"][0]["runs"][0]["values"],
+        json!(values)
+    );
+    assert_eq!(
+        observations::usage(&source, "country-factories:points").2,
+        1
+    );
+    assert_eq!(frames::reads(&source), (0, 1));
+    let _ = std::fs::remove_dir_all(root);
+}
+
 fn frame(hour: i32, count: u32) -> DecodedFrame {
     let mut frame = scale_frame(1, hour, count);
     *frame.tables[TableId::CountryFactories.index()] =

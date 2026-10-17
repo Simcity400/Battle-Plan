@@ -4,6 +4,10 @@ import type { ChartSummary } from '../../charts/chartSummary';
 import { isChartSummary } from '../../charts/chartSummary.ts';
 import { validateAutonomyReply } from './autonomyData.ts';
 import type { Span } from '../../charts/series';
+import { isOrderedSpans } from '../../charts/series.ts';
+import { withoutHours } from '../../charts/timeline/runState.ts';
+import { preparationCoverage } from '../../dashboard/preparedPrefix.ts';
+import type { PreparedCoverage } from '../../shell/preparation/contract';
 
 type Band = Omit<AutonomyRun, 'scoreRaw' | 'lowerRaw' | 'upperRaw' | 'ratioRaw'>;
 export interface PreparedAutonomy extends AutonomyReply {
@@ -12,12 +16,16 @@ export interface PreparedAutonomy extends AutonomyReply {
   exactHours: number[];
   identities: CountryIdentityHistory[];
   metadata: AutonomyReply;
+  approximate?: readonly Span[];
+  pending?: readonly Span[];
+  coverage?: PreparedCoverage;
 }
 
 /** Categorical operands feed the existing holder/level helpers; numeric labels use exact subjects. */
 export function validatePreparedAutonomy(value: unknown): PreparedAutonomy {
   const data = validateAutonomyReply(value) as PreparedAutonomy;
   if (!validCountryIdentityHistories(data.identities) || !Array.isArray(data.bands) || !Array.isArray(data.exactHours) || !data.exactHours.every(Number.isSafeInteger)
+    || data.approximate !== undefined && !isOrderedSpans(data.approximate) || data.pending !== undefined && !isOrderedSpans(data.pending)
     || !data.summaries || typeof data.summaries !== 'object' || !Object.values(data.summaries).every(isChartSummary)
     || !data.bands.every(subject => subject && typeof subject.tag === 'string' && Array.isArray(subject.runs)
       && subject.runs.every(run => run && typeof run.startsSegment === 'boolean' && typeof run.lowest === 'boolean' && typeof run.highest === 'boolean')))
@@ -26,9 +34,18 @@ export function validatePreparedAutonomy(value: unknown): PreparedAutonomy {
     scoreRaw: '0', lowerRaw: '0', upperRaw: '0', ratioRaw: null })) }));
   return { ...data, metadata: validateAutonomyReply({ ...data, subjects }) };
 }
-/** Reached evidence replaces rough values at its hours, including known missing
- * values; geometry paging may discover another subject or level token. */
+/** Summary pages retain every page's unfinished history and shared prefix. */
 export function mergePreparedAutonomy(a: PreparedAutonomy, b: PreparedAutonomy): PreparedAutonomy {
+  return mergeAutonomy(a, b, 'pages');
+}
+
+/** Reached evidence replaces rough values at its hours, including known missing
+ * values, without revising geometry's historical census. */
+export function overlayReachedAutonomy(a: PreparedAutonomy, b: PreparedAutonomy): PreparedAutonomy {
+  return mergeAutonomy(a, b, 'reached');
+}
+
+function mergeAutonomy(a: PreparedAutonomy, b: PreparedAutonomy, mode: 'pages' | 'reached'): PreparedAutonomy {
   const levels = [...a.levels];
   const indices = new Map(levels.map((level, index) => [level.id, index]));
   const remap = b.levels.map(level => {
@@ -37,7 +54,7 @@ export function mergePreparedAutonomy(a: PreparedAutonomy, b: PreparedAutonomy):
     else levels[index] = level;
     return index;
   });
-  const reached = b.exactHours.map(hour => ({ firstHour: hour, lastHour: hour }));
+  const reached = mode === 'reached' ? b.exactHours.map(hour => ({ firstHour: hour, lastHour: hour })) : [];
   const overlay = <R extends Band>(rough: readonly R[], exact: readonly R[]): R[] => {
     const cuts = [...reached, ...exact].sort((a, b) => a.firstHour - b.firstHour);
     const retained: R[] = [];
@@ -70,9 +87,21 @@ export function mergePreparedAutonomy(a: PreparedAutonomy, b: PreparedAutonomy):
     }
     return joined;
   };
+  // Geometry owns the historical census. Reached reads cannot turn its
+  // sampled bands into exact history, or put an already drawn span on hold.
+  const aCoverage = preparationCoverage(a), bCoverage = preparationCoverage(b);
+  const coverage = mode === 'reached' ? aCoverage : aCoverage && bCoverage ? {
+    ...aCoverage, firstHour: Math.max(aCoverage.firstHour, bCoverage.firstHour),
+    lastHour: Math.min(aCoverage.lastHour, bCoverage.lastHour), complete: aCoverage.complete && bCoverage.complete,
+  } : undefined;
+  const prepared = coverage && coverage.firstHour <= coverage.lastHour ? [coverage] : [];
+  const approximate = spans(a.approximate ?? [], mode === 'pages' ? b.approximate ?? [] : withoutHours(b.approximate ?? [], prepared));
+  const unfinished = spans(a.pending ?? [], b.pending ?? []);
+  const pending = mode === 'pages' ? unfinished : withoutHours(unfinished, spans(prepared, approximate));
   return validatePreparedAutonomy({ ...a, levels, subjects: mergeSubjects(a.subjects, b.subjects), bands: mergeSubjects(a.bands, b.bands),
     recorded: spans(a.recorded, b.recorded), unidentified: spans(a.unidentified, b.unidentified),
     warnings: [...new Set([...a.warnings, ...b.warnings])], summaries: { ...a.summaries, ...b.summaries },
     exactHours: [...new Set([...a.exactHours, ...b.exactHours])].sort((a, b) => a - b),
+    coverage, approximate, pending,
     identities: overlayCountryIdentities(a.identities, b.identities) });
 }

@@ -38,6 +38,9 @@ the content folders, cache folder and unverified-content choice, so tightened
 verification runs the ordinary refusal checks before accepting an endpoint.
 While preparation remains before that hour, re-asks reuse it across prefix commits and presentation widths;
 once the prefix reaches it, ordinary prepared values supply the endpoint.
+An uncovered single-hour view with recorded land inputs observes that reached
+frame alone. A missing endpoint retains the ordinary fold's availability and
+refusal evidence.
 
 An air or navy block extract steps every hour's census, but makes output rows
 and projection bases only after its scan settles and its fold will keep them.

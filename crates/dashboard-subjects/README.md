@@ -16,6 +16,17 @@ feature compiles the test oracles and instrumentation for the dashboard's tests.
 
 Keyframe first views keep compact relation/level observations in the shared source observation cache. Re-asks clip and join those observations after coverage moves; they do not decode or observe a block again.
 
+Coarse autonomy summaries use one cached native observation per keyframe,
+including campaigns fitting inside the shared exact-zoom block budget. The
+sampled bands, scores and identities carry approximate spans; preparation
+replaces them with its exact prefix. Reached hours and fine geometry use the
+exact reader independently of the coarse summary.
+The reply carries those spans at its root even with no selected numeric lanes
+or no sampled subjects: a keyframe census cannot prove absence between reads.
+Every requested recorded hour after the prepared prefix is approximate if
+sampled, otherwise pending, including skipped keyframe blocks. Reached-hour
+replies keep their uncovered history pending even when the reached value is exact.
+
 A cold subject query starts the ordinary scan at the branch's recorded bounds,
 marks its empty accepted extent and reuses the keyframe sampler for later
 geometry. No first commit is needed to publish the pending/approximate reply.

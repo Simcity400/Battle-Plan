@@ -13,6 +13,7 @@ import type { LaneGeometry, TimelineLane } from '../../charts/timeline/Timeline'
 import type { ChartTokens } from '../../charts/tokens';
 import type { TooltipRow } from '../../charts/tooltip';
 import { useChartTokens } from '../../charts/useChartTokens';
+import { PreparedKey } from '../../charts/PreparedKey';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
 import { contentTitleHint } from '../../dashboard/contentTitles';
@@ -27,9 +28,9 @@ import { useParityRows } from '../../dashboard/parityRows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useHoverLabels } from '../../dashboard/useHoverLabels';
 import { inSpans } from '../../charts/timeline/layout';
-import { mergePreparedAutonomy, validatePreparedAutonomy } from './preparedAutonomy';
+import { mergePreparedAutonomy, overlayReachedAutonomy, validatePreparedAutonomy } from './preparedAutonomy';
 import { mix } from '../../shell/appearance/color';
-import { absentAt, autonomyViews, chosenViews, clipSubject, formatProgress, formatScore, laneLabels, levelName, membershipUnknownFor, noLanesMessage, overlordIdentityUnknownFor, runOf, subjectLane,
+import { absentAt, autonomyUnprepared, autonomyViews, chosenViews, clipSubject, formatProgress, formatScore, laneLabels, levelName, membershipUnknownFor, noLanesMessage, overlordIdentityUnknownFor, runOf, subjectLane,
   } from './autonomyData';
 import type { SubjectLane } from './autonomyData';
 import { OPTIONS } from './definition';
@@ -45,14 +46,14 @@ const LANE_PAD = 8;
 /** One subject's lane: its level over time as coloured bands,
  * the move-up and move-down scores as the dashed top and bottom edges, its
  * progress between them as a line, and a dot where the level changed. */
-function paintLane(ctx: CanvasRenderingContext2D, lane: SubjectLane, geometry: LaneGeometry, tokens: ChartTokens, colour: (span: string) => string, summary: ChartSummary | undefined): void {
+function paintLane(ctx: CanvasRenderingContext2D, lane: SubjectLane, geometry: LaneGeometry, tokens: ChartTokens, colour: (span: string) => string, summary: ChartSummary | undefined, approximate: ChartSummary['approximate']): void {
   const top = geometry.top + LANE_PAD;
   const height = geometry.height - 2 * LANE_PAD;
   const bottom = top + height;
   const end = geometry.playhead == null ? Infinity : geometry.playhead;
   const toY = (value: number) => bottom - Math.max(0, Math.min(1, value)) * height;
   const frame = plotFrame(geometry.right, geometry.top + geometry.height, { left: geometry.left, right: 0, top, bottom: LANE_PAD }, geometry.hours, [0, 1], false);
-  drawApproximateSpans(ctx, frame, summary?.approximate, end === Infinity ? null : end, () => {
+  drawApproximateSpans(ctx, frame, approximate, end === Infinity ? null : end, () => {
   // Each level's colour, held for the whole span it applied.
   for (const span of lane.spans) {
     const to = Math.min(span.lastHour + 1, end);
@@ -118,8 +119,10 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const prepared = usePreparedWindow(runtime.client, track?.source, 'autonomy', { branchId: track?.branch.id, overlords: [], subjects: [] },
-    extent, [head, ...(hoverHour === null ? [] : [hoverHour])], active, validatePreparedAutonomy,mergePreparedAutonomy);
+    extent, [head, ...(hoverHour === null ? [] : [hoverHour])], active, validatePreparedAutonomy,mergePreparedAutonomy,overlayReachedAutonomy);
   const { data, error, retry } = prepared;
+  const approximate = useMemo(() => data?.approximate ?? Object.values(data?.summaries ?? {}).flatMap(summary => summary.approximate ?? []), [data]);
+  const pending = data?.pending ?? NO_SPANS;
   const identityRows = data?.identities ?? groups.data?.countryIdentities;
   const identities = useMemo(() => identityRows ? countryIdentityIndex(identityRows) : null, [identityRows]);
   const identityHistories = useMemo(() => new Map(identityRows?.map(country => [country.tag, country.identities]) ?? []), [identityRows]);
@@ -211,9 +214,9 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
       // Not a subject at the moment shown (released, not yet a subject, or not recorded): faded.
       muted: !run || run.overlord == null,
       paint: (ctx, geometry, chartTokens) => paintLane(ctx, lane, geometry, chartTokens, colourOf,
-        prepared.geometryReady ? data.summaries[lane.id] : undefined),
+        prepared.geometryReady ? data.summaries[lane.id] : undefined, approximate),
     };
-  }), [data, prepared.geometryReady, lanesData, numericLaneAt, laneTags, head, looks, palette, tokens.surface, tokens.text, unobserved]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [data, prepared.geometryReady, approximate, lanesData, numericLaneAt, laneTags, head, looks, palette, tokens.surface, tokens.text, unobserved]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const content = (() => {
   if (!track) return <WidgetState kind="empty" icon="link" message="Load a campaign to see its subjects’ autonomy." />;
@@ -225,13 +228,17 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   if (reason) return <WidgetState kind="empty" message={reason} />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data || !identities) return <WidgetState kind="loading" label="Loading autonomy…" />;
+  if (!lanesData.length && (!prepared.geometryReady || autonomyUnprepared(data, { firstHour: first, lastHour: last }))) return <>
+    <WidgetState kind="loading" label="Subject data is still being prepared." />
+    <PreparedKey approximate={approximate} pending={pending} />
+  </>;
   // Tables missing at every hour: not recorded, never "no subjects".
   if (!data.recorded.length) return <WidgetState kind="unavailable" message="Subjects’ autonomy was not recorded." />;
   if (!lanesData.length) {
     if (missingNativeSubjects) return <WidgetState kind="unavailable" message="Subject data is unavailable for these countries." />;
     if (missingNativeOverlords) return <WidgetState kind="unavailable" message="Subject data is unavailable for these countries." />;
     // Unknown membership that cut a lane away is said, never read as "no subjects".
-    return <WidgetState kind="empty" message={noLanesMessage(data, { firstHour: track.branch.firstHour, lastHour: track.branch.lastHour },
+    return <WidgetState kind="empty" message={noLanesMessage(data, { firstHour: first, lastHour: last },
       membershipUnknownFor(chosen, bySubject, unobserved))} />;
   }
 
@@ -244,7 +251,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   return <div className="autonomy">
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label={`Autonomy of ${laneTags.map((tag, index) => tag === null ? lanesData[index].tag : looks.name(tag)).join(', ')}`} extent={extent} playhead={playhead} labelHour={head} preserveZoomOnExtentChange={options.grow === true} lanes={lanes}
       rowHeight={LANE_HEIGHT} showIcons={false} showNames={false} description={description} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
-      active={active} revision={`${head}:${data.branchId}:${looks.revision}:${hover.revision}`}
+      active={active} revision={`${head}:${data.branchId}:${looks.revision}:${hover.revision}`} approximate={approximate} pending={pending}
       onHover={setHoverHour}
       onSummaryView={(view, visible) => prepared.onSummaryView(view,visible.map(lane => binding(lane.id)))}
       onNavigateHour={(lane, from, forward) => prepared.navigate(lane.id,from,forward,binding(lane.id))}
@@ -277,7 +284,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
           note: contentTitleHint(data.levels[run.level]?.id) };
       }}
       onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
-    {Object.values(data.summaries).some(summary => summary.approximate?.length) && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Approximate</p>}
+    <PreparedKey approximate={approximate} pending={pending} />
     {menu.menu}
   </div>;
   })();
