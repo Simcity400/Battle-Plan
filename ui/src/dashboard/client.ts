@@ -38,6 +38,8 @@ export const WALK_GATE = 'walk';
 /** Per-call options of a prepared query. `gate` receives the reply's gate (undefined when it waits for nothing). */
 export interface PreparedQueryOptions {
   signal: AbortSignal;
+  /** A refresh of data already shown; first views and user actions leave this false. */
+  refresh?: boolean;
   gate?: (entries: readonly string[] | undefined) => void;
 }
 

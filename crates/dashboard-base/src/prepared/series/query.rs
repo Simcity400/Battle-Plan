@@ -1,5 +1,5 @@
-//! Reuse settled numeric buckets across moving publications. Membership and
-//! sampled tails are applied afterwards, with their current provenance.
+//! Reuse immutable page reads and settled numeric buckets across publications.
+//! Membership and sampled tails keep their current provenance.
 use super::*;
 use std::{cell::RefCell, rc::Rc};
 
@@ -9,22 +9,56 @@ thread_local! {
     pub(super) static BUCKET_FOLDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Numeric folds held with one whole query reply and charged to its cache entry.
-/// Only folds used by that request survive its next publication.
+/// Page reads and numeric folds held with one reply and charged to its LRU entry.
+/// Only entries used by that request survive its next publication.
 #[derive(Clone, Default)]
-pub struct SummaryCache(BTreeMap<Vec<u8>, Arc<Fold>>);
+pub struct SummaryCache {
+    folds: BTreeMap<Vec<u8>, Arc<Fold>>,
+    blobs: BTreeMap<([u64; 3], u64), Arc<Cached>>,
+    texts: BTreeMap<(TextKind, Vec<[u64; 3]>), Arc<Vec<u8>>>,
+    events: BTreeMap<([u64; 3], u64, u64), Arc<Value>>,
+}
 
 impl SummaryCache {
     pub fn bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self
-                .0
+                .folds
                 .iter()
                 .map(|(key, fold)| {
                     2 * std::mem::size_of::<(Vec<u8>, Arc<Fold>)>()
                         + key.capacity()
                         + 2 * std::mem::size_of::<usize>()
                         + fold.bytes()
+                })
+                .sum::<usize>()
+            + self
+                .blobs
+                .iter()
+                .map(|(_, blob)| {
+                    2 * std::mem::size_of::<(([u64; 3], u64), Arc<Cached>)>()
+                        + 2 * std::mem::size_of::<usize>()
+                        + blob.bytes()
+                })
+                .sum::<usize>()
+            + self
+                .texts
+                .iter()
+                .map(|((_, ids), text)| {
+                    2 * std::mem::size_of::<((TextKind, Vec<[u64; 3]>), Arc<Vec<u8>>)>()
+                        + ids.capacity() * std::mem::size_of::<[u64; 3]>()
+                        + 2 * std::mem::size_of::<usize>()
+                        + std::mem::size_of::<Vec<u8>>()
+                        + text.capacity()
+                })
+                .sum::<usize>()
+            + self
+                .events
+                .iter()
+                .map(|(_, value)| {
+                    2 * std::mem::size_of::<(([u64; 3], u64, u64), Arc<Value>)>()
+                        + 2 * std::mem::size_of::<usize>()
+                        + crate::prepared::query::observations::json_bytes(value)
                 })
                 .sum::<usize>()
     }
@@ -60,6 +94,66 @@ impl Drop for CacheScope {
     fn drop(&mut self) {
         SCOPES.with(|scopes| scopes.borrow_mut().pop());
     }
+}
+
+/// These entries live with the query's ordinary bounded LRU reply. Retain
+/// only pages used by the current ask, and compare immutable identities rather
+/// than batch ordinals: a rewritten prefix must never reuse its former bytes.
+fn current() -> Option<Rc<RefCell<State>>> {
+    SCOPES.with(|scopes| scopes.borrow().last().cloned())
+}
+fn reuse<K: Ord, T>(
+    scope: Option<Rc<RefCell<State>>>,
+    id: K,
+    map: fn(&mut SummaryCache) -> &mut BTreeMap<K, Arc<T>>,
+    read: impl FnOnce() -> io::Result<T>,
+) -> io::Result<Arc<T>> {
+    let held = scope.as_ref().and_then(|scope| {
+        let mut state = scope.borrow_mut();
+        let State { current, previous } = &mut *state;
+        map(current)
+            .get(&id)
+            .cloned()
+            .or_else(|| map(previous).get(&id).cloned())
+    });
+    let value = match held {
+        Some(value) => value,
+        None => Arc::new(read()?),
+    };
+    if let Some(scope) = scope {
+        map(&mut scope.borrow_mut().current).insert(id, Arc::clone(&value));
+    }
+    Ok(value)
+}
+
+pub(super) fn blob(
+    id: ([u64; 3], u64),
+    read: impl FnOnce() -> io::Result<Cached>,
+) -> io::Result<Arc<Cached>> {
+    reuse(current(), id, |cache| &mut cache.blobs, read)
+}
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum TextKind {
+    Catalogue,
+    Reply,
+}
+
+pub(super) fn text(
+    kind: TextKind,
+    ids: Vec<[u64; 3]>,
+    read: impl FnOnce() -> io::Result<Vec<u8>>,
+) -> io::Result<Arc<Vec<u8>>> {
+    reuse(current(), (kind, ids), |cache| &mut cache.texts, read)
+}
+pub(super) fn event(
+    id: ([u64; 3], u64, u64),
+    read: impl FnOnce() -> io::Result<Value>,
+) -> io::Result<Value> {
+    let Some(scope) = current() else {
+        return read();
+    };
+    let value = reuse(Some(scope), id, |cache| &mut cache.events, read)?;
+    Ok((*value).clone())
 }
 
 struct Fold {
@@ -133,9 +227,9 @@ impl Reader<'_> {
             let cache = cache.borrow();
             cache
                 .current
-                .0
+                .folds
                 .get(&params)
-                .or_else(|| cache.previous.0.get(&params))
+                .or_else(|| cache.previous.folds.get(&params))
                 .cloned()
         };
         let common = previous.as_ref().map_or(0, |previous| {
@@ -166,7 +260,7 @@ impl Reader<'_> {
                 None => self.range_bucket(key, first, last, decimals)?,
             });
         }
-        cache.borrow_mut().current.0.insert(
+        cache.borrow_mut().current.folds.insert(
             params,
             Arc::new(Fold {
                 pages,

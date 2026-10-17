@@ -1,4 +1,4 @@
-use super::{Inner, Lane, Lease, Request};
+use super::{Inner, Lane, Lease, Request, queue::Receiver};
 use crate::{
     Source, SourceKey, map_settings,
     products::{self, ContentOptions, LoadContext},
@@ -16,7 +16,7 @@ use std::{
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, TrySendError},
+        mpsc::TrySendError,
     },
 };
 
@@ -232,7 +232,7 @@ impl Inner {
             source,
             restart: Arc::clone(&restart),
         };
-        match lanes.history.try_send(job) {
+        match lanes.history.try_send(false, job) {
             Ok(()) => {
                 lanes.refreshes.insert(key, restart);
                 Ok(())
@@ -1107,7 +1107,7 @@ impl Inner {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             match loader.as_ref() {
-                Some(lanes) => match lanes.sender(lane).try_send(job) {
+                Some(lanes) => match lanes.sender(lane).try_send(job.is_refresh(), job) {
                     Ok(()) => Ok(()),
                     Err(TrySendError::Full(_)) => Err(crate::transport::CAPACITY_REACHED),
                     Err(TrySendError::Disconnected(_)) => Err("Dashboard data service is closing"),
@@ -1770,6 +1770,10 @@ pub(super) enum LoadJob {
 }
 
 impl LoadJob {
+    fn is_refresh(&self) -> bool {
+        self.request()
+            .is_some_and(|request| request.refresh.load(Ordering::Acquire))
+    }
     fn request(&self) -> Option<&Arc<Request>> {
         Some(match self {
             Self::PreparationRefresh { .. } => return None,

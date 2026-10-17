@@ -298,19 +298,30 @@ content stack from the game and user folders; by default an earlier open with pr
 the content hash index, and `--readiness-cold-content` skips it. `src/readiness/widgets.json`
 lists each widget's default requests (`--readiness-table` replaces it for one run); a test fails
 when a registered widget has no entry. All requests are in flight at once, as mounted widgets issue
-them, and a pending prepared request is asked again when the coverage its last reply waits for (its
-`gate`) moves, as the client's prepared query loop asks. A reply is
+them, and a pending prepared request without a first view is asked again when the coverage its last
+reply waits for (its `gate`) moves. A shown unfinished reply refreshes on gate movement no sooner
+than 2 seconds after its last reply, then 4 seconds, then 8 seconds for every later refresh.
+Completion of every gate on the selected branch bypasses the interval. New navigation, ranges and
+selections ask immediately. The probe mirrors the shared client loop and marks shown-reply
+refreshes for the service's prepared and sampled queues. Both those queues and the browser
+connection queue admit at most eight consecutive first asks while refreshes wait, then one refresh;
+each class remains FIFO. Terminal preparation states trigger one final ask regardless of gate
+movement or refresh interval. A final null reply is unavailable; a final partial reply retains its
+extent and error, and stops polling without becoming exact.
+Status is polled every 500 ms, matching the client. A reply is
 ready when it is exact; answered beyond accepted coverage by the product's own sampling (flagged
 approximate spans count); or answered from its gate's prepared prefix (`prefix`): it names requested
 hours after the prefix `pending`, names values `preparing`, or is an event list cut at accepted
 coverage. A null reply is pending. Each request may name its first view's class (`firstView`):
 `a` exact at the hour, `b` sampled and marked approximate, `c` the newest window with a proven
-look-back, `d` the prepared prefix. A ready reply is asked again as its gate moves until it is
+look-back, `d` the prepared prefix. A ready reply follows that refresh cadence until it is
 exact (or unavailable). JSON lines report preparation progress (each status row's state,
 counts and text, including the newest battle windows' per-branch earlier-block reads,
 look-backs, failed checks and outcomes), each request's first-view (`firstViewMs`), exact (`exactMs`) and query times, each widget's first-view and exact times and
 gating request, the map, and the overall time, until every widget is exact or
-`--readiness-limit` seconds (default 1200) pass.
+`--readiness-limit` seconds (default 1200) pass, or stopped preparation's final asks have drained.
+The map worker is joined before reporting the summary; its successful first frame records both
+map widget readiness times even when it finishes after polling stops.
 
 The probe follows an approximate production-lines reply with the widget's
 separate `exact: true` product request. The first request keeps its first-view

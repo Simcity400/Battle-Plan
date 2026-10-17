@@ -16,7 +16,6 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, SyncSender},
     },
     thread,
 };
@@ -24,6 +23,8 @@ use std::{
 mod admission;
 mod jobs;
 mod pump;
+mod queue;
+use queue::{Sender as SyncSender, channel};
 
 use admission::{Lease, Pending, Request};
 use jobs::{LoadJob, MapSettingsJob, OpenJob, Sources};
@@ -207,10 +208,10 @@ impl Drop for ThreadExit {
 impl Service {
     pub fn new(emit: Arc<dyn Fn(DataEvent) -> bool + Send + Sync>) -> io::Result<Arc<Self>> {
         crate::prepared::pipeline::install_gates();
-        let (history, history_jobs) = mpsc::sync_channel::<LoadJob>(MAX_PENDING);
-        let (interactive, interactive_jobs) = mpsc::sync_channel::<LoadJob>(MAX_PENDING);
-        let (prepared, prepared_jobs) = mpsc::sync_channel::<LoadJob>(MAX_PENDING);
-        let (sampled, sampled_jobs) = mpsc::sync_channel::<LoadJob>(MAX_PENDING);
+        let (history, history_jobs) = channel::<LoadJob>(MAX_PENDING);
+        let (interactive, interactive_jobs) = channel::<LoadJob>(MAX_PENDING);
+        let (prepared, prepared_jobs) = channel::<LoadJob>(MAX_PENDING);
+        let (sampled, sampled_jobs) = channel::<LoadJob>(MAX_PENDING);
         let parallelism = parallelism();
         let inner = Arc::new(Inner {
             lease_namespace: uuid::Uuid::new_v4(),
@@ -770,7 +771,11 @@ impl Service {
                 };
                 self.inner.submit(request, job);
             }
-            DataCommand::PreparedQuery { id, request: body } => {
+            DataCommand::PreparedQuery {
+                id,
+                request: body,
+                refresh,
+            } => {
                 let Some(request) = self.inner.begin(id) else {
                     return;
                 };
@@ -783,6 +788,7 @@ impl Service {
                 else {
                     return;
                 };
+                request.refresh.store(refresh, Ordering::Release);
                 self.inner.submit(
                     Arc::clone(&request),
                     LoadJob::PreparedQuery {

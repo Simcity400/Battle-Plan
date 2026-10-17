@@ -150,6 +150,9 @@ pub enum DataCommand {
     PreparedQuery {
         id: String,
         request: ProductRequest,
+        /// Refreshing a reply already shown yields to first views and user actions.
+        #[serde(default)]
+        refresh: bool,
     },
     Preparation {
         id: String,
@@ -446,6 +449,26 @@ mod tests {
                 clear,
             };
             assert_eq!(command.request_id(), Some("h"));
+        }
+    }
+
+    #[test]
+    fn prepared_commands_preserve_refresh_priority_and_default_to_a_first_ask() {
+        let mut command = serde_json::json!({"type":"preparedQuery", "id":"q", "request":{
+            "sourceId":"source", "revision":"revision", "product":"series-state", "params":{}}});
+        for refresh in [None, Some(false), Some(true)] {
+            if let Some(refresh) = refresh {
+                command["refresh"] = serde_json::json!(refresh);
+            }
+            let parsed: DataCommand = serde_json::from_value(command.clone()).unwrap();
+            assert_eq!(parsed.request_id(), Some("q"));
+            let DataCommand::PreparedQuery {
+                refresh: actual, ..
+            } = parsed
+            else {
+                panic!("wrong command");
+            };
+            assert_eq!(actual, refresh.unwrap_or(false));
         }
     }
 

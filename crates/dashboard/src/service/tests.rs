@@ -10,7 +10,7 @@ use replay::{
     identity::{Identity, Roster, SampleBoundary, SessionStart, Verification},
     spool::Record,
 };
-use std::time::Duration;
+use std::{sync::mpsc, time::Duration};
 
 /// How long a test waits on a service thread before failing instead of
 /// hanging; only a hang guard, never a timing check.
@@ -510,6 +510,7 @@ fn preparation_commands_preserve_lease_identity_and_exact_progress_counts() {
             .load(Ordering::Acquire)
     );
     service.dispatch(DataCommand::PreparedQuery {
+        refresh: false,
         id: "stale-page".into(),
         request: ProductRequest {
             source_id: "prepared-lease".into(),
@@ -3366,4 +3367,60 @@ fn no_recording_revision_is_read_under_the_admission_lock() {
     );
     drop(hold);
     service.shutdown();
+}
+
+#[test]
+fn first_ask_priority_is_bounded_on_prepared_and_sampled_lanes() {
+    for lane in [Lane::Prepared, Lane::Sampled] {
+        let service = Service::new(Arc::new(|_| true)).unwrap();
+        let hold = LoaderHold::new(&service, lane);
+        let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let (first_sent, first_seen) = mpsc::channel();
+        let (refresh_sent, refresh_seen) = mpsc::channel();
+        let refresh = service.inner.begin("refresh".into()).unwrap();
+        refresh.refresh.store(true, Ordering::Release);
+        service.inner.submit(
+            Arc::clone(&refresh),
+            LoadJob::Fixture {
+                request: refresh,
+                lane,
+                run: Arc::new(move || {
+                    refresh_sent.send(()).unwrap();
+                }),
+            },
+        );
+        for index in 0..lane.threads(parallelism()) {
+            let request = service.inner.begin(format!("first-{index}")).unwrap();
+            let release = Arc::clone(&release);
+            let sent = first_sent.clone();
+            service.inner.submit(
+                Arc::clone(&request),
+                LoadJob::Fixture {
+                    request,
+                    lane,
+                    run: Arc::new(move || {
+                        sent.send(()).unwrap();
+                        let (lock, changed) = &*release;
+                        let mut ready = lock.lock().unwrap();
+                        while !*ready {
+                            ready = changed.wait(ready).unwrap();
+                        }
+                    }),
+                },
+            );
+        }
+        drop(hold);
+        for _ in 0..lane.threads(parallelism()) {
+            first_seen.recv_timeout(HANG_GUARD).unwrap();
+        }
+        let early_refresh = refresh_seen.try_recv().is_ok();
+        *release.0.lock().unwrap() = true;
+        release.1.notify_all();
+        service.shutdown();
+        assert_eq!(
+            early_refresh,
+            lane.threads(parallelism()) > queue::FIRST_ASK_BURST,
+            "{lane:?} did not apply the first-ask burst bound"
+        );
+    }
 }

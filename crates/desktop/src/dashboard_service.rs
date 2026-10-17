@@ -424,6 +424,7 @@ pub async fn dashboard_prepared_query(
     host: State<'_, NativeHost>,
     service: State<'_, DashboardService>,
     query: ProductRequest,
+    refresh: Option<bool>,
     request_id: String,
 ) -> Result<Response, String> {
     query.validate()?;
@@ -435,6 +436,7 @@ pub async fn dashboard_prepared_query(
         DataCommand::PreparedQuery {
             id: request_id,
             request: query,
+            refresh: refresh.unwrap_or(false),
         },
     )
     .await

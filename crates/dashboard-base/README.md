@@ -97,6 +97,17 @@ Hourly zooms retain the ordinary full-run lookup, including run bounds that can
 extend with later pages. Only the current request's folds survive, and their
 allocation capacities are charged with its reply to the observation cache.
 
+That same query entry retains decoded series blobs, parsed JSON event rows and
+reconstructed catalogue or whole-reply text. Blobs and rows name the immutable
+page identity and their key/ordinal; catalogue text names every base and patch
+page in order. An appended page leaves earlier entries reusable, while a replaced
+page misses even at the same batch ordinal. Only pages used by the current ask
+survive its next publication. Their nested allocation capacities are charged to
+the existing content-bound, source-owned query LRU; request shapes compete in that
+LRU. Each reply still performs its current coverage, membership, run-boundary and
+sampled-tail joins, so reuse does not enlarge exact spans or change a first view's
+class. Failed and cancelled asks publish no cache entry.
+
 Every family's catalogue (`{family}-{branch}-catalogue`, the JSON text of its
 keys and metadata) goes through the shared writer in
 [prepared/series/catalogue.rs](src/prepared/series/catalogue.rs).
@@ -543,6 +554,14 @@ current inputs are unavailable. Those slots have no current state or fabricated
 read coverage, so the active view shows them as unavailable.
 
 Prepared map selection retains the Operatives map's mission, operation, agency-buffer, strategic-operative and stability inputs alongside the shared map and trigger operands.
+
+Production lines' newest-block first view and whole-history follow-up share only
+their overlapping block extracts in the source's observation LRU. Keys include
+the recorded block, country tag, native holder and selected tables. The cache
+counts every kept frame allocation and is bounded by the newest window's live
+block count and largest observed extract; earlier whole-scan extracts remain
+transient. Both folds start from their own first hour, retaining their distinct
+line origins, output totals and approximate spans.
 
 Factory and territory rank publication coalesces adjacent spans whose country
 and position agree before calling the series accumulators. The rank sweep

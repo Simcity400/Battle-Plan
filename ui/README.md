@@ -62,7 +62,20 @@ comparing entire row arrays. Partial replies belong to
 the mount and never become shared cached results. Completed replies, and replies
 without preparation metadata, use the bounded product cache. Null preparation
 coverage and pending or approximate spans keep a reply out of that cache and
-keep mounted requests polling the latest gate, even when its family list shrinks. One-shot reads return the first
+keep mounted requests polling the latest gate, even when its family list shrinks.
+The shared `preparedSeriesQuery` loop asks a first view immediately. Once a reply
+is shown, moved gates refresh it no sooner than 2 seconds after that reply,
+then 4 seconds after the next reply, then 8 seconds after each later reply.
+Unchanged gates do not trigger reads. Completion of every gate for the selected
+branch bypasses the interval, as does a new request from navigation, range or
+selection changes. Paused, failed, cancelled or idle preparation gets one final
+ask before its error is raised; an exact point can finish there even while its
+branch remains incomplete. Other polling failures first drain deferred accepted
+progress. Source cancellation discards it. Status polling continues every 500 ms.
+Prepared transports mark only refreshes of shown replies; the browser's connection
+queue and the service's prepared and sampled queues prefer first asks but admit
+one waiting refresh after at most eight consecutive first asks. Each class stays
+FIFO, and the burst count resets when a refresh runs or none are waiting. One-shot reads return the first
 available reply. Source release, content changes and unmount cancel departed
 requests; a preparation failure retains already published data with its error.
 

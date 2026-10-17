@@ -59,7 +59,10 @@ Sources share canonical path/revision but return independently releasable bindin
 
 The host assembles bounded library reply fragments and returns raw JSON bytes to the WebView. Dashboard replies do not cross the native map pipe. Cancellation/admission ordering prevents a cancelled open from later creating a leaked binding. Map layouts replace snapshots and retain their bounded control queue. The native map picker's `MapOptions` and `MapToggle` events pass to the WebView as `dashboard-map-options` and `dashboard-map-toggle`; the WebView keeps each view's map mode and slots in its next layouts (the campaign map's in its Configure options), sets a fog toggle on the view's own fog switch, and writes the other toggles' chosen values to the widget's map settings one at a time. Preserve canonical retryable refusals from [transport.rs](../dashboard-core/src/transport.rs); never truncate requests naming many countries.
 
-Preparation and prepared-page queries also run host-direct. Opening a recording
+Preparation and prepared-page queries also run host-direct. The prepared-query
+command forwards the caller's `refresh` hint to both service lanes: a refresh of
+shown data yields to queued first asks, while navigation and changed parameters
+ask immediately. Opening a recording
 admits background preparation; the library and preparation controls query real
 progress, start or cancel work, and Clear its stored data. The commands validate
 the current source binding and revision. Progress counts and stored byte totals

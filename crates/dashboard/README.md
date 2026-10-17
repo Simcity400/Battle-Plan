@@ -486,8 +486,16 @@ coverage pages hold it (`independent::coverages`), beside the hourly walk's
 missing or incomplete) carries a `gate`: the status entries whose coverage it
 found short while answering (`coverage::waiting`), each a family prepared on its
 own or `walk` for the walk's coverage, or, when it consulted none, those its
-product waits for (`pipeline::gate`). Clients ask it again when one of them
-moves.
+product waits for (`pipeline::gate`). Before a first view, clients ask it again
+when one of them moves. A shown unfinished reply refreshes after a moved gate
+no sooner than 2 seconds from its last reply, then 4 seconds, then 8 seconds
+for every later refresh. Every gate completing on the selected branch bypasses
+that interval. A terminal status (paused, failed, cancelled or idle) also asks
+once before reporting its error, delivering any accepted point or prefix held by
+the interval. Other polling failures drain deferred progress; source cancellation
+discards it. New navigation, ranges and selections ask immediately. This
+policy lives in the shared frontend prepared-query loop; the readiness probe
+uses the same intervals and completion rule.
 
 A product whose values need earlier observations samples no unprepared hour.
 While its gate's coverage is partial it answers from the pages that coverage
@@ -3158,19 +3166,21 @@ prepared facts remain in their bounded caches. A sampled read holds one block's 
 the two read ahead of it and the source's frame cache (dashboard-base), so the
 sampled lane's transient recorded-frame storage grows with its thread count.
 
-Series summaries and states, air superiority, event feed, supply health, party
-history, division log manifests and air aces retain their reply data in the shared
+Series summaries and states, army size, trade flows, air superiority, event feed,
+supply health, party history, division log manifests and air aces retain their reply data in the shared
 observation cache as branch entries, separate from block observations. Each
 branch and parameter selection keeps at most one current answer. The store epoch,
 numeric publication identities of gates and declared suppliers, current
 localisation key, content folders, cache folder, unverified-content choice and
 texture decode setting bind its validity; the observation scope also binds the
 recording and recorded content stack. A changed binding replaces the previous
-answer. Series replies also keep the numeric prefix folds used by that request.
+answer. Replies also retain decoded series blobs, parsed event rows and rebuilt
+catalogue/reply text, alongside the numeric prefix folds used by that request.
 A changed publication offers the completed predecessor without waiting for an
-in-flight reply; series readers validate page identities and bucket intervals
-before reusing a fold. Fold storage is charged with the reply, so all selected
-series share the request's retention and eviction. Branch replies share the
+in-flight reply; readers validate immutable page identities, text encodings and
+bucket intervals before reuse. Only entries visited by the current ask survive.
+Their allocation capacities are charged with the reply, so all selected series
+share the request's retention and eviction. Branch replies share the
 product's bounded LRU with block observations:
 largest observed entry times live blocks, evicting the least recently used entry
 across selections and viewports. Retained replies with unchanged bindings reuse
@@ -3178,7 +3188,19 @@ their projection; supplier refusals are checked before lookup. Live content warn
 and transport fields are added when serving each response. In-flight replies that need recording reads retain the ordinary
 prepared-lane refusal and sampled-lane retry.
 
+Prepared transports mark a re-ask of an already shown reply as a refresh. The
+prepared and sampled queues prefer queued first asks, FIFO within each class.
+While refreshes wait, at most eight consecutive first asks are admitted before
+one refresh. Serving a refresh or finding none waiting resets the count. The
+browser's connection queue uses the same bound; running work finishes normally. The mark stays with the
+request when a prepared attempt moves to the sampled lane. Navigation and new
+request parameters start as first asks.
+
 Each lane uses the existing request admission budget for queued jobs.
+`Lanes` owns one non-cloneable sender per lane; dispatch and preparation
+refreshes borrow it, and desktop runtimes share the service. Workers share one
+receiver through `Arc<Mutex<_>>`. Dropping its final owner disconnects sends and
+releases queued work; dropping the sender lets the receiver drain before closing.
 Cancellation releases the frontend request but its queued job keeps occupying
 channel capacity until a loader physically receives it. Full lanes refuse new
 work with the existing retryable capacity error; bodies and country selections
@@ -3680,4 +3702,8 @@ requests built from those replies; replaced selections are no longer polled.
 Production lines follows its immutable first view with the widget's separate
 `exact: true` product request. Its first-view time belongs to the first reply;
 its exact time waits for that whole-history follow-up, independently of family
-preparation coverage.
+preparation coverage. The first view and follow-up share immutable extracts of
+the newest blocks through the source's bounded observation LRU. Only that overlap
+is retained, sized by its live block count and observed allocation capacities;
+the whole scan still folds every hour in order from its own start. Different
+countries, native holders and selected tables have distinct entries.

@@ -97,7 +97,7 @@ test('one-shot prepared loads return the first reply but never retain incomplete
 
 test('mounted preparation failure preserves its partial publication without caching it', async () => {
   let queries = 0;
-  const client = { preparedQuery: async () => { assert.ok(++queries <= 2); return queries === 1 ? partial : complete; },
+  const client = { preparedQuery: async () => { assert.ok(++queries <= 3); return queries < 3 ? partial : complete; },
     preparationStatus: async (input: object) => ({ ...input, state: 'failed', sections: [], backgroundEnabled: true, bytes: '0', error: 'synthetic preparation failure' }),
   } as unknown as DashboardClient;
   const hook = mount(() => useProduct(client, request, true, undefined, source));
@@ -106,7 +106,7 @@ test('mounted preparation failure preserves its partial publication without cach
     assert.equal(hook.render().data, partial);
     assert.equal(hook.render().error, 'synthetic preparation failure');
     assert.equal(await loadProduct(client, request, new AbortController().signal, undefined, source), complete);
-    assert.equal(queries, 2, 'failed partial was never installed in the cache');
+    assert.equal(queries, 3, 'failed partial was never installed in the cache');
   } finally { hook.unmount(); }
 });
 

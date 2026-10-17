@@ -89,3 +89,54 @@ test('a cancelled result is handed back to its owner for cleanup even when cance
   assert.deepEqual(cleaned, ['late-lease']);
   assert.equal(await queue.run('history', async () => 'next-owner'), 'next-owner');
 });
+
+
+test('queued first views and user actions precede shown-reply refreshes', async () => {
+  const queue = new BrowserRequestQueue();
+  const held = [deferred<void>(), deferred<void>()];
+  const running = held.map(job => queue.run('interactive', () => job.promise));
+  await tick();
+  const starts: string[] = [];
+  const read = (name: string, refresh: boolean) => queue.run('interactive', async () => { starts.push(name); return name; }, { refresh });
+  const tasks = [read('refresh 1', true), read('first view', false), read('refresh 2', true), read('new selection', false)];
+  held[0].resolve();
+  await Promise.all(tasks);
+  assert.deepEqual(starts, ['first view', 'new selection', 'refresh 1', 'refresh 2']);
+  held[1].resolve();
+  await Promise.all(running);
+});
+
+
+test('sustained first asks admit a waiting refresh after eight first asks', async () => {
+  const queue = new BrowserRequestQueue();
+  const held = [deferred<void>(), deferred<void>()];
+  const starts: string[] = [];
+  const running = held.map(job => queue.run('interactive', () => job.promise));
+  const refreshes = [deferred<void>(), deferred<void>()];
+  const first = Array.from({ length: 24 }, () => deferred<void>());
+  const tasks = [
+    ...refreshes.map((job, index) => queue.run('interactive', () => {
+      starts.push(`refresh ${index}`); return job.promise;
+    }, { refresh: true })),
+    ...first.map((job, index) => queue.run('interactive', () => {
+      starts.push(`first ${index}`); return job.promise;
+    })),
+  ];
+  try {
+    await tick();
+    held[0].resolve();
+    for (let round = 0; round < 2; round++) {
+      for (let index = round * 8; index < (round + 1) * 8; index++) {
+        await tick();
+        assert.equal(starts.at(-1), `first ${index}`);
+        first[index].resolve();
+      }
+      await tick();
+      assert.equal(starts.at(-1), `refresh ${round}`, 'first asks starved an accepted refresh');
+      refreshes[round].resolve();
+    }
+  } finally {
+    for (const job of [...held, ...refreshes, ...first]) job.resolve();
+    await Promise.allSettled([...running, ...tasks]);
+  }
+});

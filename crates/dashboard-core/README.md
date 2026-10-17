@@ -21,3 +21,9 @@ these types and re-exports each module at its old path.
 
 The `test-support` feature exposes `test_fixtures` and the scanned-block log
 (`blocks::SCANNED_BLOCKS`) to the tests of crates above this one.
+
+`DataCommand::PreparedQuery` carries an optional `refresh` boolean, false when
+omitted. A caller sets it only after showing a reply for the same request;
+first views and user changes keep first-ask priority. The service retains this
+scheduling hint through a prepared attempt's sampled-lane retry. It changes no
+product parameters, reply values or prepared-store layout.

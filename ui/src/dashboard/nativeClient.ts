@@ -96,7 +96,7 @@ export const nativeDashboardClient: DashboardClient = {
   preparationStatus: (query, signal) => preparation('dashboard_preparation_status', query, signal),
   async preparedQuery<T>(source: DashboardSource, product: string, params: unknown, options: PreparedQueryOptions): Promise<T> {
     const query = { sourceId: source.id, revision: source.revision, product, params };
-    const reply = await request<ProductReply<T>>('dashboard_prepared_query', () => ({ query }), options.signal);
+    const reply = await request<ProductReply<T>>('dashboard_prepared_query', () => ({ query, refresh: options.refresh ?? false }), options.signal);
     return preparedReplyData(validateProductReply(reply, query), options);
   },
   prepareSource: (query, signal) => preparation('dashboard_prepare_source', query, signal),

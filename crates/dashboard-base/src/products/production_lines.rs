@@ -866,6 +866,19 @@ fn scan_blocks_of(
     holder: Option<(u32, u32)>,
     cancelled: &AtomicBool,
 ) -> io::Result<ScannedLines> {
+    scan_blocks_cached(None, replay, blocks, tag, icons, holder, cancelled)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_blocks_cached(
+    source: Option<&Source>,
+    replay: &Replay,
+    blocks: &[&BlockIndex],
+    tag: &str,
+    icons: Option<&IconContent>,
+    holder: Option<(u32, u32)>,
+    cancelled: &AtomicBool,
+) -> io::Result<ScannedLines> {
     // The variant catalogue's tables include the countries and tokens read here too.
     let mut selected = vec![
         TableId::Campaign,
@@ -921,8 +934,54 @@ fn scan_blocks_of(
     crate::blocks::SCANNED_BLOCKS.with_borrow_mut(|scanned| {
         scanned.extend(blocks.iter().map(|block| block.offset));
     });
-    let extract =
-        |block: &BlockIndex| extract_block(replay, block, &selected, tag, holder, cancelled);
+    // Only the newest-window overlap is retained. The whole scan still folds
+    // every hour from its own start; its earlier extracts never evict the first
+    // view's before it reaches them, or retain a recording's decoded history.
+    let branch = blocks
+        .first()
+        .map(|block| branch_blocks(replay, block.branch))
+        .unwrap_or_default();
+    let spans: Vec<_> = branch
+        .iter()
+        .map(|block| (block.first_hour, block.last_hour))
+        .collect();
+    let newest = first_view_blocks(&spans);
+    let first_newest = branch
+        .get(branch.len().saturating_sub(newest))
+        .map(|block| block.first_hour);
+    let cache = source.map(|source| {
+        crate::prepared::query::observations::scope(source, "production-lines-overlap", None)
+            .working_set(newest)
+    });
+    let tables: Vec<_> = selected.iter().map(|table| *table as u16).collect();
+    let extract = |block: &BlockIndex| {
+        let read = || extract_block(replay, block, &selected, tag, holder, cancelled);
+        match cache
+            .as_ref()
+            .filter(|_| first_newest.is_some_and(|first| block.first_hour >= first))
+        {
+            Some(cache) => cache.get(
+                block,
+                &(tag, holder, &tables),
+                cancelled,
+                |extracted: &Extracted| {
+                    let mut bytes = crate::prepared::prepass::HeldBytes::default();
+                    bytes.add(
+                        std::mem::size_of::<Extracted>()
+                            + extracted.hours.capacity() * std::mem::size_of::<ScanHour>(),
+                    );
+                    for hour in &extracted.hours {
+                        if let Some(frame) = &hour.frame {
+                            bytes.frame(frame);
+                        }
+                    }
+                    bytes.total() as usize
+                },
+                read,
+            ),
+            None => read().map(Arc::new),
+        }
+    };
     crate::blocks::scan_blocks_by(
         blocks.to_vec(),
         EXTRACT_AHEAD,
@@ -943,7 +1002,7 @@ fn scan_blocks_of(
                     lost(&mut result, block.first_hour, block.last_hour);
                     continue;
                 };
-                for scan_hour in extracted.hours {
+                for scan_hour in &extracted.hours {
                     if cancelled.load(Ordering::Acquire) {
                         return Err(cancel());
                     }
@@ -2195,8 +2254,14 @@ fn whole_scan(
             .unwrap_or_else(|error| error.into_inner())
             .0 += 1;
     }
-    let scanned = Arc::new(scan_blocks_of(
-        replay, blocks, tag, icons, *holder, cancelled,
+    let scanned = Arc::new(scan_blocks_cached(
+        Some(source),
+        replay,
+        blocks,
+        tag,
+        icons,
+        *holder,
+        cancelled,
     )?);
     let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
     cache.entries.retain(|(cached, _)| !same_scan(cached, key));
@@ -2410,7 +2475,8 @@ fn scanned_view(
             let newest = first_view_blocks(&spans);
             if view == View::First && newest < blocks.len() {
                 let window = &blocks[blocks.len() - newest..];
-                let scanned = Arc::new(scan_blocks_of(
+                let scanned = Arc::new(scan_blocks_cached(
+                    Some(source),
                     &replay,
                     window,
                     &params.tag,

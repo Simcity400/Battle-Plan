@@ -13,6 +13,9 @@ const PREPARED_PRODUCTS = ['land-battles', 'land-battles-manifest', 'land-battle
 export type PreparedProduct = typeof PREPARED_PRODUCTS[number];
 export const isPreparedProduct = (product: string): product is PreparedProduct => (PREPARED_PRODUCTS as readonly string[]).includes(product);
 
+/** Delay after the latest shown reply: 2 s, then 4 s, then 8 s until exact. */
+export const preparedRefreshMs = (refreshes: number) => refreshes === 0 ? 2000 : refreshes === 1 ? 4000 : 8000;
+
 const POLL_MS = 500;
 const pause = (signal: AbortSignal) => new Promise<void>((resolve, reject) => {
   if (signal.aborted) { reject(new DOMException('Campaign preparation cancelled', 'AbortError')); return; }
@@ -22,19 +25,28 @@ const pause = (signal: AbortSignal) => new Promise<void>((resolve, reject) => {
 });
 
 /** A null query means pending coverage, never an empty balance or event page.
- * Status polling retries reads only when accepted progress changes, and stops
+ * Status polling retries shown replies at 2/4/8 s after their last reply,
+ * only when accepted progress changes; gate completion and the final read before
+ * a terminal state bypass the delay. It stops
  * when an unchanged status follows a wait that took no real time. The progress
  * followed is the coverage of what the latest reply waits for (its gate): each
  * family prepared on its own it names, from the status's `families`, and the
  * hourly walk's `coverage` for `walk` or for a reply that names none. */
 export async function preparedSeriesQuery(client: DashboardClient, source: DashboardSource, product: PreparedSeriesKind | 'focus-hour' | 'army-size' | 'supply-health' | 'country-groups' | 'idea-history' | 'subjects' | 'wars' | 'casualty-pairs' | 'equipment-losses' | 'politics-ledger' | 'occupied-states' | 'occupied-states-manifest' | 'land-owners' | PreparedProduct | 'party-history' | 'scoreboard' | 'military-air-ledger' | 'air-aces' | 'air-ace-portraits' | 'raids' | 'air-superiority' | 'unit-leaders' | 'espionage-log' | 'operative-placements' | 'operatives-roster' | 'agency-comparison' | 'decryption' | 'construction-log' | 'construction-log-manifest' | 'construction-spending' | 'resource-balance' | 'trade-flows' | 'production-spending' | 'casualty-breakdown' | 'equipment-stockpile', params: unknown,
   signal: AbortSignal, restart = false, pending: () => void = () => {},
-  wait: (signal: AbortSignal) => Promise<void> = pause, publish?: (value: unknown) => void): Promise<unknown> {
+  wait: (signal: AbortSignal) => Promise<void> = pause, publish?: (value: unknown) => void, now: () => number = () => performance.now()): Promise<unknown> {
   if (!client.preparedQuery) throw new Error('Prepared series queries are unavailable.');
   const preparedQuery = client.preparedQuery.bind(client);
   // The status entries the latest reply waits for; undefined for a reply that names none.
   let gate: readonly string[] | undefined;
-  const ask = () => preparedQuery<unknown>(source, product, params, { signal, gate: entries => { gate = entries?.length ? entries : undefined; } });
+  let shown = false, replies = 0, lastReply = 0;
+  const ask = async () => {
+    const reply = await preparedQuery<unknown>(source, product, params, { signal, refresh: shown, gate: entries => { gate = entries?.length ? entries : undefined; } });
+    lastReply = now();
+    if (shown) replies++;
+    shown ||= reply !== null && !!publish;
+    return reply;
+  };
   let value = await ask();
   if (signal.aborted) throw new DOMException('Campaign preparation cancelled', 'AbortError');
   const accept = (reply: unknown) => {
@@ -85,45 +97,73 @@ export async function preparedSeriesQuery(client: DashboardClient, source: Dashb
     const covered = coverageKey(coverage(reply));
     return !gate ? JSON.stringify(covered) : gate.length === 1 ? JSON.stringify([[gate[0], covered]]) : undefined;
   };
-  let progress = branch && value !== null ? witnessed(value) : undefined, started = false;
-  while (!signal.aborted) {
-    let changed = false;
-    const request = { sourceId: source.id, revision: source.revision, requestId: newId() };
-    const status = validatePreparationReply(await client.preparationStatus(request, signal), request);
-    if (signal.aborted) break;
-    if (!started && client.prepareSource && restart && ['idle', 'failed', 'cancelled', 'paused'].includes(status.state)) {
-      started = true;
-      validatePreparationReply(await client.prepareSource(request, signal), request);
-      progress = undefined;
-      changed = true;
-    } else if (status.state === 'failed' || status.state === 'cancelled' || status.state === 'idle' || status.state === 'paused') {
-      throw new Error(status.error ?? (status.state === 'paused' ? 'Campaign preparation is paused and resumes automatically. Prepare this recording to continue now.' : status.state === 'idle' ? (status.backgroundEnabled ? 'Prepare this recording from Preparation and storage.' : 'Background preparation is off. Prepare this recording or enable it in Settings.') : status.state === 'cancelled' ? 'Campaign preparation cancelled.' : 'Campaign preparation failed.'));
-    } else {
-      const next = progressKey(status);
-      if (next !== progress) {
+  const gateComplete = (status: PreparationReply) => status.state === 'ready' || (gate ?? [WALK_GATE]).every(entry => {
+    const map = entry === WALK_GATE ? status.coverage : status.families?.[entry];
+    if (!map) return false;
+    const values = branch ? [map[branch]] : Object.values(map);
+    return values.length > 0 && values.every(value => value?.complete === true);
+  });
+  let progress = branch && value !== null ? witnessed(value) : undefined, started = false, completed = false;
+  let observed = progress;
+  let deferred: PreparationReply | undefined;
+  const refresh = async (status: PreparationReply) => {
+    deferred = undefined;
+    const nextValue = await ask();
+    if (signal.aborted) throw new DOMException('Campaign preparation cancelled', 'AbortError');
+    // Followed under the gate the new reply names.
+    progress = progressKey(status);
+    completed = gateComplete(status);
+    observed = progress;
+    const before = coverage(value), after = coverage(nextValue);
+    const unmoved = value !== null && publish && !finalPreparedReply(nextValue) && (nextValue === null
+      || presentationKey(value) === presentationKey(nextValue) && (!after || before && after.firstHour >= before.firstHour
+        && after.lastHour <= before.lastHour && (!after.complete || before.complete)));
+    // Keep the prefix only while its extent and presentation stay unchanged.
+    // Exact windows can grow before forward coverage moves. The next status
+    // follows the new reply's gate, even if it shrank.
+    if (unmoved) return false;
+    value = nextValue;
+    return accept(value);
+  };
+  try {
+    while (!signal.aborted) {
+      let changed = false;
+      const request = { sourceId: source.id, revision: source.revision, requestId: newId() };
+      const status = validatePreparationReply(await client.preparationStatus(request, signal), request);
+      if (signal.aborted) break;
+      const terminal = ['failed', 'cancelled', 'idle', 'paused'].includes(status.state);
+      if (!started && client.prepareSource && restart && terminal) {
+        deferred = progressKey(status) !== progress ? status : undefined;
+        started = true;
+        validatePreparationReply(await client.prepareSource(request, signal), request);
+        progress = undefined;
+        observed = undefined;
         changed = true;
-        const nextValue = await ask();
-        if (signal.aborted) break;
-        // Followed under the gate the new reply names.
-        progress = progressKey(status);
-        const before = coverage(value), after = coverage(nextValue);
-        const unmoved = value !== null && publish && !finalPreparedReply(nextValue) && (nextValue === null
-          || presentationKey(value) === presentationKey(nextValue) && (!after || before && after.firstHour >= before.firstHour
-            && after.lastHour <= before.lastHour && (!after.complete || before.complete)));
-        // Keep the prefix only while its extent and presentation stay unchanged.
-        // Exact windows can grow before forward coverage moves. The next status
-        // follows the new reply's gate, even if it shrank.
-        if (!unmoved) {
-          value = nextValue;
-          if (accept(value)) return value;
+      } else {
+        const next = progressKey(status);
+        const complete = gateComplete(status);
+        const moved = next !== progress || complete && !completed;
+        changed = next !== observed || complete && !completed;
+        observed = next;
+        deferred = moved ? status : undefined;
+        // A stopped preparation gets one last read even with an unchanged gate:
+        // null can become unavailable, and a reached point can already be exact.
+        if (terminal || status.state === 'ready' || moved && (!shown || complete || now() - lastReply >= preparedRefreshMs(replies))) {
+          if (await refresh(status)) return value;
         }
+        if (terminal) throw new Error(status.error ?? (status.state === 'paused' ? 'Campaign preparation is paused and resumes automatically. Prepare this recording to continue now.' : status.state === 'idle' ? (status.backgroundEnabled ? 'Prepare this recording from Preparation and storage.' : 'Background preparation is off. Prepare this recording or enable it in Settings.') : status.state === 'cancelled' ? 'Campaign preparation cancelled.' : 'Campaign preparation failed.'));
+        if (status.state === 'ready') throw new Error('Prepared series coverage is unavailable.');
       }
-      if (status.state === 'ready') throw new Error('Prepared series coverage is unavailable.');
+      const before = now();
+      await wait(signal);
+      if (signal.aborted) break;
+      if (!changed && now() - before < POLL_MS) throw new Error('Campaign preparation made no progress.');
     }
-    const before = Date.now();
-    await wait(signal);
-    if (signal.aborted) break;
-    if (!changed && Date.now() - before < POLL_MS) throw new Error('Campaign preparation made no progress.');
+  } catch (error) {
+    // Deliver progress held by the interval before a status/wait failure stops
+    // this mounted read. Departed owners must never receive another publication.
+    if (!signal.aborted && deferred && await refresh(deferred)) return value;
+    throw error;
   }
   throw new DOMException('Campaign preparation cancelled', 'AbortError');
 }

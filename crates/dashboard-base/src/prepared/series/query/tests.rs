@@ -63,7 +63,11 @@ fn moving_prefixes_fold_only_new_buckets_and_membership_stays_independent() {
         equal(&actual, &summary(&fixture, view, &tail, None));
         equal(&masked, &summary(&fixture, view, &tail, Some(&spans)));
     }
-    assert_eq!(held.0.len(), 1, "only the current request's folds survive");
+    assert_eq!(
+        held.folds.len(),
+        1,
+        "only the current request's folds survive"
+    );
     assert!(held.bytes() > 0);
 }
 
@@ -145,6 +149,179 @@ fn narrow_windows_do_not_scan_unrelated_page_identities() {
         reader.publication.is_none(),
         "a narrow window scanned every range identity"
     );
-    assert!(scope.finish().0.is_empty());
+    assert!(scope.finish().folds.is_empty());
     equal(&actual, &summary(&fixture, (100.0, 127.0, 2), &[], None));
+}
+
+#[test]
+fn state_runs_and_events_reuse_unchanged_pages_and_replacements_miss() {
+    let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    let mut held = SummaryCache::default();
+    let read = || {
+        let mut reader = Reader::new(&fixture.store, &fixture.key, "test".into(), &flag).unwrap();
+        serde_json::json!({
+            "values": reader.values_at(&[0], 31).unwrap(),
+            "runs": reader.runs(0, 0, 127).unwrap(),
+            "events": reader.events(&[0], 0, 127, 0, 100).unwrap().rows.into_iter()
+                .map(|row| (row.hour, row.ordinal, row.row)).collect::<Vec<_>>(),
+            "latest": reader.latest_event(0, 31).unwrap(),
+        })
+    };
+    for first in [0, 32, 64] {
+        for hour in first..first + 32 {
+            values.through(hour);
+            values.observe(0, hour, amount(hour), hour % 17 == 0);
+            if hour % 8 == 0 {
+                values
+                    .event(
+                        0,
+                        hour,
+                        &serde_json::json!({"native":hour, "value":amount(hour)}),
+                    )
+                    .unwrap();
+            }
+        }
+        let mut writer = fixture.writer();
+        values.flush(&mut writer, "test", 0, &flag).unwrap();
+        writer.commit().unwrap();
+        let before = BLOB_DECODES.get();
+        let parses = EVENT_PARSES.get();
+        let scope = cache_scope(Some(&held));
+        let actual = read();
+        assert_eq!(
+            BLOB_DECODES.get() - before,
+            1,
+            "decoded a settled batch again"
+        );
+        assert_eq!(
+            EVENT_PARSES.get() - parses,
+            4,
+            "parsed a settled event again"
+        );
+        held = scope.finish();
+        assert_eq!(
+            actual,
+            read(),
+            "reuse changed the published values or event order"
+        );
+    }
+    let other = Fixture::new();
+    let mut replacement = Accumulator::default();
+    for hour in 0..32 {
+        replacement.through(hour);
+        replacement.observe(0, hour, Some(999), false);
+        if hour % 8 == 0 {
+            replacement
+                .event(0, hour, &serde_json::json!({"replacement":hour}))
+                .unwrap();
+        }
+    }
+    let mut writer = other.writer();
+    replacement.flush(&mut writer, "test", 0, &flag).unwrap();
+    writer.commit().unwrap();
+    let original = read();
+    let mut writer = fixture.writer();
+    writer
+        .write_at(
+            "test",
+            0,
+            other.store.read(&other.key, "test", 0).unwrap().unwrap(),
+        )
+        .unwrap();
+    writer.commit().unwrap();
+    let before = BLOB_DECODES.get();
+    let scope = cache_scope(Some(&held));
+    let actual = read();
+    assert_eq!(
+        BLOB_DECODES.get() - before,
+        1,
+        "a replaced page reused old decoded bytes"
+    );
+    assert_ne!(actual, original);
+    drop(scope);
+    assert_eq!(actual, read());
+}
+
+#[test]
+fn catalogue_and_reply_text_reuse_their_complete_page_identities() {
+    let fixture = Fixture::new();
+    let mut writer = fixture.writer();
+    let keys = BTreeMap::from([("synthetic".to_owned(), 7)]);
+    write_catalogue(&mut writer, "test", 1, &keys, &vec!["one"]).unwrap();
+    write_reply(&mut writer, "reply", 0, &serde_json::json!({"value":1})).unwrap();
+    writer.commit().unwrap();
+    let read = || {
+        (
+            read_catalogue::<Vec<String>>(&fixture.store, &fixture.key, "test", 1).unwrap(),
+            read_reply::<Value>(&fixture.store, &fixture.key, "reply", 0).unwrap(),
+        )
+    };
+    let scope = cache_scope(None);
+    let first = read();
+    let held = scope.finish();
+    assert_eq!(held.texts.len(), 2);
+    let scope = cache_scope(Some(&held));
+    assert_eq!(read(), first);
+    assert!(
+        read_reply::<Value>(
+            &fixture.store,
+            &fixture.key,
+            &catalogue_section("test", 1),
+            0
+        )
+        .is_err(),
+        "a cached catalogue must not turn an invalid reply encoding into a valid reply"
+    );
+    let again = scope.finish();
+    for (id, text) in &held.texts {
+        assert!(Arc::ptr_eq(text, &again.texts[id]));
+    }
+    let mut writer = fixture.writer();
+    write_catalogue(&mut writer, "test", 1, &keys, &vec!["two"]).unwrap();
+    write_reply(&mut writer, "reply", 0, &serde_json::json!({"value":2})).unwrap();
+    writer.commit().unwrap();
+    let scope = cache_scope(Some(&again));
+    let replaced = read();
+    assert_ne!(replaced, first);
+    let latest = scope.finish();
+    assert_eq!(
+        latest.texts.len(),
+        2,
+        "unused page versions survived the current request"
+    );
+    assert_eq!(read(), replaced);
+}
+
+#[test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "five-thousand-key page reuse")]
+fn state_reuse_retains_every_one_of_five_thousand_keys() {
+    let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    values.through(0);
+    for key in 0..5000 {
+        values.observe(key, 0, Some(i128::from(key)), false);
+    }
+    let mut writer = fixture.writer();
+    values.flush(&mut writer, "test", 0, &flag).unwrap();
+    writer.commit().unwrap();
+    let keys: Vec<_> = (0..5000).collect();
+    let read = || {
+        Reader::new(&fixture.store, &fixture.key, "test".into(), &flag)
+            .unwrap()
+            .values_at(&keys, 0)
+            .unwrap()
+    };
+    let scope = cache_scope(None);
+    let expected = read();
+    let held = scope.finish();
+    let before = BLOB_DECODES.get();
+    let scope = cache_scope(Some(&held));
+    assert_eq!(read(), expected);
+    assert_eq!(BLOB_DECODES.get(), before);
+    assert_eq!(scope.finish().blobs.len(), 5000);
+    assert_eq!(expected.len(), 5000);
+    assert!(held.bytes() >= 5000 * std::mem::size_of::<Cached>());
 }

@@ -985,7 +985,23 @@ pub fn read_catalogue<T: DeserializeOwned>(
         return Ok(None);
     };
     let section = catalogue_section(family, branch);
-    parse_catalogue(catalogue::read(|range| session.read(&section, range))?)
+    let mut ranges = Vec::new();
+    while let Some(range) = session.read(&section, ranges.len() as u64)? {
+        if range.is_empty() {
+            break;
+        }
+        ranges.push(range);
+    }
+    if ranges.is_empty() {
+        return Ok(None);
+    }
+    let ids = ranges.iter().map(|range| range.id().cache_key()).collect();
+    let text = query::text(query::TextKind::Catalogue, ids, || {
+        let mut ranges = ranges.into_iter();
+        catalogue::read(|_| Ok(ranges.next()))?
+            .ok_or_else(|| invalid("Prepared catalogue is missing"))
+    })?;
+    Ok(Some(serde_json::from_slice(&text)?))
 }
 /// The catalogue as `saved` published it when that is an earlier key whose
 /// prefix this preparation continues, else as `key` published it.
@@ -1860,7 +1876,31 @@ struct Cached {
     buckets: [Vec<(i64, ChartBucket)>; 4],
     events: Vec<(i32, Vec<u8>)>,
 }
+impl Cached {
+    fn bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.runs.capacity() * std::mem::size_of::<Run>()
+            + self
+                .buckets
+                .iter()
+                .map(|rows| rows.capacity() * std::mem::size_of::<(i64, ChartBucket)>())
+                .sum::<usize>()
+            + self.events.capacity() * std::mem::size_of::<(i32, Vec<u8>)>()
+            + self
+                .events
+                .iter()
+                .map(|(_, row)| row.capacity())
+                .sum::<usize>()
+    }
+}
+#[cfg(test)]
+thread_local! {
+    static BLOB_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static EVENT_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 fn decode(raw: &[u8], dir: Directory, cancelled: &AtomicBool) -> io::Result<Cached> {
+    #[cfg(test)]
+    BLOB_DECODES.set(BLOB_DECODES.get() + 1);
     let mut bytes = raw;
     let mut cached = Cached {
         runs: Vec::new(),
@@ -1937,7 +1977,7 @@ pub struct Reader<'a> {
     files: HashMap<u64, store::Range>,
     hours: HashMap<u64, (i32, i32)>,
     directories: HashMap<(u64, u64), Directory>,
-    cached: HashMap<(u64, u64), Cached>,
+    cached: HashMap<(u64, u64), Arc<Cached>>,
     /// Each batch's single-key directory searches so far, and the entry count
     /// its header claims once read.
     searches: HashMap<u64, (u64, Option<u64>)>,
@@ -2078,17 +2118,20 @@ impl<'a> Reader<'a> {
     }
     fn data(&mut self, batch: u64, key: u64) -> io::Result<&Cached> {
         if !self.cached.contains_key(&(batch, key)) {
-            let dir = self.info(batch, key)?;
-            let raw = if dir.blob.1 == 0 {
-                Vec::new()
-            } else {
-                let file = self.file(batch)?;
-                file.seek(SeekFrom::Start(dir.blob.0))?;
-                let mut compressed = Vec::new();
-                file.take(dir.blob.1).read_to_end(&mut compressed)?;
-                decompress(&compressed)?
-            };
-            let decoded = decode(&raw, dir, self.cancelled)?;
+            let id = self.file(batch)?.id().cache_key();
+            let decoded = query::blob((id, key), || {
+                let dir = self.info(batch, key)?;
+                let raw = if dir.blob.1 == 0 {
+                    Vec::new()
+                } else {
+                    let file = self.file(batch)?;
+                    file.seek(SeekFrom::Start(dir.blob.0))?;
+                    let mut compressed = Vec::new();
+                    file.take(dir.blob.1).read_to_end(&mut compressed)?;
+                    decompress(&compressed)?
+                };
+                decode(&raw, dir, self.cancelled)
+            })?;
             if self.cached.len() >= DECODED_BLOBS {
                 self.cached.clear();
             }
@@ -2579,12 +2622,18 @@ impl<'a> Reader<'a> {
             let dir = self.info(batch, key)?;
             Ok(dir.event_base + dir.event_rows <= ordinal)
         })?;
+        let id = self.file(batch)?.id().cache_key();
         let (hour, row) = self.event_row(batch, key, ordinal)?;
+        let parsed = query::event((id, key, ordinal), || {
+            #[cfg(test)]
+            EVENT_PARSES.set(EVENT_PARSES.get() + 1);
+            Ok(serde_json::from_slice(row)?)
+        })?;
         Ok(DatedRow {
             key,
             hour: *hour,
             ordinal,
-            row: serde_json::from_slice(row)?,
+            row: parsed,
         })
     }
     pub fn latest_event(&mut self, key: u64, hour: i32) -> io::Result<Option<(i32, Value)>> {
@@ -2956,8 +3005,10 @@ pub fn read_reply<T: serde::de::DeserializeOwned>(
     let Some(mut file) = store.read(key, section, ordinal)? else {
         return Ok(None);
     };
-    let mut compressed = Vec::new();
-    file.read_to_end(&mut compressed)?;
-    let json = decompress(&compressed)?;
+    let json = query::text(query::TextKind::Reply, vec![file.id().cache_key()], || {
+        let mut compressed = Vec::new();
+        file.read_to_end(&mut compressed)?;
+        decompress(&compressed)
+    })?;
     Ok(Some(serde_json::from_slice(&json)?))
 }

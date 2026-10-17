@@ -1971,8 +1971,17 @@ fn a_first_view_reads_a_bounded_number_of_newest_blocks_whatever_the_recording_l
             (again.approximate, again.lines),
             (first.approximate.clone(), first.lines.clone())
         );
+        let usage =
+            || crate::prepared::query::observations::usage(&source, "production-lines-overlap");
+        assert_eq!(usage().2, FIRST_VIEW_BLOCKS);
         let (exact, read) = blocks_read(|| load(Some(true)));
         assert_eq!(read.len(), length as usize);
+        let (bytes, budget, extracts) = usage();
+        assert!(bytes > 0 && bytes <= budget);
+        assert_eq!(
+            extracts, FIRST_VIEW_BLOCKS,
+            "the exact follow-up decoded its newest blocks again"
+        );
         assert!(exact.approximate.is_empty());
         assert_eq!(
             exact.lines,

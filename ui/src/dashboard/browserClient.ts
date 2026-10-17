@@ -45,7 +45,7 @@ async function request<T>(body: { type: string; request?: ProductRequest; source
     if (!response.ok) throw new Error(data.error ?? 'Cannot read recording');
     if (data && typeof data === 'object') replyLengths.set(data, text.length);
     return data;
-  }, { signal, sourceId: body.type === 'release' ? undefined : body.request?.sourceId ?? body.sourceId, onCancelledValue: releaseLate });
+  }, { signal, sourceId: body.type === 'release' ? undefined : body.request?.sourceId ?? body.sourceId, refresh: body.refresh === true, onCancelledValue: releaseLate });
 }
 
 /** Recordings this page holds open. The bridge outlives the page, so a page that goes
@@ -75,7 +75,7 @@ export const browserDashboardClient: DashboardClient = {
   preparationStatus: (query, signal) => preparation('status', query, signal),
   async preparedQuery<T>(source: DashboardSource, product: string, params: unknown, options: PreparedQueryOptions): Promise<T> {
     const query = { sourceId: source.id, revision: source.revision, product, params };
-    const reply = await request<ProductReply<T>>({ type: 'preparedQuery', request: query }, options.signal);
+    const reply = await request<ProductReply<T>>({ type: 'preparedQuery', request: query, refresh: options.refresh ?? false }, options.signal);
     return preparedReplyData(validateProductReply(reply, query), options);
   },
   prepareSource: (query, signal) => preparation('start', query, signal),

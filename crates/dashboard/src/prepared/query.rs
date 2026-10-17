@@ -69,7 +69,8 @@ struct Reply<'a> {
     /// For a pending or partial reply ([`waits`]), the preparation status
     /// entries it waits for: `walk` for the hourly walk's coverage, or a
     /// family prepared on its own, listed under its name in the status's
-    /// `families`. A client re-asks when one of them moves.
+    /// `families`. A client refreshes when one moves and its shown-reply interval
+    /// has elapsed, or immediately when every gate completes.
     #[serde(skip_serializing_if = "Option::is_none")]
     gate: Option<Vec<&'static str>>,
 }
@@ -116,6 +117,8 @@ fn cache_product(product: &str) -> Option<&'static str> {
         "party-history" => "queries:party-history",
         "division-log-manifest" => "queries:division-log-manifest",
         "air-aces" => "queries:air-aces",
+        "army-size" => "queries:army-size",
+        "trade-flows" => "queries:trade-flows",
         _ => return None,
     })
 }

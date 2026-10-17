@@ -13,6 +13,7 @@ use std::{
 pub(super) struct Request {
     pub(super) id: String,
     pub(super) cancelled: AtomicBool,
+    pub(super) refresh: AtomicBool,
 }
 
 impl Request {
@@ -20,6 +21,7 @@ impl Request {
         Arc::new(Self {
             id,
             cancelled: AtomicBool::new(false),
+            refresh: AtomicBool::new(false),
         })
     }
 

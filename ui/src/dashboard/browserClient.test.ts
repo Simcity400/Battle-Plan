@@ -35,7 +35,7 @@ test('a page going away releases the recordings it still holds', async () => {
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 interface PendingHttp {
-  body: { type: string; sourceId?: string; request?: import('./client').ProductRequest };
+  body: { type: string; sourceId?: string; refresh?: boolean; request?: import('./client').ProductRequest };
   signal: AbortSignal;
   done: boolean;
   finish: (data?: unknown, ok?: boolean) => void;
@@ -176,12 +176,14 @@ test('prepared pages use reserved query capacity, preserve exact values, and rej
     await tick();
     const http = transport.requests.find(request => request.body.type === 'preparedQuery')!;
     assert.ok(http, 'prepared-page queries do not wait for whole-history responses');
+    assert.equal(http.body.refresh, false);
     http.finish({ raw: '9007199254740993' });
     assert.deepEqual(await page, { raw: '9007199254740993' });
-    const stale = client.preparedQuery!(source, 'focus-hour', {}, { signal: new AbortController().signal });
+    const stale = client.preparedQuery!(source, 'focus-hour', {}, { signal: new AbortController().signal, refresh: true });
     const refused = assert.rejects(stale, /reply does not match this recording and product/);
     await tick();
     const staleHttp = transport.requests.filter(request => request.body.type === 'preparedQuery').at(-1)!;
+    assert.equal(staleHttp.body.refresh, true);
     staleHttp.body.request = { ...staleHttp.body.request!, revision: 'previous-revision' };
     staleHttp.finish({ raw: '1' });
     await refused;
