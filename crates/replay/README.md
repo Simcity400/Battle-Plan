@@ -79,8 +79,12 @@ ahead block scheduled by a live consumer, including its read-ahead.
 `Replay::section_consumer` registers a reader's next block; advancing or dropping
 it shrinks the span; a finished query releases its own read-ahead immediately.
 With no registered reader, the budget is one measured block's
-table working set. LRU eviction handles selections and future queries whose next
-reads cannot be predicted; there is no chosen byte or country cap.
+table working set. Eviction retires columns outside the live reader span first,
+in one LRU-ordered sweep, then follows LRU within it; a finished query's recent
+blocks cannot displace older columns still in preparation's span. With no
+registered reader it follows LRU. A prune visits each retained column at most
+once in the sweep and once as an LRU victim; ordered removals keep its work
+within O(entries log entries). There is no chosen byte or country cap.
 
 A longer admitted prefix supplies shorter reads; a keyframe-only admission supplies
 only keyframes. Each reader runs its selection-aware table refusal checks once

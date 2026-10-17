@@ -64,19 +64,24 @@ struct State {
     enabled: bool,
     bytes: usize,
     clock: u64,
+    #[cfg(test)]
+    inspections: usize,
 }
 impl State {
-    fn span(&self) -> usize {
-        let Some(first) = self.consumers.values().map(|reader| reader.next).min() else {
-            return 1;
-        };
-        self.consumers
+    fn frontier(&self) -> Option<(usize, usize)> {
+        let first = self.consumers.values().map(|reader| reader.next).min()?;
+        let last = self
+            .consumers
             .values()
             .map(|reader| reader.ahead)
             .max()
-            .unwrap_or(first)
-            .saturating_sub(first)
-            .saturating_add(1)
+            .unwrap_or(first);
+        Some((first, last))
+    }
+    fn span(&self) -> usize {
+        self.frontier().map_or(1, |(first, last)| {
+            last.saturating_sub(first).saturating_add(1)
+        })
     }
     fn budget(&self) -> usize {
         if !self.enabled {
@@ -113,10 +118,42 @@ impl Cache {
     }
     fn prune(state: &mut State) {
         let budget = state.budget();
+        if state.bytes <= budget {
+            return;
+        }
+        if let Some((first, last)) = state.frontier() {
+            // A finished query can leave recently used blocks outside the
+            // remaining readers' span. Retire those before any older column
+            // a live reader still needs, in one LRU-ordered sweep. Retain
+            // visits each entry once, including after the budget is met.
+            let entries = &mut state.entries;
+            let bytes = &mut state.bytes;
+            #[cfg(test)]
+            let inspections = &mut state.inspections;
+            state.lru.retain(|(_, key)| {
+                #[cfg(test)]
+                {
+                    *inspections += 1;
+                }
+                if *bytes <= budget || (first <= key.block && key.block <= last) {
+                    return true;
+                }
+                let entry = entries.get_mut(key).unwrap();
+                *bytes -= entry.value.take().unwrap().bytes;
+                if !entry.reading {
+                    entries.remove(key);
+                }
+                false
+            });
+        }
         while state.bytes > budget {
             let Some((_, key)) = state.lru.pop_first() else {
                 break;
             };
+            #[cfg(test)]
+            {
+                state.inspections += 1;
+            }
             let entry = state.entries.get_mut(&key).unwrap();
             state.bytes -= entry.value.take().unwrap().bytes;
             if !entry.reading {
@@ -350,6 +387,96 @@ mod tests {
         assert_eq!(cache.lock().budget(), largest * 3);
         preparation.at(2);
         assert_eq!(cache.lock().budget(), largest);
+    }
+    #[test]
+    fn finished_query_cannot_evict_columns_still_in_the_preparation_span() {
+        for countries in [128, 1_500, 5_000] {
+            let cache = Cache::default();
+            cache.enable(true);
+            let preparation = cache.consumer(0);
+            preparation.reading(1);
+            let query = cache.consumer(4);
+            let mut decoded = 0;
+            for block in [0, 1, 4] {
+                cache
+                    .read(key(block), 1, false, || {
+                        decoded += 1;
+                        Ok(rows(countries))
+                    })
+                    .unwrap();
+            }
+            drop(query);
+            for block in [0, 1] {
+                cache
+                    .read(key(block), 1, false, || {
+                        decoded += 1;
+                        Ok(rows(countries))
+                    })
+                    .unwrap();
+            }
+            assert_eq!(
+                decoded, 3,
+                "live columns survive a finished query at {countries} countries"
+            );
+            let state = cache.lock();
+            assert_eq!(state.entries.len(), 2);
+            assert_eq!(state.bytes, state.budget());
+        }
+    }
+    #[test]
+    fn finishing_a_663_block_query_inspects_each_column_once_before_lru_fallback() {
+        let tables = if cfg!(feature = "slow-tests") {
+            TableId::ALL.len()
+        } else {
+            32
+        };
+        let cache = Cache::default();
+        cache.enable(true);
+        let preparation = cache.consumer(0);
+        preparation.reading(330);
+        let query = cache.consumer(331);
+        query.reading(662);
+        for block in 0..663 {
+            for table in 0..tables {
+                let key = Key {
+                    table,
+                    ..key(block)
+                };
+                cache
+                    .read(key, 1, false, || {
+                        Ok(vec![TableUpdate::Unavailable {
+                            reason: "synthetic column".into(),
+                        }])
+                    })
+                    .unwrap();
+            }
+        }
+        let before = {
+            let state = cache.lock();
+            assert_eq!(state.entries.len(), 663 * tables);
+            state.inspections
+        };
+        drop(query);
+        {
+            let state = cache.lock();
+            assert_eq!(
+                state.inspections - before,
+                663 * tables,
+                "one sweep, without rescanning the 331 retained blocks for each victim"
+            );
+            assert_eq!(state.entries.len(), 331 * tables);
+            assert!(state.entries.keys().all(|key| key.block <= 330));
+            assert_eq!(state.bytes, state.budget());
+        }
+        // With every remaining column in the live span, the sweep finds no
+        // outside victim and LRU retires them without another search.
+        let before = cache.lock().inspections;
+        cache.enable(false);
+        let state = cache.lock();
+        assert_eq!(state.inspections - before, 2 * 331 * tables);
+        assert!(state.entries.is_empty());
+        assert!(state.lru.is_empty());
+        assert_eq!(state.bytes, 0);
     }
     #[test]
     fn hits_share_cells_and_keyframe_admission_never_supplies_a_table_read() {
