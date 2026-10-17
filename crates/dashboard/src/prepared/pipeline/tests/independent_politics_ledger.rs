@@ -443,17 +443,19 @@ fn politics_ledger_answers_from_its_own_coverage_while_the_hourly_walk_accepts_n
     let flag = AtomicBool::new(false);
     let mut commits = 0;
     let error = own(|| {
-        run_checked(
-            &source,
-            None,
-            &flag,
-            |_| {},
-            |_| {
-                commits += 1;
-                flag.store(true, Ordering::Release);
-                Ok(())
-            },
-        )
+        independent::with_test_one_after_another(|| {
+            run_checked(
+                &source,
+                None,
+                &flag,
+                |_| {},
+                |_| {
+                    commits += 1;
+                    flag.store(true, Ordering::Release);
+                    Ok(())
+                },
+            )
+        })
     })
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);

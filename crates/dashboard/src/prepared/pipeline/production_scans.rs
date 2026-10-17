@@ -1,6 +1,6 @@
 //! Production line scans kept between sessions. Each branch's whole production
 //! scan of the recording's player country, and of every country a request read
-//! whole this session, is kept under sections of its own
+//! whole and queued for keeping, is kept under sections of its own
 //! (`production_lines::write_saved`), one commit per scan: beside the families
 //! ([`independent::Beside`]) in their group commits, by the source's
 //! preparation alone: through its writer, admission, game guard, cancellation
@@ -26,25 +26,15 @@ struct Unkeepable(BTreeSet<(u64, String)>);
 /// The countries whose scans a preparation keeps now: by branch, the player's
 /// and every one a request read whole, without a scan kept for the branch's
 /// current last block, and none that could not be read this session.
-fn missing(
+pub(super) fn missing(
     source: &Source,
     store: &store::Store,
     key: &store::SourceKey,
     context: &LoadContext,
+    queued: &BTreeSet<(u64, String)>,
 ) -> io::Result<Vec<(u64, String)>> {
-    let metadata = source.metadata();
-    let player = metadata
-        .player_country_id
-        .as_ref()
-        .and_then(|id| metadata.countries.iter().find(|country| &country.id == id))
-        .map(|country| country.tag.clone());
-    let mut wanted: BTreeSet<(u64, String)> = metadata
-        .branches
-        .iter()
-        .filter_map(|branch| branch.id.parse::<u64>().ok())
-        .flat_map(|branch| player.clone().map(|tag| (branch, tag)))
-        .collect();
-    wanted.extend(production_lines::read_whole(source));
+    let mut wanted = wanted(source);
+    wanted.extend(queued.iter().cloned());
     let unkeepable = source
         .state::<Unkeepable>()
         .lock()
@@ -62,6 +52,23 @@ fn missing(
     Ok(missing)
 }
 
+pub(super) fn wanted(source: &Source) -> BTreeSet<(u64, String)> {
+    let metadata = source.metadata();
+    let player = metadata
+        .player_country_id
+        .as_ref()
+        .and_then(|id| metadata.countries.iter().find(|country| &country.id == id))
+        .map(|country| country.tag.clone());
+    let mut wanted: BTreeSet<(u64, String)> = metadata
+        .branches
+        .iter()
+        .filter_map(|branch| branch.id.parse::<u64>().ok())
+        .flat_map(|branch| player.clone().map(|tag| (branch, tag)))
+        .collect();
+    wanted.extend(production_lines::read_whole(source));
+    wanted
+}
+
 /// Keeps each of `wanted` through `commit`, then the scans requests read whole
 /// meanwhile, one at a time (a scan a request holds is not read again). A scan
 /// that cannot be read is not kept, nor tried again this session: its products
@@ -71,6 +78,7 @@ fn keep_each(
     context: &LoadContext,
     cancelled: &AtomicBool,
     mut wanted: Vec<(u64, String)>,
+    register: &mut dyn FnMut(&[(u64, String)]) -> io::Result<()>,
     commit: &mut dyn FnMut(&production_lines::SavedScan) -> io::Result<()>,
 ) -> io::Result<()> {
     let mut tried: BTreeSet<(u64, String)> = BTreeSet::new();
@@ -99,6 +107,7 @@ fn keep_each(
         if wanted.is_empty() {
             return Ok(());
         }
+        register(&wanted)?;
     }
 }
 
@@ -107,25 +116,61 @@ fn keep_each(
 /// read ([`keep_each`]).
 pub(super) fn jobs<'a>(
     phase: &'a independent::Phase<'a>,
+    queued: &BTreeSet<(u64, String)>,
 ) -> io::Result<Vec<independent::Beside<'a>>> {
-    let wanted = missing(phase.source, phase.store, phase.key, phase.context)?;
+    let wanted = missing(phase.source, phase.store, phase.key, phase.context, queued)?;
     if wanted.is_empty() {
         return Ok(Vec::new());
     }
+    #[cfg(test)]
+    let stall = TEST_STALL.with(|stall| stall.borrow().clone());
     Ok(vec![independent::Beside {
         name: "production lines",
+        first_view: false,
         run: Box::new(
             move |publish: &mut independent::Publish<'_>, _timings: &mut independent::Timings| {
+                #[cfg(test)]
+                if let Some(stall) = stall {
+                    stall();
+                }
+                let publish = std::cell::RefCell::new(publish);
                 keep_each(
                     phase.source,
                     phase.context,
                     phase.cancelled,
                     wanted,
+                    &mut |wanted| publish.borrow_mut().requested(wanted),
                     &mut |saved| {
-                        publish.commit(&mut |writer| production_lines::write_saved(writer, saved))
+                        publish
+                            .borrow_mut()
+                            .commit(&mut |writer| production_lines::write_saved(writer, saved))
                     },
                 )
             },
         ),
     }])
+}
+
+/// Hold production side work independently of the forward publishers.
+#[cfg(test)]
+type Stall = Option<std::sync::Arc<dyn Fn() + Send + Sync>>;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_STALL: std::cell::RefCell<Stall> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn with_test_stall<T>(
+    stall: impl Fn() + Send + Sync + 'static,
+    run: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Stall);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_STALL.with(|value| *value.borrow_mut() = self.0.take());
+        }
+    }
+    let _reset = Reset(TEST_STALL.with(|value| value.replace(Some(std::sync::Arc::new(stall)))));
+    run()
 }

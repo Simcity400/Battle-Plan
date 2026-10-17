@@ -410,6 +410,9 @@ struct Lane {
     /// Extract time of the blocks extracted so far, and their count.
     spent: Duration,
     measured: u32,
+    /// Time folding and publishing blocks on the family thread, without waits.
+    folded: Duration,
+    folds: u32,
     /// The bytes the facts of the blocks extracted so far hold.
     facts: u64,
     /// The bytes each block claimed and not yet extracted reserves for its
@@ -421,6 +424,18 @@ impl Lane {
     /// The mean extract time of its blocks so far; None before the first.
     fn mean(&self) -> Option<Duration> {
         self.spent.checked_div(self.measured)
+    }
+
+    /// Measured work per block on both sides of the family's serial chain.
+    fn cost(&self) -> Option<Duration> {
+        match (self.mean(), self.folded.checked_div(self.folds)) {
+            (None, None) => None,
+            (extract, fold) => Some(
+                extract
+                    .unwrap_or_default()
+                    .saturating_add(fold.unwrap_or_default()),
+            ),
+        }
     }
 
     /// The bytes a block's facts are expected to hold: the mean of those
@@ -499,24 +514,31 @@ impl PoolState {
         }
     }
 
-    /// The next task: the lowest block some lane can claim now, for every
-    /// lane whose next block it is and that it reaches, costliest first. A
-    /// block split into parts ([`Self::parts`]) takes the lanes of about its
-    /// share of their mean extract time, at least one.
+    /// Serve the longest remaining measured chain first, keeping each
+    /// family's claims in block order. Unknown costs use the live mean;
+    /// equal costs prefer the earlier block and then registry order.
     fn pick(&self) -> Option<(usize, Vec<usize>)> {
-        let block = self
-            .lanes
-            .iter()
-            .filter(|lane| self.reaches(lane))
-            .map(|lane| lane.next)
-            .min()?;
-        let known: Vec<Duration> = self.lanes.iter().filter_map(Lane::mean).collect();
+        let known: Vec<Duration> = self.lanes.iter().filter_map(Lane::cost).collect();
         let unknown = u32::try_from(known.len())
             .ok()
             .and_then(|count| known.iter().sum::<Duration>().checked_div(count))
             .unwrap_or(Duration::from_millis(1))
             .max(Duration::from_micros(1));
-        let cost = |lane: &Lane| lane.mean().unwrap_or(unknown).max(Duration::from_micros(1));
+        let cost = |lane: &Lane| {
+            lane.cost()
+                .unwrap_or(unknown)
+                .max(Duration::from_micros(1))
+                .as_nanos()
+                .saturating_mul(lane.end.saturating_sub(lane.handed) as u128)
+        };
+        let block = self
+            .lanes
+            .iter()
+            .enumerate()
+            .filter(|(_, lane)| self.reaches(lane))
+            .min_by_key(|(position, lane)| (std::cmp::Reverse(cost(lane)), lane.next, *position))?
+            .1
+            .next;
         let mut wanting: Vec<usize> = (0..self.lanes.len())
             .filter(|&position| {
                 let lane = &self.lanes[position];
@@ -531,11 +553,11 @@ impl PoolState {
         let share = wanting
             .iter()
             .map(|&position| cost(&self.lanes[position]))
-            .sum::<Duration>()
-            / u32::try_from(parts).unwrap_or(u32::MAX);
+            .fold(0u128, u128::saturating_add)
+            / parts as u128;
         let mut members = Vec::new();
         let mut held = self.raw(block);
-        let mut taken = Duration::ZERO;
+        let mut taken = 0u128;
         for position in wanting {
             let lane = &self.lanes[position];
             if lane.next != lane.handed && self.in_flight + held + lane.expected() > self.budget {
@@ -545,7 +567,7 @@ impl PoolState {
                 break;
             }
             held += lane.expected();
-            taken += cost(lane);
+            taken = taken.saturating_add(cost(lane));
             members.push(position);
         }
         (!members.is_empty()).then_some((block, members))
@@ -709,6 +731,8 @@ impl Pool {
                         retired: false,
                         spent: Duration::ZERO,
                         measured: 0,
+                        folded: Duration::ZERO,
+                        folds: 0,
                         facts: 0,
                         reserved: BTreeMap::new(),
                     })
@@ -796,6 +820,26 @@ impl Pool {
                 .wait_timeout(state, Duration::from_millis(25))
                 .map_or_else(|error| error.into_inner().0, |(state, _)| state);
         }
+    }
+
+    /// Live fold cost, including block publication but excluding pre-pass
+    /// waits and group-commit waits. It changes scheduling alone.
+    pub(crate) fn folded(&self, lane: usize, took: Duration) {
+        let mut state = self.shared.lock();
+        let lane = &mut state.lanes[lane];
+        lane.folded = lane.folded.saturating_add(took);
+        lane.folds = lane.folds.saturating_add(1);
+        drop(state);
+        self.shared.changed.notify_all();
+    }
+
+    /// Serialization of a batch belongs to the same chain, amortized over
+    /// its observed blocks, without counting a second fold or a commit wait.
+    pub(crate) fn published(&self, lane: usize, took: Duration) {
+        let mut state = self.shared.lock();
+        state.lanes[lane].folded = state.lanes[lane].folded.saturating_add(took);
+        drop(state);
+        self.shared.changed.notify_all();
     }
 
     /// Lane `lane`'s reads for this run, chosen from the bound content

@@ -574,17 +574,19 @@ fn world_tension_answers_from_its_own_coverage_while_the_hourly_walk_accepts_not
         );
         // The hourly walk stalls: it is cancelled at its first commit.
         let mut commits = 0;
-        let error = run_checked(
-            &source,
-            None,
-            &flag,
-            |_| {},
-            |_| {
-                commits += 1;
-                flag.store(true, Ordering::Release);
-                Ok(())
-            },
-        )
+        let error = independent::with_test_one_after_another(|| {
+            run_checked(
+                &source,
+                None,
+                &flag,
+                |_| {},
+                |_| {
+                    commits += 1;
+                    flag.store(true, Ordering::Release);
+                    Ok(())
+                },
+            )
+        })
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert_eq!(commits, 1);

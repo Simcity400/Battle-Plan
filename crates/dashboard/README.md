@@ -411,7 +411,7 @@ a request read whole after the source's preparation finished is kept the next
 time that source is prepared in the same app session, or is scanned again
 later. A scan that cannot be read is not tried again that session.
 
-Families prepared on their own are prepared before the hourly walk
+Families prepared on their own run beside the hourly walk
 (`prepared/pipeline/independent.rs`). Each is a registry entry (`Own`): its
 pre-pass family, the query products it gates, its branch state (`Branch`:
 loaded from its own saved sections or new, folding a block's facts or observing
@@ -421,13 +421,16 @@ hourly walk keeps for families that read its state in the same hour, with those
 readers. Every registered family starts at once on one pool of pre-pass workers
 (`prepass::Pool`, sized as the hourly walk's pre-pass and serving every family's
 blocks) over the source's one opened recording, so each block's checksums are
-verified once. A worker claims the lowest block some family can claim, for
-every family whose next block it is and within reach (the same read-ahead
-window per family), reads it once for all of them and runs their extracts one
-after another on it, costliest first; a family whose fold lags reads its later
-blocks in tasks of its own. When fewer blocks are coming within reach than
-workers wait (a session's newest block), a block is split between them by the
-families' mean extract time, each part read on its own. The byte budget counts
+verified once. A worker serves the longest remaining measured family chain
+first, claiming its next block for every family whose next block it is and
+within reach (the same read-ahead window per family). The cost is the live mean
+extract time plus its own thread's mean fold and block-publication time and
+amortized batch serialization, multiplied by its remaining blocks. Pre-pass and
+group-commit waits are excluded. Unknown costs use the live mean; equal costs
+prefer the earlier block and registry order. The worker reads the block once
+for those families and runs their extracts costliest first. When fewer blocks
+are coming within reach than workers wait (a session's newest block), a block
+is split between them by those costs, each part read on its own. The byte budget counts
 each claimed block's recorded raw bytes once however many families claimed it,
 and the facts of every block extracted and not yet taken by the bytes its
 extract reports (`Extract::bytes`; a block claimed reserves its family's mean
@@ -454,7 +457,32 @@ which families committed with it: each section is one family's, numbered by its
 own writes; only where sections new to the manifest are listed follows the
 groups, and every read finds a section by name. Timings report each family's
 commits, waits included, as `independent.commit`, and each store commit, by the
-family that led it, as `independent.publish`. Work beside the families
+family that led it, as `independent.publish`. The hourly walk starts after
+the first-view jobs beside the families (`Beside::first_view`, the newest
+battle windows) have each published once or finished without a view; its block
+pre-pass starts then too. Family completion is
+no gate. The walk borrows the open writer for one unchanged publication batch
+while the families continue folding, then returns it to their group commit.
+Families reaching publication during that batch wait for its end and stage
+their queued writes before the walk borrows again; their first views retain
+their existing query lanes and priorities. Each walk commit merges
+its cursor, map and refusals with the latest accepted family and newest-window
+progress, so neither publisher can overwrite another's progress. Status reads
+a snapshot of the last successful store commit, including while another group
+publishes without the lock or the walk waits to borrow the writer. Each publisher
+resumes its own committed prefix on reopen and recording growth: a family may
+lead or trail the walk, and every cursor must stay within the unchanged saved
+index prefix. Completed-store restoration requires every publisher to finish,
+including work beside the forward publishers. `preparation-side-work-v1` keeps
+the pending side jobs and requested production scan roster. A side job's final
+group commit clears its pending entry; page publication alone does not finish
+newest-window diagnostics. Reopen retries pending newest jobs even when forward
+coverage or their first pages are complete, and resumes outstanding production
+scans from the durable roster, including requests from an earlier Source.
+`unprepared_blocks` counts the walk's tail alone for its measurement journal;
+zero can still leave family or side work. The
+`independent` timing row counts time outside the walk rather than counting its
+overlapping wall time twice. Work beside the families
 (`independent::Beside`: the newest battle windows) runs on threads of its own
 from the start of the phase, however the families prepare, and publishes each
 batch as soon as it has one through the same group commits: it forks the open
@@ -2654,7 +2682,7 @@ and casualty-label cache are test-only parity oracles. The shared casualty
 branch scan also supplies scoreboard's recorded-product loss columns.
 
 Casualties are prepared on their own
-(`products/war_casualties/prepared/block.rs`), before the hourly walk. Their
+(`products/war_casualties/prepared/block.rs`), beside the hourly walk. Their
 pairs and breakdown wait for their own coverage, and those and their values
 (family kind `war-casualties`) refuse from their own page. A block is read at the hours a field
 the scan reads changes: every field of the war relations and country links and
@@ -3698,7 +3726,9 @@ The readiness probe asks for the actual default columns and a visible cell page.
 Proven newest land and naval windows publish `newest.land` and `newest.naval`
 branch extents in status `families` atomically with their pages. Commit members
 explicitly carry family progress, a proven newest-window extent, or work beside
-them without checkpoint metadata. Family progress contains only persisted fields.
+them. Side-job completion and newly queued production scans merge into the
+transaction's side-work metadata before its checkpoint is published. Family
+progress contains only persisted fields.
 Partial battle replies name both their forward gate and this window gate, so a
 mounted cold reply refreshes while independent families still prepare. These extents cover
 only their newest window and never extend the forward prefix. Sinking and peace

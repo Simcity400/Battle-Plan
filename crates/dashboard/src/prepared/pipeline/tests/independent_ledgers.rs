@@ -1,5 +1,5 @@
 //! Construction, equipment stockpiles, production, country experience and
-//! fuel prepared on their own, before the hourly walk, publish and save
+//! fuel prepared on their own beside the hourly walk, publish and save
 //! exactly what hourly preparation does, refuse where it refuses, answer
 //! their queries while the hourly walk has accepted nothing, and build no
 //! frame for the quiet hours between their changes and daily reads.
@@ -648,17 +648,19 @@ fn stalled(source: &Source, replay: &Replay) {
     let flag = AtomicBool::new(false);
     let mut commits = 0;
     let error = independent::with_test_families(&ledgers(), || {
-        run_checked(
-            source,
-            None,
-            &flag,
-            |_| {},
-            |_| {
-                commits += 1;
-                flag.store(true, Ordering::Release);
-                Ok(())
-            },
-        )
+        independent::with_test_one_after_another(|| {
+            run_checked(
+                source,
+                None,
+                &flag,
+                |_| {},
+                |_| {
+                    commits += 1;
+                    flag.store(true, Ordering::Release);
+                    Ok(())
+                },
+            )
+        })
     })
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
@@ -1147,9 +1149,7 @@ fn banked_experience_summaries_draw_the_prefix_without_decoding_the_tail() {
             assert!(!decoded, "a summary must not wait for tail decodes");
             reply.unwrap()
         };
-        let span = |first: i32, last: i32| {
-            serde_json::json!({ "firstHour": BASE + first, "lastHour": BASE + last })
-        };
+        let span = |first: i32, last: i32| serde_json::json!({ "firstHour": BASE + first, "lastHour": BASE + last });
         for measure in crate::products::country_experience::SAMPLED_MEASURES {
             let cold = summary(measure);
             assert_eq!(cold["coverage"]["lastHour"], BASE - 1);

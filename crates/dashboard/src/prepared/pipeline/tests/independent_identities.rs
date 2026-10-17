@@ -540,17 +540,19 @@ fn country_identities_answer_from_their_own_coverage_while_the_hourly_walk_accep
     // The hourly walk stalls: it is cancelled at its first commit.
     let mut commits = 0;
     let error = own(|| {
-        run_checked(
-            &source,
-            None,
-            &flag,
-            |_| {},
-            |_| {
-                commits += 1;
-                flag.store(true, Ordering::Release);
-                Ok(())
-            },
-        )
+        independent::with_test_one_after_another(|| {
+            run_checked(
+                &source,
+                None,
+                &flag,
+                |_| {},
+                |_| {
+                    commits += 1;
+                    flag.store(true, Ordering::Release);
+                    Ok(())
+                },
+            )
+        })
     })
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);

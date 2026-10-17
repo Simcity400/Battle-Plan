@@ -609,17 +609,19 @@ fn windowed_logs_answer_from_their_own_coverage_while_the_hourly_walk_accepts_no
     let families = ["divisions", "naval"];
     let mut commits = 0;
     let error = independent::with_test_only(&families, || {
-        run_checked(
-            &source,
-            None,
-            &flag,
-            |_| {},
-            |_| {
-                commits += 1;
-                flag.store(true, Ordering::Release);
-                Ok(())
-            },
-        )
+        independent::with_test_one_after_another(|| {
+            run_checked(
+                &source,
+                None,
+                &flag,
+                |_| {},
+                |_| {
+                    commits += 1;
+                    flag.store(true, Ordering::Release);
+                    Ok(())
+                },
+            )
+        })
     })
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);

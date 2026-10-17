@@ -1,5 +1,5 @@
 //! Air superiority prepared on its own, with its own read of the country
-//! groups, before the hourly walk, from blocks read by their changes: it
+//! groups, beside the hourly walk, from blocks read by their changes: it
 //! publishes and saves exactly what hourly preparation does across quiet
 //! spans, day boundaries and a war's recorded end inside them, scores moving
 //! every hour of an air war, fields it does not read changing every hour (war
@@ -671,17 +671,19 @@ fn air_superiority_answers_from_its_own_coverage_while_the_hourly_walk_accepts_n
             );
             // The hourly walk stalls: it is cancelled at its first commit.
             let mut commits = 0;
-            let error = run_checked(
-                &source,
-                None,
-                &flag,
-                |_| {},
-                |_| {
-                    commits += 1;
-                    flag.store(true, Ordering::Release);
-                    Ok(())
-                },
-            )
+            let error = independent::with_test_one_after_another(|| {
+                run_checked(
+                    &source,
+                    None,
+                    &flag,
+                    |_| {},
+                    |_| {
+                        commits += 1;
+                        flag.store(true, Ordering::Release);
+                        Ok(())
+                    },
+                )
+            })
             .unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::Interrupted, "{label}");
             assert_eq!(commits, 1, "{label}");

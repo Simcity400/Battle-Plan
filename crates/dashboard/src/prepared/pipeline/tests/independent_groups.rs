@@ -1,4 +1,4 @@
-//! Country groups prepared on their own, before the hourly walk, publish and
+//! Country groups prepared on their own beside the hourly walk, publish and
 //! save exactly what hourly preparation does (air superiority included), and
 //! answer their queries while the hourly walk has accepted nothing.
 use super::family_lanes::{assert_payloads_equal, payloads};
@@ -466,17 +466,19 @@ fn country_groups_answer_from_their_own_coverage_while_the_hourly_walk_accepts_n
         let flag = AtomicBool::new(false);
         // The hourly walk stalls: it is cancelled at its first commit.
         let mut commits = 0;
-        let error = run_checked(
-            &source,
-            None,
-            &flag,
-            |_| {},
-            |_| {
-                commits += 1;
-                flag.store(true, Ordering::Release);
-                Ok(())
-            },
-        )
+        let error = independent::with_test_one_after_another(|| {
+            run_checked(
+                &source,
+                None,
+                &flag,
+                |_| {},
+                |_| {
+                    commits += 1;
+                    flag.store(true, Ordering::Release);
+                    Ok(())
+                },
+            )
+        })
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert_eq!(commits, 1);

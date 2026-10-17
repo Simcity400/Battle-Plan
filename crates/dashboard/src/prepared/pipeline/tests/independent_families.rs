@@ -134,6 +134,7 @@ struct Hours {
     fail_commit: Option<i32>,
     /// A section it writes at every commit beside its own.
     overlap: Option<&'static str>,
+    on_fold: Option<fn(i32)>,
 }
 
 /// Each fold's family key, thread and observed hours.
@@ -168,6 +169,7 @@ struct HoursBranch {
     /// The last hour of each block it went through since its last commit,
     /// each a page of its own, as hourly preparation publishes per block.
     ended: Vec<i32>,
+    on_fold: Option<fn(i32)>,
 }
 
 impl HoursBranch {
@@ -220,6 +222,9 @@ impl Branch for HoursBranch {
         let facts = *facts
             .downcast::<Facts>()
             .map_err(|_| io::Error::other("Facts of another family"))?;
+        if let Some(on_fold) = self.on_fold {
+            on_fold(facts.hours[0]);
+        }
         SEEN.lock()
             .unwrap()
             .push((self.key, std::thread::current().id(), facts.observed));
@@ -353,6 +358,7 @@ impl Own for Hours {
             overlap: self.overlap,
             saved,
             ended: Vec::new(),
+            on_fold: self.on_fold,
         }))
     }
 }
@@ -374,6 +380,7 @@ const fn hours(
         read_by: &[],
         fail_commit: None,
         overlap: None,
+        on_fold: None,
     }
 }
 
@@ -1010,4 +1017,319 @@ fn a_family_failing_inside_a_group_commit_leaves_the_others_batches_committed() 
         assert_eq!(publications, (4, 5), "{label}");
         clear(source);
     }
+}
+
+#[derive(Default)]
+struct Overlap {
+    enabled: bool,
+    at: i32,
+    waiting: bool,
+    walk_commits: usize,
+    folds: usize,
+}
+
+static OVERLAP_TEST: Mutex<()> = Mutex::new(());
+
+static OVERLAP: (Mutex<Overlap>, std::sync::Condvar) = (
+    Mutex::new(Overlap {
+        enabled: false,
+        at: 0,
+        waiting: false,
+        walk_commits: 0,
+        folds: 0,
+    }),
+    std::sync::Condvar::new(),
+);
+
+fn hold_second_fold(hour: i32) {
+    let (state, changed) = &OVERLAP;
+    let mut state = state.lock().unwrap();
+    state.folds += 1;
+    if !state.enabled || hour != state.at {
+        return;
+    }
+    state.waiting = true;
+    changed.notify_all();
+    let (state, _) = changed
+        .wait_timeout_while(state, Duration::from_secs(2), |state| {
+            state.walk_commits == 0
+        })
+        .unwrap();
+    assert!(
+        state.walk_commits > 0,
+        "the walk waited for the family's second fold"
+    );
+}
+
+static OVERLAPPING_ALPHA: Hours = Hours {
+    on_fold: Some(hold_second_fold),
+    ..hours(
+        &ALPHA,
+        "independent.alpha",
+        &["alpha-product"],
+        "overlapping-alpha",
+    )
+};
+
+/// A counted walk commit releases a family blocked in its second fold.
+/// This cannot pass when the walk runs after all the families. Every
+/// product page matches the families-first reference.
+#[test]
+fn walk_commits_while_a_family_is_still_folding_and_keeps_every_page() {
+    let _test = OVERLAP_TEST.lock().unwrap();
+    let replay = recording(3, false);
+    let mut fixture = Fixture::new(&replay);
+    let families = registered(&[&OVERLAPPING_ALPHA]);
+    independent::with_test_families(&families, || {
+        let source = fixture.source("walk-overlap");
+        *OVERLAP.0.lock().unwrap() = Overlap::default();
+        independent::with_test_one_after_another(|| measured(&source)).unwrap();
+        let expected = payloads(&source, None);
+        clear(source);
+
+        let source = fixture.source("walk-overlap");
+        *OVERLAP.0.lock().unwrap() = Overlap {
+            enabled: true,
+            at: 104,
+            ..Default::default()
+        };
+        let mut observed = 0;
+        let mut previous_walk = 0;
+        let mut previous_family = 0;
+        run_measured_through(
+            &source,
+            None,
+            &AtomicBool::new(false),
+            true,
+            Duration::ZERO,
+            Some(u64::MAX),
+            |_| Ok(()),
+            |next| {
+                assert!(
+                    next.next_block >= previous_walk,
+                    "walk status moved backwards"
+                );
+                previous_walk = next.next_block;
+                let covered = next.families.get("alpha");
+                let complete =
+                    covered.is_some_and(|branches| branches.values().all(|extent| extent.complete));
+                if next.next_block == 0 {
+                    return;
+                }
+                let (state, changed) = &OVERLAP;
+                let state = state.lock().unwrap();
+                if !state.enabled || state.walk_commits > 0 {
+                    return;
+                }
+                let (mut state, _) = changed
+                    .wait_timeout_while(state, Duration::from_secs(2), |state| !state.waiting)
+                    .unwrap();
+                assert!(
+                    state.waiting && !complete,
+                    "family finished before the walk progressed"
+                );
+                state.walk_commits += 1;
+                observed += 1;
+                previous_family = state.folds;
+                changed.notify_all();
+            },
+        )
+        .unwrap();
+        assert_eq!(observed, 1);
+        assert_eq!(previous_family, 2);
+        assert_eq!(OVERLAP.0.lock().unwrap().folds, 3);
+        let actual = payloads(&source, None);
+        let without_checkpoint = |pages: Payloads| {
+            pages
+                .into_iter()
+                .filter(|((name, _), _)| name != CHECKPOINT)
+                .collect::<Payloads>()
+        };
+        assert_payloads_equal(
+            &without_checkpoint(actual),
+            &without_checkpoint(expected),
+            "overlapping walk vs families first",
+        );
+        clear(source);
+    });
+}
+
+/// Leave independently committed cursors on both sides of the walk, then
+/// reopen the recording with or without growth. Count the actual folds and
+/// walk blocks: rebuilding accepted work must fail even if the final pages agree.
+fn resume_separate_prefixes(family_leads: bool, append: bool) {
+    let _test = OVERLAP_TEST.lock().unwrap();
+    let replay = recording(3, false);
+    let mut fixture = Fixture::new(&replay);
+    let source = fixture.source("separate-prefixes");
+    let families = registered(&[&OVERLAPPING_ALPHA]);
+    independent::with_test_families(&families, || {
+        *OVERLAP.0.lock().unwrap() = Overlap {
+            enabled: !family_leads,
+            at: 110,
+            ..Default::default()
+        };
+        let cancelled = AtomicBool::new(false);
+        let stop = || {
+            run_measured_through(
+                &source,
+                None,
+                &cancelled,
+                true,
+                Duration::ZERO,
+                Some(u64::MAX),
+                |_| Ok(()),
+                |next| {
+                    if family_leads {
+                        if next.next_block == 1 {
+                            cancelled.store(true, Ordering::Release);
+                        }
+                        return;
+                    }
+                    if next.next_block != replay.index.len() {
+                        return;
+                    }
+                    let (state, changed) = &OVERLAP;
+                    let state = state.lock().unwrap();
+                    let (mut state, _) = changed
+                        .wait_timeout_while(state, Duration::from_secs(2), |state| !state.waiting)
+                        .unwrap();
+                    assert!(state.waiting);
+                    cancelled.store(true, Ordering::Release);
+                    state.walk_commits = 1;
+                    changed.notify_all();
+                },
+            )
+        };
+        let result = if family_leads {
+            independent::with_test_one_after_another(stop)
+        } else {
+            stop()
+        };
+        assert_eq!(
+            result.err().map(|error| error.kind()),
+            Some(io::ErrorKind::Interrupted)
+        );
+        let (store, key) = super::super::super::files(&source, None).unwrap();
+        let (saved, _) = checkpoint(&store, &key, Some(&key)).unwrap().unwrap();
+        let (walk_next, family_next) = if family_leads { (1, 3) } else { (3, 2) };
+        assert_eq!(saved.cursor.next_block, walk_next);
+        assert_eq!(saved.independent["alpha"].next_block, family_next);
+        assert!(metadata_prefix(&saved, &replay, None).unwrap());
+        let mut invalid = saved.clone();
+        invalid.independent.get_mut("alpha").unwrap().next_block = replay.index.len() + 1;
+        assert!(!metadata_prefix(&invalid, &replay, None).unwrap());
+        let flag = AtomicBool::new(false);
+        assert!(restore(&source, None, &flag).unwrap().is_none());
+        assert_eq!(
+            unprepared_blocks(&source, None).unwrap(),
+            Some(replay.index.len() - walk_next)
+        );
+        let walked = coverage(&source, None, 1, &flag).unwrap().unwrap();
+        let own = product_coverage(&source, None, 1, "alpha-product", &flag)
+            .unwrap()
+            .unwrap();
+        assert_eq!(walked.last_hour, replay.index[walk_next - 1].last_hour);
+        assert_eq!(walked.complete, walk_next == replay.index.len());
+        assert_eq!(own.last_hour, replay.index[family_next - 1].last_hour);
+        assert_eq!(own.complete, family_next == replay.index.len());
+        let status = family_coverages(&saved, &replay, &last_blocks(&replay));
+        assert_eq!(status["alpha"]["1"].last_hour, own.last_hour);
+        assert_eq!(status["alpha"]["1"].complete, own.complete);
+
+        let grown = if append {
+            replay
+                .append(&[continuation_records(
+                    &replay,
+                    1,
+                    (114..=117).map(|hour| frame(1, hour, 2)).collect(),
+                )])
+                .unwrap()
+        } else {
+            replay
+        };
+        if append {
+            fixture.replace(&grown);
+        }
+        let resumed = fixture.source("separate-prefixes-resumed");
+        assert!(metadata_prefix(&saved, &grown, None).unwrap());
+        assert!(!metadata_prefix(&invalid, &grown, None).unwrap());
+        assert_eq!(
+            unprepared_blocks(&resumed, None).unwrap(),
+            Some(grown.index.len() - walk_next)
+        );
+        assert!(restore(&resumed, None, &flag).unwrap().is_none());
+        OVERLAP.0.lock().unwrap().enabled = false;
+        forget("overlapping-alpha");
+        let mut blocks = Vec::new();
+        let (completed, timings) = run_measured_through(
+            &resumed,
+            None,
+            &flag,
+            true,
+            Duration::ZERO,
+            Some(u64::MAX),
+            |block| {
+                blocks.push(block.ordinal);
+                Ok(())
+            },
+            |_| {},
+        )
+        .unwrap();
+        let expected_walk: Vec<_> = (walk_next..grown.index.len()).collect();
+        assert_eq!(
+            blocks, expected_walk,
+            "only the walk's unaccepted blocks are processed"
+        );
+        assert_eq!(completed.new_blocks, expected_walk.len());
+        assert_eq!(timings.hours, expected_walk.len() * 4);
+        let folded: Vec<_> = seen("overlapping-alpha")
+            .into_iter()
+            .map(|(_, hours)| hours)
+            .collect();
+        let expected_family: Vec<Vec<i32>> = grown.index[family_next..]
+            .iter()
+            .map(|block| (block.first_hour..=block.last_hour).collect())
+            .collect();
+        assert_eq!(
+            folded, expected_family,
+            "only the family's unaccepted blocks are folded"
+        );
+        assert!(completed.coverage["1"].complete);
+        assert!(completed.families["alpha"]["1"].complete);
+        assert!(restore(&resumed, None, &flag).unwrap().is_some());
+        assert_eq!(unprepared_blocks(&resumed, None).unwrap(), Some(0));
+        let (store, key) = super::super::super::files(&resumed, None).unwrap();
+        let (saved, _) = checkpoint(&store, &key, Some(&key)).unwrap().unwrap();
+        assert_eq!(saved.cursor.next_block, grown.index.len());
+        assert_eq!(saved.independent["alpha"].next_block, grown.index.len());
+        let expected_hours: Vec<_> = (100..=107)
+            .chain(110..=grown.index.last().unwrap().last_hour)
+            .collect();
+        assert_eq!(
+            page(&payloads(&resumed, None), "synthetic-alpha-1"),
+            expected_hours
+        );
+        clear(resumed);
+    });
+}
+
+#[test]
+fn a_completed_walk_resumes_families_that_are_still_pending() {
+    resume_separate_prefixes(false, false);
+}
+
+#[test]
+fn append_resumes_a_family_behind_the_completed_walk() {
+    resume_separate_prefixes(false, true);
+}
+
+#[test]
+fn a_family_ahead_of_the_walk_resumes_only_its_own_tail() {
+    resume_separate_prefixes(true, false);
+}
+
+#[test]
+fn append_resumes_a_family_ahead_of_the_walk_from_its_own_prefix() {
+    resume_separate_prefixes(true, true);
 }

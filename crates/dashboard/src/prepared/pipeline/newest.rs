@@ -64,6 +64,9 @@ const LAND: &str = "land";
 /// The naval family's name in the checkpoint's refusals and among the
 /// families prepared on their own.
 const NAVAL: &str = "naval";
+const LAND_JOB: &str = "newest land windows";
+const NAVAL_JOB: &str = "newest naval windows";
+const JOINT_JOB: &str = "newest windows";
 
 /// Whether `family`'s forward preparation has accepted or refused the
 /// branch's last block, `last`: by its own progress while it is prepared on
@@ -89,13 +92,15 @@ fn wanted(
     state: &Checkpoint,
     family: &str,
     bound: bool,
+    resume: bool,
     published: fn(&store::Store, &store::SourceKey, &Replay, u64) -> io::Result<bool>,
 ) -> io::Result<Vec<u64>> {
     let mut branches = Vec::new();
     for (&branch, &last) in phase.last_blocks {
         check_cancel(phase.cancelled)?;
-        if reached(state, family, branch, last)
-            || bound && published(phase.store, phase.key, phase.replay, branch)?
+        if !resume
+            && (reached(state, family, branch, last)
+                || bound && published(phase.store, phase.key, phase.replay, branch)?)
         {
             continue;
         }
@@ -339,13 +344,21 @@ pub(super) fn jobs<'a>(
     state: &Checkpoint,
     saved: &Option<store::SourceKey>,
     reports: &'a Reports,
+    pending: &std::collections::BTreeSet<String>,
 ) -> io::Result<Vec<independent::Beside<'a>>> {
     let bound = saved.as_ref() == Some(phase.key);
     let stall = stall();
     let diagnosing = stall.clone();
     let land = Family {
         names: &LAND_NAMES,
-        branches: wanted(phase, state, LAND, bound, land_battles::newest::published)?,
+        branches: wanted(
+            phase,
+            state,
+            LAND,
+            bound,
+            pending.contains(LAND_JOB) || pending.contains(JOINT_JOB),
+            land_battles::newest::published,
+        )?,
         run: Box::new(move |branch, publish, timings| {
             let (proven, mut report) = land_battles::newest::prove_reported(
                 phase.source,
@@ -382,7 +395,14 @@ pub(super) fn jobs<'a>(
     };
     let naval = Family {
         names: &NAVAL_NAMES,
-        branches: wanted(phase, state, NAVAL, bound, naval_battles::newest::published)?,
+        branches: wanted(
+            phase,
+            state,
+            NAVAL,
+            bound,
+            pending.contains(NAVAL_JOB) || pending.contains(JOINT_JOB),
+            naval_battles::newest::published,
+        )?,
         run: Box::new(move |branch, publish, _| {
             let (newest, report) =
                 naval_battles::newest::prepare_reported(phase.source, branch, phase.cancelled)?;
@@ -404,7 +424,8 @@ pub(super) fn jobs<'a>(
     }
     if !together() {
         jobs.push(independent::Beside {
-            name: "newest windows",
+            name: JOINT_JOB,
+            first_view: true,
             run: Box::new(
                 move |publish: &mut independent::Publish<'_>,
                       timings: &mut independent::Timings| {
@@ -418,7 +439,8 @@ pub(super) fn jobs<'a>(
     if !land.branches.is_empty() {
         let stall = stall.clone();
         jobs.push(independent::Beside {
-            name: "newest land windows",
+            name: LAND_JOB,
+            first_view: true,
             run: Box::new(
                 move |publish: &mut independent::Publish<'_>,
                       timings: &mut independent::Timings| {
@@ -429,7 +451,8 @@ pub(super) fn jobs<'a>(
     }
     if !naval.branches.is_empty() {
         jobs.push(independent::Beside {
-            name: "newest naval windows",
+            name: NAVAL_JOB,
+            first_view: true,
             run: Box::new(
                 move |publish: &mut independent::Publish<'_>,
                       timings: &mut independent::Timings| {

@@ -51,16 +51,18 @@ fn clear(source: Arc<Source>) {
 /// families prepared on their own are accepted.
 fn stall_walk(source: &Source, replay: &Replay) {
     let flag = AtomicBool::new(false);
-    let error = run_checked(
-        source,
-        None,
-        &flag,
-        |_| {},
-        |_| {
-            flag.store(true, Ordering::Release);
-            Ok(())
-        },
-    )
+    let error = independent::with_test_one_after_another(|| {
+        run_checked(
+            source,
+            None,
+            &flag,
+            |_| {},
+            |_| {
+                flag.store(true, Ordering::Release);
+                Ok(())
+            },
+        )
+    })
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
     assert_eq!(

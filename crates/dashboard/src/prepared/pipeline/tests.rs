@@ -191,7 +191,7 @@ fn observer_timing_table_is_filled_only_in_measured_mode() {
     assert_eq!(families["store_commit"].calls, 1);
     assert!(families.values().all(|family| family.calls > 0));
     for name in [
-        // The politics ledger is prepared on its own, before the walk.
+        // The politics ledger is prepared on its own beside the walk.
         "independent.politics_ledger",
         "stability_parts",
         "setup.files",
@@ -1181,7 +1181,7 @@ fn prepared_country_identities_match_after_commits_resume_and_append() {
     );
     let mut commits = Vec::new();
     assert_eq!(
-        run_checked(
+        independent::with_test_one_after_another(|| run_checked(
             &source,
             None,
             &flag,
@@ -1193,16 +1193,15 @@ fn prepared_country_identities_match_after_commits_resume_and_append() {
                 }
                 Ok(())
             }
-        )
+        ))
         .unwrap_err()
         .kind(),
         io::ErrorKind::Interrupted
     );
     assert_eq!(commits, [1, 2, 3]);
     flag.store(false, Ordering::Release);
-    // The identities are prepared on their own before the hourly walk, so
-    // branch 3's answer from their own coverage although the walk stopped
-    // before reaching it.
+    // This run explicitly finishes the families first: branch 3 answers
+    // from the identities' coverage although the walk stopped before it.
     assert!(
         !coverage(&source, None, 3, &flag)
             .unwrap()
@@ -1404,15 +1403,11 @@ fn cancellation_discards_whole_block_and_resume_visits_only_unaccepted_tail() {
     )
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-    let published: Vec<_> = published
+    let mut published: Vec<_> = published
         .into_iter()
-        .filter(|accepted| {
-            accepted
-                .sections
-                .iter()
-                .any(|section| section.state == State::Ready)
-        })
+        .filter(|accepted| accepted.next_block > 0)
         .collect();
+    published.dedup_by_key(|accepted| accepted.next_block);
     assert_eq!(published.len(), 1);
     assert_eq!(published[0].coverage["1"].first_hour, 10);
     assert_eq!(published[0].coverage["1"].last_hour, 11);
@@ -1422,15 +1417,6 @@ fn cancellation_discards_whole_block_and_resume_visits_only_unaccepted_tail() {
         "uncommitted decoded blocks never reach status coverage"
     );
 
-    assert_eq!(
-        published[0]
-            .sections
-            .iter()
-            .find(|section| section.id == "focus")
-            .unwrap()
-            .state,
-        State::Ready
-    );
     assert_eq!(
         coverage(&source, None, 1, &AtomicBool::new(false))
             .unwrap()
@@ -1447,9 +1433,11 @@ fn cancellation_discards_whole_block_and_resume_visits_only_unaccepted_tail() {
     let (saved, _) = checkpoint(&store, &key, None).unwrap().unwrap();
     assert_eq!(saved.cursor.next_block, 1);
     assert!(store.read(&key, &branch_section(2), 0).unwrap().is_none());
-    let mut old_focus = store.read(&key, "focus-1", 0).unwrap().unwrap();
-    let mut original = Vec::new();
-    old_focus.read_to_end(&mut original).unwrap();
+    let original = store.read(&key, "focus-1", 0).unwrap().map(|mut page| {
+        let mut bytes = Vec::new();
+        page.read_to_end(&mut bytes).unwrap();
+        bytes
+    });
     flag.store(false, Ordering::Release);
     let mut accepted_blocks = Vec::new();
     let completed = run_checked(
@@ -1503,7 +1491,9 @@ fn cancellation_discards_whole_block_and_resume_visits_only_unaccepted_tail() {
         .unwrap()
         .read_to_end(&mut current)
         .unwrap();
-    assert_eq!(current, original);
+    if let Some(original) = original {
+        assert_eq!(current, original);
+    }
     let mut notifications = 0;
     let mut processed = 0;
     let again = run_checked(
@@ -1639,54 +1629,82 @@ fn appended_recording_reuses_accepted_domain_state_and_only_prepares_new_blocks(
 #[test]
 fn cancelled_initial_block_publishes_no_country_or_day_state() {
     let replay = recording();
-    // Cancels before the hourly walk's first commit.
-    let cancelled = |source: &Source, flag: &AtomicBool| {
-        run_checked(
-            source,
-            None,
-            flag,
-            |accepted| {
-                assert!(
-                    accepted
-                        .sections
+    let check = || {
+        let mut fixture = Fixture::new(&replay);
+        let source = fixture.source("1");
+        let flag = AtomicBool::new(false);
+        assert!(
+            run_checked(
+                &source,
+                None,
+                &flag,
+                |accepted| {
+                    assert_eq!(accepted.next_block, 0);
+                    assert!(accepted.coverage.is_empty());
+                },
+                |_| {
+                    flag.store(true, Ordering::Release);
+                    Ok(())
+                },
+            )
+            .is_err()
+        );
+        // Cancellation can race with any family commit, including the first
+        // one. Side jobs can also commit without advancing the walk.
+        let (store, key) = super::super::files(&source, None).unwrap();
+        if let Some((saved, _)) = checkpoint(&store, &key, None).unwrap() {
+            assert_eq!(saved.cursor.next_block, 0);
+            assert!(metadata_prefix(&saved, &replay, None).unwrap());
+            let status = family_coverages(&saved, &replay, &last_blocks(&replay));
+            for (name, family) in &saved.independent {
+                assert!(family.next_block <= replay.index.len(), "{name}");
+                for (&branch, &last) in &last_blocks(&replay) {
+                    let accepted = replay.index[..family.next_block]
                         .iter()
-                        .all(|section| section.state == State::Preparing)
-                )
-            },
-            |_| {
-                flag.store(true, Ordering::Release);
-                Ok(())
-            },
-        )
-        .is_err()
+                        .rev()
+                        .find(|block| block.branch == branch);
+                    let own = status
+                        .get(name)
+                        .and_then(|branches| branches.get(&branch.to_string()));
+                    let page = own_page(&store, &key, name, branch).unwrap();
+                    match accepted {
+                        Some(block) => {
+                            let own = own.expect("accepted family prefix");
+                            assert_eq!(own.last_hour, block.last_hour, "{name}");
+                            assert_eq!(own.complete, family.next_block > last, "{name}");
+                            let page = page.expect("committed family coverage page");
+                            assert_eq!(page.coverage.last_hour, own.last_hour, "{name}");
+                            assert_eq!(page.coverage.complete, own.complete, "{name}");
+                        }
+                        None => {
+                            assert!(own.is_none(), "{name}: no accepted branch");
+                            assert!(page.is_none(), "{name}: no committed coverage page");
+                        }
+                    }
+                }
+            }
+        } else {
+            assert!(store.saved_key().unwrap().is_none());
+        }
+        for branch in [1, 2] {
+            assert!(
+                store
+                    .read(&key, &branch_section(branch), 0)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                store
+                    .read(&key, &coverage_section(branch), 0)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        flag.store(false, Ordering::Release);
+        assert!(run(&source, None, &flag, |_| {}).is_ok());
     };
-    let mut fixture = Fixture::new(&replay);
-    let source = fixture.source("1");
-    let flag = AtomicBool::new(false);
-    independent::with_test_hourly(|| assert!(cancelled(&source, &flag)));
-    let (store, key) = super::super::files(&source, None).unwrap();
-    assert!(!store.is_reusable(&key).unwrap());
-    assert!(store.saved_key().unwrap().is_none());
-    flag.store(false, Ordering::Release);
-    assert!(run(&source, None, &flag, |_| {}).is_ok());
-
-    // Families prepared on their own commit before the hourly walk, so only
-    // their progress is kept: the walk accepted nothing.
-    let mut fixture = Fixture::new(&replay);
-    let source = fixture.source("1");
-    let flag = AtomicBool::new(false);
-    assert!(cancelled(&source, &flag));
-    let (store, key) = super::super::files(&source, None).unwrap();
-    let saved = checkpoint(&store, &key, None).unwrap().unwrap().0;
-    assert_eq!(saved.cursor.next_block, 0);
-    assert!(
-        saved
-            .independent
-            .values()
-            .all(|family| family.next_block == replay.index.len())
-    );
-    flag.store(false, Ordering::Release);
-    assert!(run(&source, None, &flag, |_| {}).is_ok());
+    independent::with_test_hourly(check);
+    check();
 }
 
 #[test]

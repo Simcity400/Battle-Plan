@@ -202,6 +202,8 @@ fn lane(next: usize, handed: usize, spent_ms: u64, measured: u32) -> Lane {
         retired: false,
         spent: Duration::from_millis(spent_ms),
         measured,
+        folded: Duration::ZERO,
+        folds: 0,
         facts: 0,
         reserved: BTreeMap::new(),
     }
@@ -266,13 +268,13 @@ fn finished(
     )
 }
 
-/// A pool worker claims the lowest block some lane can claim, for every lane
+/// A pool worker claims the longest chain's next block for every lane
 /// whose next block it is and within reach, costliest first, counting the
 /// block's raw bytes once; a lane waiting for its reads claims nothing. With
 /// fewer blocks coming than workers waiting, a block is split between them,
 /// each part at least one lane.
 #[test]
-fn pool_claims_the_lowest_block_for_every_lane_whose_next_it_is() {
+fn pool_claims_the_longest_chain_and_shares_its_next_block() {
     let mut waiting = lane(10, 10, 0, 0);
     waiting.binding = true;
     let pool = pool_state(
@@ -290,7 +292,7 @@ fn pool_claims_the_lowest_block_for_every_lane_whose_next_it_is() {
     assert_eq!(members(pool.claim()), Some((10, vec![2, 0])));
     assert_eq!(pool.lock().in_flight, 1, "the block's raw bytes count once");
     assert_eq!(members(pool.claim()), Some((11, vec![2, 0])));
-    assert_eq!(members(pool.claim()), Some((12, vec![2, 0, 1])));
+    assert_eq!(members(pool.claim()), Some((12, vec![2, 1, 0])));
     // One block coming, four workers waiting.
     let lanes = (0..4)
         .map(|_| Lane {
@@ -1214,4 +1216,57 @@ fn leaders_fold_shared_variable_and_tag_visibility_without_decoding_on_the_famil
         fixture.payloads()
     };
     assert_eq!(publish(&mut folded), publish(&mut hourly));
+}
+
+/// The serial fold can dominate a cheap extract. Live fold and publication
+/// costs must change both task selection and the order within a shared read.
+#[test]
+fn longest_first_uses_live_fold_and_publication_costs_across_block_frontiers() {
+    let pool = Pool {
+        shared: Arc::new(pool_state(
+            vec![lane(10, 10, 100, 10), lane(12, 12, 10, 10)],
+            1,
+            0,
+            &[],
+            u64::MAX,
+        )),
+        workers: Vec::new(),
+    };
+    assert_eq!(pool.shared.lock().pick(), Some((10, vec![0])));
+    pool.folded(1, Duration::from_millis(20));
+    pool.published(1, Duration::from_millis(10));
+    assert_eq!(pool.shared.lock().pick(), Some((12, vec![1])));
+    {
+        let mut state = pool.shared.lock();
+        state.lanes[0].next = 12;
+        state.lanes[0].handed = 12;
+        assert_eq!(state.pick(), Some((12, vec![1, 0])));
+        // A newly measured expensive fold changes the order again.
+    }
+    pool.folded(0, Duration::from_millis(50));
+    assert_eq!(pool.shared.lock().pick(), Some((12, vec![0, 1])));
+    let mut state = pool.shared.lock();
+    // Remaining work matters, as well as mean work per block.
+    state.lanes[0].end = 13;
+    assert_eq!(state.pick(), Some((12, vec![1, 0])));
+}
+
+#[test]
+fn longest_chain_does_not_claim_past_binding_read_ahead_or_byte_limits() {
+    let mut expensive = lane(10, 10, 1000, 1);
+    let state = pool_state(vec![lane(8, 8, 1, 1), expensive], 1, 0, &[], u64::MAX);
+    assert_eq!(state.lock().pick(), Some((10, vec![1])));
+    state.lock().lanes[1].handed = 2;
+    assert_eq!(state.lock().pick(), Some((8, vec![0])));
+    expensive = lane(10, 10, 1000, 1);
+    expensive.binding = true;
+    state.lock().lanes[1] = expensive;
+    assert_eq!(state.lock().pick(), Some((8, vec![0])));
+    {
+        let mut locked = state.lock();
+        locked.lanes[1].binding = false;
+        locked.lanes[1].handed = 9;
+        locked.budget = 0;
+    }
+    assert_eq!(state.lock().pick(), Some((8, vec![0])));
 }

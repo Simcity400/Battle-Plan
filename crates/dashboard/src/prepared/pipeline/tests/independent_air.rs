@@ -172,17 +172,19 @@ fn query(
 fn stalled(source: &Source, replay: &Replay) {
     let flag = AtomicBool::new(false);
     let mut commits = 0;
-    let error = run_checked(
-        source,
-        None,
-        &flag,
-        |_| {},
-        |_| {
-            commits += 1;
-            flag.store(true, Ordering::Release);
-            Ok(())
-        },
-    )
+    let error = independent::with_test_one_after_another(|| {
+        run_checked(
+            source,
+            None,
+            &flag,
+            |_| {},
+            |_| {
+                commits += 1;
+                flag.store(true, Ordering::Release);
+                Ok(())
+            },
+        )
+    })
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
     assert_eq!(commits, 1);

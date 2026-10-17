@@ -89,16 +89,18 @@ fn newest_land_window_answers_while_forward_preparation_has_accepted_nothing() {
     let source = fixture.source("newest-land");
     let flag = AtomicBool::new(false);
     // Forward preparation stalls: it is cancelled at its first commit.
-    let error = run_checked(
-        &source,
-        None,
-        &flag,
-        |_| {},
-        |_| {
-            flag.store(true, Ordering::Release);
-            Ok(())
-        },
-    )
+    let error = independent::with_test_newest_first(|| {
+        run_checked(
+            &source,
+            None,
+            &flag,
+            |_| {},
+            |_| {
+                flag.store(true, Ordering::Release);
+                Ok(())
+            },
+        )
+    })
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
     flag.store(false, Ordering::Release);
@@ -267,16 +269,18 @@ fn naval_answers_first(name: &str) {
     let source = fixture.source(name);
     let flag = AtomicBool::new(false);
     // Forward preparation stalls: it is cancelled at its first commit.
-    let error = run_checked(
-        &source,
-        None,
-        &flag,
-        |_| {},
-        |_| {
-            flag.store(true, Ordering::Release);
-            Ok(())
-        },
-    )
+    let error = independent::with_test_newest_first(|| {
+        run_checked(
+            &source,
+            None,
+            &flag,
+            |_| {},
+            |_| {
+                flag.store(true, Ordering::Release);
+                Ok(())
+            },
+        )
+    })
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
     flag.store(false, Ordering::Release);
@@ -392,16 +396,18 @@ fn battles_frame(branch: u64, hour: i32) -> DecodedFrame {
 /// commit, the newest windows' own.
 fn newest_pages(source: &Source) -> std::collections::BTreeMap<(String, u64), Vec<u8>> {
     let flag = AtomicBool::new(false);
-    let error = run_checked(
-        source,
-        None,
-        &flag,
-        |_| {},
-        |_| {
-            flag.store(true, Ordering::Release);
-            Ok(())
-        },
-    )
+    let error = independent::with_test_newest_first(|| {
+        run_checked(
+            source,
+            None,
+            &flag,
+            |_| {},
+            |_| {
+                flag.store(true, Ordering::Release);
+                Ok(())
+            },
+        )
+    })
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
     super::family_lanes::payloads(source, None)
@@ -750,4 +756,81 @@ fn newest_windows_report_their_look_backs_and_outcomes() {
             families.keys().collect::<Vec<_>>()
         );
     }
+}
+
+/// A proven page is not the end of its side job: diagnostics still have to
+/// publish even if every forward publisher finishes before cancellation.
+#[test]
+fn cancelled_newest_diagnostics_resume_after_forward_completion() {
+    let replay = gapped(land_frame);
+    let mut fixture = Fixture::new(&replay);
+    let source = fixture.source("newest-diagnostics-outstanding");
+    let flag = AtomicBool::new(false);
+    let (store, key) = super::super::super::files(&source, None).unwrap();
+    let finished = Arc::new((Mutex::new(false), Condvar::new()));
+    let signal = Arc::clone(&finished);
+    let waited = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&waited);
+    let result = super::super::newest::with_test_stall(
+        move |family, branch| {
+            if family != "newest.land.diagnostics" || branch != 1 {
+                return;
+            }
+            let (done, changed) = &*signal;
+            let (guard, _) = changed
+                .wait_timeout_while(done.lock().unwrap(), Duration::from_secs(10), |done| !*done)
+                .unwrap();
+            observed.store(*guard, Ordering::Release);
+        },
+        || {
+            run(&source, None, &flag, |_| {
+                let Some((saved, _)) = checkpoint(&store, &key, None).unwrap() else {
+                    return;
+                };
+                if saved.forward_complete(replay.index.len()) {
+                    flag.store(true, Ordering::Release);
+                    let (done, changed) = &*finished;
+                    *done.lock().unwrap() = true;
+                    changed.notify_all();
+                }
+            })
+        },
+    );
+    assert_eq!(
+        result.err().map(|error| error.kind()),
+        Some(io::ErrorKind::Interrupted)
+    );
+    assert!(
+        waited.load(Ordering::Acquire),
+        "diagnostics stayed outstanding through forward completion"
+    );
+    let (saved, _) = checkpoint(&store, &key, None).unwrap().unwrap();
+    assert!(saved.forward_complete(replay.index.len()));
+    assert!(land_battles::newest::published(&store, &key, &replay, 1).unwrap());
+    let diagnostics = "land-battle-newest-diagnostics-1";
+    assert!(store.read(&key, diagnostics, 0).unwrap().is_none());
+    flag.store(false, Ordering::Release);
+    let reopened = fixture.source("newest-diagnostics-resumed");
+    assert!(restore(&reopened, None, &flag).unwrap().is_none());
+    let mut walked = Vec::new();
+    run_checked(
+        &reopened,
+        None,
+        &flag,
+        |_| {},
+        |next| {
+            walked.push(next);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert!(
+        walked.is_empty(),
+        "completed forward prefixes were retained"
+    );
+    assert!(
+        store.read(&key, diagnostics, 0).unwrap().is_some(),
+        "pending diagnostics were scheduled"
+    );
+    assert!(restore(&reopened, None, &flag).unwrap().is_some());
 }

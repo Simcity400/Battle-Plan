@@ -785,16 +785,18 @@ fn intelligence_answers_from_its_own_coverage_while_the_hourly_walk_accepts_noth
     let flag = AtomicBool::new(false);
     own(|| {
         // The hourly walk stalls: it is cancelled at its first commit.
-        let error = run_checked(
-            &source,
-            None,
-            &flag,
-            |_| {},
-            |_| {
-                flag.store(true, Ordering::Release);
-                Ok(())
-            },
-        )
+        let error = independent::with_test_one_after_another(|| {
+            run_checked(
+                &source,
+                None,
+                &flag,
+                |_| {},
+                |_| {
+                    flag.store(true, Ordering::Release);
+                    Ok(())
+                },
+            )
+        })
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         flag.store(false, Ordering::Release);

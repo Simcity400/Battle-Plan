@@ -1,4 +1,4 @@
-//! Wars and war casualties prepared on their own, before the hourly walk,
+//! Wars and war casualties prepared on their own beside the hourly walk,
 //! publish and save exactly what hourly preparation does, read only the hours
 //! a field they compare changes (and the wars' capitulation date), refuse
 //! where hourly preparation refuses, and answer their queries while the
@@ -774,17 +774,19 @@ fn wars_and_casualties_answer_from_their_own_coverage_while_the_hourly_walk_acce
         let flag = AtomicBool::new(false);
         // The hourly walk stalls: it is cancelled at its first commit.
         let mut commits = 0;
-        let error = run_checked(
-            &source,
-            None,
-            &flag,
-            |_| {},
-            |_| {
-                commits += 1;
-                flag.store(true, Ordering::Release);
-                Ok(())
-            },
-        )
+        let error = independent::with_test_one_after_another(|| {
+            run_checked(
+                &source,
+                None,
+                &flag,
+                |_| {},
+                |_| {
+                    commits += 1;
+                    flag.store(true, Ordering::Release);
+                    Ok(())
+                },
+            )
+        })
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert_eq!(commits, 1);
