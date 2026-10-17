@@ -167,6 +167,19 @@ impl Prepared {
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        self.observe_demand(frame, format, changes, None, cancelled)
+    }
+
+    /// Observe with this read's already assembled demand rows. A block extract
+    /// can release the part table while retaining exactly these operands.
+    pub fn observe_demand(
+        &mut self,
+        frame: &replay::frame::DecodedFrame,
+        format: replay::format::FormatVersion,
+        changes: &dashboard_base::prepared::frame_changes::FrameChanges,
+        demand: Option<&[CountryFuelRow]>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let previous_hour = self.metadata.last;
         self.current.advance(frame.hour)?;
@@ -198,9 +211,15 @@ impl Prepared {
         } else {
             None
         };
-        let identities_changed = self
-            .scan
-            .observe_changes(frame, format, changes, cancelled)?;
+        let identities_changed = match demand {
+            Some(demand) => {
+                self.scan
+                    .observe_inner(frame, format, Some(changes), Some(demand), cancelled)?
+            }
+            None => self
+                .scan
+                .observe_changes(frame, format, changes, cancelled)?,
+        };
         if changes.rows_changed[TableId::CountryFuel.index()] {
             self.amounts = frame.complete::<tables::CountryFuel>().map_or_else(
                 |_| Vec::new(),

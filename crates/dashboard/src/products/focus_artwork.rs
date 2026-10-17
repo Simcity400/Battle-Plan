@@ -526,6 +526,86 @@ mod tests {
     };
     use std::cell::Cell;
 
+    #[test]
+    fn event_completion_hours_share_one_trigger_kit_decode_and_reuse_earlier_pages() {
+        let replay = Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(
+                1,
+                (10..=15)
+                    .map(|hour| source(1, hour, Some(i64::from(hour))))
+                    .collect(),
+            )],
+        )
+        .unwrap();
+        let (source, context, _folder) = product_source(replay);
+        let cancelled = AtomicBool::new(false);
+        let requests = [
+            (10, "GER", "focus_scoped"),
+            (12, "GER", "focus_scoped"),
+            (14, "GER", "focus_scoped"),
+        ];
+        let (first, decodes) = replay::container::test_work::table_decodes(|| {
+            crate::prepared_focus::art::event_art(
+                &source,
+                context.content().unwrap(),
+                1,
+                &requests,
+                &cancelled,
+            )
+            .unwrap()
+            .unwrap()
+        });
+        for table in [
+            TableId::ResearchTechnologies,
+            TableId::LexicalTokens,
+            TableId::Provinces,
+            TableId::States,
+            TableId::ArmyOrderPlans,
+            TableId::Characters,
+            TableId::ScriptVariables,
+        ] {
+            assert_eq!(
+                decodes
+                    .iter()
+                    .filter(|(_, _, decoded, _)| *decoded == table)
+                    .count(),
+                1,
+                "{table:?}"
+            );
+        }
+        assert_eq!(
+            dashboard_base::prepared::query::frames::reads(&source),
+            (1, 0)
+        );
+        let (next, decodes) = replay::container::test_work::table_decodes(|| {
+            crate::prepared_focus::art::event_art(
+                &source,
+                context.content().unwrap(),
+                1,
+                &requests[1..],
+                &cancelled,
+            )
+            .unwrap()
+            .unwrap()
+        });
+        assert!(decodes.is_empty());
+        assert_eq!(
+            serde_json::to_value(&next.0).unwrap(),
+            serde_json::to_value(&first.0[1..]).unwrap()
+        );
+        let catalogue = crate::catalogue::catalogue(&source, context.content().unwrap()).unwrap();
+        let mut art = artwork::Context::load(catalogue, artwork::Kind::Focus).unwrap();
+        for ((hour, tag, token), actual) in requests.iter().zip(&first.0) {
+            let frame = read_frame(source.replay_ref(), 1, *hour, true, &cancelled).unwrap();
+            let expected = art.focuses_at(&[(*token, *tag)], &frame).remove(0);
+            assert_eq!(
+                serde_json::to_value(actual).unwrap(),
+                serde_json::to_value(expected).unwrap()
+            );
+        }
+    }
+
     fn shared_frames(source: &Source) -> Arc<Mutex<FrameCache>> {
         Arc::clone(&source.state::<State>().lock().unwrap().frame.cache)
     }

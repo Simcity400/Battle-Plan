@@ -9,7 +9,7 @@ impl Scan {
         format: replay::format::FormatVersion,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        self.observe_inner(decoded, format, None, cancelled)
+        self.observe_inner(decoded, format, None, None, cancelled)
             .map(|_| ())
     }
     pub(super) fn finish(self, format: replay::format::FormatVersion) -> ScannedBranch {

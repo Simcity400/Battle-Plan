@@ -5,6 +5,67 @@ use dashboard_base::test_fixtures::{CAMPAIGN, records};
 use replay::{container::Replay, frame::TableView, rows::TableRows};
 
 #[test]
+fn preassembled_demand_preserves_fuel_state_and_named_part_failures() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    use replay::rows::{FuelDemandRead, FuelDemandUnit, Recorded};
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    let mut direct = Prepared::default();
+    let mut extracted = Prepared::default();
+    let mut tracker = FrameChangeTracker::new();
+    for day in 0..3 {
+        let hour = fuel_slot(1000 + day);
+        let mut frame = fuel_frame(hour, true, 9001, (100, 200, 3, 4));
+        let (header, parts) = FuelDemandRead {
+            divisions: vec![FuelDemandUnit {
+                reference: 17,
+                rate_raw: Some(500 + i64::from(day)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+        .split(11)
+        .unwrap();
+        if let TableView::Complete(TableRows::CountryFuel(rows)) =
+            &mut *frame.tables[TableId::CountryFuel.index()]
+        {
+            rows[0].demand = Recorded::Value(header);
+        }
+        *frame.tables[TableId::FuelDemandParts.index()] = match day {
+            0 => TableView::Complete(TableRows::FuelDemandParts(parts)),
+            1 => TableView::Truncated {
+                rows: TableRows::FuelDemandParts(parts),
+                missing: 1,
+            },
+            _ => TableView::Unavailable {
+                reason: "synthetic missing parts".into(),
+            },
+        };
+        let changes = tracker.observe(&frame, format);
+        let demand = replay::rows::with_demand_parts(
+            frame.complete::<tables::CountryFuel>().unwrap(),
+            &frame.tables[TableId::FuelDemandParts.index()],
+            format,
+        )
+        .unwrap();
+        direct
+            .observe_changes(&frame, format, &changes, &flag)
+            .unwrap();
+        *frame.tables[TableId::FuelDemandParts.index()] = TableView::Unavailable {
+            reason: "parts released after assembly".into(),
+        };
+        extracted
+            .observe_demand(&frame, format, &changes, Some(&demand), &flag)
+            .unwrap();
+        assert_eq!(
+            serde_json::to_vec(&extracted).unwrap(),
+            serde_json::to_vec(&direct).unwrap(),
+            "day {day}"
+        );
+    }
+}
+
+#[test]
 fn fuel_country_keys_skip_balance_only_recorded_deltas() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
     let format = replay::format::FormatVersion::CURRENT;

@@ -874,13 +874,14 @@ impl Scan {
         changes: &dashboard_base::prepared::frame_changes::FrameChanges,
         cancelled: &AtomicBool,
     ) -> io::Result<bool> {
-        self.observe_inner(decoded, format, Some(changes), cancelled)
+        self.observe_inner(decoded, format, Some(changes), None, cancelled)
     }
     fn observe_inner(
         &mut self,
         decoded: &replay::frame::DecodedFrame,
         format: replay::format::FormatVersion,
         changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
+        demand: Option<&[CountryFuelRow]>,
         cancelled: &AtomicBool,
     ) -> io::Result<bool> {
         dashboard_text::metadata::check_cancel(cancelled)?;
@@ -1050,7 +1051,7 @@ impl Scan {
             |changes| changes.slot_read[TableId::CountryFuel.index()],
         );
         // A read's packs with their lists, which later formats record apart.
-        let assembled = match fuel {
+        let assembled = match fuel.filter(|_| demand.is_none()) {
             Some(rows) if read => Some(replay::rows::with_demand_parts(
                 rows,
                 &decoded.tables[TableId::FuelDemandParts.index()],
@@ -1060,7 +1061,7 @@ impl Scan {
         };
         let by_slot = if self.country_keys.is_some()
             && self.slots.is_some()
-            && let Some(rows) = &assembled
+            && let Some(rows) = demand.or(assembled.as_deref())
         {
             #[cfg(any(test, feature = "test-support"))]
             {

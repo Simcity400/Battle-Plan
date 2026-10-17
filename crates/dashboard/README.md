@@ -93,6 +93,13 @@ parity oracles; the dashboard's pipeline tests reach the military air ledger's
 and raids' through those crates' `test-support` feature. Preparation and queries share the native observers, content
 resolvers and reply builders.
 
+Event-feed focus artwork groups completion hours into one chronological sparse
+read through the shared query frame cache. Completion hours within a block share
+its trigger-table decode and advance their decoder in order; later pages reuse
+the cached block and hours. Plain completion art reads no recorded state.
+Equipment-loss preparation reads DivisionCensus for membership coverage and
+does not select Divisions.
+
 ### Add a product
 
 1. Add `products/<name>.rs` implementing `Product`, with validation, cancellation

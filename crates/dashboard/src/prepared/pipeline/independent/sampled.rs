@@ -86,6 +86,13 @@ use std::{
 /// Measured timings of an observer's parts, by timing name.
 type Timings = Option<BTreeMap<&'static str, FamilyTimings>>;
 
+#[test]
+fn equipment_loss_preparation_reads_the_division_census_without_division_rows() {
+    let tables = <equipment_losses::prepared::Prepared as Sampled>::tables();
+    assert!(tables.contains(&TableId::DivisionCensus));
+    assert!(!tables.contains(&TableId::Divisions));
+}
+
 /// A sampled family's branch state, observing as hourly preparation does.
 trait Sampled: Serialize + DeserializeOwned + Send + 'static {
     /// Its pre-pass family: its name is the hourly walk's.
@@ -468,7 +475,7 @@ impl Sampled for equipment_losses::prepared::Prepared {
     const OBSERVED: &'static str = "equipment_losses.observed";
 
     /// The destruction and combat-log tables, lend-lease and sunk convoys and
-    /// ships, the divisions and their census, players and features, the
+    /// ships, the division census, players and features, the
     /// slice reads, and the variant catalogue naming the equipment.
     fn tables() -> &'static [TableId] {
         static TABLES: LazyLock<Vec<TableId>> = LazyLock::new(|| {
@@ -477,7 +484,6 @@ impl Sampled for equipment_losses::prepared::Prepared {
                     TableId::CombatLogEquipment,
                     TableId::CombatLogState,
                     TableId::DivisionCensus,
-                    TableId::Divisions,
                     TableId::EquipmentDestruction,
                     TableId::LendLeaseEquipment,
                     TableId::Players,

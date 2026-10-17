@@ -174,6 +174,55 @@ struct HourFrame {
     frame: DecodedFrame,
 }
 
+/// Exact, ascending hours, sharing block decodes and walking each selection
+/// once per block. Unlike a window this reconstructs no unrequested output.
+pub fn hours(
+    source: &Source,
+    branch: u64,
+    hours: &[i32],
+    tables: &[TableId],
+    cancelled: &AtomicBool,
+    mut visit: impl FnMut(i32, SeekResult) -> io::Result<()>,
+) -> io::Result<()> {
+    if hours.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(crate::invalid(
+            "Requested hours must be distinct and ascending",
+        ));
+    }
+    let mut active = None;
+    let mut decoders = BTreeMap::new();
+    for &hour in hours {
+        check_cancel(cancelled)?;
+        let block = source.replay_ref().index.iter().find(|block| {
+            block.branch == branch && block.first_hour <= hour && hour <= block.last_hour
+        });
+        let result = match block {
+            Some(block) => {
+                if active != Some(block.offset) {
+                    decoders.clear();
+                    active = Some(block.offset);
+                }
+                seek_with(source, branch, hour, tables, cancelled, |tables| {
+                    let tables = sorted(&[tables, &[TableId::Campaign]].concat());
+                    if !decoders.contains_key(&tables) {
+                        decoders.insert(
+                            tables.clone(),
+                            BlockDecoder::new(source, block, &tables, cancelled)?,
+                        );
+                    }
+                    decoders
+                        .get_mut(&tables)
+                        .expect("selected decoder")
+                        .at(source, hour, cancelled)
+                })?
+            }
+            None => seek(source, branch, hour, tables, cancelled)?,
+        };
+        visit(hour, result)?;
+    }
+    Ok(())
+}
+
 /// A bounded chronological read, sharing hour slots and table joins with `seek`.
 /// Each selection's decoder advances once through the intersecting block.
 pub fn window(

@@ -8,7 +8,7 @@ pub mod production;
 
 use crate::{Source, catalogue::Catalogue, metadata::slot_read};
 use replay::{
-    frame::{DecodedFrame, SharedView},
+    frame::{DecodedFrame, SharedView, ViewIdentity},
     rows::{
         LexicalTokenRow, TableId, VariantDefinitionRow, VariantModuleRow, VariantUpgradeRow, tables,
     },
@@ -186,16 +186,15 @@ pub struct VariantVersion {
 
 /// A complete variant read's operands for [`VariantCatalogue::observe_built`],
 /// built again only where an input changed since the read before: the
-/// countries' keys, links, appearance and lexical tokens that every name reads,
-/// or a definition's own row, modules or upgrades. The views read before are
-/// kept: the same allocation holds the same rows, and a table in a new
-/// allocation is compared.
+/// countries' keys, links, appearance and the lexical tokens its names and
+/// design read, or a definition's own row, modules or upgrades. The dictionary
+/// keeps only those spellings and a weak identity, leaving its decoder unshared.
 #[derive(Default)]
 pub(crate) struct VariantReads {
     keys: Option<crate::metadata::CountryKeys>,
     links: Option<SharedView>,
     appearance: Option<SharedView>,
-    lexical: Option<SharedView>,
+    lexical: Option<(ViewIdentity, BTreeMap<u32, Option<Vec<u8>>>)>,
     definitions: Option<SharedView>,
     modules: Option<SharedView>,
     upgrades: Option<SharedView>,
@@ -263,11 +262,23 @@ impl VariantReads {
         ) else {
             return Vec::new();
         };
+        let spelling = |token| {
+            lexical
+                .binary_search_by_key(&token, |row| row.token)
+                .ok()
+                .map(|index| &lexical[index].literal)
+        };
+        let same_lexical = self.lexical.as_ref().is_some_and(|(identity, held)| {
+            identity.is(view(TableId::LexicalTokens))
+                || held
+                    .iter()
+                    .all(|(&token, literal)| literal.as_ref() == spelling(token))
+        });
         let context = !all
             && self.keys.as_ref().is_some_and(|keys| keys.same(countries))
             && same_view(self.links.as_ref(), view(TableId::CountryLinks))
             && same_view(self.appearance.as_ref(), view(TableId::CountryAppearance))
-            && same_view(self.lexical.as_ref(), view(TableId::LexicalTokens));
+            && same_lexical;
         let designs = same_view(self.modules.as_ref(), view(TableId::VariantModules))
             && same_view(self.upgrades.as_ref(), view(TableId::VariantUpgrades));
         if context
@@ -277,6 +288,9 @@ impl VariantReads {
                 .as_ref()
                 .is_some_and(|held| SharedView::ptr_eq(held, view(TableId::VariantDefinitions)))
         {
+            if let Some((identity, _)) = &mut self.lexical {
+                *identity = view(TableId::LexicalTokens).identity();
+            }
             return Vec::new();
         }
         let appearance = frame.complete::<tables::CountryAppearance>().ok();
@@ -350,7 +364,31 @@ impl VariantReads {
         }
         self.links = Some(view(TableId::CountryLinks).clone());
         self.appearance = Some(view(TableId::CountryAppearance).clone());
-        self.lexical = Some(view(TableId::LexicalTokens).clone());
+        let tokens = definitions
+            .iter()
+            .map(|row| row.equipment_token)
+            .chain(
+                frame
+                    .complete::<tables::VariantModules>()
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|row| [row.slot, row.definition_token]),
+            )
+            .chain(
+                frame
+                    .complete::<tables::VariantUpgrades>()
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .map(|row| row.definition_token as u32),
+            );
+        self.lexical = Some((
+            view(TableId::LexicalTokens).identity(),
+            tokens
+                .map(|token| (token, spelling(token).cloned()))
+                .collect(),
+        ));
         self.definitions = Some(view(TableId::VariantDefinitions).clone());
         self.modules = Some(view(TableId::VariantModules).clone());
         self.upgrades = Some(view(TableId::VariantUpgrades).clone());

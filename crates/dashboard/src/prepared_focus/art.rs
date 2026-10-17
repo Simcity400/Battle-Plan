@@ -424,26 +424,57 @@ pub(crate) fn event_art(
         by_hour.entry(*hour).or_default().push(index);
     }
     let mut results: Vec<Option<artwork::ResolvedArt>> = vec![None; requests.len()];
-    for (hour, indices) in by_hour {
+    let dynamic: Vec<i32> = by_hour
+        .iter()
+        .filter_map(|(&hour, indices)| {
+            let tokens = indices
+                .iter()
+                .map(|&index| requests[index].2.to_owned())
+                .collect::<Vec<_>>();
+            art.requested_focus_needs_frame(&tokens).then_some(hour)
+        })
+        .collect();
+    let mut present = |hour, frame: &DecodedFrame| -> io::Result<()> {
         check_cancel(cancelled)?;
-        let tokens: Vec<String> = indices
-            .iter()
-            .map(|&index| requests[index].2.to_owned())
-            .collect();
-        let frame = if art.requested_focus_needs_frame(&tokens) {
-            #[cfg(test)]
-            FRAME_READS.with(|reads| reads.set(reads.get() + 1));
-            crate::products::focus_artwork::scoped_frame(source, branch, hour, cancelled)?
-        } else {
-            unread_frame(branch, hour)
-        };
+        let indices = &by_hour[&hour];
         let asked: Vec<(&str, &str)> = indices
             .iter()
             .map(|&index| (requests[index].2, requests[index].1))
             .collect();
-        for (index, item) in indices.iter().zip(art.focuses_at(&asked, &frame)) {
+        for (index, item) in indices.iter().zip(art.focuses_at(&asked, frame)) {
             results[*index] = Some(item);
         }
+        Ok(())
+    };
+    let mut remaining = by_hour.keys().copied().peekable();
+    let mut selected = crate::scripted_text::TABLES.to_vec();
+    selected.extend([
+        TableId::Campaign,
+        TableId::Clock,
+        TableId::Countries,
+        TableId::CountryLinks,
+    ]);
+    dashboard_base::prepared::query::frames::hours(
+        source,
+        branch,
+        &dynamic,
+        &selected,
+        cancelled,
+        |hour, result| {
+            while let Some(at) = remaining.next_if(|&at| at < hour) {
+                present(at, &unread_frame(branch, at))?;
+            }
+            let _ = remaining.next();
+            #[cfg(test)]
+            FRAME_READS.with(|reads| reads.set(reads.get() + 1));
+            match result {
+                replay::container::SeekResult::Frame(frame) => present(hour, &frame),
+                replay::container::SeekResult::Gap { reason, .. } => Err(io::Error::other(reason)),
+            }
+        },
+    )?;
+    for hour in remaining {
+        present(hour, &unread_frame(branch, hour))?;
     }
     let art: Vec<artwork::ResolvedArt> = results
         .into_iter()

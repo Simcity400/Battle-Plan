@@ -22,6 +22,11 @@ Progressive fuel levels and capacities share compact block observations across
 summary and state requests. Moving prefixes clip retained keyframes or exact
 block folds; completed-day accounting still comes only from prepared pages.
 
+The daily block extract assembles each supplying read's demand lists before
+retaining it. Its fold passes those exact rows to the ordinary observer, including
+the join's reasons for incomplete parts. Retained reads hold no FuelDemandParts
+view, so later part deltas can update the decoder's baseline in place.
+
 `cargo test -p dashboard-country-fuel` builds and runs only these products'
 tests. The `test-support` feature compiles their test oracles and instrumentation
 for the dashboard's tests.

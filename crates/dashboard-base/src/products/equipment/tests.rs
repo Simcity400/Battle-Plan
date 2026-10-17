@@ -4,6 +4,64 @@ use replay::frame::TableView;
 use replay::rows::{CountryRow, TableRows};
 
 #[test]
+fn variant_reads_keep_used_spellings_without_holding_the_dictionary_baseline() {
+    let mut frame = named_frame(slot_hour(TableId::VariantDefinitions), Some(b"Named"));
+    *frame.tables[TableId::VariantModules.index()] =
+        TableView::Complete(TableRows::VariantModules(vec![VariantModuleRow {
+            variant: 20,
+            slot: 2,
+            definition_token: 3,
+            definition_active: 1,
+            ..Default::default()
+        }]));
+    *frame.tables[TableId::VariantUpgrades.index()] =
+        TableView::Complete(TableRows::VariantUpgrades(vec![VariantUpgradeRow {
+            variant: 20,
+            definition_token: 4,
+            level: 1,
+            ..Default::default()
+        }]));
+    if let TableView::Complete(TableRows::LexicalTokens(rows)) =
+        &mut *frame.tables[TableId::LexicalTokens.index()]
+    {
+        rows.extend([3, 4, 99].map(|token| LexicalTokenRow {
+            token,
+            literal: format!("token-{token}").into_bytes(),
+        }));
+    }
+    let mut reads = VariantReads::default();
+    let original = reads.build(&frame, false);
+    assert_eq!(original.len(), 1);
+    let old = std::mem::replace(
+        &mut frame.tables[TableId::LexicalTokens.index()],
+        TableView::Unavailable {
+            reason: "replacing dictionary".into(),
+        }
+        .into(),
+    );
+    let TableView::Complete(TableRows::LexicalTokens(mut rows)) = old.try_unwrap().unwrap() else {
+        panic!("variant reads must leave the decoder's dictionary unshared")
+    };
+    rows.last_mut().unwrap().literal = b"unrelated change".to_vec();
+    *frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(rows));
+    frame.hour += 24;
+    assert!(
+        reads.build(&frame, false).is_empty(),
+        "unused tokens do not rebuild names"
+    );
+    if let TableView::Complete(TableRows::LexicalTokens(rows)) =
+        &mut *frame.tables[TableId::LexicalTokens.index()]
+    {
+        rows[2].literal = b"changed module".to_vec();
+    }
+    frame.hour += 24;
+    let changed = reads.build(&frame, false);
+    assert_eq!(changed.len(), 1);
+    assert_ne!(changed[0].1.design, original[0].1.design);
+}
+
+#[test]
 fn equipment_localisation_keeps_names_past_the_old_length_limit() {
     struct LongName(String);
     impl Texts for LongName {

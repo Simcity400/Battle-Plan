@@ -230,6 +230,11 @@ an entry left empty when its read ends is removed. It evicts
 the least recently used entry first. A reader publishes and accounts its read before
 any other request may read the same block or hour.
 
+Sparse exact-hour consumers use `frames::hours`: ascending requested hours share
+one decoder per selection in each block and the same block and hour cache as
+windows. Only requested outputs are retained; intermediate hours validate their
+ordinary baselines and campaign identity.
+
 `progressive::latest_read` finds the latest complete supplying read within a
 family's cadence. Recorded read slots locate its supplying hour first; an
 unchanged carry reconstructs only that hour. A snapshot or delta without a read
@@ -308,6 +313,12 @@ country operands are built only at a read with variants to picture. Blocks are
 read and decoded on spare cores (`extract_block`, three ahead), each hour reduced
 to what the fold reads of it, with its frame kept only where the fold reads rows
 (a variant read, a read of the country's lines).
+
+Equipment variant naming keeps only the lexical spellings its equipment types,
+module slots, modules and upgrades reference, including missing spellings, with
+a weak dictionary identity. Unrelated token edits preserve the naming operands;
+used-token edits rebuild them. Naming does not retain the decoder's dictionary
+baseline.
 
 ## Country experience
 
