@@ -188,6 +188,10 @@ struct CountryHolds {
     last_hour: Option<i32>,
     active: BTreeMap<String, Holder>,
     history: Vec<LedgerCommandHold>,
+    /// An empty allocator set's snapshot depends only on its recorded total
+    /// and, without that total, its refusal. Rebuilt after a resume.
+    #[serde(skip)]
+    empty_snapshot: Option<(Option<i64>, Option<String>)>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -250,6 +254,36 @@ fn holder_kind(row: &LedgerMutation) -> String {
 }
 
 impl CountryHolds {
+    fn observe_snapshot(
+        &mut self,
+        frame: &DecodedFrame,
+        total: Option<i64>,
+        content: Option<&PoliticsContent>,
+        missing: Option<&str>,
+    ) -> bool {
+        let missing = missing.filter(|_| total.is_none());
+        if self.active.is_empty()
+            && self
+                .empty_snapshot
+                .as_ref()
+                .is_some_and(|(old, reason)| *old == total && reason.as_deref() == missing)
+            && let Some(last) = self.history.last_mut()
+            && last.through_hour.checked_add(1) == Some(frame.hour)
+        {
+            self.last_hour = Some(frame.hour);
+            last.through_hour = frame.hour;
+            return false;
+        }
+        #[cfg(test)]
+        SNAPSHOTS.with(|count| count.set(count.get() + 1));
+        let value = self.snapshot(frame, total, content, missing);
+        self.empty_snapshot = self
+            .active
+            .is_empty()
+            .then(|| (total, missing.map(str::to_owned)));
+        self.append(value)
+    }
+
     /// The unit leader keys and character ids naming the allocators, read
     /// with `leaders`.
     fn name_rows(&self, leaders: Option<&[UnitLeaderRow]>) -> (Vec<u128>, Vec<u32>) {
@@ -488,6 +522,7 @@ pub(super) fn observe_holds(
     scan: &mut Scanned,
     content: Option<&PoliticsContent>,
 ) {
+    let _cpu = ::replay::cpu::scope_phase("politics_ledger:accounting_holds");
     let mut holds = std::mem::take(&mut scan.holds);
     let native = Arc::clone(&scan.inputs);
     let countries_known = frame.complete::<tables::Countries>().is_ok();
@@ -592,13 +627,12 @@ pub(super) fn observe_holds(
             }
         }
         let total = by_slot.get(&country.canonical_slot).copied();
-        let value = state.snapshot(
+        if state.observe_snapshot(
             frame,
             total,
             content,
             Some("CountryCommandPower row unavailable"),
-        );
-        if state.append(value) {
+        ) {
             scan.dirty.insert(tag.to_owned());
         }
     }
@@ -616,13 +650,12 @@ pub(super) fn observe_holds(
         // they do not prove that the country ceased to exist.
         let refusal = state.slot.and_then(|slot| refused.get(&slot));
         let total = (countries_known && refusal.is_none()).then_some(0);
-        let value = state.snapshot(
+        if state.observe_snapshot(
             frame,
             total,
             content,
             Some(refusal.map_or("Countries unavailable", String::as_str)),
-        );
-        if state.append(value) {
+        ) {
             scan.dirty.insert(tag.clone());
         }
     }
@@ -652,10 +685,16 @@ pub(super) fn observe_holds(
 thread_local! {
     /// Countries observed again because their allocators may be renamed.
     static NAMED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SNAPSHOTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 #[cfg(test)]
 pub(super) fn named_count() -> usize {
     NAMED.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(super) fn snapshot_count() -> usize {
+    SNAPSHOTS.with(std::cell::Cell::get)
 }
 
 pub(super) fn history<'a>(scan: &'a Scanned, tag: &str) -> &'a [LedgerCommandHold] {

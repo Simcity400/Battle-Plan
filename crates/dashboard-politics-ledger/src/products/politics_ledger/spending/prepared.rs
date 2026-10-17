@@ -52,6 +52,22 @@ pub struct Prepared {
     current_daily_keys: BTreeSet<u128>,
     #[serde(skip)]
     scalar_values: BTreeMap<u64, Option<i128>>,
+    /// Native daily operands already projected on this day. Membership edits
+    /// invalidate the tags that have retained rows of the edited country.
+    #[serde(skip)]
+    projected_daily: BTreeMap<String, i32>,
+    /// Stable native daily field ordinals, in publication order.
+    #[serde(skip)]
+    native_daily: BTreeMap<String, BTreeMap<(u32, u32, String), [u64; 26]>>,
+    #[cfg(test)]
+    #[serde(skip)]
+    native_daily_key_visits: usize,
+    #[cfg(test)]
+    #[serde(skip)]
+    daily_projection_visits: usize,
+    #[cfg(test)]
+    #[serde(skip)]
+    whole_projection: bool,
     #[serde(skip)]
     day_tags: BTreeMap<i32, BTreeSet<String>>,
     /// Whether every part not in `new_parts` names a capture of the last
@@ -979,10 +995,49 @@ impl Prepared {
 
     fn publish_daily(&mut self, tag: &str, row: &LedgerDaily) -> io::Result<()> {
         let day = row.day_hour;
-        let prefix = daily_prefix(&(row.country, row.instance, row.epoch.clone()))?;
-        for (field, value) in daily_values(row)? {
-            self.native(tag, &format!("{prefix}:{field}"), day, value)?;
-        }
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:native_daily_projection");
+        let mut values = Vec::with_capacity(26);
+        values.extend(daily_values(row)?.into_iter().map(|(_, value)| value));
+        let identity = (row.country, row.instance, row.epoch.clone());
+        let cached = self
+            .native_daily
+            .get(tag)
+            .and_then(|keys| keys.get(&identity))
+            .copied();
+        #[cfg(test)]
+        let cached = cached.filter(|_| !self.whole_projection);
+        let keys = match cached {
+            Some(keys) => keys,
+            None => {
+                let prefix = daily_prefix(&identity)?;
+                let mut keys = [0; 26];
+                for (key, field) in keys.iter_mut().zip(DAILY_FIELDS.iter().copied().chain([
+                    "Political:gained-positive",
+                    "Political:gained-negative",
+                    "Political:lost",
+                    "Political:incomplete",
+                    "Political:days",
+                    "Political:availability-lag",
+                    "Command:gained-positive",
+                    "Command:gained-negative",
+                    "Command:lost",
+                    "Command:incomplete",
+                    "Command:days",
+                    "Command:availability-lag",
+                ])) {
+                    *key = self.key(tag, &format!("{prefix}:{field}"))?;
+                    #[cfg(test)]
+                    {
+                        self.native_daily_key_visits += 1;
+                    }
+                }
+                self.native_daily
+                    .entry(tag.to_owned())
+                    .or_default()
+                    .insert(identity, keys);
+                keys
+            }
+        };
         for (currency, gain, net, applied) in [
             (
                 "Political",
@@ -1011,42 +1066,25 @@ impl Prepared {
                     0
                 }
             });
-            self.native(
-                tag,
-                &format!("{prefix}:{currency}:gained-positive"),
-                day,
-                gained.map(|value| value.max(0)),
-            )?;
-            self.native(
-                tag,
-                &format!("{prefix}:{currency}:gained-negative"),
-                day,
-                gained.map(|value| value.min(0)),
-            )?;
-            self.native(tag, &format!("{prefix}:{currency}:lost"), day, lost)?;
-            self.native(
-                tag,
-                &format!("{prefix}:{currency}:incomplete"),
-                day,
-                Some(i128::from(gain.is_none())),
-            )?;
             let read = if currency == "Political" {
                 row.pp_read_hour
             } else {
                 row.cp_read_hour
             };
-            self.native(
-                tag,
-                &format!("{prefix}:{currency}:days"),
-                day,
+            values.extend([
+                gained.map(|value| value.max(0)),
+                gained.map(|value| value.min(0)),
+                lost,
+                Some(i128::from(gain.is_none())),
                 Some(i128::from(read.is_some())),
-            )?;
-            self.native(
-                tag,
-                &format!("{prefix}:{currency}:availability-lag"),
-                day,
                 Some(i128::from(read.unwrap_or(row.read_hour)) - i128::from(day)),
-            )?;
+            ]);
+        }
+        for (key, value) in keys.into_iter().zip(values) {
+            if let Some(value) = value {
+                self.recurring
+                    .push(key, Run::new(day, day.saturating_add(23), value, false));
+            }
         }
         Ok(())
     }
@@ -1452,8 +1490,12 @@ impl Prepared {
                 self.work.history_visits += 1;
             }
             cancelled_request(cancelled)?;
-            let (reply, tooltip_order, notes) =
-                presented.take(&self.scan, frame.branch, tag, content, cancelled)?;
+            let Presented {
+                reply,
+                tooltip_order,
+                notes,
+                payments: projected_payments,
+            } = presented.take(&self.scan, frame.branch, tag, content, cancelled)?;
             self.open_notes
                 .entry(tag.clone())
                 .or_default()
@@ -1469,24 +1511,6 @@ impl Prepared {
                     .entry(series::field_key(tag, &token))
                     .or_default()[usize::from(cost)]
                 .get_or_insert((frame.hour, order as u64));
-            }
-            let current_days: Vec<_> = self.scan.countries[tag]
-                .daily
-                .iter()
-                .filter(|day| self.current_daily_keys.contains(&day.row.key()))
-                .map(Daily::ledger)
-                .collect();
-            let current = current_days.iter().max_by_key(|day| day.day_hour).cloned();
-            if current_days
-                .iter()
-                .any(|row| row.day_hour == frame.hour.div_euclid(24) * 24)
-                && let Some(next) = frame
-                    .hour
-                    .div_euclid(24)
-                    .checked_add(1)
-                    .and_then(|day| day.checked_mul(24))
-            {
-                self.day_tags.entry(next).or_default().insert(tag.clone());
             }
             let identity = self.scan.countries[tag]
                 .coverage
@@ -1520,59 +1544,87 @@ impl Prepared {
                 self.scalar(tag, "capture", frame.hour, None, false, false)?;
             }
 
-            for (field, value) in current
-                .as_ref()
-                .map(daily_values)
-                .transpose()?
-                .unwrap_or_default()
-            {
-                self.scalar(tag, field, frame.hour, value, false, false)?;
-            }
-            if current.is_none() {
-                for field in DAILY_FIELDS {
-                    self.scalar(tag, field, frame.hour, None, false, false)?;
-                }
-            }
-            for day in current_days {
-                let identity = (day.country, day.instance, day.epoch.clone());
-                self.metadata
-                    .actors
-                    .entry(tag.clone())
-                    .or_default()
-                    .insert(identity.clone());
-                let lags = self
-                    .metadata
-                    .daily_lags
-                    .entry(series::field_key(tag, &daily_prefix(&identity)?))
-                    .or_default();
-                for (index, read) in [day.pp_read_hour, day.cp_read_hour].into_iter().enumerate() {
-                    lags[index] =
-                        lags[index].max(read.unwrap_or(day.read_hour).saturating_sub(day.day_hour));
-                }
-                self.metadata.largest_lag = self.metadata.largest_lag.max(
-                    day.pp_read_hour
-                        .into_iter()
-                        .chain(day.cp_read_hour)
-                        .map(|read| read.saturating_sub(day.day_hour))
-                        .max()
-                        .unwrap_or(0),
-                );
-                if self
-                    .frontier
-                    .is_some_and(|frontier| day.day_hour <= frontier)
+            let day = frame.hour.div_euclid(24) * 24;
+            let same_daily = self.projected_daily.get(tag) == Some(&day)
+                && !self.scan.countries[tag].daily_changed
+                && self
+                    .scan
+                    .clock
+                    .previous
+                    .and_then(|last| last.checked_add(1))
+                    == Some(frame.hour);
+            #[cfg(test)]
+            let same_daily = same_daily && !self.whole_projection;
+            if !same_daily {
+                let current_days: Vec<_> = self.scan.countries[tag]
+                    .daily
+                    .iter()
+                    .filter(|day| self.current_daily_keys.contains(&day.row.key()))
+                    .map(Daily::ledger)
+                    .collect();
+                #[cfg(test)]
                 {
-                    if day.read_hour == frame.hour {
-                        let key = self.key(tag, "late-daily")?;
-                        self.series
-                            .event(key, frame.hour, &Event::LateDaily { row: day })?;
-                    }
-                } else {
-                    self.tail
-                        .entry(day.day_hour)
-                        .or_default()
-                        .daily
-                        .insert(daily_id(tag, &day)?, day);
+                    self.daily_projection_visits += current_days.len();
                 }
+                let current = current_days.iter().max_by_key(|day| day.day_hour);
+                if current_days.iter().any(|row| row.day_hour == day)
+                    && let Some(next) = day.checked_add(24)
+                {
+                    self.day_tags.entry(next).or_default().insert(tag.clone());
+                }
+                for (field, value) in current.map(daily_values).transpose()?.unwrap_or_default() {
+                    self.scalar(tag, field, frame.hour, value, false, false)?;
+                }
+                if current.is_none() {
+                    for field in DAILY_FIELDS {
+                        self.scalar(tag, field, frame.hour, None, false, false)?;
+                    }
+                }
+                for day in current_days {
+                    let identity = (day.country, day.instance, day.epoch.clone());
+                    self.metadata
+                        .actors
+                        .entry(tag.clone())
+                        .or_default()
+                        .insert(identity.clone());
+                    let lags = self
+                        .metadata
+                        .daily_lags
+                        .entry(series::field_key(tag, &daily_prefix(&identity)?))
+                        .or_default();
+                    for (index, read) in
+                        [day.pp_read_hour, day.cp_read_hour].into_iter().enumerate()
+                    {
+                        lags[index] = lags[index]
+                            .max(read.unwrap_or(day.read_hour).saturating_sub(day.day_hour));
+                    }
+                    self.metadata.largest_lag = self.metadata.largest_lag.max(
+                        day.pp_read_hour
+                            .into_iter()
+                            .chain(day.cp_read_hour)
+                            .map(|read| read.saturating_sub(day.day_hour))
+                            .max()
+                            .unwrap_or(0),
+                    );
+                    if self
+                        .frontier
+                        .is_some_and(|frontier| day.day_hour <= frontier)
+                    {
+                        if day.read_hour == frame.hour {
+                            let key = self.key(tag, "late-daily")?;
+                            self.series
+                                .event(key, frame.hour, &Event::LateDaily { row: day })?;
+                        }
+                    } else {
+                        self.tail
+                            .entry(day.day_hour)
+                            .or_default()
+                            .daily
+                            .insert(daily_id(tag, &day)?, day);
+                    }
+                }
+                self.scan.countries.get_mut(tag).unwrap().daily_changed = false;
+                self.projected_daily.insert(tag.clone(), day);
             }
             let cover = reply.spending_coverage.iter().find(|row| {
                 row.since_hour
@@ -1647,9 +1699,8 @@ impl Prepared {
                 }
             }
             let mut payments = BTreeMap::new();
-            let mut projection = Payments::new(&reply);
-            for spend in &reply.spending {
-                let mut projected = projection.payment(spend)?;
+            for (spend, (order, projected)) in reply.spending.iter().zip(projected_payments) {
+                let mut projected = projected?;
                 if projected.spend.category == "upkeep" {
                     let day = projected.spend.hour.div_euclid(24) * 24;
                     if let Some(first) = self.tail.get(&day).and_then(|open| {
@@ -1680,8 +1731,7 @@ impl Prepared {
                     }
                 }
                 let cost = spend.id.starts_with("daily:");
-                let order = projection.order.get(&spend.id).copied().unwrap_or(0);
-                self.register(tag, &projected, frame.hour, order as u64, cost)?;
+                self.register(tag, &projected, frame.hour, order, cost)?;
                 payments.insert(spend.id.clone(), projected);
             }
             for row in &reply.mutations {
@@ -1997,6 +2047,7 @@ impl Prepared {
     /// reads replace just their changed keys.
     fn read_daily_keys(&mut self, frame: &DecodedFrame, changes: &FrameChanges) {
         let _cpu = ::replay::cpu::scope_phase("politics_ledger:observe_apply");
+        let _keys_cpu = ::replay::cpu::scope_phase("politics_ledger:daily_keys");
         let index = TableId::CountryPowerDaily.index();
         if !(changes.rows_changed[index] || changes.table_read[index]) {
             return;
@@ -2020,16 +2071,30 @@ impl Prepared {
         let delta = delta.filter(|_| !self.scan.whole_tables);
         if let Some((changed, deleted)) = delta {
             for key in deleted {
-                self.current_daily_keys.remove(key);
+                if self.current_daily_keys.remove(key) {
+                    self.daily_membership_changed(*key as u32);
+                }
             }
-            self.current_daily_keys
-                .extend(changed.iter().map(|row| row.key));
+            for row in changed {
+                if self.current_daily_keys.insert(row.key) {
+                    self.daily_membership_changed(row.key as u32);
+                }
+            }
             #[cfg(test)]
             {
                 self.daily_key_visits += changed.len() + deleted.len();
             }
         } else {
-            self.current_daily_keys = rows.unwrap_or_default().iter().map(RowCodec::key).collect();
+            let current = rows.unwrap_or_default().iter().map(RowCodec::key).collect();
+            let edited: Vec<_> = self
+                .current_daily_keys
+                .symmetric_difference(&current)
+                .map(|key| *key as u32)
+                .collect();
+            for country in edited {
+                self.daily_membership_changed(country);
+            }
+            self.current_daily_keys = current;
             #[cfg(test)]
             {
                 self.daily_key_visits += rows.map_or(0, <[_]>::len);
@@ -2039,9 +2104,23 @@ impl Prepared {
         self.daily_view = Some(view.identity());
     }
 
+    fn daily_membership_changed(&mut self, country: u32) {
+        for tags in self
+            .scan
+            .identities
+            .range((country, 0, 0)..=(country, u32::MAX, u64::MAX))
+            .map(|(_, tags)| tags)
+        {
+            for tag in tags.values() {
+                self.projected_daily.remove(tag);
+            }
+        }
+    }
+
     /// Keep the open parts of the captured countries only, when the hour
     /// reads its captures.
     fn check_parts(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:parts_capture_check");
         if (changes.rows_changed[TableId::PoliticsCaptureCoverage.index()]
             || changes.table_read[TableId::PoliticsCaptureCoverage.index()])
             && let Ok(rows) = frame.complete::<tables::PoliticsCaptureCoverage>()
@@ -2350,8 +2429,14 @@ impl BlockFold {
 }
 
 /// One country's presentation at an hour: its raw reply, the tooltip order
-/// and the presentation notes.
-type Presented = (PoliticsLedgerReply, Vec<(String, bool)>, PresentationNotes);
+/// and the presentation notes. Payment operands are independent of the fold;
+/// their errors are consumed in the fold's original order.
+struct Presented {
+    reply: PoliticsLedgerReply,
+    tooltip_order: Vec<(String, bool)>,
+    notes: PresentationNotes,
+    payments: Vec<(u64, io::Result<Payment>)>,
+}
 
 fn present_one(
     scan: &Scanned,
@@ -2374,7 +2459,24 @@ fn present_one(
         Some(&mut tooltip_order),
         Some(&mut notes),
     )?;
-    Ok((reply, tooltip_order, notes))
+    let payments = {
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:payment_projection");
+        let mut projection = Payments::new(&reply);
+        reply
+            .spending
+            .iter()
+            .map(|spend| {
+                let order = projection.order.get(&spend.id).copied().unwrap_or(0) as u64;
+                (order, projection.payment(spend))
+            })
+            .collect()
+    };
+    Ok(Presented {
+        reply,
+        tooltip_order,
+        notes,
+        payments,
+    })
 }
 
 /// The countries an hour presents, taken in order. A country's presentation

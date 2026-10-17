@@ -2777,6 +2777,7 @@ fn prepared_advance_only_hours_match_the_whole_accounting_byte_for_byte() {
     let fixtures = [Fixture::new(), Fixture::new()];
     let mut observers = [Prepared::default(), Prepared::default()];
     observers[1].dense = true;
+    observers[1].whole_projection = true;
     let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
     let mut recorded = Recorded::new();
     let mut input = frame(24, 4);
@@ -2884,8 +2885,10 @@ fn prepared_advance_only_hours_match_the_whole_accounting_byte_for_byte() {
             break;
         }
         for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
-            let (dense, paths) = (observer.dense, observer.paths);
+            let (dense, paths, whole_projection) =
+                (observer.dense, observer.paths, observer.whole_projection);
             *observer = Prepared::read(observer.saved_bytes().unwrap().as_slice()).unwrap();
+            observer.whole_projection = whole_projection;
             observer.dense = dense;
             observer.paths = paths;
             observer.resume(&decoded);
@@ -3133,6 +3136,7 @@ fn assert_daily_changes_observe_only_their_owners(count: u32) {
     let fixtures = [Fixture::new(), Fixture::new()];
     let mut observers = [Prepared::default(), Prepared::default()];
     observers[1].scan.whole_tables = true;
+    observers[1].whole_projection = true;
     let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
     let mut recorded = Recorded::new();
     let mut input = frame(24, count);
@@ -3251,9 +3255,11 @@ fn assert_daily_changes_observe_only_their_owners(count: u32) {
         );
         if hour == 27 {
             for observer in &mut observers {
-                let whole_tables = observer.scan.whole_tables;
+                let (whole_tables, whole_projection) =
+                    (observer.scan.whole_tables, observer.whole_projection);
                 *observer = Prepared::read(observer.saved_bytes().unwrap().as_slice()).unwrap();
                 observer.scan.whole_tables = whole_tables;
+                observer.whole_projection = whole_projection;
                 observer.resume(&decoded);
             }
         }
@@ -3288,7 +3294,7 @@ fn prepared_payment_projection_indexes_each_source_row_once() {
     put(&mut input, TableRows::CountryPowerChanges(changes));
     let mut scan = Scanned::default();
     scan.observe(&input, None).unwrap();
-    let (reply, _, _) = present_one(&scan, 1, "C1", None, &flag).unwrap();
+    let reply = present_one(&scan, 1, "C1", None, &flag).unwrap().reply;
     assert_eq!(reply.spending.len(), 128);
     let mut payments = Payments::new(&reply);
     let indexed = payments.indexed;
@@ -3558,6 +3564,179 @@ fn prepared_accounting_follows_changed_rows_within_one_owners_retained_publicati
                     tracker.invalidate();
                 }
             }
+        }
+    }
+}
+
+/// Replacing capture starts selects every owner even when its retained daily
+/// operands and empty holds have not changed.
+fn unchanged_daily_and_empty_holds_do_not_rebuild(count: u32) {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    let mut prepared = Prepared::default();
+    let mut tracker = FrameChangeTracker::new();
+    let mut recorded = Recorded::new();
+    let mut input = frame(24, count);
+    put(&mut input, command_power(count));
+    let mut days: Vec<_> = (1..=count)
+        .map(|country| daily_gain(country, 1, 24).0)
+        .collect();
+    for hour in 24..=26 {
+        input.hour = hour;
+        if hour == 26 {
+            days.last_mut().unwrap().cp_gain_raw = Some(31);
+        }
+        put(&mut input, TableRows::CountryPowerDaily(days.clone()));
+        put(
+            &mut input,
+            TableRows::PoliticsCaptureCoverage(
+                (1..=count)
+                    .map(|country| capture(country, hour, hour))
+                    .collect(),
+            ),
+        );
+        let (decoded, wire) = recorded.next(&mut input, hour == 24);
+        let before = (
+            prepared.scan.daily_builds,
+            prepared.daily_projection_visits,
+            holds::snapshot_count(),
+            prepared.scan.country_visits,
+        );
+        let changes = tracker.observe_updates(&decoded, wire, format);
+        prepared.observe(&decoded, &changes, &flag).unwrap();
+        assert_eq!(prepared.scan.country_visits - before.3, count as usize);
+        if hour > 24 {
+            let edited = usize::from(hour == 26);
+            assert_eq!(prepared.scan.daily_builds - before.0, edited);
+            assert_eq!(prepared.daily_projection_visits - before.1, edited);
+            assert_eq!(holds::snapshot_count() - before.2, 0);
+        }
+    }
+}
+
+#[test]
+fn selected_countries_keep_equal_daily_projections_and_empty_hold_snapshots() {
+    unchanged_daily_and_empty_holds_do_not_rebuild(16);
+}
+
+#[test]
+#[cfg(feature = "slow-tests")]
+fn selected_5000_countries_keep_equal_daily_projections_and_empty_hold_snapshots() {
+    unchanged_daily_and_empty_holds_do_not_rebuild(5000);
+}
+
+#[test]
+fn native_daily_ordinals_are_resolved_once_per_tag_and_identity() {
+    let mut prepared = Prepared::default();
+    for day in [24, 48, 72] {
+        for country in 1..=12 {
+            let row = Daily {
+                row: daily_gain(country, 1, day).0,
+                read_hour: day + 1,
+                pp_read_hour: Some(day + 1),
+                cp_read_hour: Some(day),
+            }
+            .ledger();
+            prepared
+                .publish_daily(&format!("C{country}"), &row)
+                .unwrap();
+        }
+        assert_eq!(prepared.native_daily_key_visits, 12 * 26);
+    }
+    let row = Daily {
+        row: daily_gain(1, 2, 96).0,
+        read_hour: 97,
+        pp_read_hour: Some(97),
+        cp_read_hour: Some(96),
+    }
+    .ledger();
+    prepared.publish_daily("C1", &row).unwrap();
+    prepared.publish_daily("a different tag", &row).unwrap();
+    assert_eq!(prepared.native_daily_key_visits, 14 * 26);
+}
+
+#[test]
+fn retained_daily_projection_keeps_bytes_across_membership_refusals_days_and_resume() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let format = replay::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut observers = [Prepared::default(), Prepared::default()];
+    observers[1].whole_projection = true;
+    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+    let mut recorded = Recorded::new();
+    let mut input = frame(24, 4);
+    put(&mut input, command_power(4));
+    let mut visits = [0; 2];
+    for hour in (24..=77).filter(|hour| *hour != 54) {
+        input.hour = hour;
+        let native = if hour < 48 {
+            24
+        } else if hour < 60 {
+            48
+        } else {
+            72
+        };
+        let mut days: Vec<_> = (1..=4)
+            .map(|country| daily_gain(country, 1, native).0)
+            .collect();
+        if hour == 56 {
+            days.clear();
+        }
+        put(&mut input, TableRows::CountryPowerDaily(days));
+        if hour == 50 {
+            input.tables[TableId::CountryPowerDaily.index()] =
+                replay::frame::TableView::Unavailable {
+                    reason: "synthetic daily refusal".into(),
+                }
+                .into();
+        }
+        // Every owner stays dirty, including hours whose daily operands hold.
+        put(
+            &mut input,
+            TableRows::PoliticsCaptureCoverage(
+                (1..=4)
+                    .map(|country| capture(country, hour, hour))
+                    .collect(),
+            ),
+        );
+        let (decoded, wire) = recorded.next(&mut input, hour == 24 || hour == 52);
+        for ((observer, tracker), visits) in
+            observers.iter_mut().zip(&mut trackers).zip(&mut visits)
+        {
+            let before = observer.daily_projection_visits;
+            let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), format);
+            observer.observe(&decoded, &changes, &flag).unwrap();
+            *visits += observer.daily_projection_visits - before;
+        }
+        if [47, 50, 59, 72, 77].contains(&hour) {
+            for (observer, fixture) in observers.iter_mut().zip(&fixtures) {
+                publish(observer, fixture);
+            }
+            assert_eq!(
+                sections(&fixtures[0]),
+                sections(&fixtures[1]),
+                "hour {hour}"
+            );
+        }
+        if [47, 59].contains(&hour) {
+            for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
+                let whole_projection = observer.whole_projection;
+                *observer = Prepared::read(observer.saved_bytes().unwrap().as_slice()).unwrap();
+                observer.whole_projection = whole_projection;
+                observer.resume(&decoded);
+                tracker.invalidate();
+            }
+        }
+    }
+    assert!(visits[0] * 3 < visits[1], "changed projections {visits:?}");
+    for tag in ["C1", "C2", "C3", "C4"] {
+        for view in ["raw", "balance", "spending"] {
+            assert_eq!(
+                read(&fixtures[0], tag, 24, 77, view),
+                read(&fixtures[1], tag, 24, 77, view)
+            );
         }
     }
 }

@@ -161,6 +161,8 @@ pub(super) struct Scanned {
     country_visits: usize,
     #[cfg(test)]
     accounting_visits: usize,
+    #[cfg(test)]
+    daily_builds: usize,
     /// Join every hour from the whole tables, never from changed rows.
     #[cfg(test)]
     whole_tables: bool,
@@ -195,6 +197,8 @@ struct Country {
     mutations: Vec<Mutation>,
     governments: Vec<LedgerGovernment>,
     daily: Vec<Daily>,
+    /// Retained daily operands changed since their last prepared projection.
+    daily_changed: bool,
     daily_costs: Vec<DailyCost>,
     coverage: Vec<LedgerCoverage>,
     spending_coverage: Vec<LedgerSpendCoverage>,
@@ -338,6 +342,7 @@ impl Scanned {
     /// Keep the read just observed for the next read: whole when no
     /// recording can decode it again, otherwise only its naming tables.
     fn retain_previous(&mut self, frame: &DecodedFrame) {
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:retain_previous");
         let whole = self.replay.is_none();
         // The oracle holds whole only a read the next read dates a row at.
         #[cfg(any(test, feature = "test-support"))]
@@ -378,6 +383,7 @@ impl Scanned {
             country.mutations.clear();
             country.governments.clear();
             if let Some(current) = &current {
+                let before = country.daily.len();
                 country.daily.retain(|day| {
                     current.contains(&(
                         day.row.country,
@@ -386,6 +392,7 @@ impl Scanned {
                         day.row.day_hour,
                     ))
                 });
+                country.daily_changed |= country.daily.len() != before;
             }
             let applications: BTreeSet<_> = country
                 .daily
@@ -620,6 +627,7 @@ impl Scanned {
         requested: &BTreeSet<u32>,
         current: bool,
     ) {
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:accounting_names");
         if requested
             .iter()
             .all(|raw| self.naming.contains_key(&(*raw, frame.hour)))
@@ -912,6 +920,7 @@ fn valid_recorded_tag(country: &CountryRow) -> Result<&str, String> {
     Ok(std::str::from_utf8(&country.tag).expect("validated UTF-8"))
 }
 fn observe_presence(scan: &mut Scanned, frame: &DecodedFrame) -> io::Result<()> {
+    let _cpu = ::replay::cpu::scope_phase("politics_ledger:accounting_presence");
     if frame.complete::<tables::Countries>().is_err() {
         return Ok(());
     }
@@ -1008,6 +1017,7 @@ fn observe_accounting(
     content: Option<&PoliticsContent>,
 ) -> io::Result<()> {
     let native = Arc::clone(&scan.inputs);
+    let _cpu = ::replay::cpu::scope_phase("politics_ledger:accounting_apply");
     let hour = frame.hour;
     #[cfg(test)]
     {
@@ -1045,6 +1055,7 @@ fn observe_accounting(
         scan.name_frame(&previous, content, &event_countries, false);
         scan.previous = Some(previous);
     }
+    let coverage_cpu = ::replay::cpu::scope_phase("politics_ledger:accounting_coverage");
     for country in native.refused.iter().take(
         if !scan.clock.recording
             || native.countries_changed
@@ -1298,6 +1309,8 @@ fn observe_accounting(
                 && event_hour <= row.through_hour
         })
     };
+    drop(coverage_cpu);
+    let rows_cpu = ::replay::cpu::scope_phase("politics_ledger:accounting_events");
     let mut previous = scan.previous.take();
     // A row dated at a previous read held only by its naming tables is
     // described from that read decoded again.
@@ -1425,6 +1438,15 @@ fn observe_accounting(
                 continue;
             };
             let key = (row.country, row.instance, row.epoch, row.day_hour);
+            if let Some(&index) = scan.daily.get(&key)
+                && scan.countries[&tag].daily[index].row == *row
+            {
+                continue;
+            }
+            #[cfg(test)]
+            {
+                scan.daily_builds += 1;
+            }
             let mut value = Daily {
                 row: row.clone(),
                 read_hour: hour,
@@ -1476,12 +1498,14 @@ fn observe_accounting(
                 unchanged.read_hour = old.read_hour;
                 if *old != unchanged {
                     *old = value;
+                    scan.country(&tag).daily_changed = true;
                     scan.dirty.insert(tag.clone());
                 }
             } else {
                 let index = scan.country(&tag).daily.len();
                 scan.daily.insert(key, index);
                 scan.country(&tag).daily.push(value);
+                scan.country(&tag).daily_changed = true;
                 scan.dirty.insert(tag.clone());
             }
         }
@@ -1547,6 +1571,7 @@ fn observe_accounting(
             scan.country(&tag).daily_costs.push(cost);
         }
     }
+    drop(rows_cpu);
     holds::observe_holds(frame, scan, content);
     scan.first_hour.get_or_insert(hour);
     scan.last_hour = Some(scan.last_hour.map_or(hour, |last| last.max(hour)));

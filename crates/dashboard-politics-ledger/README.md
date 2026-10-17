@@ -53,6 +53,8 @@ extent), and taking an earlier country clears only that country's mutations
 and governments. It does so only once the content's power diagnostics are
 reachable (`PoliticsContent::power_requested`), since a presentation reports
 them only from the first item that demanded the power content.
+The same workers build its payment operands and tooltip groups; the fold
+consumes them, including any errors, in the country's original row order.
 
 Accounting selects recorded changed rows, unresolved power and cost rows that
 this read observes again, and every row of an identity it rechecks. Retained rows
@@ -62,6 +64,16 @@ owner's positions once, regardless of how many unresolved rows it retains.
 Native-day counts, latest power hours, daily-gain membership, unknown-addition
 counts and wrapping cost sums
 remove each replaced or deleted row and add its replacement. Duplicate gains and zero wrapping sums retain their multiplicities.
+Equal retained daily rows keep their supplying dates without rebuilding their
+accounting wrappers. A selected country's daily series project again only when
+its retained operands, published key membership or native day changes, or an
+accepted episode starts. Membership edits invalidate every retained tag of that
+native country. Native daily publication retains its field ordinals by tag and
+recorded identity, preserving their allocation and publication order. These
+projection indexes are transient and rebuild after loading saved state.
+Empty command allocator sets extend equal snapshots in place: their only
+operands are the recorded total and, without it, the refusal. Named allocators,
+changed totals or refusals, gaps and restored states build their snapshots.
 Capture identity changes recheck their owner's additions; snapshots rebuild the
 same aggregates. Reconciliation and publication pruning retain their owner joins.
 The selection is rebuilt from each accepted read and is not saved.
@@ -102,3 +114,8 @@ captures. Consecutive hours with the same certificate carry that check and the
 expiry bucket membership; other deadlines still stop at their recorded dates.
 Ordinary joins discard the deadline proof, and captures with future starts keep
 each hour's check. Phase labels separate capture deadline checks and expiry changes.
+Observer phase labels also separate clock advance, input joins and certificate
+checks, accounting selection, names, presence, coverage, events, holds and
+completion, the retained read, daily key membership and capture checks for
+parts. Presentation workers label payment projection; native daily settlement
+labels its projection separately.

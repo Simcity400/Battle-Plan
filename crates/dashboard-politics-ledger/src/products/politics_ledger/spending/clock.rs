@@ -75,6 +75,7 @@ pub(super) struct Clock {
 
 impl Scanned {
     pub(super) fn advance(&mut self, hour: i32) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:clock_advance");
         if self
             .clock
             .through
@@ -166,6 +167,7 @@ impl Scanned {
     /// Country balances are not identity operands. The shared projection avoids
     /// joins when only those unrelated fields supplied a new allocation.
     pub(super) fn inputs_changed(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> bool {
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:inputs_changed");
         self.clock.advancing_deadlines = None;
         let refused_tags: Vec<_> = if changes.rows_changed[TableId::Countries.index()]
             || changes.table_read[TableId::Countries.index()]
@@ -251,6 +253,7 @@ impl Scanned {
         advanced: &Arc<[(u32, i32)]>,
         day_due: bool,
     ) -> bool {
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:certified_check");
         let read = |table: TableId| {
             changes.rows_changed[table.index()] || changes.table_read[table.index()]
         };
@@ -362,6 +365,7 @@ impl Scanned {
         changes: &FrameChanges,
         advanced: &Arc<[(u32, i32)]>,
     ) -> bool {
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:inputs_advanced");
         Arc::make_mut(&mut self.inputs).refresh_advanced(frame, changes, advanced);
         #[cfg(test)]
         {
@@ -379,6 +383,7 @@ impl Scanned {
     }
 
     pub(super) fn begin_accounting(&mut self, frame: &DecodedFrame) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:accounting_begin");
         self.clock.selected = self
             .inputs
             .slots
@@ -389,8 +394,10 @@ impl Scanned {
             .chain(self.dirty.iter().cloned())
             .collect();
         if let Some(previous) = self.clock.previous {
-            let selected = self.clock.selected.clone();
-            self.materialize_tags(previous, &selected)?;
+            let selected = std::mem::take(&mut self.clock.selected);
+            let result = self.materialize_tags(previous, &selected);
+            self.clock.selected = selected;
+            result?;
             if self.inputs.countries_changed {
                 self.materialize_refusals(previous)?;
             }
@@ -477,6 +484,7 @@ impl Scanned {
         frame: &DecodedFrame,
         content: Option<&PoliticsContent>,
     ) -> io::Result<()> {
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:advance_accounting");
         let hour = frame.hour;
         // As begin_accounting with nothing selected.
         self.clock.selected.clear();
@@ -503,6 +511,7 @@ impl Scanned {
     }
 
     pub(super) fn end_accounting(&mut self, hour: i32) {
+        let _cpu = ::replay::cpu::scope_phase("politics_ledger:accounting_end");
         if self.clock.presence_refreshed {
             // A refused alias before its first valid alias has no known tag on
             // the first read. Subsequent equal censuses use the final known tag.

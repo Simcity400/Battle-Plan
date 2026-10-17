@@ -57,6 +57,64 @@ fn latest(scan: &Scanned) -> LedgerCommandHold {
 }
 
 #[test]
+fn empty_snapshots_extend_only_equal_totals_and_refusals_across_gaps_and_resume() {
+    let mut fast = CountryHolds::default();
+    let mut dense = CountryHolds::default();
+    for (hour, total, missing, reused) in [
+        (24, Some(0), None, false),
+        (25, Some(0), None, true),
+        (26, Some(5), None, false),
+        (27, Some(5), Some("ignored with a total"), true),
+        (28, None, Some("first refusal"), false),
+        (29, None, Some("second refusal"), false),
+        (30, None, Some("second refusal"), true),
+        (32, None, Some("second refusal"), false),
+        (33, Some(-2), None, false),
+        (34, Some(-2), None, true),
+        (35, Some(5), None, false),
+        (36, Some(5), None, false),
+        (37, Some(5), None, true),
+        (38, Some(5), None, false),
+    ] {
+        if hour == 35 {
+            for state in [&mut fast, &mut dense] {
+                state.active.insert(
+                    "known".into(),
+                    Holder {
+                        kind: "Leader".into(),
+                        item: (&PowerIdentity::default()).into(),
+                        amount: 3,
+                        cause: PowerCause::LeaderAssignment,
+                    },
+                );
+            }
+        }
+        if hour == 36 {
+            fast.active.clear();
+            dense.active.clear();
+        }
+        if hour == 38 {
+            fast = serde_json::from_slice(&serde_json::to_vec(&fast).unwrap()).unwrap();
+        }
+        let frame = frame(hour, 1);
+        let before = snapshot_count();
+        let changed = fast.observe_snapshot(&frame, total, None, missing);
+        assert_eq!(
+            snapshot_count() - before,
+            usize::from(!reused),
+            "hour {hour}"
+        );
+        let snapshot = dense.snapshot(&frame, total, None, missing);
+        assert_eq!(changed, dense.append(snapshot), "hour {hour}");
+        assert_eq!(
+            serde_json::to_vec(&fast).unwrap(),
+            serde_json::to_vec(&dense).unwrap(),
+            "hour {hour}"
+        );
+    }
+}
+
+#[test]
 fn allocate_release_reallocate_are_zero_spending_and_held_is_exact_each_hour() {
     let mut scan = Scanned::default();
     observe(&mut scan, &held_frame(24, 0, Vec::new()));
